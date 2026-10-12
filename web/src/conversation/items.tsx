@@ -256,7 +256,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
       <Attachments list={node.attachments} resolve={actions?.resolveAttachmentUrl} />
       <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
         {node.transcribed && (
-          <Tooltip><TooltipTrigger asChild><span className="px-1 text-muted-foreground"><MicIcon className="size-3.5" /></span></TooltipTrigger><TooltipContent>Transcribed from voice</TooltipContent></Tooltip>
+          <Tooltip><TooltipTrigger asChild><span className="px-1 text-muted-foreground" data-voice-badge><MicIcon className="size-3.5" /></span></TooltipTrigger><TooltipContent>Transcribed from voice</TooltipContent></Tooltip>
         )}
         {hasTextControls && (
           <>

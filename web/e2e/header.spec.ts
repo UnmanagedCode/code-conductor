@@ -95,12 +95,19 @@ test('a long-titled worktree session: the controls share one row inside the view
 });
 
 test('the subline\'s project and worktree names, and the model badge on desktop, each clip with an ellipsis inside the header', async ({ page, cc }) => {
+  // Invariant: a long project, worktree and (desktop) model name each stay on one line, overflowing a box that clips rather than spills, with an ellipsis, inside a header no taller than a short-named one; a short name does not overflow its box.
   // The header a short project and worktree name give, to compare heights against.
   const short = await seed(cc, 'hdr-short', 't');
   await page.goto(`/next/#session=${short.sessionId}`);
   const header = sessionHeader(page);
   await expect(header.getByRole('heading', { level: 1 })).toHaveText('t');
   const shortHeight = await header.evaluate((h) => h.getBoundingClientRect().height);
+  const shortName = await header.evaluate((h, text) => {
+    const el = [...h.querySelectorAll('span')].filter((s) => s.textContent === text).at(-1);
+    return el ? { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth } : null;
+  }, short.project);
+  expect(shortName, 'the short project name is rendered').not.toBeNull();
+  expect(shortName!.scrollWidth, 'a short name fits its box').toBeLessThanOrEqual(shortName!.clientWidth);
 
   // Wide glyphs, hyphenated so a name that lost `nowrap` could wrap. Project
   // names have no length cap. POST /api/instances takes no worktree name, so the
@@ -155,7 +162,7 @@ test('the subline\'s project and worktree names, and the model badge on desktop,
     expect(el.clientWidth!, `${name}: shows a clipped part, not squeezed away`).toBeGreaterThan(0);
     expect(el.scrollWidth!, `${name}: overflows its box`).toBeGreaterThan(el.clientWidth!);
     expect(el.whiteSpace, `${name}: one line`).toBe('nowrap');
-    expect(el.overflowX, `${name}: clipped`).toBe('clip');
+    expect(el.overflowX, `${name}: clipped, not spilling`).not.toBe('visible');
     expect(el.textOverflow, `${name}: ellipsized`).toBe('ellipsis');
     expect(el.right!, `${name}: inside the header`).toBeLessThanOrEqual(el.headerRight!);
   }

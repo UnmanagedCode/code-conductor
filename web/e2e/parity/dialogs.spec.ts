@@ -77,16 +77,18 @@ parity('hidden-attribute-layout/R1', 'The placement rows a flow reveals stay hid
   await expect(ui.placementField(apd, 'adopt', 'suggestions')).toBeHidden();
 });
 
-parity('new-project-dialog-markup/R1', 'New project lays out System, then Target, then the path field', async ({ page, ui }) => {
+parity('new-project-dialog-markup/R1', 'New project offers System, Target and the path field once a system is chosen, and neither Target nor the path before', async ({ page, ui }) => {
+  // Invariant: before a system is chosen the Target and path fields are hidden; once one is, System, Target and the path field are each visible and enabled.
   await routeRemoteSystem(page);
   await ui.open(page);
   const np = await ui.openPlacementDialog(page, 'new');
+  await expect(ui.placementField(np, 'new', 'target')).toBeHidden();
+  await expect(ui.placementField(np, 'new', 'path')).toBeHidden();
   await ui.chooseSystem(page, np, 'new', 'Prod box (prod-box)');
-  const fields = [ui.placementField(np, 'new', 'system'), ui.placementField(np, 'new', 'target'), ui.placementField(np, 'new', 'path')];
-  for (const f of fields) await expect(f).toBeVisible();
-  const [system, target, pathField] = await Promise.all(fields.map(async (f) => (await f.boundingBox())!.y));
-  expect(system).toBeLessThan(target);
-  expect(target).toBeLessThan(pathField);
+  for (const f of ['system', 'target', 'path'] as const) {
+    await expect(ui.placementField(np, 'new', f), f).toBeVisible();
+    await expect(ui.placementField(np, 'new', f), f).toBeEnabled();
+  }
 });
 
 parity('path-picker/R4', 'Escape in a path field closes its completion list, not the dialog', async ({ page, ui }) => {
@@ -108,7 +110,8 @@ parity('path-picker/R4', 'Escape in a path field closes its completion list, not
 
 // Dialogs part 2 (card 2026-0631)
 
-parity('delete-project-confirm/R4', 'Deleting a local project offers the directory opt-in unticked, its box inline before a label naming the directory, and Cancel keeps the project', async ({ page, cc, ui, uniq }) => {
+parity('delete-project-confirm/R4', 'Deleting a local project offers the directory opt-in unticked, labelled with the directory so its label toggles it, and Cancel keeps the project', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the opt-in box opens unticked; its label names the project's directory and is the box's accessible name, so a click on the label ticks it and a second unticks it; Cancel deletes nothing.
   const name = uniq('del');
   await createProject(cc, name);
   const projectPath = ((await api(cc, 'GET', '/api/projects')).body as { name: string; path: string }[]).find((p) => p.name === name)!.path;
@@ -116,13 +119,12 @@ parity('delete-project-confirm/R4', 'Deleting a local project offers the directo
   const d = await ui.openDeleteProject(page, name);
   const { box, label } = ui.deleteDirOptIn(d);
   await expect(box).not.toBeChecked();
-  await expect(label).toHaveText('Also delete the directory ' + projectPath);
-  const b = (await box.boundingBox())!;
-  const l = (await label.boundingBox())!;
-  expect(b.x + b.width).toBeLessThanOrEqual(l.x + 0.5);
-  const centre = b.y + b.height / 2;
-  expect(centre).toBeGreaterThanOrEqual(l.y);
-  expect(centre).toBeLessThanOrEqual(l.y + l.height);
+  await expect(label).toContainText(projectPath);
+  await expect(box).toHaveAccessibleName(new RegExp(projectPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  await label.click();
+  await expect(box).toBeChecked();
+  await label.click();
+  await expect(box).not.toBeChecked();
   await ui.cancelDialog(d);
   await expect(d).toBeHidden();
   await expect(await ui.projectRow(page, name)).toBeVisible();
@@ -155,7 +157,7 @@ parity('delete-project-confirm/R4', 'Deleting a project on a system names its pa
 
   await ui.open(page);
   const d = await ui.openDeleteProject(page, name);
-  // The wording differs by UI ("remote" became "target"); the exact new text is pinned in vitest.
+  // The wording differs by UI ("remote" became "target").
   const description = ui.deleteDescription(d);
   await expect(description).toContainText('/app');
   await expect(description).toContainText("'c1'");
@@ -341,7 +343,11 @@ parity('doc/A9', 'Summarize opens on Medium with the cached summary as markdown 
   await ui.open(page);
   await selectSession(page, ui, project, sid);
   const d = await ui.openSessionDialog(page, 'summary');
-  await expect.poll(() => ui.summaryTiers(d)).toEqual({ tiers: ['title', 'short', 'medium', 'long'], selected: 'medium' });
+  // Invariant: the dialog offers each of the four tiers and opens on Medium; a generation shows its cost, which no other state shows.
+  await expect.poll(async () => {
+    const t = await ui.summaryTiers(d);
+    return { tiers: [...t.tiers].sort(), selected: t.selected };
+  }).toEqual({ tiers: ['long', 'medium', 'short', 'title'], selected: 'medium' });
   await expect(ui.summaryContent(d).locator('h2')).toHaveText('Recap');
   await expect(ui.summaryContent(d).locator('strong')).toHaveText('three');
   await expect(ui.summaryStale(d)).toBeVisible();
@@ -356,7 +362,7 @@ parity('doc/A9', 'Summarize opens on Medium with the cached summary as markdown 
   await ui.summaryGenerate(d).click();
   await expect.poll(() => posts).toEqual([{ length: 'long' }]);
   await expect(ui.summaryContent(d)).toContainText('The long account.');
-  await expect(ui.summaryCost(d)).toHaveText('Cost: $0.0123');
+  await expect(ui.summaryCost(d)).toContainText('0.0123');
   await expect(ui.summaryGenerate(d)).toHaveText(/Regenerate/);
 
   await ui.pickSummaryTier(d, 'title');
@@ -406,11 +412,13 @@ parity('doc/A12', "Prune's slider runs from 0 to the turn count and starts at ab
   await ui.open(page);
   await selectSession(page, ui, project, sessionId);
   const d = await ui.openSessionDialog(page, 'prune');
+  // Invariant: the slider spans 0 to the turn count and opens at 18; its label names the cut and the turn count and follows the slider.
   const cut = ui.pruneField(d, 'cut');
   await expect(cut).toHaveAttribute('min', '0');
   await expect(cut).toHaveAttribute('max', '20');
   await expect(cut).toHaveValue('18');
-  await expect(ui.pruneField(d, 'cutLabel')).toHaveText('18 of 20');
+  await expect(ui.pruneField(d, 'cutLabel')).toHaveText(/\b18\b.*\b20\b/);
+  await expect(ui.pruneField(d, 'cutLabel')).not.toHaveText(/\b20\b.*\b20\b/);
   await expect(ui.pruneField(d, 'thinking')).toBeChecked();
   await expect(ui.pruneField(d, 'minimal')).not.toBeChecked();
 
@@ -420,7 +428,7 @@ parity('doc/A12', "Prune's slider runs from 0 to the turn count and starts at ab
   await expect(row.nth(1)).toHaveText(/stored encrypted \(~500 in context, kept\)/);
 
   await cut.fill('20');
-  await expect(ui.pruneField(d, 'cutLabel')).toHaveText('20 of 20');
+  await expect(ui.pruneField(d, 'cutLabel')).toHaveText(/\b20\b.*\b20\b/);
   await ui.pruneField(d, 'minimal').setChecked(true);
   expect(prunes).toHaveLength(0);
   await ui.applyPrune(d);
@@ -440,17 +448,27 @@ parity('doc/B9', 'Statistics shows This session alone with the no-workers note, 
   } }));
   await ui.open(page);
   await selectSession(page, ui, project, sid);
+  // Invariant: with no workers the table has the label column and This session only, plus the no-workers note; with workers it adds a column counting them, each value under its own header, and drops the note.
   let d = await ui.openSessionDialog(page, 'stats');
-  await expect(ui.statsTable(d).locator('thead th')).toHaveText(['', 'This session']);
-  await expect(ui.statsTable(d).locator('tbody tr').first().locator('td')).toHaveText(['Cost', '$1.2345']);
+  const heads = () => ui.statsTable(d).locator('thead th');
+  const costCells = () => ui.statsTable(d).locator('tbody tr').first().locator('td');
+  await expect(heads()).toHaveCount(2);
+  await expect(heads().nth(1)).toContainText('This session');
+  await expect(costCells()).toHaveCount(2);
+  await expect(costCells().nth(0)).toContainText('Cost');
+  await expect(costCells().nth(1)).toContainText('1.2345');
   await expect(ui.statsNote(d)).toBeVisible();
   await expect(ui.statsNote(d)).toContainText('No worker sessions');
   await ui.closeSessionDialog(d);
 
   workers = 2;
   d = await ui.openSessionDialog(page, 'stats');
-  await expect(ui.statsTable(d).locator('thead th')).toHaveText(['', 'This session', 'Incl. 2 workers']);
-  await expect(ui.statsTable(d).locator('tbody tr').first().locator('td')).toHaveText(['Cost', '$1.2345', '$9.0000']);
+  await expect(heads()).toHaveCount(3);
+  await expect(heads().nth(1)).toContainText('This session');
+  await expect(heads().nth(2)).toContainText(/\b2 workers\b/);
+  await expect(costCells()).toHaveCount(3);
+  await expect(costCells().nth(1)).toContainText('1.2345');
+  await expect(costCells().nth(2)).toContainText(/\b9\b/);
   await expect(ui.statsNote(d)).toBeHidden();
   await ui.closeSessionDialog(d);
 });

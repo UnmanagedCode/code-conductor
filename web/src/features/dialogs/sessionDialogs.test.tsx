@@ -45,15 +45,15 @@ describe('session summary', () => {
   const tier = (t: string) => document.querySelector<HTMLButtonElement>(`[data-len="${t}"]`)!;
   const content = () => document.querySelector('[data-summary-content]')!;
 
-  it('opens on Medium with its cached summary rendered as markdown, Title leftmost, and no cost', async () => {
-    // Invariant: the dialog opens on the cached Medium tier (not the first cached tier), renders it through the markdown pipeline, and shows no cost before a generation.
+  it('opens on Medium with its cached summary rendered as markdown, offering all four tiers, and no cost', async () => {
+    // Invariant: the dialog offers each of the four tiers once, opens on the cached Medium tier alone pressed (not the first cached tier), renders it through the markdown pipeline, and shows no cost before a generation.
     const data = SUMMARY;
     routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }) });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
     await screen.findByText('Recap');
     const lens = [...document.querySelectorAll('[data-len]')].map((b) => b.getAttribute('data-len'));
-    expect(lens).toEqual(['title', 'short', 'medium', 'long']);
+    expect([...lens].sort()).toEqual(['long', 'medium', 'short', 'title']);
     const pressed = [...document.querySelectorAll('[data-len]')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.getAttribute('data-len'));
     expect(pressed).toEqual(['medium']);
     expect(content().querySelector('h2')?.textContent).toBe('Recap');

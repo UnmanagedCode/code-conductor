@@ -65,15 +65,16 @@ describe('plain user bubbles', () => {
   });
 
   it('a transcribed prompt strips the marker everywhere and shows the voice badge; a plain one has no badge', async () => {
+    // Invariant: a transcribed prompt's bubble carries the voice badge and a plain prompt's does not; the marker shows nowhere and is not copied.
     const t = await echo('<transcribed>\n**hi**');
     expect(t.bubble.textContent).not.toContain('<transcribed>');
     expect((t.m.items[0] as UserNode).transcribed).toBe(true);
-    expect(t.bubble.querySelector('.lucide-mic')).toBeTruthy();
+    expect(t.bubble.querySelector('[data-voice-badge]')).toBeTruthy();
     fireEvent.click(within(t.bubble).getByRole('button', { name: 'Copy message' }));
     await flush();
     expect(copied).toEqual(['**hi**']);
     const p = await echo('hello');
-    expect(p.bubble.querySelector('.lucide-mic')).toBeNull();
+    expect(p.bubble.querySelector('[data-voice-badge]')).toBeNull();
   });
 });
 

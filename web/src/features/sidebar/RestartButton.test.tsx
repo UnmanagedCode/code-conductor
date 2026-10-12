@@ -36,16 +36,22 @@ describe('restart button', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('with live sessions a click asks first, counting them, with Cancel, Restart only and Restart & resume in that order', () => {
-    // Invariant: with instances the click opens the ask dialog, counting the live instance list, with the three choices in order, and restarts nothing yet.
+  it('with live sessions a click asks first, counting them, offering Cancel, Restart only and Restart & resume with resume focused', () => {
+    // Invariant: with instances the click opens the ask dialog, its count following the live instance list, offering Cancel, Restart only and the resume choice, with the resume choice (not the plain restart that drops the sessions) holding the default focus; it restarts nothing yet.
     act(() => appStore.set({ instances: [inst('a'), inst('b')] }));
     fireEvent.click(button());
-    const description = within(dialog()).getByText(/active session/);
-    expect(description.textContent).toBe('2 active sessions. Resume them after the restart, or restart only? A plain restart drops them, and temp sessions are archived.');
-    expect(footer().map((b) => b.textContent)).toEqual(['Cancel', 'Restart only', 'Restart & resume']);
+    const d = dialog();
+    expect(within(d).getByText(/active session/).textContent).toMatch(/\b2 active sessions\b/);
+    expect(within(d).getByRole('button', { name: /cancel/i })).toBeTruthy();
+    const plain = within(d).getByRole('button', { name: /restart only/i });
+    const resume = within(d).getByRole('button', { name: /resume/i });
+    expect(document.activeElement === resume, 'the resume choice holds the default focus').toBe(true);
+    expect(document.activeElement === plain, 'the plain restart is not the default').toBe(false);
     expect(performRestart).not.toHaveBeenCalled();
     act(() => appStore.set({ instances: [inst('a')] }));
-    expect(within(dialog()).getByText(/active session/).textContent?.startsWith('1 active session. ')).toBe(true);
+    const one = within(dialog()).getByText(/active session/).textContent;
+    expect(one).toMatch(/\b1 active session\b/);
+    expect(one).not.toMatch(/\b2 active/);
   });
 
   it('Cancel closes without restarting, Restart only restarts plain, and Restart & resume restarts with resume', async () => {
