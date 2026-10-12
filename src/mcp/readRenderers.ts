@@ -59,6 +59,7 @@ import { jobLine, type BackgroundJob } from '../backgroundJobs.ts';
 // path itself so the flag and the behaviour cannot drift.
 import { resumesHot } from '../sessionModes.ts';
 import type { RemoteEnumeration } from '../systems/remoteEnumeration.ts';
+import { readablePrompt } from '../../public/promptPreview.ts';
 
 type Row = Record<string, unknown>;
 
@@ -187,6 +188,7 @@ export function renderProjects(projects: unknown): string {
 // check — "the one whose cwd ends in .conduct" (conventions/conductor/core.md)
 // — so it has to be readable straight off the text. Same for firstPrompt/title,
 // which back "only drive workers you spawned". Neither may be dropped.
+// firstPrompt renders as readablePrompt names it, the same as a session label.
 
 const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'temp', default: false, label: 'temp' },
@@ -230,7 +232,7 @@ function instanceRows(rows: Row[]): Array<string | string[]> {
       `mode ${dash(r.mode)}   effort ${dash(r.effort)}   thinking ${dash(r.thinking)}   model ${dash(r.backend)}/${dash(r.model)}`,
       contextLine(r),
       `playbook ${dash(r.playbook)} / ${dash(r.stage)}`,
-      `title ${r.title == null ? `${DASH}   first ${trunc(r.firstPrompt, 100)}` : trunc(r.title, 100)}`,
+      `title ${r.title == null ? `${DASH}   first ${trunc(readablePrompt(r.firstPrompt), 100)}` : trunc(r.title, 100)}`,
       `last ${ts(r.lastResponseAt)}`,
     ];
     const dev = deviations(r, INSTANCE_DEVIANT);
@@ -273,7 +275,7 @@ function inactiveRows(rows: Row[]): string[] {
     ts(s.lastActivity),
     s.playbook ? `${dash(s.playbook)}/${dash(s.stage)}` : DASH,
     deviations(s, SESSION_DEVIANT).join(',') || DASH,
-    trunc(s.title ?? s.firstPrompt, 60),
+    trunc(s.title ?? readablePrompt(s.firstPrompt), 60),
   ]), ['l', 'l', 'l', 'l', 'l']);
 }
 
