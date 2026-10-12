@@ -14,7 +14,7 @@ import { applySessionTitle } from '@/app/sessionActions';
 import { isCallUsageShown, setCallUsageShown, uiStore } from '@/app/ui';
 import { toast } from '@/ui/feedback';
 import { cn } from '@/lib/utils';
-import { useModalFocus } from '@/lib/modalFocus';
+import { focusContent } from '@/lib/modalFocus';
 import { closeDialog, dialogStore } from './api';
 import { CheckRow } from './SpawnDialog';
 import { FormError } from './FormError';
@@ -152,10 +152,9 @@ function SummaryBody({ sessionId }: { sessionId: string }) {
 export function SummaryDialog() {
   const slot = useStore(dialogStore, (s) => s.summary);
   const key = useOpenKey(slot);
-  const focus = useModalFocus(!!slot);
   return (
     <Dialog open={!!slot} onOpenChange={(o) => { if (!o) closeDialog('summary'); }}>
-      {slot && <DialogContent className="sm:max-w-2xl focus:outline-none" data-dialog="summary" {...focus}><SummaryBody key={key} sessionId={slot.sessionId} /></DialogContent>}
+      {slot && <DialogContent className="sm:max-w-2xl focus:outline-none" data-dialog="summary" onOpenAutoFocus={focusContent}><SummaryBody key={key} sessionId={slot.sessionId} /></DialogContent>}
     </Dialog>
   );
 }
@@ -240,10 +239,9 @@ function StatsBody({ sessionId }: { sessionId: string }) {
 export function StatsDialog() {
   const slot = useStore(dialogStore, (s) => s.stats);
   const key = useOpenKey(slot);
-  const focus = useModalFocus(!!slot);
   return (
     <Dialog open={!!slot} onOpenChange={(o) => { if (!o) closeDialog('stats'); }}>
-      {slot && <DialogContent className="sm:max-w-lg focus:outline-none" data-dialog="stats" {...focus}><StatsBody key={key} sessionId={slot.sessionId} /></DialogContent>}
+      {slot && <DialogContent className="sm:max-w-lg focus:outline-none" data-dialog="stats" onOpenAutoFocus={focusContent}><StatsBody key={key} sessionId={slot.sessionId} /></DialogContent>}
     </Dialog>
   );
 }
@@ -377,10 +375,9 @@ function PruneBody({ instanceId }: { instanceId: string }) {
 export function PruneDialog() {
   const slot = useStore(dialogStore, (s) => s.prune);
   const key = useOpenKey(slot);
-  const focus = useModalFocus(!!slot);
   return (
     <Dialog open={!!slot} onOpenChange={(o) => { if (!o) closeDialog('prune'); }}>
-      {slot && <DialogContent className="sm:max-w-lg focus:outline-none" data-dialog="prune" {...focus}><PruneBody key={key} instanceId={slot.instanceId} /></DialogContent>}
+      {slot && <DialogContent className="sm:max-w-lg focus:outline-none" data-dialog="prune" onOpenAutoFocus={focusContent}><PruneBody key={key} instanceId={slot.instanceId} /></DialogContent>}
     </Dialog>
   );
 }

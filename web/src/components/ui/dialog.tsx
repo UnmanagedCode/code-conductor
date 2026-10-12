@@ -2,8 +2,13 @@ import * as React from 'react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
 import { XIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ReturnFocusContext, useContentReturnFocus, useReturnFocus } from '@/lib/modalFocus';
 
-const Dialog = (props: React.ComponentProps<typeof DialogPrimitive.Root>) => <DialogPrimitive.Root data-slot="dialog" {...props} />;
+/** Every app modal opens from state, never a Trigger: the root reads its opener for the content's focus return. */
+function Dialog(props: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  const returnFocus = useReturnFocus(!!props.open);
+  return <ReturnFocusContext.Provider value={returnFocus}><DialogPrimitive.Root data-slot="dialog" {...props} /></ReturnFocusContext.Provider>;
+}
 const DialogTrigger = (props: React.ComponentProps<typeof DialogPrimitive.Trigger>) => <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
 const DialogClose = (props: React.ComponentProps<typeof DialogPrimitive.Close>) => <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 
@@ -16,7 +21,8 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
     />
   );
 }
-function DialogContent({ className, children, showCloseButton = true, ...props }: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
+function DialogContent({ className, children, showCloseButton = true, onCloseAutoFocus, ...props }: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
+  const returnFocus = useContentReturnFocus(onCloseAutoFocus);
   return (
     <DialogPrimitive.Portal>
       <DialogOverlay />
@@ -27,6 +33,8 @@ function DialogContent({ className, children, showCloseButton = true, ...props }
           className,
         )}
         {...props}
+        ref={returnFocus.ref}
+        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
       >
         {children}
         {showCloseButton && (

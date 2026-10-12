@@ -223,3 +223,96 @@ export async function drawerFlow({ page }: Ctx): Promise<void> {
   await expect(drawer).toHaveCount(0);
   await expect(opener, 'Escape returns focus to Open sidebar').toBeFocused();
 }
+
+type Opened = { dialog: Locator; returnsTo: Locator };
+type ReturnCtx = { page: Page; project: string; session: { id: string; sessionId: string } };
+
+const drawerViewport = () => test.info().project.name !== 'desktop';
+const sidebarOpener = (page: Page) => page.getByRole('button', { name: 'Open sidebar' }).filter({ visible: true }).first();
+
+/** The sidebar with keyboard focus inside it: on a phone the drawer, opened by Enter on Open sidebar. */
+async function sidebarByKeyboard(page: Page) {
+  if (drawerViewport() && !(await page.locator('[data-slot="sheet-content"][data-state="open"]').count())) {
+    await press(page, sidebarOpener(page), 'Enter');
+    await expect(page.locator('[data-slot="sheet-content"][data-state="open"]')).toBeVisible();
+  }
+  return nextSidebar(page);
+}
+
+/** A sidebar project-menu item: on a phone the menu closes the drawer first, so focus returns to Open sidebar. */
+async function projectMenuItem(page: Page, item: string, dialog: Locator): Promise<Opened> {
+  const sb = await sidebarByKeyboard(page);
+  const trigger = sb.getByRole('button', { name: 'Project actions' });
+  const returnsTo = drawerViewport() ? sidebarOpener(page) : trigger;
+  await press(page, trigger, 'Enter');
+  await press(page, page.getByRole('menuitem', { name: item, exact: true }), 'Enter');
+  return { dialog, returnsTo };
+}
+
+async function rowButton(page: Page, row: string, name: string, dialog: Locator): Promise<Opened> {
+  const sb = await sidebarByKeyboard(page);
+  const button = sb.locator(row).getByRole('button', { name, exact: true });
+  await press(page, button, 'Enter');
+  return { dialog, returnsTo: button };
+}
+
+/** Every dialog the web UI opens, by the control a keyboard user opens it from. */
+export const RETURNS: { name: string; open: (c: ReturnCtx) => Promise<Opened> }[] = [
+  {
+    name: 'Rename',
+    open: async ({ page, project, session }) => {
+      const row = await next.sessionRow(page, project, session.sessionId);
+      await row.click();
+      await expect(next.sessionHeader(page).locator(`[title="session ${session.sessionId}"]`)).toBeVisible();
+      const actions = next.sessionHeader(page).getByRole('button', { name: 'Session actions' });
+      await press(page, actions, 'Enter');
+      await press(page, page.getByRole('menuitem', { name: 'Rename', exact: true }), 'Enter');
+      return { dialog: page.locator('[role="dialog"][data-dialog="rename"]'), returnsTo: actions };
+    },
+  },
+  { name: 'Spawn', open: ({ page, project }) => rowButton(page, `[data-project-row="${project}"]`, 'New session', page.locator('[role="dialog"][data-dialog="spawn"]')) },
+  { name: 'Delete project', open: ({ page, project }) => rowButton(page, `[data-project-row="${project}"]`, 'Delete project', page.locator('[role="dialog"][data-dialog="delete-project"]')) },
+  {
+    name: 'a row action confirm',
+    open: ({ page, session }) => rowButton(page, `[data-session-row="${session.sessionId}"] > [data-row]`, 'Archive session (keeps history)', page.getByRole('dialog', { name: /^Archive session / })),
+  },
+  { name: 'New project', open: ({ page }) => projectMenuItem(page, 'New project', page.locator('[role="dialog"][data-dialog="new-project"]')) },
+  { name: 'Add existing directory', open: ({ page }) => projectMenuItem(page, 'Add existing directory', page.locator('[role="dialog"][data-dialog="adopt-project"]')) },
+  { name: 'New workspace', open: ({ page }) => projectMenuItem(page, 'New workspace', page.locator('[role="dialog"][data-dialog="workspace"]')) },
+  {
+    name: 'Restart',
+    open: async ({ page }) => {
+      const sb = await sidebarByKeyboard(page);
+      const button = sb.locator('[data-restart]');
+      await press(page, button, 'Enter');
+      return { dialog: page.locator('[role="dialog"][data-restart-dialog]'), returnsTo: button };
+    },
+  },
+];
+
+// Invariant: a dialog opened from a control hands focus back to that control when it closes — to a menu's trigger for a
+// menu item, and to Open sidebar when the control sat in the phone drawer the dialog's opening closed.
+export function returnFlow(row: (typeof RETURNS)[number]) {
+  return async ({ page, cc }: Ctx): Promise<void> => {
+    test.setTimeout(90_000);
+    const project = label(`ret-${row.name.replace(/\W+/g, '-').toLowerCase()}`);
+    await createProject(cc, project);
+    // A live temp session: the row confirm's Archive, Rename's session, and the Restart dialog (asked only with live sessions).
+    const session = await idleSession(cc, project, true);
+    await next.open(page);
+    await expect.poll(async () => next.sessionRowLive(await next.sessionRow(page, project, session.sessionId))).toBe(true);
+    if (drawerViewport()) {
+      await escape(page);
+      await expect(page.locator('[data-slot="sheet-content"][data-state="open"]')).toHaveCount(0);
+    }
+    const { dialog, returnsTo } = await row.open({ page, project, session });
+    await expect(dialog).toBeVisible();
+    await expect.poll(() => focusInside(dialog), { message: `${row.name}: focus moves inside as it opens` }).toBe(true);
+    // A drawer the opening closed finishes leaving first, as it would before any person's next key.
+    await expect(page.locator('[data-slot="sheet-content"][data-state="closed"]')).toHaveCount(0);
+    expect(await focusInside(dialog), `${row.name}: focus is still inside once the drawer has gone`).toBe(true);
+    await escape(page);
+    await expect(dialog).toBeHidden();
+    await expect(returnsTo, `${row.name}: closing returns focus to the control that opened it`).toBeFocused();
+  };
+}
