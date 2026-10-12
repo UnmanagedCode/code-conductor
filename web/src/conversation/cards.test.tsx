@@ -135,6 +135,37 @@ describe('question card', () => {
     expect(card().textContent).not.toContain('[object Object]');
   });
 
+  // Invariant: answering a card whose question has a non-string header renders the answer bubble with the question text and no object text.
+  it('a non-string header leaves the answer bubble rendering its question text', async () => {
+    const qs: any[] = [{ header: {}, question: 'Pick a colour', options: [{ label: 'Red' }, { label: 'Blue' }] }];
+    const answers: UserQuestionAnswer[] = [{ kind: 'option', label: 'Red' }];
+    const { m, card, root } = await show([CARD(qs)]);
+    fireEvent.click(opt(card(), 'Red'));
+    await flush();
+    fireEvent.click(sendBtn(card()));
+    await flush();
+    m.apply(stamped(qs, answers));
+    await flush();
+    const bubble = root.querySelector('[data-item="user"][data-variant="answer"]') as HTMLElement;
+    expect(bubble.textContent).toContain('Pick a colour');
+    expect(bubble.textContent).not.toContain('[object Object]');
+  });
+
+  // Invariant: the pick identity is the raw `opt.label`: two distinct object labels stay distinct, and the answer carries the picked one's own value.
+  it('two object option labels stay distinct picks and the answer carries the raw label', async () => {
+    const second = { id: 'b' };
+    const qs: any[] = [{ question: 'Pick one', options: [{ label: { id: 'a' } }, { label: second }] }];
+    const { card } = await show([CARD(qs)]);
+    fireEvent.click(card().querySelectorAll('[data-option]')[1]);
+    await flush();
+    expect([...card().querySelectorAll('[data-option]')].map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'true']);
+    fireEvent.click(sendBtn(card()));
+    await flush();
+    const text = formatUserQuestionAnswers(qs, [{ kind: 'option', label: second as any }]);
+    expect(text).toContain('{"id":"b"}');
+    expect(sent).toEqual([{ t: 'prompt', payload: { id: 'inst-1', text }, opts: { ack: true } }]);
+  });
+
   it("an answer that never reaches the CLI re-opens the card with the reason; the picks survive", async () => {
     ackBehavior = () => Promise.reject(new Error('not connected'));
     const { card } = await show([CARD()]);
