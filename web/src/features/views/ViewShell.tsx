@@ -61,7 +61,8 @@ export function ViewShell({
         </div>
         {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      {/* Positioned: an absolutely positioned descendant (Radix's hidden form input) stays in this pane and scrolls with it instead of extending the page. */}
+      <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className={cn('mx-auto w-full px-3 py-5 md:px-6 md:py-8', wide ? 'max-w-6xl' : 'max-w-4xl', className)}>{children}</div>
       </div>
     </main>

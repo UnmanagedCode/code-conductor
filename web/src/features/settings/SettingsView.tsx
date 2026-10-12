@@ -19,34 +19,32 @@ import { ConventionsSection, clearConventionsListErrors } from './ConventionsSec
 import { PluginsSection, resetPluginNotes } from './PluginsSection';
 import { ArchivedSection } from './ArchivedSection';
 import { AboutSection } from './AboutSection';
+import { SECTION_CATALOG, offeredSections, type SectionCaps, type SectionId } from './sections';
 
-export type SectionId = 'models' | 'conventions' | 'plugins' | 'backends' | 'systems' | 'account' | 'voice' | 'archived' | 'about';
+const VIEWS: Record<SectionId, { icon: React.ComponentType<{ className?: string }>; render: () => React.ReactNode }> = {
+  models: { icon: CpuIcon, render: () => <ModelsSection /> },
+  conventions: { icon: ScrollTextIcon, render: () => <ConventionsSection /> },
+  plugins: { icon: PlugIcon, render: () => <PluginsSection /> },
+  backends: { icon: LayersIcon, render: () => <BackendsSection /> },
+  systems: { icon: ServerIcon, render: () => <SystemsSection /> },
+  account: { icon: KeyRoundIcon, render: () => <AccountSection /> },
+  voice: { icon: MicIcon, render: () => <VoiceSection /> },
+  archived: { icon: ArchiveIcon, render: () => <ArchivedSection /> },
+  about: { icon: InfoIcon, render: () => <AboutSection /> },
+};
 
-export const SECTIONS: { id: SectionId; label: string; icon: React.ComponentType<{ className?: string }>; capability?: 'remoteSystems' | 'voice'; render: () => React.ReactNode }[] = [
-  { id: 'models', label: 'Models', icon: CpuIcon, render: () => <ModelsSection /> },
-  { id: 'conventions', label: 'Conventions', icon: ScrollTextIcon, render: () => <ConventionsSection /> },
-  { id: 'plugins', label: 'Plugins', icon: PlugIcon, render: () => <PluginsSection /> },
-  { id: 'backends', label: 'Backends', icon: LayersIcon, render: () => <BackendsSection /> },
-  { id: 'systems', label: 'Systems', icon: ServerIcon, capability: 'remoteSystems', render: () => <SystemsSection /> },
-  { id: 'account', label: 'Account', icon: KeyRoundIcon, render: () => <AccountSection /> },
-  { id: 'voice', label: 'Voice', icon: MicIcon, capability: 'voice', render: () => <VoiceSection /> },
-  { id: 'archived', label: 'Archived', icon: ArchiveIcon, render: () => <ArchivedSection /> },
-  { id: 'about', label: 'About', icon: InfoIcon, render: () => <AboutSection /> },
-];
+/** SECTION_CATALOG (./sections.ts) with each section's icon and renderer. */
+export const SECTIONS = SECTION_CATALOG.map((s) => ({ ...s, ...VIEWS[s.id] }));
 
-/**
- * The sections this platform offers. Until capabilities load (`caps` null)
- * every section shows; a platform without remote systems / voice drops those,
- * so they are never fetched.
- */
-export function visibleSections(caps: { remoteSystems?: boolean; voice?: boolean } | null) {
-  return SECTIONS.filter((s) => !s.capability || !caps || !!caps[s.capability]);
+/** The sections this platform offers: `offeredSections` over SECTIONS. */
+export function visibleSections(caps: SectionCaps | null) {
+  return offeredSections(SECTIONS, caps);
 }
 
 export function SettingsView() {
   const route = useRoute();
   const activeSid = useStore(appStore, (s) => activeInstance(s)?.sessionId ?? null);
-  const [caps, setCaps] = React.useState<{ remoteSystems?: boolean; voice?: boolean } | null>(null);
+  const [caps, setCaps] = React.useState<SectionCaps | null>(null);
   const [capsLoaded, setCapsLoaded] = React.useState(false);
   const sections = visibleSections(caps);
   const requested = (route.section as SectionId | null) ?? 'models';
@@ -93,7 +91,8 @@ export function SettingsView() {
         <h1 className="flex-1 text-sm font-semibold">Settings</h1>
         <Button variant="ghost" size="sm" onClick={() => closeView(activeSid)}><ArrowLeftIcon /> Back</Button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* Positioned: an absolutely positioned descendant (Radix's hidden form input) stays in this pane and scrolls with it instead of extending the page. */}
+      <div className="relative min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-5 @2xl:flex-row @2xl:gap-8 @2xl:px-8 @2xl:py-10">
           <div className="@2xl:sticky @2xl:top-10 @2xl:w-48 @2xl:shrink-0 @2xl:self-start">
             <div className="mb-4 hidden items-center gap-1 md:flex">
