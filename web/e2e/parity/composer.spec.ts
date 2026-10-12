@@ -1,8 +1,7 @@
-import { expect } from '../harness/fixtures.ts';
+import { expect, test } from './test.ts';
 import { createProject } from '../harness/api.ts';
-import { parity } from './parity.ts';
 
-parity('composer/R1', "a prompt sent from the composer shows as the user's message, the reply streams in, and the turn ends", async ({ page, cc, ui, uniq }) => {
+test("a prompt sent from the composer shows as the user's message, the reply streams in, and the turn ends", async ({ page, cc, ui, uniq }) => {
   const project = uniq('chat');
   await createProject(cc, project);
   await ui.open(page);

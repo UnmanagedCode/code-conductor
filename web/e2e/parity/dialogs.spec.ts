@@ -2,10 +2,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Page, Route } from '@playwright/test';
-import { expect, type Cc } from '../harness/fixtures.ts';
+import { expect, test, type Cc } from './test.ts';
 import { api, createProject, spawnSession } from '../harness/api.ts';
 import { seedTranscript } from '../harness/transcript.ts';
-import { parity } from './parity.ts';
 import type { Ui } from './ui.ts';
 
 // The scratch cc has no reachable provider, so a scenario that needs a remote
@@ -21,7 +20,7 @@ async function routeRemoteSystem(page: Page) {
   await page.route('**/api/fs/dirs**', (r) => r.fulfill({ json: { ok: true, entries: ['api', 'app'], links: [], truncated: false, max: 1000 } }));
 }
 
-parity('new-project-dialog-wiring/R1', 'New project creates a project that the Projects lens lists', async ({ page, ui, uniq }) => {
+test('New project creates a project that the Projects lens lists', async ({ page, ui, uniq }) => {
   const name = uniq('proj');
   await ui.open(page);
   await ui.lens(page, 'projects');
@@ -29,7 +28,7 @@ parity('new-project-dialog-wiring/R1', 'New project creates a project that the P
   await expect(await ui.projectRow(page, name)).toBeVisible();
 });
 
-parity('adopt-dialog-markup/R2', 'Adding an existing directory from the project menu: the menu closes, System comes from the registry, a suggestion fills the form, and Relocate adopts over a stale record', async ({ page, cc, ui, uniq }) => {
+test('Adding an existing directory from the project menu: the menu closes, System comes from the registry, a suggestion fills the form, and Relocate adopts over a stale record', async ({ page, cc, ui, uniq }) => {
   const name = uniq('stale');
   const held = path.join(cc.dirs.root, 'elsewhere', name);
   fs.mkdirSync(held, { recursive: true });
@@ -55,7 +54,7 @@ parity('adopt-dialog-markup/R2', 'Adding an existing directory from the project 
   await expect(await ui.projectRow(page, name)).toBeVisible();
 });
 
-parity('hidden-attribute-layout/R1', 'The placement rows a flow reveals stay hidden until it reveals them', async ({ page, cc, ui, uniq }) => {
+test('The placement rows a flow reveals stay hidden until it reveals them', async ({ page, cc, ui, uniq }) => {
   fs.mkdirSync(path.join(cc.dirs.projects, uniq('candidate')), { recursive: true });
   await routeRemoteSystem(page);
   await ui.open(page);
@@ -77,7 +76,7 @@ parity('hidden-attribute-layout/R1', 'The placement rows a flow reveals stay hid
   await expect(ui.placementField(apd, 'adopt', 'suggestions')).toBeHidden();
 });
 
-parity('new-project-dialog-markup/R1', 'New project offers System, Target and the path field once a system is chosen, and neither Target nor the path before', async ({ page, ui }) => {
+test('New project offers System, Target and the path field once a system is chosen, and neither Target nor the path before', async ({ page, ui }) => {
   // Invariant: before a system is chosen the Target and path fields are hidden; once one is, System, Target and the path field are each visible and enabled.
   await routeRemoteSystem(page);
   await ui.open(page);
@@ -91,7 +90,7 @@ parity('new-project-dialog-markup/R1', 'New project offers System, Target and th
   }
 });
 
-parity('path-picker/R4', 'Escape in a path field closes its completion list, not the dialog', async ({ page, ui }) => {
+test('Escape in a path field closes its completion list, not the dialog', async ({ page, ui }) => {
   await routeRemoteSystem(page);
   await ui.open(page);
   for (const which of ['new', 'adopt'] as const) {
@@ -110,7 +109,7 @@ parity('path-picker/R4', 'Escape in a path field closes its completion list, not
 
 // Dialogs part 2 (card 2026-0631)
 
-parity('delete-project-confirm/R4', 'Deleting a local project offers the directory opt-in unticked, labelled with the directory so its label toggles it, and Cancel keeps the project', async ({ page, cc, ui, uniq }) => {
+test('Deleting a local project offers the directory opt-in unticked, labelled with the directory so its label toggles it, and Cancel keeps the project', async ({ page, cc, ui, uniq }) => {
   // Invariant: the opt-in box opens unticked; its label names the project's directory and is the box's accessible name, so a click on the label ticks it and a second unticks it; Cancel deletes nothing.
   const name = uniq('del');
   await createProject(cc, name);
@@ -130,7 +129,7 @@ parity('delete-project-confirm/R4', 'Deleting a local project offers the directo
   await expect(await ui.projectRow(page, name)).toBeVisible();
 });
 
-parity('delete-project-confirm/R3', 'A mismatched name in the delete dialog deletes nothing and keeps the dialog open, and Cancel keeps the project', async ({ page, cc, ui, uniq }) => {
+test('A mismatched name in the delete dialog deletes nothing and keeps the dialog open, and Cancel keeps the project', async ({ page, cc, ui, uniq }) => {
   const name = uniq('mismatch');
   await createProject(cc, name);
   const deletes: string[] = [];
@@ -145,7 +144,7 @@ parity('delete-project-confirm/R3', 'A mismatched name in the delete dialog dele
   expect(deletes).toHaveLength(0);
 });
 
-parity('delete-project-confirm/R4', 'Deleting a project on a system names its path, target and system, and Cancel keeps the project', async ({ page, ui, uniq }) => {
+test('Deleting a project on a system names its path, target and system, and Cancel keeps the project', async ({ page, ui, uniq }) => {
   // The delete dialog of a project on a system says which path, target and system it leaves alone.
   const name = uniq('delremote');
   const fake = { name, path: '/app', system: 'prod-box', remoteId: 'c1', systemUnreachable: null, workspace: null, isGitRepo: true, unbornHead: false, worktrees: [] };
@@ -167,7 +166,7 @@ parity('delete-project-confirm/R4', 'Deleting a project on a system names its pa
   await page.unrouteAll({ behavior: 'wait' });
 });
 
-parity('project-remote-dialog/R3', 'Change target from the system pill: a refusal shows the server message and keeps the dialog, Cancel sends nothing, a reopen starts clean, and Save PUTs the trimmed target and refreshes the list', async ({ page, ui, uniq }) => {
+test('Change target from the system pill: a refusal shows the server message and keeps the dialog, Cancel sends nothing, a reopen starts clean, and Save PUTs the trimmed target and refreshes the list', async ({ page, ui, uniq }) => {
   const name = uniq('remote');
   const fake = { name, path: '/app', system: 'prod-box', remoteId: 'ctr-7', systemUnreachable: null, workspace: null, isGitRepo: true, unbornHead: false, worktrees: [] };
   let gets = 0;
@@ -212,7 +211,7 @@ parity('project-remote-dialog/R3', 'Change target from the system pill: a refusa
   await page.unrouteAll({ behavior: 'wait' });
 });
 
-parity('spawn-dialog-worktree/R1', "The worktree box follows the project's repo: disabled with a reason for a non-git directory and an unborn HEAD, tickable on a repo with a commit", async ({ page, cc, ui, uniq }) => {
+test("The worktree box follows the project's repo: disabled with a reason for a non-git directory and an unborn HEAD, tickable on a repo with a commit", async ({ page, cc, ui, uniq }) => {
   async function adopt(name: string, init: boolean) {
     const dir = path.join(cc.dirs.root, 'elsewhere', name);
     fs.mkdirSync(dir, { recursive: true });
@@ -252,7 +251,7 @@ parity('spawn-dialog-worktree/R1', "The worktree box follows the project's repo:
   await ui.cancelDialog(d);
 });
 
-parity('spawn-dialog-effort/R2', 'The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting', async ({ page, cc, ui, uniq }) => {
+test('The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting', async ({ page, cc, ui, uniq }) => {
   // Page-local settings: the shared cc's own settings are never written.
   await page.route('**/api/settings/models', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -319,7 +318,7 @@ async function selectSession(page: Page, ui: Ui, project: string, sessionId: str
   await expect(ui.sessionHeader(page).locator(`[title="session ${sessionId}"]`)).toBeVisible();
 }
 
-parity('doc/A9', 'Summarize opens on Medium with the cached summary as markdown and its stale warning, generates an empty tier on request with its cost, clears the cost on a tier switch, and applies the Title tier as the session title', async ({ page, cc, ui, uniq }) => {
+test('Summarize opens on Medium with the cached summary as markdown and its stale warning, generates an empty tier on request with its cost, clears the cost on a tier switch, and applies the Title tier as the session title', async ({ page, cc, ui, uniq }) => {
   const project = uniq('sum');
   const { sessionId: sid } = await idleSession(cc, project);
   const data = {
@@ -374,7 +373,7 @@ parity('doc/A9', 'Summarize opens on Medium with the cached summary as markdown 
   await ui.closeSessionDialog(d);
 });
 
-parity('doc/A10', 'Rename prefills the current title, sends nothing for a cancel or an unchanged title, cuts a long title to 100 characters, and sends an empty title to clear it', async ({ page, cc, ui, uniq }) => {
+test('Rename prefills the current title, sends nothing for a cancel or an unchanged title, cuts a long title to 100 characters, and sends an empty title to clear it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('ren');
   const { sessionId: sid } = await idleSession(cc, project);
   const seeded = uniq('Seeded title');
@@ -398,7 +397,7 @@ parity('doc/A10', 'Rename prefills the current title, sends nothing for a cancel
   await expect.poll(() => puts).toEqual([{ title: 'x'.repeat(100) }, { title: '' }]);
 });
 
-parity('doc/A12', "Prune's slider runs from 0 to the turn count and starts at about 90%, thinking starts ticked and minimal inputs unticked, a visible thinking saving shows beside encrypted thinking, and Prune sends the cut and both choices", async ({ page, cc, ui, uniq }) => {
+test("Prune's slider runs from 0 to the turn count and starts at about 90%, thinking starts ticked and minimal inputs unticked, a visible thinking saving shows beside encrypted thinking, and Prune sends the cut and both choices", async ({ page, cc, ui, uniq }) => {
   const project = uniq('prune');
   const { id, sessionId } = await idleSession(cc, project);
   const turn = { thinking: 30, toolInputTruncatable: 10, toolInputMinimal: 20, toolOutput: 100, toolOutputImage: 0, exempt: 0 };
@@ -443,7 +442,7 @@ parity('doc/A12', "Prune's slider runs from 0 to the turn count and starts at ab
   expect(prunes).toEqual([{ cutTurnIndex: 20, pruneThinking: false, inputMode: 'minimal' }]);
 });
 
-parity('doc/B9', 'Statistics shows This session alone with the no-workers note, and with workers adds the Incl. N workers column and drops the note', async ({ page, cc, ui, uniq }) => {
+test('Statistics shows This session alone with the no-workers note, and with workers adds the Incl. N workers column and drops the note', async ({ page, cc, ui, uniq }) => {
   const project = uniq('stats');
   const { sessionId: sid } = await idleSession(cc, project);
   let workers = 0;
@@ -479,7 +478,7 @@ parity('doc/B9', 'Statistics shows This session alone with the no-workers note, 
   await ui.closeSessionDialog(d);
 });
 
-parity('doc/A1', 'A workspace is created from the project menu, edited from its pencil with its members pre-ticked, renamed before its members move, created empty with nothing ticked, and deleted only once the confirm is accepted', async ({ page, cc, ui, uniq }) => {
+test('A workspace is created from the project menu, edited from its pencil with its members pre-ticked, renamed before its members move, created empty with nothing ticked, and deleted only once the confirm is accepted', async ({ page, cc, ui, uniq }) => {
   const a = uniq('wsa');
   const b = uniq('wsb');
   await createProject(cc, a);
@@ -579,7 +578,7 @@ parity('doc/A1', 'A workspace is created from the project menu, edited from its 
   await page.unrouteAll({ behavior: 'wait' });
 });
 
-parity('doc/B31', 'With live sessions the restart button asks first: dismissing restarts nothing, the plain choice posts resume:false and the resume choice resume:true, each reloading once the server is back; with no sessions it restarts plain without asking', async ({ page, cc, ui, uniq }) => {
+test('With live sessions the restart button asks first: dismissing restarts nothing, the plain choice posts resume:false and the resume choice resume:true, each reloading once the server is back; with no sessions it restarts plain without asking', async ({ page, cc, ui, uniq }) => {
   const p = uniq('rst');
   await createProject(cc, p);
   const { sessionId } = await spawnSession(cc, p, { temp: false });

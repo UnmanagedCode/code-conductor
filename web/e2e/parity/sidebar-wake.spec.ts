@@ -3,9 +3,8 @@ import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { api, createProject, mcpCall } from '../harness/api.ts';
 import { FIXTURES } from '../harness/boot.ts';
-import { expect, test, type Cc } from '../harness/fixtures.ts';
+import { expect, test, type Cc } from './test.ts';
 import { idleInst, insts, liveModel } from './fleet.ts';
-import { parity } from './parity.ts';
 import type { Ui } from './ui.ts';
 
 // Long enough that the caller is back at idle well before the next ping, and short enough that one lands inside the worker's turn.
@@ -24,7 +23,7 @@ const userEchoes = async (cc: Cc, id: string, needle: string): Promise<number> =
 /** The session row's dot, re-acquiring the row on every read. */
 const dot = async (page: Page, ui: Ui, project: string, sid: string) => ui.rowDot(await ui.sessionRow(page, project, sid));
 
-parity('legacy-awaiting-wake-dot/R1', "a session's dot lights while its worker is mid-turn, stays lit across a heartbeat, and clears at turn_end", async ({ page, cc, ui, uniq }) => {
+test("a session's dot lights while its worker is mid-turn, stays lit across a heartbeat, and clears at turn_end", async ({ page, cc, ui, uniq }) => {
   // Invariant: the caller's dot reads waiting-on-a-worker (its title) while its worker is mid-turn, keeps it across a heartbeat, and returns to plain idle at turn_end.
   test.setTimeout(180_000);
   const P = uniq('wake');

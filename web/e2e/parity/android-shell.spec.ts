@@ -5,9 +5,8 @@
 // into the other parity files' Conductors-lens scenarios.
 import type { Page } from '@playwright/test';
 import { api, createProject, spawnSession } from '../harness/api.ts';
-import { expect, test, type Cc } from '../harness/fixtures.ts';
+import { expect, test, type Cc } from './test.ts';
 import { spawnConductor, spawnWorker, type FleetInst } from './fleet.ts';
-import { parity } from './parity.ts';
 import type { Ui } from './ui.ts';
 
 test.use({ ccOptions: { server: 'android-shell' } });
@@ -48,7 +47,7 @@ async function notificationClick(page: Page, data: { instanceId: string; session
   }, { message: 'a service worker posted the click to the page' }).toBe(1);
 }
 
-parity('doc/back-button', 'Back from a worker opened from the workers panel returns to its conductor, and Forward to the worker again', async ({ page, cc, ui, uniq }) => {
+test('Back from a worker opened from the workers panel returns to its conductor, and Forward to the worker again', async ({ page, cc, ui, uniq }) => {
   const title = uniq('Fix the parser');
   const { conductor, worker } = await conductorWithWorker(cc, uniq('bk'), title);
   await ui.open(page);
@@ -66,7 +65,7 @@ parity('doc/back-button', 'Back from a worker opened from the workers panel retu
   await showing(page, ui, worker.sessionId);
 });
 
-parity('notification-click/R2', 'a notification click opens its session in place, adding no history entry: Back then returns past it to the conductor', async ({ page, cc, ui, uniq }) => {
+test('a notification click opens its session in place, adding no history entry: Back then returns past it to the conductor', async ({ page, cc, ui, uniq }) => {
   const title = uniq('Fix the lexer');
   const { conductor, worker } = await conductorWithWorker(cc, uniq('nc'), title);
   const pinged = await spawnSession(cc, uniq('nc'));

@@ -1,9 +1,8 @@
 // The Conductors lens's rows in both UIs. A file of its own with its own cc: the live conductors it seeds would leak into the shared parity cc. Each scenario seeds its own uniq-named conductors, because the two halves share the cc.
 import { api, createProject } from '../harness/api.ts';
-import { expect, test, type Cc } from '../harness/fixtures.ts';
+import { expect, test, type Cc } from './test.ts';
 import { seedTranscript } from '../harness/transcript.ts';
 import { colourOf, gone, idleInst, liveModel, spawnConductor, spawnWorker } from './fleet.ts';
-import { parity } from './parity.ts';
 
 test.use({ ccOptions: { server: 'sidebar-conductors' } });
 const desktop = () => test.info().project.name === 'desktop';
@@ -31,7 +30,7 @@ async function seedPair(cc: Cc, uniq: (s: string) => string) {
   return { P, Q, a, b, aLabel };
 }
 
-parity('legacy-sidebar-lenses/R3', "conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor's colour, and the selected row and its strip entry marked and filled", async ({ page, cc, ui, uniq }) => {
+test("conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor's colour, and the selected row and its strip entry marked and filled", async ({ page, cc, ui, uniq }) => {
   // Invariant: a titled conductor row shows its title, live and idle chips list their projects in order with their kind, each block's bar is its own conductor's colour, and selecting a conductor marks its row and its strip entry active with a fill an unselected one lacks, the strip entry keeping the conductor's colour.
   test.setTimeout(180_000);
   const s = await seedPair(cc, uniq);
@@ -81,7 +80,7 @@ parity('legacy-sidebar-lenses/R3', "conductor rows: titled and untitled labels, 
   });
 });
 
-parity('sidebar-conductors/R2', "a conductor row's × shows on hover, and each row label stays readable and truncates while the ago label, ↑ and × stay inside the row", async ({ page, cc, ui, uniq }) => {
+test("a conductor row's × shows on hover, and each row label stays readable and truncates while the ago label, ↑ and × stay inside the row", async ({ page, cc, ui, uniq }) => {
   // Invariant: an inactive conductor row's × is hidden until hover on a pointer device and shown on hover; the conductor title, a tree worker's label column and a session row's label keep a non-zero width and text height and truncate when long; ago, ↑ and × stay inside the row, even beside an overflowing label.
   test.setTimeout(180_000);
   const P = uniq('rows');

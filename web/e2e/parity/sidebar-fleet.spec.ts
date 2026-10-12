@@ -4,10 +4,9 @@
 // scenario seeds its own uniq-named fleet, because the two halves share the cc.
 import type { Page } from '@playwright/test';
 import { api, createProject } from '../harness/api.ts';
-import { expect, test, type Cc } from '../harness/fixtures.ts';
+import { expect, test, type Cc } from './test.ts';
 import { seedTranscript } from '../harness/transcript.ts';
 import { archived, colourOf, gone, idleInst, insts, liveModel, spawnConductor, spawnWorker } from './fleet.ts';
-import { parity } from './parity.ts';
 import type { Ui } from './ui.ts';
 
 test.use({ ccOptions: { server: 'sidebar-fleet' } });
@@ -61,7 +60,7 @@ async function seedFleet(cc: Cc, page: Page, uniq: (s: string) => string) {
   return { P, O, a, b, aSid: a.sessionId, aLabel, colA, colB, aSolo, aSolo2, aMixed, bMixed, aMain, bMain, bOther, hand };
 }
 
-parity('legacy-sidebar-lenses/R7', 'the Projects lens lists no .conduct row while a conductor is live and .conduct has a disk row', async ({ page, cc, ui, uniq }) => {
+test('the Projects lens lists no .conduct row while a conductor is live and .conduct has a disk row', async ({ page, cc, ui, uniq }) => {
   // Invariant: the Projects lens lists registered projects only; a live conductor with a conduct disk row adds no entry.
   const project = uniq('lens7');
   await createProject(cc, project);
@@ -74,7 +73,7 @@ parity('legacy-sidebar-lenses/R7', 'the Projects lens lists no .conduct row whil
   expect((await ui.projectNames(page)).filter((n) => /conduct/i.test(n))).toEqual([]);
 });
 
-parity('legacy-sidebar-lenses/R8', 'owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row is marked and keeps its bar', async ({ page, cc, ui, uniq }) => {
+test('owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row is marked and keeps its bar', async ({ page, cc, ui, uniq }) => {
   // Invariant: bars follow live ownership per place in each conductor's colour, the filter narrows to one owner, and selection marks exactly the picked row, fills it unlike an unselected one, and keeps its bar.
   test.setTimeout(300_000);
   await ui.open(page);
@@ -200,7 +199,7 @@ async function seedFilterFleet(cc: Cc, page: Page, ui: Ui, uniq: (s: string) => 
   return { ...f, bSid: f.b.sessionId, bLabel };
 }
 
-parity('sidebar-conductor-filter/R3', "the conductor filter in a browser: a conductor narrows the tree, force-opens Worktrees and colours the root, survives the drawer, Hand-spawned only keeps hand rows, and All restores the user's expansion", async ({ page, cc, ui, uniq }) => {
+test("the conductor filter in a browser: a conductor narrows the tree, force-opens Worktrees and colours the root, survives the drawer, Hand-spawned only keeps hand rows, and All restores the user's expansion", async ({ page, cc, ui, uniq }) => {
   // Invariant: an owner filter narrows to its projects, worktrees and rows, force-opens Worktrees unrecorded and colours its root, and survives the drawer; Hand-spawned only keeps hand places and rows, uncoloured and unforced; All restores the tree.
   test.setTimeout(300_000);
   const E = uniq('fleet-empty');
@@ -266,7 +265,7 @@ parity('sidebar-conductor-filter/R3', "the conductor filter in a browser: a cond
   });
 });
 
-parity('sidebar-conductor-filter/R3', 'the conductor filter keeps a conductor with idle chips, listing them as bare rows, and falls back to All once nothing offers its owner', async ({ page, cc, ui, uniq }) => {
+test('the conductor filter keeps a conductor with idle chips, listing them as bare rows, and falls back to All once nothing offers its owner', async ({ page, cc, ui, uniq }) => {
   // Invariant: a conductor stays offered and selected while it has a live worker or a registered idle chip, live or inactive, with its idle projects listed bare; a dead conductor with no disk row is not offered, and its filter falls back to All.
   test.setTimeout(300_000);
   const f = await seedFilterFleet(cc, page, ui, uniq, 'chips');
@@ -351,7 +350,7 @@ async function seedRevealFleet(cc: Cc, page: Page, ui: Ui, u: (s: string) => str
 /** The session header names `sid`: the selection landed. */
 const landed = (page: Page, ui: Ui, sid: string) => expect(ui.sessionHeader(page).locator(`[title="session ${sid}"]`)).toBeVisible();
 
-parity('sidebar-reveal/R2', "reveal on select in a browser: a Conductors-lens pick opens its workspace and Worktrees group and nothing off its path, a Projects-lens pick opens its owner's bubble only, a group revealed under an owner filter stays open after All, and a conductor pick changes nothing", async ({ page, cc, ui, uniq }) => {
+test("reveal on select in a browser: a Conductors-lens pick opens its workspace and Worktrees group and nothing off its path, a Projects-lens pick opens its owner's bubble only, a group revealed under an owner filter stays open after All, and a conductor pick changes nothing", async ({ page, cc, ui, uniq }) => {
   // Invariant: a worker's selection opens exactly its own path in each lens (its workspace, Worktrees group and owner bubble) and records it; a conductor's selection opens nothing and keeps the filter.
   test.setTimeout(300_000);
   const u = tagged(uniq, 'reveal');
@@ -418,7 +417,7 @@ parity('sidebar-reveal/R2', "reveal on select in a browser: a Conductors-lens pi
   }
 });
 
-parity('sidebar-reveal/R2', 'a re-selection of the selected session re-opens the groups the user collapsed on its path, in both lenses', async ({ page, cc, ui, uniq }) => {
+test('a re-selection of the selected session re-opens the groups the user collapsed on its path, in both lenses', async ({ page, cc, ui, uniq }) => {
   // Invariant: every selection reveals, the selected session's included, so a click on the selected row re-opens its owner bubble and its Worktrees group.
   test.setTimeout(300_000);
   const f = await seedRevealFleet(cc, page, ui, tagged(uniq, 'reselect'));
@@ -444,7 +443,7 @@ parity('sidebar-reveal/R2', 'a re-selection of the selected session re-opens the
   });
 });
 
-parity('sidebar-reveal/R2', 'the sidebar keeps its scroll offset across the phone drawer closing and re-opening, so a row tapped deep in the list is in view when it re-opens', async ({ page, cc, ui, uniq }) => {
+test('the sidebar keeps its scroll offset across the phone drawer closing and re-opening, so a row tapped deep in the list is in view when it re-opens', async ({ page, cc, ui, uniq }) => {
   // Invariant: the sidebar's scroll offset outlives the drawer closing, so the drawer re-opens where the user left it, on the row they tapped.
   test.setTimeout(300_000);
   const u = tagged(uniq, 'drawer');

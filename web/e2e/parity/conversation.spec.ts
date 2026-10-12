@@ -1,6 +1,5 @@
-import { expect } from '../harness/fixtures.ts';
+import { expect, test } from './test.ts';
 import { api, createProject } from '../harness/api.ts';
-import { parity } from './parity.ts';
 import { bringTo, conceal, cssOf, offsetFromTop, reveal, sendAll, tallPrompt } from './stickyPin.ts';
 import { LONG_WAKE_STUB, overflowsX, sendWake, WAKE_PAYLOAD } from './foldedBubbles.ts';
 import { appendTranscriptRecord } from '../harness/transcript.ts';
@@ -10,7 +9,7 @@ import { AWAITING_INPUT_MESSAGE } from '../../../src/settings.ts';
 import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
 import { buildWakeStub } from '../../../public/wakeCallback.ts';
 
-parity('sticky-prompt/R2', 'revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it', async ({ page, cc, ui, uniq }) => {
+test('revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('pin-jump');
   await createProject(cc, project);
   await ui.open(page);
@@ -46,7 +45,7 @@ parity('sticky-prompt/R2', 'revealed with Down, the pin holds the prompt being r
   await expect(pin).toBeHidden();
 });
 
-parity('sticky-prompt/R4', 'a status line is a status region with no jump affordance; a pinned prompt is the jump button again', async ({ page, cc, ui, uniq }) => {
+test('a status line is a status region with no jump affordance; a pinned prompt is the jump button again', async ({ page, cc, ui, uniq }) => {
   // Invariant: the status line is a status region with no tab stop and no title, whose text tells the reader there is nothing earlier; once a prompt pins, the pin is the focusable, titled jump button.
   const project = uniq('pin-status');
   await createProject(cc, project);
@@ -74,7 +73,7 @@ parity('sticky-prompt/R4', 'a status line is a status region with no jump afford
   await expect(pin).toContainText('PIN-SOLO');
 });
 
-parity('sticky-prompt/R3', 'the pin clamps a long prompt and fits a short one, and both swipe zones keep pinch zoom without a vertical pan', async ({ page, cc, ui, uniq }) => {
+test('the pin clamps a long prompt and fits a short one, and both swipe zones keep pinch zoom without a vertical pan', async ({ page, cc, ui, uniq }) => {
   // Invariant: a long prompt overflows the pin's clamp while a short one fits it; both swipe zones pan only sideways and keep pinch zoom.
   const project = uniq('pin-clamp');
   await createProject(cc, project);
@@ -98,7 +97,7 @@ parity('sticky-prompt/R3', 'the pin clamps a long prompt and fits a short one, a
   await expect.poll(() => pinBody.evaluate((e) => e.scrollHeight <= e.clientHeight + 1), 'the short prompt fits the clamp').toBe(true);
 });
 
-parity('legacy-awaiting-wake-dot/R2', 'a wake-callback stub renders as a collapsed fold naming its worker that opens to its payload and closes again', async ({ page, cc, ui, uniq }) => {
+test('a wake-callback stub renders as a collapsed fold naming its worker that opens to its payload and closes again', async ({ page, cc, ui, uniq }) => {
   // Invariant: the wake stub is a closed fold whose toggle names its worker; its body opens and closes with its toggle.
   const project = uniq('wake-fold');
   await createProject(cc, project);
@@ -122,7 +121,7 @@ parity('legacy-awaiting-wake-dot/R2', 'a wake-callback stub renders as a collaps
   await expect(ui.userMessages(page).first()).not.toContainText('[[cc:');
 });
 
-parity('wake-callback-bubble/R2', 'an expanded wake body keeps its metadata line apart from its prose, and its raw view across a collapse and reopen', async ({ page, cc, ui, uniq }) => {
+test('an expanded wake body keeps its metadata line apart from its prose, and its raw view across a collapse and reopen', async ({ page, cc, ui, uniq }) => {
   // Invariant: the meta line holds exactly the metadata and the prose renders as markdown without it; the expanded body and its raw view survive a collapse and reopen.
   const project = uniq('wake-raw');
   await createProject(cc, project);
@@ -163,7 +162,7 @@ parity('wake-callback-bubble/R2', 'an expanded wake body keeps its metadata line
   expect(await overflowsX(ui.transcript(page)), 'the transcript overflows sideways (raw)').toBe(false);
 });
 
-parity('user-bubble-markdown/R2', 'markdown headings in a prompt and in a folded wake body are headings, and the prompt raw/copy row shows on touch and on hover', async ({ page, cc, ui, uniq }) => {
+test('markdown headings in a prompt and in a folded wake body are headings, and the prompt raw/copy row shows on touch and on hover', async ({ page, cc, ui, uniq }) => {
   // Invariant: a markdown heading in prompt text and in a fold body is a heading, and the prose around it is not.
   const project = uniq('heads');
   await createProject(cc, project);
@@ -188,7 +187,7 @@ parity('user-bubble-markdown/R2', 'markdown headings in a prompt and in a folded
   await expect(fold.getByRole('heading', { name: /WAKE-PROSE/ })).toHaveCount(0);
 });
 
-parity('question-answer-bubble/R2', 'a two-question card stays open through a wake stub, locks on its answer with each pane\'s pick and note, keeps its controls disabled through tab clicks, and replays locked with the same answer rows', async ({ page, cc, ui, uniq }) => {
+test('a two-question card stays open through a wake stub, locks on its answer with each pane\'s pick and note, keeps its controls disabled through tab clicks, and replays locked with the same answer rows', async ({ page, cc, ui, uniq }) => {
   // Invariant: an interleaved wake stub leaves the card open; the stamped answer locks it with each pane's pick and note; tab clicks never re-open a control; a snapshot replay renders the same locked card and answer rows.
   const project = uniq('qa-live');
   await createProject(cc, project);
@@ -223,7 +222,7 @@ parity('question-answer-bubble/R2', 'a two-question card stays open through a wa
   await expectQaAnswerRows(ui, ui.answerBubble(page));
 });
 
-parity('user-question-idle-callback/R2', 'a mid-turn answer replayed from disk past an interleaved wake stub locks the card on the answered option, and the mid-turn note never shows', async ({ page, cc, ui, uniq }) => {
+test('a mid-turn answer replayed from disk past an interleaved wake stub locks the card on the answered option, and the mid-turn note never shows', async ({ page, cc, ui, uniq }) => {
   // Invariant: the server's disk replay strips the mid-turn note, stamps the answer past an interleaved wake stub, and the card renders locked on the answered option.
   const project = uniq('qa-replay');
   await createProject(cc, project);
@@ -263,7 +262,7 @@ parity('user-question-idle-callback/R2', 'a mid-turn answer replayed from disk p
 });
 
 // Conversation part 3b (card 2026-0652)
-parity('user-actions-midturn/R2', 'between turns a prompt offers Rewind and Fork; mid-turn Rewind is disabled while Fork stays enabled, on the earlier prompt and on the running one', async ({ page, cc, ui, uniq }) => {
+test('between turns a prompt offers Rewind and Fork; mid-turn Rewind is disabled while Fork stays enabled, on the earlier prompt and on the running one', async ({ page, cc, ui, uniq }) => {
   // Invariant: the bubble actions follow the instance's status: both enabled while idle; mid-turn, Rewind disabled and Fork enabled on every bubble, existing or new.
   const project = uniq('midturn-actions');
   await createProject(cc, project);
@@ -292,7 +291,7 @@ parity('user-actions-midturn/R2', 'between turns a prompt offers Rewind and Fork
   }
 });
 
-parity('doc/A11', 'a refused fork shows the server\'s message and leaves the session where it was', async ({ page, cc, ui, uniq }) => {
+test('a refused fork shows the server\'s message and leaves the session where it was', async ({ page, cc, ui, uniq }) => {
   // Invariant: a fork the server refuses reports the server's own message, and the UI stays on the session it forked from.
   const project = uniq('fork-refused');
   const refusal = uniq('prompt 0 has not been written to the session transcript yet');

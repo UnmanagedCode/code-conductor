@@ -1,14 +1,13 @@
 import type { Locator, Page, Route } from '@playwright/test';
-import { expect } from '../harness/fixtures.ts';
+import { expect, test } from './test.ts';
 import { createProject } from '../harness/api.ts';
-import { parity } from './parity.ts';
 import type { ConventionScope, Ui } from './ui.ts';
 
 // The web UI ignores Escape while a dialog is open, and on a phone the sidebar
 // drawer (a dialog) is still closing after Settings is opened from it.
 const noDialog = (page: Page) => expect(page.getByRole('dialog')).toHaveCount(0);
 
-parity('settings-toggle/R4', 'Escape leaves Settings, even after the hash drifted to a session', async ({ page, ui }) => {
+test('Escape leaves Settings, even after the hash drifted to a session', async ({ page, ui }) => {
   await ui.open(page);
   await ui.openSettings(page);
   await expect(ui.settingsView(page)).toBeVisible();
@@ -24,7 +23,7 @@ parity('settings-toggle/R4', 'Escape leaves Settings, even after the hash drifte
   await expect(ui.settingsView(page)).toBeHidden();
 });
 
-parity('claude-auth-frontend/R2', 'Claude login: Log in shows the sign-in link, and Enter in the code field submits the trimmed code', async ({ page, ui }) => {
+test('Claude login: Log in shows the sign-in link, and Enter in the code field submits the trimmed code', async ({ page, ui }) => {
   const url = 'https://claude.com/cai/oauth/authorize?code=true&state=S';
   let snap: object = { state: 'idle' };
   const codes: unknown[] = [];
@@ -49,7 +48,7 @@ parity('claude-auth-frontend/R2', 'Claude login: Log in shows the sign-in link, 
   await expect(page.getByText('Signed in.', { exact: true })).toBeVisible();
 });
 
-parity('doc/A7', 'Archived: groups start collapsed with the Conductor group first, and Delete asks first and removes the transcript', async ({ page, ui }) => {
+test('Archived: groups start collapsed with the Conductor group first, and Delete asks first and removes the transcript', async ({ page, ui }) => {
   let deleted = 0;
   await page.route('**/api/archived', (r) => r.fulfill({ json: { groups: [
     { project: 'p', sessions: deleted ? [] : [{ sessionId: 's1', title: 'T1' }] },
@@ -74,7 +73,7 @@ parity('doc/A7', 'Archived: groups start collapsed with the Conductor group firs
   expect(deleted).toBe(1);
 });
 
-parity('doc/B23', 'About shows the legal notice and the update state', async ({ page, ui }) => {
+test('About shows the legal notice and the update state', async ({ page, ui }) => {
   // GET only, and Update is never clicked: a real update would restart the cc.
   await page.route('**/api/settings/self-update', (r) => (r.request().method() === 'GET'
     ? r.fulfill({ json: { version: '9.9.9', canCheck: true, updateAvailable: true, behind: 2, upstream: 'origin/main' } })
@@ -148,7 +147,7 @@ async function routeModels(page: Page, opts: { get: (real: ModelsBody) => Models
 /** A Settings control by its accessible name; both UIs name the tier and role selects alike. */
 const control = (page: Page, ui: Ui, name: string): Locator => ui.settingsView(page).getByLabel(name, { exact: true });
 
-parity('settings-backends-panel/R4', "Models: the backend picker lists a user backend, switching a tier to it saves its first model, and a custom model's Remove addresses its pair", async ({ page, ui }) => {
+test("Models: the backend picker lists a user backend, switching a tier to it saves its first model, and a custom model's Remove addresses its pair", async ({ page, ui }) => {
   const withProxy = (b: ModelsBody): ModelsBody => ({
     ...b,
     backends: [...b.backends, { id: 'px', label: 'My Proxy', template: 'px {model}', env: [], managed: false }],
@@ -172,7 +171,7 @@ parity('settings-backends-panel/R4', "Models: the backend picker lists a user ba
   await expect.poll(() => writes[1]).toEqual({ method: 'DELETE', path: '/api/settings/models/custom/px/mine%3Av2', body: null });
 });
 
-parity('settings-models-effort-panel/R2', "Models: a role's explicit effort shows and saves, and the Conduct session's compact-window override saves its window", async ({ page, ui }) => {
+test("Models: a role's explicit effort shows and saves, and the Conduct session's compact-window override saves its window", async ({ page, ui }) => {
   let state: ModelsBody;
   const writes = await routeModels(page, {
     get: (b) => (state = {
@@ -207,7 +206,7 @@ parity('settings-models-effort-panel/R2', "Models: a role's explicit effort show
   await expect.poll(() => writes.at(-1)?.body).toEqual({ conductorCompactWindow: { enabled: true, value: 310 } });
 });
 
-parity('app-models-change-wiring/R1', 'A tier switched off in Settings → Models leaves the New session dialog at once', async ({ page, cc, ui, uniq }) => {
+test('A tier switched off in Settings → Models leaves the New session dialog at once', async ({ page, cc, ui, uniq }) => {
   // The GET always answers the original tiers: only the save's answer carries
   // the switch-off, so a UI that re-fetched instead of applying it offers Fast.
   const original = (b: ModelsBody): ModelsBody => ({
@@ -235,7 +234,7 @@ parity('app-models-change-wiring/R1', 'A tier switched off in Settings → Model
   await ui.cancelDialog(d);
 });
 
-parity('settings-systems-panel/R2', 'Systems: rows show the provider command or a name-only note; Edit keeps the id and resends the command; a refused Remove names the project', async ({ page, ui }) => {
+test('Systems: rows show the provider command or a name-only note; Edit keeps the id and resends the command; a refused Remove names the project', async ({ page, ui }) => {
   const writes = await routeSystems(page, (w) => (w.method === 'PATCH'
     ? { json: { systems: [LOCAL, { ...PROD, label: 'Production' }, NAMED] } }
     : { status: 409, json: { error: "system 'prod-box' is still named by 1 project (shipping) — move or remove it first" } }));
@@ -260,7 +259,7 @@ parity('settings-systems-panel/R2', 'Systems: rows show the provider command or 
   await expect(ui.systemRow(page, 'prod-box')).toBeVisible();
 });
 
-parity('settings-systems-panel/R2', 'Systems: an unsaved edit survives a section switch and leaving Settings, and Cancel clears it', async ({ page, ui }) => {
+test('Systems: an unsaved edit survives a section switch and leaving Settings, and Cancel clears it', async ({ page, ui }) => {
   const writes = await routeSystems(page, () => ({ status: 500, json: { error: 'no write is expected' } }));
   await ui.open(page);
   await ui.openSettingsSection(page, 'systems');
@@ -347,7 +346,7 @@ const PJ = {
 };
 const optionValues = (select: Locator) => select.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
 
-parity('default-enforcement-frontend/R2', "Conventions: the conductor's playbook and enforcement pickers list the payload's rows, save each pick to its own endpoint, and report a refused save", async ({ page, ui }) => {
+test("Conventions: the conductor's playbook and enforcement pickers list the payload's rows, save each pick to its own endpoint, and report a refused save", async ({ page, ui }) => {
   const writes = await routeConventions(page, { conductor: () => CD }, (w) => (w.path.endsWith('default-playbook-enforcement')
     ? { status: 400, json: { error: 'mode must be one of warn | enforce' } }
     : { status: 200, json: {} }));
@@ -368,7 +367,7 @@ parity('default-enforcement-frontend/R2', "Conventions: the conductor's playbook
   await expect(p.enforcementStatus).toContainText('mode must be one of warn | enforce');
 });
 
-parity('doc/B17', 'Conventions: each block shows its core row, read-only built-ins and editable customs, switches only where the scope has a selection, and an unsaved Add form survives a section switch and leaving Settings', async ({ page, ui }) => {
+test('Conventions: each block shows its core row, read-only built-ins and editable customs, switches only where the scope has a selection, and an unsaved Add form survives a section switch and leaving Settings', async ({ page, ui }) => {
   const writes = await routeConventions(page, { workspace: () => WS, conductor: () => CD, project: () => PJ }, () => ({ status: 500, json: { error: 'no write is expected' } }));
   await ui.open(page);
   await ui.openSettingsSection(page, 'conventions');
@@ -408,7 +407,7 @@ parity('doc/B17', 'Conventions: each block shows its core row, read-only built-i
   expect(writes).toEqual([]);
 });
 
-parity('settings-toggle/R5', 'Conventions: enabling a plugin from the Plugins section brings its conductor convention into the Conductor block and clears a refused Delete there', async ({ page, ui }) => {
+test('Conventions: enabling a plugin from the Plugins section brings its conductor convention into the Conductor block and clears a refused Delete there', async ({ page, ui }) => {
   let enabled = false;
   let enables = 0;
   await page.route('**/api/plugins', (r) => (r.request().method() === 'GET'
@@ -461,7 +460,7 @@ async function routeLibrary(page: Page, entries: () => LibraryEntry[]): Promise<
   await page.route('**/api/plugins/library', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: { entries: entries(), skipped: [] } }) : r.fallback()));
 }
 
-parity('plugins-frontend/R16', 'Plugins: an update whose post-update command failed relabels the entry up to date and warns that its backend still runs the old code, with the command output', async ({ page, ui, uniq }) => {
+test('Plugins: an update whose post-update command failed relabels the entry up to date and warns that its backend still runs the old code, with the command output', async ({ page, ui, uniq }) => {
   const id = uniq('share');
   let updated = false;
   const updates: string[] = [];
@@ -488,7 +487,7 @@ parity('plugins-frontend/R16', 'Plugins: an update whose post-update command fai
   expect(updates).toEqual([id]);
 });
 
-parity('plugins-frontend/R17', 'Plugins: Install shows its progress in the entry and the status line, both survive a section switch, and the entry then relabels installed', async ({ page, ui, uniq }) => {
+test('Plugins: Install shows its progress in the entry and the status line, both survive a section switch, and the entry then relabels installed', async ({ page, ui, uniq }) => {
   const id = uniq('share');
   let installed = false;
   let release!: () => void;
@@ -522,7 +521,7 @@ parity('plugins-frontend/R17', 'Plugins: Install shows its progress in the entry
   expect(installs).toEqual([id]);
 });
 
-parity('plugins-frontend/R17', 'Plugins: a failed update keeps Update offered with the error, the pull output and the live log; all survive a section switch, and reopening Settings keeps only the output', async ({ page, ui, uniq }) => {
+test('Plugins: a failed update keeps Update offered with the error, the pull output and the live log; all survive a section switch, and reopening Settings keeps only the output', async ({ page, ui, uniq }) => {
   const id = uniq('share');
   const updates: string[] = [];
   await routeLibrary(page, () => [libraryEntry(id, { installed: true, installedAs: id, updateAvailable: true })]);
@@ -580,7 +579,7 @@ async function routePlugins(page: Page, rows: PluginRowJson[]): Promise<void> {
   await page.route('**/api/plugins', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: { rows, notices: [] } }) : r.fallback()));
 }
 
-parity('plugins-frontend/R23', 'Plugins: Update all updates one behind entry at a time with its progress in the header, and a section switch or a reopened Settings re-arms nothing until both are updated', async ({ page, ui, uniq }) => {
+test('Plugins: Update all updates one behind entry at a time with its progress in the header, and a section switch or a reopened Settings re-arms nothing until both are updated', async ({ page, ui, uniq }) => {
   const a = uniq('ua-a');
   const b = uniq('ua-b');
   const c = uniq('ua-c');
@@ -654,7 +653,7 @@ parity('plugins-frontend/R23', 'Plugins: Update all updates one behind entry at 
   expect(updates).toEqual([a, b]);
 });
 
-parity('plugins-frontend/R23', 'Plugins: Update all continues past a failed update, names it in the summary with its output, and stays armed for the entry still behind', async ({ page, ui, uniq }) => {
+test('Plugins: Update all continues past a failed update, names it in the summary with its output, and stays armed for the entry still behind', async ({ page, ui, uniq }) => {
   const a = uniq('uf-a');
   const b = uniq('uf-b');
   const updated = new Set<string>();
@@ -695,7 +694,7 @@ parity('plugins-frontend/R23', 'Plugins: Update all continues past a failed upda
   expect(updates).toEqual([a, b]);
 });
 
-parity('plugins-local-only-ui/R2', 'Plugins: local-only capabilities: a plugin on this machine offers Start, one on a system declaring both names both codes and hides Start, and a conventions-only one there is not marked', async ({ page, ui }) => {
+test('Plugins: local-only capabilities: a plugin on this machine offers Start, one on a system declaring both names both codes and hides Start, and a conventions-only one there is not marked', async ({ page, ui }) => {
   await routePlugins(page, [
     rowJson('hereplug', 'Here Plug'),
     rowJson('bothplug', 'Both Plug', { system: 'prod-box', localOnly: ['PLUGIN_BACKEND_LOCAL_ONLY', 'PLUGIN_DIR_LOCAL_ONLY'] }),
@@ -739,7 +738,7 @@ async function versionGeometry(page: Page, ui: Ui, name: string): Promise<Versio
   return { width: box!.width, rowWidth: rowBox!.width, ...facts };
 }
 
-parity('legacy-plugin-version-select-width/R1', 'Plugins: the version select stays inside its action row and the page whatever its options say: a stopped plugin on main beside a running one with a long worktree name', async ({ page, ui }) => {
+test('Plugins: the version select stays inside its action row and the page whatever its options say: a stopped plugin on main beside a running one with a long worktree name', async ({ page, ui }) => {
   await routePlugins(page, [
     rowJson('shortplug', 'Short Plug'),
     rowJson('longplug', 'Long Plug', { project: LONG_PROJECT, state: 'ready' }),
@@ -776,7 +775,7 @@ parity('legacy-plugin-version-select-width/R1', 'Plugins: the version select sta
 // Settings part 2b
 // The planner role is bound to a Claude model by a page-local rewrite of the
 // models GET, so a role row carries all four selects; nothing is written.
-parity('settings-models-field-labels/R1', 'Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways', async ({ page, ui }) => {
+test('Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways', async ({ page, ui }) => {
   let shown: ModelsBody | undefined;
   const writes = await routeModels(page, {
     get: (b) => (shown = { ...b, roleBackend: { ...(b.roleBackend as Record<string, unknown>), planner: { backend: 'claude', model: 'claude-sonnet-5-5' } } }),

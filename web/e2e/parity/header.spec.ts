@@ -1,11 +1,10 @@
-import { expect } from '../harness/fixtures.ts';
+import { expect, test } from './test.ts';
 import { api, createProject, installFakePlugin, mcpCall } from '../harness/api.ts';
-import { parity } from './parity.ts';
 
 type Inst = { id: string; status: string; sessionId: string | null; callerInstanceId?: string | null };
 const instances = async (cc: Parameters<typeof api>[0]) => (await api<Inst[]>(cc, 'GET', '/api/instances')).body;
 
-parity('legacy-main-bar-reset/R1', 'opening Settings clears the session from the main bar, and leaving restores it', async ({ page, cc, ui, uniq }) => {
+test('opening Settings clears the session from the main bar, and leaving restores it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('hdr');
   await createProject(cc, project);
   await ui.open(page);
@@ -20,7 +19,7 @@ parity('legacy-main-bar-reset/R1', 'opening Settings clears the session from the
   await expect(ui.sessionHeader(page)).toContainText(project);
 });
 
-parity('legacy-main-bar-reset/R2', 'opening a plugin view clears the session from the main bar, and leaving restores it', async ({ page, cc, ui, uniq }) => {
+test('opening a plugin view clears the session from the main bar, and leaving restores it', async ({ page, cc, ui, uniq }) => {
   // Before open: the web UI's app switcher reads the plugin catalog when it mounts.
   await installFakePlugin(cc, 'fakeplug');
   try {
@@ -41,7 +40,7 @@ parity('legacy-main-bar-reset/R2', 'opening a plugin view clears the session fro
   }
 });
 
-parity('legacy-sidebar-lenses/R10', 'opening a conductor from its sidebar row shows its title and its workers', async ({ page, cc, ui, uniq }) => {
+test('opening a conductor from its sidebar row shows its title and its workers', async ({ page, cc, ui, uniq }) => {
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
   // `warn`, so the conductor may spawn an unbound worker.
   const spawned = await api(cc, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'warn' });
@@ -68,7 +67,7 @@ parity('legacy-sidebar-lenses/R10', 'opening a conductor from its sidebar row sh
   await expect(ui.workersPanel(page)).toBeVisible();
 });
 
-parity('doc/B26', 'with no turn running, Terminate asks first: declining keeps the session, confirming stops it', async ({ page, cc, ui, uniq }) => {
+test('with no turn running, Terminate asks first: declining keeps the session, confirming stops it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('term');
   await createProject(cc, project);
   await ui.open(page);
@@ -82,7 +81,7 @@ parity('doc/B26', 'with no turn running, Terminate asks first: declining keeps t
   await expect(ui.resumeButton(page)).toBeVisible();
 });
 
-parity('doc/B25', 'a stopped session offers Resume, which brings it back', async ({ page, cc, ui, uniq }) => {
+test('a stopped session offers Resume, which brings it back', async ({ page, cc, ui, uniq }) => {
   const project = uniq('resume');
   await createProject(cc, project);
   await ui.open(page);

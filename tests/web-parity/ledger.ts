@@ -936,7 +936,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'header',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/header.spec.ts::opening Settings clears the session from the main bar, and leaving restores it > next',
+        'web/e2e/parity/header.spec.ts::opening Settings clears the session from the main bar, and leaving restores it',
       ] },
   },
   {
@@ -948,7 +948,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'header',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/header.spec.ts::opening a plugin view clears the session from the main bar, and leaving restores it > next',
+        'web/e2e/parity/header.spec.ts::opening a plugin view clears the session from the main bar, and leaving restores it',
       ] },
   },
   {
@@ -961,7 +961,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop'],
     area: 'header',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/header.spec.ts::opening a conductor from its sidebar row shows its title and its workers > next',
+        'web/e2e/parity/header.spec.ts::opening a conductor from its sidebar row shows its title and its workers',
       ] },
   },
   {
@@ -985,7 +985,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/session/headerLayout.test.tsx::Resume > a crashed or exited session offers Resume, which calls respawnActive; a live or switching session does not',
         'web/src/app/sessionActions.test.ts::resuming the active session > respawnActive POSTs the active instance\'s respawn route, refreshes and resubscribes; a refusal toasts Resume failed',
-        'web/e2e/parity/header.spec.ts::a stopped session offers Resume, which brings it back > next',
+        'web/e2e/parity/header.spec.ts::a stopped session offers Resume, which brings it back',
       ] },
   },
   {
@@ -996,7 +996,7 @@ export const LEDGER: readonly Row[] = [
     area: 'header',
     status: { kind: 'ported', by: [
         'web/src/features/session/header.test.tsx::session menu > with no turn running, Terminate asks first: Cancel sends nothing, confirming sends one kill; mid-turn Interrupt sends interrupt without asking',
-        'web/e2e/parity/header.spec.ts::with no turn running, Terminate asks first: declining keeps the session, confirming stops it > next',
+        'web/e2e/parity/header.spec.ts::with no turn running, Terminate asks first: declining keeps the session, confirming stops it',
       ] },
   },
 
@@ -1037,7 +1037,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/composer/composer.test.tsx::send and mic modes > an empty box is a mic (disabled without whisper); typing flips to Send; clearing flips back',
         'web/src/features/composer/composer.test.tsx::send and mic modes > tap the mic to record, tap again to transcribe; the text is inserted and sent with the transcribed tag',
         'web/src/features/composer/composer.test.tsx::send and mic modes > Send submits the typed message and clears the box; Enter sends, Shift+Enter does not',
-        'web/e2e/parity/composer.spec.ts::a prompt sent from the composer shows as the user\'s message, the reply streams in, and the turn ends > next',
+        'web/e2e/parity/composer.spec.ts::a prompt sent from the composer shows as the user\'s message, the reply streams in, and the turn ends',
       ] },
   },
   {
@@ -1452,7 +1452,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/session/header.test.tsx::reveal swipe > a vertical swipe on the session header reveals (down) or conceals (up) the pinned prompt, including one that starts on a header button',
         'web/src/conversation/ConversationView.test.tsx::pinned prompt > a vertical swipe on the pin reveals (down) or conceals (up); a swipe on the transcript does nothing',
         'web/e2e/sticky-prompt.spec.ts::a vertical swipe on the session header reveals the pin and a swipe up conceals it; a swipe on the transcript does nothing',
-        'web/e2e/parity/conversation.spec.ts::revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it > next',
+        'web/e2e/parity/conversation.spec.ts::revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it',
       ] },
   },
   {
@@ -1480,7 +1480,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/composer/composer.test.tsx::sticky prompt keys > an empty box satisfies both caret rules',
         'web/src/features/composer/composer.test.tsx::sticky prompt keys > a modifier, a non-collapsed selection or IME composition makes Down and Up do nothing',
         'web/src/features/composer/composer.test.tsx::sticky prompt keys > Down and Up are never prevented, whether or not they act',
-        'web/e2e/parity/conversation.spec.ts::revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it > next',
+        'web/e2e/parity/conversation.spec.ts::revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it',
       ] },
   },
   {
@@ -2223,7 +2223,7 @@ export const LEDGER: readonly Row[] = [
     area: 'conversation',
     status: { kind: 'ported', by: [
         'web/src/conversation/answers.test.tsx::lazy history > C15 the pager\'s page locks a card whose stamped answer the live tail applied first',
-        'web/e2e/parity/conversation-paging.spec.ts::a card that pages in from below the snapshot tail locks from the answer the tail already applied > next',
+        'web/e2e/parity/conversation-paging.spec.ts::a card that pages in from below the snapshot tail locks from the answer the tail already applied',
       ] },
   },
   {
@@ -2344,7 +2344,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/conversation/answers.test.tsx::question card locking > a non-canonical answer the strict parse accepts renders raw and locks the card with no pick > a stamp the canonical parse rejects discards an unsubmitted local pick',
         'web/src/conversation/answers.test.tsx::question card locking > a card whose question text is not a string > a foreign answer text locks the older-page card with no pick, without throwing',
         'web/src/conversation/answers.test.tsx::question card locking > a card whose question text is not a string > the formatter\'s own text locks it with its pick, matching the bubble\'s rows',
-        'web/e2e/parity/conversation.spec.ts::a two-question card stays open through a wake stub, locks on its answer with each pane\'s pick and note, keeps its controls disabled through tab clicks, and replays locked with the same answer rows > next',
+        'web/e2e/parity/conversation.spec.ts::a two-question card stays open through a wake stub, locks on its answer with each pane\'s pick and note, keeps its controls disabled through tab clicks, and replays locked with the same answer rows',
       ] },
   },
   {
@@ -2708,8 +2708,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/conversation/ConversationView.test.tsx::pinned prompt > clicking the pin, Enter or Space jumps to the pinned prompt; another key does nothing',
         'web/src/conversation/ConversationView.test.tsx::pinned prompt > a fully pushed-off pin is hidden, so it leaves the tab order; peeking again shows the same pinned text node',
         'web/src/conversation/ConversationView.test.tsx::pinned prompt > the pin lives outside the scroll root, and pinning adds nothing to the transcript',
-        'web/e2e/parity/conversation.spec.ts::revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it > next',
-        'web/e2e/parity/conversation.spec.ts::a status line is a status region with no jump affordance; a pinned prompt is the jump button again > next',
+        'web/e2e/parity/conversation.spec.ts::revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it',
+        'web/e2e/parity/conversation.spec.ts::a status line is a status region with no jump affordance; a pinned prompt is the jump button again',
         'web/e2e/sticky-prompt.spec.ts::after a jump the held prompt is pushed off by the one now at the top, so the pin hides until the transcript scrolls on',
         "web/e2e/sticky-prompt.spec.ts::a pin peeking back past the transcript's top edge is clipped to the transcript, so the session header above it still takes taps",
         'web/src/conversation/stickyPrompt.test.ts::sticky prompt > re-attaching to a fresh transcript after a detach re-reads its prompts: the pin never holds a detached prompt, and a jump scrolls the fresh one',
@@ -2731,7 +2731,7 @@ export const LEDGER: readonly Row[] = [
         "web/src/conversation/stickyPrompt.test.ts::sticky prompt > the pin's right edge follows the scroll root's scrollbar gutter, net of its borders and never negative",
         "web/src/conversation/ConversationView.test.tsx::pinned prompt > the pin's right edge follows the scrollbar gutter the controller measured",
         "web/e2e/sticky-prompt.spec.ts::the pin stops short of the transcript's scrollbar",
-        'web/e2e/parity/conversation.spec.ts::the pin clamps a long prompt and fits a short one, and both swipe zones keep pinch zoom without a vertical pan > next',
+        'web/e2e/parity/conversation.spec.ts::the pin clamps a long prompt and fits a short one, and both swipe zones keep pinch zoom without a vertical pan',
       ] },
   },
   {
@@ -2742,7 +2742,7 @@ export const LEDGER: readonly Row[] = [
     area: 'conversation',
     status: { kind: 'ported', by: [
         'web/src/conversation/ConversationView.test.tsx::pinned prompt > a status line is a status region with no jump affordance; a pinned prompt is the jump button again',
-        'web/e2e/parity/conversation.spec.ts::a status line is a status region with no jump affordance; a pinned prompt is the jump button again > next',
+        'web/e2e/parity/conversation.spec.ts::a status line is a status region with no jump affordance; a pinned prompt is the jump button again',
       ] },
   },
   {
@@ -2930,7 +2930,7 @@ export const LEDGER: readonly Row[] = [
         "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > a bubble from a segment that is no longer current has no actions mid-turn or idle, while the current segment's bubble keeps them",
         "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > a status frame for the active instance reaches its bubbles; a frame for another instance does not",
         "web/src/conversation/userActions.test.tsx::bubble actions follow the active instance > a lazy-history page spliced in mid-turn gets fork enabled and rewind disabled, spliced in idle both, and follows a later status change",
-        "web/e2e/parity/conversation.spec.ts::between turns a prompt offers Rewind and Fork; mid-turn Rewind is disabled while Fork stays enabled, on the earlier prompt and on the running one > next",
+        'web/e2e/parity/conversation.spec.ts::between turns a prompt offers Rewind and Fork; mid-turn Rewind is disabled while Fork stays enabled, on the earlier prompt and on the running one',
       ] },
   },
   {
@@ -2971,7 +2971,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/conversation/foldedBubbles.test.tsx::plain user bubble controls > clicks on the toggle and copy buttons never leave the button, in either view',
         'web/src/conversation/foldedBubbles.test.tsx::plain user bubble controls > toggle and copy survive segment retirement and stay enabled during a running turn',
         'web/src/conversation/foldedBubbles.test.tsx::fold markers > every folded user-bubble kind, renew included, carries its own data-fold marker, and a plain prompt none',
-        'web/e2e/parity/conversation.spec.ts::markdown headings in a prompt and in a folded wake body are headings, and the prompt raw/copy row shows on touch and on hover > next',
+        'web/e2e/parity/conversation.spec.ts::markdown headings in a prompt and in a folded wake body are headings, and the prompt raw/copy row shows on touch and on hover',
       ] },
   },
   {
@@ -3005,8 +3005,8 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/conversation/answers.test.tsx::interleaved echoes > an unstamped wake stub between the tool_result and the answer leaves the card open; the stamped echo after it locks Apple',
         'web/src/conversation/answers.test.tsx::interleaved echoes > a mid-turn answer replayed from disk past a wake stub is stamped by the server and locks the card on its option',
-        'web/e2e/parity/conversation.spec.ts::a two-question card stays open through a wake stub, locks on its answer with each pane\'s pick and note, keeps its controls disabled through tab clicks, and replays locked with the same answer rows > next',
-        'web/e2e/parity/conversation.spec.ts::a mid-turn answer replayed from disk past an interleaved wake stub locks the card on the answered option, and the mid-turn note never shows > next',
+        'web/e2e/parity/conversation.spec.ts::a two-question card stays open through a wake stub, locks on its answer with each pane\'s pick and note, keeps its controls disabled through tab clicks, and replays locked with the same answer rows',
+        'web/e2e/parity/conversation.spec.ts::a mid-turn answer replayed from disk past an interleaved wake stub locks the card on the answered option, and the mid-turn note never shows',
       ] },
   },
   {
@@ -3057,7 +3057,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > copy returns the exact payload in both views, never the summary or the markers',
         'web/src/conversation/foldedBubbles.test.tsx::wake-callback bubble lifecycle > its fold controls survive segment retirement and a running turn, and their clicks stay inside the fold',
         'web/src/conversation/userBubbles.test.tsx::wake-callback bubbles > raw view and copy of the expanded body yield the exact payload',
-        'web/e2e/parity/conversation.spec.ts::an expanded wake body keeps its metadata line apart from its prose, and its raw view across a collapse and reopen > next',
+        'web/e2e/parity/conversation.spec.ts::an expanded wake body keeps its metadata line apart from its prose, and its raw view across a collapse and reopen',
       ] },
   },
   {
@@ -3077,7 +3077,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'conversation',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/conversation.spec.ts::a wake-callback stub renders as a collapsed fold naming its worker that opens to its payload and closes again > next',
+        'web/e2e/parity/conversation.spec.ts::a wake-callback stub renders as a collapsed fold naming its worker that opens to its payload and closes again',
       ] },
   },
   {
@@ -3088,7 +3088,7 @@ export const LEDGER: readonly Row[] = [
     area: 'conversation',
     status: { kind: 'ported', by: [
         "web/src/app/sessionActions.test.ts::promote, resume, rewind, fork, delete > a refused fork toasts the server's message for each refusal and refreshes and selects nothing",
-        "web/e2e/parity/conversation.spec.ts::a refused fork shows the server's message and leaves the session where it was > next",
+        'web/e2e/parity/conversation.spec.ts::a refused fork shows the server\'s message and leaves the session where it was',
       ] },
   },
   {
@@ -3392,7 +3392,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/app/sessionHistory.test.tsx::session selection and the history > a notification click selects its instance in place, pushing no entry: Back then skips the session it replaced',
         'web/src/app/sessionHistory.test.tsx::session selection and the history > a notification click whose instanceId and sessionId name different live instances selects the one its instanceId names',
         'web/src/app/sessionHistory.test.tsx::session selection and the history > a notification click without a service worker opens its session in place, adding no history entry',
-        'web/e2e/parity/android-shell.spec.ts::a notification click opens its session in place, adding no history entry: Back then returns past it to the conductor > next',
+        'web/e2e/parity/android-shell.spec.ts::a notification click opens its session in place, adding no history entry: Back then returns past it to the conductor',
       ] },
   },
   {
@@ -3471,7 +3471,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/app/sessionHistory.test.tsx::session selection and the history > Back from a worker opened from its conductor\'s workers panel selects the conductor again; a worker selected any other way leaves no entry to go back to',
         'web/src/app/sessionHistory.test.tsx::session selection and the history > Back onto an entry naming the session already shown leaves that session alone: nothing is selected or subscribed again',
-        'web/e2e/parity/android-shell.spec.ts::Back from a worker opened from the workers panel returns to its conductor, and Forward to the worker again > next',
+        'web/e2e/parity/android-shell.spec.ts::Back from a worker opened from the workers panel returns to its conductor, and Forward to the worker again',
       ] },
   },
 
@@ -4046,7 +4046,7 @@ export const LEDGER: readonly Row[] = [
     area: 'sidebar',
     status: { kind: 'ported', by: [
         "web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > the ≡ menu's Add existing directory opens the add-project dialog",
-        'web/e2e/parity/sidebar.spec.ts::the ≡ menu opens the Add-project dialog > next',
+        'web/e2e/parity/sidebar.spec.ts::the ≡ menu opens the Add-project dialog',
       ] },
   },
   {
@@ -4139,7 +4139,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/ProjectsList.test.tsx::Projects tree > a normal repo and a plain directory show no no commits pill',
         'web/src/features/sidebar/ProjectsList.test.tsx::Projects tree > commit history names the project on a project row and the pair on a worktree row, as the worktree review does',
         'web/src/features/sidebar/ProjectsList.test.tsx::Projects tree > a locked worktree shows the lock marker, which follows the lock across renders',
-        'web/e2e/parity/sidebar.spec.ts::a live session row in the Projects lens opens it, and once stopped its row resumes it > next',
+        'web/e2e/parity/sidebar.spec.ts::a live session row in the Projects lens opens it, and once stopped its row resumes it',
       ] },
   },
   {
@@ -4292,8 +4292,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/conductorFilter.test.tsx::idle chips and spawn history > a live conductor\'s selection adds its idle projects as bare rows beside its live ones',
         'web/src/features/sidebar/conductorFilter.test.tsx::idle chips and spawn history > a root with only spawn history that is not a conductor is not offered, while an inactive conductor with the same history is',
         'web/src/features/sidebar/conductorFilter.test.tsx::idle chips and spawn history > a live non-conductor owner\'s selection lists its spawn-history projects as bare rows beside its live ones',
-        'web/e2e/parity/sidebar-fleet.spec.ts::the conductor filter in a browser: a conductor narrows the tree, force-opens Worktrees and colours the root, survives the drawer, Hand-spawned only keeps hand rows, and All restores the user\'s expansion > next',
-        'web/e2e/parity/sidebar-fleet.spec.ts::the conductor filter keeps a conductor with idle chips, listing them as bare rows, and falls back to All once nothing offers its owner > next',
+        'web/e2e/parity/sidebar-fleet.spec.ts::the conductor filter in a browser: a conductor narrows the tree, force-opens Worktrees and colours the root, survives the drawer, Hand-spawned only keeps hand rows, and All restores the user\'s expansion',
+        'web/e2e/parity/sidebar-fleet.spec.ts::the conductor filter keeps a conductor with idle chips, listing them as bare rows, and falls back to All once nothing offers its owner',
       ] },
   },
   {
@@ -4323,7 +4323,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [
-        "web/e2e/parity/sidebar-conductors.spec.ts::a conductor row's × shows on hover, and each row label stays readable and truncates while the ago label, ↑ and × stay inside the row > next",
+        'web/e2e/parity/sidebar-conductors.spec.ts::a conductor row\'s × shows on hover, and each row label stays readable and truncates while the ago label, ↑ and × stay inside the row',
       ] },
   },
   {
@@ -4354,7 +4354,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > a conductor row pills its unread turn marks from a live instance or its .conduct row, and a read conductor has no pill',
         "web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > an armed conductor's auto-resume badge shows on its strip entry and on no Conductors-lens row, its worker's included",
         'web/src/features/sidebar/ConductorsList.test.tsx::selected conductor row > a selected conductor row is marked data-active whether titled or untitled and keeps its unread pill, and the mark follows a selection change',
-        "web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor's colour, and the selected row and its strip entry marked and filled > next",
+        'web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor\'s colour, and the selected row and its strip entry marked and filled',
       ] },
   },
   {
@@ -4569,7 +4569,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/ownership.test.tsx::Projects-lens ownership colour > the Projects lens lists no .conduct row while conductors are live and .conduct has disk rows',
         'web/src/features/sidebar/ownership.test.tsx::Projects-lens ownership colour > No projects yet shows while a conductor is live',
         "web/src/features/sidebar/ownership.test.tsx::Projects-lens ownership colour > hand-spawn controls stay in the Projects tree beside a conductor's workers",
-        'web/e2e/parity/sidebar-fleet.spec.ts::owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row is marked and keeps its bar > next',
+        'web/e2e/parity/sidebar-fleet.spec.ts::owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row is marked and keeps its bar',
       ] },
   },
   {
@@ -4630,9 +4630,9 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/reveal.test.tsx::the phone drawer > a sidebar mounting with a selection scrolls its row into view, as the phone drawer does on re-opening, and one mounting with none scrolls nothing',
         'web/src/features/sidebar/reveal.test.tsx::the phone drawer > each lens keeps its own scroll offset across a lens switch and across the sidebar unmounting and mounting again',
         'web/src/features/sidebar/reveal.test.tsx::the phone drawer > resetting the lens offsets returns a remounted sidebar to the top of each lens',
-        'web/e2e/parity/sidebar-fleet.spec.ts::reveal on select in a browser: a Conductors-lens pick opens its workspace and Worktrees group and nothing off its path, a Projects-lens pick opens its owner\'s bubble only, a group revealed under an owner filter stays open after All, and a conductor pick changes nothing > next',
-        'web/e2e/parity/sidebar-fleet.spec.ts::a re-selection of the selected session re-opens the groups the user collapsed on its path, in both lenses > next',
-        'web/e2e/parity/sidebar-fleet.spec.ts::the sidebar keeps its scroll offset across the phone drawer closing and re-opening, so a row tapped deep in the list is in view when it re-opens > next',
+        'web/e2e/parity/sidebar-fleet.spec.ts::reveal on select in a browser: a Conductors-lens pick opens its workspace and Worktrees group and nothing off its path, a Projects-lens pick opens its owner\'s bubble only, a group revealed under an owner filter stays open after All, and a conductor pick changes nothing',
+        'web/e2e/parity/sidebar-fleet.spec.ts::a re-selection of the selected session re-opens the groups the user collapsed on its path, in both lenses',
+        'web/e2e/parity/sidebar-fleet.spec.ts::the sidebar keeps its scroll offset across the phone drawer closing and re-opening, so a row tapped deep in the list is in view when it re-opens',
         'web/e2e/sidebar-reveal.spec.ts::a reveal from the needs-you strip opens the sidebar onto the revealed row deep in the list, the phone drawer re-opening included',
       ] },
   },
@@ -4948,7 +4948,7 @@ export const LEDGER: readonly Row[] = [
     area: 'sidebar',
     status: { kind: 'ported', by: [
         'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > the Conduct button ensures .conduct, POSTs exactly {project, role, temp, mode} and selects the new conductor with a gesture',
-        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor > next',
+        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor',
       ] },
   },
   {
@@ -4959,7 +4959,7 @@ export const LEDGER: readonly Row[] = [
     area: 'sidebar',
     status: { kind: 'ported', by: [
         'web/src/features/sidebar/AppSidebar.test.tsx::AppSidebar > the Conduct button ensures .conduct, POSTs exactly {project, role, temp, mode} and selects the new conductor with a gesture',
-        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor > next',
+        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor',
       ] },
   },
   {
@@ -4971,7 +4971,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [
-        "web/e2e/parity/sidebar-wake.spec.ts::a session's dot lights while its worker is mid-turn, stays lit across a heartbeat, and clears at turn_end > next",
+        'web/e2e/parity/sidebar-wake.spec.ts::a session\'s dot lights while its worker is mid-turn, stays lit across a heartbeat, and clears at turn_end',
         "web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > a conductor row's dot keeps the running, waiting-on-a-worker, waiting-on-a-job and idle semantics",
       ] },
   },
@@ -4985,7 +4985,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/sidebar.spec.ts::a fresh profile opens on the Conductors lens, and the chosen lens survives a reload > next',
+        'web/e2e/parity/sidebar.spec.ts::a fresh profile opens on the Conductors lens, and the chosen lens survives a reload',
       ] },
   },
   {
@@ -5009,7 +5009,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [
-        "web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor's colour, and the selected row and its strip entry marked and filled > next",
+        'web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor\'s colour, and the selected row and its strip entry marked and filled',
         'web/src/features/sidebar/ConductorsList.test.tsx::selected conductor row > a selected conductor row is marked data-active whether titled or untitled and keeps its unread pill, and the mark follows a selection change',
         'web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > the selected conductor row and the selected worker row in its tree are marked, and only they',
       ] },
@@ -5024,7 +5024,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [
-        "web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor's colour, and the selected row and its strip entry marked and filled > next",
+        'web/e2e/parity/sidebar-conductors.spec.ts::conductor rows: titled and untitled labels, live and idle chips, block bars in each conductor\'s colour, and the selected row and its strip entry marked and filled',
         "web/src/features/sidebar/ConductorsList.test.tsx::Conductors-lens conductor rows > a conductor block carries its own conductor's colour",
       ] },
   },
@@ -5067,7 +5067,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/sidebar-fleet.spec.ts::the Projects lens lists no .conduct row while a conductor is live and .conduct has a disk row > next',
+        'web/e2e/parity/sidebar-fleet.spec.ts::the Projects lens lists no .conduct row while a conductor is live and .conduct has a disk row',
         'web/src/features/sidebar/ownership.test.tsx::Projects-lens ownership colour > the Projects lens lists no .conduct row while conductors are live and .conduct has disk rows',
       ] },
   },
@@ -5081,7 +5081,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'sidebar',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/sidebar-fleet.spec.ts::owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row is marked and keeps its bar > next',
+        'web/e2e/parity/sidebar-fleet.spec.ts::owner bars on a seeded fleet: single, mixed and main checkout, the filter to one conductor, killed workers, and the selected row is marked and keeps its bar',
         'web/src/features/sidebar/ownership.test.tsx::selected session row > a selected session row is marked active independently of its unread pill and keeps its owner colour',
       ] },
   },
@@ -5227,7 +5227,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/ProjectsList.test.tsx::Sessions summary line > the open Sessions list of the main checkout and of each worktree starts with Sessions (N) · K live · last <ago>',
         'web/src/features/sidebar/ProjectsList.test.tsx::Sessions summary line > the summary line leaves out · K live with no live session and · last with no recorded activity',
         'web/src/features/sidebar/ProjectsList.test.tsx::Projects tree > the 15s tick re-renders the ago labels without new data: the row and the Sessions summary line',
-        'web/e2e/parity/sidebar.spec.ts::the main checkout and a worktree each head their Sessions list with Sessions (N) · K live · last <ago> > next',
+        'web/e2e/parity/sidebar.spec.ts::the main checkout and a worktree each head their Sessions list with Sessions (N) · K live · last <ago>',
       ] },
   },
   {
@@ -5250,7 +5250,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'dialogs',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/dialogs.spec.ts::Adding an existing directory from the project menu: the menu closes, System comes from the registry, a suggestion fills the form, and Relocate adopts over a stale record > next',
+        'web/e2e/parity/dialogs.spec.ts::Adding an existing directory from the project menu: the menu closes, System comes from the registry, a suggestion fills the form, and Relocate adopts over a stale record',
       ] },
   },
   {
@@ -5421,7 +5421,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/placement.test.tsx::placement > an answer for a system no longer chosen is dropped',
         'web/src/features/dialogs/placement.test.tsx::placement > this machine asks for no targets, on open or when chosen back',
         'tests/adopt-refusal-tails.test.mjs::the overridden refusals still end with the exact tails the adopt dialog strips',
-        'web/e2e/parity/dialogs.spec.ts::Escape in a path field closes its completion list, not the dialog > next',
+        'web/e2e/parity/dialogs.spec.ts::Escape in a path field closes its completion list, not the dialog',
         'web/src/features/dialogs/dialogs.test.tsx::add-project dialog > reopening the dialog resets every field the previous open left behind',
       ] },
   },
@@ -5461,7 +5461,7 @@ export const LEDGER: readonly Row[] = [
     area: 'dialogs',
     status: { kind: 'ported', by: [
         'web/src/features/dialogs/deleteProject.test.tsx::delete-project confirmation > a mismatched name keeps the submit disabled, and a forced submit says so and deletes nothing',
-        'web/e2e/parity/dialogs.spec.ts::A mismatched name in the delete dialog deletes nothing and keeps the dialog open, and Cancel keeps the project > next',
+        'web/e2e/parity/dialogs.spec.ts::A mismatched name in the delete dialog deletes nothing and keeps the dialog open, and Cancel keeps the project',
       ] },
   },
   {
@@ -5486,8 +5486,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/deleteProject.test.tsx::delete-project confirmation > the worktree effect counts the project\'s worktrees: 0 with none, 2 with two',
         'web/src/features/dialogs/deleteProject.test.tsx::delete-project confirmation > the sidebar\'s Delete project hands the dialog this project\'s live instance count',
         'web/src/app/sessionActions.test.ts::promote, resume, rewind, fork, delete > deleting a project sends deleteDirectory as chosen and drops a selection inside it',
-        'web/e2e/parity/dialogs.spec.ts::Deleting a local project offers the directory opt-in unticked, labelled with the directory so its label toggles it, and Cancel keeps the project > next',
-        'web/e2e/parity/dialogs.spec.ts::Deleting a project on a system names its path, target and system, and Cancel keeps the project > next',
+        'web/e2e/parity/dialogs.spec.ts::Deleting a local project offers the directory opt-in unticked, labelled with the directory so its label toggles it, and Cancel keeps the project',
+        'web/e2e/parity/dialogs.spec.ts::Deleting a project on a system names its path, target and system, and Cancel keeps the project',
       ] },
   },
   {
@@ -5497,7 +5497,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'dialogs',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/dialogs.spec.ts::The placement rows a flow reveals stay hidden until it reveals them > next',
+        'web/e2e/parity/dialogs.spec.ts::The placement rows a flow reveals stay hidden until it reveals them',
         'web/src/features/dialogs/adopt.test.tsx::Add project dialog > choosing a system hides the scanned list and points the note at that system; this machine brings both back with no second scan',
         'web/src/features/dialogs/newProject.test.tsx::New project dialog > choosing a system reveals the path field and retargets the preview',
         'web/src/features/dialogs/newProject.test.tsx::New project dialog > the Target field appears only on a system, the preview names it, and its trimmed value is posted',
@@ -5541,7 +5541,7 @@ export const LEDGER: readonly Row[] = [
     area: 'dialogs',
     status: { kind: 'ported', by: [
         'web/src/features/dialogs/newProject.test.tsx::New project dialog > on a system the dialog offers System, a Target dropdown with its free-text field and note, and the path field, each by its label; on this machine none but System',
-        'web/e2e/parity/dialogs.spec.ts::New project offers System, Target and the path field once a system is chosen, and neither Target nor the path before > next',
+        'web/e2e/parity/dialogs.spec.ts::New project offers System, Target and the path field once a system is chosen, and neither Target nor the path before',
       ] },
   },
   {
@@ -5552,7 +5552,7 @@ export const LEDGER: readonly Row[] = [
     area: 'dialogs',
     status: { kind: 'ported', by: [
         'web/e2e/app.spec.ts::create a project from the sidebar and start a session in it',
-        'web/e2e/parity/dialogs.spec.ts::New project creates a project that the Projects lens lists > next',
+        'web/e2e/parity/dialogs.spec.ts::New project creates a project that the Projects lens lists',
       ] },
   },
   {
@@ -5741,7 +5741,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/PathInput.test.tsx::PathInput > a network error puts up a note and is not cached',
         'web/src/features/dialogs/adopt.test.tsx::Add project dialog > Escape in the path field closes the completion list and leaves the dialog open; the next Escape closes the dialog',
         'web/src/features/dialogs/newProject.test.tsx::New project dialog > Escape in the path field closes the completion list and leaves the dialog open; the next Escape closes the dialog',
-        'web/e2e/parity/dialogs.spec.ts::Escape in a path field closes its completion list, not the dialog > next',
+        'web/e2e/parity/dialogs.spec.ts::Escape in a path field closes its completion list, not the dialog',
       ] },
   },
   {
@@ -5795,7 +5795,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/projectRemote.test.tsx::change-target saving > any other refusal shows the server message verbatim, lists no blockers, keeps the dialog and refreshes nothing',
         'web/src/features/dialogs/projectRemote.test.tsx::change-target saving > Cancel sends nothing and closes',
         'web/src/features/dialogs/projectRemote.test.tsx::change-target saving > reopening after a refusal starts clean: no message, no blockers, the project\'s own target',
-        'web/e2e/parity/dialogs.spec.ts::Change target from the system pill: a refusal shows the server message and keeps the dialog, Cancel sends nothing, a reopen starts clean, and Save PUTs the trimmed target and refreshes the list > next',
+        'web/e2e/parity/dialogs.spec.ts::Change target from the system pill: a refusal shows the server message and keeps the dialog, Cancel sends nothing, a reopen starts clean, and Save PUTs the trimmed target and refreshes the list',
       ] },
   },
   {
@@ -5833,7 +5833,7 @@ export const LEDGER: readonly Row[] = [
     area: 'dialogs',
     status: { kind: 'ported', by: [
         'web/src/features/dialogs/sessionDialogs.test.tsx::prune context > a visible thinking saving reads as tokens even when encrypted thinking is present',
-        'web/e2e/parity/dialogs.spec.ts::Prune\'s slider runs from 0 to the turn count and starts at about 90%, thinking starts ticked and minimal inputs unticked, a visible thinking saving shows beside encrypted thinking, and Prune sends the cut and both choices > next',
+        'web/e2e/parity/dialogs.spec.ts::Prune\'s slider runs from 0 to the turn count and starts at about 90%, thinking starts ticked and minimal inputs unticked, a visible thinking saving shows beside encrypted thinking, and Prune sends the cut and both choices',
       ] },
   },
   {
@@ -5864,8 +5864,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > an explicit level is sent as the override, and the tier still rides along',
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > Default is the first option and the only one of its kind, followed by every level in order, and it is the one selected until another is picked',
         'web/src/features/dialogs/conduct.test.ts::Conduct > Conduct ensures the .conduct project, then spawns a temp conductor in code mode with no effort or tier, and selects it',
-        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor > next',
-        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting > next',
+        'web/e2e/parity/sidebar.spec.ts::Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor',
+        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting',
       ] },
   },
   {
@@ -5908,7 +5908,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a click cannot tick the worktree box on an unborn-HEAD project, so no worktree is sent',
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a click ticks the worktree box on a repo with a commit, and the spawn asks for a fresh worktree',
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a worktree named by the caller force-ticks and locks the box, on a born or an unborn repo',
-        'web/e2e/parity/dialogs.spec.ts::The worktree box follows the project\'s repo: disabled with a reason for a non-git directory and an unborn HEAD, tickable on a repo with a commit > next',
+        'web/e2e/parity/dialogs.spec.ts::The worktree box follows the project\'s repo: disabled with a reason for a non-git directory and an unborn HEAD, tickable on a repo with a commit',
       ] },
   },
   {
@@ -5950,7 +5950,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/logic.test.ts::saving a workspace > a new workspace with nothing ticked is created empty',
         'web/src/features/dialogs/logic.test.ts::saving a workspace > renames first, then adds and removes only the members that changed',
         'web/src/features/sidebar/ProjectsList.test.tsx::Projects tree > the workspace pencil opens that workspace editor without toggling the workspace',
-        'web/e2e/parity/dialogs.spec.ts::A workspace is created from the project menu, edited from its pencil with its members pre-ticked, renamed before its members move, created empty with nothing ticked, and deleted only once the confirm is accepted > next',
+        'web/e2e/parity/dialogs.spec.ts::A workspace is created from the project menu, edited from its pencil with its members pre-ticked, renamed before its members move, created empty with nothing ticked, and deleted only once the confirm is accepted',
       ] },
   },
   {
@@ -5977,7 +5977,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/sessionDialogs.test.tsx::session summary > Use as session title shows only on a cached Title tier and applies that title',
         'web/src/features/dialogs/logic.test.ts::dialog text helpers > the summary tier falls back to medium, then to the first cached tier',
         'web/src/features/session/header.test.tsx::session menu > mute flips per session; rename / summary / statistics / prune open their dialogs',
-        'web/e2e/parity/dialogs.spec.ts::Summarize opens on Medium with the cached summary as markdown and its stale warning, generates an empty tier on request with its cost, clears the cost on a tier switch, and applies the Title tier as the session title > next',
+        'web/e2e/parity/dialogs.spec.ts::Summarize opens on Medium with the cached summary as markdown and its stale warning, generates an empty tier on request with its cost, clears the cost on a tier switch, and applies the Title tier as the session title',
       ] },
   },
   {
@@ -5993,7 +5993,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/sessionDialogs.test.tsx::session rename > an unchanged title closes without a request',
         'web/src/features/dialogs/sessionDialogs.test.tsx::session rename > a refused rename shows the reason and keeps the dialog open',
         'web/src/features/session/header.test.tsx::session menu > mute flips per session; rename / summary / statistics / prune open their dialogs',
-        'web/e2e/parity/dialogs.spec.ts::Rename prefills the current title, sends nothing for a cancel or an unchanged title, cuts a long title to 100 characters, and sends an empty title to clear it > next',
+        'web/e2e/parity/dialogs.spec.ts::Rename prefills the current title, sends nothing for a cancel or an unchanged title, cuts a long title to 100 characters, and sends an empty title to clear it',
       ] },
   },
   {
@@ -6008,7 +6008,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/sessionDialogs.test.tsx::prune context > a session with no completed turns says so and cannot be pruned, while a one-turn session can',
         'web/src/features/dialogs/logic.test.ts::prune savings > starts the cut near 90%, at least 1, and short of the last turn',
         'web/src/features/session/header.test.tsx::session menu > mute flips per session; rename / summary / statistics / prune open their dialogs',
-        'web/e2e/parity/dialogs.spec.ts::Prune\'s slider runs from 0 to the turn count and starts at about 90%, thinking starts ticked and minimal inputs unticked, a visible thinking saving shows beside encrypted thinking, and Prune sends the cut and both choices > next',
+        'web/e2e/parity/dialogs.spec.ts::Prune\'s slider runs from 0 to the turn count and starts at about 90%, thinking starts ticked and minimal inputs unticked, a visible thinking saving shows beside encrypted thinking, and Prune sends the cut and both choices',
       ] },
   },
   {
@@ -6020,7 +6020,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > Thinking offers adaptive, enabled and disabled, starts on adaptive, and sends the one picked',
         'web/src/features/dialogs/dialogs.test.tsx::spawn dialog > sends a tier, never a model or backend, and leaves effort to the tier default',
-        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting > next',
+        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting',
       ] },
   },
   {
@@ -6033,7 +6033,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > tiers disabled in Settings are not offered, and a disabled default tier falls back to the first enabled one in fallback order',
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a tier disabled while the dialog is open disappears and the selection falls back',
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > with every tier disabled, the fallback tier alone is offered',
-        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting > next',
+        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting',
       ] },
   },
   {
@@ -6058,7 +6058,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a Debug tick made before the default arrives is kept and sent',
         'web/src/features/dialogs/spawn.test.tsx::spawn dialog options > a Debug tick on one open does not stop the next open from taking the debug default',
         'web/src/features/dialogs/dialogs.test.tsx::spawn dialog > the debug default comes from the spawn settings',
-        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting > next',
+        'web/e2e/parity/dialogs.spec.ts::The spawn dialog hides disabled tiers, opens Effort on Default naming the tier level and follows a tier pick, opens Thinking on adaptive, and pre-checks Debug from the setting',
       ] },
   },
   {
@@ -6072,7 +6072,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/dialogs/sessionDialogs.test.tsx::session statistics > with one worker it adds the Incl. 1 worker column beside This session and drops the note',
         'web/src/features/dialogs/dialogs.test.tsx::statistics dialog > shows a worker column only when the session spawned workers, and toggles mid-turn statistics per session',
         'web/src/features/session/header.test.tsx::session menu > mute flips per session; rename / summary / statistics / prune open their dialogs',
-        'web/e2e/parity/dialogs.spec.ts::Statistics shows This session alone with the no-workers note, and with workers adds the Incl. N workers column and drops the note > next',
+        'web/e2e/parity/dialogs.spec.ts::Statistics shows This session alone with the no-workers note, and with workers adds the Incl. N workers column and drops the note',
       ] },
   },
   {
@@ -6089,7 +6089,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/sidebar/restart.test.ts::performRestart > posts the resume choice, reports progress in the sidebar status, reloads, and ignores a second click meanwhile',
         'web/src/features/sidebar/restart.test.ts::performRestart > a plain restart gives up waiting after the short poll budget and reloads',
         'web/src/features/sidebar/restart.test.ts::performRestart > a resume restart keeps waiting through the long drain budget before it reloads',
-        'web/e2e/parity/dialogs.spec.ts::With live sessions the restart button asks first: dismissing restarts nothing, the plain choice posts resume:false and the resume choice resume:true, each reloading once the server is back; with no sessions it restarts plain without asking > next',
+        'web/e2e/parity/dialogs.spec.ts::With live sessions the restart button asks first: dismissing restarts nothing, the plain choice posts resume:false and the resume choice resume:true, each reloading once the server is back; with no sessions it restarts plain without asking',
       ] },
   },
 
@@ -6146,7 +6146,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/settings/models/store.test.tsx::Models payload > a Models save hands its payload to the settings view and the model cache before the signal, and an open New session dialog re-reads it',
         'web/src/features/settings/models/store.test.tsx::Models payload > a prefs-only save updates the settings view but leaves the model cache and the New session dialog alone',
-        'web/e2e/parity/settings.spec.ts::A tier switched off in Settings → Models leaves the New session dialog at once > next',
+        'web/e2e/parity/settings.spec.ts::A tier switched off in Settings → Models leaves the New session dialog at once',
       ] },
   },
   {
@@ -6232,7 +6232,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/panels.test.tsx::Account → Claude login > a start refused while another tab\'s flow is verifying keeps the refusal on screen',
         'web/src/features/settings/panels.test.tsx::Account → Claude login > an older status answer landing after a newer one does not repaint the previous account',
         'web/src/features/settings/panels.test.tsx::Account → Claude login > an older status failure landing after a newer answer does not replace it',
-        'web/e2e/parity/settings.spec.ts::Claude login: Log in shows the sign-in link, and Enter in the code field submits the trimmed code > next',
+        'web/e2e/parity/settings.spec.ts::Claude login: Log in shows the sign-in link, and Enter in the code field submits the trimmed code',
       ] },
   },
   {
@@ -6258,7 +6258,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/conventions.test.tsx::Conventions → conductor pickers > one conductor load fills both pickers and the conventions list',
         'web/src/features/settings/conventions.test.tsx::Conventions → conductor pickers > a load after refused picks re-selects the stored playbook and level; the playbook line repaints from the payload and the level\'s error stays',
         'web/src/features/settings/conventions.test.tsx::Conventions → conductor pickers > every picker status line renders in the error tone: a refused pick, the not-loaded reason and the load-error notes alike',
-        'web/e2e/parity/settings.spec.ts::Conventions: the conductor\'s playbook and enforcement pickers list the payload\'s rows, save each pick to its own endpoint, and report a refused save > next',
+        'web/e2e/parity/settings.spec.ts::Conventions: the conductor\'s playbook and enforcement pickers list the payload\'s rows, save each pick to its own endpoint, and report a refused save',
       ] },
   },
   {
@@ -6291,7 +6291,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/conventions.test.tsx::Conventions → conductor pickers > a successful playbook pick blanks the status line, and the next load repaints it from the payload',
         'web/src/features/settings/conventions.test.tsx::Conventions → conductor pickers > a load after refused picks re-selects the stored playbook and level; the playbook line repaints from the payload and the level\'s error stays',
         'web/src/features/settings/conventions.test.tsx::Conventions → conductor pickers > every picker status line renders in the error tone: a refused pick, the not-loaded reason and the load-error notes alike',
-        'web/e2e/parity/settings.spec.ts::Conventions: the conductor\'s playbook and enforcement pickers list the payload\'s rows, save each pick to its own endpoint, and report a refused save > next',
+        'web/e2e/parity/settings.spec.ts::Conventions: the conductor\'s playbook and enforcement pickers list the payload\'s rows, save each pick to its own endpoint, and report a refused save',
       ] },
   },
   {
@@ -6400,7 +6400,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/drafts.test.tsx::Settings edit drafts > a backend edit survives a section switch and leaving Settings, and clears on Cancel',
         'web/src/features/settings/drafts.test.tsx::Settings edit drafts > typed Add forms and a typed role name survive a section switch; a successful add clears the role name',
         'web/src/features/settings/logic.test.ts::models logic > switching a tier to a backend picks its tier default, then the user model, else refuses',
-        "web/e2e/parity/settings.spec.ts::Models: the backend picker lists a user backend, switching a tier to it saves its first model, and a custom model's Remove addresses its pair > next",
+        'web/e2e/parity/settings.spec.ts::Models: the backend picker lists a user backend, switching a tier to it saves its first model, and a custom model\'s Remove addresses its pair',
       ] },
   },
   {
@@ -6429,7 +6429,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/settings/models/models.test.tsx::Models → role effort > a role with an explicit level shows it, its Inherit names the level it falls back to, and each pick POSTs roleEffort',
         "web/src/features/settings/models/models.test.tsx::Models → role effort > every effort fallback uses the payload's defaultEffort, Inherit label included, and high only when the payload names none",
-        "web/e2e/parity/settings.spec.ts::Models: a role's explicit effort shows and saves, and the Conduct session's compact-window override saves its window > next",
+        'web/e2e/parity/settings.spec.ts::Models: a role\'s explicit effort shows and saves, and the Conduct session\'s compact-window override saves its window',
       ] },
   },
   {
@@ -6453,7 +6453,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > model and effort share one pair, and only where both exist',
         'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > no caption is emitted empty, and the enable switch, named by the tier beside it, has none',
         'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > every tier and role select and every default radio shows a caption its name contains: its own when the row stacks, the column header when it is one line',
-        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways > next',
+        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways',
       ] },
   },
   {
@@ -6489,8 +6489,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/panels.test.tsx::Systems > a successful Remove re-renders the list from the answer',
         'web/src/features/settings/panels.test.tsx::Systems > a row shows its provider command, a command-less row says it is a name only, and the built-in row shows neither',
         'web/src/features/settings/drafts.test.tsx::Settings edit drafts > a system edit survives a section switch and leaving Settings, and a successful Save clears it',
-        'web/e2e/parity/settings.spec.ts::Systems: rows show the provider command or a name-only note; Edit keeps the id and resends the command; a refused Remove names the project > next',
-        'web/e2e/parity/settings.spec.ts::Systems: an unsaved edit survives a section switch and leaving Settings, and Cancel clears it > next',
+        'web/e2e/parity/settings.spec.ts::Systems: rows show the provider command or a name-only note; Edit keeps the id and resends the command; a refused Remove names the project',
+        'web/e2e/parity/settings.spec.ts::Systems: an unsaved edit survives a section switch and leaving Settings, and Cancel clears it',
       ] },
   },
   {
@@ -6543,7 +6543,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/SettingsView.test.tsx::Settings view > an Escape another handler already prevented leaves Settings open',
         'web/src/features/settings/SettingsView.test.tsx::Settings view > Escape with a dialog open leaves Settings open',
         'web/src/features/settings/SettingsView.test.tsx::Settings view > Escape with a menu open leaves Settings open',
-        'web/e2e/parity/settings.spec.ts::Escape leaves Settings, even after the hash drifted to a session > next',
+        'web/e2e/parity/settings.spec.ts::Escape leaves Settings, even after the hash drifted to a session',
       ] },
   },
   {
@@ -6555,7 +6555,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/settings/conventions.test.tsx::Conventions → plugin changes > a plugin action that finishes after the switch to Conventions reloads every open block, and the Conductor block then lists the plugin\'s convention',
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > every block\'s refused Delete clears after a plugin change made while another section was shown',
-        'web/e2e/parity/settings.spec.ts::Conventions: enabling a plugin from the Plugins section brings its conductor convention into the Conductor block and clears a refused Delete there > next',
+        'web/e2e/parity/settings.spec.ts::Conventions: enabling a plugin from the Plugins section brings its conductor convention into the Conductor block and clears a refused Delete there',
       ] },
   },
   {
@@ -6655,7 +6655,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/plugins.test.tsx::Plugins → hook warnings > an update whose backend restart failed still updates, and warns with the restart error',
         'web/src/features/settings/plugins.test.tsx::Plugins → hook warnings > an update whose post-update command and restart both failed reports the command, not the restart',
         'web/src/features/settings/plugins.test.tsx::Plugins → hook warnings > an update whose restart was skipped after a failed post-update command says the backend still runs the old code, with the command output',
-        'web/e2e/parity/settings.spec.ts::Plugins: an update whose post-update command failed relabels the entry up to date and warns that its backend still runs the old code, with the command output > next',
+        'web/e2e/parity/settings.spec.ts::Plugins: an update whose post-update command failed relabels the entry up to date and warns that its backend still runs the old code, with the command output',
       ] },
   },
   {
@@ -6694,8 +6694,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/plugins.test.tsx::Plugins → state across remounts > a plugin action still in flight after a section switch blocks a second one until it ends',
         'web/src/features/settings/plugins.test.tsx::Plugins → reloads > a reload after any action replaces a refusal on either status line and drops the live logs, but keeps the library output',
         'web/src/features/settings/plugins.test.tsx::Plugins → reloads > a reload that fails after an action says so on the plugin list\'s line and leaves no progress note on either line',
-        'web/e2e/parity/settings.spec.ts::Plugins: Install shows its progress in the entry and the status line, both survive a section switch, and the entry then relabels installed > next',
-        'web/e2e/parity/settings.spec.ts::Plugins: a failed update keeps Update offered with the error, the pull output and the live log; all survive a section switch, and reopening Settings keeps only the output > next',
+        'web/e2e/parity/settings.spec.ts::Plugins: Install shows its progress in the entry and the status line, both survive a section switch, and the entry then relabels installed',
+        'web/e2e/parity/settings.spec.ts::Plugins: a failed update keeps Update offered with the error, the pull output and the live log; all survive a section switch, and reopening Settings keeps only the output',
         'web/src/features/settings/panels.test.tsx::Plugins > Restart reports {action, ids}; Stop reports no change',
       ] },
   },
@@ -6727,8 +6727,8 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all disarms when a reload finds the library empty',
         'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all keeps every plugin control locked through its closing reload',
         'web/src/features/settings/plugins.test.tsx::Plugins → Update all > Update all reads its targets when clicked: a caught-up entry is skipped, and with none left it starts nothing and takes no guard',
-        'web/e2e/parity/settings.spec.ts::Plugins: Update all updates one behind entry at a time with its progress in the header, and a section switch or a reopened Settings re-arms nothing until both are updated > next',
-        'web/e2e/parity/settings.spec.ts::Plugins: Update all continues past a failed update, names it in the summary with its output, and stays armed for the entry still behind > next',
+        'web/e2e/parity/settings.spec.ts::Plugins: Update all updates one behind entry at a time with its progress in the header, and a section switch or a reopened Settings re-arms nothing until both are updated',
+        'web/e2e/parity/settings.spec.ts::Plugins: Update all continues past a failed update, names it in the summary with its output, and stays armed for the entry still behind',
       ] },
   },
   {
@@ -6755,7 +6755,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/plugins.test.tsx::Plugins → local-only > a plugin on this machine offers Start and carries no local-only note',
         'web/src/features/settings/plugins.test.tsx::Plugins → local-only > a plugin on a system that declares both local-only capabilities names both codes on its note and hides Start',
         'web/src/features/settings/plugins.test.tsx::Plugins → local-only > a conventions-only plugin on a system is not marked local-only and keeps Disable, and a disabled plugin there carries no note',
-        'web/e2e/parity/settings.spec.ts::Plugins: local-only capabilities: a plugin on this machine offers Start, one on a system declaring both names both codes and hides Start, and a conventions-only one there is not marked > next',
+        'web/e2e/parity/settings.spec.ts::Plugins: local-only capabilities: a plugin on this machine offers Start, one on a system declaring both names both codes and hides Start, and a conventions-only one there is not marked',
       ] },
   },
   {
@@ -6767,7 +6767,7 @@ export const LEDGER: readonly Row[] = [
     viewports: ['desktop', 'phone'],
     area: 'settings',
     status: { kind: 'ported', by: [
-        'web/e2e/parity/settings.spec.ts::Plugins: the version select stays inside its action row and the page whatever its options say: a stopped plugin on main beside a running one with a long worktree name > next',
+        'web/e2e/parity/settings.spec.ts::Plugins: the version select stays inside its action row and the page whatever its options say: a stopped plugin on main beside a running one with a long worktree name',
       ] },
   },
   {
@@ -6782,7 +6782,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > nothing overflows the page, the Settings column or the Models section at any swept viewport and sidebar width',
         'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > the Settings nav sits beside the content where the column has room and above it where it has not, and every section link is reachable in both forms',
-        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways > next',
+        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways',
         'web/e2e/settings-layout.spec.ts::Settings layout > no Settings section overflows its column, and every control in it stays on screen, uncovered and clear of its siblings, at every swept viewport and sidebar width',
       ] },
   },
@@ -6813,7 +6813,7 @@ export const LEDGER: readonly Row[] = [
         'web/e2e/settings-models-layout.spec.ts::Settings → Models layout > every tier and role select and every default radio shows a caption its name contains: its own when the row stacks, the column header when it is one line',
         'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > every tier and role select has its own caption, a word its name contains',
         'web/src/features/settings/models/fieldLabels.test.tsx::Models → field labels > the backend, model and binding selects carry a row-specific name, not just a shared caption',
-        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways > next',
+        'web/e2e/parity/settings.spec.ts::Models: every tier and role select names its row, every tier select shows a caption its name contains, and nothing scrolls sideways',
       ] },
   },
   {
@@ -6854,7 +6854,7 @@ export const LEDGER: readonly Row[] = [
     area: 'settings',
     status: { kind: 'ported', by: [
         'web/src/features/settings/panels.test.tsx::Archived > groups start collapsed; an expanded row shows its title, else its first prompt, else its short id, with the worktree and last activity',
-        'web/e2e/parity/settings.spec.ts::Archived: groups start collapsed with the Conductor group first, and Delete asks first and removes the transcript > next',
+        'web/e2e/parity/settings.spec.ts::Archived: groups start collapsed with the Conductor group first, and Delete asks first and removes the transcript',
         'web/src/features/settings/panels.test.tsx::Archived > Restore restores, then resumes the session; conductor sessions are listed first',
       ] },
   },
@@ -6867,7 +6867,7 @@ export const LEDGER: readonly Row[] = [
     status: { kind: 'ported', by: [
         'web/src/features/settings/panels.test.tsx::Archived > Delete asks first: Cancel sends nothing; confirming deletes that transcript and reloads the list without it',
         'web/src/features/settings/panels.test.tsx::Archived > deleting a worktree session addresses it under its worktree; a failed delete keeps the row and says so',
-        'web/e2e/parity/settings.spec.ts::Archived: groups start collapsed with the Conductor group first, and Delete asks first and removes the transcript > next',
+        'web/e2e/parity/settings.spec.ts::Archived: groups start collapsed with the Conductor group first, and Delete asks first and removes the transcript',
       ] },
   },
   {
@@ -6882,7 +6882,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/models/models.test.tsx::Models → Conductor session > a failed compact-window save says so',
         'tests/compact-window-spawn.test.mjs::.conduct orchestrator spawn receives CLAUDE_CODE_AUTO_COMPACT_WINDOW when enabled',
         'tests/compact-window-spawn.test.mjs::MCP-spawned worker (conducted:true) does NOT receive CLAUDE_CODE_AUTO_COMPACT_WINDOW',
-        "web/e2e/parity/settings.spec.ts::Models: a role's explicit effort shows and saves, and the Conduct session's compact-window override saves its window > next",
+        'web/e2e/parity/settings.spec.ts::Models: a role\'s explicit effort shows and saves, and the Conduct session\'s compact-window override saves its window',
       ] },
   },
   {
@@ -6912,7 +6912,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > a refused switch flip reloads the scope and the switch snaps back to the stored selection',
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > a list refusal outranks a load failure on the list\'s status line',
         'web/src/features/settings/conventions.test.tsx::Conventions → drafts > the list status line is muted only while loading; a refusal and a load failure render in the error tone',
-        'web/e2e/parity/settings.spec.ts::Conventions: each block shows its core row, read-only built-ins and editable customs, switches only where the scope has a selection, and an unsaved Add form survives a section switch and leaving Settings > next',
+        'web/e2e/parity/settings.spec.ts::Conventions: each block shows its core row, read-only built-ins and editable customs, switches only where the scope has a selection, and an unsaved Add form survives a section switch and leaving Settings',
       ] },
   },
   {
@@ -6953,7 +6953,7 @@ export const LEDGER: readonly Row[] = [
     area: 'settings',
     status: { kind: 'ported', by: [
         'web/src/features/settings/about.test.tsx::About > shows the legal notice: copyright, the AGPL-3.0 link, the source link and the §13 note',
-        'web/e2e/parity/settings.spec.ts::About shows the legal notice and the update state > next',
+        'web/e2e/parity/settings.spec.ts::About shows the legal notice and the update state',
       ] },
   },
   {
@@ -6969,7 +6969,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/about.test.tsx::About > reopening About after an npm failure checks again and offers Update with an empty log',
         'web/src/features/settings/about.test.tsx::About > a refused or failed update says why, shows its tail and offers Update again',
         'web/src/features/settings/about.test.tsx::About > leaving About during an update and coming back shows the running update, offers no second Update, and still shows its outcome',
-        'web/e2e/parity/settings.spec.ts::About shows the legal notice and the update state > next',
+        'web/e2e/parity/settings.spec.ts::About shows the legal notice and the update state',
         'web/src/features/settings/logic.test.ts::account / about / archived > self-update offers Update only when a fast-forward is available',
       ] },
   },

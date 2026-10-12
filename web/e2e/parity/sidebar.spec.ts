@@ -1,10 +1,9 @@
 import type { Locator } from '@playwright/test';
 import { api, createProject, spawnSession } from '../harness/api.ts';
-import { expect, test, type Cc } from '../harness/fixtures.ts';
+import { expect, test, type Cc } from './test.ts';
 import { seedTranscript } from '../harness/transcript.ts';
-import { parity } from './parity.ts';
 
-parity('legacy-sidebar-lenses/R1', 'a fresh profile opens on the Conductors lens, and the chosen lens survives a reload', async ({ page, ui }) => {
+test('a fresh profile opens on the Conductors lens, and the chosen lens survives a reload', async ({ page, ui }) => {
   await ui.open(page);
   await expect.poll(() => ui.selectedLens(page)).toBe('conductors');
   await ui.lens(page, 'projects');
@@ -13,7 +12,7 @@ parity('legacy-sidebar-lenses/R1', 'a fresh profile opens on the Conductors lens
   await expect.poll(() => ui.selectedLens(page)).toBe('projects');
 });
 
-parity('spawn-dialog-server-resolves/R2', 'Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor', async ({ page, cc, ui }) => {
+test('Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor', async ({ page, cc, ui }) => {
   await ui.open(page);
   const spawn = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/instances');
   await ui.conduct(page);
@@ -33,7 +32,7 @@ parity('spawn-dialog-server-resolves/R2', 'Conduct POSTs exactly {project, role,
   await expect(header.locator(`[title="session ${sid}"]`)).toBeVisible();
 });
 
-parity('adopt-dialog-markup/R1', 'the ≡ menu opens the Add-project dialog', async ({ page, ui }) => {
+test('the ≡ menu opens the Add-project dialog', async ({ page, ui }) => {
   await ui.open(page);
   const dialog = await ui.openAddProject(page);
   await expect(dialog).toBeVisible();
@@ -64,7 +63,7 @@ async function persistentSession(cc: Cc, project: string, text: string, extra: R
   return row!;
 }
 
-parity('sidebar/R2', 'a live session row in the Projects lens opens it, and once stopped its row resumes it', async ({ page, cc, ui, uniq }) => {
+test('a live session row in the Projects lens opens it, and once stopped its row resumes it', async ({ page, cc, ui, uniq }) => {
   // Invariant: a live row opens its session, and the stopped session's row resumes it with exactly {project, resume}.
   const project = uniq('rows');
   await createProject(cc, project);
@@ -92,7 +91,7 @@ parity('sidebar/R2', 'a live session row in the Projects lens opens it, and once
   await expect(ui.sessionHeader(page).locator(`[title="session ${sid}"]`)).toBeVisible();
 });
 
-parity('doc/A6', 'the main checkout and a worktree each head their Sessions list with Sessions (N) · K live · last <ago>', async ({ page, cc, ui, uniq }) => {
+test('the main checkout and a worktree each head their Sessions list with Sessions (N) · K live · last <ago>', async ({ page, cc, ui, uniq }) => {
   // Invariant: the summary text is visible on the main checkout's list and on the worktree's.
   const project = uniq('summ');
   await createProject(cc, project);

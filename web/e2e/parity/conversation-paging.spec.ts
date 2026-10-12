@@ -2,15 +2,14 @@
 // events page in through lineage-events: this file boots its own cc with
 // ORCH_SNAPSHOT_TAIL=2. Append later paging scenarios here.
 import { createProject } from '../harness/api.ts';
-import { expect, test } from '../harness/fixtures.ts';
-import { parity } from './parity.ts';
+import { expect, test } from './test.ts';
 import { answerCard, askCard, expectLockedOn, expectQaAnswerRows, instanceIn, QA_NOTE, reselect } from './questionCard.ts';
 
 test.use({ ccOptions: { server: 'conversation-paging', env: { ORCH_SNAPSHOT_TAIL: '2' } } });
 
 type LineagePage = { events: { kind: string; toolUseId?: string; questionAnswer?: unknown }[] };
 
-parity('lineage-scrollback-client/R2', 'a card that pages in from below the snapshot tail locks from the answer the tail already applied', async ({ page, cc, ui, uniq }) => {
+test('a card that pages in from below the snapshot tail locks from the answer the tail already applied', async ({ page, cc, ui, uniq }) => {
   // Invariant: a card served by a lineage page locks from the answer the snapshot tail applied first.
   const project = uniq('qa-paged');
   await createProject(cc, project);
