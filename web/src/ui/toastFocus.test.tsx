@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { toast as sonnerToast } from 'sonner';
@@ -5,15 +6,16 @@ import { installToastFocus } from '@/ui/toastFocus';
 import { ToastHost, toast } from '@/ui/feedback';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
-// A page, then sonner's markup: <section> → list → toast → Close toast. `sonner` stands for sonner's
+// A page, then sonner's markup: <section> → list → toast → Close toast (and, with `second`, a
+// second toast after it). `sonner` stands for sonner's
 // list handler (React's root listener hands it every focusin whose target is inside the list), and
 // `doc` for the document-level listeners (Radix's focus-outside and focus traps).
-function fixture() {
+function fixture({ second = false } = {}) {
   teardown();
   document.body.innerHTML = `
     <button id="page">page</button><button id="other">other</button>
     <div id="root"><section tabindex="-1"><ol data-sonner-toaster tabindex="-1">
-      <li data-sonner-toast tabindex="0"><button id="close">Close toast</button></li>
+      <li data-sonner-toast tabindex="0"><button id="close">Close toast</button></li>${second ? '<li data-sonner-toast tabindex="0" id="second"></li>' : ''}
     </ol></section></div>`;
   const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
   const [page, other, root, section, list, item, close] = ['#page', '#other', '#root', 'section', 'ol', 'li', '#close'].map((s) => $(s));
@@ -24,7 +26,7 @@ function fixture() {
   document.addEventListener('focusin', (e) => doc.push(e), { signal: listeners.signal });
   const uninstall = installToastFocus(section);
   teardown = () => { uninstall(); listeners.abort(); document.body.innerHTML = ''; };
-  return { page, other, section, list, item, close, sonner, doc };
+  return { page, other, section, list, item, close, second: document.querySelector<HTMLElement>('#second'), sonner, doc };
 }
 let teardown = () => {};
 afterEach(() => teardown());
@@ -141,6 +143,25 @@ describe('installToastFocus', () => {
     expect(document.activeElement === document.body).toBe(true);
   });
 
+  it('leaves focus where it is when a toast that does not hold focus leaves', async () => {
+    const f = fixture({ second: true });
+    f.page.focus();
+    f.item.focus();
+    f.second!.remove();
+    await settle();
+    expect(document.activeElement === f.item).toBe(true);
+  });
+
+  it('returns focus to the page element focus came from when the focused toast leaves while another still shows', async () => {
+    const f = fixture({ second: true });
+    f.page.focus();
+    f.item.focus();
+    dismiss(f.item, f.item);
+    await settle();
+    expect(f.second!.isConnected, 'fixture: the other toast still shows').toBe(true);
+    expect(document.activeElement === f.page).toBe(true);
+  });
+
   it('keeps the element to return to across a window switch that leaves focus on the toast', async () => {
     const f = fixture();
     f.page.focus();
@@ -157,6 +178,47 @@ describe('installToastFocus', () => {
 describe('ToastHost', () => {
   afterEach(() => { act(() => { sonnerToast.dismiss(); }); });
 
+  /** Resolves once sonner has rendered a toast. */
+  const shownToast = () => waitFor(() => {
+    const el = document.querySelector<HTMLElement>('[data-sonner-toast]');
+    if (!el) throw new Error('no toast yet');
+    return el;
+  });
+
+  it('under StrictMode installs one set of listeners, and none of them outlives its unmount', async () => {
+    // StrictMode runs the install effect, its cleanup, then the effect again, as main.tsx mounts the app.
+    const { unmount } = render(<StrictMode><button>page</button><ToastHost /></StrictMode>);
+    act(() => { toast.info('Saved'); });
+    const item = await shownToast();
+    const section = item.closest('section')!;
+    act(() => { screen.getByRole('button', { name: 'page' }).focus(); });
+    const doc: FocusEvent[] = [];
+    const listeners = new AbortController();
+    document.addEventListener('focusin', (e) => doc.push(e), { signal: listeners.signal });
+    act(() => { item.focus(); });
+    listeners.abort();
+    // Invariant: the document sees exactly one focusin per focus move into a toast, the re-dispatch from the section.
+    expect(doc).toHaveLength(1);
+    expect(doc[0].target === section).toBe(true);
+
+    // Added after ours, so it runs after any listener of ours still on the section, mid-dispatch.
+    const atSection: { event: Event; stopped: boolean }[] = [];
+    section.addEventListener('focusin', (e) => atSection.push({ event: e, stopped: e.cancelBubble }));
+    const mounted = new FocusEvent('focusin', { bubbles: true, relatedTarget: null });
+    item.dispatchEvent(mounted);
+    expect(atSection.find((r) => r.event === mounted)?.stopped, 'positive control: mounted, ours stops the entry and the probe sees it').toBe(true);
+
+    atSection.length = 0;
+    unmount();
+    expect(section.isConnected, 'fixture: the Toaster unmounted').toBe(false);
+    const entry = new FocusEvent('focusin', { bubbles: true, relatedTarget: null });
+    item.dispatchEvent(entry);
+    // Invariant: after unmount no listener of ours handles a focusin: nothing is re-dispatched, nothing stopped.
+    expect(atSection).toHaveLength(1);
+    expect(atSection[0].event === entry).toBe(true);
+    expect(atSection[0].stopped).toBe(false);
+  });
+
   it('closes an open non-modal popover when focus moves from it straight into a toast', async () => {
     render(
       <>
@@ -168,11 +230,7 @@ describe('ToastHost', () => {
       </>,
     );
     act(() => { toast.info('Saved'); });
-    const item = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('[data-sonner-toast]');
-      if (!el) throw new Error('no toast yet');
-      return el;
-    });
+    const item = await shownToast();
     expect(screen.queryByText('popover body'), 'fixture: the popover is open').not.toBeNull();
     // Invariant: the focusin hidden from sonner still reaches Radix's focus-outside, which closes the layer.
     act(() => { item.focus(); });
