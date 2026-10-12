@@ -11,6 +11,8 @@
 // conductorChips (the chips, the Conductors tree, the filter), never
 // ownership.
 
+import { promptPreview } from './promptPreview.ts';
+
 // The client-side spelling of the server's isDeadStatus.
 export function isLiveStatus(status) {
   return status !== 'exited' && status !== 'crashed';
@@ -110,12 +112,12 @@ export function deriveConductors({ conductRows = [], instances = [] } = {}) {
 }
 
 // The label a conductor row shows: its own title, else the first prompt (the
-// same preview rule as a session row), else the sessionId prefix. `untitled`
+// same promptPreview as a session row), else the sessionId prefix. `untitled`
 // says the text is a fallback, which the row renders muted italic.
 export function conductorTitle(row) {
   const custom = (row.title ?? '').trim();
   if (custom) return { text: custom, untitled: false };
-  const preview = (row.firstPrompt ?? '').slice(0, 80).replace(/\s+/g, ' ').trim();
+  const preview = promptPreview(row.firstPrompt);
   if (preview) return { text: preview, untitled: true };
   return { text: `${String(row.sessionId).slice(0, 8)}…`, untitled: true };
 }
@@ -186,7 +188,7 @@ export function ownerLabel(sid, { conductors, instances = [] } = {}) {
   const inst = instances.find(i => i.sessionId === sid);
   if (inst) {
     const t = (inst.title ?? '').trim()
-      || (inst.firstPrompt ?? '').slice(0, 80).replace(/\s+/g, ' ').trim();
+      || promptPreview(inst.firstPrompt);
     if (t) return t;
   }
   return `${String(sid).slice(0, 8)}…`;

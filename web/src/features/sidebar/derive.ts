@@ -2,6 +2,7 @@
 // live instances, workspace grouping, the Projects-lens filter, and the
 // reveal-on-select target. No React, no DOM.
 import { sessionFromInstance, workersOf, isLiveStatus } from '@/lib/core/conductors.js';
+import { promptPreview } from '@/lib/core/promptPreview.ts';
 import { conductorChips, ownerLabel } from './core';
 import type { Instance, Project } from '@/state/types';
 
@@ -62,10 +63,10 @@ export function mergeLive(onDisk: any[] | null | undefined, live: Instance[]): S
   return [...byId.values()].sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
 }
 
-/** The row label: custom title → first prompt (80) → sessionId prefix. */
+/** The row label: custom title → first-prompt preview (`promptPreview`) → sessionId prefix. */
 export function sessionLabel(s: SessionItem): string {
   const title = (s.title ?? '').trim();
-  const preview = (s.firstPrompt ?? '').slice(0, 80).replace(/\s+/g, ' ').trim();
+  const preview = promptPreview(s.firstPrompt);
   return title || preview || (s.synthetic ? '(new session)' : `${s.sessionId.slice(0, 8)}…`);
 }
 

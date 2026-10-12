@@ -9,6 +9,7 @@ import type { Instance } from '@/state/types';
 import { peekTaskTracker, trackerSignal } from '@/app/trackers';
 import { selectInstance, send } from '@/app/controller';
 import { runLabel, waitingOn } from '@/lib/core/needsYou.js';
+import { readablePrompt } from '@/lib/core/promptPreview.ts';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 
@@ -47,7 +48,7 @@ export function TaskPanel({ inst }: { inst: Instance }) {
 }
 
 function workerLabel(w: Instance) {
-  const raw = (w.title || w.firstPrompt || '').replace(/\s+/g, ' ').trim();
+  const raw = (w.title || readablePrompt(w.firstPrompt)).replace(/\s+/g, ' ').trim();
   if (raw) return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
   return `${w.project} · ${w.id.slice(0, 8)}`;
 }

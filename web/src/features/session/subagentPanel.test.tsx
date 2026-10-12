@@ -8,6 +8,7 @@ vi.mock('@/app/controller', async (orig) => ({ ...(await orig<typeof import('@/a
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { SubagentPanel } from './SessionPanels';
+import { buildForwardFrame } from '@/lib/core/forwardFrame.ts';
 
 const CONDUCTOR = 'cond-41';
 const conductor = { id: CONDUCTOR, project: 'demo', status: 'idle', displayStatus: 'idle' } as Instance;
@@ -86,5 +87,23 @@ describe('workers panel', () => {
     expect(hint(/job w-plain/)).toBeNull();
     expect(hint(/job w-turn/)).toBeNull();
     expect(hint(/job w-runjob/)).toBeNull();
+  });
+
+  it('a relay worker whose first prompt is a forward frame reads Forwarded worker output, not the frame header', () => {
+    // Invariant: an untitled worker's label renders the forward frame (as the server stores it, cut by Instance.prompt) by name, in its text and accessible name.
+    const frame = buildForwardFrame({ messages: ['FWD-PANEL body'], instruction: 'FWD-PANEL instruction' }).slice(0, 200);
+    mount([worker('w-relay', { title: null, firstPrompt: frame })]);
+    expect(row('Forwarded worker output')).toBeTruthy();
+    expect(screen.queryAllByRole('button', { name: /FORWARDED WORKER OUTPUT|\[\[cc:/ })).toHaveLength(0);
+  });
+
+  it('an untitled worker with a person\'s first prompt shows that prompt unchanged, and a titled one its title', () => {
+    // Invariant (negative control): a human first prompt keeps its whitespace-collapsed label, and a title still wins over any first prompt.
+    mount([
+      worker('w-human', { title: null, firstPrompt: 'review   the\n parser change' }),
+      worker('w-titled', { firstPrompt: 'review the parser change' }),
+    ]);
+    expect(row('review the parser change')).toBeTruthy();
+    expect(row('job w-titled')).toBeTruthy();
   });
 });

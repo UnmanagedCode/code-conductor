@@ -24,6 +24,8 @@ import { PluginsSection } from './PluginsSection';
 import { pluginsChangeStore, pluginsChangedSignal } from './pluginsSignal';
 import { on } from '@/app/events';
 import { ConfirmHost, toast } from '@/ui/feedback';
+import { buildWakeStub } from '@/lib/core/wakeCallback.ts';
+import { readJsonl } from '@/conversation/testkit';
 
 const DRAFTS = [modelsDraftStore.get(), backendsDraftStore.get(), systemsDraftStore.get()] as const;
 
@@ -856,6 +858,46 @@ describe('Archived', () => {
     expect(calls.filter((c) => c.url === '/api/archived')).toHaveLength(1);
     expect(screen.getByText('fp')).toBeTruthy();
     err.mockRestore();
+  });
+
+  // A first prompt as the server lists it (cut by readFirstPrompt): a wake stub is labelled by its summary in the row, its tooltip and the Delete dialog's accessible name, never by its marker.
+  it('an archived session whose first prompt is a wake stub is labelled by its wake summary, in the row and in the Delete dialog\'s name', async () => {
+    const wake = buildWakeStub({ targetSessionId: 'labelwake', payloadText: '{"sessionId":"labelwake"}\nWAKE-ARCHIVED prose' }).slice(0, 200);
+    mockFetch({ 'GET /api/archived': () => ({ groups: [{ project: 'p', sessions: [{ sessionId: 's-wake', firstPrompt: wake }] }] }) });
+    wrap(<><ArchivedSection /><ConfirmHost /></>);
+    fireEvent.click(await screen.findByRole('button', { name: /^p/ }));
+    const label = await screen.findByText((t) => t.startsWith('Wake: Worker `labelwake` finished its turn.'));
+    expect(label.getAttribute('title')).not.toContain('[[cc:');
+    expect(row('s-wake')).not.toContain('[[cc:');
+    fireEvent.click(within(document.querySelector('[data-session="s-wake"]') as HTMLElement).getByRole('button', { name: 'Delete' }));
+    expect(await screen.findByRole('dialog', { name: (n) => n.includes('“Wake: Worker `labelwake` finished its turn.') })).toBeTruthy();
+    expect(screen.queryAllByRole('dialog', { name: (n) => n.includes('[[cc:') })).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  });
+
+  // A renewed session's file opens with the CLI's caveat record (modelled by RENEW_HEAD in tests/segmentChain.mjs; read here from a hand-authored fixture carrying the same record), which the server lists as its first prompt: it reads Context renewed, never by its tag.
+  it('an archived session whose first prompt is a post-/clear caveat record is labelled Context renewed, in the row and in the Delete dialog\'s name', async () => {
+    const caveat = readJsonl('awaiting-user/renew-two-segments.transcript.jsonl')
+      .find((r) => r.type === 'user' && typeof r.message?.content === 'string' && r.message.content.startsWith('<local-command-caveat>'))!.message.content.slice(0, 200);
+    mockFetch({ 'GET /api/archived': () => ({ groups: [{ project: 'p', sessions: [{ sessionId: 's-caveat', firstPrompt: caveat }] }] }) });
+    wrap(<><ArchivedSection /><ConfirmHost /></>);
+    fireEvent.click(await screen.findByRole('button', { name: /^p/ }));
+    expect((await screen.findByText('Context renewed')).getAttribute('title')).toBe('Context renewed');
+    expect(row('s-caveat')).not.toContain('<local-command-caveat>');
+    fireEvent.click(within(document.querySelector('[data-session="s-caveat"]') as HTMLElement).getByRole('button', { name: 'Delete' }));
+    expect(await screen.findByRole('dialog', { name: 'Delete the transcript of “Context renewed”?' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  });
+
+  // Negative control: a person's first prompt is the label as it is, in the row and the Delete dialog's name.
+  it('an archived session whose first prompt a person wrote is labelled by that prompt unchanged', async () => {
+    mockFetch({ 'GET /api/archived': () => ({ groups: [{ project: 'p', sessions: [{ sessionId: 's-human', firstPrompt: 'sweep the docs index' }] }] }) });
+    wrap(<><ArchivedSection /><ConfirmHost /></>);
+    fireEvent.click(await screen.findByRole('button', { name: /^p/ }));
+    expect((await screen.findByText('sweep the docs index')).getAttribute('title')).toBe('sweep the docs index');
+    fireEvent.click(within(document.querySelector('[data-session="s-human"]') as HTMLElement).getByRole('button', { name: 'Delete' }));
+    expect(await screen.findByRole('dialog', { name: 'Delete the transcript of “sweep the docs index”?' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   });
 });
 
