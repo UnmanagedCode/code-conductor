@@ -23,7 +23,7 @@ import { createLazyHistory } from './lazyHistory';
 import { flush, renderModel } from './renderModel';
 import { serverMidTurnNote, serverModules } from './testkit';
 import {
-  CARD, CARD_RESULT, FRUIT, SIZE, TURN_END, banana, expectLocked, expectOpen, input, opt, sendBtn, show, stamped, statusOf,
+  CARD, CARD_RESULT, FRUIT, SIZE, TOPPINGS, TURN_END, banana, expectLocked, expectOpen, input, opt, sendBtn, show, stamped, statusOf,
 } from './questionTestkit';
 
 beforeEach(() => {
@@ -49,7 +49,7 @@ describe('answer bubble', () => {
     const rows = bubble.querySelectorAll<HTMLElement>('[data-kind]');
     expect(rows.length).toBe(1);
     expect(rows[0].getAttribute('data-kind')).toBe('option');
-    // Invariant: the answer row carries its question's header and question text beside its pick; the capitalised header reaches the row only through the header, since the question reads "Pick a fruit".
+    // Invariant: each answer row carries its own question's header and question text beside its pick, never another question's header; a capitalised header reaches a row only through the header, since the questions read "Pick a fruit" and "Pick toppings".
     const rowText = rows[0].textContent ?? '';
     expect(rowText).toContain('Fruit');
     expect(rowText).toContain('Pick a fruit');
@@ -62,6 +62,13 @@ describe('answer bubble', () => {
     const bareText = bare.root.querySelector('[data-kind]')!.textContent ?? '';
     expect(bareText).toContain('Pick a size');
     expect(bareText).not.toContain('Fruit');
+    // Two questions with distinct headers: each row names its own header and not the other's.
+    const two = await show([stamped([FRUIT, TOPPINGS], [{ kind: 'option', label: 'Apple' }, { kind: 'multi', labels: ['Nuts'] }])]);
+    const [fruitRow, toppingsRow] = [...two.root.querySelectorAll<HTMLElement>('[data-kind]')].map((r) => r.textContent ?? '');
+    expect(fruitRow).toContain('Fruit');
+    expect(fruitRow).not.toContain('Toppings');
+    expect(toppingsRow).toContain('Toppings');
+    expect(toppingsRow).not.toContain('Fruit');
   });
 
   it('a structured canonical answer offers no raw-text or copy control', async () => {
