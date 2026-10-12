@@ -33,13 +33,22 @@ export const stickyPrompt = createStickyPrompt({
 
 // ── REST refreshers ──────────────────────────────────────────────────────
 
+// Reads in start order. Hints come in bursts (two projects created together) and
+// their reads can answer out of order: one that answers after a later read has
+// landed carries an older list, so it is dropped.
+let projectsStarted = 0;
+let projectsLanded = 0;
+
 export async function refreshProjects() {
+  const mine = ++projectsStarted;
   const [projects, workspaces, conductSessions, conductorSpawns] = await Promise.all([
     fetch('/api/projects').then((r) => r.json()),
     fetch('/api/workspaces').then((r) => r.json()).catch(() => []),
     fetch('/api/projects/.conduct/sessions').then((r) => (r.ok ? r.json() : [])).catch(() => []),
     fetch('/api/conductors/projects').then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
   ]);
+  if (mine < projectsLanded) return;
+  projectsLanded = mine;
   appStore.set({
     projects: Array.isArray(projects) ? projects : [],
     workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
