@@ -143,9 +143,9 @@ parity('<ledger row id>', '<the behaviour>', async ({ page, cc, ui, uniq }) => {
 
 ## The android seam
 
-The `android` project (Pixel 7 + `notifications` permission) runs `harness.spec.ts`, every `**/*.android.spec.ts` and the parity scenarios; no other project runs the `*.android.spec.ts` files. Android-only behaviour lands there: the back button and the hash, external links, a notification click, and the on-screen keyboard opening.
+The `android` project (Pixel 7 + `notifications` permission) runs `harness.spec.ts`, every `**/*.android.spec.ts` and the parity scenarios; no other project runs the `*.android.spec.ts` files. Android-only behaviour lands there: external links and the on-screen keyboard opening. The back button and a notification click behave the same on every project, so they are parity scenarios in `parity/android-shell.spec.ts` (its own cc). There the click arrives the way the installed app gets it: the page's service worker posts `cc-notification-click` to the page (`notificationClick`). The worker's own `notificationclick` handler cannot run headless, because a synthetic `NotificationEvent` is untrusted.
 
-A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts` and has a one-line `*.android.spec.ts` twin: `composer-attach`, `composer-drafts`, `composer-dictate`, `conversation-scroll`, `collapse-state`, `conversation-machinery`, `conversation-bubbles`, `settings-overage`, `sidebar-chrome`, `sidebar-lens`, `plugin-hidden`, `plugin-host` and `reduced-motion`. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
+A `/next/`-only spec that must also run on `android` keeps its body in a `*.shared.ts`, with an `*.android.spec.ts` twin beside its desktop spec (`ls web/e2e/*.android.spec.ts`). `web/src/parity/e2eProjects.test.ts` pins the split from Playwright's own `--list` of the config: android runs every twin and none of their desktop specs, and desktop and phone run the reverse. `sidebar-chrome` branches on `test.info().project.name` to tell the desktop column from the drawer.
 
 ## Mutation scoring
 

@@ -3367,11 +3367,14 @@ export const LEDGER: readonly Row[] = [
   },
   {
     id: 'notification-click/R2',
-    old: { file: 'tests/notification-click.test.mjs', tests: 'rest' },
+    old: { file: 'tests/notification-click.test.mjs', tests: ['notification click selects the live instance matching instanceId'] },
     behaviour: 'a notification click selects the instance matching instanceId **without pushing a history entry** (the old test asserts `!selected.opts?.push`)',
     viewports: ['desktop', 'phone', 'android'],
     area: 'android-shell',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/sessionHistory.test.tsx::session selection and the history > a notification click selects its instance in place, pushing no entry: Back then skips the session it replaced',
+        'web/e2e/parity/android-shell.spec.ts::a notification click opens its session in place, adding no history entry: Back then returns past it to the conductor > next',
+      ] },
   },
   {
     id: 'notifications/R2',
@@ -3446,7 +3449,10 @@ export const LEDGER: readonly Row[] = [
     behaviour: 'browser Back from a sub-agent session opened from the workers panel returns to the conductor (pushState anchor + popstate) — the never-run `tests/back-button.mjs`',
     viewports: ['desktop', 'phone', 'android'],
     area: 'android-shell',
-    status: { kind: 'missing' },
+    status: { kind: 'ported', by: [
+        'web/src/app/sessionHistory.test.tsx::session selection and the history > Back from a worker opened from its conductor\'s workers panel selects the conductor again; a worker selected any other way leaves no entry to go back to',
+        'web/e2e/parity/android-shell.spec.ts::Back from a worker opened from the workers panel returns to its conductor, and Forward to the worker again > next',
+      ] },
   },
 
   // voice

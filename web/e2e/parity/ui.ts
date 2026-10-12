@@ -53,6 +53,8 @@ export interface Ui {
   openConductor(page: Page, sessionId: string): Promise<void>;
   /** The open conductor's workers panel. */
   workersPanel(page: Page): Locator;
+  /** Opens the worker titled `title` from the open conductor's workers panel. */
+  openWorker(page: Page, title: string): Promise<void>;
   composer(page: Page): Locator;
   sendPrompt(page: Page, text: string): Promise<void>;
   lastUserMessage(page: Page): Locator;
@@ -572,6 +574,9 @@ export const legacy: Ui = {
     }).toPass({ timeout: 10_000 });
   },
   workersPanel: (page) => page.locator('#subagent-panel'),
+  async openWorker(page, title) {
+    await legacy.workersPanel(page).locator('li', { hasText: title }).click();
+  },
   composer: (page) => page.locator('#composer-input'),
   async sendPrompt(page, text) {
     await expect(legacy.composer(page)).toBeEnabled();
@@ -1262,6 +1267,9 @@ export const next: Ui = {
     await sidebar(page).locator(`[data-conductor="${sessionId}"] > [role=button]`).click();
   },
   workersPanel: (page) => page.locator('[data-subagent-panel]'),
+  async openWorker(page, title) {
+    await next.workersPanel(page).getByRole('button', { name: title }).click();
+  },
   composer: (page) => page.locator('#composer-input'),
   async sendPrompt(page, text) {
     await expect(next.composer(page)).toBeEnabled();
