@@ -316,3 +316,24 @@ export function returnFlow(row: (typeof RETURNS)[number]) {
     await expect(returnsTo, `${row.name}: closing returns focus to the control that opened it`).toBeFocused();
   };
 }
+
+// Invariant: a dialog's close leaves focus where its own action put it. Start session focuses the prompt bar in an animation
+// frame that can run before or after the closing dialog's focus return; either way the prompt bar keeps focus.
+export async function keepsActionFocusFlow({ page, cc }: Ctx): Promise<void> {
+  test.skip(drawerViewport(), 'a touch device never focuses the prompt bar on select');
+  const project = label('keep');
+  await createProject(cc, project);
+  await next.open(page);
+  await next.lens(page, 'projects');
+  const sb = await sidebarByKeyboard(page);
+  await press(page, sb.locator(`[data-project-row="${project}"]`).getByRole('button', { name: 'New session', exact: true }), 'Enter');
+  const dialog = page.locator('[role="dialog"][data-dialog="spawn"]');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Start session' }).click();
+  await expect(dialog).toBeHidden();
+  const prompt = page.locator('#composer-input');
+  await expect(prompt, 'Start session focuses the prompt bar').toBeFocused();
+  // Past the closing dialog's focus return (a timer after its unmount) and another frame.
+  await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => setTimeout(r, 50)), 0)));
+  await expect(prompt, 'the dialog closing does not take focus back to New session').toBeFocused();
+}
