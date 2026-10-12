@@ -11,6 +11,7 @@ import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
 import { DialogsHost } from '@/features/dialogs/DialogsHost';
+import { focusContent } from '@/lib/modalFocus';
 
 // Full-page views load on first use; the session view is the app's landing page.
 const SettingsView = lazy(() => import('@/features/settings/SettingsView').then((m) => ({ default: m.SettingsView })));
@@ -53,7 +54,7 @@ export function App() {
           <AppSidebar />
         </div>
         <Sheet open={sidebarOpen} onOpenChange={(o) => uiStore.set({ sidebarOpen: o })}>
-          <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 md:hidden" onOpenAutoFocus={(e) => e.preventDefault()}>
+          <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 focus:outline-none md:hidden" onOpenAutoFocus={focusContent}>
             <SheetTitle className="sr-only">Navigation</SheetTitle>
             <AppSidebar mobile />
           </SheetContent>

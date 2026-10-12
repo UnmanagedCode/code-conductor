@@ -24,7 +24,7 @@ test('a reveal from the needs-you strip opens the sidebar onto the revealed row 
     await page.goto('/');
     await next.lens(page, 'projects');
     const sb = nextSidebar(page);
-    const row = sb.locator(`[data-project="${P}"] [data-session-row="${s.sessionId}"] > [role="button"]`);
+    const row = sb.locator(`[data-project="${P}"] [data-session-row="${s.sessionId}"] > [data-row]`);
     await expect(row).toHaveCount(1);
     await expect(row, 'fixture: the row starts below the fold').not.toBeInViewport();
     // The user collapses P's Sessions subnode: the row leaves the tree, so only the reveal brings it back.
@@ -39,7 +39,7 @@ test('a reveal from the needs-you strip opens the sidebar onto the revealed row 
     await expect(next.sessionHeader(page).locator(`[title="session ${s.sessionId}"]`)).toBeVisible();
     const selected = await next.selectedProjectsRow(page);
     await expect(selected).toHaveCount(1);
-    expect(await selected.getAttribute('title')).toMatch(new RegExp(`^${s.sessionId}`));
+    expect(await selected.locator('[data-row-open]').getAttribute('title')).toMatch(new RegExp(`^${s.sessionId}`));
     await expect(selected).toBeInViewport();
   } finally {
     for (const name of [...fillers, P]) await api(cc, 'DELETE', `/api/projects/${name}`, { deleteDirectory: true });

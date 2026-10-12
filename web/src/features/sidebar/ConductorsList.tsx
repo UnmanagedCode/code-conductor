@@ -7,7 +7,7 @@ import { resumeSession } from '@/app/sessionActions';
 import { selectInstance } from '@/app/controller';
 import { CONDUCT_PROJECT, chipsOf, wtName } from './derive';
 import { setConductorOpen, sidebarStore, useSidebarUi } from './state';
-import { Ago, CloseButton, Dot, ProjectRow, PromoteButton, SessionRow, UnreadPill, WorktreeHead } from './rows';
+import { Ago, CloseButton, Dot, dotTitle, ProjectRow, PromoteButton, rowName, SessionRow, UnreadPill, WorktreeHead } from './rows';
 import type { SidebarModel } from './useSidebarModel';
 
 function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel; workers: Instance[]; projectName: string; worktreeName: string | null }) {
@@ -82,6 +82,13 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: any; open: boolean
   const chips = chipsOf(sid, m.instances, m.spawns, m.registered);
   const unread = m.unread.get(sid) ?? 0;
   const active = !!c.instanceId && c.instanceId === m.activeId;
+  const dot = {
+    status: c.instanceDisplayStatus ?? c.instanceStatus ?? 'offline',
+    awaitingWake: c.instanceAwaitingWake,
+    waitingOnJob: c.instanceWaitingOnJob,
+    awaitingUser: c.live ? c.awaitingUser : null,
+    awaitingUserSource: c.awaitingUserSource,
+  };
   const openSession = () => {
     if (c.instanceId) selectInstance(c.instanceId, { userGesture: true });
     else void resumeSession({ projectName: CONDUCT_PROJECT, worktreeName: null, sessionId: sid });
@@ -93,15 +100,13 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: any; open: boolean
       data-conductor={sid}
     >
       <span className={cn('absolute inset-y-1 left-0 w-[3px] rounded-full bg-[var(--owner-color)]', !c.live && 'opacity-50')} />
+      {/* As a session row: the row is the pointer target, the button its keyboard target, the caret and actions beside it. */}
       <div
-        role="button"
-        tabIndex={0}
-        title={sid}
         onClick={openSession}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSession(); } }}
+        data-row
         data-active={active || undefined}
         className={cn(
-          'group/row flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1 pl-0.5 text-sm outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring',
+          'group/row flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md pr-1 pl-0.5 text-sm hover:bg-sidebar-accent has-[>[data-row-open]:focus-visible]:ring-2 has-[>[data-row-open]:focus-visible]:ring-ring',
           active && 'bg-sidebar-accent ring-1 ring-border',
         )}
       >
@@ -110,24 +115,21 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: any; open: boolean
           aria-expanded={open}
           aria-label="Show workers"
           onClick={(e) => { e.stopPropagation(); setConductorOpen(sid, !open); }}
-          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground"
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
           <ChevronRightIcon className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
         </button>
-        <Dot
-          status={c.instanceDisplayStatus ?? c.instanceStatus ?? 'offline'}
-          awaitingWake={c.instanceAwaitingWake}
-          waitingOnJob={c.instanceWaitingOnJob}
-          awaitingUser={c.live ? c.awaitingUser : null}
-          awaitingUserSource={c.awaitingUserSource}
-        />
-        <span className={cn('min-w-[2em] flex-1 truncate', untitled && 'text-muted-foreground italic', active && 'text-foreground',
-          // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
-          unread > 0 && 'font-semibold')}>
-          {text}
-        </span>
-        <Ago ms={c.lastActivity} />
-        <UnreadPill n={unread} />
+        {/* No handler of its own: Enter and Space click it, and the click bubbles to the row's. */}
+        <button type="button" title={sid} aria-label={rowName(text, dotTitle(dot), null, unread)} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 self-stretch py-1 text-left outline-none" data-row-open>
+          <Dot {...dot} />
+          <span className={cn('min-w-[2em] flex-1 truncate', untitled && 'text-muted-foreground italic', active && 'text-foreground',
+            // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
+            unread > 0 && 'font-semibold')}>
+            {text}
+          </span>
+          <Ago ms={c.lastActivity} />
+          <UnreadPill n={unread} />
+        </button>
         {c.live && c.instanceTemp && (
           <PromoteButton getArgs={() => ({ projectName: CONDUCT_PROJECT, instanceId: c.instanceId, preview: text })} />
         )}

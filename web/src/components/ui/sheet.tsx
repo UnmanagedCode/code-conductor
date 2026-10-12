@@ -2,12 +2,18 @@ import * as React from 'react';
 import { Dialog as SheetPrimitive } from 'radix-ui';
 import { XIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ReturnFocusContext, useContentReturnFocus, useReturnFocus } from '@/lib/modalFocus';
 
-const Sheet = (props: React.ComponentProps<typeof SheetPrimitive.Root>) => <SheetPrimitive.Root data-slot="sheet" {...props} />;
+/** Every app modal opens from state, never a Trigger: the root reads its opener for the content's focus return. */
+function Sheet(props: React.ComponentProps<typeof SheetPrimitive.Root>) {
+  const returnFocus = useReturnFocus(!!props.open);
+  return <ReturnFocusContext.Provider value={returnFocus}><SheetPrimitive.Root data-slot="sheet" {...props} /></ReturnFocusContext.Provider>;
+}
 const SheetTrigger = (props: React.ComponentProps<typeof SheetPrimitive.Trigger>) => <SheetPrimitive.Trigger data-slot="sheet-trigger" {...props} />;
 const SheetClose = (props: React.ComponentProps<typeof SheetPrimitive.Close>) => <SheetPrimitive.Close data-slot="sheet-close" {...props} />;
 
-function SheetContent({ className, children, side = 'left', ...props }: React.ComponentProps<typeof SheetPrimitive.Content> & { side?: 'top' | 'right' | 'bottom' | 'left' }) {
+function SheetContent({ className, children, side = 'left', onCloseAutoFocus, ...props }: React.ComponentProps<typeof SheetPrimitive.Content> & { side?: 'top' | 'right' | 'bottom' | 'left' }) {
+  const returnFocus = useContentReturnFocus(onCloseAutoFocus);
   return (
     <SheetPrimitive.Portal>
       <SheetPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0" />
@@ -22,6 +28,8 @@ function SheetContent({ className, children, side = 'left', ...props }: React.Co
           className,
         )}
         {...props}
+        ref={returnFocus.ref}
+        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
       >
         {children}
         <SheetPrimitive.Close className="absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:outline-hidden">

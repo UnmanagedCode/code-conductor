@@ -67,10 +67,10 @@ export async function machineLabelFlow({ page, cc }: Ctx): Promise<void> {
   for (const c of CASES) {
     const sid = sids.get(c.what)!;
     await test.step(`the ${c.what} session's row and strip entry`, async () => {
-      const row = nextSidebar(page).locator(`[data-session-row="${sid}"] > [role="button"]`);
+      const row = nextSidebar(page).locator(`[data-session-row="${sid}"] > [data-row]`);
       await expect(row.locator('span.truncate').first()).toHaveText(c.label);
-      await expect(row).toHaveAccessibleName(c.name);
-      await expect(row).not.toHaveAccessibleName(RAW);
+      await expect(row.locator('[data-row-open]')).toHaveAccessibleName(c.name);
+      await expect(row.locator('[data-row-open]')).not.toHaveAccessibleName(RAW);
       const entry = nextSidebar(page).locator(`[data-strip-entry="${sid}"] > button`);
       await expect(entry.locator('[data-strip-label]')).toHaveText(c.label);
       await expect(entry).toHaveAccessibleName(c.name);

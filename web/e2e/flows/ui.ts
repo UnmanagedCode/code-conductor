@@ -527,7 +527,7 @@ export const next: Ui = {
   },
   async openConductor(page, sessionId) {
     await next.lens(page, 'conductors');
-    await sidebar(page).locator(`[data-conductor="${sessionId}"] > [role=button]`).click();
+    await sidebar(page).locator(`[data-conductor="${sessionId}"] > [data-row]`).click();
   },
   workersPanel: (page) => page.locator('[data-subagent-panel]'),
   async openWorker(page, title) {
@@ -697,7 +697,7 @@ export const next: Ui = {
   // Sidebar B (card 2026-0628)
   async sessionRow(page, project, sessionId) {
     await next.lens(page, 'projects');
-    return sidebar(page).locator(`[data-project="${project}"] [data-session-row="${sessionId}"] > [role="button"]`);
+    return sidebar(page).locator(`[data-project="${project}"] [data-session-row="${sessionId}"] > [data-row]`);
   },
   sessionRowLive: async (row) => (await row.locator('[data-dot]').getAttribute('data-dot')) !== 'offline',
   async sessionsSummary(page, project, worktree) {
@@ -895,7 +895,7 @@ export const next: Ui = {
   // Sidebar C (card 2026-0629)
   async conductorRow(page, sessionId) {
     await next.lens(page, 'conductors');
-    return sidebar(page).locator(`[data-conductor="${sessionId}"] > [role="button"]`);
+    return sidebar(page).locator(`[data-conductor="${sessionId}"] > [data-row]`);
   },
   async openInactive(page) {
     await next.lens(page, 'conductors');
@@ -918,18 +918,18 @@ export const next: Ui = {
   },
   async treeWorkerRow(page, conductor, sessionId) {
     await next.lens(page, 'conductors');
-    const caret = sidebar(page).locator(`[data-conductor="${conductor}"] > [role="button"] button[aria-label="Show workers"]`);
+    const caret = sidebar(page).locator(`[data-conductor="${conductor}"] > [data-row] button[aria-label="Show workers"]`);
     if ((await caret.getAttribute('aria-expanded')) !== 'true') await caret.click();
     await expect(caret).toHaveAttribute('aria-expanded', 'true');
-    return sidebar(page).locator(`[data-conductor="${conductor}"] [data-session-row="${sessionId}"] > [role="button"]`);
+    return sidebar(page).locator(`[data-conductor="${conductor}"] [data-session-row="${sessionId}"] > [data-row]`);
   },
   rowLayout: async (row) => {
     const conductor = await row.evaluate((e) => !!e.parentElement?.hasAttribute('data-conductor'));
     return measureRow(row, {
-      labels: [conductor ? ':scope > span.truncate' : ':scope > span.flex-col'],
+      labels: [conductor ? ':scope > [data-row-open] > span.truncate' : ':scope > [data-row-open] > span.flex-col'],
       text: 'span.truncate',
       fixed: {
-        ago: ':scope > [data-ago]',
+        ago: ':scope > [data-row-open] > [data-ago]',
         promote: ':scope > button[aria-label="Make persistent"]',
         close: ':scope > button[aria-label="Stop session"], :scope > button[aria-label="Archive session (keeps history)"]',
       },
@@ -1080,17 +1080,17 @@ export const next: Ui = {
   },
   async conductorOpen(page, sessionId) {
     await next.lens(page, 'conductors');
-    return (await sidebar(page).locator(`[data-conductor="${sessionId}"] > [role="button"] button[aria-label="Show workers"]`).getAttribute('aria-expanded')) === 'true';
+    return (await sidebar(page).locator(`[data-conductor="${sessionId}"] > [data-row] button[aria-label="Show workers"]`).getAttribute('aria-expanded')) === 'true';
   },
   async closeConductor(page, sessionId) {
     await next.lens(page, 'conductors');
-    const caret = sidebar(page).locator(`[data-conductor="${sessionId}"] > [role="button"] button[aria-label="Show workers"]`);
+    const caret = sidebar(page).locator(`[data-conductor="${sessionId}"] > [data-row] button[aria-label="Show workers"]`);
     if ((await caret.getAttribute('aria-expanded')) === 'true') await caret.click();
     await expect(caret).toHaveAttribute('aria-expanded', 'false');
   },
   async selectedProjectsRow(page) {
     await next.openSidebar(page);
-    return sidebar(page).locator('[data-project-list] [data-session-row] > [role="button"][data-active="true"]');
+    return sidebar(page).locator('[data-project-list] [data-session-row] > [data-row][data-active="true"]');
   },
   async sidebarScroll(page) {
     await next.openSidebar(page);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { uiStore } from '@/app/ui';
-import { conductor, conductorRowOf, hand, labelOf, proj, rowOf, seed, stripEntryOf, stripLabelOf, worker } from '@/test/sidebarFleet';
+import { conductor, conductorOpenOf, conductorRowOf, hand, labelOf, openOf, proj, seed, stripEntryOf, stripLabelOf, worker } from '@/test/sidebarFleet';
 import { selectOptions } from '@/test/radixSelect';
 import { buildWakeStub } from '@/lib/core/wakeCallback.ts';
 import { buildForwardFrame } from '@/lib/core/forwardFrame.ts';
@@ -86,7 +86,7 @@ describe('a machine-written first prompt in a sidebar label', () => {
     await settle();
     expect(conductorRowOf('cond-wake').textContent).toContain(WAKE_LABEL);
     expect(conductorRowOf('cond-wake').textContent).not.toMatch(RAW);
-    expect(named(WAKE_LABEL).includes(conductorRowOf('cond-wake'))).toBe(true);
+    expect(named(WAKE_LABEL).includes(conductorOpenOf('cond-wake'))).toBe(true);
     expect(rawNamed()).toHaveLength(0);
   });
 
@@ -115,10 +115,10 @@ describe('a machine-written first prompt in a sidebar label', () => {
     expect(labelOf('h-wake').textContent).toMatch(/^Wake: Worker `labelwake` finished its turn\./);
     // Named before the preview's cut: the window holds summary text past the raw stub's first 80 chars.
     expect(labelOf('h-wake').textContent).toContain('folded in');
-    expect(named(WAKE_LABEL).includes(rowOf('h-wake'))).toBe(true);
+    expect(named(WAKE_LABEL).includes(openOf('h-wake'))).toBe(true);
     expect(labelOf('h-wake-titled').textContent).toBe('Titled wake');
-    expect(rowOf('h-wake-titled').title).toContain(WAKE_LABEL);
-    expect(rowOf('h-wake-titled').title).not.toMatch(RAW);
+    expect(openOf('h-wake-titled').title).toContain(WAKE_LABEL);
+    expect(openOf('h-wake-titled').title).not.toMatch(RAW);
     expect(rawNamed()).toHaveLength(0);
   });
 
@@ -128,7 +128,7 @@ describe('a machine-written first prompt in a sidebar label', () => {
     renderSidebar();
     await settle();
     expect(labelOf('h-fwd').textContent).toBe('Forwarded worker output');
-    expect(named('Forwarded worker output').includes(rowOf('h-fwd'))).toBe(true);
+    expect(named('Forwarded worker output').includes(openOf('h-fwd'))).toBe(true);
     expect(rawNamed()).toHaveLength(0);
   });
 
@@ -138,7 +138,7 @@ describe('a machine-written first prompt in a sidebar label', () => {
     renderSidebar();
     await settle();
     expect(labelOf('h-renew').textContent).toBe('Context renewed');
-    expect(named('Context renewed').includes(rowOf('h-renew'))).toBe(true);
+    expect(named('Context renewed').includes(openOf('h-renew'))).toBe(true);
     expect(screen.queryAllByRole('button', { name: (n) => n.includes('Your context was just renewed') })).toHaveLength(0);
   });
 
@@ -167,12 +167,12 @@ describe('a machine-written first prompt in a sidebar label', () => {
     await settle();
     expect(labelOf('h-human').textContent).toBe(HUMAN_LABEL);
     expect(stripLabelOf('h-human')!.textContent).toBe(HUMAN_LABEL);
-    expect(named(HUMAN_LABEL).includes(rowOf('h-human'))).toBe(true);
+    expect(named(HUMAN_LABEL).includes(openOf('h-human'))).toBe(true);
     unmount();
     uiStore.set({ lens: 'conductors' });
     renderSidebar();
     await settle();
-    expect(named(HUMAN_LABEL).includes(conductorRowOf('cond-human'))).toBe(true);
+    expect(named(HUMAN_LABEL).includes(conductorOpenOf('cond-human'))).toBe(true);
   });
 
   it('a session row whose first prompt is a post-/clear head reads Context renewed, for the caveat record and for the /clear command line', async () => {
@@ -185,8 +185,8 @@ describe('a machine-written first prompt in a sidebar label', () => {
     await settle();
     expect(labelOf('h-caveat').textContent).toBe('Context renewed');
     expect(labelOf('h-clear').textContent).toBe('Context renewed');
-    expect(named('Context renewed').includes(rowOf('h-caveat'))).toBe(true);
-    expect(named('Context renewed').includes(rowOf('h-clear'))).toBe(true);
+    expect(named('Context renewed').includes(openOf('h-caveat'))).toBe(true);
+    expect(named('Context renewed').includes(openOf('h-clear'))).toBe(true);
     expect(screen.queryAllByRole('button', { name: (n) => n.includes('<local-command-caveat>') || n.includes('<command-name>') })).toHaveLength(0);
   });
 
@@ -196,7 +196,7 @@ describe('a machine-written first prompt in a sidebar label', () => {
     renderSidebar();
     await settle();
     expect(labelOf('h-compact').textContent).toBe('/compact');
-    expect(named('/compact').includes(rowOf('h-compact'))).toBe(true);
+    expect(named('/compact').includes(openOf('h-compact'))).toBe(true);
     expect(screen.queryAllByRole('button', { name: (n) => n.includes('<command-') })).toHaveLength(0);
   });
 
@@ -212,8 +212,8 @@ describe('a machine-written first prompt in a sidebar label', () => {
     await settle();
     expect(labelOf('h-cmd-mention').textContent).toBe(command);
     expect(labelOf('h-caveat-mention').textContent).toBe(caveat);
-    expect(named(command).includes(rowOf('h-cmd-mention'))).toBe(true);
-    expect(named(caveat).includes(rowOf('h-caveat-mention'))).toBe(true);
+    expect(named(command).includes(openOf('h-cmd-mention'))).toBe(true);
+    expect(named(caveat).includes(openOf('h-caveat-mention'))).toBe(true);
   });
 
   it('a human prompt that mentions the wake marker mid-text is shown unchanged', async () => {
@@ -223,7 +223,7 @@ describe('a machine-written first prompt in a sidebar label', () => {
     renderSidebar();
     await settle();
     expect(labelOf('h-mention').textContent).toBe(mention);
-    expect(named(mention).includes(rowOf('h-mention'))).toBe(true);
+    expect(named(mention).includes(openOf('h-mention'))).toBe(true);
   });
 });
 

@@ -120,7 +120,7 @@ export async function askFlow({ page, cc }: Ctx): Promise<void> {
     expect(a.text).toBe(alpha);
     expect(a.needsYou).toBe(true);
     asks.push(reasonOf(a));
-    await expect(nextSidebar(page).locator(`[data-conductor="${A.sessionId}"] > [role="button"] [data-dot]`), 'its conductor row is marked too')
+    await expect(nextSidebar(page).locator(`[data-conductor="${A.sessionId}"] > [data-row] [data-dot]`), 'its conductor row is marked too')
       .toHaveAttribute('data-needs-you', 'true');
     await mcpCall(cc, 'send_prompt', { sessionId: H.sessionId, text: 'ASK-TEXT' });
     await until(cc, H.id, 'H asks in text', (i) => i.awaitingUser === 'question');

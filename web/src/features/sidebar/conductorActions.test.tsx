@@ -47,7 +47,7 @@ const closeOf = (row: HTMLElement) => [CLOSE_TITLES.stop, CLOSE_TITLES.archive].
 const archiveOf = (row: HTMLElement) => within(row).queryAllByRole('button', { name: CLOSE_TITLES.archive });
 const unreadOf = (row: HTMLElement) => row.querySelector('[data-unread]');
 const expand = (sid: string) => { fireEvent.click(within(blockOf(sid)).getByRole('button', { name: 'Show workers' })); return treeOf(sid)!; };
-const treeRowOf = (tree: HTMLElement, sid: string) => tree.querySelector(`[data-session-row="${sid}"] > [role="button"]`) as HTMLElement | null;
+const treeRowOf = (tree: HTMLElement, sid: string) => tree.querySelector(`[data-session-row="${sid}"] > [data-row]`) as HTMLElement | null;
 
 beforeEach(() => {
   localStorage.clear();

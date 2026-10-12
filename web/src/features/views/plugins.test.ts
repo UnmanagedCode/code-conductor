@@ -113,7 +113,7 @@ describe('plugin frames', () => {
     expect(overlayStore.get().overlay).toEqual({ message: 'hub: exited 1\n\ntrace', retry: { id: 'hub', subpath: '/' } });
   });
 
-  it('a keep-alive frame survives leaving, is revealed without reloading, and an evicting action ends it', async () => {
+  it('a keep-alive frame survives leaving, is revealed without reloading, and an evicting action ends it while hidden', async () => {
     const fetchMock = vi.fn(async () => ok({ state: 'ready', enabled: true, frontendKeepAlive: true }));
     vi.stubGlobal('fetch', fetchMock);
     const h = host();
@@ -127,9 +127,29 @@ describe('plugin frames', () => {
     await vi.waitFor(() => expect(frame.hidden).toBe(false));
     expect(h.querySelector('iframe')).toBe(frame);
     expect(frame.getAttribute('src')).toBe('/plugins/call/');
+    pluginFrames.leave();
     await pluginFrames.reconcile({ action: 'restart', ids: ['call'] });
     expect(frame.isConnected).toBe(false);
     expect(pluginFrames.residentIds()).toEqual([]);
+    expect(h.querySelector('iframe'), 'a hidden frame is not reloaded').toBeNull();
+  });
+
+  it('reconcile reloads the resident plugin on screen in place when an evicting action ends its frame', async () => {
+    const fetchMock = vi.fn(async () => ok({ state: 'ready', enabled: true, frontendKeepAlive: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    const h = host();
+    await pluginFrames.load({ id: 'call', subpath: '/x' });
+    const old = h.querySelector('iframe')!;
+    await pluginFrames.reconcile({ action: 'restart', ids: ['call'] });
+    expect(old.isConnected, 'the renewed frame is ended').toBe(false);
+    await vi.waitFor(() => expect(h.querySelector('iframe[data-plugin-id="call"]')).not.toBeNull());
+    const fresh = h.querySelector<HTMLIFrameElement>('iframe[data-plugin-id="call"]')!;
+    expect(fresh).not.toBe(old);
+    expect(fresh.getAttribute('src'), 'reloaded at the subpath it was on').toBe('/plugins/call/x');
+    expect(fresh.hidden).toBe(false);
+    expect(pluginFrames.currentId()).toBe('call');
+    expect(pluginFrames.residentIds()).toEqual(['call']);
+    expect(overlayStore.get().overlay).toBeNull();
   });
 
   it('reconcile keeps a resident frame on a network blip and evicts on a 404', async () => {

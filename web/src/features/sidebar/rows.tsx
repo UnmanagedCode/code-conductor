@@ -36,9 +36,23 @@ export function Hint({ label, children }: { label: React.ReactNode; children: Re
 
 // ── Status dot ───────────────────────────────────────────────────────────
 
-export function Dot({ status, awaitingWake, waitingOnJob, awaitingUser = null, awaitingUserSource = null, unreadRing = false, className }: {
+type DotProps = {
   status?: string | null; awaitingWake?: boolean; waitingOnJob?: boolean;
-  awaitingUser?: string | null; awaitingUserSource?: string | null; unreadRing?: boolean; className?: string;
+  awaitingUser?: string | null; awaitingUserSource?: string | null;
+};
+
+/** The status dot's words: its tooltip, and the status part of a row's accessible name. */
+export function dotTitle({ status, awaitingWake, waitingOnJob, awaitingUser = null, awaitingUserSource = null }: DotProps) {
+  const d = dotState({ status, awaitingWake, waitingOnJob, awaitingUser });
+  return d.needsYou
+    ? needsYouTitle({ status: d.status, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource })
+    : d.waiting === 'worker' ? 'idle — waiting on a worker'
+    : d.waiting === 'job' ? 'idle — waiting on a background job'
+    : runLabel(d.status, awaitingWake, waitingOnJob);
+}
+
+export function Dot({ status, awaitingWake, waitingOnJob, awaitingUser = null, awaitingUserSource = null, unreadRing = false, className }: DotProps & {
+  unreadRing?: boolean; className?: string;
 }) {
   const d = dotState({ status, awaitingWake, waitingOnJob, awaitingUser });
   const s = d.status;
@@ -51,11 +65,7 @@ export function Dot({ status, awaitingWake, waitingOnJob, awaitingUser = null, a
     : d.waiting ? 'bg-info'
     : d.needsYou ? 'bg-warning'
     : 'bg-muted-foreground/45';
-  const title = d.needsYou
-    ? needsYouTitle({ status: s, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource })
-    : d.waiting === 'worker' ? 'idle — waiting on a worker'
-    : d.waiting === 'job' ? 'idle — waiting on a background job'
-    : runLabel(s, awaitingWake, waitingOnJob);
+  const title = dotTitle({ status, awaitingWake, waitingOnJob, awaitingUser, awaitingUserSource });
   return (
     <span
       className={cn('relative inline-flex size-2 shrink-0 rounded-full', fill,
@@ -129,6 +139,14 @@ export function CloseButton({ args }: { args: CloseArgs }) {
 
 // ── Session row ──────────────────────────────────────────────────────────
 
+/**
+ * A row's accessible name: what identifies and qualifies it, never its ago label, which would change it every minute.
+ * Fields join with commas: a status may itself carry ' — ' ('idle — waiting on a worker').
+ */
+export function rowName(label: string, status: string, stage: string | null, unread: number) {
+  return [label, status, stage, unread > 0 ? `${unread} unread` : null].filter(Boolean).join(', ');
+}
+
 export function SessionRow({ session, projectName, worktreeName, activeId, unread, showOwner = false, showDelete = true, stage = null, ownerTitle }: {
   session: SessionItem; projectName: string; worktreeName: string | null; activeId: string | null; unread: number;
   showOwner?: boolean; showDelete?: boolean; stage?: string | null; ownerTitle?: (sid: string) => string;
@@ -148,16 +166,15 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
   };
   return (
     <li className="group/row relative" data-session-row={session.sessionId}>
+      {/* The row is a pointer target as a whole; its keyboard and assistive-technology target is the button,
+          with the actions beside it, never inside it (a control inside a button is presentational). */}
       <div
-        role="button"
-        tabIndex={0}
-        title={tooltip}
         onClick={open}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } }}
         style={ownerStyle(owner)}
+        data-row
         data-active={active || undefined}
         className={cn(
-          'flex min-h-8 cursor-pointer items-center gap-2 rounded-md py-1 pr-1 pl-2 text-sm text-muted-foreground transition-colors outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring',
+          'flex min-h-8 cursor-pointer items-center gap-2 rounded-md pr-1 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground has-[>[data-row-open]:focus-visible]:ring-2 has-[>[data-row-open]:focus-visible]:ring-ring',
           live && 'text-foreground/90',
           active && 'bg-sidebar-accent text-foreground ring-1 ring-border',
           // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
@@ -165,14 +182,23 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
           owner && OWNER_BAR,
         )}
       >
-        <Dot status={status} awaitingWake={session.instanceAwaitingWake} waitingOnJob={session.instanceWaitingOnJob} />
-        <span className="flex min-w-[2em] flex-1 flex-col">
-          {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
-          <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}>{label}</span>
-          {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
-        </span>
-        <Ago ms={session.lastActivity} />
-        <UnreadPill n={unread} />
+        {/* No handler of its own: Enter and Space click it, and the click bubbles to the row's. */}
+        <button
+          type="button"
+          title={tooltip}
+          aria-label={rowName(label, dotTitle({ status, awaitingWake: session.instanceAwaitingWake, waitingOnJob: session.instanceWaitingOnJob }), stage, unread)}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch py-1 pl-2 text-left outline-none"
+          data-row-open
+        >
+          <Dot status={status} awaitingWake={session.instanceAwaitingWake} waitingOnJob={session.instanceWaitingOnJob} />
+          <span className="flex min-w-[2em] flex-1 flex-col">
+            {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
+            <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}>{label}</span>
+            {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
+          </span>
+          <Ago ms={session.lastActivity} />
+          <UnreadPill n={unread} />
+        </button>
         {showPromote && <PromoteButton getArgs={() => ({ projectName, instanceId: session.instanceId!, preview: label })} />}
         {showDelete && (
           <CloseButton args={{
