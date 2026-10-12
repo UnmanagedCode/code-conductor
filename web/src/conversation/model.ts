@@ -261,6 +261,8 @@ export class ConversationModel {
   private sawSegmentCloser = false;
   /** Live sub-agent events whose parent Agent block isn't rendered yet. */
   orphanChildEvents = new Map<string, UiEvent[]>();
+  /** Live call_usage events whose message isn't rendered yet, by msgId: a tail or page can start between the two. */
+  orphanCallUsage = new Map<string, UiEvent>();
   private pendingCompaction: CompactionNode | null = null;
   private compaction: CompactionNode | null = null;
 
@@ -371,6 +373,7 @@ export class ConversationModel {
     this.leadingAssistantWrap = null;
     this.sawSegmentCloser = false;
     this.orphanChildEvents.clear();
+    this.orphanCallUsage.clear();
     this.pendingCompaction = null;
     this.compaction = null;
     this.segmentId = null;
@@ -860,7 +863,10 @@ export class ConversationModel {
 
   private renderCallUsage(ev: UiEvent) {
     const wrap = this.messageWraps.get(ev.msgId);
-    if (!wrap) return;
+    if (!wrap) {
+      if (ev.msgId) this.orphanCallUsage.set(ev.msgId, ev);
+      return;
+    }
     const node = this.make<CallUsageNode>({ type: 'call_usage', ev }, null);
     const g = wrap.openGroup;
     if (g && wrap.children.includes(g)) {
@@ -1071,6 +1077,12 @@ export class ConversationModel {
       planNodes: this.planNodes,
     });
     page.applyEvents(events);
+    // Before finalizing and the splice's merge, so it lands where the page's own copy would.
+    for (const [msgId, ev] of this.orphanCallUsage) {
+      if (!page.messageWraps.has(msgId)) continue;
+      this.orphanCallUsage.delete(msgId);
+      page.apply(ev);
+    }
     page.finalizeDanglingBlocks();
     return page;
   }
@@ -1121,6 +1133,8 @@ export class ConversationModel {
     for (const [pid, block] of page.toolBlocks) {
       if (this.orphanChildEvents.has(pid)) this.adoptToolBlock(pid, block);
     }
+    // A call_usage at the page's head waits for the older page holding its message.
+    for (const [msgId, ev] of page.orphanCallUsage) this.orphanCallUsage.set(msgId, ev);
     this.rev++;
     this.changed();
     return merged && page.leadingAssistantWrap === trailing ? oldestLeadingWrap : page.leadingAssistantWrap ?? null;
