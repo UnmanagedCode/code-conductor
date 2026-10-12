@@ -74,8 +74,7 @@ export function send(t, payload = {}, { ack = false } = {}) {
       //     closes the class rather than the current call sites. Under node:test the
       //     loop is alive while tests run, so the reject still fires; the only case
       //     it does not is a process with nothing else to do, which is the case we
-      //     want it not to hold open. `?.` because browsers have no unref (the same
-      //     guarded form as public/blocks.js).
+      //     want it not to hold open. `?.` because browsers have no unref.
       const timer = setTimeout(() => {
         if (pending.has(reqId)) { pending.delete(reqId); reject(new Error('timeout')); }
       }, 10_000);

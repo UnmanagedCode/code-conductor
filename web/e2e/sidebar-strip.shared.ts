@@ -1,12 +1,12 @@
-// The needs-you strip under /next/ on a real server: the group real sessions land in as they run, wait on a worker
+// The needs-you strip on a real server: the group real sessions land in as they run, wait on a worker
 // and ask; opening an asking session and replying; resumes onto ask transcripts; both lenses; the × and the drawer;
 // and an armed entry's fit. The bodies are shared by the per-project spec files.
 import type { Page } from '@playwright/test';
 import { api, createProject, mcpCall } from './harness/api.ts';
 import { expect, test, type Cc } from './harness/fixtures.ts';
 import { appendTranscriptRecord } from './harness/transcript.ts';
-import { gone, idleInst, insts, liveModel, spawnConductor, spawnWorker, type FleetInst } from './parity/fleet.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { gone, idleInst, insts, liveModel, spawnConductor, spawnWorker, type FleetInst } from './flows/fleet.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
 type Inst = FleetInst & { awaitingUser?: string | null; awaitingUserSource?: string | null; awaitingWake?: boolean };

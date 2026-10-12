@@ -193,7 +193,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 
 ## Behavior notes
 
-- The container's dep repair may create `node_modules/` in the **host checkout**. It is gitignored; a worktree's broken `node_modules` symlink is removed (the symlink only) before reinstalling.
+- The container's dep repair runs `npm install --omit=dev` whenever `node_modules/<dep>/package.json` is missing for any `dependencies` key of `package.json` (`docker/deps-complete.mjs`). It may create `node_modules/` in the **host checkout**. It is gitignored; a worktree's broken `node_modules` symlink is removed (the symlink only) before reinstalling.
 - An empty/missing projects dir boots with **zero projects**: unset `CC_PROJECTS_DIR` → compose fails with a `:?` message; set-but-missing → `create_host_path: false` errors; the entrypoint pre-flight is the final layer (existence, writability, `.git`-ancestor probe) with remediation text. With `CC_MOUNT=inside`, cc additionally self-adopts the repo into workspace `CC-Dev`.
 - `docker compose exec conductor <cmd>` lands in the projects root (`WORKDIR` is `/workspaces/projects`, not the checkout) — convenient for poking at projects. The entrypoint `cd`s into the checkout itself before exec'ing.
 - **Don't run cc's self-update from a worktree checkout** — its `.git` is a file, not a directory.

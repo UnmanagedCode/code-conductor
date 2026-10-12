@@ -10,11 +10,13 @@
 //   1. Sanity-check for the race diagnosis: a freshly-resumed instance is
 //      NOT deterministically absent from GET /api/instances — it appears
 //      immediately, with its sessionId and a canMenu-eligible status, before
-//      any prompt is sent. This is what public/sessionActions.js's
-//      resumeSession() and public/app.js's refreshInstances() see. If this
+//      any prompt is sent. This is what resumeSession()
+//      (web/src/app/sessionActions.ts) and refreshInstances()
+//      (web/src/app/controller.ts) see. If this
 //      assertion failed, the header bug would need a different root cause
 //      than the stale-fetch race described in the plan.
-//   2. The 'model' WS message (exactly what header.js's popover sends) is
+//   2. The 'model' WS message (exactly what the session header's model picker,
+//      pickModel in web/src/features/session/SessionHeader.tsx, sends) is
 //      accepted and actually switches inst.model while the instance is
 //      still pre-first-prompt live (status 'idle'/'spawning', no prompt
 //      sent) — proving the server-side mechanism the button depends on
@@ -119,7 +121,7 @@ test('a resumed, not-yet-prompted session appears live in GET /api/instances and
     await waitFor(() => ['idle', 'spawning'].includes(ctx.instances.get(id).status));
     assert.equal(ctx.instances.get(id).status === 'turn', false, 'no turn has run yet');
 
-    // (2) Drive the real 'model' WS message (what header.js's popover sends —
+    // (2) Drive the real 'model' WS message (what the header's model picker sends —
     // a bare tier name, resolved server-side) against this pre-first-prompt
     // resumed instance.
     await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });

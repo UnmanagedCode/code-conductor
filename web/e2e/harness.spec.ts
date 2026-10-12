@@ -1,7 +1,7 @@
 // The harness's own self-test, run in every project: the bundle is current, the
 // booted cc is isolated in one scratch root with its own port, the default
-// engine is the fake CLI end to end, both UIs are served, and close() removes
-// the root.
+// engine is the fake CLI end to end, the web UI is served at / (a /next/ link
+// lands there with its hash route), and close() removes the root.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,7 +38,7 @@ test('the booted cc lives in one scratch root under the temp dir, on its own por
 
 test('the default engine is the fake CLI, end to end, with an isolated worker env', async ({ page, cc }) => {
   const { sessionId } = await spawnSession(cc, `e2e-harness-${test.info().project.name}`);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   const composer = page.locator('#composer-input');
   await expect(composer).toBeEnabled();
   await composer.fill('Add a rate limiter to the API');
@@ -55,13 +55,16 @@ test('the default engine is the fake CLI, end to end, with an isolated worker en
   expect(env.has('CLAUDE_CODE_SESSION_ID')).toBe(false);
 });
 
-test('/legacy/ serves the old UI and /next/ the new one', async ({ request }) => {
-  const legacy = await request.get('/legacy/');
-  expect(legacy.status()).toBe(200);
-  expect(await legacy.text()).toContain('<div id="app">');
-  const next = await request.get('/next/');
-  expect(next.status()).toBe(200);
-  expect(await next.text()).toContain('<div id="root"></div>');
+test('/ serves the web UI', async ({ request }) => {
+  const root = await request.get('/');
+  expect(root.status()).toBe(200);
+  expect(await root.text()).toContain('<div id="root"></div>');
+});
+
+test('a /next/ link keeps its hash route: /next/#settings/models lands on /#settings/models', async ({ page, cc }) => {
+  await page.goto('/next/#settings/models');
+  await expect(page).toHaveURL(`${cc.url}/#settings/models`);
+  await expect(page.getByRole('heading', { name: 'Models', level: 2 })).toBeVisible();
 });
 
 test('bootCc() then close() leaves no scratch root behind', async () => {

@@ -8,7 +8,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject, spawnSession } from './harness/api.ts';
 import { commitsView, createWorktree, openHistory } from './commits-actions.shared.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
 
@@ -114,7 +114,7 @@ export async function sessionHeaderFlow({ page, cc }: Args): Promise<void> {
     const row = ((await api(cc, 'GET', '/api/instances')).body as { id: string; status: string; sessionId: string | null }[]).find((r) => r.id === id);
     return row?.status === 'idle' && !!row.sessionId;
   }).toBe(true);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   const header = page.locator('[data-session-header]');
   const heading = header.getByRole('heading', { level: 1 });
   await expect(heading).toBeVisible();

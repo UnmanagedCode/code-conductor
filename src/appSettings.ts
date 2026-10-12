@@ -243,7 +243,8 @@ export async function setTierEnabled(tier: TierName, enabled: unknown): Promise<
   let nextDefault = typeof cur.models?.defaultTier === 'string' ? cur.models.defaultTier : DEFAULT_SPAWN_TIER;
   if (!enabled && nextDefault === tier) {
     // Deliberate fallback-preference order (NOT the CAPABILITY_TIERS catalog
-    // order) — mirrored client-side in public/spawnDialog.js defaultSpawnTier().
+    // order) — mirrored client-side in defaultSpawnTier()
+    // (web/src/features/dialogs/SpawnDialog.tsx).
     nextDefault = ['balanced', 'fast', 'powerful', 'frontier'].find(t => t !== tier && nextEnabled[t] !== false) ?? 'balanced';
   }
 
@@ -1161,8 +1162,8 @@ export function resolveSpawnEffort(input: { effort?: unknown; tier?: unknown; ro
   // ATTEMPT to name a level and must be validated, not absorbed: `''` was a 400
   // before this feature and staying a 400 is what keeps "an invalid explicit value
   // never silently becomes a default" true. (The spawn dialog's `Default` option
-  // has value '' but is normalized to `undefined` before the POST — see
-  // public/spawnDialog.js.)
+  // is normalized to `undefined` before the POST — see
+  // web/src/features/dialogs/SpawnDialog.tsx.)
   if (effort !== undefined && effort !== null) {
     if (!isKnownEffort(effort)) {
       throw httpError(400, 'invalid effort');

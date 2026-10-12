@@ -6,23 +6,16 @@
 // assistant line's usage as `lastAssistantUsage`, which loadHistory replays as
 // one synthetic, non-retained `message_start`.
 //
-// Two things this file pins:
-//   1. the scan's hazards — `<synthetic>` all-zero placeholders (frequently the
-//      LAST assistant line of an interrupted session) and sub-agent sidechain
-//      lines (a different context window) must never win.
-//   2. the renderer invariant — the synthetic event must leave a subscribed
-//      client's conversation completely unchanged. `conversation.apply` has no
-//      `message_start` case, but it does run `_ensureNotEmpty()` first, so
-//      "probably ignored" is not good enough to rely on.
+// This file pins the scan's hazards: `<synthetic>` all-zero placeholders
+// (frequently the LAST assistant line of an interrupted session) and sub-agent
+// sidechain lines (a different context window) must never win.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertNull } from './dom-assert.mjs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Window } from 'happy-dom';
+import { fileURLToPath } from 'node:url';
 import { encodeCwd, localPlace} from '../src/projects.ts';
 import { loadPersistedTranscript } from '../src/transcript.ts';
 
@@ -172,81 +165,4 @@ test('lastAssistantUsage: a sidechain compact_boundary does not reset the sessio
   ]);
   assert.deepEqual(result.lastAssistantUsage, { msgId: 'm_outer', usage: usage(60000) },
     'a sub-agent compacting its own window leaves this session\'s context alone');
-});
-
-// ── the renderer invariant ──────────────────────────────────────────────────
-
-globalThis.AudioContext = class MockAudioContext {
-  constructor() { this.currentTime = 0; this.destination = {}; }
-  resume() { return Promise.resolve(); }
-  createBufferSource() { return { connect() {}, start() {}, onended: null, buffer: null }; }
-  decodeAudioData() { return Promise.resolve({ duration: 0.5 }); }
-};
-globalThis.fetch = async () => ({
-  ok: true,
-  body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
-});
-
-const convUrl = pathToFileURL(path.resolve(__dirname, '..', 'public', 'conversation.js')).href;
-const { Conversation } = await import(convUrl);
-
-function freshConversation() {
-  const window = new Window({ url: 'http://localhost/' });
-  globalThis.window = window;
-  globalThis.document = window.document;
-  globalThis.HTMLElement = window.HTMLElement;
-  globalThis.Element = window.Element;
-  globalThis.Node = window.Node;
-  globalThis.window.AudioContext = globalThis.AudioContext;
-  const root = window.document.createElement('div');
-  window.document.body.appendChild(root);
-  return new Conversation(root);
-}
-
-test('the replayed message_start leaves a subscribed client conversation completely unchanged', async () => {
-  const conv = freshConversation();
-  // Replay real history first — this is the production order: loadHistory only
-  // emits the synthetic event inside `replayedCount > 0`, i.e. after at least
-  // one real replayed event has already reached the client.
-  conv.apply({ kind: 'user_echo', text: 'go', userIndex: 0, parentToolUseId: null });
-  conv.apply({ kind: 'text_delta', msgId: 'm_new', blockIdx: 0, text: 'an answer', parentToolUseId: null });
-  conv.apply({ kind: 'text_end', msgId: 'm_new', blockIdx: 0, parentToolUseId: null });
-
-  const before = {
-    html: conv.root.innerHTML,
-    blocks: conv.blocksByKey.size,
-    wraps: conv.messageWraps.size,
-    reconcile: conv.reconcileCounts.size,
-    seenSeq: conv.seenSeq.size,
-    empty: conv.emptyNode,
-  };
-
-  // The synthetic event, exactly as loadHistory emits it — note it reuses the
-  // REAL msgId whose text block was just replayed, so this also pins that the
-  // msgId cannot reopen, duplicate or attach to that block.
-  conv.apply({
-    kind: 'message_start', msgId: 'm_new',
-    usage: usage(46398), replayed: true, parentToolUseId: null,
-  });
-
-  assert.equal(conv.root.innerHTML, before.html, 'DOM is byte-identical');
-  assert.equal(conv.blocksByKey.size, before.blocks, 'no new block registered');
-  assert.equal(conv.messageWraps.size, before.wraps, 'no new assistant wrap opened');
-  assert.equal(conv.reconcileCounts.size, before.reconcile, 'reconcile cursor untouched');
-  assert.equal(conv.seenSeq.size, before.seenSeq, 'seq-less, so it consumes no dedup slot');
-  assertNull(conv.emptyNode, 'empty-state placeholder state unchanged');
-  assert.equal(conv.root.querySelectorAll('.msg.assistant').length, 1,
-    'still exactly one assistant bubble — no empty/spurious block');
-});
-
-test('the empty-state placeholder survives: the event is never the first thing a client sees', async () => {
-  // The one renderer surface `message_start` does touch is `_ensureNotEmpty()`.
-  // loadHistory's `replayedCount > 0` guard is what keeps that harmless, so pin
-  // the consequence: on a conversation that HAS content the placeholder is
-  // already gone, and the server never emits the event in the other case (see
-  // the ws.test.mjs coverage for the guard itself).
-  const conv = freshConversation();
-  assert.ok(conv.emptyNode, 'fresh conversation shows the placeholder');
-  conv.apply({ kind: 'user_echo', text: 'go', userIndex: 0, parentToolUseId: null });
-  assertNull(conv.emptyNode, 'real replayed content clears it first');
 });

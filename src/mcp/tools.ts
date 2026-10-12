@@ -31,7 +31,8 @@ const IDLE_TIMEOUT_SECONDS_PROP = {
 };
 
 // The Bash `description` argument, shared verbatim by project_bash and
-// system_bash: it is the transcript's subject line for both (public/blocks.js),
+// system_bash: it is the transcript's subject line for both
+// (web/src/conversation/format.ts),
 // so the guidance cannot differ between them.
 const BASH_DESCRIPTION_PROP = {
   type: 'string',

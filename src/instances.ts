@@ -401,8 +401,8 @@ function isLiveOrComingUp(inst: Instance): boolean {
 }
 
 // Annotation on the `soft_interrupted` event the turn-start guard emits when a
-// turn begins during an overage lockout. Rendered by public/blocks.js as
-// `⏸ Turn interrupted: <text>` — the observed defect was that such a turn was cut
+// turn begins during an overage lockout. Rendered by
+// web/src/conversation/format.ts as `Turn interrupted: <text>` — the observed defect was that such a turn was cut
 // SILENTLY, so naming the lockout as the cause is the point. Not sent to the CLI:
 // nothing may be written to a session during the window.
 const OVERAGE_TURN_BLOCKED_TEXT =
@@ -454,7 +454,8 @@ function isOverageEvent(data: unknown): boolean {
 // Normalise the rate-limit window reset time to epoch SECONDS, or null.
 // The live `rate_limit_event` field is the camelCase epoch-seconds `resetsAt`
 // (confirmed against a real CLI capture). The snake_case ISO `resets_at` (as in
-// the account-usage payload / header.js's `new Date(bucket.resets_at)`) and a
+// the account-usage payload / web/src/app/accountUsage.ts's
+// `new Date(b.resets_at)`) and a
 // raw epoch number are accepted only as defensive fallbacks. The overage
 // auto-resume timer (overageResume.ts arm()) and the global clear timer both
 // expect epoch seconds, so this is the single place the shape is reconciled.
@@ -545,7 +546,7 @@ export class EventLog {
   // Retention is storage-only — it never gates what _emitUi emits to the live
   // WS feed. A `v` this method declines to retain simply never receives a
   // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
-  // events unconditionally — see public/conversation.js). The per-token
+  // events unconditionally — see web/src/conversation/model.ts). The per-token
   // live-stream floods (one system/thinking_tokens per thinking_delta token,
   // emitted by the Claude CLI as a live progress estimate — docs/protocol.md owns
   // the observed-emitter list; it is NOT specific to any one backend, and prose
@@ -1552,7 +1553,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // because wsHub is synchronous (it subscribes the socket BEFORE calling this
   // and awaits reconstructActiveTasks before sending), but because growth is
   // append-only and the client clears before replaying a snapshot
-  // (public/wsRouter.js), so live frames emitted inside that window are
+  // (web/src/app/controller.ts), so live frames emitted inside that window are
   // discarded in favour of the grown slot. Only unsafe to re-read a slot
   // expecting byte-stable text or to page/merge by array position rather than
   // `_seq`.
@@ -6632,8 +6633,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // instance so its resume arms. `armResume` defaults to `resume` and splits off
   // only for a conductor's own worker, which is stopped un-armed.
   //
-  // The event carries `armResume`, NOT the routing mode: `public/blocks.js` renders
-  // `resume:true` as "auto-resuming at ⟨time⟩", which for an un-armed worker names
+  // The event carries `armResume`, NOT the routing mode:
+  // web/src/conversation/format.ts renders `resume:true` as "Auto-resuming at ⟨time⟩", which for an un-armed worker names
   // a resume that will never happen — and contradicts its own null `autoResumeAt`
   // badge.
   _directOverageStop(inst: Instance, { resume, resetsAt, armResume = resume }: { resume: boolean; resetsAt: number | null; armResume?: boolean }): void {

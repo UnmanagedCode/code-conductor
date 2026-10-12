@@ -32,8 +32,7 @@ import { setPluginConductorConventionsProvider } from './src/conductorConvention
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
-import { ensureWebBuild, webHandler, WEB_MOUNT } from './src/webBuild.ts';
-import { legacyPublicTs } from './src/legacyPublicTs.ts';
+import { ensureWebBuild, retiredNextRedirect, webHandler } from './src/webBuild.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -46,7 +45,7 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager({ claudeLauncher, platform }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
@@ -132,13 +131,12 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
-  // The React UI under /next/; the old UI at / and again under /legacy/ (its
-  // root-absolute asset URLs load the same module graph from /), with its
-  // shared public/*.ts modules served type-stripped ahead of the static mounts.
-  app.use(WEB_MOUNT, webHandler());
-  app.use(legacyPublicTs(PUBLIC_DIR));
-  app.use('/legacy', express.static(PUBLIC_DIR));
-  app.use(express.static(PUBLIC_DIR));
+  // Plugin pages load the bridge from here; it ships in public/, not in the
+  // web build, so it answers with no build in place.
+  app.get('/pluginBridge.js', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pluginBridge.js')));
+  app.use('/next', retiredNextRedirect());
+  // The web UI at the root. `webDistDir` is for tests; it defaults to web/dist.
+  app.use(webHandler(webDistDir ? { distDir: webDistDir } : {}));
 
   const server = http.createServer(app);
   // noServer + manual dispatch: the wsHub keeps /ws, plugin WebSockets pipe
@@ -311,7 +309,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   // directly). Stopped in both manager shutdown paths.
   if (instances) instances._usageMonitor.start();
   // Build the web UI if its sources changed. Fire-and-forget: the API is
-  // already answering, and /next/ serves a "building" page meanwhile.
+  // already answering, and / serves a "building" page until a build exists.
   if (buildWeb) void webBuild();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can

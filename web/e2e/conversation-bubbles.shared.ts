@@ -1,4 +1,4 @@
-// The /next/ transcript's assistant-bubble controls and queued ghosts in a real browser,
+// The transcript's assistant-bubble controls and queued ghosts in a real browser,
 // on the fake engine's bubble scenario (fixtures/scenario-conversation-bubbles.json): copy,
 // raw and read-aloud on a bubble whose turn is still running, the same controls through a
 // raw switch, a full-page view and a reload, and queued messages that stay on screen,
@@ -8,8 +8,8 @@
 import type { Page, WebSocketRoute } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject } from './harness/api.ts';
-import { next } from './parity/ui.ts';
-import { instanceIn } from './parity/questionCard.ts';
+import { next } from './flows/ui.ts';
+import { instanceIn } from './flows/questionCard.ts';
 import { release } from './conversation-machinery.shared.ts';
 
 type Args = { page: Page; cc: Cc };
@@ -69,7 +69,7 @@ async function heldRun(page: Page, cc: Cc, what: string): Promise<Session> {
   return { project, ...(await instanceIn(cc, project)) };
 }
 
-// ── assistant-bubble-controls/R2 ─────────────────────────────────────────
+// ── a streaming bubble's controls ────────────────────────────────────────
 
 export async function liveControlsFlow({ page, cc }: Args): Promise<void> {
   // Invariant: while the turn runs and the bubble's second block streams, its controls are enabled and work: copy hands the clipboard the source streamed so far without the thinking or the call, and announces it; raw switched on mid-stream holds as the block finishes; copy then takes the whole text.
@@ -123,7 +123,7 @@ export async function controlsReturnFlow({ page, cc }: Args): Promise<void> {
   await expect(bubble(page)).toContainText('Streamed **so far** and done.');
 }
 
-// ── blocks/R3 ────────────────────────────────────────────────────────────
+// ── read-aloud per text block ────────────────────────────────────────────
 
 export async function blockReadAloudFlow({ page, cc }: Args): Promise<void> {
   // Invariant: every finished text block of the bubble has a read-aloud of its own, placed with that block, that sends that block's text to be spoken; a block still streaming has none.
@@ -152,7 +152,7 @@ export async function blockReadAloudFlow({ page, cc }: Args): Promise<void> {
   }
 }
 
-// ── doc/B19 ──────────────────────────────────────────────────────────────
+// ── queued messages across a usage-window reset ──────────────────────────
 
 const queued = (text: string) => ({ kind: 'overage_message_queued', data: { text, attachmentCount: 0, ts: Date.now(), queuedCount: 1 } });
 

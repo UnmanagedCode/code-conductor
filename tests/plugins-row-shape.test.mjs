@@ -5,12 +5,13 @@ import { makePluginRoot, readFixtureManifest } from './plugin-helpers.mjs';
 
 // Characterization pin for the PluginRow view-model — the projection
 // describeRow() builds, serialized verbatim by GET /api/plugins and consumed
-// field-by-field by public/pluginManager.js and public/appSwitcher.js.
+// field-by-field by web/src/features/settings/PluginsSection.tsx and the app
+// switcher (web/src/features/views/plugins.ts + AppSwitcher.tsx).
 //
-// Five of these fields (name, version, frontendPath, startedAt, crashTail) had
-// no assertion anywhere in the suite against a real host row, yet
-// pluginManager.js renders crashTail and appSwitcher.js renders
-// `navLabel || name`. A field dropped by a refactor would ship as a blank UI
+// Five of these fields (name, version, frontendPath, startedAt, crashTail) have
+// no other assertion in the suite against a real host row, yet the Plugins
+// section renders crashTail and the app switcher renders `navLabel || name`.
+// A field dropped by a refactor would ship as a blank UI
 // panel with every test still green.
 //
 // HAND-TYPED on purpose — deriving the expectation from the row itself would
@@ -53,7 +54,7 @@ test('a discovered (never-enabled) row carries the full PluginRow field set', as
     assert.ok(row, 'the fixture plugin is discovered');
     assert.equal(row.state, 'discovered');
     assert.deepEqual(Object.keys(row).sort(), ROW_FIELDS,
-      'the PluginRow projection changed — public/pluginManager.js and public/appSwitcher.js read these by name');
+      'the PluginRow projection changed — web/src/features/settings/PluginsSection.tsx and web/src/features/views/plugins.ts read these by name');
   } finally {
     await host.stopAll();
     await env.restore();
@@ -73,7 +74,7 @@ test('a running row carries the same field set, with the UI-read fields populate
       'no field may appear or disappear with lifecycle state');
 
     // The five fields nothing else asserts on a real row, plus the healthy-state
-    // crashTail contract pluginManager.js branches on.
+    // crashTail contract the Plugins section branches on.
     assert.equal(row.state, 'ready');
     assert.equal(row.name, 'Fake Plugin');
     assert.equal(row.version, '1.0.0');
@@ -124,7 +125,7 @@ test('crashTail carries the child output after a crash', async () => {
     const row = await host.status('crasher');
     assert.deepEqual(Object.keys(row).sort(), ROW_FIELDS);
     assert.equal(typeof row.crashTail, 'string');
-    assert.match(row.crashTail, /boom/, 'the crash tail is what pluginManager.js renders in the failure panel');
+    assert.match(row.crashTail, /boom/, 'the crash tail is what the Plugins section renders as its crash output');
   } finally {
     await host.stopAll();
     await env.restore();

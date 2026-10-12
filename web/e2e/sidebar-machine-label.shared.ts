@@ -1,12 +1,12 @@
-// The /next/ sidebar's label for a session whose first prompt the server wrote — a wake-callback stub, a
+// The sidebar's label for a session whose first prompt the server wrote — a wake-callback stub, a
 // send_prompt({forward}) frame, a renew_session seed — on a real server, which stores only that prompt's head, so the
 // label is derived from the cut the browser actually receives. A person's first prompt is the negative control.
 // The bodies are shared by the per-project spec files; this module declares no tests.
 import type { Page } from '@playwright/test';
 import { createProject, mcpCall, spawnSession } from './harness/api.ts';
 import { expect, test, type Cc } from './harness/fixtures.ts';
-import { idleInst, insts, type FleetInst } from './parity/fleet.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { idleInst, insts, type FleetInst } from './flows/fleet.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 import { buildWakeStub } from '../../public/wakeCallback.ts';
 import { buildForwardFrame } from '../../public/forwardFrame.ts';
 import { buildRenewSeed } from '../../public/renewSeed.ts';

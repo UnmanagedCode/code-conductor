@@ -1,11 +1,11 @@
-// The Projects lens under /next/ follows changes made through cc's API after the
+// The Projects lens follows changes made through cc's API after the
 // page loaded — REST and MCP alike, as a conductor makes them — without a reload:
 // the server's `projects` hint re-reads the list. The bodies are shared by the
 // per-project spec files.
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject, mcpCall } from './harness/api.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
 

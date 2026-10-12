@@ -1,4 +1,4 @@
-// The /next/ transcript's scroll position in a real browser: stuck to the bottom
+// The transcript's scroll position in a real browser: stuck to the bottom
 // for live output, left alone once scrolled up, the bottom again after a rewind,
 // the reader's place again after a full-page view, an older page spliced above
 // without moving what the reader sees, and a real multi-segment lineage walk.
@@ -7,9 +7,9 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { createProject, mcpCall } from './harness/api.ts';
 import { resumeSeeded, seedTurns, type SeedSegment } from './harness/lineage.ts';
-import { next } from './parity/ui.ts';
-import { bringTo, offsetFromTop, sendAll, tallPrompt } from './parity/stickyPin.ts';
-import { instanceIn, reselect } from './parity/questionCard.ts';
+import { next } from './flows/ui.ts';
+import { bringTo, offsetFromTop, sendAll, tallPrompt } from './flows/stickyPin.ts';
+import { instanceIn, reselect } from './flows/questionCard.ts';
 
 type Args = { page: Page; cc: Cc };
 type LineagePage = { hasMore: boolean; events: { kind: string; text?: string }[] };
@@ -53,7 +53,7 @@ function lineagePages(page: Page, instanceId: string): Promise<LineagePage>[] {
   return bodies;
 }
 
-// ── conversation-scroll-batch/R1 ─────────────────────────────────────────
+// ── sticking to the bottom ───────────────────────────────────────────────
 
 export async function stickFlow({ page, cc }: Args): Promise<void> {
   // Invariant: live output keeps a reader at the bottom there; a reader scrolled up stays put through it; re-opening the session lands at the bottom.
@@ -83,7 +83,7 @@ export async function stickFlow({ page, cc }: Args): Promise<void> {
   await expectAtBottom(page, transcript, 'after the session is opened again from its snapshot');
 }
 
-// ── conversation-view-return/R1 ──────────────────────────────────────────
+// ── returning from a full-page view ──────────────────────────────────────
 
 export async function viewReturnFlow({ page, cc }: Args): Promise<void> {
   // Invariant: leaving a full-page view puts the transcript back where the reader left it — scrolled up stays on the prompt being read, at the bottom stays at the (new) bottom.
@@ -115,7 +115,7 @@ export async function viewReturnFlow({ page, cc }: Args): Promise<void> {
   await expectAtBottom(page, transcript, 'a reader who left at the bottom');
 }
 
-// ── scroll-anchor/R2 ─────────────────────────────────────────────────────
+// ── rewind from a scrolled-up prompt ─────────────────────────────────────
 
 export async function rewindFlow({ page, cc }: Args): Promise<void> {
   // Invariant: a rewind from a prompt the reader scrolled up to lands them at the bottom of the rewound transcript, following it.
@@ -177,7 +177,7 @@ export async function anchorFlow({ page, cc }: Args): Promise<void> {
   }
 }
 
-// ── lineage-pager/R1 ─────────────────────────────────────────────────────
+// ── the lineage walk ─────────────────────────────────────────────────────
 
 export async function lineageFlow({ page, cc }: Args): Promise<void> {
   // Invariant: a real lineage walk renders its renew dividers and its gap in order, and only the current segment's prompts offer Rewind and Fork — those paged in from the archive included.

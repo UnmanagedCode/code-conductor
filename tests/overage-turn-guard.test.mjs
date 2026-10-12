@@ -240,7 +240,7 @@ test('G-T2 the guard never escalates to the forced tier', async () => {
 
 // PIN — Invariant: the cut is VISIBLE. The observed defect was silence — workers
 // silently re-invoked — so the guard emits a `system/soft_interrupted` carrying the
-// reason, which public/blocks.js renders as `⏸ Turn interrupted: <text>`.
+// reason, which web/src/conversation/format.ts renders as `Turn interrupted: <text>`.
 // Mutant: dropping the emit.
 test('G-T3 the guard says why in the transcript', async () => {
   await boot('stop-resume');

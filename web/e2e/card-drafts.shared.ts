@@ -1,11 +1,11 @@
-// A plan card's feedback and a question card's tab, pick and note in the /next/ transcript,
+// A plan card's feedback and a question card's tab, pick and note in the transcript,
 // in a real browser: leaving a full-page view (Settings) brings each back as the reader left
 // it, and typing in the middle of either card's text keeps the caret where the reader typed.
 // The bodies are shared by the per-project spec files; this module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { createProject } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
 

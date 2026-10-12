@@ -3,7 +3,6 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { WEB_BASE } from './base.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // `npm run dev:web` proxies the API to a running server (override with CC_DEV_SERVER).
@@ -11,11 +10,10 @@ const devServer = process.env.CC_DEV_SERVER || 'http://127.0.0.1:8787';
 
 export default defineConfig({
   root: here,
-  base: WEB_BASE,
   plugins: [react(), tailwindcss()],
   resolve: {
-    // The client modules shared with the old UI live in public/ while that UI is
-    // served; the `@/lib/core/*` entry in tsconfig.json `paths` mirrors this one.
+    // The client modules shared with the server live in public/; the
+    // `@/lib/core/*` entry in tsconfig.json `paths` mirrors this one.
     alias: [
       { find: /^@\/lib\/core\//, replacement: path.join(here, '..', 'public') + '/' },
       { find: '@', replacement: path.join(here, 'src') },
@@ -35,6 +33,7 @@ export default defineConfig({
     proxy: {
       '/api': devServer,
       '/plugins': { target: devServer, ws: true },
+      '/pluginBridge.js': devServer,
       '/ws': { target: devServer.replace(/^http/, 'ws'), ws: true },
     },
   },

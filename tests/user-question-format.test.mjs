@@ -1,20 +1,12 @@
-// Parity + canonical-output tests for the AskUserQuestion answer formatter.
+// Canonical-output tests for the AskUserQuestion answer formatter.
 //
-// The whole point of extracting public/userQuestionAnswers.ts is that the UI
-// question card and the answer_question MCP tool call ONE function — no fork.
-// These tests lock the canonical strings (the exact bytes the model reads)
-// AND prove the re-export is the same function reference, so a divergence
-// can't creep in.
+// public/userQuestionAnswers.ts is the one function the UI question card and
+// the answer_question MCP tool both call. These tests lock the canonical
+// strings — the exact bytes the model reads.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.ts';
-import { formatUserQuestionAnswers as fromBlocks } from '../public/blocks.js';
-
-test('blocks.js re-exports the SAME formatter function (no fork)', () => {
-  assert.equal(fromBlocks, formatUserQuestionAnswers,
-    'public/blocks.js must re-export the canonical formatter, not a copy');
-});
 
 const fruit = { question: 'Pick a fruit', header: 'Fruit', multiSelect: false,
   options: [{ label: 'Apple' }, { label: 'Banana' }] };

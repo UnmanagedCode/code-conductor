@@ -1,8 +1,8 @@
 // Settings → Models layout in the web UI across viewports and the sidebar's
 // widths: nothing overflows, the selected model reads, every select is
 // captioned, every control is tappable, and the Settings nav changes form with
-// its column. The old UI's sweep is legacy/models-responsive.spec.ts; the DOM
-// this rests on is web/src/features/settings/models/fieldLabels.test.tsx.
+// its column. The DOM this rests on is
+// web/src/features/settings/models/fieldLabels.test.tsx.
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { api } from './harness/api.ts';
@@ -170,7 +170,7 @@ async function seedSidebar(page: Page, width: number): Promise<void> {
 /** Lays Settings → Models out at each swept point and hands each to `visit`. */
 async function sweep(page: Page, visit: (p: Point) => Promise<void>): Promise<void> {
   const height = page.viewportSize()!.height;
-  await page.goto('/next/#settings/models');
+  await page.goto('/#settings/models');
   let seeded: number | null = null;
   for (const p of points()) {
     await page.setViewportSize({ width: p.viewport, height });
@@ -251,7 +251,7 @@ test.describe('Settings → Models layout', () => {
       ? [{ viewport: 1920, sidebar: 220, form: 'beside' }, { viewport: 768, sidebar: 560, form: 'above' }]
       : [{ viewport: 412, sidebar: null, form: 'above' }];
     const height = page.viewportSize()!.height;
-    await page.goto('/next/#settings/models');
+    await page.goto('/#settings/models');
     for (const c of cases) {
       await page.setViewportSize({ width: c.viewport, height });
       if (c.sidebar !== null) await seedSidebar(page, c.sidebar);

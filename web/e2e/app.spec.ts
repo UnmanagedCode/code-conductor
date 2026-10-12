@@ -11,7 +11,7 @@ async function sidebar(page: Page) {
 
 test('create a project from the sidebar and start a session in it', async ({ page }) => {
   const name = `e2e-proj-${test.info().project.name}`;
-  await page.goto('/next/');
+  await page.goto('/');
   let side = await sidebar(page);
   await side.getByRole('tab', { name: 'Projects' }).click();
   await side.getByRole('button', { name: 'Project actions' }).click();
@@ -38,7 +38,7 @@ test('create a project from the sidebar and start a session in it', async ({ pag
 });
 
 test('Conduct starts a conductor session straight away', async ({ page }) => {
-  await page.goto('/next/');
+  await page.goto('/');
   if (isPhone()) {
     await page.getByRole('button', { name: 'Start conducting' }).click();
   } else {
@@ -50,7 +50,7 @@ test('Conduct starts a conductor session straight away', async ({ page }) => {
 });
 
 test('Settings opens from the sidebar, switches sections, and Back returns', async ({ page }) => {
-  await page.goto('/next/');
+  await page.goto('/');
   const side = await sidebar(page);
   await side.getByRole('button', { name: 'Settings' }).click();
   await expect(page).toHaveURL(/#settings/);
@@ -62,7 +62,7 @@ test('Settings opens from the sidebar, switches sections, and Back returns', asy
 });
 
 test('the costs view opens from the sidebar menu and Escape closes it', async ({ page }) => {
-  await page.goto('/next/');
+  await page.goto('/');
   const side = await sidebar(page);
   await side.getByRole('button', { name: 'Project actions' }).click();
   await page.getByRole('menuitem', { name: /Costs/ }).click();

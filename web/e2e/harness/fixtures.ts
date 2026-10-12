@@ -1,7 +1,7 @@
 // The test object every cc spec imports. `cc` is a WORKER fixture: one booted
 // server per worker, and a spec file's `test.use({ ccOptions })` gets its own
 // (Playwright starts a new worker when worker options differ). `baseURL` points
-// at it, so `page.goto('/next/')` reaches this spec's server.
+// at it, so `page.goto('/')` reaches this spec's server.
 
 import { test as base } from '@playwright/test';
 import { bootCc, type Cc, type CcOptions } from './boot.ts';

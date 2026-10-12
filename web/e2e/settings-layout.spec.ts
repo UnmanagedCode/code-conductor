@@ -176,7 +176,7 @@ test.describe('Settings layout', () => {
     const inFlight = trackRequests(page);
     await serveWorstCaseRows(page);
     const height = page.viewportSize()!.height;
-    await page.goto('/next/#settings');
+    await page.goto('/#settings');
     const nav = page.getByRole('navigation', { name: 'Settings sections' });
     await expect(nav.getByRole('link').first()).toBeVisible();
     const sections = (await nav.getByRole('link').evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).getAttribute('href')!.replace('#settings/', ''))));

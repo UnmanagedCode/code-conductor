@@ -57,8 +57,7 @@ function claim(): boolean {
 
 /**
  * Reloads both lists and the load-owned status lines. `reset` also drops both
- * action notes and every live log, as each reload the old UI made after an
- * action did; a remount's load keeps them.
+ * action notes and every live log; a remount's load keeps them.
  */
 async function loadPlugins(reset: boolean): Promise<PluginRow[] | null> {
   try {
@@ -84,9 +83,9 @@ async function loadPlugins(reset: boolean): Promise<PluginRow[] | null> {
 }
 
 /**
- * Opening Settings drops the action notes and live logs, as the old UI's reload
- * on open did. While an action is running it keeps them, so its progress line and
- * log stay on screen, as About's running update does; the old reload replaced them.
+ * Opening Settings drops the action notes and live logs. While an action is
+ * running it keeps them, so its progress line and log stay on screen, as About's
+ * running update does.
  */
 export function resetPluginNotes() {
   if (!pluginsStore.get().busy) pluginsStore.set({ note: null, libNote: null, live: {} });

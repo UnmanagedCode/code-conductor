@@ -1,10 +1,8 @@
 // Characterization pin for the *attribute surface* of the markdown renderer.
 //
-// Why this exists: markdown.js builds every node through a private
-// `el(tag, ...children)` helper whose signature differs from blocks.js's
-// `el(tag, attrs, ...children)`. Consolidating onto the attrs-first form means
-// inserting `{}` at each call site, and a missed `{}` fails in one of two
-// silent ways:
+// Why this exists: markdown.js builds every node through dom.js's attrs-first
+// `el(tag, attrs, ...children)`, so every call site carries an attrs argument,
+// and a missed `{}` fails in one of two silent ways:
 //   - first child is a string → `Object.entries('text')` sets attributes
 //     0="t", 1="e", … (visible corruption, text lost);
 //   - first child is an element → `Object.entries(node)` yields nothing and

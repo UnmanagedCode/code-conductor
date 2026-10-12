@@ -22,12 +22,12 @@ export default defineConfig({
     {
       name: 'phone',
       use: { ...devices['Pixel 7'] },
-      testIgnore: ['legacy/**', 'live.spec.ts', '**/*.android.spec.ts'],
+      testIgnore: ['live.spec.ts', '**/*.android.spec.ts'],
     },
     {
       name: 'android',
       use: { ...devices['Pixel 7'], permissions: ['notifications'] },
-      testMatch: ['harness.spec.ts', '**/*.android.spec.ts', 'parity/**/*.spec.ts'],
+      testMatch: ['harness.spec.ts', '**/*.android.spec.ts', 'flows/**/*.spec.ts'],
     },
   ],
 });

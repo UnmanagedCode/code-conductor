@@ -962,7 +962,9 @@ test('a redacted block with no counter frames carries no estimatedTokens', async
     // were renamed and never written. Its protection against that comes from
     // the `=== 450` assertion in the preceding test, the only place the
     // SERVER-side write of this field name is pinned (the client-side read is
-    // pinned separately in tests/thinking-tokens.test.mjs). Don't delete that
+    // pinned separately in web/src/conversation/blocks.test.tsx "redacted: plain
+    // label without tokens, ~N with live or stamped tokens, and later counts are
+    // ignored"). Don't delete that
     // one as redundant.
     assert.equal(red.estimatedTokens, undefined,
       'thinking_start cleared the stale counter — no carry-over from a prior block');

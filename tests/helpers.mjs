@@ -40,7 +40,7 @@ export async function makeTmpHome() {
 //   useRealClaude:true → the real `claude` binary (RUN_REAL_CLAUDE smoke suite).
 //   claudeLauncher     → inject a custom launcher (e.g. one that crashes the
 //                        subprocess on demand) instead of the in-process fake.
-export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform } = {}) {
+export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform, webDistDir } = {}) {
   // Reset the projects git-facts cache so stale entries from a previous test
   // can't bleed into this one. TTL=0 gives pure-coalescing semantics:
   // concurrent requests coalesce but sequential requests always recompute,
@@ -80,7 +80,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   // subprocess is spawned, but swaps the launcher itself).
   if (claudeLauncherOverride) claudeLauncher = claudeLauncherOverride;
 
-  const { server, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform });
+  const { server, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform, webDistDir });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);

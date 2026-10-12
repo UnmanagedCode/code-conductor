@@ -1,11 +1,11 @@
-// The Conductors lens under /next/: the expanded tree's actions and stage lines, the Inactive group, and ↑ / ×
+// The Conductors lens: the expanded tree's actions and stage lines, the Inactive group, and ↑ / ×
 // end to end on a real server. The bodies are shared by the per-project spec files.
 import type { Page } from '@playwright/test';
 import { api, createProject, mcpCall } from './harness/api.ts';
 import { expect, test, type Cc } from './harness/fixtures.ts';
 import { seedTranscript } from './harness/transcript.ts';
-import { archived, gone, insts, spawnConductor, spawnWorker } from './parity/fleet.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { archived, gone, insts, spawnConductor, spawnWorker } from './flows/fleet.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
 type Inst = { id: string; sessionId: string; status: string; temp?: boolean; playbook?: string | null; stage?: string | null };

@@ -12,12 +12,8 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Window } from 'happy-dom';
 import { encodeCwd, localPlace} from '../src/projects.ts';
 import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.ts';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CWD = '/tmp/split-blocks-project';
 const SID = 'sess-split-blocks';
@@ -87,40 +83,4 @@ test('loadSubAgentTranscript: fragmented sub-agent messages get the same per-msg
   const thinkStarts = events.filter(ev => ev.msgId === 'm_frag' && ev.kind === 'thinking_start');
   assert.deepEqual(thinkStarts.map(ev => ev.blockIdx), [0, 1]);
   assert.ok(events.every(ev => ev.parentToolUseId === 'tu_outer'), 'sub-agent events stay tagged');
-});
-
-// End-to-end DOM regression for the actual misrender: on replay, the second
-// thinking block's colliding `${msgId}:0:thinking` key made its deltas append
-// into the FIRST ThinkingBlock — one merged block where the live stream
-// rendered two.
-test('DOM: replayed fragmented message renders two thinking blocks, not one merged block', async () => {
-  await seedTranscript(splitBlockLines(), `${SID}.jsonl`);
-  const result = await loadPersistedTranscript({ place: localPlace(CWD), sessionId: SID });
-  const events = flatEvents(result);
-
-  const window = new Window({ url: 'http://localhost/' });
-  globalThis.window = window;
-  globalThis.document = window.document;
-  globalThis.HTMLElement = window.HTMLElement;
-  globalThis.Element = window.Element;
-  globalThis.Node = window.Node;
-  const { Conversation } = await import(
-    pathToFileURL(path.resolve(__dirname, '..', 'public', 'conversation.js')).href
-  );
-  document.body.innerHTML = '<div id="root"></div>';
-  const root = document.getElementById('root');
-
-  const conversation = new Conversation(root);
-  for (const ev of events) conversation.apply(ev);
-
-  const thinkBlocks = [...root.querySelectorAll('.block.thinking')];
-  assert.equal(thinkBlocks.length, 2,
-    'both persisted thinking blocks must render as distinct blocks after replay');
-  const texts = thinkBlocks.map(n => n.querySelector('.body')?.textContent ?? '');
-  assert.deepEqual(texts, ['first thought', 'second thought'],
-    'each thinking block keeps its own content (no merge into the first block)');
-  // The two tool blocks survive as before (toolUseId-keyed, already immune).
-  assert.equal(root.querySelectorAll('.block.tool').length, 2, 'both tool blocks render');
-  assert.equal(root.querySelectorAll('.block.tool-result').length, 2,
-    'each tool_result attaches to its own tool block');
 });

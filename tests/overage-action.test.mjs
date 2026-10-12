@@ -542,8 +542,8 @@ test('A2-T1 routing: a conductor\'s own worker is stopped too, and left UN-ARMED
   await waitFor(() => worker.status === 'idle', { timeout: 10000 });
   assert.equal(worker.autoStoppedForOverage, false, 'the worker is NOT armed for resume');
   assert.equal(instances._autoResumeTimers.has(worker.id), false, 'no worker resume timer');
-  // …and the event says so. public/blocks.js renders `resume:true` as
-  // "auto-resuming at <time>", which for an un-armed worker names a resume that
+  // …and the event says so. web/src/conversation/format.ts renders `resume:true`
+  // as "Auto-resuming at <time>", which for an un-armed worker names a resume that
   // will never happen and contradicts its own null autoResumeAt badge. The event
   // must carry the PER-SESSION arming decision, not the routing mode.
   assert.equal(sub(wEvs, 'auto_stop_overage')[0].data.resume, false,
@@ -1851,7 +1851,7 @@ test('policy switch stop-resume → stop unmarks every marked session, across pr
   }
   assert.equal(ctx.instances._autoResumeTimers.size, 0, 'no deadline left anywhere');
   assert.equal(ctx.instances._overageResumeMode, false, 'queue gate disengaged');
-  // The dropped queue is announced, not silent — reuses blocks.js' existing renderer.
+  // The dropped queue is announced, not silent — an `auto_resume_skipped` line in the transcript.
   const skipped = sub(bEvs, 'auto_resume_skipped');
   assert.equal(skipped.length, 1, 'B told its queued message was dropped');
   assert.match(skipped[0].data.reason, /overage handling changed — 1 queued message\(s\) dropped/);

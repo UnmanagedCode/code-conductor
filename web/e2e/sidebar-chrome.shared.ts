@@ -1,9 +1,9 @@
-// The sidebar's two forms under /next/: a drawer on drawer viewports (phone, android), a fixed column on desktop.
+// The sidebar's two forms: a drawer on drawer viewports (phone, android), a fixed column on desktop.
 // The bodies are shared by the per-project spec files.
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Parameters<typeof spawnSession>[0] };
 
@@ -22,7 +22,7 @@ async function twoSessions(cc: Ctx['cc']) {
 export async function drawerFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(isDesktop(), 'a desktop has a column, not a drawer');
   const { project, a, b } = await twoSessions(cc);
-  await page.goto(`/next/#session=${a}`);
+  await page.goto(`/#session=${a}`);
   await expect(page.locator('#composer-input')).toBeEnabled();
   await expect(openSheet(page)).toHaveCount(0);
 
@@ -50,7 +50,7 @@ export async function drawerFlow({ page, cc }: Ctx): Promise<void> {
 export async function desktopColumnFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(!isDesktop(), 'drawer viewports have no fixed column');
   const { project, a, b } = await twoSessions(cc);
-  await page.goto(`/next/#session=${a}`);
+  await page.goto(`/#session=${a}`);
   await expect(page.locator('#composer-input')).toBeEnabled();
   const column = page.locator('[data-sidebar]:visible');
   await expect(column).toBeVisible();

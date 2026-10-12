@@ -1,4 +1,4 @@
-// The session header's real-browser layout under /next/: what happy-dom cannot
+// The session header's real-browser layout: what happy-dom cannot
 // measure (geometry, computed overflow and touch-action, a real resize across md).
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -51,7 +51,7 @@ async function terminate(page: Page) {
 
 test('a long-titled worktree session: the controls share one row inside the viewport, the title ends in an ellipsis without growing the header, and Sync is in the bar only from md up', async ({ page, cc }) => {
   const { sessionId, title } = await seed(cc, 'hdr-row', LONG_TITLE);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   const header = sessionHeader(page);
   const h1 = header.getByRole('heading', { level: 1 });
   await expect(h1).toHaveText(title);
@@ -114,7 +114,7 @@ test('the subline\'s project and worktree names, and the model badge on desktop,
   // Invariant: a long project, worktree and (desktop) model name each stay on one line, overflowing a box that clips rather than spills, with an ellipsis, inside a header no taller than a short-named one; a short name does not overflow its box.
   // The header a short project and worktree name give, to compare heights against.
   const short = await seed(cc, 'hdr-short', 't');
-  await page.goto(`/next/#session=${short.sessionId}`);
+  await page.goto(`/#session=${short.sessionId}`);
   const header = sessionHeader(page);
   await expect(header.getByRole('heading', { level: 1 })).toHaveText('t');
   const shortHeight = await header.evaluate((h) => h.getBoundingClientRect().height);
@@ -148,7 +148,7 @@ test('the subline\'s project and worktree names, and the model badge on desktop,
   expect(row!.worktree!.worktreeName, 'the session runs in the named worktree').toBe(worktreeName);
   // The subline shows the project only under a custom title.
   expect((await api(cc, 'PUT', `/api/sessions/${sessionId}/title`, { title: 't' })).status).toBeLessThan(300);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   await expect(header.getByRole('heading', { level: 1 })).toHaveText('t');
   await expect(header).toContainText(worktreeName);
 
@@ -186,7 +186,7 @@ test('the subline\'s project and worktree names, and the model badge on desktop,
 
 test('nothing in the session header is a scroll container, so the header keeps vertical swipes to itself', async ({ page, cc }) => {
   const { sessionId, title } = await seed(cc, 'hdr-scroll', LONG_TITLE);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   const header = sessionHeader(page);
   await expect(header.getByRole('heading', { level: 1 })).toHaveText(title);
   // A scroll container (overflow hidden/auto/scroll) between a touch and the
@@ -203,7 +203,7 @@ test('nothing in the session header is a scroll container, so the header keeps v
 
 test('a stopped worktree session: ⋮ holds only Sync worktree on a phone and is absent on desktop', async ({ page, cc }) => {
   const { sessionId } = await seed(cc, 'hdr-stopped', 'stopped');
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   await expect(sessionHeader(page).getByRole('heading', { level: 1 })).toHaveText('stopped');
   await terminate(page);
   if (isDesktop()) {
@@ -232,7 +232,7 @@ test('resizing across md moves Sync between the bar and ⋮ and closes a stopped
     await expect(barSync(page)).toHaveCount(0);
   };
   await page.setViewportSize({ width: WIDE, height });
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   await expect(sessionHeader(page).getByRole('heading', { level: 1 })).toHaveText('resize');
   await expectWide();
   expect(await menuItems(page)).not.toContain('Sync worktree');

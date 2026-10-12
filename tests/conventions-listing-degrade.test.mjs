@@ -512,8 +512,8 @@ describe('the conventions listings and the project created from them, over a deg
   // the warn is what only this test can see.
   //
   // NOT CLAIMING: that `GET /api/settings/conventions/project` carries the flag
-  // — it deliberately does not, and the comments at that route and at
-  // public/newProjectDialog.js say so; that the new-project dialog shows
+  // — it deliberately does not, and the comment at that route says so; that
+  // the new-project dialog shows
   // anything; that the route's own name refusals moved (they stay first, and
   // other files pin them).
   test('POST /api/projects delegates: same 201 body, same marker, no scaffold, one warn', async () => {

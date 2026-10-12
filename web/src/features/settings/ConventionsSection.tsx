@@ -127,10 +127,10 @@ export const conventionsDraftStore = createStore<Record<ConventionScope, Draft>>
 const patchDraft = (scope: ConventionScope, patch: Partial<Draft>) => conventionsDraftStore.set((s) => ({ ...s, [scope]: { ...s[scope], ...patch } }));
 // The plugins version each scope's panel last loaded at. It is module-scoped so that a remount can tell a plugin change that landed while the panel was unmounted (a section switch, a collapse) from a plain remount.
 export const pluginsSeen: Partial<Record<ConventionScope, number>> = {};
-// Each block stays open or closed as the user left it until a page reload, as the old UI's <details> did.
+// Each block stays open or closed as the user left it until a page reload.
 export const conventionsBlocksStore = createStore<Record<ConventionScope, boolean>>({ workspace: true, conductor: false, project: false });
 
-/** Opening Settings drops every list refusal, as the old UI's reload on open replaced it. */
+/** Opening Settings drops every list refusal. */
 export function clearConventionsListErrors() {
   conventionsDraftStore.set((s) => ({ workspace: { ...s.workspace, listError: null }, conductor: { ...s.conductor, listError: null }, project: { ...s.project, listError: null } }));
 }

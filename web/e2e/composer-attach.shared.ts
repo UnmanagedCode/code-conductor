@@ -1,15 +1,15 @@
-// The composer's attachments under /next/: a file chosen through the Attach files button and files
+// The composer's attachments: a file chosen through the Attach files button and files
 // dropped on the composer both become removable chips; each session keeps its own chips and previews
 // through sidebar switches; and a session's chips survive leaving the session view. The body is
 // shared by the per-project spec files.
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 export async function attachFlow({ page, cc }: { page: Page; cc: Parameters<typeof spawnSession>[0] }): Promise<void> {
   const { sessionId } = await spawnSession(cc, `e2e-attach-${test.info().project.name}`);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   await expect(page.locator('#composer-input')).toBeEnabled();
 
   // The button opens the picker; choosing a file attaches it.

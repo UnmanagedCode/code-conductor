@@ -1,4 +1,4 @@
-// The Projects lens's real-browser layout under /next/: what happy-dom cannot
+// The Projects lens's real-browser layout: what happy-dom cannot
 // measure (the Other projects rule and label x, row geometry in and out of a
 // workspace, a caret beside an overflowing workspace name).
 import fs from 'node:fs';
@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { api, createProject, mcpCall } from './harness/api.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 
 test.use({ ccOptions: { server: 'sidebar-projects' } });
 
@@ -27,7 +27,7 @@ async function setOpen(sb: Locator, name: string, open: boolean) {
 }
 
 async function projectsLens(page: Page) {
-  await page.goto('/next/');
+  await page.goto('/');
   await next.lens(page, 'projects');
   return nextSidebar(page);
 }
@@ -119,7 +119,7 @@ test('a Conductors-lens tree project row offers the same Commit history button a
   expect(r.isError, JSON.stringify(r.content)).toBeFalsy();
   await expect.poll(async () => (await instances()).some((i) => i.callerInstanceId === id && i.status === 'idle')).toBe(true);
 
-  await page.goto('/next/');
+  await page.goto('/');
   await next.lens(page, 'conductors');
   const sb = nextSidebar(page);
   await sb.locator(`[data-conductor="${sid}"] button[aria-label="Show workers"]`).click();
