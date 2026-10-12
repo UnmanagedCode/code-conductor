@@ -267,7 +267,7 @@ describe('placement', () => {
 
   // Capabilities already known to lack remote systems decide the first paint: no System row, before any reload answers.
   it('with the capabilities already known to lack remote systems, the first paint has no System row and the registry is not read', () => {
-    vi.mocked(capabilities).mockImplementation(() => ({ remoteSystems: false, voice: true, fuseUnion: true }) as any);
+    vi.mocked(capabilities).mockImplementation(() => ({ remoteSystems: false, voice: true, fuseUnion: true }));
     vi.mocked(loadCapabilities).mockReturnValueOnce(held().answer as any);
     const calls = routeFetch({ 'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }) });
     render(<Harness />);
@@ -278,7 +278,7 @@ describe('placement', () => {
 
   // Capabilities already known to offer remote systems put the System row on the first paint, without waiting for a reload.
   it('with the capabilities already known to offer remote systems, the System row is there on first paint, before they are reloaded', () => {
-    vi.mocked(capabilities).mockImplementation(() => ({ remoteSystems: true, voice: true, fuseUnion: true }) as any);
+    vi.mocked(capabilities).mockImplementation(() => ({ remoteSystems: true, voice: true, fuseUnion: true }));
     vi.mocked(loadCapabilities).mockReturnValueOnce(held().answer as any);
     routeFetch({ 'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }) });
     render(<Harness />);

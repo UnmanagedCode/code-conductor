@@ -14,7 +14,37 @@
 
 const CREATE_ID_RE = /Task #(\d+) created/;
 
+export type TaskStatus = 'pending' | 'in_progress' | 'completed' | (string & {});
+export type Task = { subject: string; description: string; activeForm: string | null; status: TaskStatus };
+export type ListedTask = Task & { id: string };
+type TaskInfo = { subject: string | null; description: string | null };
+type PendingCreate = { subject?: string; description?: string; activeForm?: string | null };
+type TextBlock = { text?: string } | null | undefined;
+
+// A tool_use / tool_result UI event's fields (src/parser.ts) the tracker reads.
+export type TaskEvent = {
+  kind?: string;
+  parentToolUseId?: string | null;
+  name?: string;
+  toolUseId?: string;
+  input?: {
+    subject?: string;
+    description?: string;
+    activeForm?: string;
+    status?: TaskStatus;
+    taskId?: string | number | null;
+  } | null;
+  content?: unknown;
+};
+
 export class TaskTracker {
+  declare tasks: Map<string, Task>;
+  declare _pendingCreates: Map<string | undefined, PendingCreate>;
+  declare _pendingResults: Map<string | undefined, TaskEvent>;
+  declare _infoHistory: Map<string, TaskInfo>;
+  declare _listeners: Set<(tracker: TaskTracker) => void>;
+  declare completedBatches: { tasks: ListedTask[] }[];
+
   constructor() {
     // taskId (string) -> { subject, description?, activeForm?, status }
     this.tasks = new Map();
@@ -43,20 +73,20 @@ export class TaskTracker {
   // Public lookups for the tool-block renderer. Returns the most
   // recently-known subject / description for a task id, or null if
   // we've never seen one.
-  getSubject(taskId) {
+  getSubject(taskId: string | number | null | undefined): string | null {
     if (taskId == null) return null;
     return this._infoHistory.get(String(taskId))?.subject ?? null;
   }
-  getDescription(taskId) {
+  getDescription(taskId: string | number | null | undefined): string | null {
     if (taskId == null) return null;
     return this._infoHistory.get(String(taskId))?.description ?? null;
   }
 
-  onChange(fn) { this._listeners.add(fn); return () => this._listeners.delete(fn); }
-  _notify() { for (const fn of this._listeners) { try { fn(this); } catch { /* ignore */ } } }
+  onChange(fn: (tracker: TaskTracker) => void): () => boolean { this._listeners.add(fn); return () => this._listeners.delete(fn); }
+  _notify(): void { for (const fn of this._listeners) { try { fn(this); } catch { /* ignore */ } } }
 
   // Snapshot replay calls reset() before re-feeding every event.
-  reset() {
+  reset(): void {
     this.tasks.clear();
     this._pendingCreates.clear();
     this._pendingResults.clear();
@@ -71,7 +101,7 @@ export class TaskTracker {
   // batch whose TaskCreate is below the tail is present when the tail's
   // TaskUpdates arrive — the panel shows and, if the batch completes inside the
   // tail, the completion edge fires and the inline bubble is synthesized.
-  seedActive(list) {
+  seedActive(list: readonly { id: string | number; subject?: string | null; description?: string | null; activeForm?: string | null; status?: TaskStatus | null }[] | null | undefined): void {
     if (!Array.isArray(list) || list.length === 0) return;
     for (const t of list) {
       const id = String(t.id);
@@ -92,11 +122,11 @@ export class TaskTracker {
   // Shared task-creation logic, called from both the normal path (live:
   // tool_use first, then tool_result) and the replay path (jsonl: tool_result
   // first, then tool_use).
-  _applyCreate(input, resultEv) {
+  _applyCreate(input: PendingCreate, resultEv: TaskEvent): void {
     const content = typeof resultEv.content === 'string'
       ? resultEv.content
       : Array.isArray(resultEv.content)
-        ? resultEv.content.map(b => b?.text ?? '').join('\n')
+        ? resultEv.content.map((b: TextBlock) => b?.text ?? '').join('\n')
         : '';
     const m = content.match(CREATE_ID_RE);
     if (!m) return;
@@ -117,7 +147,7 @@ export class TaskTracker {
     this._notify();
   }
 
-  apply(ev) {
+  apply(ev: TaskEvent | null | undefined): void {
     if (!ev || typeof ev !== 'object') return;
     if (ev.parentToolUseId) return; // a sub-agent's todo list is not the outer agent's
     if (ev.kind === 'tool_use') {
@@ -185,7 +215,7 @@ export class TaskTracker {
         const content = typeof ev.content === 'string'
           ? ev.content
           : Array.isArray(ev.content)
-            ? ev.content.map(b => b?.text ?? '').join('\n')
+            ? ev.content.map((b: TextBlock) => b?.text ?? '').join('\n')
             : '';
         if (CREATE_ID_RE.test(content)) {
           this._pendingResults.set(ev.toolUseId, ev);
@@ -197,7 +227,7 @@ export class TaskTracker {
     }
   }
 
-  _allCompleted() {
+  _allCompleted(): boolean {
     for (const t of this.tasks.values()) {
       if (t.status !== 'completed') return false;
     }
@@ -206,7 +236,7 @@ export class TaskTracker {
 
   // True when the panel should render — there's at least one task and
   // not everything is completed yet.
-  isVisible() {
+  isVisible(): boolean {
     if (this.tasks.size === 0) return false;
     for (const t of this.tasks.values()) {
       if (t.status !== 'completed') return true;
@@ -214,7 +244,7 @@ export class TaskTracker {
     return false;
   }
 
-  list() {
+  list(): ListedTask[] {
     // Stable order by numeric task id ascending — matches the order
     // the model created them.
     return [...this.tasks.entries()]
@@ -222,7 +252,7 @@ export class TaskTracker {
       .map(([id, t]) => ({ id, ...t }));
   }
 
-  completedCount() {
+  completedCount(): number {
     let n = 0;
     for (const t of this.tasks.values()) if (t.status === 'completed') n++;
     return n;
@@ -234,21 +264,25 @@ export class TaskTracker {
 // tracker visibility. That keeps the layout from jumping when the
 // last task flips to completed and the panel disappears.
 export class TaskPanel {
-  constructor(host) {
+  declare host: HTMLElement;
+  declare tracker: TaskTracker | null;
+  declare _unsubscribe: (() => unknown) | null;
+
+  constructor(host: HTMLElement) {
     this.host = host;
     this.tracker = null;
     this._unsubscribe = null;
     this._render();
   }
 
-  attach(tracker) {
+  attach(tracker: TaskTracker | null): void {
     if (this._unsubscribe) { this._unsubscribe(); this._unsubscribe = null; }
     this.tracker = tracker;
     if (tracker) this._unsubscribe = tracker.onChange(() => this._render());
     this._render();
   }
 
-  _render() {
+  _render(): void {
     const t = this.tracker;
     if (!t || !t.isVisible()) {
       this.host.hidden = true;

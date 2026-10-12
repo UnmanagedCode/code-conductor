@@ -90,12 +90,12 @@ export function modelGroups(inst: Instance): [string, Entry[]][] {
     if (!groups.has(id)) groups.set(id, []);
     groups.get(id)!.push({ target: { tier }, label: getTierLabel(tier), state: modelEntryState(inst, binding), selected: isRunning(id, binding.model), model: binding.model });
   }
-  for (const { id } of getBackends() as { id: string }[]) {
+  for (const { id } of getBackends()) {
     if (id === CLAUDE_BACKEND) continue;
     if (!groups.has(id)) groups.set(id, []);
     const group = groups.get(id)!;
     const tierModels = new Set(group.map((e) => e.model));
-    for (const { model, label } of getBackendModels(id) as { model: string; label: string }[]) {
+    for (const { model, label } of getBackendModels(id)) {
       if (tierModels.has(model)) continue;
       const binding = { backend: id, model };
       group.push({ target: binding, label, state: modelEntryState(inst, binding), selected: isRunning(id, model), model });
@@ -163,7 +163,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   const between = isBetweenTurns(inst);
   const muted = isSessionMuted(inst.sessionId);
   const enforcing = isEnforcing(inst.playbookEnforcement);
-  const resumeBadge = autoResumeBadge(inst as any);
+  const resumeBadge = autoResumeBadge(inst);
   React.useSyncExternalStore(uiStore.subscribe, () => uiStore.get().callUsageShown);
   const showCallUsage = isCallUsageShown(inst.sessionId);
 

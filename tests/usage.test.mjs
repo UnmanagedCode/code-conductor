@@ -16,7 +16,7 @@ import { Window } from 'happy-dom';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'shared');
-const USAGE_URL = pathToFileURL(path.join(PUB, 'usage.js')).href;
+const USAGE_URL = pathToFileURL(path.join(PUB, 'usage.ts')).href;
 
 test('UsageTracker: initial state has no current size or totals', async () => {
   const { UsageTracker } = await import(USAGE_URL);

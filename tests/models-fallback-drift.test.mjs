@@ -41,7 +41,7 @@ import {
 import { DEFAULT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const MODELS_URL = pathToFileURL(path.resolve(__dirname, '..', 'shared', 'models.js')).href;
+const MODELS_URL = pathToFileURL(path.resolve(__dirname, '..', 'shared', 'models.ts')).href;
 const client = await import(MODELS_URL);
 
 test('mirror: each family default id resolves to that version\'s catalog label', async () => {
@@ -150,7 +150,7 @@ test('models.js: pre-fetch reads the DEFAULT_EFFORT seed, then adopts the payloa
   globalThis.window = window;
   globalThis.document = window.document;
   const models = await import(
-    pathToFileURL(path.resolve(__dirname, '..', 'shared', 'models.js')).href + '?prefetch=1');
+    pathToFileURL(path.resolve(__dirname, '..', 'shared', 'models.ts')).href + '?prefetch=1');
 
   // Before any fetch: the seed mirrors src/effortLevels.ts DEFAULT_EFFORT, so a
   // first paint can't advertise a level the server would never resolve.

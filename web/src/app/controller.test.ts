@@ -156,9 +156,9 @@ describe('routing session data', () => {
     const b = await boot({ instances: [{ id: 'A' }] });
     b.rateLimits.apply({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { utilization: 0.8 } } });
     b.emit('snapshot', { id: 'A', events: [{ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { utilization: 0.1 } }, _seq: 1 }] });
-    expect(b.rateLimits.info.utilization).toBe(0.8);
+    expect(b.rateLimits.info?.utilization).toBe(0.8);
     b.emit('event', { id: 'A', ev: { kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { utilization: 0.3 } } } });
-    expect(b.rateLimits.info.utilization).toBe(0.3);
+    expect(b.rateLimits.info?.utilization).toBe(0.3);
   });
 
   it('a reset_snapshot (rewind) rebuilds the conversation and drops the prompt back into the composer', async () => {

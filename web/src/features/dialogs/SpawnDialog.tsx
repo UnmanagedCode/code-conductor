@@ -38,7 +38,7 @@ export function defaultSpawnTier(): string {
 
 /** Tiers offered: the enabled ones; when every tier is off, the fallback tier alone. */
 export function visibleTiers(): string[] {
-  const tiers = getTierList() as string[];
+  const tiers = getTierList();
   const on = tiers.filter((t) => getActiveTierEnabled(t));
   return on.length ? on : [defaultSpawnTier()];
 }
@@ -197,7 +197,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
                 <SelectTrigger id="sd-effort" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value={DEFAULT_EFFORT}>Default ({getActiveTierEffort(tier)})</SelectItem>
-                  {(getEffortLevels() as string[]).map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                  {getEffortLevels().map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
