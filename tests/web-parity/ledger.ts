@@ -3500,6 +3500,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > a release that fires no click still lets the next tap stop the recording',
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > a press cancelled before the threshold does nothing',
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > a cancel after the recording started leaves it running until a tap',
+        'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > after a hold that recorded and a cancel, Stop recording works from the keyboard',
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > pressing Dictate, Send to hold, or Stop recording keeps the focus in the message box',
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > the Send button\'s tooltip names the hold gesture while dictation is available, and not without it',
         'web/src/features/composer/composerHoldDictate.test.tsx::holding Send with text in the box > a recorder that fails to start releases the microphone, says so, and the next hold records',

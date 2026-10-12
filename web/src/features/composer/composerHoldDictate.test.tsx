@@ -232,6 +232,23 @@ describe('holding Send with text in the box', () => {
     expect(box().value).toBe('hello spoken');
   });
 
+  it('after a hold that recorded and a cancel, Stop recording works from the keyboard', async () => {
+    mount(inst('cancel-keys'));
+    type('hello');
+    await holdToRecord();
+    expect(label(), 'positive control: the hold started a recording').toBe('Stop recording');
+    fireEvent.pointerCancel(button(), { pointerId: 1 });
+    await wait(HOLD_MS);
+    expect(label(), 'the cancel leaves it recording').toBe('Stop recording');
+    fireEvent.click(button());
+    await flushMicrotasks();
+    expect(transcriptions, 'a keyboard activation, a click with no pointer, stops it').toBe(1);
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(label(), 'the control returns to Send').toBe('Send');
+    expect(box().value).toBe('hello spoken');
+  });
+
   it('pressing Dictate, Send to hold, or Stop recording keeps the focus in the message box', async () => {
     mount(inst('focus'));
     box().focus();
