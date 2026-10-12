@@ -4,6 +4,7 @@
 // as the reader left it; a sent plan keeps the feedback it sent, and one whose send failed
 // re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session,
 // a rewind) starts every card empty. Typing in the middle of a card's text keeps the caret.
+// A card that paged in from an older page re-opens after a failed send the same way.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 
@@ -256,5 +257,130 @@ describe('typing in the middle of a card\'s text', () => {
     const { root } = renderModel(m, noActions);
     await flush();
     expect(await typeMidText(textbox(questions(root)[0]))).toBe('aXYbc');
+  });
+});
+
+describe('a card from an older page', () => {
+  /** The snapshot's tail starts at seq 10; the page below it carries a plan card and a question card. */
+  const OLDER: UiEvent[] = [
+    { kind: 'user_echo', text: 'plan it', userIndex: 0, _seq: 1 },
+    { kind: 'plan_request', toolUseId: 'p-old', plan: '# Older', _seq: 2 },
+    { kind: 'user_question', toolUseId: 'q-old', questions: [FRUIT], _seq: 3 },
+    { kind: 'turn_end', subtype: 'success', _seq: 4 },
+  ];
+  const TAIL: UiEvent[] = [
+    { kind: 'user_echo', text: 'plan again', userIndex: 1, _seq: 10 },
+    { kind: 'plan_request', toolUseId: 'p-new', plan: '# Newer', _seq: 11 },
+    { kind: 'turn_end', subtype: 'success', _seq: 12 },
+  ];
+
+  /** Shows `id`'s tail, then pages OLDER in above it, as scrolling up does. */
+  async function showPaged(id: string) {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ events: OLDER, hasMore: false, segment: null, nextBefore: null }),
+    })));
+    await frame('snapshot', { id, events: TAIL, tailStartSeq: 10 });
+    await act(async () => { await lazyHistory.loadEarlier(); });
+    await flush();
+  }
+  /** The two plan cards, the paged one first, each told apart by its plan's heading. */
+  function olderAndNewer(root: Element): [HTMLElement, HTMLElement] {
+    const [older, newer] = plans(root);
+    expect(plans(root).map((p) => within(p).getAllByRole('heading').map((h) => h.textContent)), 'fixture check: the older plan paged in above the tail\'s').toEqual([['Older'], ['Newer']]);
+    return [older, newer];
+  }
+  const decideButton = (card: HTMLElement, decision: 'Approve' | 'Reject') => within(card).getByRole('button', { name: new RegExp(decision) }) as HTMLButtonElement;
+  const prompts = () => sent.filter((s) => s.t === 'prompt').map((s) => s.payload.text);
+
+  /** Both cards' decisions are refused; each re-opens with its feedback, and the older one then sends again and locks. */
+  async function failedDecisionReopens(decision: 'Approve' | 'Reject') {
+    const build = decision === 'Approve' ? buildApprovePrompt : buildRejectPrompt;
+    const state = (card: HTMLElement) => ({ feedback: textbox(card).value, editable: !textbox(card).disabled, decides: !decideButton(card, decision).disabled });
+    const { el } = mount();
+    await showPaged('i1');
+    const [older, newer] = olderAndNewer(el);
+    await type(textbox(newer), 'newer fails');
+    await click(decideButton(newer, decision));
+    await type(textbox(older), 'older fails');
+    await click(decideButton(older, decision));
+    await flush();
+    expect(prompts(), 'fixture check: each decision sent its own feedback, and both were refused').toEqual([build('newer fails'), build('older fails')]);
+    expect(state(newer), 'positive control: the tail\'s card re-opened with its feedback').toEqual({ feedback: 'newer fails', editable: true, decides: true });
+    expect(state(older)).toEqual({ feedback: 'older fails', editable: true, decides: true });
+    expect(older.textContent, 'the older card shows why its send failed').toContain('not connected');
+    await type(textbox(older), 'older lands');
+    await click(decideButton(older, decision));
+    await flush();
+    expect(prompts().at(-1), 'the re-opened card sends its new feedback').toBe(build('older lands'));
+    expect(state(older), 'and locks on what it sent').toEqual({ feedback: 'older lands', editable: false, decides: false });
+    expect(older.textContent, 'the earlier failure is no longer shown').not.toContain('not connected');
+  }
+
+  it('when Reject can\'t reach the CLI, the older card re-opens with its feedback, as the tail\'s card does, and sends again', async () => {
+    await failedDecisionReopens('Reject');
+  });
+
+  it('when Approve can\'t reach the CLI, the older card re-opens with its feedback, as the tail\'s card does, and sends again', async () => {
+    await failedDecisionReopens('Approve');
+  });
+
+  it('a question card that can\'t send its answer re-opens with its pick and note', async () => {
+    const { el } = mount();
+    await showPaged('i1');
+    const [card] = questions(el);
+    await click(card.querySelector('[data-option="Apple"]')!);
+    await type(textbox(card), 'note fails');
+    await click(within(card).getByRole('button', { name: /Send/ }));
+    await flush();
+    expect(prompts().length, 'fixture check: the answer was sent and refused').toBe(1);
+    expect({
+      picked: [...card.querySelectorAll('[data-option][aria-pressed="true"]')].map((b) => b.getAttribute('data-option')),
+      note: textbox(card).value,
+      editable: !textbox(card).disabled,
+    }).toEqual({ picked: ['Apple'], note: 'note fails', editable: true });
+  });
+
+  it('the same older page spliced in twice renders its plan card once, and that card re-opens after a refused decision', async () => {
+    const { el } = mount();
+    await snapshot('i1', TAIL);
+    conversation.prependPage(conversation.renderPage(OLDER, null, null), conversation.leadingAssistantWrap);
+    conversation.prependPage(conversation.renderPage(OLDER, null, null), conversation.leadingAssistantWrap);
+    await flush();
+    expect(questions(el), 'positive control: the shared question registry renders the page\'s question card once').toHaveLength(1);
+    const headings = plans(el).map((p) => within(p).getAllByRole('heading').map((h) => h.textContent));
+    expect(headings, 'the older plan card renders once, above the tail\'s').toEqual([['Older'], ['Newer']]);
+    const [older] = plans(el);
+    await type(textbox(older), 'older fails');
+    await click(decideButton(older, 'Reject'));
+    await flush();
+    expect(prompts(), 'fixture check: the decision was sent and refused').toEqual([buildRejectPrompt('older fails')]);
+    expect({ feedback: textbox(older).value, editable: !textbox(older).disabled }).toEqual({ feedback: 'older fails', editable: true });
+  });
+
+  /** Locks the older card on a decision that lands, then runs `reset` and pages the same history in again. */
+  async function lockThenReset(reset: () => Promise<void>) {
+    const { el } = mount();
+    await showPaged('i1');
+    const [older] = olderAndNewer(el);
+    await type(textbox(older), 'older lands');
+    await click(decideButton(older, 'Reject'));
+    await flush();
+    expect({ feedback: textbox(older).value, editable: !textbox(older).disabled }, 'fixture check: the older card is locked on what it sent').toEqual({ feedback: 'older lands', editable: false });
+    await reset();
+    await showPaged('i1');
+    const [again] = olderAndNewer(el);
+    return { feedback: textbox(again).value, editable: !textbox(again).disabled };
+  }
+
+  it('another session selected and coming back pages the older card in again, awaiting a decision', async () => {
+    expect(await lockThenReset(async () => {
+      act(() => { selectInstance('i2'); });
+      await snapshot('i2', []);
+      act(() => { selectInstance('i1'); });
+    })).toEqual({ feedback: '', editable: true });
+  });
+
+  it('a reconnect\'s snapshot pages the older card in again, awaiting a decision', async () => {
+    expect(await lockThenReset(async () => {})).toEqual({ feedback: '', editable: true });
   });
 });

@@ -59,6 +59,7 @@ The web UI (`web/`) has its own Vitest and Playwright suites: [The web UI](#the-
 - **A session on disk after exit** (Inactive/archived rows, resume): seed a jsonl named by the session's **backing** id, read from the sandbox store's `sessions.json` → `.sessions[<publicId>].current`. A file named by the public id matches no archive marker, and a check can go green on it by accident.
 - **A harness conductor that spawns unbound workers** needs `playbookEnforcement: 'warn'`.
 - **An overage queue** (`overage_message_queued`, then `system`/`auto_resume`): send the server's frames into the page's own WebSocket with Playwright's `page.routeWebSocket` (`queuedGhostsFlow` in `web/e2e/conversation-bubbles.shared.ts`). A real queue needs the account-usage monitor, the Stop & resume policy and a reset deadline.
+- **A send the server refuses** (an acked `prompt` that can't reach the CLI): route the page's socket with `page.routeWebSocket`, answer the chosen `prompt` frame with `{ t: 'ack', reqId, ok: false, error }` and forward every other frame to `ws.connectToServer()` (`refuseMarkedPrompts` in `web/e2e/paged-plan-card.shared.ts`). The fake engine never refuses one.
 - **Read-aloud without a Piper voice:** fulfil `GET /api/tts/status` with `{ available: true }`, and read what a tap would speak from the `POST /api/tts` request body, answered with an empty `200` (`speechSeam` in `web/e2e/conversation-bubbles.shared.ts`).
 - **`awaitingUser`:**
   - Text ask: a scenario turn ending in `?` with `stop_reason: "end_turn"`, sent to a REST-spawned (non-conducted) session.
