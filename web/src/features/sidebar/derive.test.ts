@@ -3,7 +3,7 @@ import {
   clampSidebarWidth, filterOptions, filterShows, groupProjects, hasHandSession, mergeLive, revealTarget,
   sessionLabel, sessionSections, sessionsTotal,
 } from './derive';
-import { deriveConductors } from './core';
+import { deriveConductors } from '@shared/conductors';
 
 const inst = (o: Record<string, any>) => ({ id: o.id ?? `i-${o.sessionId}`, status: 'idle', mode: 'plan', ...o }) as any;
 

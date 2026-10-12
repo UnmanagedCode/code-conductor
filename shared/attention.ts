@@ -9,22 +9,32 @@
 // pre-launch listing cannot fake one. Baselines are keyed by instanceId, because
 // the counters belong to an Instance object.
 
-import { topLevelEntries, stripGroupOf } from './needsYou.js';
-import { deriveConductors } from './conductors.js';
+import { topLevelEntries, stripGroupOf } from './needsYou.ts';
+import type { StripEntry } from './needsYou.ts';
+import { deriveConductors } from './conductors.ts';
+import type { AskKind, AskSource, InstanceFields } from './conductors.ts';
 
-export function createAttentionTracker() {
+// The live-only counters of the summary, beside the fields the strip reads.
+export type AttentionInstance = InstanceFields & { liveAsks?: number; liveTurnEnds?: number; lastTurnError?: boolean };
+
+type Base = { sessionId: string; instanceId: string; entry: StripEntry };
+export type AttentionTransition =
+  | Base & { kind: 'waiting'; ask: AskKind | null; source: AskSource | null }
+  | Base & { kind: 'finished'; isError: boolean };
+
+export function createAttentionTracker(): { observe(instances: readonly AttentionInstance[]): AttentionTransition[] } {
   // instanceId → { asks, turnEnds, pending }. `pending`: first seen already past
   // its turn end but held in Running (idle with subagents live or a wake armed),
   // so its settle into Finished is owed a notification with no new turn end.
-  const baselines = new Map();
+  const baselines = new Map<string, { asks: number; turnEnds: number; pending: boolean }>();
 
   // Returns the transitions this list produced: { kind: 'waiting' | 'finished',
   // sessionId, instanceId, entry, ask?, source?, isError? }.
-  function observe(instances) {
+  function observe(instances: readonly AttentionInstance[]): AttentionTransition[] {
     const byId = new Map(instances.map(i => [i.id, i]));
     const pool = topLevelEntries({ conductors: deriveConductors({ instances }).live, instances });
-    const out = [];
-    const present = new Set();
+    const out: AttentionTransition[] = [];
+    const present = new Set<string>();
     for (const entry of pool) {
       const inst = byId.get(entry.instanceId);
       if (!inst) continue;

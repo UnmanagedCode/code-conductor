@@ -11,7 +11,7 @@
 // `cc-notification-click` message, the page fallback dispatches the same-named
 // window event.
 import { askLabel } from '@shared/needsYou';
-import { createAttentionTracker } from '@shared/attention';
+import { createAttentionTracker, type AttentionInstance } from '@shared/attention';
 import { createStore } from '@/state/createStore';
 import { isSessionMuted } from './mutes';
 
@@ -143,8 +143,8 @@ export type AttentionTransition = {
   sessionId: string;
   instanceId: string;
   entry: { conductor?: boolean; projectName?: string; worktreeName?: string | null; label?: string };
-  ask?: string;
-  source?: string;
+  ask?: string | null;
+  source?: string | null;
   isError?: boolean;
 };
 
@@ -178,8 +178,8 @@ export function notifyAttention({ transition, onScreen }: { transition: Attentio
 export function createAttentionNotifier({ isOnScreen }: { isOnScreen: (sessionId: string) => boolean }) {
   const tracker = createAttentionTracker();
   return {
-    observe(instances: unknown[]) {
-      for (const transition of tracker.observe(instances) as AttentionTransition[]) {
+    observe(instances: readonly AttentionInstance[]) {
+      for (const transition of tracker.observe(instances)) {
         notifyAttention({ transition, onScreen: isOnScreen(transition.sessionId) });
       }
     },

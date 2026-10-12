@@ -3,7 +3,7 @@
 // kept), a live temp or not-live one is archived — and which stops ask first.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeActionOf, stopNeedsConfirm } from '../shared/closeAction.js';
+import { closeActionOf, stopNeedsConfirm } from '../shared/closeAction.ts';
 
 test('closeActionOf: one step down — stop only a live persistent session', async (t) => {
   const cases = [

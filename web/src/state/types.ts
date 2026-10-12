@@ -23,6 +23,8 @@ export type Instance = {
   conducted?: boolean;
   callerInstanceId?: string | null;
   ownerSessionId?: string | null;
+  awaitingWake?: boolean;
+  waitingOnJob?: boolean;
   awaitingUser?: 'question' | 'plan' | null;
   awaitingUserSource?: 'tool' | 'text' | null;
   autoApprovePlan?: boolean;

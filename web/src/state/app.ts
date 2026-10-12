@@ -1,5 +1,6 @@
 import { createStore } from './createStore';
 import type { Instance, Project, SessionRow } from './types';
+import type { SpawnedProject } from '@shared/conductors';
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting';
 
@@ -12,7 +13,7 @@ export type AppState = {
   /** `.conduct` sessions on disk (the Conductors lens). */
   conductSessions: SessionRow[];
   /** GET /api/conductors/projects. */
-  conductorSpawns: Record<string, { project: string; lastSpawnAt: number; worktrees?: string[] }[]>;
+  conductorSpawns: Record<string, SpawnedProject[]>;
   instances: Instance[];
   activeId: string | null;
   /** One-line status in the sidebar footer (resume / restart progress). */

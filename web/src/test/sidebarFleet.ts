@@ -5,6 +5,7 @@
 // hand 3), so an inverted owner predicate cannot hide behind equal totals.
 import { appStore } from '@/state/app';
 import { conductorColor } from '@shared/conductorColor';
+import type { SpawnedProject } from '@shared/conductors';
 import type { SidebarUi } from '@/features/sidebar/state';
 
 export const A = 'cond-a';
@@ -46,7 +47,7 @@ export type Fleet = {
   workspaces: string[];
   instances: any[];
   conductSessions: any[];
-  conductorSpawns: Record<string, { project: string; lastSpawnAt: number; worktrees?: string[] }[]>;
+  conductorSpawns: Record<string, SpawnedProject[]>;
 };
 
 /** A fresh fleet on every call. Only `hand` has disk sessions, so every other list is live-only until a test adds rows. */
@@ -81,8 +82,8 @@ export function fleet(): Fleet {
       { sessionId: C, firstPrompt: 'charlie: an old run', lastActivity: 50 },
     ],
     conductorSpawns: {
-      [A]: [{ project: 'idle', lastSpawnAt: 2, worktrees: [] }],
-      [C]: [{ project: 'idle', lastSpawnAt: 1, worktrees: [] }],
+      [A]: [{ project: 'idle', lastSpawnAt: '2026-01-02T00:00:00Z', worktrees: [] }],
+      [C]: [{ project: 'idle', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }],
     },
   };
 }

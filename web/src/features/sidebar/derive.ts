@@ -1,9 +1,9 @@
 // Pure derivations behind the sidebar tree: merging disk session lists with
 // live instances, workspace grouping, the Projects-lens filter, and the
 // reveal-on-select target. No React, no DOM.
-import { sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
+import { conductorChips, hasSessionId, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
+import type { ConductorsSplit, SpawnedProject } from '@shared/conductors';
 import { promptPreview } from '@shared/promptPreview';
-import { conductorChips, ownerLabel } from './core';
 import type { Instance, Project } from '@/state/types';
 
 export const CONDUCT_PROJECT = '.conduct';
@@ -29,7 +29,6 @@ export type SessionItem = {
   [k: string]: unknown;
 };
 
-export type Conductors = { live: any[]; inactive: any[] };
 
 export const wtName = (i: Instance): string | null => i.worktree?.worktreeName ?? null;
 
@@ -43,7 +42,7 @@ export const placeKeyOf = (project: string, worktree?: string | null) => (worktr
 export function mergeLive(onDisk: any[] | null | undefined, live: Instance[]): SessionItem[] {
   const byId = new Map<string, SessionItem>((onDisk ?? []).map((s) => [s.sessionId, { ...s, instanceTemp: !!s.temp }]));
   for (const inst of live) {
-    if (!inst.sessionId) continue;
+    if (!hasSessionId(inst)) continue;
     const row = byId.get(inst.sessionId);
     if (row) {
       row.instanceId = inst.id;
@@ -111,13 +110,13 @@ export const hasHandSession = ({ liveInstances, summary }: { liveInstances: Inst
 export type Filter = string;
 export const filterOwner = (filter: Filter) => (filter && filter !== 'hand' ? filter : null);
 
-export function chipsOf(sid: string, instances: Instance[], spawns: Record<string, any[]>, registered: Set<string>) {
+export function chipsOf(sid: string, instances: Instance[], spawns: Record<string, SpawnedProject[]>, registered: Set<string>) {
   return conductorChips({ workers: workersOf(sid, instances), spawned: spawns[sid] ?? [], registered });
 }
 
 /** Filter options: All, Hand-spawned, each conductor with a chip, then other live owners. */
 export function filterOptions(
-  { conductors, instances, spawns, registered }: { conductors: Conductors; instances: Instance[]; spawns: Record<string, any[]>; registered: Set<string> },
+  { conductors, instances, spawns, registered }: { conductors: ConductorsSplit; instances: Instance[]; spawns: Record<string, SpawnedProject[]>; registered: Set<string> },
 ): { value: string; label: string }[] {
   const order: string[] = [];
   for (const c of [...conductors.live, ...conductors.inactive]) {
@@ -191,7 +190,7 @@ export type RevealTarget = {
 
 /** What a selection opens in both lenses, and the filter it switches to when the current one hides it. */
 export function revealTarget({ inst, projects, conductors, filter }: {
-  inst: Instance; projects: Project[]; conductors: Conductors; filter: Filter;
+  inst: Instance; projects: Project[]; conductors: ConductorsSplit; filter: Filter;
 }): RevealTarget {
   const t: RevealTarget = { workspace: null, worktreesOf: null, sessionsKey: null, conductor: null, inactive: false, filter: null };
   const isConductor = inst.project === CONDUCT_PROJECT;

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'shared');
-const M = await import(pathToFileURL(path.join(PUB, 'conductors.js')).href);
+const M = await import(pathToFileURL(path.join(PUB, 'conductors.ts')).href);
 const { conductorColor } = await import(pathToFileURL(path.join(PUB, 'conductorColor.ts')).href);
 
 const HSL = /^hsl\((\d+) (\d+)% (\d+)%\)$/;

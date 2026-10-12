@@ -382,7 +382,7 @@ describe('clearing and falling back', () => {
   it('a conductor keeps its filter entry after its last live worker exits while it has an idle chip, and lists those projects as bare rows', async () => {
     // Invariant: a registered idle chip keeps the owner offered and selected, its projects listed bare.
     const f = fleet();
-    f.conductorSpawns[B] = [{ project: 'mixed', lastSpawnAt: 3, worktrees: ['mix'] }, { project: 'hand', lastSpawnAt: 2, worktrees: [] }];
+    f.conductorSpawns[B] = [{ project: 'mixed', lastSpawnAt: '2026-01-03T00:00:00Z', worktrees: ['mix'] }, { project: 'hand', lastSpawnAt: '2026-01-02T00:00:00Z', worktrees: [] }];
     seedFleet(f);
     renderSidebar();
     await settle();
@@ -401,7 +401,7 @@ describe('clearing and falling back', () => {
   it('a conductor whose recorded projects are all unregistered is not offered, and a filter set to it falls back to All', async () => {
     // Invariant: an unregistered spawn project is no chip; a filter set to an owner nothing offers returns to All.
     const f = fleet();
-    f.conductorSpawns[C] = [{ project: 'removed', lastSpawnAt: 1, worktrees: [] }];
+    f.conductorSpawns[C] = [{ project: 'removed', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }];
     seedFleet(f);
     renderSidebar();
     await settle();
@@ -418,7 +418,7 @@ describe('idle chips and spawn history', () => {
   it('a conductor with only idle chips is offered after the live conductors and before other owners, and selecting it lists its idle projects as bare rows', async () => {
     // Invariant: an inactive conductor with a registered idle chip is offered in the conductor block, and its filter lists those projects bare, even ones holding other owners' sessions.
     const f = fleet();
-    f.conductorSpawns[C] = [{ project: 'solo', lastSpawnAt: 2, worktrees: ['solo-a'] }, { project: 'idle', lastSpawnAt: 1, worktrees: [] }];
+    f.conductorSpawns[C] = [{ project: 'solo', lastSpawnAt: '2026-01-02T00:00:00Z', worktrees: ['solo-a'] }, { project: 'idle', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }];
     f.instances.push(hand('own-h', 'hand', null, { title: 'hand owner' }), worker('wh', 'own-h', 'hand'));
     seedFleet(f);
     renderSidebar();
@@ -453,7 +453,7 @@ describe('idle chips and spawn history', () => {
   it('a root with only spawn history that is not a conductor is not offered, while an inactive conductor with the same history is', async () => {
     // Invariant: spawn history offers a conductor, never a root that is neither a conductor nor a live owner.
     const f = fleet();
-    f.conductorSpawns['root-x'] = [{ project: 'idle', lastSpawnAt: 3, worktrees: [] }];
+    f.conductorSpawns['root-x'] = [{ project: 'idle', lastSpawnAt: '2026-01-03T00:00:00Z', worktrees: [] }];
     seedFleet(f);
     renderSidebar();
     await settle();
@@ -464,7 +464,7 @@ describe('idle chips and spawn history', () => {
     // Invariant: any live owner's filter reads its spawn history for idle projects, and lists only its own rows.
     const f = fleet();
     f.instances.push(hand('own-h', 'hand', null, { title: 'hand owner' }), worker('wh', 'own-h', 'hand'));
-    f.conductorSpawns['own-h'] = [{ project: 'solo', lastSpawnAt: 1, worktrees: [] }];
+    f.conductorSpawns['own-h'] = [{ project: 'solo', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }];
     seedFleet(f);
     renderSidebar();
     await settle();

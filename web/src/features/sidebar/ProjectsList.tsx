@@ -196,7 +196,7 @@ export function ProjectsList({ m }: { m: SidebarModel }) {
     return <div className="px-3 py-6 text-center text-sm text-muted-foreground">No projects yet</div>;
   }
   const owner = filterOwner(ui.filter);
-  const ownedProjects = new Set(owner ? chipsOf(owner, m.instances, m.spawns, m.registered).map((c: any) => c.project) : []);
+  const ownedProjects = new Set(owner ? chipsOf(owner, m.instances, m.spawns, m.registered).map((c) => c.project) : []);
   const hasHand = (p: Project) =>
     hasHandSession({ liveInstances: m.directByProject.get(p.name) ?? [], summary: p.sessions })
     || (Array.isArray(p.worktrees) ? p.worktrees : []).some((wt: any) =>
