@@ -70,7 +70,7 @@ export async function refreshProjects() {
 }
 
 const instanceReads = inStartOrder();
-/** Whether any instance list has been applied: until then an anchor naming no listed session is the restore's to judge. */
+/** Whether this controller has applied an instance list: until then an anchor naming no listed session is the restore's to judge. */
 let instancesLanded = false;
 export async function refreshInstances() {
   await instanceReads(
@@ -324,6 +324,7 @@ export function startController() {
 
   let firstConnect = true;
   let opens = 0;
+  instancesLanded = false;
   listen('open', async () => {
     const gen = ++opens;
     // A selection made before now subscribed on no socket, or on one that closed.

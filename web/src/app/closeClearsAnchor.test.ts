@@ -4,6 +4,8 @@
 // is no gesture: one started before it still opens its session. Back/forward
 // onto an entry naming a session no longer listed clears that anchor once the
 // first instance list has landed.
+// First: the anchor's replaceState must not resync the route through a hashchange a browser never fires.
+import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeStashedAnchor } from '@/lib/core/anchor.js';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
@@ -201,6 +203,19 @@ describe('Back onto an entry naming a session that is not listed', () => {
     expect(b.posts()).toBe(0);
   });
 
+  it('Back onto an entry naming the listed session already shown leaves its anchor intact and adds no history entry', async () => {
+    const b = await boot();
+    await b.connected([A]);
+    b.c.selectInstance('iA', { push: true });
+    b.c.selectInstance('iA', { push: true });
+    const entries = history.length;
+    history.back();
+    await b.flush();
+    expect(b.active(), 'fixture check: Back landed on the session already shown').toBe('iA');
+    expect(location.hash).toBe('#session=s-a');
+    expect(history.length).toBe(entries);
+  });
+
   it('Back onto an unlisted entry before the first instance list has landed leaves it to the first connect\'s restore', async () => {
     // Only the first applied list opens the gate, whoever's read it is: a Back made after a hint's list landed but
     // before the first connect's restore runs may clear its entry's anchor, since that Back is the user's own navigation.
@@ -214,5 +229,23 @@ describe('Back onto an entry naming a session that is not listed', () => {
     await b.land(1, [A]);
     expect(b.active()).toBe('iA');
     expect(location.hash).toBe('#session=s-a');
+  });
+
+  it('Back onto an unlisted entry before a restarted controller\'s first instance list has landed leaves it to that controller\'s restore', async () => {
+    const b = await boot();
+    await b.connected([A]);
+    history.replaceState(null, '', '/#session=s-x');
+    history.pushState(null, '', '/');
+    b.c.stopController();
+    b.c.startController();
+    await b.open();
+    history.back();
+    await b.flush();
+    expect(location.hash).toBe('#session=s-x');
+    await b.land(2, [A]);
+    expect(b.posts(), 'fixture check: the restore resumed the session its entry names').toBe(1);
+    await b.landRest(3, [A, resumed('s-x')]);
+    expect(b.active()).toBe(resumed('s-x').id);
+    expect(location.hash).toBe('#session=s-x');
   });
 });
