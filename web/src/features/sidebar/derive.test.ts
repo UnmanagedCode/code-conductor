@@ -19,6 +19,17 @@ describe('mergeLive', () => {
     expect(rows[0]).toMatchObject({ instanceTemp: true });
   });
 
+  it('skips an instance with no session yet: it adds no row and overlays none', () => {
+    // Invariant: a row exists per sessionId; an instance still spawning (sessionId null) is not one, and does not touch a disk row.
+    const rows = mergeLive(
+      [{ sessionId: 'a', lastActivity: 10 }],
+      [inst({ sessionId: null, id: 'ispawn', status: 'spawning', createdAt: 50 }), inst({ sessionId: 'c', id: 'ic', createdAt: 20 })],
+    );
+    expect(rows.map((r) => r.sessionId)).toEqual(['c', 'a']);
+    expect(rows.some((r) => r.instanceId === 'ispawn')).toBe(false);
+    expect(rows[1].instanceId).toBeUndefined();
+  });
+
   it('labels a row by title, then first prompt, then id prefix (or "(new session)" for a fresh live one)', () => {
     expect(sessionLabel({ sessionId: 'abcdef123', title: ' T ', firstPrompt: 'p' })).toBe('T');
     expect(sessionLabel({ sessionId: 'abcdef123', firstPrompt: 'hello   world' })).toBe('hello world');

@@ -244,6 +244,20 @@ describe('expanded conductor tree', () => {
     for (const l of ['New session', 'Delete project', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.archive]) expect(projects.has(l), `positive control: ${l}`).toBe(true);
   });
 
+  it('a worker with no session yet gets no row in the tree, beside its sibling that has one', async () => {
+    // Invariant: worker rows are session rows; an owned instance still spawning (sessionId null) renders none.
+    seed({
+      projects: [proj('proj')],
+      instances: [conductor('A'), worker('wd', 'A', 'proj'), worker('spawning', 'A', 'proj', null, { sessionId: null, id: 'i-spawning' })],
+    });
+    renderSidebar();
+    await settle();
+    const tree = expand('A');
+    expect(workerRows(tree)).toEqual(['wd']);
+    expect(tree.textContent).toContain('wd prompt');
+    expect(tree.textContent).not.toContain('spawning prompt');
+  });
+
   it("the tree shows only this conductor's workers", async () => {
     // Invariant: a conductor's tree lists its own workers; another conductor's worker in the same worktree and a hand session are absent.
     seed(treeFixture());

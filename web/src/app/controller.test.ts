@@ -292,7 +292,7 @@ describe('refreshing projects', () => {
   }
 
   it('GET /api/conductors/projects becomes appStore.conductorSpawns, the Conductors lens\'s idle-chip source', async () => {
-    const body = { C: [{ project: 'p', lastSpawnAt: 1 }] };
+    const body = { C: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }] };
     conductors = { body };
     const { c, appStore } = await load();
     await c.refreshProjects();
@@ -300,7 +300,7 @@ describe('refreshing projects', () => {
   });
 
   it('a non-ok or rejected conductors fetch replaces the spawns with an empty map', async () => {
-    const body = { C: [{ project: 'p', lastSpawnAt: 1 }] };
+    const body = { C: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }] };
     const { c, appStore } = await load();
     conductors = { body };
     await c.refreshProjects();

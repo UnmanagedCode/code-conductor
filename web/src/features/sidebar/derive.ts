@@ -29,7 +29,6 @@ export type SessionItem = {
   [k: string]: unknown;
 };
 
-
 export const wtName = (i: Instance): string | null => i.worktree?.worktreeName ?? null;
 
 /** Sessions-cache / collapse key of a place: `project` or `project:worktree`. */
