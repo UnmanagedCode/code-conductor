@@ -932,16 +932,19 @@ describe('Plugins', () => {
   });
 
   it('library: Update all is disabled with nothing to update and counts updatable entries otherwise', async () => {
-    // With no installed entry behind its origin, Update all is offered disabled.
+    // With no entry both installed and behind its origin, Update all is offered disabled.
+    // b is behind but not installed, a shape the server never sends: it pins the client's own conjunction, not the server's invariant.
     mockFetch({
       'GET /api/plugins': () => ({ rows: [] }), 'GET /api/projects': () => [],
       'GET /api/plugins/library': () => ({ entries: [
         { id: 'a', name: 'A', repo: 'r', installed: true, installedAs: 'a', updateAvailable: false },
-        { id: 'b', name: 'B', repo: 'r', installed: false },
+        { id: 'b', name: 'B', repo: 'r', installed: false, updateAvailable: true },
       ] }),
     });
     const empty = wrap(<PluginsSection />);
-    expect(await screen.findByRole('button', { name: 'Update all' })).toHaveProperty('disabled', true);
+    // Read Update all only once this load's library line has replaced the previous store's.
+    await waitFor(() => expect(screen.getByText('2 available')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Update all' })).toHaveProperty('disabled', true);
     empty.unmount();
     mockFetch({
       'GET /api/plugins': () => ({ rows: [] }), 'GET /api/projects': () => [],
