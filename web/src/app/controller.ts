@@ -94,6 +94,9 @@ function patchInstance(id: string, patch: Partial<Instance>) {
 /** `gesture`: the `beginGesture()` token of the async gesture making this selection; a pick omits it. */
 export type SelectOptions = { push?: boolean; userGesture?: boolean; gesture?: number };
 
+/** The session the latest selection subscribed since the socket last opened; that `open` re-subscribes any other. */
+let subscribedSinceOpen: string | null = null;
+
 export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   if (opts.userGesture) gestureSelected(opts.gesture);
   const prev = appStore.get().activeId;
@@ -103,6 +106,7 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   lazyHistory.reset();
   const inst = id ? appStore.get().instances.find((i) => i.id === id) ?? null : null;
   emit('select', { id, sessionId: inst?.sessionId ?? null, userGesture: !!opts.userGesture });
+  subscribedSinceOpen = id;
   if (id) send('subscribe', { id });
   // The hash carries the sessionId (stable across crash / resume), not the instance id.
   if (opts.push) pushSessionAnchor(inst?.sessionId || null);
@@ -307,6 +311,8 @@ export function startController() {
 
   let firstConnect = true;
   listen('open', async () => {
+    // A selection made before now subscribed on no socket, or on one that closed.
+    subscribedSinceOpen = null;
     appStore.set({ connection: 'open' });
     await refreshProjects();
     await refreshInstances();
@@ -318,7 +324,7 @@ export function startController() {
       }
     }
     const { activeId, instances } = appStore.get();
-    if (activeId && instances.some((i) => i.id === activeId)) send('subscribe', { id: activeId });
+    if (activeId && activeId !== subscribedSinceOpen && instances.some((i) => i.id === activeId)) send('subscribe', { id: activeId });
   });
 
   connect();
