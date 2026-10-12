@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { renderSessions, renderSession } from '../src/mcp/readRenderers.ts';
 import { readFirstPrompt } from '../src/projects.ts';
-import { buildWakeStub } from '../public/wakeCallback.ts';
+import { buildWakeStub, WAKE_BODY_SEP } from '../public/wakeCallback.ts';
 import { readablePrompt } from '../public/promptPreview.ts';
 import { backgroundJobsNote } from '../src/backgroundJobs.ts';
 import { buildForwardFrame } from '../public/forwardFrame.ts';
@@ -92,12 +92,14 @@ test('a wake-callback first prompt renders as Wake: <summary>, never the [[cc: m
   });
 });
 
-// The store cut never reaches a wake stub's body separator: whatever
-// buildWakeStub produces, the head readFirstPrompt keeps reads, in full and
-// untruncated, as the summary alone — no partial `\n[[cc:wake-body]]\n` left
-// in it. A note only prefixes the summary and a jobs note only suffixes it, so
-// the bare stub is the binding case.
-test('the stored head of every wake stub reads with no [[cc: left in it', async t => {
+// The store cut never reaches a wake stub's body separator: for every stub
+// buildWakeStub produces, WAKE_BODY_SEP starts at or past the end of the head
+// readFirstPrompt keeps, so no part of it — not even its leading `\n` — is in
+// the head, and the head reads, in full and untruncated, as the summary alone.
+// The cut is measured off readFirstPrompt's own output (its 200-char slice in
+// src/projects.ts exports no constant). A note only prefixes the summary and a
+// jobs note only suffixes it, so the bare stub is the binding case.
+test('the stored head of every wake stub stops before its body separator', async t => {
   const NOW = 1786001000000;
   const notes = { 'no note': null, 'a note': 'NOTE: the renewal was declined.' };
   const jobsNotes = {
@@ -108,19 +110,20 @@ test('the stored head of every wake stub reads with no [[cc: left in it', async 
       { title: 'tail -f server.log', startedAt: NOW - 5_000 },
     ], NOW),
   };
-  const payloads = { 'empty payload': '', 'a payload': 'Done: 3 files changed.\n[[cc:wake-body]]\nquoted' };
   for (const [noteName, note] of Object.entries(notes)) {
     for (const [jobsName, jobsNote] of Object.entries(jobsNotes)) {
-      for (const [payloadName, payloadText] of Object.entries(payloads)) {
-        const name = `${noteName}, ${jobsName}, ${payloadName}`;
-        await t.test(name, async () => {
-          const stored = await storedFirstPrompt(`wake-head-${name.replace(/\W+/g, '-')}`,
-            [userTurn(buildWakeStub({ targetSessionId: WORKER, payloadText, note, jobsNote }))]);
-          const readable = readablePrompt(stored);
-          assert.ok(readable.startsWith('Wake: '), readable);
-          assert.ok(!readable.includes('[[cc:'), readable);
-        });
-      }
+      const name = `${noteName}, ${jobsName}`;
+      await t.test(name, async () => {
+        const raw = buildWakeStub({ targetSessionId: WORKER, payloadText: 'Done: 3 files changed.', note, jobsNote });
+        const stored = await storedFirstPrompt(`wake-head-${name.replace(/\W+/g, '-')}`, [userTurn(raw)]);
+        assert.ok(stored.length < raw.length && raw.startsWith(stored),
+          `the stored head is a cut prefix of the stub (${stored.length} of ${raw.length} chars)`);
+        assert.ok(raw.indexOf(WAKE_BODY_SEP) >= stored.length,
+          `the separator starts at ${raw.indexOf(WAKE_BODY_SEP)}, inside the ${stored.length}-char head`);
+        const readable = readablePrompt(stored);
+        assert.ok(readable.startsWith('Wake: '), readable);
+        assert.ok(!readable.includes('[[cc:'), readable);
+      });
     }
   }
 });
