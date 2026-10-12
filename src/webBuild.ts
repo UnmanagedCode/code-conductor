@@ -179,9 +179,10 @@ export function webHandler(
 /**
  * Mounted at /next: answers 301 to the same path and query under /, so a
  * /next/ link, an installed /next/ app and a /next/-based build's asset URLs
- * all land in the UI. Leading slashes collapse to one, so `/next///host/x`
- * stays on this origin instead of becoming the protocol-relative `//host/x`.
+ * all land in the UI. The Location is always a path on this origin: leading
+ * slashes and backslashes collapse to one `/`, because a URL parser reads
+ * `//host` and `/\host` alike as another host.
  */
 export function retiredNextRedirect(): express.RequestHandler {
-  return (req, res) => { res.redirect(301, '/' + req.url.replace(/^\/+/, '')); };
+  return (req, res) => { res.redirect(301, '/' + req.url.replace(/^[\\/]+/, '')); };
 }

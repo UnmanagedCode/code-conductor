@@ -179,14 +179,13 @@ describe('fire without a service worker', () => {
 });
 
 describe('the root mount', () => {
-  it('registers /sw.js, so an upgraded client updates the registration the plain-JS UI made in place', async () => {
+  it('registers /sw.js at the root, so an installed client updates that one registration in place', async () => {
     __setSwRegistrationForTests(null);
     const reg = {} as ServiceWorkerRegistration;
     const register = vi.fn(async () => reg);
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register, ready: Promise.resolve(reg) } });
     try {
       expect(await registerServiceWorker()).toBe(reg);
-      // The same script URL and scope the plain-JS UI registered: the browser updates that registration in place.
       expect(register).toHaveBeenCalledWith('/sw.js');
     } finally {
       delete (navigator as any).serviceWorker;

@@ -1,9 +1,13 @@
 // A browser that ran the plain-JS UI, upgraded: the old UI's root service
 // worker is registered from web/e2e/fixtures/old-ui-sw (its sw.js and manifest
 // as that UI shipped them), then cc starts on the same port and the browser
-// loads /. These flows boot their own cc on a port they pick, so they take
-// Playwright's own `test`, not the harness's worker `cc`. The bodies are shared
-// by the per-project spec files; this module declares no tests.
+// loads /. Two things put the web UI's worker in that registration, and the
+// flows pin both: the browser updates the worker in place when /sw.js's bytes
+// change, and the web UI itself registers /sw.js (recorded by an init script
+// wrapping navigator.serviceWorker.register). These flows boot their own cc on
+// a port they pick, so they take Playwright's own `test`, not the harness's
+// worker `cc`. The bodies are shared by the per-project spec files; this module
+// declares no tests.
 import http from 'node:http';
 import path from 'node:path';
 import express from 'express';
@@ -33,11 +37,27 @@ async function trackVersions(page: Page): Promise<Map<string, Version>> {
   return versions;
 }
 
+/** Records every navigator.serviceWorker.register call a document makes, as the URL it resolves to, in `__swRegisterCalls`. */
+async function recordRegistrations(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const calls: string[] = [];
+    (window as unknown as { __swRegisterCalls: string[] }).__swRegisterCalls = calls;
+    const sw = navigator.serviceWorker;
+    if (!sw) return;
+    const register = sw.register.bind(sw);
+    sw.register = (url: string | URL, opts?: RegistrationOptions) => {
+      calls.push(new URL(url, location.href).href);
+      return register(url, opts);
+    };
+  });
+}
+
 /** Runs the upgrade; the caller closes the returned cc. */
 async function upgrade(page: Page): Promise<Upgraded> {
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
   const versions = await trackVersions(page);
+  await recordRegistrations(page);
 
   const closeOld = await oldUiServer(port);
   try {
@@ -73,6 +93,11 @@ export async function workerReplacedFlow({ page }: { page: Page }): Promise<void
     }, { message: 'a new version activated in the old registration, and the old one is redundant', timeout: 20_000 }).toEqual({ v2: true, v1: 'redundant' });
     expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).map((r) => r.scope))).toEqual([`${origin}/`]);
     await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL ?? null)).toBe(`${origin}/sw.js`);
+
+    // Invariant: the web UI registers /sw.js itself, at the root.
+    const registered = () => page.evaluate(() => (window as unknown as { __swRegisterCalls: string[] }).__swRegisterCalls);
+    await expect.poll(registered, { message: 'the web UI registered /sw.js' }).toContain(`${origin}/sw.js`);
+    expect(new Set(await registered()), 'and nothing else').toEqual(new Set([`${origin}/sw.js`]));
   } finally { await cc.close(); }
 }
 

@@ -38,8 +38,8 @@ export function isNotificationAPIAvailable() {
 }
 
 /**
- * Register the UI's own `sw.js` once, at scope `/`, the same registration the
- * plain-JS UI used, so an upgraded client updates it in place. Done eagerly at
+ * Register the UI's own `sw.js` once, as `/sw.js` at scope `/`, so an installed
+ * client updates that one registration in place. Done eagerly at
  * boot even without notification permission: Chrome only offers "Install app"
  * (a real PWA) once a service worker is active.
  */

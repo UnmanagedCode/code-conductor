@@ -98,7 +98,7 @@ describe('ensureWebBuild', () => {
 
 describe('serving the built UI', () => {
   it('serves every shipped file under the mount, non-empty, with the index reachable at the mount root', async () => {
-    // Invariant: each file the build emits (document, manifest, icons, chunks) is answered 200 with a body, so nothing the page references is missing.
+    // Invariant: each file the build emits (document, manifest, icons, chunks) is answered 200 with a body, so nothing the page references is missing, and the manifest and icons with the content type a browser needs.
     const files: string[] = [];
     const walk = (dir: string) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -118,13 +118,23 @@ describe('serving the built UI', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     try {
       const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      // The types a browser needs to use the manifest and the icons.
+      const TYPES: Record<string, RegExp> = { '.webmanifest': /^application\/manifest\+json\b/, '.svg': /^image\/svg\+xml\b/, '.png': /^image\/png\b/ };
       const bad: string[] = [];
+      const typed: string[] = [];
       for (const f of ['', ...files]) {
         const r = await fetch(`${base}/${f}`);
         const body = await r.arrayBuffer();
         if (r.status !== 200 || body.byteLength === 0) bad.push(`${f || '/'} -> ${r.status}, ${body.byteLength} bytes`);
+        const want = TYPES[path.extname(f)];
+        if (want) {
+          typed.push(path.extname(f));
+          const type = r.headers.get('content-type') ?? '';
+          if (!want.test(type)) bad.push(`${f} -> content-type ${type}`);
+        }
       }
       expect(bad).toEqual([]);
+      expect(new Set(typed), 'fixture check: the build ships a manifest, SVGs and PNGs').toEqual(new Set(Object.keys(TYPES)));
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }

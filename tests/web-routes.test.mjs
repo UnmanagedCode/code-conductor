@@ -63,13 +63,17 @@ test('the real server, booted with no build', async (t) => {
       }
     });
 
-    await t.test('/next///<host> and /next//<host> redirect to a path on this origin, never off it', async () => {
+    await t.test('/next/ followed by slashes or backslashes and a <host> redirects to a path on this origin, never off it', async () => {
       for (const [from, to] of [
         ['/next///evil.example/x', '/evil.example/x'],
         ['/next//evil.example/x', '/evil.example/x'],
         ['/next////evil.example', '/evil.example'],
+        ['/next/\\evil.example', '/evil.example'],
+        ['/next/\\/evil.example', '/evil.example'],
       ]) {
-        assert.deepEqual(await rawGet(baseUrl, from), { status: 301, location: to }, from);
+        const r = await rawGet(baseUrl, from);
+        assert.deepEqual(r, { status: 301, location: to }, from);
+        assert.equal(new URL(r.location, baseUrl).origin, new URL(baseUrl).origin, `${from}: Location stays on this origin`);
       }
     });
 
