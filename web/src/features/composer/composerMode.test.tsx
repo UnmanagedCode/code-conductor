@@ -74,6 +74,9 @@ describe('a click in Send mode', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Stop recording' })).toBeTruthy();
     expect(sent).toEqual([]);
+    // A recording outlives its composer: cancel it, so the next test starts with none.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Dictate' })).toBeTruthy();
   });
 });
 

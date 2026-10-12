@@ -1,95 +1,117 @@
-import * as React from 'react';
+import { createStore, useStore } from '@/state/createStore';
 import { toast } from '@/ui/feedback';
+import { EMPTY_DRAFT, draftStore, joinDictation } from './drafts';
 
 export type MicState = 'idle' | 'recording' | 'transcribing';
 
 /**
- * Record → POST /api/transcribe → hand the text back. Holds a screen wake lock
- * while recording. `onText` returns where the text goes; the composer routes a
- * transcript back to the session the recording started in.
+ * Offers a transcript to the composer's box. `startedIn` is the session the recording started in,
+ * or null when it started before its instance had a session id. Returns whether the box took it.
  */
+export type BoxDelivery = (startedIn: string | null, text: string) => boolean;
+
+// One recording at a time, at module scope: leaving the session view (Settings or another full-page
+// view) unmounts the composer, and the recording must run on and its transcript still land in the
+// session it was spoken to. Holds a screen wake lock while recording.
+const store = createStore<{ state: MicState }>({ state: 'idle' });
+let rec: { recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; cancelled: boolean } | null = null;
+let box: BoxDelivery | null = null;
+let wakeLock: any = null;
+
+async function acquireWakeLock() {
+  try { wakeLock = await (navigator as any).wakeLock?.request('screen'); } catch { /* unavailable */ }
+}
+function releaseWakeLock() {
+  try { wakeLock?.release(); } catch { /* ignore */ }
+  wakeLock = null;
+}
+const onVisible = () => { if (!document.hidden && rec) void acquireWakeLock(); };
+const stopTracks = (stream: MediaStream) => { for (const t of stream.getTracks()) try { t.stop(); } catch { /* ignore */ } };
+
+function finish() {
+  releaseWakeLock();
+  document.removeEventListener('visibilitychange', onVisible);
+  store.set({ state: 'idle' });
+}
+
+/** The box, when it takes the transcript; otherwise the stored draft of the session it was started in. */
+function deliver(startedIn: string | null, text: string) {
+  if (box?.(startedIn, text)) return;
+  if (startedIn && text.trim()) {
+    const d = draftStore.load(startedIn) || EMPTY_DRAFT;
+    draftStore.save(startedIn, { text: joinDictation(d.text, text), transcribed: true });
+  }
+}
+
+async function transcribe(blob: Blob, startedIn: string | null) {
+  try {
+    const res = await fetch('/api/transcribe', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const { text } = await res.json();
+    deliver(startedIn, text ?? '');
+  } catch (e: any) {
+    toast.error('Transcription failed', e?.message || String(e));
+  } finally {
+    finish();
+  }
+}
+
+/** Record → POST /api/transcribe → deliver the text to the session the recording started in. */
+async function start(startedIn: string | null) {
+  if (rec || store.get().state !== 'idle') return;
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e: any) {
+    toast.error('Microphone access denied', e?.message || String(e));
+    return;
+  }
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(stream);
+  } catch (e: any) {
+    stopTracks(stream);
+    toast.error('Recording unavailable', e?.message || String(e));
+    return;
+  }
+  const entry = { recorder, stream, chunks: [] as Blob[], cancelled: false };
+  rec = entry;
+  recorder.addEventListener('dataavailable', (ev) => { if (ev.data?.size) entry.chunks.push(ev.data); });
+  recorder.addEventListener('stop', () => {
+    const blob = new Blob(entry.chunks, { type: recorder.mimeType || 'audio/webm' });
+    stopTracks(stream);
+    rec = null;
+    if (entry.cancelled) return;
+    void transcribe(blob, startedIn);
+  });
+  recorder.start();
+  void acquireWakeLock();
+  document.addEventListener('visibilitychange', onVisible);
+  store.set({ state: 'recording' });
+}
+
+function stop() {
+  if (!rec || store.get().state !== 'recording') return;
+  store.set({ state: 'transcribing' });
+  try { rec.recorder.stop(); } catch { /* ignore */ }
+}
+
+function abort() {
+  const r = rec;
+  if (!r) return;
+  r.cancelled = true;
+  finish();
+  try { r.recorder.stop(); } catch { /* ignore */ }
+}
+
+/** The mounted composer takes transcripts into its box until the returned cleanup runs. */
+function offerBox(deliverToBox: BoxDelivery) {
+  box = deliverToBox;
+  return () => { if (box === deliverToBox) box = null; };
+}
+
+/** The recording state, and the controls every composer shares. */
 export function useDictation() {
-  const [state, setState] = React.useState<MicState>('idle');
-  const rec = React.useRef<{ recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; cancelled: boolean; deliver: (t: string) => void } | null>(null);
-  const wakeLock = React.useRef<any>(null);
-
-  const acquireWakeLock = async () => {
-    try { wakeLock.current = await (navigator as any).wakeLock?.request('screen'); } catch { /* unavailable */ }
-  };
-  const releaseWakeLock = () => {
-    try { wakeLock.current?.release(); } catch { /* ignore */ }
-    wakeLock.current = null;
-  };
-
-  React.useEffect(() => {
-    const onVis = () => { if (!document.hidden && rec.current) void acquireWakeLock(); };
-    document.addEventListener('visibilitychange', onVis);
-    return () => document.removeEventListener('visibilitychange', onVis);
-  }, []);
-
-  const stopTracks = (stream: MediaStream) => { for (const t of stream.getTracks()) try { t.stop(); } catch { /* ignore */ } };
-
-  async function start(deliver: (text: string) => void) {
-    if (rec.current || state !== 'idle') return;
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (e: any) {
-      toast.error('Microphone access denied', e?.message || String(e));
-      return;
-    }
-    let recorder: MediaRecorder;
-    try {
-      recorder = new MediaRecorder(stream);
-    } catch (e: any) {
-      stopTracks(stream);
-      toast.error('Recording unavailable', e?.message || String(e));
-      return;
-    }
-    const entry = { recorder, stream, chunks: [] as Blob[], cancelled: false, deliver };
-    rec.current = entry;
-    recorder.addEventListener('dataavailable', (ev) => { if (ev.data?.size) entry.chunks.push(ev.data); });
-    recorder.addEventListener('stop', () => {
-      const blob = new Blob(entry.chunks, { type: recorder.mimeType || 'audio/webm' });
-      stopTracks(stream);
-      rec.current = null;
-      if (entry.cancelled) return;
-      void transcribe(blob, entry.deliver);
-    });
-    recorder.start();
-    void acquireWakeLock();
-    setState('recording');
-  }
-
-  function stop() {
-    const r = rec.current;
-    if (!r || state !== 'recording') return;
-    setState('transcribing');
-    try { r.recorder.stop(); } catch { /* cleanup below */ }
-  }
-
-  function abort() {
-    const r = rec.current;
-    if (!r) return;
-    r.cancelled = true;
-    releaseWakeLock();
-    setState('idle');
-    try { r.recorder.stop(); } catch { /* ignore */ }
-  }
-
-  async function transcribe(blob: Blob, deliver: (t: string) => void) {
-    try {
-      const res = await fetch('/api/transcribe', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      const { text } = await res.json();
-      deliver(text ?? '');
-    } catch (e: any) {
-      toast.error('Transcription failed', e?.message || String(e));
-    } finally {
-      releaseWakeLock();
-      setState('idle');
-    }
-  }
-
-  return { state, start, stop, abort };
+  const state = useStore(store, (s) => s.state);
+  return { state, start, stop, abort, offerBox };
 }
