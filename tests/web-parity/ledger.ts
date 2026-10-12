@@ -1419,6 +1419,23 @@ export const LEDGER: readonly Row[] = [
       ] },
   },
   {
+    id: 'latest-only/R1',
+    old: { file: 'tests/latest-only.test.mjs', tests: [
+        'a slower call dispatched earlier is dropped when a faster later call resolves first',
+        'a single call always applies',
+        'three interleaved calls: only the last-dispatched one applies',
+        'sequential (non-overlapping) calls all apply',
+      ] },
+    behaviour: 'an instance-list read that answers after a newer one has landed never overwrites it; a read that answers first, alone or in sequence, applies',
+    viewports: ['desktop', 'phone'],
+    area: 'cross-cutting',
+    status: { kind: 'ported', by: [
+        'web/src/app/anchorRestore.test.ts::restoring the URL-named session on first connect > the first list read landing before a hint\'s newer read still opens the named session, and the newer list then applies',
+        'web/src/app/anchorRestore.test.ts::restoring the URL-named session on first connect > a hint\'s newer read landing before the first list read opens the named session, and the older read never overwrites it',
+        'web/src/app/anchorRestore.test.ts::restoring the URL-named session on first connect > a hint arriving before the first connect reads the list: the newer list opens the session and the older one landing last never overwrites it',
+      ] },
+  },
+  {
     id: 'app-sticky-prompt-wiring/R1',
     old: { file: 'tests/app-sticky-prompt-wiring.test.mjs', tests: [
         "the reveal gestures call reveal() and the hide gestures call conceal() on the sticky prompt",
