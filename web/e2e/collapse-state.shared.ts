@@ -1,4 +1,4 @@
-// What the reader opened in the /next/ transcript, in a real browser: a tool card
+// What the reader opened in the transcript, in a real browser: a tool card
 // keeps its Arguments and Result through closing and reopening it, and leaving a
 // full-page view (Settings) brings back the tool card, thinking block, fold and raw
 // views the reader set, with the reader still on the prompt they were reading.

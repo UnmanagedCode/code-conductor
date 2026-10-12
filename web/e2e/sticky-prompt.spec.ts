@@ -1,4 +1,4 @@
-// The /next/ sticky prompt's own browser checks: the scrollbar gutter, hiding a
+// The sticky prompt's own browser checks: the scrollbar gutter, hiding a
 // pushed-off pin after a jump, and real touch swipes. The conversation flows
 // are in flows/conversation.spec.ts.
 import { test, expect } from './harness/fixtures.ts';

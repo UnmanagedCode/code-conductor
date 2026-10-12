@@ -18,14 +18,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { WEB_BASE } from '../web/base.ts';
 import { isProcessAlive } from './storeLock.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WEB_ROOT = path.join(repoRoot, 'web');
 export const WEB_DIST = path.join(WEB_ROOT, 'dist');
-/** The Express mount for the web UI: WEB_BASE without its trailing slash. */
-export const WEB_MOUNT = WEB_BASE.slice(0, -1);
 const STAMP = '.source-hash';
 
 // Inputs: the web app itself, the shared modules it imports from public/, and
@@ -160,20 +157,13 @@ const BUILDING_PAGE = `<!doctype html><meta charset="utf-8"><meta http-equiv="re
 <p>Building the interface&hellip; this page refreshes by itself.</p></body>`;
 
 /**
- * Mounted at WEB_MOUNT: serves the built UI, or the building / failed page while
+ * Mounted at the root: serves the built UI, or the building / failed page while
  * there is none. `distDir` and `getState` are injectable for tests.
  */
 export function webHandler(
   { distDir = WEB_DIST, getState = () => state }: { distDir?: string; getState?: () => WebState } = {},
 ): express.Router {
   const router = express.Router();
-  // The document must sit inside the UI's service-worker scope (WEB_BASE), so
-  // the bare mount redirects. express.static only does that once a build exists.
-  router.use((req, res, next) => {
-    const q = req.originalUrl.indexOf('?');
-    if ((q === -1 ? req.originalUrl : req.originalUrl.slice(0, q)) !== WEB_MOUNT) return next();
-    res.redirect(301, WEB_BASE + (q === -1 ? '' : req.originalUrl.slice(q)));
-  });
   router.use(express.static(distDir));
   router.get('/', (_req, res) => {
     const { phase, error } = getState();
@@ -184,4 +174,14 @@ export function webHandler(
     }
   });
   return router;
+}
+
+/**
+ * Mounted at /next: answers 301 to the same path and query under /, so a
+ * /next/ link, an installed /next/ app and a /next/-based build's asset URLs
+ * all land in the UI. Leading slashes collapse to one, so `/next///host/x`
+ * stays on this origin instead of becoming the protocol-relative `//host/x`.
+ */
+export function retiredNextRedirect(): express.RequestHandler {
+  return (req, res) => { res.redirect(301, '/' + req.url.replace(/^\/+/, '')); };
 }

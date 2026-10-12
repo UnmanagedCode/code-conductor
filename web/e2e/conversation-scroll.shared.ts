@@ -1,4 +1,4 @@
-// The /next/ transcript's scroll position in a real browser: stuck to the bottom
+// The transcript's scroll position in a real browser: stuck to the bottom
 // for live output, left alone once scrolled up, the bottom again after a rewind,
 // the reader's place again after a full-page view, an older page spliced above
 // without moving what the reader sees, and a real multi-segment lineage walk.

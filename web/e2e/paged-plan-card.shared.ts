@@ -1,4 +1,4 @@
-// A plan card that paged in from an older page of the /next/ transcript, in a real browser:
+// A plan card that paged in from an older page of the transcript, in a real browser:
 // when its decision can't reach the CLI the card re-opens with the reader's feedback, as a
 // card in the live tail does, and it then sends again. The page's socket runs through the
 // test, which refuses the marked prompts the way the server refuses a send it can't deliver.

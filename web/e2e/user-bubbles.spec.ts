@@ -1,4 +1,4 @@
-// The /next/ user bubbles' text layout in a real browser, which happy-dom cannot
+// The user bubbles' text layout in a real browser, which happy-dom cannot
 // lay out: a newline in a prompt or a wake summary stays a line break, and an
 // unbroken token wraps inside its bubble instead of widening the transcript.
 // The conversation flows are in flows/conversation.spec.ts.

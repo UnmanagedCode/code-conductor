@@ -178,22 +178,23 @@ describe('fire without a service worker', () => {
   });
 });
 
-describe('the base path', () => {
-  it('registers the service worker under it, so its scope never covers the old UI at /', async () => {
+describe('the root mount', () => {
+  it('registers /sw.js, so an upgraded client updates the registration the plain-JS UI made in place', async () => {
     __setSwRegistrationForTests(null);
     const reg = {} as ServiceWorkerRegistration;
     const register = vi.fn(async () => reg);
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register, ready: Promise.resolve(reg) } });
     try {
       expect(await registerServiceWorker()).toBe(reg);
-      expect(register).toHaveBeenCalledWith('/next/sw.js');
+      // The same script URL and scope the plain-JS UI registered: the browser updates that registration in place.
+      expect(register).toHaveBeenCalledWith('/sw.js');
     } finally {
       delete (navigator as any).serviceWorker;
       __setSwRegistrationForTests(null);
     }
   });
 
-  it('a notification carries the icon from under it', () => {
+  it('a notification carries the icon served at the root', () => {
     __setSwRegistrationForTests(null);
     const created: { opts: NotificationOptions }[] = [];
     (globalThis as any).Notification = class {
@@ -202,7 +203,7 @@ describe('the base path', () => {
       close() {}
     };
     fire({ title: 't', body: 'b', tag: 'session:s', data: { project: 'p', instanceId: 'i', sessionId: 's' } });
-    expect(created.map((n) => n.opts.icon)).toEqual(['/next/icon-192.png']);
+    expect(created.map((n) => n.opts.icon)).toEqual(['/icon-192.png']);
   });
 });
 

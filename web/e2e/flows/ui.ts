@@ -444,7 +444,7 @@ const LENS_LABEL: Record<Lens, string> = { conductors: 'Conductors', projects: '
 
 export const next: Ui = {
   async open(page) {
-    await page.goto('/next/');
+    await page.goto('/');
     await expect(page.locator('[data-sidebar]').first()).toBeAttached();
   },
   async openSidebar(page) {

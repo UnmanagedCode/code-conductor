@@ -65,7 +65,7 @@ async function expectedSections(cc: Cc): Promise<string[]> {
 /** Every Settings section the nav offers, read from the nav once capabilities have pruned it, and checked against the catalog. */
 async function settingsSections(page: Page, cc: Cc): Promise<string[]> {
   const expected = await expectedSections(cc);
-  await page.goto('/next/#settings');
+  await page.goto('/#settings');
   const links = page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link');
   // The nav lists every section until capabilities land: wait for the pruned list before reading it.
   await expect(links, 'the nav once capabilities have pruned it').toHaveCount(expected.length);
@@ -93,7 +93,7 @@ async function views(page: Page, cc: Cc, s: { project: string; sessionId: string
   const settings: View[] = sections.map((id) => ({
     label: `settings/${id}`,
     open: async (p) => {
-      await p.goto(`/next/#settings/${id}`);
+      await p.goto(`/#settings/${id}`);
       await expect(p.locator(`[data-section="${id}"]`)).toBeVisible();
       await expectControl(p, id);
     },
@@ -103,8 +103,8 @@ async function views(page: Page, cc: Cc, s: { project: string; sessionId: string
   return [
     ...settings,
     { label: 'session (landing)', open: async (p) => { await next.open(p); await expect(sessionPane(p)).toBeVisible(); }, pane: null },
-    { label: 'session (live)', open: async (p) => { await p.goto(`/next/#session=${s.sessionId}`); await expect(sessionPane(p)).toBeVisible(); }, pane: null },
-    { label: 'costs', open: async (p) => { await p.goto('/next/#costs'); await expect(p.locator('main[data-view="costs"]')).toBeVisible(); }, pane: shellView('costs') },
+    { label: 'session (live)', open: async (p) => { await p.goto(`/#session=${s.sessionId}`); await expect(sessionPane(p)).toBeVisible(); }, pane: null },
+    { label: 'costs', open: async (p) => { await p.goto('/#costs'); await expect(p.locator('main[data-view="costs"]')).toBeVisible(); }, pane: shellView('costs') },
     { label: 'commits', open: async (p) => { await next.open(p); await openHistory(p, s.project, null); }, pane: shellView('commits') },
     {
       label: 'review',
@@ -118,7 +118,7 @@ async function views(page: Page, cc: Cc, s: { project: string; sessionId: string
     },
     {
       label: 'plugin',
-      open: async (p) => { await p.goto(`/next/#plugin/${PLUGIN_ID}/`); await expect(p.locator('section[data-view="plugin"][aria-hidden="false"]')).toBeVisible(); },
+      open: async (p) => { await p.goto(`/#plugin/${PLUGIN_ID}/`); await expect(p.locator('section[data-view="plugin"][aria-hidden="false"]')).toBeVisible(); },
       pane: null,
     },
   ];
@@ -251,7 +251,7 @@ export async function pluginHoldsHiddenInputFlow({ page, cc }: Args): Promise<vo
   const violations: string[] = [];
   for (const vp of viewports(page)) {
     await page.setViewportSize(vp);
-    await page.goto(`/next/#plugin/${PLUGIN_ID}/`);
+    await page.goto(`/#plugin/${PLUGIN_ID}/`);
     await expect(page.locator(`${section}[aria-hidden="false"]`)).toBeVisible();
     await settle(page, inFlight);
     // The plugin view scrolls inside its frame, so the section holds the probe with no spacer.
@@ -286,7 +286,7 @@ export async function shellClipsStrayBoxFlow({ page }: Args): Promise<void> {
   const inFlight = trackRequests(page);
   for (const vp of viewports(page)) {
     await page.setViewportSize(vp);
-    await page.goto('/next/#settings/models');
+    await page.goto('/#settings/models');
     await expect(page.locator('[data-section="models"]')).toBeVisible();
     await settle(page, inFlight);
     const r = await page.evaluate(shellProbe, SHELL);
@@ -322,7 +322,7 @@ function fixedBoxes(a: { shell: string; pane: string }): Fixed {
 export async function onlyPaneScrollsFlow({ page }: Args): Promise<void> {
   const inFlight = trackRequests(page);
   const desktop = test.info().project.name === 'desktop';
-  await page.goto('/next/#settings/models');
+  await page.goto('/#settings/models');
   await expect(page.locator('[data-section="models"] select').first()).toBeVisible();
   await settle(page, inFlight);
   const read = () => page.evaluate(fixedBoxes, { shell: SHELL, pane: SETTINGS_PANE });

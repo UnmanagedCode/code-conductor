@@ -11,7 +11,7 @@ type Ctx = { page: Page; cc: Parameters<typeof installFakePlugin>[0] & Parameter
 export async function hiddenPluginFlow({ page, cc }: Ctx): Promise<void> {
   await installFakePlugin(cc, 'fake-plugin');
   const { sessionId } = await spawnSession(cc, `e2e-hidden-${test.info().project.name}`);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   await expect(page.locator('#composer-input')).toBeEnabled();
   const view = page.locator('[data-view="plugin"]');
   await expect(view).toBeHidden();

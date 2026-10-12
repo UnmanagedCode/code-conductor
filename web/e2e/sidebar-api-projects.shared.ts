@@ -1,4 +1,4 @@
-// The Projects lens under /next/ follows changes made through cc's API after the
+// The Projects lens follows changes made through cc's API after the
 // page loaded — REST and MCP alike, as a conductor makes them — without a reload:
 // the server's `projects` hint re-reads the list. The bodies are shared by the
 // per-project spec files.

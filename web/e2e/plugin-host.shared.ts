@@ -1,4 +1,4 @@
-// The /next/ plugin host in a real browser, with the keep-alive probe plugin:
+// The plugin host in a real browser, with the keep-alive probe plugin:
 // picking a plugin while a session is open lands on the first pick; the hash
 // opens, steers and swaps plugin pages without reloading them; a keep-alive
 // page keeps running while hidden and comes back as the same page load, while a
@@ -120,7 +120,7 @@ export async function subpathFlow({ page }: Args): Promise<void> {
   expect(probeFrame(page, id), 'the plain plugin\'s page ended').toBeUndefined();
 
   await page.goto('about:blank');
-  await page.goto(`/next/#plugin/${id}/deep/x`);
+  await page.goto(`/#plugin/${id}/deep/x`);
   await expect(pluginView(page)).toBeVisible();
   await loaded(page, id, 'booted on its hash');
   expect(framePath(page, id)).toBe(`/plugins/${id}/deep/x`);

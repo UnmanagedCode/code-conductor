@@ -2,7 +2,7 @@
 // PNG, or boots a scratch cc (fake CLI), snaps it and tears it down.
 //
 //   node web/e2e/harness/snap.ts <url> <out.png>
-//   node web/e2e/harness/snap.ts --boot <out.png>     (snaps <scratch cc>/next/)
+//   node web/e2e/harness/snap.ts --boot <out.png>     (snaps <scratch cc>/)
 //
 //   SNAP_VIEWPORT   "<w>x<h>" (default 1280x800)
 //   SNAP_WAIT       CSS selector to wait for before the shot
@@ -40,7 +40,7 @@ try {
   if (boot) {
     await globalSetup();
     cc = await bootCc();
-    url = `${cc.url}/next/`;
+    url = `${cc.url}/`;
     console.error(`[boot] ${cc.url}`);
   }
   const browser = await chromium.launch();

@@ -12,6 +12,8 @@ import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export async function overtakenListReadFlow({ page, cc }: Args): Promise<void> {
   const { sessionId } = await spawnSession(cc, `restore-${test.info().project.name}`);
   // The hint goes into the page's own socket while its first list read is held, so a second read starts behind it.
@@ -25,9 +27,9 @@ export async function overtakenListReadFlow({ page, cc }: Args): Promise<void> {
     if (!socket.route) throw new Error("fixture check: the page's socket was routed");
     socket.route.send(JSON.stringify({ t: 'instances' }));
   });
-  const anchored = new RegExp(`/next/#session=${sessionId}$`);
+  const anchored = new RegExp(`/#session=${sessionId}$`);
 
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   await expect.poll(() => reads.length, { message: 'fixture check: the hint started a second read while the first was held' }).toBe(2);
   const [first, second] = reads;
   const firstLanded = page.waitForResponse((r) => r.request() === first.request());
@@ -53,15 +55,15 @@ export async function closeThenReloadFlow({ page, cc }: Args): Promise<void> {
   const marker = await spawnSession(cc, project);
   // fake-claude writes no transcript: with one on disk the stopped session stays resumable, so a reload would resume it.
   await seedTranscript(cc, closed.id, 'close me');
-  const anchored = new RegExp(`/next/#session=${closed.sessionId}$`);
-  await page.goto(`/next/#session=${closed.sessionId}`);
+  const anchored = new RegExp(`/#session=${closed.sessionId}$`);
+  await page.goto(`/#session=${closed.sessionId}`);
   await expect(next.sessionHeader(page), 'fixture check: the named session opened').toBeVisible();
   await expect(page).toHaveURL(anchored);
   const entries = await page.evaluate(() => history.length);
 
   await next.sessionClose(await next.sessionRow(page, project, closed.sessionId)).click();
   // Invariant: the close drops the anchor naming the closed session, replacing the entry rather than adding one.
-  await expect(page).toHaveURL(/\/next\/$/);
+  await expect(page).toHaveURL(new RegExp(`^${escapeRe(cc.url)}/$`));
   expect(await page.evaluate(() => history.length)).toBe(entries);
 
   const restores: string[] = [];
@@ -77,7 +79,7 @@ export async function closeThenReloadFlow({ page, cc }: Args): Promise<void> {
   await expect(next.sessionHeader(page)).toHaveCount(0);
 
   // Control: the same reload with the anchor still naming the session resumes and opens it.
-  await page.evaluate((sid) => history.replaceState(null, '', `/next/#session=${sid}`), closed.sessionId);
+  await page.evaluate((sid) => history.replaceState(null, '', `/#session=${sid}`), closed.sessionId);
   const resume = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/instances');
   await page.reload();
   await resume;

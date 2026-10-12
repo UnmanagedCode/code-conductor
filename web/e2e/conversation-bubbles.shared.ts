@@ -1,4 +1,4 @@
-// The /next/ transcript's assistant-bubble controls and queued ghosts in a real browser,
+// The transcript's assistant-bubble controls and queued ghosts in a real browser,
 // on the fake engine's bubble scenario (fixtures/scenario-conversation-bubbles.json): copy,
 // raw and read-aloud on a bubble whose turn is still running, the same controls through a
 // raw switch, a full-page view and a reload, and queued messages that stay on screen,

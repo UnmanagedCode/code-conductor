@@ -19,9 +19,9 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Every full-page view's root, the plugin view's only while it shows; the session pane is none of them. */
 const fullPageViews = (page: Page) => page.locator('main[data-view], main[data-settings-view], section[data-view="plugin"][aria-hidden="false"]');
 
-/** Asserts the page sits on the app's session pane: still inside /next/, with no full-page view showing. */
+/** Asserts the page sits on the app's session pane: still in the app, with no full-page view showing. */
 async function onSession(page: Page, cc: Cc, what: string): Promise<void> {
-  await expect(page, `${what}: still in the app`).toHaveURL(new RegExp(`^${escapeRe(cc.url)}/next/`));
+  await expect(page, `${what}: still in the app`).toHaveURL(new RegExp(`^${escapeRe(cc.url)}/`));
   await expect(page.locator('main:not([data-view]):not([data-settings-view])'), `${what}: the session pane`).toBeVisible();
   await expect(fullPageViews(page), `${what}: no full-page view`).toHaveCount(0);
 }
@@ -61,16 +61,16 @@ export async function viewOrderFlow({ page, cc }: Args): Promise<void> {
 export async function backAfterBrowserBackFlow({ page, cc }: Args): Promise<void> {
   const project = `deep-${test.info().project.name}`;
   await createProject(cc, project);
-  await page.goto('/next/#settings');
+  await page.goto('/#settings');
   await expect(next.settingsView(page)).toBeVisible();
   await openHistory(page, project, null);
   await page.goBack();
   await expect(next.settingsView(page), 'positive control: the browser\'s Back returned to Settings').toBeVisible();
-  await expect(page).toHaveURL(/\/next\/#settings$/);
+  await expect(page).toHaveURL(/\/#settings$/);
 
   // Invariant: Back from an entry the app did not push lands on the app's session anchor, never off the app.
   await back(page);
-  await expect(page, 'Back stays in the app').toHaveURL(new RegExp(`^${escapeRe(cc.url)}/next/`));
+  await expect(page, 'Back stays in the app').toHaveURL(new RegExp(`^${escapeRe(cc.url)}/`));
   await expect(page).not.toHaveURL(/#settings$/);
   await expect(next.settingsView(page)).toHaveCount(0);
 }
@@ -78,7 +78,7 @@ export async function backAfterBrowserBackFlow({ page, cc }: Args): Promise<void
 export async function costsForwardFlow({ page, cc }: Args): Promise<void> {
   const { sessionId } = await spawnSession(cc, `costs-${test.info().project.name}`);
   const anchored = new RegExp(`#session=${sessionId}$`);
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   await expect(next.sessionHeader(page), 'fixture check: the session opened').toBeVisible();
   await expect(page).toHaveURL(anchored);
 

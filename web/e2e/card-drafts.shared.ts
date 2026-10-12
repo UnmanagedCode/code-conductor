@@ -1,4 +1,4 @@
-// A plan card's feedback and a question card's tab, pick and note in the /next/ transcript,
+// A plan card's feedback and a question card's tab, pick and note in the transcript,
 // in a real browser: leaving a full-page view (Settings) brings each back as the reader left
 // it, and typing in the middle of either card's text keeps the caret where the reader typed.
 // The bodies are shared by the per-project spec files; this module declares no tests.

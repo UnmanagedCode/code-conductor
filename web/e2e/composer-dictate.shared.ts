@@ -1,4 +1,4 @@
-// Dictation under /next/ through a real browser microphone: Chromium's fake capture device stands
+// Dictation through a real browser microphone: Chromium's fake capture device stands
 // in for it, and the page's own route answers the transcription endpoints. Holding Send with text in
 // the box records until a tap and keeps the box focused; a short press sends; a touch the browser
 // cancels does nothing; Space or Enter held on Send and Alt+Enter in the box dictate from the

@@ -1,7 +1,10 @@
 // The sidebar flow files' shared fleet helpers: spawning conductors and their workers, waiting on instances, and conductor colours as the page resolves them.
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
 import { api, LIVE_WORKER_MODEL, mcpCall } from '../harness/api.ts';
 import { expect, type Cc } from '../harness/fixtures.ts';
+import { REPO_ROOT } from '../harness/boot.ts';
 
 export type FleetInst = { id: string; sessionId: string; status: string; temp?: boolean; ownerSessionId?: string | null };
 
@@ -34,16 +37,20 @@ export async function spawnWorker(cc: Cc, caller: string, args: Record<string, u
   return idleInst(cc, (i) => i.sessionId === sessionId, `worker ${sessionId} idle`);
 }
 
-/** A conductor's colour resolved the way the page does, as a computed rgb(). */
-export const colourOf = (page: Page, sid: string) => page.evaluate(async ([s, mod]) => {
-  const { conductorColor } = await import(mod);
-  const probe = document.createElement('i');
-  probe.style.color = conductorColor(s);
-  document.body.appendChild(probe);
-  const c = getComputedStyle(probe).color;
-  probe.remove();
-  return c;
-}, [sid, '/conductorColor.js'] as const);
+const CONDUCTOR_COLOR = pathToFileURL(path.join(REPO_ROOT, 'public', 'conductorColor.js')).href;
+
+/** A conductor's colour from the module the page derives it with, resolved by the page as a computed rgb(). */
+export async function colourOf(page: Page, sid: string): Promise<string> {
+  const { conductorColor } = await import(CONDUCTOR_COLOR) as { conductorColor: (sessionId: string) => string };
+  return page.evaluate((css) => {
+    const probe = document.createElement('i');
+    probe.style.color = css;
+    document.body.appendChild(probe);
+    const c = getComputedStyle(probe).color;
+    probe.remove();
+    return c;
+  }, conductorColor(sid));
+}
 
 export const gone = (cc: Cc, id: string) =>
   expect.poll(async () => (await insts(cc)).some((i) => i.id === id), { message: `instance ${id} gone` }).toBe(false);

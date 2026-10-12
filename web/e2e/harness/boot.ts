@@ -41,6 +41,8 @@ export type CcOptions = {
   /** Extra env for the server, applied last. */
   env?: Record<string, string>;
   engine?: Engine;
+  /** The port to listen on (default: a free one), for a spec that must know it before the server starts. */
+  port?: number;
 };
 export type Cc = {
   url: string;
@@ -53,7 +55,8 @@ export type Cc = {
 
 const GITCONFIG = '[user]\n\tname = e2e\n\temail = e2e@example.invalid\n[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n';
 
-function freePort(): Promise<number> {
+/** A port nothing on 127.0.0.1 listens on right now. */
+export function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.once('error', reject);
@@ -120,7 +123,7 @@ function waitExit(child: ChildProcess, ms: number): Promise<boolean> {
   });
 }
 
-export async function bootCc({ scenario = DEFAULT_SCENARIO, env = {}, engine = 'fake' }: CcOptions = {}): Promise<Cc> {
+export async function bootCc({ scenario = DEFAULT_SCENARIO, env = {}, engine = 'fake', port: fixedPort }: CcOptions = {}): Promise<Cc> {
   if (engine === 'live' && process.env.CC_E2E_LIVE !== '1') {
     throw new Error('bootCc: engine "live" needs CC_E2E_LIVE=1');
   }
@@ -157,7 +160,7 @@ export async function bootCc({ scenario = DEFAULT_SCENARIO, env = {}, engine = '
       seedLiveGlobalConfig({ dest: path.join(dirs.claudeConfig, '.claude.json'), liveConfigDir: liveDir! });
     }
 
-    const port = await freePort();
+    const port = fixedPort ?? await freePort();
     const url = `http://127.0.0.1:${port}`;
     const log = fs.openSync(dirs.log, 'a');
     try {
@@ -171,13 +174,13 @@ export async function bootCc({ scenario = DEFAULT_SCENARIO, env = {}, engine = '
 
     const deadline = Date.now() + READY_TIMEOUT_MS;
     for (;;) {
-      if (exited(server)) throw new Error(`bootCc: the server exited (${server.exitCode ?? server.signalCode}) before answering /next/; log tail:\n${logTail(dirs.log)}`);
+      if (exited(server)) throw new Error(`bootCc: the server exited (${server.exitCode ?? server.signalCode}) before answering /; log tail:\n${logTail(dirs.log)}`);
       try {
-        const res = await fetch(`${url}/next/`);
+        const res = await fetch(`${url}/`);
         await res.arrayBuffer();
         if (res.status === 200) break;
       } catch { /* not listening yet */ }
-      if (Date.now() > deadline) throw new Error(`bootCc: /next/ did not answer 200 within ${READY_TIMEOUT_MS} ms; log tail:\n${logTail(dirs.log)}`);
+      if (Date.now() > deadline) throw new Error(`bootCc: / did not answer 200 within ${READY_TIMEOUT_MS} ms; log tail:\n${logTail(dirs.log)}`);
       await new Promise((r) => setTimeout(r, 100));
     }
 

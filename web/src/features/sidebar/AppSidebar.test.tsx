@@ -321,13 +321,6 @@ describe('AppSidebar', () => {
     expect(sidebarStore.get().expandedConductors).toContain('cond');
   });
 
-  it('the footer links to the classic UI at /legacy/', () => {
-    renderSidebar();
-    const footer = document.querySelector('[data-sidebar-footer]') as HTMLElement;
-    const link = within(footer).getByRole('link', { name: 'Classic UI' });
-    expect(link.getAttribute('href')).toBe('/legacy/');
-  });
-
   it('shows Reconnecting… after the socket dropped', () => {
     seed({ connection: 'reconnecting', everDropped: true });
     renderSidebar();

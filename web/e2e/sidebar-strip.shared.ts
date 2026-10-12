@@ -1,4 +1,4 @@
-// The needs-you strip under /next/ on a real server: the group real sessions land in as they run, wait on a worker
+// The needs-you strip on a real server: the group real sessions land in as they run, wait on a worker
 // and ask; opening an asking session and replying; resumes onto ask transcripts; both lenses; the × and the drawer;
 // and an armed entry's fit. The bodies are shared by the per-project spec files.
 import type { Page } from '@playwright/test';

@@ -1,4 +1,4 @@
-// The /next/ transcript's machinery in a real browser, on the fake engine's
+// The transcript's machinery in a real browser, on the fake engine's
 // machinery scenario (fixtures/scenario-conversation-machinery.json): a run held
 // open mid-turn and the run-enders that fold it, tool-card bodies and the Agent
 // card's subagent total, the per-call usage lines and the Statistics box that shows

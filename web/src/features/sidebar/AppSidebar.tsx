@@ -199,9 +199,6 @@ function Footer() {
           <><LoaderCircleIcon className="size-3.5 animate-spin" /> Connecting…</>
         )}
       </div>
-      <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground">
-        <a href="/legacy/" data-legacy-link>Classic UI</a>
-      </Button>
       <ThemeButton />
       <RestartButton />
     </div>

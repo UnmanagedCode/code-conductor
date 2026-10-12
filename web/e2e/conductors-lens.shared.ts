@@ -1,4 +1,4 @@
-// The Conductors lens under /next/: the expanded tree's actions and stage lines, the Inactive group, and ↑ / ×
+// The Conductors lens: the expanded tree's actions and stage lines, the Inactive group, and ↑ / ×
 // end to end on a real server. The bodies are shared by the per-project spec files.
 import type { Page } from '@playwright/test';
 import { api, createProject, mcpCall } from './harness/api.ts';

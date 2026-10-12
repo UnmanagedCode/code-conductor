@@ -4,9 +4,8 @@
 // and public/promptOrigin.ts recognises that output BY them (src/awaitingUser.ts
 // through it), so a builder cannot change its opening without its recogniser
 // seeing the same bytes. Importing nothing keeps both sides free of an import
-// cycle through src/instances.ts. Lives under public/ because the browser can
-// only import from public/ (src/legacyPublicTs.ts serves it to the old UI);
-// DOM-free so the server imports it directly.
+// cycle through src/instances.ts. Lives under public/ with the client modules
+// the web UI shares with the server; DOM-free so the server imports it directly.
 
 // The opening sentence of buildRenewRequest (renew_session turn A).
 export const RENEW_REQUEST_LEAD: string =

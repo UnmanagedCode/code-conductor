@@ -1,4 +1,4 @@
-// The composer's per-session drafts under /next/: a draft follows its session through sidebar
+// The composer's per-session drafts: a draft follows its session through sidebar
 // switches byte for byte and survives a reload, and text typed just before leaving the session view
 // survives the page closing before its debounced save was due. The body is shared by the
 // per-project spec files.

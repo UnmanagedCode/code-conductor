@@ -27,14 +27,14 @@ async function diagnosis(cc: Cc, id: string): Promise<string> {
   return redact(`last events:\n${JSON.stringify(events.body, null, 1)}\nserver log tail:\n${log}`);
 }
 
-test('a live worker answers a prompt through /next/, isolated in the scratch root', async ({ page, cc }) => {
+test('a live worker answers a prompt through the web UI, isolated in the scratch root', async ({ page, cc }) => {
   await createProject(cc, 'e2e-live');
   const { id, sessionId } = await spawnSession(cc, 'e2e-live');
 
   const list = await api<Array<{ id: string; model: string | null }>>(cc, 'GET', '/api/instances');
   expect(list.body.find((i) => i.id === id)?.model).toBe(LIVE_WORKER_MODEL);
 
-  await page.goto(`/next/#session=${sessionId}`);
+  await page.goto(`/#session=${sessionId}`);
   const composer = page.locator('#composer-input');
   await expect(composer).toBeEnabled();
   await composer.fill('Reply with the single word: pong');

@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
-import { ensureWebBuild, webHandler, webSourceHash, WEB_MOUNT, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
+import { ensureWebBuild, webHandler, webSourceHash, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
 const log = { log: vi.fn(), error: vi.fn() };
@@ -74,18 +74,24 @@ describe('ensureWebBuild', () => {
     expect(viteWarnings.filter((w) => /chunks are larger than/.test(w))).toEqual([]);
   });
 
-  it('prefixes every URL in index.html with the /next/ base', () => {
+  it('every URL in index.html is root-absolute: the entry chunk, the manifest and the favicon', () => {
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
-    expect(html).toMatch(/src="\/next\/assets\/[^"]+\.js"/);
-    expect(html).toContain('href="/next/manifest.webmanifest"');
-    expect(html).toContain('href="/next/favicon.svg"');
+    expect(html).toMatch(/src="\/assets\/[^"]+\.js"/);
+    expect(html).toContain('href="/manifest.webmanifest"');
+    expect(html).toContain('href="/favicon.svg"');
   });
 
-  it('ships a manifest whose scope, start URL and icons resolve under the base', () => {
+  it('ships a manifest whose start URL and scope resolve to / and that sets no other id, so an app installed from the old UI keeps its identity; it launches navigate-existing with any and maskable icons', () => {
+    // Invariant: an install's id is its start URL unless `id` says otherwise, and the old UI's was `/`.
     const manifest = JSON.parse(fs.readFileSync(path.join(distDir, 'manifest.webmanifest'), 'utf8'));
-    expect(manifest.start_url).toBe('./');
-    expect(manifest.scope).toBe('./');
-    expect(manifest.icons.length).toBeGreaterThan(0);
+    const served = 'http://h/manifest.webmanifest';
+    expect(new URL(manifest.start_url, served).pathname).toBe('/');
+    expect(new URL(manifest.scope, served).pathname).toBe('/');
+    if (manifest.id !== undefined) expect(new URL(manifest.id, new URL(manifest.start_url, served)).pathname).toBe('/');
+    expect(manifest.display).toBe('standalone');
+    expect(manifest.launch_handler).toEqual({ client_mode: 'navigate-existing' });
+    const purposes = manifest.icons.flatMap((i: { purpose?: string }) => (i.purpose ?? 'any').split(/\s+/));
+    expect(purposes).toEqual(expect.arrayContaining(['any', 'maskable']));
     expect(manifest.icons.filter((i: { src: string }) => i.src.startsWith('/'))).toEqual([]);
   });
 });
@@ -107,11 +113,11 @@ describe('serving the built UI', () => {
     expect(files).toContain('manifest.webmanifest');
 
     const app = express();
-    app.use(WEB_MOUNT, webHandler({ distDir, getState: () => first }));
+    app.use(webHandler({ distDir, getState: () => first }));
     const server = http.createServer(app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     try {
-      const base = `http://127.0.0.1:${(server.address() as { port: number }).port}${WEB_MOUNT}`;
+      const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       const bad: string[] = [];
       for (const f of ['', ...files]) {
         const r = await fetch(`${base}/${f}`);
@@ -195,12 +201,12 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
     expect(fs.readdirSync(parent).filter((n) => n.startsWith(`${path.basename(dist)}.`))).toEqual([]);
 
     const app = express();
-    app.use(WEB_MOUNT, webHandler({ distDir: dist, getState: () => result }));
+    app.use(webHandler({ distDir: dist, getState: () => result }));
     const server = http.createServer(app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     try {
       const { port } = server.address() as { port: number };
-      const r = await fetch(`http://127.0.0.1:${port}${WEB_MOUNT}/`);
+      const r = await fetch(`http://127.0.0.1:${port}/`);
       expect(r.status).toBe(200);
       expect(await r.text()).toContain('previous-build');
     } finally { await new Promise((resolve) => server.close(resolve)); }

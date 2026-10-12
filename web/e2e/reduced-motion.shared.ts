@@ -16,7 +16,7 @@ export async function reducedMotionFlow({ page, cc }: { page: Page; cc: Paramete
   const { id, sessionId } = await spawnSession(cc, `e2e-motion-${test.info().project.name}`);
   try {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
-    await page.goto(`/next/#session=${sessionId}`);
+    await page.goto(`/#session=${sessionId}`);
     await expect(page.locator('#composer-input')).toBeEnabled();
     await next.sendPrompt(page, 'MIDTURN-HOLD keep the turn running');
     const indicator = page.locator('[data-turn-indicator="working"]');

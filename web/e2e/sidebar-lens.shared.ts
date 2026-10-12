@@ -1,4 +1,4 @@
-// The sidebar's lenses under /next/: each shows only its own lists and they are reachable; the Projects
+// The sidebar's lenses: each shows only its own lists and they are reachable; the Projects
 // lens's controls fit the column. The bodies are shared by the per-project spec files.
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
@@ -17,7 +17,7 @@ async function reachable(page: Page, target: ReturnType<Page['locator']>) {
 export async function lensListsFlow({ page, cc }: Ctx): Promise<void> {
   const project = `e2e-lens-${test.info().project.name}`;
   await spawnSession(cc, project);
-  await page.goto('/next/');
+  await page.goto('/');
 
   await next.lens(page, 'projects');
   const sb = nextSidebar(page);
@@ -33,7 +33,7 @@ export async function lensListsFlow({ page, cc }: Ctx): Promise<void> {
 // Invariant: both Projects-lens controls are reachable and the column does not overflow sideways.
 export async function lensControlsFitFlow({ page, cc }: Ctx): Promise<void> {
   await spawnSession(cc, `e2e-lens-fit-${test.info().project.name}`);
-  await page.goto('/next/');
+  await page.goto('/');
   await next.lens(page, 'projects');
   const sb = nextSidebar(page);
   const filter = sb.getByRole('combobox', { name: 'Filter by conductor' });
