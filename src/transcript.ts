@@ -381,7 +381,7 @@ export async function loadSubAgentTranscript(options: {
 // as a context-size SNAPSHOT, not a sum: each line's
 // input+cache_read+cache_creation equals the previous call's total (the
 // per-call prompt ladder), and the per-turn sum the `ctx 743%` bug came from
-// (`turn_end.usage`, see public/usage.js) is a stream-only `result` frame the
+// (`turn_end.usage`, see shared/usage.ts) is a stream-only `result` frame the
 // CLI never persists — there is no `type:"result"` line in a session jsonl,
 // so that value is structurally unreachable from here.
 export interface PersistedTranscript {
@@ -414,7 +414,7 @@ export async function loadPersistedTranscript(options: {
 // `model_changed` carrying `restart`/`switchId` on success, `model_switch_failed`
 // on failure (`cancelled` when a Terminate stopped it). `switchId` is what makes it durable — eventArchive treats an event
 // carrying one as persisted and correlates it by that id. The replay splice
-// marks its copy `replayed`, which public/usage.js reads to keep a replayed
+// marks its copy `replayed`, which shared/usage.ts reads to keep a replayed
 // divider from blanking the ctx reading a later turn seeded.
 export function modelSwitchEvent(entry: ModelSwitchEntry, { replayed = false }: { replayed?: boolean } = {}): UiEvent {
   // A switch that crossed backends names both on either outcome.

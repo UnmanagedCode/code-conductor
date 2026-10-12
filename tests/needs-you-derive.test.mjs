@@ -1,5 +1,5 @@
 // Pure derivations behind the needs-you strip and the waiting-on-you ring
-// (public/needsYou.js). No DOM.
+// (shared/needsYou.ts). No DOM.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

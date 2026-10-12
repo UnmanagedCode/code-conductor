@@ -45,7 +45,7 @@ import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../../shared/planApproval.ts';
 // DOM-free formatter shared with the UI question card
 // (web/src/conversation/cards.tsx) so an answer_question MCP answer is byte-identical to a UI
-// submit — one canonical function, no fork. See public/userQuestionAnswers.ts.
+// submit — one canonical function, no fork. See shared/userQuestionAnswers.ts.
 import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../shared/userQuestionAnswers.ts';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
 import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
@@ -1681,7 +1681,7 @@ interface AnswerEntry {
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
 // question card's submit (web/src/conversation/cards.tsx → formatUserQuestionAnswers):
 // the consolidated answer goes out as a normal user turn, byte-identical to a UI
-// answer because both call the same public/userQuestionAnswers.ts formatter.
+// answer because both call the same shared/userQuestionAnswers.ts formatter.
 // The worker is NOT necessarily idle here — the can_use_tool deny only ends the
 // turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
 // so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn,
@@ -2332,7 +2332,7 @@ function forwardTruncationMarker(planPath: string | undefined): string {
 }
 
 // Compose a send_prompt({forward}) prompt. The frame layout (header, footer,
-// boundary lines, blank-line joins) is owned by public/forwardFrame.ts, which
+// boundary lines, blank-line joins) is owned by shared/forwardFrame.ts, which
 // the conversation view parses back to render the forward bubble; this
 // function only renders the per-message bodies. They reuse renderMessageBody
 // — the SAME renderer get_recent_messages uses — so a forwarded plan/questions

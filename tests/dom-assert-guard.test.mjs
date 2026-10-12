@@ -289,7 +289,7 @@ test('T7 pins: the tripwire is installed in this child and converts a node-vs-nu
   // Assert installation FIRST so this test cannot pass vacuously if the
   // execArgv preload in tests/run.mjs is ever removed.
   assert.equal(assert.equal.__domTripwire, true,
-    'tripwire not installed — the public/-valued gap in the scan is unguarded');
+    'tripwire not installed — the source-valued gap in the scan is unguarded');
   // A node-ISH plain object, never a live node: if the tripwire were ever
   // absent this fails instantly instead of stalling the suite for 33-120s.
   assert.throws(

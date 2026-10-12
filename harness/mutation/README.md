@@ -80,7 +80,7 @@ that only breaks a type gets a behavioural verdict from the tests it names — a
 mutant never reads `ERROR (scope-empty)` through a pretest red.
 
 **Playwright rows rebuild the bundle.** The suite's globalSetup runs the server's hash-gated
-`ensureWebBuild()`: a mutant under `web/` or `public/` changes the source hash, so the scored run
+`ensureWebBuild()`: a mutant under `web/` or `shared/` changes the source hash, so the scored run
 rebuilds `web/dist`, and the restore makes the next run rebuild again. A mutant that breaks the build
 fails globalSetup and reads `IMPRECISE (compile-error)`. Specs and fixtures are not build inputs, so
 the canary injected into a spec costs no rebuild. Playwright rows need the browser revision

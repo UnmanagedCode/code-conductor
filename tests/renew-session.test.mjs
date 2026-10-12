@@ -122,7 +122,7 @@ test('renew_session drives a /clear that rotates the session in place and reseed
       (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-XYZ'));
     assert.ok(seedEcho, 'summary was injected as a user turn on the cleared session');
     assert.ok(seedEcho.text.includes('MECHANICAL STATE'), 'mechanical state block was appended to the seed');
-    // buildStateBlock writes exactly MECHANICAL_STATE_HEADER (public/renewSeed.ts) as its
+    // buildStateBlock writes exactly MECHANICAL_STATE_HEADER (shared/renewSeed.ts) as its
     // first line — the client's parseRenewSeed splits on this exact string, so a drift
     // here would silently break the renew-seed bubble's state section.
     assert.ok(seedEcho.text.includes(MECHANICAL_STATE_HEADER), 'the state block header matches the shared MECHANICAL_STATE_HEADER exactly');

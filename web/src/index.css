@@ -149,7 +149,7 @@
   }
 }
 
-/* Rendered markdown (components/Markdown.tsx → lib/core/markdown.js). */
+/* Rendered markdown (components/Markdown.tsx → shared/markdown.ts). */
 @layer components {
   .md {
     @apply text-[15px] leading-relaxed break-words;

@@ -1,6 +1,6 @@
 // Characterization pin for the *attribute surface* of the markdown renderer.
 //
-// Why this exists: markdown.js builds every node through dom.js's attrs-first
+// Why this exists: markdown.ts builds every node through dom.ts's attrs-first
 // `el(tag, attrs, ...children)`, so every call site carries an attrs argument,
 // and a missed `{}` fails in one of two silent ways:
 //   - first child is a string → `Object.entries('text')` sets attributes
@@ -37,7 +37,7 @@ async function loadMarkdown() {
   return import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'markdown.ts')).href);
 }
 
-// One fixture exercising every `el` call site in markdown.js that a real
+// One fixture exercising every `el` call site in markdown.ts that a real
 // document can reach: heading, paragraph, strong, em (both `*x*` and `_x_`),
 // inline code, fenced code (pre > code, an ELEMENT first child), ul/ol items
 // (one starting with an element child), blockquote, hr, a table with all three

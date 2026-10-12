@@ -1,9 +1,9 @@
 // The one DOM builder for the whole client.
 //
 // A LEAF module by necessity, not by taste: blocks.js imports
-// renderMarkdownInto from markdown.js, so an `el` living in blocks.js and
-// imported by markdown.js would make blocks → markdown → blocks a cycle.
-// dom.js imports nothing, so every consumer can reach it.
+// renderMarkdownInto from markdown.ts, so an `el` living in blocks.js and
+// imported by markdown.ts would make blocks → markdown → blocks a cycle.
+// dom.ts imports nothing, so every consumer can reach it.
 //
 // Signature is attrs-first — `el(tag, attrs, ...children)`. `attrs` is
 // mandatory in practice: pass `{}` when there are none, because a first

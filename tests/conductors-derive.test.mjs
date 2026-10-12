@@ -1,5 +1,5 @@
 // Pure derivations behind the sidebar's Conductors lens and ownership colour
-// (public/conductors.js, public/conductorColor.js). No DOM.
+// (shared/conductors.ts, shared/conductorColor.ts). No DOM.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

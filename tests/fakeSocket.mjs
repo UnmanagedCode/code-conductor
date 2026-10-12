@@ -1,13 +1,13 @@
 // The minimal stand-in for the browser's WebSocket that the DOM tests drive the
-// REAL public/ws.js over, so an assertion reads the frame that actually goes on
+// REAL shared/ws.ts over, so an assertion reads the frame that actually goes on
 // the wire rather than a re-implementation of it.
 //
-// Enough for ws.js and no more: connect() constructs it and registers listeners,
+// Enough for ws.ts and no more: connect() constructs it and registers listeners,
 // send() checks readyState against the constructor's OPEN, and an ack is
 // dispatched back SYNCHRONOUSLY for any frame carrying a reqId so an {ack:true}
 // send's await settles instead of timing out into an alert().
 //
-// It sets the WebSocket GLOBAL, which is what ws.js resolves; `sent` collects
+// It sets the WebSocket GLOBAL, which is what ws.ts resolves; `sent` collects
 // every frame as a parsed object, in send order. `ack(msg)` decides each ack's
 // `{ok, error}` — every frame succeeds unless a test passes a refusing one.
 export function installFakeSocket(sent, { ack = () => ({ ok: true }) } = {}) {

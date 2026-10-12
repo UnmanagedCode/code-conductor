@@ -1,7 +1,7 @@
 // Server-side, single-pass, chronological reconstruction of task-batch state
 // from the raw tool_use/tool_result event stream (TaskCreate / TaskUpdate).
 //
-// This MIRRORS the client TaskTracker in public/tasks.js — the two implement
+// This MIRRORS the client TaskTracker in shared/tasks.ts — the two implement
 // the SAME batch-rollover + completion-edge rules and MUST stay in sync. If you
 // change the create-id binding, rollover (`_allCompleted` → clear on next
 // create), or the completion edge (`wasVisible && !isVisible()`) here, change it

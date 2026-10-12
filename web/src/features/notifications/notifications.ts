@@ -1,5 +1,5 @@
 // Browser notifications for a top-level session entering the needs-you strip's
-// Waiting or Finished group (detection: lib/core/attention.js). The decision
+// Waiting or Finished group (detection: shared/attention.ts). The decision
 // logic is pure and exported for tests; the Notification / Service Worker
 // plumbing wraps it.
 //

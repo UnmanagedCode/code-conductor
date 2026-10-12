@@ -74,7 +74,7 @@ export interface InstanceSummary {
   viewedSeq?: number;
   // Live-only, per Instance object (never hydrated): outer turn ends seen, not
   // counting a commanded-stop interrupted one; the latest counted one's is_error;
-  // live null→ask transitions of awaitingUser. Read by public/attention.js.
+  // live null→ask transitions of awaitingUser. Read by shared/attention.ts.
   liveTurnEnds?: number;
   lastTurnError?: boolean;
   liveAsks?: number;

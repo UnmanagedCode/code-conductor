@@ -138,7 +138,7 @@ The scan-time policy is therefore a **strict superset** of the compose-time one,
 
 ### Bridge protocol — `/pluginBridge.js`
 
-Plugin frontends include `<script src="/pluginBridge.js" defer></script>` (`public/pluginBridge.js`, served by an explicit `GET /pluginBridge.js` route in `server.ts` whether or not the web UI is built; harmless 404 standalone, no-op when not iframed; the parent side is `pluginFrames` in `web/src/features/views/plugins.ts`). Envelope `{cc:1, type, ...}` over `postMessage`, same-origin both ways. Exactly three messages:
+Plugin frontends include `<script src="/pluginBridge.js" defer></script>` (`web/src/features/views/pluginBridge.js`, served by an explicit `GET /pluginBridge.js` route in `server.ts` whether or not the web UI is built; harmless 404 standalone, no-op when not iframed; the parent side is `pluginFrames` in `web/src/features/views/plugins.ts`). Envelope `{cc:1, type, ...}` over `postMessage`, same-origin both ways. Exactly three messages:
 
 | Direction | Type | Payload | Meaning |
 |---|---|---|---|

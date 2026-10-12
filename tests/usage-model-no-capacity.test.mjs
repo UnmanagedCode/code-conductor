@@ -1,6 +1,6 @@
 // The client derives NO context capacity from the model it observed.
 //
-// usage.js's header records that the hardcoded family→window table was
+// usage.ts's header records that the hardcoded family→window table was
 // deleted: the server resolves capacity once from the concrete
 // {backend, exact model} pair and ships it as `contextWindowTokens`. The
 // client cannot redo that — `message_start` reports a bare model id with the
@@ -46,7 +46,7 @@ const MODEL_IDS = [
   'claude-future-9',
 ];
 
-// The two paths that write `this.model` (usage.js apply()).
+// The two paths that write `this.model` (usage.ts apply()).
 const SEED_VIA = {
   init: (t, id) => t.apply({ kind: 'system', subtype: 'init', data: { model: id } }),
   model_changed: (t, id) => t.apply({ kind: 'system', subtype: 'model_changed', data: { to: id } }),

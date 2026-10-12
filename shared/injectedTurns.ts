@@ -1,11 +1,11 @@
 // The fixed leads of every server-authored text that reaches a session as a
 // user turn. A leaf module: the builders (sessionRenew.ts, resumeRestart.ts,
 // overageResume.ts, worktrees.ts) compose their output FROM these constants,
-// and public/promptOrigin.ts recognises that output BY them (src/awaitingUser.ts
+// and shared/promptOrigin.ts recognises that output BY them (src/awaitingUser.ts
 // through it), so a builder cannot change its opening without its recogniser
 // seeing the same bytes. Importing nothing keeps both sides free of an import
-// cycle through src/instances.ts. Lives under public/ with the client modules
-// the web UI shares with the server; DOM-free so the server imports it directly.
+// cycle through src/instances.ts. Lives in shared/ with the modules the web UI
+// shares with the server; DOM-free so the server imports it directly.
 
 // The opening sentence of buildRenewRequest (renew_session turn A).
 export const RENEW_REQUEST_LEAD: string =

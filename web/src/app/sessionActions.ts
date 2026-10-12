@@ -150,7 +150,7 @@ export type CloseArgs = {
   temp?: boolean;
 };
 
-/** A session's ×: one step down from where it is (closeAction.js decides stop vs archive). */
+/** A session's ×: one step down from where it is (closeAction.ts decides stop vs archive). */
 export function closeSession(args: CloseArgs) {
   return closeActionOf({ instanceId: args.instanceId ?? null, status: args.status ?? null, temp: !!args.temp }) === 'stop' ? stopSession(args) : archiveSession(args);
 }

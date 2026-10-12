@@ -1,6 +1,6 @@
 // Canonical-output tests for the AskUserQuestion answer formatter.
 //
-// public/userQuestionAnswers.ts is the one function the UI question card and
+// shared/userQuestionAnswers.ts is the one function the UI question card and
 // the answer_question MCP tool both call. These tests lock the canonical
 // strings — the exact bytes the model reads.
 

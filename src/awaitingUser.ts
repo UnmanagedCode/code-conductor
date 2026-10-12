@@ -49,7 +49,7 @@ export function isTextAsk(text: unknown): boolean {
 // 'real' for anything a person (or, per the limit above, an MCP driver) sent;
 // 'injected' for the server- and CLI-authored turns listed in
 // docs/architecture.md → "Ownership and awaitingUser". The text/flag rules live
-// in public/promptOrigin.ts (isInjectedUserTurn), which the browser's sticky
+// in shared/promptOrigin.ts (isInjectedUserTurn), which the browser's sticky
 // prompt header shares.
 export function classifyUserTurn(ev: UiEvent): 'real' | 'injected' {
   return isInjectedUserTurn(ev) ? 'injected' : 'real';

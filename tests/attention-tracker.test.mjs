@@ -1,4 +1,4 @@
-// The attention tracker (public/attention.js): which successive /api/instances
+// The attention tracker (shared/attention.ts): which successive /api/instances
 // lists make a top-level session ENTER the needs-you strip's Waiting or
 // Finished group. Pure; one invariant per test.
 

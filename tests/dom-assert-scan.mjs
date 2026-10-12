@@ -245,7 +245,7 @@ export function findNullishEqualityCalls(stripped) {
 // no DOM-valued definition in the same file, is INDISTINGUISHABLE from the
 // legitimate primitive-vs-null comparisons in `tests/`:
 // `main.leadingAssistantWrap` has exactly the shape of
-// `inst.autoResumeAt`. Their DOM-ness lives in the RETURN VALUES of `public/`
+// `inst.autoResumeAt`. Their DOM-ness lives in the RETURN VALUES of source
 // code and is not present in the test's syntax at all, so no amount of scanner
 // work reaches them. They are covered by `tests/dom-assert-tripwire.mjs` at
 // runtime; do NOT close the gap with a hand-maintained name list, which rots

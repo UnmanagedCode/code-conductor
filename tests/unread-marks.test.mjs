@@ -1,4 +1,4 @@
-// public/unreadMarks.js: the one unread fact the sidebar reads — the server's
+// shared/unreadMarks.ts: the one unread fact the sidebar reads — the server's
 // turn marks, from a live instance or a disk session row.
 
 import { test } from 'node:test';

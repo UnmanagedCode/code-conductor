@@ -1,4 +1,4 @@
-// Tests for public/forwardFrame.ts's parse side: parseForwardFrame recovers
+// Tests for shared/forwardFrame.ts's parse side: parseForwardFrame recovers
 // { payload, instruction } from exactly what buildForwardFrame writes, and
 // splitForwardedMessages recovers the per-message bodies from the payload.
 // Pure — no DOM. The worker-visible bytes themselves are pinned against the

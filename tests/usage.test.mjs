@@ -1,4 +1,4 @@
-// Tests for public/usage.js: the per-instance context-usage tracker that
+// Tests for shared/usage.ts: the per-instance context-usage tracker that
 // drives the `ctx N%` header chip + session-totals popover, and the
 // rate-limit chip segment.
 //
@@ -290,7 +290,7 @@ test('currentFillPct: unknown capacity yields null, never a fabricated 200k defa
   assert.equal(fresh.currentFillPct(1_000_000), null);
 });
 
-test('usage.js exports no context-window table or resolver', async () => {
+test('usage.ts exports no context-window table or resolver', async () => {
   const mod = await import(USAGE_URL);
   // Capacity has exactly one home (the server). A client-side resolver
   // reappearing here is a second source of truth that will drift.

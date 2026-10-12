@@ -1,4 +1,4 @@
-// Pins the contract of the one client-side fetch helper — public/http.js's
+// Pins the contract of the one client-side fetch helper — shared/http.ts's
 // apiFetch, the client counterpart of src/httpError.ts.
 //
 // Invariant: apiFetch returns the PARSED JSON body on success, and on failure

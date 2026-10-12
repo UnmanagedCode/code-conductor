@@ -4,7 +4,7 @@
 // builds it with `buildForwardFrame`; the web UI's transcript model
 // (`web/src/conversation/model.ts`) parses the very same text back out and
 // `ForwardBody` (`web/src/conversation/items.tsx`) renders it as a folded bubble; `src/awaitingUser.ts` recognises it by FORWARD_FRAME_HEADER
-// (mirroring how `public/renewSeed.ts` is shared with `src/sessionRenew.ts`).
+// (mirroring how `shared/renewSeed.ts` is shared with `src/sessionRenew.ts`).
 // Being in-band means a frame already in history is recognised too — no wire
 // or protocol change.
 //

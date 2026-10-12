@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'shared');
 
-// tasks.js uses `document` only inside TaskPanel — TaskTracker itself
+// tasks.ts uses `document` only inside TaskPanel — TaskTracker itself
 // is DOM-free and import-safe in plain Node.
 const { TaskTracker } = await import(pathToFileURL(path.join(PUB, 'tasks.ts')).href);
 

@@ -1,4 +1,4 @@
-// public/toolName.js — the display parse of a tool's wire name.
+// shared/toolName.ts — the display parse of a tool's wire name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';

@@ -22,7 +22,7 @@ import {
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT, QUEUED_SECTION_LEAD,
 } from '../shared/injectedTurns.ts';
 
-// The three preambles live in public/injectedTurns.ts, where the awaiting-user
+// The three preambles live in shared/injectedTurns.ts, where the awaiting-user
 // classifier recognises the same bytes.
 export { AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT };
 

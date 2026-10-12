@@ -1,5 +1,5 @@
 // list_sessions / describe_session render a session's first prompt the way a
-// label shows it (public/promptPreview.ts readablePrompt): a prompt the server
+// label shows it (shared/promptPreview.ts readablePrompt): a prompt the server
 // or the CLI wrote reads by name, a person's reads as typed.
 //
 // Each first prompt is built by its real producer, written as a transcript and

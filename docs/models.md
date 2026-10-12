@@ -544,7 +544,7 @@ the window the session already held (first bullet below).
 - **`addCustomModel` checks `contextWindow` only for a finite value > 0**, never
   against the model's real window.
 - **The fill readout does not clamp.** `currentFillPct` / `formatPct`
-  (`public/usage.js`) render an understated window as >100%. Triage a >100% chip by
+  (`shared/usage.ts`) render an understated window as >100%. Triage a >100% chip by
   reading the session's model and its window row first.
 
 A binding is exactly `{backend, model}`. The session record's `backend` (in

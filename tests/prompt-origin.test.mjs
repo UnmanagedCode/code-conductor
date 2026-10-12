@@ -1,4 +1,4 @@
-// promptOrigin / isPinEligible (public/promptOrigin.ts): which user turns the
+// promptOrigin / isPinEligible (shared/promptOrigin.ts): which user turns the
 // sticky prompt header may pin. Pure — no DOM.
 //
 // Every input comes from the REAL builder of that turn, never a hand-typed copy,

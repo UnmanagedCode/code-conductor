@@ -713,7 +713,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // hydrated from the transcript at launch and reduced from live events after.
   // Never set on a conducted worker; never persisted.
   _awaitingUser: AskState;
-  // Live-only attention counters (summary(); read by public/attention.js). Never
+  // Live-only attention counters (summary(); read by shared/attention.ts). Never
   // hydrated and never reset, so a resume or a pre-launch listing cannot fake a
   // transition.
   liveTurnEnds: number;
@@ -1787,7 +1787,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // every frame — so a null block must leave the latch alone or the very
     // first live frame would wipe the reading loadHistory seeded from the
     // jsonl, and a reload would drop to `ctx —` while the already-subscribed
-    // client still shows the number. Mirrors public/usage.js's `&& ev.usage`.
+    // client still shows the number. Mirrors shared/usage.ts's `&& ev.usage`.
     // `context_usage` is the parser's fallback reading for a backend whose
     // message_start is all-zero (src/parser.ts); it is armed only when THAT
     // message produced no message_start reading, so the two can never fight

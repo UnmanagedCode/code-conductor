@@ -3,7 +3,7 @@ import { renderMarkdownInto } from '@shared/markdown';
 import { cn } from '@/lib/utils';
 
 /**
- * Markdown through the app's safe renderer (lib/core/markdown.js): text only
+ * Markdown through the app's safe renderer (shared/markdown.ts): text only
  * via textContent, links and images restricted to safe schemes. Styled by the
  * `.md` rules in index.css.
  */
