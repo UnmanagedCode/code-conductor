@@ -17,6 +17,8 @@ import path from 'node:path';
 import { renderSessions, renderSession } from '../src/mcp/readRenderers.ts';
 import { readFirstPrompt } from '../src/projects.ts';
 import { buildWakeStub } from '../public/wakeCallback.ts';
+import { readablePrompt } from '../public/promptPreview.ts';
+import { backgroundJobsNote } from '../src/backgroundJobs.ts';
 import { buildForwardFrame } from '../public/forwardFrame.ts';
 import { buildRenewSeed } from '../public/renewSeed.ts';
 
@@ -88,6 +90,39 @@ test('a wake-callback first prompt renders as Wake: <summary>, never the [[cc: m
     live: `title —   first Wake: Worker \`${WORKER}\` finished its turn. Its recent output is folded …`,
     inactive: `Wake: Worker \`${WORKER}\` finishe…`,
   });
+});
+
+// The store cut never reaches a wake stub's body separator: whatever
+// buildWakeStub produces, the head readFirstPrompt keeps reads, in full and
+// untruncated, as the summary alone — no partial `\n[[cc:wake-body]]\n` left
+// in it. A note only prefixes the summary and a jobs note only suffixes it, so
+// the bare stub is the binding case.
+test('the stored head of every wake stub reads with no [[cc: left in it', async t => {
+  const NOW = 1786001000000;
+  const notes = { 'no note': null, 'a note': 'NOTE: the renewal was declined.' };
+  const jobsNotes = {
+    'no jobs': null,
+    'one job': backgroundJobsNote(WORKER, [{ title: 'npm test', startedAt: NOW - 60_000 }], NOW),
+    'two jobs': backgroundJobsNote(WORKER, [
+      { title: 'npm test', startedAt: NOW - 60_000 },
+      { title: 'tail -f server.log', startedAt: NOW - 5_000 },
+    ], NOW),
+  };
+  const payloads = { 'empty payload': '', 'a payload': 'Done: 3 files changed.\n[[cc:wake-body]]\nquoted' };
+  for (const [noteName, note] of Object.entries(notes)) {
+    for (const [jobsName, jobsNote] of Object.entries(jobsNotes)) {
+      for (const [payloadName, payloadText] of Object.entries(payloads)) {
+        const name = `${noteName}, ${jobsName}, ${payloadName}`;
+        await t.test(name, async () => {
+          const stored = await storedFirstPrompt(`wake-head-${name.replace(/\W+/g, '-')}`,
+            [userTurn(buildWakeStub({ targetSessionId: WORKER, payloadText, note, jobsNote }))]);
+          const readable = readablePrompt(stored);
+          assert.ok(readable.startsWith('Wake: '), readable);
+          assert.ok(!readable.includes('[[cc:'), readable);
+        });
+      }
+    }
+  }
 });
 
 test('a forwarded-frame first prompt renders as Forwarded worker output', async t => {
