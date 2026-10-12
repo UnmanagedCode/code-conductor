@@ -70,10 +70,13 @@ export async function refreshProjects() {
 }
 
 const instanceReads = inStartOrder();
+/** Whether any instance list has been applied: until then an anchor naming no listed session is the restore's to judge. */
+let instancesLanded = false;
 export async function refreshInstances() {
   await instanceReads(
     () => fetch('/api/instances').then((r) => r.json()),
     (data: Instance[]) => {
+      instancesLanded = true;
       appStore.set({ instances: Array.isArray(data) ? data : [] });
       emit('instances');
     },
@@ -298,13 +301,18 @@ export function startController() {
     appStore.set({ connection: 'reconnecting', everDropped: true });
   });
 
-  // Back / forward between session anchors (e.g. back from a worker to its conductor).
+  // Back / forward between session anchors (e.g. back from a worker to its conductor): select the
+  // session the entry names if it is listed, else clear the anchor, so a reload never resumes it.
   addEventListener('popstate', () => {
     if (routeStore.get().route.view !== 'session') return;
     const anchor = readSessionAnchor();
     const live = anchor ? appStore.get().instances.find((i) => i.sessionId === anchor) : null;
     const target = live?.id ?? null;
     if (target !== appStore.get().activeId) selectInstance(target);
+    else if (anchor && !target && instancesLanded) {
+      writeSessionAnchor(null);
+      syncRoute();
+    }
   }, { signal });
 
   if (typeof navigator !== 'undefined' && navigator.serviceWorker) {

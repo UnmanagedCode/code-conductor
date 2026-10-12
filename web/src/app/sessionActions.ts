@@ -2,7 +2,9 @@
 // sidebar, the session header, the conversation and the commit-history view.
 import { apiFetch } from '@/lib/core/http.js';
 import { closeActionOf, stopNeedsConfirm } from '@/lib/core/closeAction.js';
-import { appStore } from '@/state/app';
+import { readSessionAnchor, writeSessionAnchor } from '@/lib/core/anchor.js';
+import { appStore, activeInstance } from '@/state/app';
+import { syncRoute } from '@/state/route';
 import type { Instance, Project } from '@/state/types';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { refreshInstances, refreshProjects, selectInstance, subscribe } from './controller';
@@ -11,7 +13,15 @@ import { beginGesture, gestureOvertaken } from './gestures';
 
 const instances = () => appStore.get().instances;
 const activeId = () => appStore.get().activeId;
-const clearActive = () => appStore.set({ activeId: null });
+/** Closing the active session is no selection; it drops the anchor naming that session, so a reload resumes nothing. */
+function clearActive() {
+  const closed = activeInstance(appStore.get())?.sessionId;
+  appStore.set({ activeId: null });
+  if (closed && readSessionAnchor() === closed) {
+    writeSessionAnchor(null);
+    syncRoute();
+  }
+}
 
 export async function promoteSession({ projectName, instanceId, preview }: { projectName: string; instanceId: string; preview?: string | null }) {
   if (!instanceId) return;
