@@ -3,7 +3,6 @@
 // projects) and the first-connect anchor restore. UI features subscribe to the
 // stores and to app events; nothing here touches the DOM beyond the URL hash.
 import { bus, connect, send } from '@/lib/core/ws.js';
-import { latestOnly } from '@/lib/core/latestOnly.js';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@/lib/core/anchor.js';
 import { appStore, activeInstance, type AppState } from '@/state/app';
 import { syncRoute, routeStore } from '@/state/route';
@@ -33,33 +32,45 @@ export const stickyPrompt = createStickyPrompt({
 
 // ── REST refreshers ──────────────────────────────────────────────────────
 
-// Reads in start order. Hints come in bursts (two projects created together) and
-// their reads can answer out of order: one that answers after a later read has
-// landed carries an older list, so it is dropped.
-let projectsStarted = 0;
-let projectsLanded = 0;
+/**
+ * Reads applied in start order. Hints come in bursts (two projects created
+ * together; a status flip's `instances` and `projects`) and their reads can
+ * answer out of order: one that answers after a later read has landed carries
+ * an older list, so it is dropped. One that answers first is applied, so when a
+ * refresh resolves the store holds a list at least as new as that refresh.
+ */
+function inStartOrder() {
+  let started = 0;
+  let landed = 0;
+  return async <T>(read: () => Promise<T>, apply: (data: T) => void): Promise<void> => {
+    const mine = ++started;
+    const data = await read();
+    if (mine < landed) return;
+    landed = mine;
+    apply(data);
+  };
+}
 
+const projectReads = inStartOrder();
 export async function refreshProjects() {
-  const mine = ++projectsStarted;
-  const [projects, workspaces, conductSessions, conductorSpawns] = await Promise.all([
+  await projectReads(() => Promise.all([
     fetch('/api/projects').then((r) => r.json()),
     fetch('/api/workspaces').then((r) => r.json()).catch(() => []),
     fetch('/api/projects/.conduct/sessions').then((r) => (r.ok ? r.json() : [])).catch(() => []),
     fetch('/api/conductors/projects').then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
-  ]);
-  if (mine < projectsLanded) return;
-  projectsLanded = mine;
-  appStore.set({
-    projects: Array.isArray(projects) ? projects : [],
-    workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
-    conductSessions: Array.isArray(conductSessions) ? conductSessions : [],
-    conductorSpawns: conductorSpawns && typeof conductorSpawns === 'object' ? (conductorSpawns as AppState['conductorSpawns']) : {},
+  ]), ([projects, workspaces, conductSessions, conductorSpawns]) => {
+    appStore.set({
+      projects: Array.isArray(projects) ? projects : [],
+      workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
+      conductSessions: Array.isArray(conductSessions) ? conductSessions : [],
+      conductorSpawns: conductorSpawns && typeof conductorSpawns === 'object' ? (conductorSpawns as AppState['conductorSpawns']) : {},
+    });
   });
 }
 
-const instancesGuard = latestOnly();
+const instanceReads = inStartOrder();
 export async function refreshInstances() {
-  await instancesGuard(
+  await instanceReads(
     () => fetch('/api/instances').then((r) => r.json()),
     (data: Instance[]) => {
       appStore.set({ instances: Array.isArray(data) ? data : [] });
@@ -97,35 +108,40 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   closeSidebarOnMobile();
 }
 
-/** Select a live instance owning `sessionId`, or locate it on disk and resume it. */
+/**
+ * Select a live instance owning `sessionId`, or locate it on disk and resume it.
+ * An automatic lookup (no user gesture, e.g. the first-connect restore) yields to
+ * a session selected while it runs: that one stands, with its anchor, and nothing
+ * is cleared or resumed over it. A user's lookup (a notification click) never
+ * yields: it is the newer intent.
+ */
 export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss = true, userGesture = false } = {}): Promise<boolean> {
   const live = appStore.get().instances.find((i) => i.sessionId === anchor);
   if (live) {
     selectInstance(live.id, { userGesture });
     return true;
   }
+  const selected = appStore.get().activeId;
+  const overtaken = () => !userGesture && appStore.get().activeId !== selected;
+  const clear = () => { if (clearAnchorOnMiss) { writeSessionAnchor(null); syncRoute(); } };
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(anchor)}/locate`);
-    if (r.ok) {
-      const { project, worktreeName, archived } = await r.json();
-      // An archived session is never resurrected silently from a link.
-      if (archived) {
-        if (clearAnchorOnMiss) { writeSessionAnchor(null); syncRoute(); }
-        return true;
-      }
-      appStore.set({ sidebarStatus: { text: 'Resuming session…', warn: true } });
-      try {
-        await resumeSession({ projectName: project, worktreeName, sessionId: anchor, silent: true, userGesture });
-      } finally {
-        appStore.set({ sidebarStatus: null });
-      }
-      return true;
+    const hit: { project: string; worktreeName: string | null; archived: boolean } | null = r.ok ? await r.json() : null;
+    if (overtaken()) return true;
+    if (!hit) { clear(); return false; }
+    // An archived session is never resurrected silently from a link.
+    if (hit.archived) { clear(); return true; }
+    appStore.set({ sidebarStatus: { text: 'Resuming session…', warn: true } });
+    try {
+      await resumeSession({ projectName: hit.project, worktreeName: hit.worktreeName, sessionId: anchor, silent: true, userGesture });
+    } finally {
+      appStore.set({ sidebarStatus: null });
     }
-    if (clearAnchorOnMiss) { writeSessionAnchor(null); syncRoute(); }
-    return false;
+    return true;
   } catch (e) {
     console.warn('auto-resume from anchor failed', e);
-    if (clearAnchorOnMiss) { writeSessionAnchor(null); syncRoute(); }
+    if (overtaken()) return true;
+    clear();
     return false;
   }
 }

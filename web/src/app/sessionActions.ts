@@ -41,6 +41,9 @@ export function loadSessions(projectName: string, worktreeName?: string | null) 
 export async function resumeSession({
   projectName, worktreeName, sessionId, silent = false, userGesture = !silent,
 }: { projectName: string; worktreeName?: string | null; sessionId: string; silent?: boolean; userGesture?: boolean }) {
+  // An automatic resume (a URL anchor) never takes over a session selected while it ran; a user's never yields.
+  const selected = activeId();
+  const wanted = () => userGesture || activeId() === selected;
   try {
     const r = await fetch('/api/instances', {
       method: 'POST',
@@ -52,7 +55,7 @@ export async function resumeSession({
         // A concurrent resume (e.g. the server's restart restore) may already own it.
         await refreshInstances();
         const live = instances().find((i) => i.sessionId === sessionId);
-        if (live) selectInstance(live.id, { userGesture });
+        if (live && wanted()) selectInstance(live.id, { userGesture });
         return;
       }
       throw new Error((await r.json()).error);
@@ -60,7 +63,7 @@ export async function resumeSession({
     const inst = await r.json();
     await refreshProjects();
     await refreshInstances();
-    selectInstance(inst.id, { userGesture });
+    if (wanted()) selectInstance(inst.id, { userGesture });
   } catch (e: any) {
     if (silent) { console.warn('anchor auto-resume failed', e); return; }
     toast.error('Resume failed', e.message);
