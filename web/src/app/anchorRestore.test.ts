@@ -110,6 +110,26 @@ describe('restoring the URL-named session on first connect', () => {
     expect(b.ids()).toEqual(['iA', 'iB']);
   });
 
+  it('with three list reads in flight, the oldest landing first never drops the first connect\'s newer read, which opens the named session, and the newest still applies after it', async () => {
+    history.replaceState(null, '', '/#session=s-a');
+    const b = await boot();
+    await b.hint();
+    await b.open();
+    await b.hint();
+    expect(b.reads, 'fixture check: a hint\'s read, the first connect\'s, then a second hint\'s, all in flight').toHaveLength(3);
+    await b.land(1, [B]);
+    expect(b.ids(), 'fixture check: the oldest read, landing first, applied').toEqual(['iB']);
+    // Invariant: a read is dropped only when a newer read has landed, not merely started, so the first connect's await resolves on its own list.
+    await b.land(2, [A]);
+    expect(b.ids()).toEqual(['iA']);
+    expect(b.active()).toBe('iA');
+    expect(location.hash).toBe('#session=s-a');
+    expect(b.locates()).toBe(0);
+    await b.land(3, [A, B]);
+    expect(b.ids()).toEqual(['iA', 'iB']);
+    expect(b.active()).toBe('iA');
+  });
+
   it('an unknown session id lands on the home screen with the anchor cleared, looked up once and nothing re-read', async () => {
     history.replaceState(null, '', '/#session=s-gone');
     const b = await boot();
