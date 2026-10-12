@@ -8,6 +8,7 @@ import { effectiveResumeMode } from './sessionModes.ts';
 import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
+import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
 import { isSessionId } from './identifiers.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import {
@@ -699,6 +700,7 @@ async function writeProjectRecord(
   const next: ProjectRecord = { workspace, location };
   const onDisk: Record<string, unknown> = { ...(workspace ? { workspace } : {}), location };
   await writeFileAtomic(recordFile(name), JSON.stringify(onDisk, null, 2) + '\n');
+  markProjectsChanged();
   return next;
 }
 
@@ -790,10 +792,14 @@ async function writeWorkspacesRegistry(names: string[]): Promise<string[]> {
   const cleaned = [...new Set(names.map(n => (typeof n === 'string' ? n.trim() : '')).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
   if (cleaned.length === 0) {
-    try { await fs.unlink(file); } catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+    try {
+      await fs.unlink(file);
+      markProjectsChanged();
+    } catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
     return cleaned;
   }
   await writeFileAtomic(file, JSON.stringify({ workspaces: cleaned }, null, 2) + '\n');
+  markProjectsChanged();
   return cleaned;
 }
 
@@ -810,8 +816,13 @@ export async function addWorkspace(name: string): Promise<{ added: boolean; name
 
 // Remove a workspace from the registry and clear the `workspace` field
 // on every project that currently points at it. The projects themselves
-// are untouched — they just fall back to unassigned.
-export async function removeWorkspace(name: string): Promise<{ removed: boolean; name: string; clearedProjects: string[] }> {
+// are untouched — they just fall back to unassigned. One `projects` signal
+// for the whole removal, however many members it clears.
+export function removeWorkspace(...args: Parameters<typeof removeWorkspaceSteps>) {
+  return projectsOperation(() => removeWorkspaceSteps(...args));
+}
+
+async function removeWorkspaceSteps(name: string): Promise<{ removed: boolean; name: string; clearedProjects: string[] }> {
   const v = validateWorkspace(name);
   if (!v) {
     throw httpError(400, 'workspace name is required');
@@ -830,8 +841,13 @@ export async function removeWorkspace(name: string): Promise<{ removed: boolean;
 }
 
 // Atomically rename a workspace: rewrite every member project's
-// `workspace` field and swap the entry in the registry.
-export async function renameWorkspace(oldName: string, newName: string): Promise<{ renamed: boolean; name: string; movedProjects: string[] }> {
+// `workspace` field and swap the entry in the registry. One `projects` signal
+// for the whole rename.
+export function renameWorkspace(...args: Parameters<typeof renameWorkspaceSteps>) {
+  return projectsOperation(() => renameWorkspaceSteps(...args));
+}
+
+async function renameWorkspaceSteps(oldName: string, newName: string): Promise<{ renamed: boolean; name: string; movedProjects: string[] }> {
   const oldV = validateWorkspace(oldName);
   const newV = validateWorkspace(newName);
   if (!oldV || !newV) {
@@ -853,6 +869,24 @@ export async function renameWorkspace(oldName: string, newName: string): Promise
   return { renamed: true, name: newV, movedProjects: members };
 }
 
+// Assign or clear a project's workspace, registering a newly named one: the one
+// implementation behind REST PUT /projects/:name/workspace and MCP
+// set_project_workspace, so the pair is one `projects` signal on both. "" and
+// undefined clear it; workspace names are validated in writeProjectMeta.
+export function setProjectWorkspace(name: string, workspace: unknown): Promise<{ name: string; workspace: string | null }> {
+  return projectsOperation(async () => {
+    if (name === CONDUCT_PROJECT_NAME) {
+      throw httpError(400, 'the .conduct project cannot be assigned to a workspace');
+    }
+    const target = workspace === '' || workspace === undefined ? null : workspace;
+    const meta = await writeProjectMeta(name, { workspace: target as string | null });
+    if (meta.workspace) {
+      try { await addWorkspace(meta.workspace); } catch { /* validateWorkspace already ran in writeProjectMeta */ }
+    }
+    return { name, workspace: meta.workspace ?? null };
+  });
+}
+
 // Why registering PROJECT `name` would put two places in one CLI transcript
 // directory, or null when it would not. Both creation paths ask, because a name
 // can be free and its cwd still collide: a project named `p_worktree_w` lands
@@ -871,7 +905,12 @@ async function projectKeyCollisionReason(
   return hit === null ? null : transcriptCollisionReason(`project '${name}'`, candidate, hit);
 }
 
-export async function createProject(
+// One `projects` signal once the project is whole: record, repository and seed files.
+export function createProject(...args: Parameters<typeof createProjectSteps>) {
+  return projectsOperation(() => createProjectSteps(...args));
+}
+
+async function createProjectSteps(
   name: string,
   { conventionsDoc = null, system: systemId = null, remoteId = null, systemPath = null }: {
     conventionsDoc?: string | null;
@@ -1324,6 +1363,7 @@ export async function deleteProject(
 export async function removeProjectStoreDir(name: string): Promise<void> {
   try { await fs.rm(projectStoreDir(name), { recursive: true, force: true }); }
   catch { /* best-effort */ }
+  markProjectsChanged();
 }
 
 // Carries the System handle so a caller that has the project has everything it
@@ -1392,7 +1432,12 @@ function unreachableDuring(systemId: string, what: string, e: unknown): AdoptRes
   };
 }
 
-export async function adoptProject(
+// One `projects` signal for an adopt, a replaced or relocated stale record included.
+export function adoptProject(...args: Parameters<typeof adoptProjectSteps>) {
+  return projectsOperation(() => adoptProjectSteps(...args));
+}
+
+async function adoptProjectSteps(
   name: unknown,
   target: unknown,
   { system: systemId = null, remoteId = null, onStaleRecord = null }: {

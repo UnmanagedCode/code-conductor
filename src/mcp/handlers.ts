@@ -21,7 +21,7 @@ import {
   addWorkspace as fsAddWorkspace,
   removeWorkspace as fsRemoveWorkspace,
   renameWorkspace as fsRenameWorkspace,
-  writeProjectMeta,
+  setProjectWorkspace as fsSetProjectWorkspace,
   tryResolveProject,
   placeOf,
   projectRootPlace,
@@ -2134,23 +2134,13 @@ export async function renameWorkspace({ oldName, newName }: { oldName: string; n
   return fsRenameWorkspace(oldName, newName);
 }
 
-// Assign or clear a project's workspace. `workspace: null` or "" clears
-// the field. Non-null values are auto-registered so freshly-named
-// workspaces appear in list_workspaces immediately, matching the REST
-// PUT handler's behaviour. Refuses .conduct — the hidden project can't
-// belong to a workspace.
+// Assign or clear a project's workspace: the twin of the REST PUT, both on
+// setProjectWorkspace (projects.ts). `workspace: null` or "" clears it, a new
+// name is auto-registered, and `.conduct` is refused.
 export async function setProjectWorkspace({ project, workspace }: { project: string; workspace?: string | null }) {
   if (typeof project !== 'string' || !project) throw new Error('project required');
-  if (project === CONDUCT_PROJECT_NAME) {
-    throw new Error('the .conduct project cannot be assigned to a workspace');
-  }
-  await getProject(project);
-  const target = (workspace === '' || workspace === undefined) ? null : workspace;
-  const meta = await writeProjectMeta(project, { workspace: target });
-  if (meta.workspace) {
-    try { await fsAddWorkspace(meta.workspace); } catch { /* validateWorkspace already ran */ }
-  }
-  return { project, workspace: meta.workspace ?? null };
+  const result = await fsSetProjectWorkspace(project, workspace);
+  return { project, workspace: result.workspace };
 }
 
 // Change which TARGET of its system a project is on, or clear it back to the
