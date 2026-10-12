@@ -381,10 +381,18 @@ export function parseSuiteOutput(stdout: string, _stderr: string, exitCode: numb
 type Canary = { content: string; testId: string; matches: (failure: { name: string }) => boolean };
 type CanaryAdapter = { canary(source: string, opts: { file: string }): Canary };
 
+/** The test object every cc spec imports; the Playwright canary is one of its tests. */
+const PW_FIXTURES = 'web/e2e/harness/fixtures.ts';
+
 /**
  * The canary for one test file, by its runner. Playwright's is ours: the run is
  * pinned to one project, so the canary's name is matched exactly with that
  * project's prefix, and a second project's copy would be a defect to see.
+ *
+ * Playwright validates a test's ancestor hooks against that test's own fixture
+ * pool and keys workers by it, so the canary is a test of PW_FIXTURES's type: a
+ * root `beforeAll(({ cc }) => …)` loads, and in a cc spec the canary shares the
+ * spec's worker rather than re-running its root hooks in one of its own.
  */
 export function canaryFor(
   file: string,
@@ -397,8 +405,9 @@ export function canaryFor(
   if (group === 'vitest') return vitest.canary(source, { file });
   if (group !== 'playwright') throw refusal(file);
   const name = `${label}_fires`;
+  const fixtures = path.posix.relative(path.posix.dirname(file), PW_FIXTURES);
   const content = `${source}${source.endsWith('\n') ? '' : '\n'}
-import { test as __codeMutantCanary } from '@playwright/test';
+import { test as __codeMutantCanary } from '${fixtures.startsWith('.') ? fixtures : `./${fixtures}`}';
 __codeMutantCanary(${JSON.stringify(name)}, () => { throw new Error(${JSON.stringify(message)}); });
 `;
   const expected = `${project} > ${name}`;

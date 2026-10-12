@@ -150,3 +150,5 @@ A `/next/`-only spec that must also run on `android` keeps its body in a `*.shar
 ## Mutation scoring
 
 A mutation run can judge a mutant with any spec here: `harness/mutation/README.md` → Three suites. A Playwright-scored row rebuilds `web/dist` through globalSetup (the mutant changes the source hash) and runs under one project, `CC_MUTATION_PW_PROJECT` (default `desktop`).
+
+A spec's root hooks may take only `harness/fixtures.ts`'s fixtures and Playwright's own: the mutation canary is a test of that `test`, so a root hook that needs a spec-local `test.extend` fixture makes the spec unscoreable (`canary-not-established`). `harness/mutation/README.md` → "The Playwright canary".

@@ -342,13 +342,23 @@ test('canaryFor dispatches by test file; the Playwright canary matches only the 
   await t.test('playwright', () => {
     const c = canaryFor('web/e2e/session.spec.ts', 'const x = 1;', deps('desktop'));
     assert.ok(c.content.startsWith('const x = 1;\n'));
-    assert.match(c.content, /import \{ test as __codeMutantCanary \} from '@playwright\/test';/);
     assert.match(c.content, /__codeMutantCanary\("code_mutant_canary_fires", \(\) => \{ throw new Error\("code-mutant canary"\); \}\);/);
     assert.equal(c.testId, 'web/e2e/session.spec.ts::desktop > code_mutant_canary_fires');
     assert.equal(c.matches({ name: 'desktop > code_mutant_canary_fires' }), true);
     assert.equal(c.matches({ name: 'phone > code_mutant_canary_fires' }), false);
     assert.equal(canaryFor('web/e2e/session.spec.ts', '', deps('android')).matches({ name: 'android > code_mutant_canary_fires' }), true);
   });
+  // The canary's test type is the e2e fixtures' (harness-mutation-canary.test.mjs
+  // has why); its import must resolve from a spec at any depth.
+  for (const spec of ['web/e2e/settings-models-layout.spec.ts', 'web/e2e/legacy/header-compact.spec.ts']) {
+    await t.test(`the Playwright canary's import resolves to the e2e fixtures from ${spec}`, () => {
+      const m = /^import \{ test as __codeMutantCanary \} from '([^']+)';$/m.exec(canaryFor(spec, '', deps('desktop')).content);
+      assert.ok(m, 'the canary imports its test type');
+      const target = path.resolve(REPO, path.dirname(spec), m[1]);
+      assert.equal(path.relative(REPO, target).split(path.sep).join('/'), 'web/e2e/harness/fixtures.ts');
+      assert.ok(fs.existsSync(target));
+    });
+  }
   await t.test('a non-test file is refused', () => assert.throws(() => canaryFor('src/x.ts', '', deps('desktop')), /src\/x\.ts/));
 });
 

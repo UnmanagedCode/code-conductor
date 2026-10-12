@@ -87,6 +87,18 @@ the canary injected into a spec costs no rebuild. Playwright rows need the brows
 `@playwright/test` pins (`web/e2e/README.md`). `--all` runs no Playwright: a spec scores a mutant
 only when a ref names it.
 
+**The Playwright canary is a test of `web/e2e/harness/fixtures.ts`'s `test`** (`canaryFor` in
+`scoring.ts`), appended to the spec as `<project> > code_mutant_canary_fires`. Playwright checks a
+file's root hooks against each test's own fixtures and gives each test type its own worker, so a
+root `test.beforeAll(async ({ cc }) => …)` loads, and in a spec built on those fixtures the canary
+runs last in the spec's worker — the root `beforeAll` runs once. Two consequences:
+
+- A root hook that takes a fixture `fixtures.ts` does not define (a spec-local `test.extend`) fails
+  the file's load once the canary is in it: the spec reads `canary-not-established`, never a verdict.
+- A spec that takes `test` from `@playwright/test` (`legacy/header-compact.spec.ts`) runs its canary
+  in a worker of its own, which re-runs the spec's root hooks and boots a `cc` (Playwright's auto
+  artifacts fixture reaches it through `baseURL`).
+
 **Playwright rows: one project per run.** Every Playwright row of an invocation runs under
 `CC_MUTATION_PW_PROJECT` (default `desktop`; an unknown name is refused). Without the pin a spec
 shared by several projects would fail the canary, and a real kill, once per project. So:
