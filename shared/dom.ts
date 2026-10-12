@@ -11,14 +11,20 @@
 // either sets numeric attributes (0="t", 1="e", …) or drops the child
 // silently. tests/markdown-attr-surface.test.mjs pins both failure modes.
 
-export function el(tag, attrs = {}, ...children) {
+//
+// Values are stringified as the DOM would (String() is its DOMString
+// conversion), so a number attribute reads as it always did.
+export type AttrValue = string | number | boolean | null | undefined | EventListener | Record<string, string>;
+export type Child = Node | string | null | undefined | false;
+
+export function el(tag: string, attrs: Record<string, AttrValue> = {}, ...children: Child[]): HTMLElement {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
-    if (k === 'class') e.className = v;
+    if (k === 'class') e.className = String(v);
     else if (k === 'dataset') Object.assign(e.dataset, v);
     else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2).toLowerCase(), v);
     else if (v === true) e.setAttribute(k, '');
-    else if (v !== false && v != null) e.setAttribute(k, v);
+    else if (v !== false && v != null) e.setAttribute(k, String(v));
   }
   for (const c of children) {
     if (c == null || c === false) continue;

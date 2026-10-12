@@ -19,7 +19,18 @@
 //   | GFM pipe tables (with optional :--- / :---: / ---: alignment)
 //   blank-line-separated paragraphs
 
-import { el } from './dom.js';
+import { el } from './dom.ts';
+
+export type Align = 'left' | 'center' | 'right' | null;
+export type MdBlock =
+  | { type: 'code'; lang: string; code: string }
+  | { type: 'hr' }
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'blockquote'; text: string }
+  | { type: 'ul'; items: string[] }
+  | { type: 'ol'; items: string[]; start: number }
+  | { type: 'table'; header: string[]; aligns: Align[]; rows: string[][] }
+  | { type: 'paragraph'; text: string };
 
 const SAFE_URL = /^(https?:\/\/|\/|#|mailto:)/i;
 // Same as SAFE_URL plus file:// for local images. Kept separate so anchor
@@ -42,8 +53,8 @@ const INLINE_PATTERN =
 // (e.g. the period in "see https://example.com.").
 const URL_TRAILING_PUNCT = /[.,;:!?'")\]]+$/;
 
-export function renderInline(text) {
-  const out = [];
+export function renderInline(text: string): (string | Node)[] {
+  const out: (string | Node)[] = [];
   let cursor = 0;
   const re = new RegExp(INLINE_PATTERN, 'g');
   let m;
@@ -110,32 +121,32 @@ export function renderInline(text) {
   return out;
 }
 
-function isBlankLine(line) { return !line || !line.trim(); }
-function startsHeading(line) { return /^#{1,6}\s+\S/.test(line); }
-function startsCodeFence(line) { return line.startsWith('```'); }
-function startsHr(line) { return /^[-*_]{3,}\s*$/.test(line.trim()); }
-function startsUl(line) { return /^[\-*+]\s+/.test(line); }
-function startsOl(line) { return /^\d+\.\s+/.test(line); }
-function startsBq(line) { return line.startsWith('> ') || line === '>'; }
-function looksLikeTableRow(line) {
+function isBlankLine(line: string | undefined): boolean { return !line || !line.trim(); }
+function startsHeading(line: string): boolean { return /^#{1,6}\s+\S/.test(line); }
+function startsCodeFence(line: string): boolean { return line.startsWith('```'); }
+function startsHr(line: string): boolean { return /^[-*_]{3,}\s*$/.test(line.trim()); }
+function startsUl(line: string): boolean { return /^[\-*+]\s+/.test(line); }
+function startsOl(line: string): boolean { return /^\d+\.\s+/.test(line); }
+function startsBq(line: string): boolean { return line.startsWith('> ') || line === '>'; }
+function looksLikeTableRow(line: string | undefined): boolean {
   return line != null && line.includes('|') && line.trim() !== '';
 }
 // Separator row like "| --- | :---: | ---: |". Requires at least two columns
 // (single-column "tables" aren't a thing in GFM and would collide with HR).
 const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
-function looksLikeTableSeparator(line) {
+function looksLikeTableSeparator(line: string | undefined): boolean {
   return line != null && TABLE_SEPARATOR_RE.test(line);
 }
-function isTableStart(line, next) {
+function isTableStart(line: string, next: string | undefined): boolean {
   return looksLikeTableRow(line) && looksLikeTableSeparator(next);
 }
-function splitTableRow(line) {
+function splitTableRow(line: string): string[] {
   let s = line.trim();
   if (s.startsWith('|')) s = s.slice(1);
   if (s.endsWith('|')) s = s.slice(0, -1);
   return s.split('|').map((c) => c.trim());
 }
-function parseAlignments(sepLine) {
+function parseAlignments(sepLine: string): Align[] {
   return splitTableRow(sepLine).map((cell) => {
     const left = cell.startsWith(':');
     const right = cell.endsWith(':');
@@ -145,14 +156,14 @@ function parseAlignments(sepLine) {
     return null;
   });
 }
-function startsAnyBlock(line) {
+function startsAnyBlock(line: string): boolean {
   return isBlankLine(line) || startsHeading(line) || startsCodeFence(line)
     || startsHr(line) || startsUl(line) || startsOl(line) || startsBq(line);
 }
 
-export function parseMarkdown(text) {
+export function parseMarkdown(text: unknown): MdBlock[] {
   const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
-  const blocks = [];
+  const blocks: MdBlock[] = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -160,7 +171,7 @@ export function parseMarkdown(text) {
 
     if (startsCodeFence(line)) {
       const lang = line.slice(3).trim();
-      const code = [];
+      const code: string[] = [];
       i++;
       while (i < lines.length && !startsCodeFence(lines[i])) { code.push(lines[i]); i++; }
       if (i < lines.length) i++; // consume closing fence
@@ -170,11 +181,11 @@ export function parseMarkdown(text) {
     if (startsHr(line)) { blocks.push({ type: 'hr' }); i++; continue; }
     if (startsHeading(line)) {
       const m = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
-      blocks.push({ type: 'heading', level: m[1].length, text: m[2] });
+      blocks.push({ type: 'heading', level: m![1].length, text: m![2] });
       i++; continue;
     }
     if (startsBq(line)) {
-      const inner = [];
+      const inner: string[] = [];
       while (i < lines.length && (startsBq(lines[i]) || (!startsAnyBlock(lines[i]) && !isBlankLine(lines[i]) && lines[i].startsWith(' ')))) {
         inner.push(lines[i].replace(/^>\s?/, ''));
         i++;
@@ -183,7 +194,7 @@ export function parseMarkdown(text) {
       continue;
     }
     if (startsUl(line)) {
-      const items = [];
+      const items: string[] = [];
       while (i < lines.length && startsUl(lines[i])) {
         items.push(lines[i].replace(/^[\-*+]\s+/, ''));
         i++;
@@ -192,8 +203,8 @@ export function parseMarkdown(text) {
       continue;
     }
     if (startsOl(line)) {
-      const start = parseInt(line.match(/^(\d+)\./)[1], 10);
-      const items = [];
+      const start = parseInt(line.match(/^(\d+)\./)![1], 10);
+      const items: string[] = [];
       while (i < lines.length && startsOl(lines[i])) {
         items.push(lines[i].replace(/^\d+\.\s+/, ''));
         i++;
@@ -205,10 +216,10 @@ export function parseMarkdown(text) {
       const header = splitTableRow(line);
       const aligns = parseAlignments(lines[i + 1]);
       const width = header.length;
-      const norm = (r) => r.length === width
+      const norm = (r: string[]): string[] => r.length === width
         ? r
         : (r.length < width ? r.concat(Array(width - r.length).fill('')) : r.slice(0, width));
-      const rows = [];
+      const rows: string[][] = [];
       i += 2;
       while (i < lines.length && looksLikeTableRow(lines[i]) && !startsAnyBlock(lines[i])) {
         rows.push(norm(splitTableRow(lines[i])));
@@ -218,7 +229,7 @@ export function parseMarkdown(text) {
       continue;
     }
     // Paragraph — collect contiguous non-block lines.
-    const para = [];
+    const para: string[] = [];
     while (i < lines.length && !isBlankLine(lines[i]) && !startsCodeFence(lines[i])
            && !startsHeading(lines[i]) && !startsHr(lines[i])
            && !startsUl(lines[i]) && !startsOl(lines[i]) && !startsBq(lines[i])
@@ -231,7 +242,7 @@ export function parseMarkdown(text) {
   return blocks;
 }
 
-function blockToNode(block) {
+function blockToNode(block: MdBlock): Node {
   switch (block.type) {
     case 'heading': {
       const tag = 'h' + Math.min(Math.max(block.level, 1), 6);
@@ -247,11 +258,11 @@ function blockToNode(block) {
       btn.type = 'button';
       btn.className = 'md-code-copy';
       btn.textContent = 'Copy';
-      let resetTimer = null;
+      let resetTimer: ReturnType<typeof setTimeout> | null = null;
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const text = code.textContent;
-        const flash = (label, cls) => {
+        const flash = (label: string, cls: string) => {
           btn.textContent = label;
           btn.classList.remove('copied', 'failed');
           if (cls) btn.classList.add(cls);
@@ -294,7 +305,7 @@ function blockToNode(block) {
       const trh = document.createElement('tr');
       block.header.forEach((cell, idx) => {
         const th = el('th', {}, ...renderInline(cell));
-        if (block.aligns[idx]) th.style.textAlign = block.aligns[idx];
+        if (block.aligns[idx]) th.style.textAlign = block.aligns[idx]!;
         trh.appendChild(th);
       });
       thead.appendChild(trh);
@@ -304,7 +315,7 @@ function blockToNode(block) {
         const tr = document.createElement('tr');
         row.forEach((cell, idx) => {
           const td = el('td', {}, ...renderInline(cell));
-          if (block.aligns[idx]) td.style.textAlign = block.aligns[idx];
+          if (block.aligns[idx]) td.style.textAlign = block.aligns[idx]!;
           tr.appendChild(td);
         });
         tbody.appendChild(tr);
@@ -312,13 +323,16 @@ function blockToNode(block) {
       table.appendChild(tbody);
       return table;
     }
-    default:
-      return el('p', {}, String(block.text ?? ''));
+    default: {
+      // Unreachable for a parsed block; kept for any other shape.
+      const other: { text?: unknown } = block;
+      return el('p', {}, String(other.text ?? ''));
+    }
   }
 }
 
 /** Replace rootEl's children with rendered markdown. */
-export function renderMarkdownInto(rootEl, text) {
+export function renderMarkdownInto(rootEl: HTMLElement, text: unknown): void {
   rootEl.textContent = '';
   try {
     for (const block of parseMarkdown(text)) {

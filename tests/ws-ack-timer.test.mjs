@@ -27,7 +27,7 @@ import { installFakeSocket } from './fakeSocket.mjs';
 const PUB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'shared');
 // ws.js reads `location` to build its URL; nothing here asserts on the URL.
 globalThis.location = { protocol: 'http:', host: 'localhost:0' };
-const ws = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);
+const ws = await import(pathToFileURL(path.join(PUB, 'ws.ts')).href);
 
 // The shared fake acks every frame carrying a reqId. The two variants below
 // SUBCLASS it rather than paste a second copy: they differ only in what comes

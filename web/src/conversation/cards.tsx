@@ -17,7 +17,7 @@ import { ConversationModel, type PlanNode, type QuestionNode } from './model';
  * the card instead of leaving it "sending…" forever.
  */
 function sendCardAnswer(instanceId: string, text: string, onFail: (reason: string) => void) {
-  (send('prompt', { id: instanceId, text }, { ack: true }) as Promise<unknown>).catch((e: Error) => onFail(e?.message || 'send failed'));
+  send('prompt', { id: instanceId, text }, { ack: true }).catch((e: Error) => onFail(e?.message || 'send failed'));
 }
 
 export function PlanCard({ node, model }: { node: PlanNode; model: ConversationModel }) {

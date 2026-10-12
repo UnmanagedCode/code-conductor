@@ -105,7 +105,7 @@ export function modelGroups(inst: Instance): [string, Entry[]][] {
 }
 
 async function wsAck(t: string, payload: Record<string, unknown>) {
-  return send(t, payload, { ack: true }) as Promise<unknown>;
+  return send(t, payload, { ack: true });
 }
 
 function displayStatus(inst: Instance): SessionStatus {
