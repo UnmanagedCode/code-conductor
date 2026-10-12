@@ -24,7 +24,7 @@ import { bus } from '@/lib/core/ws.js';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
 import type { Instance, UiEvent } from '@/state/types';
-import { buildRejectPrompt } from '../../../public/planApproval.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.ts';
 import { ConversationView } from './ConversationView';
 import { ConversationModel } from './model';
 import { flush, noActions, renderModel } from './renderModel';
@@ -187,6 +187,28 @@ describe('a full-page view round trip', () => {
     const state = (root: Element) => plans(root).map((p) => ({ feedback: textbox(p).value, locked: textbox(p).disabled }));
     const want = [{ feedback: 'this one lands', locked: true }, { feedback: 'this one fails', locked: false }];
     expect(state(first.el), 'before the round trip: the sent plan locked, the failed one re-opened').toEqual(want);
+    first.unmount();
+    const back = mount();
+    expect(state(back.el)).toEqual(want);
+  });
+
+  it('an approved plan keeps the feedback it sent, locked, and a plan whose approve failed re-opens with its feedback', async () => {
+    const first = mount();
+    await snapshot('i1', TRANSCRIPT);
+    const [p1, p2] = plans(first.el);
+    await type(textbox(p1), 'this one lands');
+    await type(textbox(p2), 'this one fails');
+    await click(within(p1).getByRole('button', { name: /Approve/ }));
+    await click(within(p2).getByRole('button', { name: /Approve/ }));
+    await flush();
+    // Each Approve first switches the mode, then sends its prompt; the prompts carry the feedback.
+    expect(sent.filter((s) => s.t === 'prompt').map((s) => s.payload.text), 'each decision sent its own feedback').toEqual([
+      buildApprovePrompt('this one lands'),
+      buildApprovePrompt('this one fails'),
+    ]);
+    const state = (root: Element) => plans(root).map((p) => ({ feedback: textbox(p).value, locked: textbox(p).disabled }));
+    const want = [{ feedback: 'this one lands', locked: true }, { feedback: 'this one fails', locked: false }];
+    expect(state(first.el), 'before the round trip: the approved plan locked, the failed one re-opened').toEqual(want);
     first.unmount();
     const back = mount();
     expect(state(back.el)).toEqual(want);
