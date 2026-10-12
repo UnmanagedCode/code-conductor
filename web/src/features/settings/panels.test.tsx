@@ -875,7 +875,7 @@ describe('Archived', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   });
 
-  // A renewed session's file opens with the CLI's caveat record, which the server lists as its first prompt: it reads Context renewed, never by its tag.
+  // A renewed session's file opens with the CLI's caveat record (modelled by RENEW_HEAD in tests/segmentChain.mjs; read here from a hand-authored fixture carrying the same record), which the server lists as its first prompt: it reads Context renewed, never by its tag.
   it('an archived session whose first prompt is a post-/clear caveat record is labelled Context renewed, in the row and in the Delete dialog\'s name', async () => {
     const caveat = readJsonl('awaiting-user/renew-two-segments.transcript.jsonl')
       .find((r) => r.type === 'user' && typeof r.message?.content === 'string' && r.message.content.startsWith('<local-command-caveat>'))!.message.content.slice(0, 200);

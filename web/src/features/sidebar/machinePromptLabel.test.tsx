@@ -37,7 +37,11 @@ const stored = (text: string) => text.slice(0, 200);
 const WAKE = stored(buildWakeStub({ targetSessionId: 'labelwake', payloadText: '{"sessionId":"labelwake"}\nWAKE-LABEL prose' }));
 const FORWARD = stored(buildForwardFrame({ messages: ['FWD-LABEL body'], instruction: 'FWD-LABEL instruction' }));
 const RENEW = stored(buildRenewSeed({ summary: 'RENEW-LABEL summary' }));
-/** The first user record whose content starts with `head`, from a real post-`/clear` CLI transcript, as the server stores it. */
+/**
+ * A post-`/clear` file's head record, as the server stores it: the first user record whose content starts with `head`.
+ * `RENEW_HEAD` in `tests/segmentChain.mjs` models that head (importing it loads the server); this hand-authored
+ * fixture carries the same caveat record and `/clear` line, the latter differing only in indentation.
+ */
 const renewHead = (head: string) => {
   const rec = readJsonl('awaiting-user/renew-two-segments.transcript.jsonl')
     .find((r) => r.type === 'user' && typeof r.message?.content === 'string' && r.message.content.startsWith(head));
@@ -194,6 +198,22 @@ describe('a machine-written first prompt in a sidebar label', () => {
     expect(labelOf('h-compact').textContent).toBe('/compact');
     expect(named('/compact').includes(rowOf('h-compact'))).toBe(true);
     expect(screen.queryAllByRole('button', { name: (n) => n.includes('<command-') })).toHaveLength(0);
+  });
+
+  it('a human prompt that mentions a /clear command line or the local-command caveat mid-text is shown unchanged', async () => {
+    // Invariant (negative control): only a prompt that opens with a head record's tag is one.
+    const command = 'why is <command-name>/clear</command-name> in my log';
+    const caveat = 'what does <local-command-caveat>Caveat: run locally</local-command-caveat> mean';
+    seed({
+      projects: [proj('labels')],
+      instances: [hand('h-cmd-mention', 'labels', null, { firstPrompt: command }), hand('h-caveat-mention', 'labels', null, { firstPrompt: caveat })],
+    });
+    renderSidebar();
+    await settle();
+    expect(labelOf('h-cmd-mention').textContent).toBe(command);
+    expect(labelOf('h-caveat-mention').textContent).toBe(caveat);
+    expect(named(command).includes(rowOf('h-cmd-mention'))).toBe(true);
+    expect(named(caveat).includes(rowOf('h-caveat-mention'))).toBe(true);
   });
 
   it('a human prompt that mentions the wake marker mid-text is shown unchanged', async () => {
