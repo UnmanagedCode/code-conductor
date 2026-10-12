@@ -17,7 +17,7 @@ vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
 vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => null }));
 vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-view="session" /> }));
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
-vi.mock('@/lib/core/capabilities.js', () => ({ loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true })), capabilities: vi.fn(() => null) }));
+vi.mock('@shared/capabilities', () => ({ loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true })), capabilities: vi.fn(() => null) }));
 
 const { App } = await import('@/App');
 const { catalogStore, pluginFrames } = await import('./plugins');

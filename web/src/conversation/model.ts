@@ -9,11 +9,11 @@
 // Mutation model: nodes are mutable; every change bumps the node's `rev` and its
 // ancestors', and schedules one notification. Components memoize on `rev`.
 
-import { parseWakeCallback } from '../../../public/wakeCallback.ts';
-import { parseRenewSeed } from '../../../public/renewSeed.ts';
-import { parseForwardFrame, splitForwardedMessages } from '../../../public/forwardFrame.ts';
-import { promptOrigin } from '../../../public/promptOrigin.ts';
-import { normalizeQuestions, parseCanonicalUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
+import { parseWakeCallback } from '@shared/wakeCallback';
+import { parseRenewSeed } from '@shared/renewSeed';
+import { parseForwardFrame, splitForwardedMessages } from '@shared/forwardFrame';
+import { promptOrigin } from '@shared/promptOrigin';
+import { normalizeQuestions, parseCanonicalUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import type { UiEvent } from '@/state/types';
 import { splitResultContent } from './format';
 

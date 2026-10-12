@@ -3,7 +3,7 @@ import { act, fireEvent, render, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
-import { CLOSE_TITLES } from '@/lib/core/closeAction.js';
+import { CLOSE_TITLES } from '@shared/closeAction';
 import { blockOf, conductor, el, hand, inactiveGroup, proj, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
 
 const selectInstance = vi.fn();

@@ -59,7 +59,7 @@ import { jobLine, type BackgroundJob } from '../backgroundJobs.ts';
 // path itself so the flag and the behaviour cannot drift.
 import { resumesHot } from '../sessionModes.ts';
 import type { RemoteEnumeration } from '../systems/remoteEnumeration.ts';
-import { readablePrompt } from '../../public/promptPreview.ts';
+import { readablePrompt } from '../../shared/promptPreview.ts';
 
 type Row = Record<string, unknown>;
 

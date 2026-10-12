@@ -20,7 +20,7 @@ import {
   seedSessionJsonl, driveTurn,
 } from './helpers.mjs';
 import { localPlace } from '../src/projects.ts';
-import { parseForwardFrame, splitForwardedMessages } from '../public/forwardFrame.ts';
+import { parseForwardFrame, splitForwardedMessages } from '../shared/forwardFrame.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');

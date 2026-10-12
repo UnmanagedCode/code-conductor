@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { createAttentionTracker } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'attention.js')).href);
+const { createAttentionTracker } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'attention.js')).href);
 
 const hand = (sid, o = {}) => ({
   id: `i-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: false, ownerSessionId: null,

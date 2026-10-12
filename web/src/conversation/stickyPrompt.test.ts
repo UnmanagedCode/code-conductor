@@ -4,9 +4,9 @@ import { ConversationModel, type UserNode } from './model';
 import { createLazyHistory } from './lazyHistory';
 import { flush, renderModel } from './renderModel';
 import { cleanup } from '@testing-library/react';
-import { promptOrigin } from '../../../public/promptOrigin.ts';
-import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
-import { buildWakeStub } from '../../../public/wakeCallback.ts';
+import { promptOrigin } from '@shared/promptOrigin';
+import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
+import { buildWakeStub } from '@shared/wakeCallback';
 
 describe('pickPinned', () => {
   const tops = (arr: number[]) => (i: number) => arr[i];

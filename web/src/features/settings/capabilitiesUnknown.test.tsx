@@ -10,7 +10,7 @@ vi.mock('@/app/controller', () => ({ refreshProjects: vi.fn(async () => {}), ref
 vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
 vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => {}) }));
 
-import { capabilities } from '@/lib/core/capabilities.js';
+import { capabilities } from '@shared/capabilities';
 import { syncRoute } from '@/state/route';
 import { SettingsView } from './SettingsView';
 

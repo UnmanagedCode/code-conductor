@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 const selectInstance = vi.fn();
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 vi.mock('@/app/controller', async (orig) => ({ ...(await orig<typeof import('@/app/controller')>()), selectInstance: (...a: unknown[]) => selectInstance(...a) }));
 
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { SubagentPanel } from './SessionPanels';
-import { buildForwardFrame } from '@/lib/core/forwardFrame.ts';
+import { buildForwardFrame } from '@shared/forwardFrame';
 
 const CONDUCTOR = 'cond-41';
 const conductor = { id: CONDUCTOR, project: 'demo', status: 'idle', displayStatus: 'idle' } as Instance;

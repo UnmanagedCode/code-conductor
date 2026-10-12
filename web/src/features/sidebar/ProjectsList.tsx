@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ChevronRightIcon, LoaderCircleIcon, PencilIcon } from 'lucide-react';
 import { useSignal } from '@/state/createStore';
-import { worktreeOwnership } from '@/lib/core/conductors.js';
+import { worktreeOwnership } from '@shared/conductors';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import type { Instance, Project } from '@/state/types';

@@ -8,7 +8,7 @@ import { createProject } from './harness/api.ts';
 import { next } from './flows/ui.ts';
 import { sendAll } from './flows/stickyPin.ts';
 import { overflowsX } from './flows/foldedBubbles.ts';
-import { buildWakeStub, markPlainStub } from '../../public/wakeCallback.ts';
+import { buildWakeStub, markPlainStub } from '../../shared/wakeCallback.ts';
 
 const TOKEN = `ub${'w'.repeat(300)}`;
 const JOBS = 'Background jobs still running:\n- "npm test" — running 2m5s';

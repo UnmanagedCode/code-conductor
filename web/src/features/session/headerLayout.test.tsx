@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 const sent: [string, any, any][] = [];
-vi.mock('@/lib/core/ws.js', () => ({
+vi.mock('@shared/ws', () => ({
   bus: new EventTarget(),
   connect: () => {},
   send: (t: string, payload: any, opts: any = {}) => { sent.push([t, payload, opts]); return opts.ack ? Promise.resolve({ ok: true }) : undefined; },
@@ -18,7 +18,7 @@ vi.mock('@/app/sessionActions', async (orig) => ({
 }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { formatAutoResumeTime } from '@/lib/core/usage.js';
+import { formatAutoResumeTime } from '@shared/usage';
 import { respawnActive, syncWorktree } from '@/app/sessionActions';
 import { stickyPrompt } from '@/app/controller';
 import { SWIPE_MIN_PX } from '@/conversation/stickyPrompt';

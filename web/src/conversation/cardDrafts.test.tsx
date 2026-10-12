@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 
 const sent: { t: string; payload: any }[] = [];
-vi.mock('@/lib/core/ws.js', () => ({
+vi.mock('@shared/ws', () => ({
   bus: new EventTarget(),
   connect: () => {},
   // An acked prompt whose text says it fails is refused, as a send on a dead socket is.
@@ -21,11 +21,11 @@ vi.mock('@/lib/core/ws.js', () => ({
 }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { bus } from '@/lib/core/ws.js';
+import { bus } from '@shared/ws';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
 import type { Instance, UiEvent } from '@/state/types';
-import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { ConversationView } from './ConversationView';
 import { ConversationModel } from './model';
 import { flush, noActions, renderModel } from './renderModel';

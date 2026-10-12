@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useStore } from '@/state/createStore';
 import type { Instance } from '@/state/types';
-import { formatAutoResumeTime } from '@/lib/core/usage.js';
+import { formatAutoResumeTime } from '@shared/usage';
 import { send, stickyPrompt } from '@/app/controller';
 import { on } from '@/app/events';
 import { voiceStore } from '@/features/voice/store';

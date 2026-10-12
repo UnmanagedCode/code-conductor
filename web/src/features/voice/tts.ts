@@ -6,8 +6,8 @@
 //
 // `speakStore.activeNodeId` names the message whose button shows "stop": the
 // one the user tapped, or the auto-spoken one once its segment starts playing.
-import { mdToSpeech } from '@/lib/core/md-to-speech.js';
-import { TtsQueue } from '@/lib/core/tts-queue.js';
+import { mdToSpeech } from '@shared/md-to-speech';
+import { TtsQueue } from '@shared/tts-queue';
 import { createStore } from '@/state/createStore';
 import { voiceStore } from './store';
 

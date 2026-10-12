@@ -1,8 +1,8 @@
 // User-triggered session / project / worktree mutations, shared by the
 // sidebar, the session header, the conversation and the commit-history view.
-import { apiFetch } from '@/lib/core/http.js';
-import { closeActionOf, stopNeedsConfirm } from '@/lib/core/closeAction.js';
-import { readSessionAnchor, writeSessionAnchor } from '@/lib/core/anchor.js';
+import { apiFetch } from '@shared/http';
+import { closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
+import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
 import { appStore, activeInstance } from '@/state/app';
 import { syncRoute } from '@/state/route';
 import type { Instance, Project } from '@/state/types';

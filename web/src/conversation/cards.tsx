@@ -5,9 +5,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Markdown } from '@/components/Markdown';
 import { cn } from '@/lib/utils';
-import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.ts';
-import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
-import { send } from '@/lib/core/ws.js';
+import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
+import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
+import { send } from '@shared/ws';
 import { appStore } from '@/state/app';
 import { ConversationModel, type PlanNode, type QuestionNode } from './model';
 

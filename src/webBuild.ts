@@ -25,9 +25,9 @@ export const WEB_ROOT = path.join(repoRoot, 'web');
 export const WEB_DIST = path.join(WEB_ROOT, 'dist');
 const STAMP = '.source-hash';
 
-// Inputs: the web app itself, the shared modules it imports from public/, and
+// Inputs: the web app itself, the shared modules it imports from shared/, and
 // the lockfile (a dependency bump changes the bundle).
-const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'public')];
+const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'shared')];
 const INPUT_FILES = [path.join(repoRoot, 'package-lock.json')];
 // Build output, dependencies, Playwright output and the e2e specs + fixtures
 // are not inputs; a killed build can leave a `dist.tmp-<pid>` or

@@ -8,12 +8,12 @@ import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-vi.mock('@/lib/core/capabilities.js', () => ({
+vi.mock('@shared/capabilities', () => ({
   loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true, fuseUnion: true })),
   capabilities: vi.fn(() => null),
 }));
 
-import { capabilities, loadCapabilities } from '@/lib/core/capabilities.js';
+import { capabilities, loadCapabilities } from '@shared/capabilities';
 import { PlacementFields, usePlacement } from './placement';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import { chooseOption, selectOptions } from '@/test/radixSelect';

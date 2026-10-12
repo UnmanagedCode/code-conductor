@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
+const PUB = path.resolve(__dirname, '..', 'shared');
 
 async function setup(initialHref = 'http://localhost/') {
   const window = new Window({ url: initialHref });

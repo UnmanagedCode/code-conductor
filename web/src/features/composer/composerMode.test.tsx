@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const sent: [string, any][] = [];
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, send: (t: string, p: any) => { sent.push([t, p]); } }));
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: (t: string, p: any) => { sent.push([t, p]); } }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { voiceStore } from '@/features/voice/store';

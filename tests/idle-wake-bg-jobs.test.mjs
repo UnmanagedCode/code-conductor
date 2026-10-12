@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api, waitFor, instForSession, settle } from './helpers.mjs';
-import { WAKE_BODY_SEP, parseWakeCallback } from '../public/wakeCallback.ts';
+import { WAKE_BODY_SEP, parseWakeCallback } from '../shared/wakeCallback.ts';
 import {
   setupIdleWake, callTool, spawnReady, spawnReadyWithScenario, restWorker,
   findCompletionStubFor,

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/core/ws.js', () => {
+vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
   const sent: any[] = [];
   return { bus, sent, connect: vi.fn(), send: vi.fn((t: string, payload: any) => { sent.push([t, payload]); }) };
@@ -18,7 +18,7 @@ let stopPrevious: (() => void) | null = null;
 async function boot({ instances = [] as any[], locate = null as null | ((sid: string) => any) } = {}) {
   stopPrevious?.();
   vi.resetModules();
-  const ws: any = await import('@/lib/core/ws.js');
+  const ws: any = await import('@shared/ws');
   ws.sent.length = 0;
   const actions: any = await import('./sessionActions');
   const fetch = vi.fn(async (url: string) => {

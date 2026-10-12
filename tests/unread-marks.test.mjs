@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { unreadCount, unreadBySession } from '../public/unreadMarks.js';
+import { unreadCount, unreadBySession } from '../shared/unreadMarks.js';
 
 // Invariant: the count is turnEndSeq − viewedSeq, missing counters read 0, and
 // a marker past the turn count never reads negative.

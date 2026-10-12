@@ -12,11 +12,11 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSignal, useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
-import { apiFetch } from '@/lib/core/http.js';
+import { apiFetch } from '@shared/http';
 import {
   backendIdOf, CLAUDE_BACKEND, getActiveDefaultSpawnTier, getActiveTierBackend, getActiveTierEffort, getActiveTierEnabled,
   getEffortLevels, getTierLabel, getTierList, getVersionLabel,
-} from '@/lib/core/models.js';
+} from '@shared/models';
 import { modelsSignal } from '@/app/models';
 import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
 import { beginGesture, gestureOvertaken } from '@/app/gestures';

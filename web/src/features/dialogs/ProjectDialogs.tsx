@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import type { Project } from '@/state/types';
-import { apiFetch } from '@/lib/core/http.js';
+import { apiFetch } from '@shared/http';
 import { refreshProjects } from '@/app/controller';
 import { performProjectDelete } from '@/app/sessionActions';
 import { confirmDialog } from '@/ui/feedback';

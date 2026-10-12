@@ -3,8 +3,8 @@ import { useStore, useSignal } from '@/state/createStore';
 import type { Instance } from '@/state/types';
 import {
   formatTokens, formatPct, formatDuration, formatResetTime, rlChipSegment, RL_BUCKET_KEYS, RL_WINDOW_LABEL, fmtCost,
-} from '@/lib/core/usage.js';
-import { CLAUDE_BACKEND } from '@/lib/core/models.js';
+} from '@shared/usage';
+import { CLAUDE_BACKEND } from '@shared/models';
 import { getUsageTracker, rateLimits, trackerSignal } from '@/app/trackers';
 import { accountUsageStore } from '@/app/accountUsage';
 import { cn } from '@/lib/utils';

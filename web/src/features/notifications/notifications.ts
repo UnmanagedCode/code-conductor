@@ -10,8 +10,8 @@
 // controller's notification-click handling: the SW posts a
 // `cc-notification-click` message, the page fallback dispatches the same-named
 // window event.
-import { askLabel } from '@/lib/core/needsYou.js';
-import { createAttentionTracker } from '@/lib/core/attention.js';
+import { askLabel } from '@shared/needsYou';
+import { createAttentionTracker } from '@shared/attention';
 import { createStore } from '@/state/createStore';
 import { isSessionMuted } from './mutes';
 

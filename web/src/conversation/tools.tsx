@@ -8,9 +8,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CopyButton } from '@/components/CopyButton';
-import { formatToolName, toolNamePlain } from '@/lib/core/toolName.js';
-import { lineDiff, diffStats } from '@/lib/core/diff.js';
-import { formatTokens } from '@/lib/core/usage.js';
+import { formatToolName, toolNamePlain } from '@shared/toolName';
+import { lineDiff, diffStats } from '@shared/diff';
+import { formatTokens } from '@shared/usage';
 import { cn } from '@/lib/utils';
 import type { ConversationModel, GroupChild, GroupNode, ResultNode, ThinkingNode, ToolNode, CallUsageNode } from './model';
 import { CALL_USAGE_TITLE, callUsageText, describeToolInput, formatElapsed, renderKindFor, splitResultContent, type DescribeCtx } from './format';

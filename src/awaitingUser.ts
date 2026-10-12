@@ -16,7 +16,7 @@
 // approve_plan, reject_plan) is byte-identical to the user's own and so reads as
 // real. Workers never carry the flag (Instance feeds nothing when conducted).
 
-import { isInjectedUserTurn } from '../public/promptOrigin.ts';
+import { isInjectedUserTurn } from '../shared/promptOrigin.ts';
 import type { UiEvent } from './parser.ts';
 
 export type AskKind = 'question' | 'plan';

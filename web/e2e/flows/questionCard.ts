@@ -6,7 +6,7 @@ import type { Locator, Page } from '@playwright/test';
 import { api } from '../harness/api.ts';
 import { DEFAULT_SCENARIO } from '../harness/boot.ts';
 import { expect, type Cc } from '../harness/fixtures.ts';
-import type { Question } from '../../../public/userQuestionAnswers.ts';
+import type { Question } from '../../../shared/userQuestionAnswers.ts';
 import type { Ui } from './ui.ts';
 
 type ScenarioTurn = { on?: { text?: string }; emit: { type: string; request?: { input?: { questions?: Question[] } } }[] };

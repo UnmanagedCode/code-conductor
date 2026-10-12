@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.ts';
+import { formatUserQuestionAnswers } from '../shared/userQuestionAnswers.ts';
 
 const fruit = { question: 'Pick a fruit', header: 'Fruit', multiSelect: false,
   options: [{ label: 'Apple' }, { label: 'Banana' }] };

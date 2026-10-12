@@ -15,7 +15,7 @@ import { encodeCwd, localPlace } from '../src/projects.ts';
 import { loadPersistedTranscript } from '../src/transcript.ts';
 import { AWAITING_INPUT_MESSAGE } from '../src/settings.ts';
 import { MID_TURN_NOTE } from '../src/instances.ts';
-import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../public/userQuestionAnswers.ts';
+import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../shared/userQuestionAnswers.ts';
 
 const CWD = '/tmp/question-answer-project';
 const SID = 'sess-question-answer';

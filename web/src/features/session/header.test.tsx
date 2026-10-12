@@ -3,14 +3,14 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 
 const sent: [string, any, any][] = [];
 let ackReply: (t: string) => Promise<unknown> = () => Promise.resolve({ ok: true });
-vi.mock('@/lib/core/ws.js', () => ({
+vi.mock('@shared/ws', () => ({
   bus: new EventTarget(),
   connect: () => {},
   send: (t: string, payload: any, opts: any = {}) => { sent.push([t, payload, opts]); return opts.ack ? ackReply(t) : undefined; },
 }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { applyModelsPayload } from '@/lib/core/models.js';
+import { applyModelsPayload } from '@shared/models';
 import { getUsageTracker } from '@/app/trackers';
 import { accountUsageStore } from '@/app/accountUsage';
 import { isSessionMuted, muteSession } from '@/features/notifications/mutes';

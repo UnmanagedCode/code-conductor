@@ -1,8 +1,8 @@
 // Typed views of the DOM-free derivations in lib/core (plain JS, whose
 // destructured defaults would otherwise infer as never[]).
-import * as conductors from '@/lib/core/conductors.js';
-import * as needsYou from '@/lib/core/needsYou.js';
-import * as unread from '@/lib/core/unreadMarks.js';
+import * as conductors from '@shared/conductors';
+import * as needsYou from '@shared/needsYou';
+import * as unread from '@shared/unreadMarks';
 import type { Instance } from '@/state/types';
 
 type AnyRow = Record<string, any>;

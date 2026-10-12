@@ -31,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODEL_FAMILIES } from '../src/modelVersions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const USAGE_URL = pathToFileURL(path.resolve(__dirname, '..', 'public', 'usage.js')).href;
+const USAGE_URL = pathToFileURL(path.resolve(__dirname, '..', 'shared', 'usage.js')).href;
 
 // Every catalog id, plus the tagged launch form of any version that carries a
 // launchTag (what the session actually launched with), plus two ids the

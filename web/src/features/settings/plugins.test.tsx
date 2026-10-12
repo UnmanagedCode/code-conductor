@@ -8,9 +8,9 @@ vi.mock('@/app/sessionActions', () => ({ resumeSession: vi.fn(async () => {}) })
 vi.mock('@/app/controller', () => ({ refreshProjects: vi.fn(async () => {}), refreshInstances: vi.fn(async () => {}) }));
 vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
 vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => {}) }));
-vi.mock('@/lib/core/capabilities.js', () => ({ loadCapabilities: vi.fn(), capabilities: vi.fn(() => null) }));
+vi.mock('@shared/capabilities', () => ({ loadCapabilities: vi.fn(), capabilities: vi.fn(() => null) }));
 
-import { loadCapabilities } from '@/lib/core/capabilities.js';
+import { loadCapabilities } from '@shared/capabilities';
 import { syncRoute, useRoute } from '@/state/route';
 import { PluginsSection } from './PluginsSection';
 import { pluginsStore } from './PluginsSection'; // step 2

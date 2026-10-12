@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
+const PUB = path.resolve(__dirname, '..', 'shared');
 const N = await import(pathToFileURL(path.join(PUB, 'needsYou.js')).href);
 const { deriveConductors } = await import(pathToFileURL(path.join(PUB, 'conductors.js')).href);
 

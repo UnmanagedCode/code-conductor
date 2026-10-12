@@ -16,11 +16,11 @@ import path from 'node:path';
 
 import { renderSessions, renderSession } from '../src/mcp/readRenderers.ts';
 import { readFirstPrompt } from '../src/projects.ts';
-import { buildWakeStub, WAKE_BODY_SEP } from '../public/wakeCallback.ts';
-import { readablePrompt } from '../public/promptPreview.ts';
+import { buildWakeStub, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
+import { readablePrompt } from '../shared/promptPreview.ts';
 import { backgroundJobsNote } from '../src/backgroundJobs.ts';
-import { buildForwardFrame } from '../public/forwardFrame.ts';
-import { buildRenewSeed } from '../public/renewSeed.ts';
+import { buildForwardFrame } from '../shared/forwardFrame.ts';
+import { buildRenewSeed } from '../shared/renewSeed.ts';
 
 const SID = '3f2a8c11-77b2-4c1e-9a2f-5d6e7f801234';
 const WORKER = '7c0e5a2d-41b8-4f3a-9d26-b1e8f0c43a17';

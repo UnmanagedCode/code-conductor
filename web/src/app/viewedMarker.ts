@@ -2,7 +2,7 @@
 // the fact behind the sidebar's unread marks and the needs-you strip's
 // "Finished" group. Seen = tab visible and the session pane (not a full-page
 // view) showing.
-import { apiFetch } from '@/lib/core/http.js';
+import { apiFetch } from '@shared/http';
 import { appStore, activeInstance } from '@/state/app';
 import { routeStore } from '@/state/route';
 import { on } from './events';

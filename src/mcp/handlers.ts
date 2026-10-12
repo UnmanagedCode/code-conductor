@@ -42,11 +42,11 @@ import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
 import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
-import { buildApprovePrompt, buildRejectPrompt } from '../../public/planApproval.ts';
+import { buildApprovePrompt, buildRejectPrompt } from '../../shared/planApproval.ts';
 // DOM-free formatter shared with the UI question card
 // (web/src/conversation/cards.tsx) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.ts.
-import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.ts';
+import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../shared/userQuestionAnswers.ts';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
 import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
@@ -76,7 +76,7 @@ import { isDeadStatus } from '../instances.ts';
 import { publicIdFor } from '../sessionLineage.ts';
 import { applySessionTitle } from '../sessionTitles.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
-import { buildForwardFrame } from '../../public/forwardFrame.ts';
+import { buildForwardFrame } from '../../shared/forwardFrame.ts';
 import { contextReading } from '../sessionPrune.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';

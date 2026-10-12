@@ -5,10 +5,10 @@
 // screen with nothing re-read, a session the user picks or Back returns to
 // meanwhile stands, and a notification clicked meanwhile opens its own session.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { consumeStashedAnchor, stashCurrentAnchorForRelaunch } from '@/lib/core/anchor.js';
+import { consumeStashedAnchor, stashCurrentAnchorForRelaunch } from '@shared/anchor';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 
-vi.mock('@/lib/core/ws.js', () => {
+vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
   const sent: [string, unknown][] = [];
   return { bus, sent, connect: vi.fn(), send: vi.fn((t: string, payload: unknown) => { sent.push([t, payload]); }) };
@@ -32,7 +32,7 @@ let stop: (() => void) | null = null;
 async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAnswer> = () => MISS) {
   stop?.();
   vi.resetModules();
-  const ws = (await import('@/lib/core/ws.js')) as unknown as { bus: EventTarget; sent: [string, unknown][] };
+  const ws = (await import('@shared/ws')) as unknown as { bus: EventTarget; sent: [string, unknown][] };
   ws.sent.length = 0;
   const reads: Held[] = [];
   const calls = routeFetch({

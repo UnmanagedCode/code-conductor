@@ -6,7 +6,7 @@ import { fireEvent, within } from '@testing-library/react';
 
 const sent: { t: string; payload: any; opts: any }[] = [];
 let ackBehavior: (t: string) => Promise<unknown> = () => Promise.resolve({ ok: true });
-vi.mock('@/lib/core/ws.js', () => ({
+vi.mock('@shared/ws', () => ({
   bus: new EventTarget(),
   connect: () => {},
   send: (t: string, payload: any, opts: any = {}) => {
@@ -15,8 +15,8 @@ vi.mock('@/lib/core/ws.js', () => ({
   },
 }));
 
-import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
-import { buildWakeStub } from '../../../public/wakeCallback.ts';
+import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '@shared/userQuestionAnswers';
+import { buildWakeStub } from '@shared/wakeCallback';
 import { appStore } from '@/state/app';
 import { ConversationModel, type UserNode } from './model';
 import { createLazyHistory } from './lazyHistory';

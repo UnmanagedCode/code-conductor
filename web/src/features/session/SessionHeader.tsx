@@ -16,8 +16,8 @@ import type { Instance } from '@/state/types';
 import {
   getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackends, getBackendLabel,
   getBackendModels, getEffortLevels, CLAUDE_BACKEND,
-} from '@/lib/core/models.js';
-import { autoResumeBadge, formatAutoResumeTime } from '@/lib/core/usage.js';
+} from '@shared/models';
+import { autoResumeBadge, formatAutoResumeTime } from '@shared/usage';
 import { send, stickyPrompt } from '@/app/controller';
 import { trackSwipes } from '@/conversation/stickyPrompt';
 import { modelsSignal } from '@/app/models';

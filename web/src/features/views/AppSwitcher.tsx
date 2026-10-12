@@ -11,7 +11,7 @@ import { OctopusMark } from '@/components/mascot/Octopus';
 import { useSignal, useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { syncRoute, useRoute } from '@/state/route';
-import { writeSessionAnchor } from '@/lib/core/anchor.js';
+import { writeSessionAnchor } from '@shared/anchor';
 import { closeSidebarOnMobile } from '@/app/ui';
 import { pluginsChangedSignal } from '@/features/settings/pluginsSignal';
 import { openPlugin } from './api';

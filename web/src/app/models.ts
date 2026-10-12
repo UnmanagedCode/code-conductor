@@ -1,6 +1,6 @@
 // The client-side model catalog (lib/core/models.js caches it); `modelsSignal`
 // tells React when it was reloaded or edited in Settings → Models.
-import { applyModelsPayload, loadModelVersions } from '@/lib/core/models.js';
+import { applyModelsPayload, loadModelVersions } from '@shared/models';
 import { createSignal } from '@/state/createStore';
 
 export const modelsSignal = createSignal();

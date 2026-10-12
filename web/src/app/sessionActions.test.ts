@@ -20,7 +20,7 @@ vi.mock('./controller', () => ({
   subscribe: vi.fn(),
 }));
 
-import { CLOSE_TITLES, closeActionOf, stopNeedsConfirm } from '@/lib/core/closeAction.js';
+import { CLOSE_TITLES, closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
 import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';

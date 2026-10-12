@@ -4,7 +4,7 @@
 // checkout, and hand-spawned sessions. Counts are asymmetric (A 5 workers, B 2,
 // hand 3), so an inverted owner predicate cannot hide behind equal totals.
 import { appStore } from '@/state/app';
-import { conductorColor } from '@/lib/core/conductorColor.js';
+import { conductorColor } from '@shared/conductorColor';
 import type { SidebarUi } from '@/features/sidebar/state';
 
 export const A = 'cond-a';

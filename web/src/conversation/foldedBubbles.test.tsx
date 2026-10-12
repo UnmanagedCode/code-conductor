@@ -2,9 +2,9 @@
 // lifecycle, and the plain user bubble's view controls.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, within } from '@testing-library/react';
-import { buildWakeStub, WAKE_CALLBACK_MARKER } from '../../../public/wakeCallback.ts';
-import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../../../public/forwardFrame.ts';
-import { buildRenewSeed } from '../../../public/renewSeed.ts';
+import { buildWakeStub, WAKE_CALLBACK_MARKER } from '@shared/wakeCallback';
+import { buildForwardFrame, FORWARD_FRAME_HEADER } from '@shared/forwardFrame';
+import { buildRenewSeed } from '@shared/renewSeed';
 import { ConversationModel, type CompactionNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 import { readJsonl, replayLines, serverModules } from './testkit';

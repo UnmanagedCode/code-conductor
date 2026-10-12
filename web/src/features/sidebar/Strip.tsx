@@ -1,6 +1,6 @@
-import { isStripEmpty, entryReason } from '@/lib/core/needsYou.js';
+import { isStripEmpty, entryReason } from '@shared/needsYou';
 import { deriveStrip } from './core';
-import { autoResumeBadge } from '@/lib/core/usage.js';
+import { autoResumeBadge } from '@shared/usage';
 import * as React from 'react';
 import { ChevronRightIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';

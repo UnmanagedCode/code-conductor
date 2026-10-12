@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 vi.mock('@/conversation/stickyPrompt', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/conversation/stickyPrompt')>();
   return { ...real, createStickyPrompt: vi.fn(real.createStickyPrompt) };

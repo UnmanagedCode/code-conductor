@@ -1,8 +1,8 @@
 // Pure derivations behind the sidebar tree: merging disk session lists with
 // live instances, workspace grouping, the Projects-lens filter, and the
 // reveal-on-select target. No React, no DOM.
-import { sessionFromInstance, workersOf, isLiveStatus } from '@/lib/core/conductors.js';
-import { promptPreview } from '@/lib/core/promptPreview.ts';
+import { sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
+import { promptPreview } from '@shared/promptPreview';
 import { conductorChips, ownerLabel } from './core';
 import type { Instance, Project } from '@/state/types';
 

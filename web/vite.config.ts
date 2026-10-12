@@ -12,10 +12,10 @@ export default defineConfig({
   root: here,
   plugins: [react(), tailwindcss()],
   resolve: {
-    // The client modules shared with the server live in public/; the
-    // `@/lib/core/*` entry in tsconfig.json `paths` mirrors this one.
+    // The modules shared with the server and the node tests live in ../shared;
+    // the `@shared/*` entry in tsconfig.json `paths` mirrors this one.
     alias: [
-      { find: /^@\/lib\/core\//, replacement: path.join(here, '..', 'public') + '/' },
+      { find: /^@shared\//, replacement: path.join(here, '..', 'shared') + '/' },
       { find: '@', replacement: path.join(here, 'src') },
     ],
   },
@@ -28,7 +28,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 800,
   },
   server: {
-    // The web app imports the modules it shares with the server from ../public.
+    // The web app imports the modules it shares with the server from ../shared.
     fs: { allow: [path.join(here, '..')] },
     proxy: {
       '/api': devServer,

@@ -24,7 +24,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installFakeSocket } from './fakeSocket.mjs';
 
-const PUB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const PUB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'shared');
 // ws.js reads `location` to build its URL; nothing here asserts on the URL.
 globalThis.location = { protocol: 'http:', host: 'localhost:0' };
 const ws = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);

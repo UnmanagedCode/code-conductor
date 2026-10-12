@@ -4,10 +4,10 @@ import {
   ServerOffIcon, Trash2Icon, XIcon, FileDiffIcon, ArchiveIcon, SquareIcon,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { conductorColor } from '@/lib/core/conductorColor.js';
-import { closeActionOf, CLOSE_TITLES } from '@/lib/core/closeAction.js';
-import { needsYouTitle, runLabel } from '@/lib/core/needsYou.js';
-import { promptPreview } from '@/lib/core/promptPreview.ts';
+import { conductorColor } from '@shared/conductorColor';
+import { closeActionOf, CLOSE_TITLES } from '@shared/closeAction';
+import { needsYouTitle, runLabel } from '@shared/needsYou';
+import { promptPreview } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import type { Project } from '@/state/types';

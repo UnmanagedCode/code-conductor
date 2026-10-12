@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
 import { buildRecentMessages } from '../src/mcp/handlers.ts';
-import { formatUserQuestionAnswers } from '../public/userQuestionAnswers.ts';
+import { formatUserQuestionAnswers } from '../shared/userQuestionAnswers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');

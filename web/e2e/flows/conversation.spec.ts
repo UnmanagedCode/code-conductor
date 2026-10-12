@@ -6,8 +6,8 @@ import { appendTranscriptRecord } from '../harness/transcript.ts';
 import { answerCard, askCard, expectLockedOn, expectQaAnswerRows, instanceIn, QA_NOTE, reselect } from './questionCard.ts';
 import { MID_TURN_NOTE } from '../../../src/instances.ts';
 import { AWAITING_INPUT_MESSAGE } from '../../../src/settings.ts';
-import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
-import { buildWakeStub } from '../../../public/wakeCallback.ts';
+import { formatUserQuestionAnswers } from '../../../shared/userQuestionAnswers.ts';
+import { buildWakeStub } from '../../../shared/wakeCallback.ts';
 
 test('revealed with Down, the pin holds the prompt being read; a click jumps to it, the held prompt peeks back as the transcript scrolls on, a full-page view keeps it, and Up conceals it', async ({ page, cc, ui, uniq }) => {
   const project = uniq('pin-jump');

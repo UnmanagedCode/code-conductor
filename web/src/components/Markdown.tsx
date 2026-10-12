@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { renderMarkdownInto } from '@/lib/core/markdown.js';
+import { renderMarkdownInto } from '@shared/markdown';
 import { cn } from '@/lib/utils';
 
 /**

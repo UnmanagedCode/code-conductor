@@ -37,7 +37,7 @@ export async function spawnWorker(cc: Cc, caller: string, args: Record<string, u
   return idleInst(cc, (i) => i.sessionId === sessionId, `worker ${sessionId} idle`);
 }
 
-const CONDUCTOR_COLOR = pathToFileURL(path.join(REPO_ROOT, 'public', 'conductorColor.js')).href;
+const CONDUCTOR_COLOR = pathToFileURL(path.join(REPO_ROOT, 'shared', 'conductorColor.js')).href;
 
 /** A conductor's colour from the module the page derives it with, resolved by the page as a computed rgb(). */
 export async function colourOf(page: Page, sid: string): Promise<string> {

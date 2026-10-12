@@ -11,7 +11,7 @@ vi.mock('@/app/sessionActions', () => ({
   performProjectDelete: vi.fn(async () => {}),
   applySessionTitle: vi.fn(async () => 't'),
 }));
-vi.mock('@/lib/core/capabilities.js', () => ({
+vi.mock('@shared/capabilities', () => ({
   loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true, fuseUnion: true })),
   capabilities: () => null,
 }));
@@ -20,7 +20,7 @@ import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openSpawnDialog } from './api';
 import { appStore } from '@/state/app';
 import { modelsSignal } from '@/app/models';
-import { setActiveDefaultSpawnTier, setActiveTierEffort, setActiveTierEnabled } from '@/lib/core/models.js';
+import { setActiveDefaultSpawnTier, setActiveTierEffort, setActiveTierEnabled } from '@shared/models';
 import { held, routeFetch, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { chooseOption, selectOptions } from '@/test/radixSelect';
 

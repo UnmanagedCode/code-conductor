@@ -1,7 +1,7 @@
 // Conduct: spawn a conductor straight away (no dialog) — a temp session in the
 // hidden `.conduct` project, code mode, on the Conductor role. The server
 // resolves the role's current model and default effort.
-import { apiFetch } from '@/lib/core/http.js';
+import { apiFetch } from '@shared/http';
 import { createStore } from '@/state/createStore';
 import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
 import { beginGesture, gestureOvertaken } from '@/app/gestures';

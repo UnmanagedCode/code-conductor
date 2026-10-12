@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { formatToolName, toolNamePlain } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'toolName.js')).href);
+const { formatToolName, toolNamePlain } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'toolName.js')).href);
 
 function check(t, raw, kind, chip, label) {
   return t.test(raw ?? String(raw), () => {

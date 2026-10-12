@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api, waitFor, instForSession, settle } from './helpers.mjs';
-import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.ts';
+import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import {
   setupIdleWake, callTool, unwrap, spawnReady, spawnReadyWithScenario,
   countUserEchoes, findStubFor, SCENARIO_BG_HANG, SCENARIO_BG_COMPLETE,

@@ -4,7 +4,7 @@
 // ConversationModel (the exact live path) and is spliced above with
 // prependPage. The scroll container registers a viewport so a splice keeps the
 // reader's position and short histories fill the screen.
-import { apiFetch } from '@/lib/core/http.js';
+import { apiFetch } from '@shared/http';
 import type { AssistantNode, ConversationModel } from './model';
 import { createStore } from '@/state/createStore';
 

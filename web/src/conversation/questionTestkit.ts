@@ -1,7 +1,7 @@
 // Question-card fixtures and DOM readers shared by the card tests. Declares no tests.
 import { expect } from 'vitest';
 import { within } from '@testing-library/react';
-import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
+import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { ConversationModel } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 

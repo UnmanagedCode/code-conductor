@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import {
   buildRenewSeed, parseRenewSeed, splitSummarySections, RENEW_SUMMARY_SECTIONS,
   MECHANICAL_STATE_HEADER,
-} from '../public/renewSeed.ts';
-import { buildWakeStub } from '../public/wakeCallback.ts';
-import { buildForwardFrame } from '../public/forwardFrame.ts';
+} from '../shared/renewSeed.ts';
+import { buildWakeStub } from '../shared/wakeCallback.ts';
+import { buildForwardFrame } from '../shared/forwardFrame.ts';
 import { RENEW_SUMMARY_TEMPLATE } from '../src/sessionRenew.ts';
 
 const S = RENEW_SUMMARY_SECTIONS;

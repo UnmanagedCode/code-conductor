@@ -1,7 +1,7 @@
 // Account-level usage from GET /api/usage (the server caches the OAuth
 // endpoint). Its tightest bucket also seeds the rate-limit tracker, so the
 // usage chip has a value before any session emits a rate_limit_event.
-import { RL_BUCKET_KEYS } from '@/lib/core/usage.js';
+import { RL_BUCKET_KEYS } from '@shared/usage';
 import { createStore } from '@/state/createStore';
 import { rateLimits, trackerSignal } from './trackers';
 

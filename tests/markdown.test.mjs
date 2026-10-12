@@ -18,7 +18,7 @@ function setupDOM() {
 }
 
 async function loadMarkdown() {
-  return import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'markdown.js')).href);
+  return import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'markdown.js')).href);
 }
 
 function render(md, text) {

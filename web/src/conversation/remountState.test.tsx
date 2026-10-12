@@ -6,15 +6,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { bus } from '@/lib/core/ws.js';
+import { bus } from '@shared/ws';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
 import type { Instance, UiEvent } from '@/state/types';
-import { buildForwardFrame } from '../../../public/forwardFrame.ts';
-import { buildWakeStub } from '../../../public/wakeCallback.ts';
+import { buildForwardFrame } from '@shared/forwardFrame';
+import { buildWakeStub } from '@shared/wakeCallback';
 import { ConversationView } from './ConversationView';
 import { flush } from './renderModel';
 import { text, thinking, tool } from './testkit';

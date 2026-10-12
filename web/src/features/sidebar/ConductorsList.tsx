@@ -1,6 +1,6 @@
 import { ChevronRightIcon } from 'lucide-react';
-import { conductorTitle, sessionFromInstance, stageText, workersOf } from '@/lib/core/conductors.js';
-import { conductorColor } from '@/lib/core/conductorColor.js';
+import { conductorTitle, sessionFromInstance, stageText, workersOf } from '@shared/conductors';
+import { conductorColor } from '@shared/conductorColor';
 import { cn } from '@/lib/utils';
 import type { Instance, Project } from '@/state/types';
 import { resumeSession } from '@/app/sessionActions';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RateLimitTracker, RL_BUCKET_KEYS, UsageTracker, rlChipSegment } from '@/lib/core/usage.js';
+import { RateLimitTracker, RL_BUCKET_KEYS, UsageTracker, rlChipSegment } from '@shared/usage';
 
 const M1 = 'claude-haiku-4-5';
 const M2 = 'claude-opus-4-8';

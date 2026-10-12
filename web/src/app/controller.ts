@@ -2,8 +2,8 @@
 // router (snapshot / reset_snapshot / segment / event / status / instances /
 // projects) and the first-connect anchor restore. UI features subscribe to the
 // stores and to app events; nothing here touches the DOM beyond the URL hash.
-import { bus, connect, send } from '@/lib/core/ws.js';
-import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@/lib/core/anchor.js';
+import { bus, connect, send } from '@shared/ws';
+import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
 import { appStore, activeInstance, type AppState } from '@/state/app';
 import { syncRoute, routeStore } from '@/state/route';
 import type { Instance, UiEvent } from '@/state/types';

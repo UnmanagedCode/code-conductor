@@ -1,5 +1,5 @@
 // Pure helpers behind Settings → Models / Backends, over the /api/settings/models payload.
-import { CLAUDE_BACKEND, backendIdOf } from '@/lib/core/models.js';
+import { CLAUDE_BACKEND, backendIdOf } from '@shared/models';
 
 export type Binding = { backend?: string; model: string; kind?: string; tier?: string };
 export type ModelsPayload = {

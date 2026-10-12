@@ -11,7 +11,7 @@ vi.mock('@/app/sessionActions', () => ({
   performProjectDelete: vi.fn(async () => {}),
   applySessionTitle: vi.fn(async () => 't'),
 }));
-vi.mock('@/lib/core/capabilities.js', () => ({
+vi.mock('@shared/capabilities', () => ({
   loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true, fuseUnion: true })),
   capabilities: () => null,
 }));
@@ -22,7 +22,7 @@ import { appStore } from '@/state/app';
 import { modelsSignal } from '@/app/models';
 import {
   getActiveTierBackend, getActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEnabled,
-} from '@/lib/core/models.js';
+} from '@shared/models';
 import { routeFetch } from '@/test/routeFetch';
 import { applyModelsPayload, modelsSettingsStore } from './store';
 import type { ModelsPayload } from './logic';
