@@ -93,7 +93,8 @@ export function SettingsView() {
         <h1 className="flex-1 text-sm font-semibold">Settings</h1>
         <Button variant="ghost" size="sm" onClick={() => closeView(activeSid)}><ArrowLeftIcon /> Back</Button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* Positioned: an absolutely positioned descendant scrolls with the content instead of overflowing the shell. */}
+      <div className="relative min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-5 @2xl:flex-row @2xl:gap-8 @2xl:px-8 @2xl:py-10">
           <div className="@2xl:sticky @2xl:top-10 @2xl:w-48 @2xl:shrink-0 @2xl:self-start">
             <div className="mb-4 hidden items-center gap-1 md:flex">

@@ -47,7 +47,8 @@ export function App() {
   const route = useRoute();
   return (
     <TooltipProvider delayDuration={400}>
-      <div className="flex h-dvh overflow-hidden bg-background">
+      {/* Positioned, so its clip also holds absolutely positioned descendants (Radix's hidden form inputs): the page itself never scrolls. */}
+      <div className="relative flex h-dvh overflow-hidden bg-background">
         <div className="hidden shrink-0 md:flex">
           <AppSidebar />
         </div>
