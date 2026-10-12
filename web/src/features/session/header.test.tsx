@@ -70,7 +70,6 @@ beforeEach(() => {
   catalog();
 });
 
-// Each case below mirrors the named test in tests/header-change-model.test.mjs (the old UI's picker).
 const ON_CLAUDE = 'Restarts the session on Claude. The conversation is kept.';
 const ON_OLLAMA = 'Restarts the session on Ollama. The conversation is kept.';
 const ON_THIS_MODEL = 'Restarts the session on this model. The conversation is kept.';
@@ -678,7 +677,7 @@ describe('context + rate-limit chip', () => {
     expect(chip().textContent).toMatch(/^ctx —/);
   });
 
-  it('the popover names a session with no known model `(account default)` (mirrors header-change-model "the usage popover names a session with no known model `(account default)`")', async () => {
+  it('the popover names a session with no known model `(account default)`', async () => {
     getUsageTracker('c6').reset();
     wrap(<UsageChip inst={base({ id: 'c6', model: null })} />);
     await act(async () => { fireEvent.click(chip()); });

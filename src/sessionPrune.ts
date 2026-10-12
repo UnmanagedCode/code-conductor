@@ -122,7 +122,7 @@ export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
 //   `input.questions` on replay (transcript.ts), and the answer is recovered by
 //   STRING-MATCHING the question text and option labels against the user echo
 //   that follows (public/userQuestionAnswers.ts, driven from
-//   public/conversation.js). Squeezing either side leaves the human with an
+//   web/src/conversation/model.ts). Squeezing either side leaves the human with an
 //   unreadable question and silently drops the answer off the card.
 //
 //   Core conductor MCP calls: the orchestration record — what was spawned,

@@ -3,7 +3,7 @@
 // rotated. `src/sessionRenew.ts` builds it with `buildRenewSeed`; this module
 // also owns the fence strings and section-heading titles so the client can
 // parse the very same text back out and render it as a folded bubble (see
-// `public/foldedText.js`'s `renderRenewSeedInto`, mirroring how
+// `RenewBody` in `web/src/conversation/items.tsx`, mirroring how
 // `public/wakeCallback.ts` is shared with `src/idleSubscriptions.ts`). Being
 // in-band means a seed already in history is recognised too — no wire or
 // protocol change, no marker leaking into `firstPrompt` or sidebar previews.

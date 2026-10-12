@@ -1,5 +1,6 @@
 // Display parse of a tool's wire name — the single owner of how a tool-call
-// name reads in the UI. DOM-free; public/blocks.js builds the node from it.
+// name reads in the UI. DOM-free; `ToolName` (web/src/conversation/tools.tsx)
+// builds the node from it.
 //
 // Wire shapes (all `__`-delimited):
 //   mcp__code-conductor__<core_tool>          core tool — no `__` in the name (src/mcp/tools.ts)

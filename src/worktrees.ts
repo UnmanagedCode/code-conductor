@@ -1799,7 +1799,7 @@ export async function getProjectCommits(
   // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI/%P are all single-line.
   // %P = parent SHAs (space-separated): empty for the root commit, ≥2 for a merge.
   // --topo-order, not git's default committer-date order: the frontend's lane
-  // assignment (computeGraph, public/commits.js) requires that no parent precede
+  // assignment (computeGraph, web/src/features/views/graph.ts) requires that no parent precede
   // its child. A rebase stamps a whole branch with one committer second, the date
   // sort key goes constant, and the emitted order degenerates — branch points
   // then attach to the wrong rows, and lanes end abruptly where the rail gives

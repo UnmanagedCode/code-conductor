@@ -309,7 +309,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   // directly). Stopped in both manager shutdown paths.
   if (instances) instances._usageMonitor.start();
   // Build the web UI if its sources changed. Fire-and-forget: the API is
-  // already answering, and /next/ serves a "building" page meanwhile.
+  // already answering, and / serves a "building" page until a build exists.
   if (buildWeb) void webBuild();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can

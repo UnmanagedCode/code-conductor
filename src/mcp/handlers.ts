@@ -43,8 +43,8 @@ import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../
 import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../../public/planApproval.ts';
-// DOM-free formatter shared with the UI question card (public/blocks.js
-// re-exports it) so an answer_question MCP answer is byte-identical to a UI
+// DOM-free formatter shared with the UI question card
+// (web/src/conversation/cards.tsx) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.ts.
 import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.ts';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
@@ -1167,7 +1167,8 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       // `callerId` is now the conductor's stable sessionId (from ?caller=) —
       // resolve it back to the conductor's live instanceId so the internal
       // Instance.callerInstanceId field stays an instanceId (consumers:
-      // public/subagents.js, conductedSubtreeOf — both match on instanceId).
+      // SubagentPanel in web/src/features/session/SessionPanels.tsx,
+      // conductedSubtreeOf — both match on instanceId).
       callerInstanceId: callerInst?.id ?? null,
     };
     inst = await instances.create(createArgs);
@@ -1678,7 +1679,7 @@ interface AnswerEntry {
 }
 
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
-// question card's submit (public/app.js onUserQuestionSubmit → formatUserQuestionAnswers):
+// question card's submit (web/src/conversation/cards.tsx → formatUserQuestionAnswers):
 // the consolidated answer goes out as a normal user turn, byte-identical to a UI
 // answer because both call the same public/userQuestionAnswers.ts formatter.
 // The worker is NOT necessarily idle here — the can_use_tool deny only ends the
@@ -2943,8 +2944,8 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult): TextP
 // cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
 // shell (bash or zsh) that produced it — see bundleShellKind(). Read-only
 // inspection only (see the tool description in mcp/tools.ts). `description`
-// is a display-layer field, rendered by the frontend (public/blocks.js) and
-// never read here.
+// is a display-layer field, rendered by the frontend
+// (web/src/conversation/format.ts) and never read here.
 export async function bashProject({ project, worktree, command, timeout }: {
   project: string; worktree?: string; command: string; timeout?: number;
 }) {
@@ -2992,7 +2993,8 @@ export async function enumerateRemotes({ system }: { system?: string }) {
 // through, so its named refusals are identical; what differs is that the subject
 // is the system itself rather than a project on it. Read-only inspection only
 // (see the tool description in mcp/tools.ts). `description` is a display-layer
-// field, rendered by the frontend (public/blocks.js) and never read here.
+// field, rendered by the frontend (web/src/conversation/format.ts) and never
+// read here.
 export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
   system: string; remoteId?: string | null; command: string; cwd?: string | null; timeout?: number;
 }) {

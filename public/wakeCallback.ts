@@ -9,8 +9,8 @@
 // in-band (like the <transcribed> / soft-interrupt markers) means it survives
 // resume/replay: the persisted user turn re-emits the same text.
 //
-// Imported by src/idleSubscriptions.ts (build) and public/conversation.js
-// (parse), mirroring public/userQuestionAnswers.ts's cross-boundary sharing.
+// Imported by src/idleSubscriptions.ts (build) and
+// web/src/conversation/model.ts (parse), mirroring public/userQuestionAnswers.ts's cross-boundary sharing.
 
 export const WAKE_CALLBACK_MARKER: string = '[[cc:wake-callback]]';
 // Separates the always-visible summary line from the collapsible folded payload.

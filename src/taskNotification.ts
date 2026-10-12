@@ -7,7 +7,7 @@
 // event — from the live stdout `system/task_notification` frame and from the
 // persisted `queue-operation` `enqueue` line. Wired by src/parser.ts (live),
 // src/transcript.ts (replay), src/eventArchive.ts (correlation) and
-// public/blocks.js (render).
+// web/src/conversation/items.tsx (render).
 //
 // A notification renders (`data.notified`) only when its task was started in
 // the background and ended `completed` or `failed`. A foreground task's

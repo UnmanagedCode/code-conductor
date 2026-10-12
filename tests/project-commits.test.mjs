@@ -480,7 +480,7 @@ test('the worktree-scoped commit and uncommitted diff routes read that checkout'
 });
 
 // ── Topological ordering ────────────────────────────────────────────────────
-// The frontend's lane assignment (computeGraph, public/commits.js) requires
+// The frontend's lane assignment (computeGraph, web/src/features/views/graph.ts) requires
 // that a parent never precede its child in commits[]. git's DEFAULT ordering is
 // a committer-date priority queue and does not guarantee that; --topo-order
 // does. The fixture below is built so the default ordering demonstrably breaks

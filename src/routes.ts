@@ -397,7 +397,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // Settings → About. GET reports version + git-behind detection; POST applies
   // (`git pull --ff-only` + conditional `npm install`), streamed as NDJSON.
   // The client hands off to the restart+resume flow after a successful apply
-  // (see public/restartFlow.js); the POST itself never restarts the process.
+  // (performRestart, web/src/features/sidebar/restart.ts); the POST itself never
+  // restarts the process.
   r.get('/settings/self-update', async (req, res, next) => {
     try { res.json(await getSelfUpdateStatus()); } catch (e) { next(e); }
   });
@@ -1179,7 +1180,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     } catch (e) { next(e); }
   });
 
-  // The browser marks the turn end it showed the human (public/viewedMarker.js).
+  // The browser marks the turn end it showed the human (web/src/app/viewedMarker.ts).
   // No MCP equivalent, by design: a conductor's reads never count as viewed.
   // The broadcast is the live instances' `turn_marks` event (setTurnMarks).
   r.post('/sessions/:sessionId/viewed', async (req, res, next) => {
@@ -1893,7 +1894,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       efforts: EFFORT_LEVELS,
       // The end of the precedence chain, shipped so a client fallback lands on the
       // level the SERVER would actually resolve rather than on the first level in
-      // the catalog (see buildEffortPicker, public/settings.js).
+      // the catalog (see EffortPicker, web/src/features/settings/models/ModelsSection.tsx).
       defaultEffort: DEFAULT_EFFORT,
       roles: allRoles,
       roleBackend,

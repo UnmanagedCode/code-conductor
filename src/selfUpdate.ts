@@ -18,8 +18,8 @@ import { pullPastGeneratedConventions } from './conventionsCheckout.ts';
 // then `npm install` if the pull moved a dependency manifest, then a restart
 // so the running node process loads the new files. This module owns the
 // git/npm half; the restart is the caller's step (the client hands off to the
-// existing restart+resume engine after a successful apply — see
-// public/restartFlow.js), keeping this a pure git/npm action like
+// restart+resume engine after a successful apply — see performRestart in
+// web/src/features/sidebar/restart.ts), keeping this a pure git/npm action like
 // pluginLibrary.update().
 
 // Repo root = one level up from src/ (this module's dir). Resolved from

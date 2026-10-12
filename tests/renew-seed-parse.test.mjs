@@ -1,5 +1,5 @@
 // Pure-node tests for public/renewSeed.ts — the DOM-free module shared by
-// src/sessionRenew.ts (build) and public/conversation.js + foldedText.js
+// src/sessionRenew.ts (build) and web/src/conversation/model.ts + items.tsx
 // (parse) for the renew_session reseed text. No DOM involved: this pins the
 // parsing/splitting logic in isolation from the bubble it feeds.
 

@@ -1,6 +1,5 @@
-// Reveal on select in the web UI's real layout: a reveal the needs-you strip
-// starts opens the sidebar onto the revealed row, the phone drawer's re-open
-// included. The old UI never scrolls to a revealed row, so this is web-only.
+// Reveal on select in the real layout: a reveal the needs-you strip starts
+// opens the sidebar onto the revealed row, the phone drawer's re-open included.
 import { test, expect } from './harness/fixtures.ts';
 import { api, createProject, spawnSession } from './harness/api.ts';
 import { insts } from './flows/fleet.ts';
@@ -22,7 +21,7 @@ test('a reveal from the needs-you strip opens the sidebar onto the revealed row 
     for (const name of fillers) await createProject(cc, name);
     const s = await spawnSession(cc, P, { temp: false });
     await expect.poll(async () => (await insts(cc)).find((i) => i.id === s.id)?.status, { message: 'the session is idle' }).toBe('idle');
-    await page.goto('/next/');
+    await page.goto('/');
     await next.lens(page, 'projects');
     const sb = nextSidebar(page);
     const row = sb.locator(`[data-project="${P}"] [data-session-row="${s.sessionId}"] > [role="button"]`);

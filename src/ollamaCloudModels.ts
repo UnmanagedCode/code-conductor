@@ -40,7 +40,7 @@ export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
 
 // Per-tier catalog default, used only as the auto-picked model when a user
 // switches THAT tier's Settings → Models backend to the built-in `ollama` row
-// (see onPickBackend in public/settings.js). Does not change the global
+// (see firstModelForBackend in web/src/features/settings/models/logic.ts). Does not change the global
 // out-of-the-box tier default (DEFAULT_TIER_BACKEND in modelVersions.ts
 // stays all-Claude) — frontier intentionally has no catalog default.
 export const OLLAMA_CLOUD_TIER_DEFAULTS: Record<string, string> = {

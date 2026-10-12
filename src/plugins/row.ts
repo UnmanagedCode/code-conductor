@@ -3,7 +3,8 @@ import type { Platform } from '../platform/index.ts';
 import { claudePluginPaths, type PluginManifest, type ManifestSource } from './manifest.ts';
 
 // The PluginRow view-model: the projection GET /api/plugins serializes verbatim
-// and public/pluginManager.js + public/appSwitcher.js read field by field.
+// and web/src/features/settings/PluginsSection.tsx + the app switcher
+// (web/src/features/views/plugins.ts) read field by field.
 //
 // A pure projection — it writes nothing and closes over nothing, so every input
 // is passed in and no shared mutable state crosses the boundary. The registry

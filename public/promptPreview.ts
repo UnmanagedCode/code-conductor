@@ -2,8 +2,8 @@
 // CLI wrote — a wake-callback stub, a `send_prompt({forward})` frame, a
 // `renew_session` seed, a local command's head records — is rendered by name
 // rather than by its raw marker, frame or tag text; a person's prompt is the
-// text as is. Shared by both UIs' sidebars, the web UI's
-// other session labels and the MCP list_sessions / describe_session rows.
+// text as is. Shared by the web UI's session labels (sidebar, session panels,
+// Settings → Archived) and the MCP list_sessions / describe_session rows.
 //
 // DOM-free: the server imports it too.
 

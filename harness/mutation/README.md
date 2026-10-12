@@ -69,7 +69,7 @@ in one mutant's refs is fine: each runner gets its own files and the counts are 
 
 | runner | id | example |
 |---|---|---|
-| node | `<file>::<describe> > … > <test>` | `tests/sidebar.test.mjs::renders the dot` |
+| node | `<file>::<describe> > … > <test>` | `tests/anchor.test.mjs::readSessionAnchor returns null when no hash is set` |
 | Vitest | `<file>::<describe> > … > <test>` | `web/src/conversation/cards.test.tsx::cards > plan card > renders markdown` |
 | Playwright | `<file>::<project> > <describe> > … > <test>` | `web/e2e/session.spec.ts::desktop > a prompt streams a reply with tool calls, prose and a turn footer` |
 
@@ -77,7 +77,7 @@ in one mutant's refs is fine: each runner gets its own files and the counts are 
 `npm run typecheck`, then the whole node suite, then the whole Vitest suite, and a typecheck failure
 reads as a build break. A mutant's narrow command skips `pretest` (`--ignore-scripts`), so a mutant
 that only breaks a type gets a behavioural verdict from the tests it names — an `x && false`-style
-mutant no longer reads `ERROR (scope-empty)` through a pretest red.
+mutant never reads `ERROR (scope-empty)` through a pretest red.
 
 **Playwright rows rebuild the bundle.** The suite's globalSetup runs the server's hash-gated
 `ensureWebBuild()`: a mutant under `web/` or `public/` changes the source hash, so the scored run
@@ -95,7 +95,7 @@ runs last in the spec's worker — the root `beforeAll` runs once. Two consequen
 
 - A root hook that takes a fixture `fixtures.ts` does not define (a spec-local `test.extend`) fails
   the file's load once the canary is in it: the spec reads `canary-not-established`, never a verdict.
-- A spec that takes `test` from `@playwright/test` (`legacy/header-compact.spec.ts`) runs its canary
+- A spec that takes `test` from `@playwright/test` (`sw-upgrade.spec.ts`) runs its canary
   in a worker of its own, which re-runs the spec's root hooks and boots a `cc` (Playwright's auto
   artifacts fixture reaches it through `baseURL`).
 
@@ -103,8 +103,8 @@ runs last in the spec's worker — the root `beforeAll` runs once. Two consequen
 `CC_MUTATION_PW_PROJECT` (default `desktop`; an unknown name is refused). Without the pin a spec
 shared by several projects would fail the canary, and a real kill, once per project. So:
 
-- A spec the project does not run (`*.android.spec.ts` under `desktop` or `phone`; `legacy/**` or
-  `live.spec.ts` under `phone` or `android`) is refused; `suite.ts` names the projects that run it.
+- A spec the project does not run (`*.android.spec.ts` under `desktop` or `phone`; `live.spec.ts`
+  under `phone` or `android`) is refused; `suite.ts` names the projects that run it.
 - A test that skips itself outside its project reads *skipped* under the default, so a mutant
   touching only phone- or android-only behaviour reads `SURVIVED`. The honest reading is **"scored
   under desktop only"**, not "uncovered": re-run the whole invocation with
@@ -168,7 +168,6 @@ condition stops holding, the row's mutant becomes killable and the row goes.
 
 | construct | mutation | why it is equivalent, and under what condition |
 |---|---|---|
-| `agBody` in `public/blocks.js` | its direct-children scan replaced by `groupNode.querySelector('.ag-body')` | **EQUIVALENT WHILE EVERY ACTION GROUP CARRIES ITS OWN `.ag-body` AS A DIRECT CHILD** — `createActionGroup` is the only producer of a group and always builds one. A direct child precedes every descendant in tree order, so `querySelector` returns this group's own body even when the group holds a sub-agent conversation with a group (and a body) of its own: no DOM a test can build tells the two forms apart. **If a group is ever built without a body of its own** — a second wrapper shape, or a body a merge removes — the forms diverge and this row goes. Do not write a test for it; there is none to write. |
 
 And the standing one, which is not a construct but a test: **`A16`'s sha256 latch
 (`tests/fuse-lifecycle.test.mjs`) is a deliberate-edit disclosure, not coverage.** A C mutant whose

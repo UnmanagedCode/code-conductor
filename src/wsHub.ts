@@ -243,7 +243,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
               : [];
             // One frame backs THREE human surfaces — the composer, the plan
             // Approve/Reject card and the AskUserQuestion card — and mid-turn is
-            // the normal case for all three (public/app.js). On a model that
+            // the normal case for all three. On a model that
             // silently drops a mid-turn injection the text is parked behind a
             // block-edge stop instead. `reply(true)` stays in this tick either way:
             // public/ws.js rejects a pending ack after 10s and sendCardAnswer's
