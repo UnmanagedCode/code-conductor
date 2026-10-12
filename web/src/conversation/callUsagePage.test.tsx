@@ -13,7 +13,7 @@ import { conversation, lazyHistory, selectInstance, startController, stopControl
 import { appStore } from '@/state/app';
 import type { Instance, UiEvent } from '@/state/types';
 import { ConversationView } from './ConversationView';
-import { ConversationModel } from './model';
+import { ConversationModel, type AssistantNode } from './model';
 import { text, tool } from './testkit';
 import { flush, renderModel } from './renderModel';
 import { CALL_USAGE_TITLE } from './format';
@@ -188,6 +188,22 @@ describe('a call_usage that arrives before its message', () => {
     expect(conversation.orphanCallUsage.size, 'the switch dropped it').toBe(0);
     await loadEarlier();
     expect(bubbleReading(bubbleOf(el, 'm9 reply')), 'another session\'s page with the same message id gets no line').toEqual(['m9 reply']);
+  });
+
+  it('a held call_usage lands inside the open action group its message ends on, where the page\'s own copy lands', () => {
+    // Invariant: a parked call_usage takes the same node position as the page's own copy would: inside the message's still-open action group.
+    const page = seqd([{ kind: 'user_echo', text: 'first', userIndex: 0 }, ...tool('m1', 0, 'tu1', 'Read')], 1);
+    /** The bubble's children, a group as its children's types. */
+    const shape = (m: ConversationModel) => (m.items.find((i) => i.type === 'assistant') as AssistantNode).children
+      .map((c) => (c.type === 'group' ? c.children.map((g) => g.type) : c.type));
+    const native = new ConversationModel();
+    native.prependPage(native.renderPage([...page, usage('m1', 5)], null, null), null);
+    expect(shape(native), 'fixture check: the page\'s own copy lands inside the group').toEqual([['tool', 'call_usage']]);
+    const held = new ConversationModel();
+    held.apply(usage('m1', 5));
+    expect(held.orphanCallUsage.has('m1'), 'fixture check: held before its page').toBe(true);
+    held.prependPage(held.renderPage(page, null, null), null);
+    expect(shape(held)).toEqual(shape(native));
   });
 
   it('a call_usage after its message, in one tail, renders in place', async () => {

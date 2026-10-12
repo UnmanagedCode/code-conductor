@@ -864,6 +864,7 @@ export class ConversationModel {
   private renderCallUsage(ev: UiEvent) {
     const wrap = this.messageWraps.get(ev.msgId);
     if (!wrap) {
+      // A message's blocks precede its call_usage, so with no wrap yet the message is on an older page: only renderPage consumes this.
       if (ev.msgId) this.orphanCallUsage.set(ev.msgId, ev);
       return;
     }
