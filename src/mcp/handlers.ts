@@ -1716,7 +1716,7 @@ export async function answerQuestion(
   for (let i = msgs.length - 1; i >= 0; i--) {
     const qs = msgs[i].questions;
     if (Array.isArray(qs) && qs.length > 0) {
-      questions = qs as Question[];
+      questions = qs;
       break;
     }
   }
@@ -2309,7 +2309,7 @@ function renderMessageBody(m: ReconMessage, cappedText: string, questionsText?: 
     const header = m.planPath ? `--- plan · saved to ${m.planPath} ---` : '--- plan ---';
     segments.push({ pos: m.planSeq ?? Infinity, text: m.plan ? `${header}\n${m.plan}` : header });
   }
-  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: questionsText ?? renderQuestions(m.questions as Question[]) });
+  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: questionsText ?? renderQuestions(m.questions) });
   segments.sort((a, b) => a.pos - b.pos);
   return segments.map(s => s.text).join('\n');
 }
@@ -2552,7 +2552,7 @@ function renderRecentMessages(
     const capped = capText(m.text ?? '', textCap);
     const plan = stringCap !== undefined && m.plan ? capText(m.plan, stringCap) : null;
     const questions = stringCap !== undefined && m.questions
-      ? capText(renderQuestions(m.questions as Question[]), stringCap) : null;
+      ? capText(renderQuestions(m.questions), stringCap) : null;
     const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text, questions?.text);
     const body = total > 1
       ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
@@ -2568,7 +2568,7 @@ function renderRecentMessages(
     if (m.plan || m.planPath) entry.hasPlan = true;
     if (plan?.truncated) entry.planTruncated = true;
     if (m.planPath) entry.planPath = m.planPath;
-    if (m.questions) entry.questionCount = (m.questions as Question[]).length;
+    if (m.questions) entry.questionCount = m.questions.length;
     if (questions?.truncated) entry.questionsTruncated = true;
     if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls, textCap));
     return entry;

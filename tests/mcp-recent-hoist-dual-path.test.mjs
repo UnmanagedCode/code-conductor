@@ -177,7 +177,7 @@ const CASES = [
     expect: m => {
       assert.equal(m.questionsSeq, 0, 'questionsSeq holds the FIRST AskUserQuestion\'s position');
       assert.equal(m.textSeq, 1, 'so the prose is still position 1, not 2');
-      assert.deepEqual(m.questions, [{ question: 'second?' }], 'the questions PAYLOAD is still last-write-wins');
+      assert.deepEqual(m.questions, [{ question: 'second?', options: [] }], 'the questions PAYLOAD (normalised) is still last-write-wins');
       assert.equal(m.blocks, undefined, 'both hoisted asks stay out of blocks[]');
     },
   },

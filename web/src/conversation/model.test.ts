@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatUserQuestionAnswers, type UserQuestionAnswer } from '../../../public/userQuestionAnswers.ts';
-import { ConversationModel, normalizeQuestions, type AssistantNode, type GroupNode, type ToolNode, type QuestionNode, type UserNode } from './model';
+import { formatUserQuestionAnswers, normalizeQuestions, type UserQuestionAnswer } from '../../../public/userQuestionAnswers.ts';
+import { ConversationModel, type AssistantNode, type GroupNode, type ToolNode, type QuestionNode, type UserNode } from './model';
 
 const text = (msgId: string, t: string, blockIdx = 0) => [
   { kind: 'text_delta', msgId, blockIdx, text: t },

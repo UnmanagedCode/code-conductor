@@ -42,6 +42,24 @@ export type UserQuestionAnswer =
   | { kind: 'custom'; text: string }
   | { kind: 'none' };
 
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * An AskUserQuestion's `questions` (the model's raw tool input) in the shape a
+ * renderer can walk: a non-object question becomes an empty one IN ITS
+ * POSITION, a non-array `options` becomes none, and a non-object option is
+ * dropped. A question is never dropped: answers are index-aligned to the
+ * questions, and the correlator pairs the answer echo against the raw array,
+ * so the count and positions must survive for the formatted text over these
+ * questions to equal the text over the raw ones.
+ */
+export function normalizeQuestions(raw: unknown): Question[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((q) => (isRecord(q)
+    ? { ...q, options: Array.isArray(q.options) ? q.options.filter(isRecord) : [] } as Question
+    : {}));
+}
+
 const NO_ANSWER = '(no answer)';
 const OWN_ANSWER = '(own answer)';
 const NOTE_OPEN = ' (note: ';
