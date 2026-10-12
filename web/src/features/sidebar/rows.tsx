@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { conductorColor } from '@/lib/core/conductorColor.js';
 import { closeActionOf, CLOSE_TITLES } from '@/lib/core/closeAction.js';
 import { needsYouTitle, runLabel } from '@/lib/core/needsYou.js';
+import { promptPreview } from '@/lib/core/promptPreview.ts';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import type { Project } from '@/state/types';
@@ -138,7 +139,7 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
   const active = live && session.instanceId === activeId;
   const owner = showOwner ? session.ownerSessionId ?? null : null;
   const title = (session.title ?? '').trim();
-  const preview = (session.firstPrompt ?? '').slice(0, 80).replace(/\s+/g, ' ').trim();
+  const preview = promptPreview(session.firstPrompt);
   const tooltip = [session.sessionId, title && preview ? preview : null, owner ? `conductor: ${ownerTitle?.(owner) ?? owner}` : null].filter(Boolean).join('\n');
   const showPromote = !!session.instanceTemp && live && status !== 'exited' && status !== 'crashed';
   const open = () => {

@@ -6,6 +6,7 @@ import { refreshInstances, refreshProjects } from '@/app/controller';
 import { emit } from '@/app/events';
 import { resumeSession } from '@/app/sessionActions';
 import { formatAgo } from '@/lib/time';
+import { readablePrompt } from '@/lib/core/promptPreview.ts';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { SectionIntro, Status } from './ui';
 import { json, errText } from './api';
@@ -102,7 +103,7 @@ export function ArchivedSection() {
             </CollapsibleTrigger>
             <CollapsibleContent className="divide-y border-t">
               {g.sessions.map((s) => {
-                const label = s.title || s.firstPrompt || `${s.sessionId.slice(0, 8)}…`;
+                const label = s.title || readablePrompt(s.firstPrompt) || `${s.sessionId.slice(0, 8)}…`;
                 return (
                   <div key={s.sessionId} className="flex flex-wrap items-center gap-2 px-4 py-2.5" data-session={s.sessionId}>
                     <div className="min-w-0 flex-1">
