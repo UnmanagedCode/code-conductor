@@ -137,6 +137,103 @@
   {
    "on": {
     "type": "prompt",
+    "text": "PLAN-ASK"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_plan",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "tool_use",
+       "id": "toolu_plan",
+       "name": "ExitPlanMode",
+       "input": {}
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "input_json_delta",
+       "partial_json": "{\"plan\": \"# PLAN-HEAD\\n\\n- step one\"}"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "control_request",
+     "request_id": "ct_plan",
+     "request": {
+      "subtype": "can_use_tool",
+      "tool_name": "ExitPlanMode",
+      "input": {
+       "plan": "# PLAN-HEAD\n\n- step one"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "control_response",
+    "request_id": "ct_plan",
+    "behavior": "deny"
+   },
+   "emit": [
+    {
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "toolu_plan",
+        "content": "Delivered — the user can see your request in the orchestrator UI now. The tool result is flagged as an error only because the reply arrives asynchronously; the tool worked. Do not repeat the call, do not answer or decide it yourself, and do not start other work. End your turn now with no further tool calls and wait for the user's reply; it arrives as a new message.",
+        "is_error": true
+       }
+      ]
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0,
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt",
     "text": "Pick a QA fruit"
    },
    "emit": [

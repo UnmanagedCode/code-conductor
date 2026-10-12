@@ -130,7 +130,7 @@ describe('question card', () => {
     it('a stamped custom answer shows whole in the field with nothing picked', async () => {
       const { card } = await show([CARD(), CARD_RESULT, stamped([FRUIT], [{ kind: 'custom', text: 'Mango — please' }])]);
       expect(input(card()).value).toBe('Mango — please');
-      expect(card().querySelectorAll('[aria-pressed="true"]')).toHaveLength(0);
+      expect(card().querySelectorAll('[data-option][aria-pressed="true"]')).toHaveLength(0);
       expect(input(card()).getAttribute('data-custom-input')).toBe('active');
     });
 
@@ -140,7 +140,7 @@ describe('question card', () => {
       expectLocked(card(), { text: 'ripe' });
       fireEvent.click(card().querySelector('[data-tab="1"]')!);
       await flush();
-      expect(card().querySelectorAll('[aria-pressed="true"]')).toHaveLength(0);
+      expect(card().querySelectorAll('[data-option][aria-pressed="true"]')).toHaveLength(0);
       expect(input(card()).value).toBe('medium-ish');
       expect(statusOf(card())).toBe('Answered');
       fireEvent.click(card().querySelector('[data-tab="0"]')!);
