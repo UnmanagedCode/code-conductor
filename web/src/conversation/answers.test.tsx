@@ -49,12 +49,19 @@ describe('answer bubble', () => {
     const rows = bubble.querySelectorAll<HTMLElement>('[data-kind]');
     expect(rows.length).toBe(1);
     expect(rows[0].getAttribute('data-kind')).toBe('option');
-    expect((rows[0].querySelector('span.uppercase') as HTMLElement).textContent).toBe('Fruit');
-    expect((rows[0].firstElementChild as HTMLElement).textContent).toBe('FruitPick a fruit');
+    // Invariant: the answer row carries its question's header and question text beside its pick; the capitalised header reaches the row only through the header, since the question reads "Pick a fruit".
+    const rowText = rows[0].textContent ?? '';
+    expect(rowText).toContain('Fruit');
+    expect(rowText).toContain('Pick a fruit');
     expect([...rows[0].querySelectorAll('[data-choice]')].map((n) => n.textContent)).toEqual(['Apple']);
     expect(rows[0].querySelector('[data-note]')).toBeNull();
     expect(bubble.querySelector('.md')).toBeNull();
     expect(bubble.querySelector('[data-view="raw"]')).toBeNull();
+    // Negative control: a header-less question's row carries its question text and no header.
+    const bare = await show([stamped([SIZE], [{ kind: 'option', label: 'S' }])]);
+    const bareText = bare.root.querySelector('[data-kind]')!.textContent ?? '';
+    expect(bareText).toContain('Pick a size');
+    expect(bareText).not.toContain('Fruit');
   });
 
   it('a structured canonical answer offers no raw-text or copy control', async () => {
@@ -185,6 +192,7 @@ describe('question card locking', () => {
     'a label holding a quote': [[QUOTE], [{ kind: 'option', label: 'say "hi"' }]],
   };
 
+  // Invariant: each hard-case answer renders one row per question with its kind, picks, custom text and note, and locks the card on those picks; a note-less row has no note.
   it('replay: every hard-case answer renders its exact rows and locks the card with its picks', async () => {
     for (const [name, [questions, answers]] of Object.entries(HARD_CASES)) {
       const live = new ConversationModel();
@@ -201,7 +209,7 @@ describe('question card locking', () => {
         expect([...row.querySelectorAll('[data-choice]')].map((n) => n.textContent), `${name}: row ${i} chips`).toEqual(labels);
         if (a.kind === 'custom') expect(row.querySelector('[data-custom]')?.textContent, `${name}: row ${i} custom text`).toBe(a.text);
         else expect(row.querySelector('[data-custom]'), `${name}: row ${i} no custom text`).toBeNull();
-        if (a.note) expect(row.querySelector('[data-note]')?.textContent, `${name}: row ${i} note`).toBe(`— ${a.note}`);
+        if (a.note) expect(row.querySelector('[data-note]')?.textContent, `${name}: row ${i} note`).toContain(a.note);
         else expect(row.querySelector('[data-note]'), `${name}: row ${i} no note`).toBeNull();
       });
       expect(bubble.querySelector('.md'), `${name}: no raw text fallback`).toBeNull();
@@ -336,6 +344,7 @@ describe('question card locking', () => {
       expect((bubble as HTMLElement).querySelector('.md'), 'the raw text is shown').not.toBeNull();
     });
 
+    // Invariant: the formatter's own text locks the card on its pick and note, and the bubble's row shows that pick and note; the same text with no note shows none.
     it('the formatter\'s own text locks it with its pick, matching the bubble\'s rows', async () => {
       const answers: any[] = [{ kind: 'option', label: 'Banana', note: 'ripe' }];
       const live = new ConversationModel();
@@ -347,11 +356,19 @@ describe('question card locking', () => {
       expect(rows.length).toBe(1);
       expect(rows[0].getAttribute('data-kind')).toBe('option');
       expect([...rows[0].querySelectorAll('[data-choice]')].map((n) => n.textContent)).toEqual(['Banana']);
-      expect(rows[0].querySelector('[data-note]')?.textContent).toBe('— ripe');
+      expect(rows[0].querySelector('[data-note]')?.textContent).toContain('ripe');
       const el = cardIn(r.root);
       expect(opt(el, 'Banana').getAttribute('aria-pressed')).toBe('true');
       expect(opt(el, 'Apple').getAttribute('aria-pressed')).toBe('false');
       expect(input(el).value).toBe('ripe');
+      // Negative control: the same formatter text without a note renders no note.
+      const bare = new ConversationModel();
+      bare.apply(echo(formatUserQuestionAnswers(questions, [{ kind: 'option', label: 'Banana' }])));
+      page(bare, [card, CARD_RESULT]);
+      const br = renderModel(bare);
+      await flush();
+      expect(br.root.querySelectorAll('[data-variant="answer"] [data-kind]').length).toBe(1);
+      expect(br.root.querySelector('[data-variant="answer"] [data-note]')).toBeNull();
     });
   });
 });

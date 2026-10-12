@@ -4,7 +4,7 @@
 import { createProject } from '../harness/api.ts';
 import { expect, test } from '../harness/fixtures.ts';
 import { parity } from './parity.ts';
-import { answerCard, askCard, expectLockedOn, instanceIn, QA_NOTE, reselect } from './questionCard.ts';
+import { answerCard, askCard, expectLockedOn, expectQaAnswerRows, instanceIn, QA_NOTE, reselect } from './questionCard.ts';
 
 test.use({ ccOptions: { server: 'conversation-paging', env: { ORCH_SNAPSHOT_TAIL: '2' } } });
 
@@ -28,10 +28,7 @@ parity('lineage-scrollback-client/R2', 'a card that pages in from below the snap
   const card = ui.questionCard(page);
   await expect(card).toHaveCount(1);
   await expectLockedOn(ui, card, 'Banana', 'Apple', QA_NOTE);
-  expect(await ui.answerRows(ui.answerBubble(page))).toEqual([
-    { kind: 'option', choices: ['Banana'], note: `— ${QA_NOTE}`, custom: null },
-    { kind: 'option', choices: ['L'], note: null, custom: null },
-  ]);
+  await expectQaAnswerRows(ui, ui.answerBubble(page));
 
   const got = await Promise.all(bodies);
   expect(got.length, 'the session paged').toBeGreaterThan(0);

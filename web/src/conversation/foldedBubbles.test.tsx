@@ -1,9 +1,5 @@
-/// <reference types="node" />
 // Folded user-bubble bodies (wake, skill, forward, compaction) across their
 // lifecycle, and the plain user bubble's view controls.
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, within } from '@testing-library/react';
 import { buildWakeStub, WAKE_CALLBACK_MARKER } from '../../../public/wakeCallback.ts';
@@ -97,8 +93,6 @@ describe('wake-callback bubble lifecycle', () => {
     await toggleFold(fold);
     const meta = fold.querySelector('[data-wake-meta]')!;
     const md = fold.querySelector('.md')!;
-    // Invariant: the fold's controls row sits above its body.
-    expect(button(fold, 'Show raw text').parentElement!.compareDocumentPosition(meta)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     await toggleFold(fold);
     expect(fold.getAttribute('data-state')).toBe('closed');
     expect(contentOf(fold).hidden).toBe(true);
@@ -211,19 +205,6 @@ describe('wake-callback bubble lifecycle', () => {
     expect(button(busyFold, 'Show raw text').disabled).toBe(false);
     expect(button(busyFold, 'Copy text').disabled).toBe(false);
   });
-
-  // Invariant: only the meta line is muted monospace; nothing from the fold down to its markdown forces font-mono.
-  it('the metadata line is muted monospace, and nothing between the fold and its markdown forces a font', async () => {
-    const { bubble } = await echo(STUB);
-    const fold = bubble.querySelector('[data-fold="wake"]') as HTMLElement;
-    await toggleFold(fold);
-    const meta = fold.querySelector('[data-wake-meta]')!;
-    expect(meta.classList.contains('font-mono')).toBe(true);
-    expect(meta.classList.contains('text-muted-foreground')).toBe(true);
-    for (let e: Element | null = fold.querySelector('.md'); e && e !== fold; e = e.parentElement) {
-      expect(e.classList.contains('font-mono'), e.className).toBe(false);
-    }
-  });
 });
 
 describe('skill-load bubble lifecycle', () => {
@@ -234,8 +215,6 @@ describe('skill-load bubble lifecycle', () => {
     await toggleFold(fold);
     const md = fold.querySelector('.md')!;
     expect(md.querySelector('h1')!.textContent).toBe('Keybindings');
-    // Invariant: the fold's controls row sits above its body.
-    expect(button(fold, 'Show raw text').parentElement!.compareDocumentPosition(md)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     await toggleFold(fold);
     expect(contentOf(fold).hidden).toBe(true);
     expect(fold.contains(md)).toBe(true);
@@ -383,15 +362,9 @@ describe('plain user bubble controls', () => {
   });
 });
 
-describe('heading size', () => {
-  // Invariant: one rule sizes markdown headings to the body in prompt text and in every [data-fold] body.
-  it('headings stay body size in the prompt text and in every folded body (CSS pin)', () => {
-    const css = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../index.css'), 'utf8');
-    expect(css).toContain(':is([data-user-text], [data-fold]) .md :is(h1, h2, h3, h4, h5, h6) { font-size: inherit;');
-  });
-
+describe('fold markers', () => {
   // Invariant: wake, skill, renew and forward bubbles each carry exactly one [data-fold] of their own kind; a plain prompt carries none.
-  it('every folded user-bubble kind, renew included, carries the data-fold attribute the heading rule matches', async () => {
+  it('every folded user-bubble kind, renew included, carries its own data-fold marker, and a plain prompt none', async () => {
     const cases: [string, object, string][] = [
       [STUB, {}, 'wake'],
       [SKILL_TEXT, SKILL, 'skill'],

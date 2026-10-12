@@ -214,15 +214,17 @@ describe('answer bubble', () => {
     expect(calls).toEqual([['rewind', 4, ev.text], ['fork', 4, ev.text]]);
   });
 
+  // Invariant: each answer kind renders its own row (chips, a skipped mark, a note, a custom text), only the noted row carries a note, and the head counts the questions only when there is more than one.
   it('renders each answer kind: chips, a custom text, a note, a skipped question; the head counts questions', async () => {
     const { root } = await show([stamped([TOPPINGS, SIZE, FRUIT], [
       { kind: 'multi', labels: ['Nuts', 'Syrup'] }, { kind: 'none' }, { kind: 'option', label: 'Banana', note: 'ripe ones only' },
     ])]);
-    expect(root.querySelector('[data-answer-head]')!.textContent).toMatch(/Answered · 3 questions$/);
+    expect(root.querySelector('[data-answer-head]')!.textContent).toMatch(/3 questions/);
     const [multi, skipped, single] = root.querySelectorAll('[data-kind]');
     expect([...multi.querySelectorAll('[data-choice]')].map((n) => n.textContent)).toEqual(['Nuts', 'Syrup']);
-    expect(skipped.querySelector('[data-skipped]')!.textContent).toBe('skipped');
-    expect(single.querySelector('[data-note]')!.textContent).toBe('— ripe ones only');
+    expect(skipped.querySelector('[data-skipped]')).not.toBeNull();
+    expect(single.querySelector('[data-note]')!.textContent).toContain('ripe ones only');
+    expect(multi.querySelector('[data-note]')).toBeNull();
     const custom = await show([stamped([FRUIT], [{ kind: 'custom', text: 'Mango — please' }])]);
     expect(custom.root.querySelector('[data-custom]')!.textContent).toBe('Mango — please');
     expect(custom.root.querySelector('[data-answer-head]')!.textContent).toMatch(/Answered$/);

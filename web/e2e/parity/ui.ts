@@ -83,8 +83,6 @@ export interface Ui {
   pin(page: Page): Locator;
   /** Its clamped text box. */
   pinBody(page: Page): Locator;
-  /** The box drawing the pin's shadow. */
-  pinCard(page: Page): Locator;
   /** The reveal swipe zones: the top bar and the pin. */
   swipeZones(page: Page): Locator[];
 
@@ -145,8 +143,6 @@ export interface Ui {
   foldToggle(fold: Locator): Locator;
   /** A fold's body box: hidden while the fold is closed. */
   foldBody(fold: Locator): Locator;
-  /** The bell on a wake fold. */
-  wakeBadge(fold: Locator): Locator;
   /** The wake body's metadata line. */
   wakeMeta(fold: Locator): Locator;
   /** The fold body's raw view, present only while raw shows. */
@@ -645,7 +641,6 @@ export const legacy: Ui = {
   turnEnds: (page) => page.locator('#conversation .block.turn-end'),
   pin: (page) => page.locator('#pinned-prompt'),
   pinBody: (page) => page.locator('#pinned-prompt .pinned-prompt-body'),
-  pinCard: (page) => page.locator('#pinned-prompt'),
   swipeZones: (page) => [page.locator('#instance-header'), page.locator('#pinned-prompt')],
 
   // Settings (card 2026-0625)
@@ -763,7 +758,6 @@ export const legacy: Ui = {
   wakeFold: (page) => page.locator('#conversation .msg.user.wake-callback details.block.wake'),
   foldToggle: (fold) => fold.locator(':scope > summary'),
   foldBody: (fold) => fold.locator(':scope > .user-text'),
-  wakeBadge: (fold) => fold.locator(':scope > summary .wake-badge'),
   wakeMeta: (fold) => fold.locator('.wake-meta'),
   foldRaw: (fold) => fold.locator('.user-text[data-view="raw"]'),
   async toggleFoldView(fold) {
@@ -1338,7 +1332,6 @@ export const next: Ui = {
   turnEnds: (page) => page.locator('[data-item=turn-end]'),
   pin: (page) => page.locator('[data-pinned-prompt]'),
   pinBody: (page) => page.locator('[data-pin-body]'),
-  pinCard: (page) => page.locator('[data-pin-body]').locator('..'),
   swipeZones: (page) => [page.locator('[data-session-header]'), page.locator('[data-pinned-prompt]')],
 
   // Settings (card 2026-0625)
@@ -1450,7 +1443,6 @@ export const next: Ui = {
   wakeFold: (page) => page.locator('[data-item=user][data-variant=wake] [data-fold=wake]'),
   foldToggle: (fold) => fold.locator('[data-fold-trigger]'),
   foldBody: (fold) => fold.locator('[data-slot="collapsible-content"]'),
-  wakeBadge: (fold) => fold.locator('[data-fold-trigger] svg.lucide-bell'),
   wakeMeta: (fold) => fold.locator('[data-wake-meta]'),
   foldRaw: (fold) => fold.locator('[data-view="raw"]'),
   async toggleFoldView(fold) {

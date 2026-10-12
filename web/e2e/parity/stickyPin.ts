@@ -51,27 +51,6 @@ export function cssOf(loc: Locator, prop: string): Promise<string> {
   return loc.evaluate((e, p) => getComputedStyle(e).getPropertyValue(p), prop);
 }
 
-export type ShadowLayer = { inset: boolean; y: number; blur: number; spread: number };
-
-/** A computed `box-shadow`, one entry per layer. */
-export function shadowLayers(css: string): ShadowLayer[] {
-  const layers: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < css.length; i++) {
-    if (css[i] === '(') depth++;
-    else if (css[i] === ')') depth--;
-    else if (css[i] === ',' && depth === 0) { layers.push(css.slice(start, i)); start = i + 1; }
-  }
-  layers.push(css.slice(start));
-  return layers.map((layer) => {
-    const inset = /\binset\b/.test(layer);
-    const lengths = (layer.replace(/[a-z-]+\((?:[^()]|\([^()]*\))*\)/g, '').match(/-?[\d.]+px/g) ?? []).map(parseFloat);
-    const [, y = 0, blur = 0, spread = 0] = lengths;
-    return { inset, y, blur, spread };
-  });
-}
-
 /** A one-finger vertical swipe of `dy` px from the zone's centre, as touch events. */
 export async function swipe(zone: Locator, dy: number): Promise<void> {
   const box = await zone.boundingBox();

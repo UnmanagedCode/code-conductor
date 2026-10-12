@@ -70,6 +70,16 @@ export async function reselect(page: Page, ui: Ui, project: string, sessionId: s
   await expect(chip).toBeVisible();
 }
 
+/** The answer bubble's rows as answerCard leaves them; the note is matched by containing QA_NOTE, its separator being the UI's own. */
+export async function expectQaAnswerRows(ui: Ui, bubble: Locator): Promise<void> {
+  const rows = await ui.answerRows(bubble);
+  // Invariant: one row per question with its pick; only the first carries the note, and neither has custom text.
+  expect(rows.map((r) => ({ ...r, note: r.note === null ? null : r.note.includes(QA_NOTE) }))).toEqual([
+    { kind: 'option', choices: ['Banana'], note: true, custom: null },
+    { kind: 'option', choices: ['L'], note: null, custom: null },
+  ]);
+}
+
 /** The card reads answered, `picked` is picked and `notPicked` is not, and every control is disabled. */
 export async function expectLockedOn(ui: Ui, card: Locator, picked: string, notPicked: string, field: string): Promise<void> {
   await expect(ui.cardStatus(card)).toHaveText(/^answered$/i);
