@@ -25,6 +25,7 @@ import { pluginsChangeStore, pluginsChangedSignal } from './pluginsSignal';
 import { on } from '@/app/events';
 import { ConfirmHost, toast } from '@/ui/feedback';
 import { buildWakeStub } from '@/lib/core/wakeCallback.ts';
+import { readJsonl } from '@/conversation/testkit';
 
 const DRAFTS = [modelsDraftStore.get(), backendsDraftStore.get(), systemsDraftStore.get()] as const;
 
@@ -871,6 +872,20 @@ describe('Archived', () => {
     fireEvent.click(within(document.querySelector('[data-session="s-wake"]') as HTMLElement).getByRole('button', { name: 'Delete' }));
     expect(await screen.findByRole('dialog', { name: (n) => n.includes('“Wake: Worker `labelwake` finished its turn.') })).toBeTruthy();
     expect(screen.queryAllByRole('dialog', { name: (n) => n.includes('[[cc:') })).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  });
+
+  // A renewed session's file opens with the CLI's caveat record, which the server lists as its first prompt: it reads Context renewed, never by its tag.
+  it('an archived session whose first prompt is a post-/clear caveat record is labelled Context renewed, in the row and in the Delete dialog\'s name', async () => {
+    const caveat = readJsonl('awaiting-user/renew-two-segments.transcript.jsonl')
+      .find((r) => r.type === 'user' && typeof r.message?.content === 'string' && r.message.content.startsWith('<local-command-caveat>'))!.message.content.slice(0, 200);
+    mockFetch({ 'GET /api/archived': () => ({ groups: [{ project: 'p', sessions: [{ sessionId: 's-caveat', firstPrompt: caveat }] }] }) });
+    wrap(<><ArchivedSection /><ConfirmHost /></>);
+    fireEvent.click(await screen.findByRole('button', { name: /^p/ }));
+    expect((await screen.findByText('Context renewed')).getAttribute('title')).toBe('Context renewed');
+    expect(row('s-caveat')).not.toContain('<local-command-caveat>');
+    fireEvent.click(within(document.querySelector('[data-session="s-caveat"]') as HTMLElement).getByRole('button', { name: 'Delete' }));
+    expect(await screen.findByRole('dialog', { name: 'Delete the transcript of “Context renewed”?' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   });
 

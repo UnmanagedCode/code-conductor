@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { uiStore } from '@/app/ui';
@@ -7,6 +7,7 @@ import { selectOptions } from '@/test/radixSelect';
 import { buildWakeStub } from '@/lib/core/wakeCallback.ts';
 import { buildForwardFrame } from '@/lib/core/forwardFrame.ts';
 import { buildRenewSeed } from '@/lib/core/renewSeed.ts';
+import { readJsonl } from '@/conversation/testkit';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(),
@@ -36,6 +37,18 @@ const stored = (text: string) => text.slice(0, 200);
 const WAKE = stored(buildWakeStub({ targetSessionId: 'labelwake', payloadText: '{"sessionId":"labelwake"}\nWAKE-LABEL prose' }));
 const FORWARD = stored(buildForwardFrame({ messages: ['FWD-LABEL body'], instruction: 'FWD-LABEL instruction' }));
 const RENEW = stored(buildRenewSeed({ summary: 'RENEW-LABEL summary' }));
+/** The first user record whose content starts with `head`, from a real post-`/clear` CLI transcript, as the server stores it. */
+const renewHead = (head: string) => {
+  const rec = readJsonl('awaiting-user/renew-two-segments.transcript.jsonl')
+    .find((r) => r.type === 'user' && typeof r.message?.content === 'string' && r.message.content.startsWith(head));
+  if (!rec) throw new Error(`fixture: no user record starting ${head}`);
+  return stored(rec.message.content as string);
+};
+const CAVEAT = renewHead('<local-command-caveat>');
+const CLEAR = renewHead('<command-name>/clear</command-name>');
+/** Another local command's line, in the CLI's own shape. */
+const COMPACT = stored(readJsonl('compaction-manual.transcript.jsonl')
+  .find((r) => r.type === 'user' && typeof r.message?.content === 'string' && r.message.content.startsWith('<command-name>/compact</command-name>'))!.message.content);
 /** A person's first prompt, and the label it has always had (whitespace collapsed). */
 const HUMAN = 'human:   tidy the\n docs index';
 const HUMAN_LABEL = 'human: tidy the docs index';
@@ -96,6 +109,8 @@ describe('a machine-written first prompt in a sidebar label', () => {
     renderSidebar();
     await settle();
     expect(labelOf('h-wake').textContent).toMatch(/^Wake: Worker `labelwake` finished its turn\./);
+    // Named before the preview's cut: the window holds summary text past the raw stub's first 80 chars.
+    expect(labelOf('h-wake').textContent).toContain('folded in');
     expect(named(WAKE_LABEL).includes(rowOf('h-wake'))).toBe(true);
     expect(labelOf('h-wake-titled').textContent).toBe('Titled wake');
     expect(rowOf('h-wake-titled').title).toContain(WAKE_LABEL);
@@ -154,5 +169,62 @@ describe('a machine-written first prompt in a sidebar label', () => {
     renderSidebar();
     await settle();
     expect(named(HUMAN_LABEL).includes(conductorRowOf('cond-human'))).toBe(true);
+  });
+
+  it('a session row whose first prompt is a post-/clear head reads Context renewed, for the caveat record and for the /clear command line', async () => {
+    // Invariant: the CLI's head records of a renewed session's file (the caveat, then the /clear line) read by name, never by their tags.
+    seed({
+      projects: [proj('labels')],
+      instances: [hand('h-caveat', 'labels', null, { firstPrompt: CAVEAT }), hand('h-clear', 'labels', null, { firstPrompt: CLEAR })],
+    });
+    renderSidebar();
+    await settle();
+    expect(labelOf('h-caveat').textContent).toBe('Context renewed');
+    expect(labelOf('h-clear').textContent).toBe('Context renewed');
+    expect(named('Context renewed').includes(rowOf('h-caveat'))).toBe(true);
+    expect(named('Context renewed').includes(rowOf('h-clear'))).toBe(true);
+    expect(screen.queryAllByRole('button', { name: (n) => n.includes('<local-command-caveat>') || n.includes('<command-name>') })).toHaveLength(0);
+  });
+
+  it('a session row whose first prompt is another local command reads its command name with no tags', async () => {
+    // Invariant: a command line other than /clear reads as its bare command name.
+    seed({ projects: [proj('labels')], instances: [hand('h-compact', 'labels', null, { firstPrompt: COMPACT })] });
+    renderSidebar();
+    await settle();
+    expect(labelOf('h-compact').textContent).toBe('/compact');
+    expect(named('/compact').includes(rowOf('h-compact'))).toBe(true);
+    expect(screen.queryAllByRole('button', { name: (n) => n.includes('<command-') })).toHaveLength(0);
+  });
+
+  it('a human prompt that mentions the wake marker mid-text is shown unchanged', async () => {
+    // Invariant (negative control): only a prompt that opens with the marker is a wake stub.
+    const mention = 'why does [[cc:wake-callback]] show here';
+    seed({ projects: [proj('labels')], instances: [hand('h-mention', 'labels', null, { firstPrompt: mention })] });
+    renderSidebar();
+    await settle();
+    expect(labelOf('h-mention').textContent).toBe(mention);
+    expect(named(mention).includes(rowOf('h-mention'))).toBe(true);
+  });
+});
+
+describe('promptPreview at load', () => {
+  afterEach(() => {
+    vi.doUnmock('@/lib/core/renewSeed.ts');
+    vi.doUnmock('@/lib/core/forwardFrame.ts');
+    vi.resetModules();
+  });
+
+  it('refuses to load when the renew preamble has no first sentence to recognise it by', async () => {
+    // Invariant: a lead that would be empty, so match every prompt, fails loudly at load instead.
+    vi.resetModules();
+    vi.doMock('@/lib/core/renewSeed.ts', () => ({ RENEW_SEED_PREAMBLE: 'a preamble with no sentence end' }));
+    await expect(import('@/lib/core/promptPreview.ts')).rejects.toThrow('RENEW_SEED_PREAMBLE');
+  });
+
+  it('refuses to load when the forward header has no first line to recognise it by', async () => {
+    // Invariant: as above, for the forward frame's header.
+    vi.resetModules();
+    vi.doMock('@/lib/core/forwardFrame.ts', () => ({ FORWARD_FRAME_HEADER: 'a header on one line' }));
+    await expect(import('@/lib/core/promptPreview.ts')).rejects.toThrow('FORWARD_FRAME_HEADER');
   });
 });
