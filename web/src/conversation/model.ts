@@ -208,6 +208,7 @@ export type ModelOptions = {
   currentSegmentGetter?: (() => string | null) | null;
   answeredQuestions?: Map<string, string> | null;
   questionNodes?: Map<string, QuestionNode> | null;
+  planNodes?: Map<string, PlanNode> | null;
   /** Fired when an outer assistant text block finalizes (TTS auto-speak). */
   onAssistantText?: ((node: TextNode) => void) | null;
 };
@@ -228,7 +229,7 @@ export class ConversationModel {
   onAssistantText: ((node: TextNode) => void) | null;
 
   questionNodes: Map<string, QuestionNode>;
-  planNodes = new Map<string, PlanNode>();
+  planNodes: Map<string, PlanNode>;
   answeredQuestions: Map<string, string>;
   private blocksByKey = new Map<string, TextNode | ThinkingNode | ToolNode>();
   toolBlocks = new Map<string, ToolNode>();
@@ -260,6 +261,7 @@ export class ConversationModel {
     this.currentSegmentGetter = opts.currentSegmentGetter ?? null;
     this.answeredQuestions = opts.answeredQuestions ?? new Map();
     this.questionNodes = opts.questionNodes ?? new Map();
+    this.planNodes = opts.planNodes ?? new Map();
     this.onAssistantText = opts.onAssistantText ?? null;
   }
 
@@ -1050,6 +1052,7 @@ export class ConversationModel {
       currentSegmentGetter: () => this.currentSegmentId ?? fallbackCurrent,
       answeredQuestions: this.answeredQuestions,
       questionNodes: this.questionNodes,
+      planNodes: this.planNodes,
     });
     page.applyEvents(events);
     page.finalizeDanglingBlocks();
