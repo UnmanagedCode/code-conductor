@@ -7,6 +7,7 @@ import type { Instance, Project } from '@/state/types';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { refreshInstances, refreshProjects, selectInstance, send } from './controller';
 import { emit } from './events';
+import { beginGesture, gestureOvertaken } from './gestures';
 
 const instances = () => appStore.get().instances;
 const activeId = () => appStore.get().activeId;
@@ -39,11 +40,13 @@ export function loadSessions(projectName: string, worktreeName?: string | null) 
 }
 
 export async function resumeSession({
-  projectName, worktreeName, sessionId, silent = false, userGesture = !silent,
-}: { projectName: string; worktreeName?: string | null; sessionId: string; silent?: boolean; userGesture?: boolean }) {
-  // An automatic resume (a URL anchor) never takes over a session selected while it ran; a user's never yields.
+  projectName, worktreeName, sessionId, silent = false, userGesture = !silent, gesture,
+}: { projectName: string; worktreeName?: string | null; sessionId: string; silent?: boolean; userGesture?: boolean; gesture?: number }) {
+  // An automatic resume (a URL anchor) never takes over a session selected while it ran. A user's
+  // (`gesture`: the token of the click that started it, else its own) yields only to a newer gesture's.
   const selected = activeId();
-  const wanted = () => userGesture || activeId() === selected;
+  const token = userGesture ? gesture ?? beginGesture() : undefined;
+  const wanted = () => (token === undefined ? activeId() === selected : !gestureOvertaken(token));
   try {
     const r = await fetch('/api/instances', {
       method: 'POST',
@@ -55,7 +58,7 @@ export async function resumeSession({
         // A concurrent resume (e.g. the server's restart restore) may already own it.
         await refreshInstances();
         const live = instances().find((i) => i.sessionId === sessionId);
-        if (live && wanted()) selectInstance(live.id, { userGesture });
+        if (live && wanted()) selectInstance(live.id, { userGesture, gesture: token });
         return;
       }
       throw new Error((await r.json()).error);
@@ -63,7 +66,7 @@ export async function resumeSession({
     const inst = await r.json();
     await refreshProjects();
     await refreshInstances();
-    if (wanted()) selectInstance(inst.id, { userGesture });
+    if (wanted()) selectInstance(inst.id, { userGesture, gesture: token });
   } catch (e: any) {
     if (silent) { console.warn('anchor auto-resume failed', e); return; }
     toast.error('Resume failed', e.message);
@@ -98,13 +101,14 @@ export async function forkActiveSession(userMessageIndex: number, text: string) 
     confirmLabel: 'Fork',
   });
   if (!ok) return;
+  const gesture = beginGesture();
   try {
     const { instance } = await apiFetch(`/api/instances/${encodeURIComponent(id)}/fork`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userMessageIndex, text }),
     });
     await refreshProjects();
     await refreshInstances();
-    selectInstance(instance.id, { userGesture: true });
+    if (!gestureOvertaken(gesture)) selectInstance(instance.id, { userGesture: true, gesture });
   } catch (e: any) {
     toast.error('Fork failed', e.message);
   }
