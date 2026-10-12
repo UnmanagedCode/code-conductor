@@ -13,7 +13,7 @@ import { parseWakeCallback } from '../../../public/wakeCallback.ts';
 import { parseRenewSeed } from '../../../public/renewSeed.ts';
 import { parseForwardFrame, splitForwardedMessages } from '../../../public/forwardFrame.ts';
 import { promptOrigin } from '../../../public/promptOrigin.ts';
-import { parseCanonicalUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
+import { normalizeQuestions, parseCanonicalUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
 import type { UiEvent } from '@/state/types';
 import { splitResultContent } from './format';
 
@@ -185,23 +185,6 @@ function looseResultOpens(ev: UiEvent): boolean {
   if (ev.isError || ev.yielded) return false;
   const { text, images } = splitResultContent(ev.content);
   return images.length > 0 || text.length < LOOSE_RESULT_OPEN_MAX;
-}
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/**
- * An AskUserQuestion's `questions` (the model's raw tool input) in the shape the
- * card renders: a non-object question becomes an empty one IN ITS POSITION, a
- * non-array `options` becomes none, and a non-object option is dropped. A
- * question is never dropped: the server pairs the answer echo and formats MCP
- * answers against the raw array, so the count and positions must survive for
- * the card's answer text to match theirs.
- */
-export function normalizeQuestions(raw: unknown): any[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((q) => (isRecord(q)
-    ? { ...q, options: Array.isArray(q.options) ? q.options.filter(isRecord) : [] }
-    : {}));
 }
 
 function answersToLock(questions: any[], text: string): AnswerState[] {
