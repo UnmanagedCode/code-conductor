@@ -75,7 +75,7 @@ afterEach(() => { stopController(); });
 
 describe('the projects hint in the Conductors lens', () => {
   it('a projects re-read shows the conductor sessions the server reports, and the next re-read replaces them with the new list', async () => {
-    // Invariant: after each re-read the conductor rows are exactly the server's .conduct list; each read's list is distinct and non-empty, so neither an empty nor a stale list passes.
+    // Invariant: after each re-read the conductor rows are exactly the server's .conduct list, an empty one included; the non-empty lists are distinct, so neither an always-empty nor a stale list passes.
     expect(document.querySelector('[data-conductors-empty]')).not.toBe(null);
     server.conduct = { rows: [{ sessionId: 'A', title: 'Alpha', lastActivity: 2 }, { sessionId: 'B', title: 'Bravo', lastActivity: 1 }] };
     await hint('projects');
@@ -87,6 +87,11 @@ describe('the projects hint in the Conductors lens', () => {
     await hint('projects');
     await waitFor(() => expect(conductors()).toEqual(['C']));
     within(blockOf('C')).getByText('Charlie');
+    // An empty list is a list too: a good read of [] empties the lens rather than keeping C.
+    server.conduct = { rows: [] };
+    await hint('projects');
+    await waitFor(() => expect(document.querySelector('[data-conductors-empty]')).not.toBe(null));
+    expect(conductors()).toEqual([]);
   });
 
   it("a failed conduct-sessions read does not stop the other reads, and the next good read shows the server's list", async () => {
