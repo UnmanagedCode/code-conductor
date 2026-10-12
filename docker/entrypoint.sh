@@ -107,7 +107,7 @@ fi
 # ── Deps, then exec ──────────────────────────────────────────────────────
 cd "$REPO_DIR"
 
-if ! node -e "require.resolve('express/package.json');require.resolve('ws/package.json')" >/dev/null 2>&1; then
+if ! node docker/deps-complete.mjs; then
   echo "node_modules incomplete — installing runtime deps" >&2
   # A git-worktree checkout can have a BROKEN node_modules symlink from the
   # host; drop the symlink only, never a real directory.

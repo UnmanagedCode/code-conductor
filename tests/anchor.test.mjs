@@ -82,6 +82,39 @@ test('writeSessionAnchor URL-encodes session ids with special characters', async
   assert.equal(readSessionAnchor(), 'a b/c?d');
 });
 
+test('pushSessionAnchor adds a history entry, unlike writeSessionAnchor', async () => {
+  const { window, writeSessionAnchor, pushSessionAnchor } = await setup('http://localhost/app');
+  const before = window.history.length;
+  writeSessionAnchor('conductor-a');
+  assert.equal(window.history.length, before);
+  pushSessionAnchor('worker-b');
+  assert.equal(window.history.length, before + 1);
+  assert.equal(window.location.hash, '#session=worker-b');
+  assert.equal(window.location.pathname, '/app');
+});
+
+test('pushSessionAnchor URL-encodes session ids, and readSessionAnchor reads them back', async () => {
+  const { window, pushSessionAnchor, readSessionAnchor } = await setup('http://localhost/');
+  pushSessionAnchor('a b/c?d');
+  assert.ok(window.location.hash.includes('a%20b%2Fc%3Fd'));
+  assert.equal(readSessionAnchor(), 'a b/c?d');
+});
+
+test('pushSessionAnchor(null) clears the hash', async () => {
+  const { window, pushSessionAnchor, readSessionAnchor } = await setup('http://localhost/app#session=old');
+  pushSessionAnchor(null);
+  assert.equal(window.location.hash, '');
+  assert.equal(window.location.pathname, '/app');
+  assert.equal(readSessionAnchor(), null);
+});
+
+test('pushSessionAnchor(null) on an empty hash adds no history entry', async () => {
+  const { window, pushSessionAnchor } = await setup('http://localhost/');
+  const before = window.history.length;
+  pushSessionAnchor(null);
+  assert.equal(window.history.length, before);
+});
+
 function memStorage() {
   const m = new Map();
   return {

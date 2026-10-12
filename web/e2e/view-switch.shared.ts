@@ -1,18 +1,20 @@
 // The web UI's full-page views on a real cc: a commit row's review opens over
 // its history and Back retraces review → history → where it was opened from;
-// one view at a time with the URL naming it; and Back from a view the app did
+// one view at a time with the URL naming it; Back from a view the app did
 // not push itself — a deep link the browser's Back returned to — stays in the
-// app. The bodies are shared by the per-project spec files; this module
-// declares no tests.
+// app; and Forward onto a full-page view keeps the selected session. The
+// bodies are shared by the per-project spec files; this module declares no
+// tests.
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
-import { createProject } from './harness/api.ts';
+import { createProject, spawnSession } from './harness/api.ts';
 import { next } from './parity/ui.ts';
 import { back, commitsView, openHistory } from './commits-actions.shared.ts';
 
 type Args = { page: Page; cc: Cc };
 
 const reviewView = (page: Page) => page.locator('main[data-view="review"]');
+const costsView = (page: Page) => page.locator('main[data-view="costs"]');
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Every full-page view's root, the plugin view's only while it shows; the session pane is none of them. */
 const fullPageViews = (page: Page) => page.locator('main[data-view], main[data-settings-view], section[data-view="plugin"][aria-hidden="false"]');
@@ -71,4 +73,35 @@ export async function backAfterBrowserBackFlow({ page, cc }: Args): Promise<void
   await expect(page, 'Back stays in the app').toHaveURL(new RegExp(`^${escapeRe(cc.url)}/next/`));
   await expect(page).not.toHaveURL(/#settings$/);
   await expect(next.settingsView(page)).toHaveCount(0);
+}
+
+export async function costsForwardFlow({ page, cc }: Args): Promise<void> {
+  const { sessionId } = await spawnSession(cc, `costs-${test.info().project.name}`);
+  const anchored = new RegExp(`#session=${sessionId}$`);
+  await page.goto(`/next/#session=${sessionId}`);
+  await expect(next.sessionHeader(page), 'fixture check: the session opened').toBeVisible();
+  await expect(page).toHaveURL(anchored);
+
+  await next.openSidebar(page);
+  await page.getByRole('button', { name: 'Project actions' }).filter({ visible: true }).first().click();
+  await page.getByRole('menuitem', { name: /Costs/ }).click();
+  await expect(page).toHaveURL(/#costs$/);
+  await expect(costsView(page)).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(anchored);
+  await expect(next.sessionHeader(page), 'Back returns to the session').toBeVisible();
+  await expect(costsView(page)).toHaveCount(0);
+
+  // Invariant: a popstate onto a full-page view shows it and leaves the URL naming it.
+  await page.goForward();
+  await expect(page).toHaveURL(/#costs$/);
+  await expect(costsView(page), 'Forward shows the cost dashboard again').toBeVisible();
+  await expect(page, 'the URL still names the dashboard').toHaveURL(/#costs$/);
+
+  // Invariant: it never deselected the session.
+  await page.goBack();
+  await expect(page).toHaveURL(anchored);
+  await expect(next.sessionHeader(page), 'the session is still selected').toBeVisible();
+  await expect(next.resumeButton(page), 'the session was never dropped').toHaveCount(0);
 }
