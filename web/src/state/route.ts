@@ -48,20 +48,24 @@ export function useRoute(): Route {
   return useStore(routeStore, (s) => s.route);
 }
 
-/** Views this tab pushed — closing one of them is a history.back(). */
-let pushedViews = 0;
+/**
+ * The state of a history entry this app pushed a full-page view onto. Closing a
+ * view from such an entry is a history.back(); from any other (a deep link, an
+ * address-bar hash) it writes the active session's anchor, so Back never steps
+ * off the app.
+ */
+const VIEW_ENTRY = { ccView: 1 } as const;
 
 /** Open a full-page view by pushing its hash. */
 export function openView(hash: string) {
   if (location.hash === hash) return;
-  history.pushState(null, '', `${location.pathname}${location.search}${hash}`);
-  pushedViews++;
+  history.pushState(VIEW_ENTRY, '', `${location.pathname}${location.search}${hash}`);
   sync();
 }
 
-/** Replace the current hash without a history entry (e.g. a settings section). */
+/** Replace the current hash without a history entry (e.g. a settings section); the entry stays a pushed view's if it was one. */
 export function replaceHash(hash: string) {
-  history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+  history.replaceState(history.state, '', `${location.pathname}${location.search}${hash}`);
   sync();
 }
 
@@ -70,8 +74,7 @@ export function replaceHash(hash: string) {
  * opened it, else (a deep link) to the active session's anchor.
  */
 export function closeView(activeSessionId: string | null) {
-  if (pushedViews > 0) {
-    pushedViews--;
+  if (history.state?.ccView === VIEW_ENTRY.ccView) {
     history.back();
     return;
   }

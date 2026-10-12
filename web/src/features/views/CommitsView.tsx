@@ -187,13 +187,13 @@ export function CommitsView() {
   const isLocked = locked === true;
   const actions = worktree ? (
     <>
-      <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(syncWorktree)} title="Bring this worktree up to date with its parent branch">
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(syncWorktree)} title="Bring this worktree up to date with its parent branch" aria-label="Sync">
         <GitPullRequestArrowIcon /> <span className="hidden sm:inline">Sync</span>
       </Button>
       <Tooltip>
         <TooltipTrigger asChild>
           <span>
-            <Button size="sm" variant="outline" disabled={busy || isLocked} onClick={() => void run(mergeWorktree)}>
+            <Button size="sm" variant="outline" disabled={busy || isLocked} onClick={() => void run(mergeWorktree)} aria-label="Merge">
               <GitMergeIcon /> <span className="hidden sm:inline">Merge</span>
             </Button>
           </span>
@@ -207,6 +207,7 @@ export function CommitsView() {
             variant={isLocked ? 'secondary' : 'ghost'}
             disabled={busy || locked === null}
             aria-pressed={isLocked}
+            aria-label={isLocked ? 'Locked' : 'Lock'}
             onClick={() => void run((t) => setWorktreeLock(t, !isLocked), (r) => setLocked(r.locked === true))}
           >
             {isLocked ? <LockIcon /> : <LockOpenIcon />} <span className="hidden sm:inline">{isLocked ? 'Locked' : 'Lock'}</span>
