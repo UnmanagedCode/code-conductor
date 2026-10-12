@@ -5989,6 +5989,7 @@ export const LEDGER: readonly Row[] = [
         'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > a payload without overage prefs shows Off with no threshold, and switching the threshold on starts it at 85',
         'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > reopening Settings at Account never renders the discarded edit, its error or an enabled Apply, even for a moment',
         'web/e2e/settings-overage.spec.ts::a staged overage edit survives a section switch, Apply commits it and keeps its status, and reopening Settings discards an unapplied edit',
+        'web/src/features/settings/overageDraft.test.tsx::Account → overage draft > reopening Settings at its default section and then picking Account never renders the discarded edit or its error, and shows the server values',
       ] },
   },
   {

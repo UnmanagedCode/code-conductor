@@ -52,6 +52,7 @@ export function SettingsView() {
   const requested = (route.section as SectionId | null) ?? 'models';
   const current = sections.find((s) => s.id === requested) ?? sections[0];
   // An unapplied overage edit and its status are dropped before the section renders, so a stale status (a live region) and an enabled Apply never reach the DOM.
+  // The write runs during render, so no overageDraftStore subscriber may be mounted yet: Settings must remount on entry, or React warns "Cannot update a component while rendering a different component".
   React.useState(discardOverageDraft);
   const navRef = React.useRef<HTMLElement>(null);
 

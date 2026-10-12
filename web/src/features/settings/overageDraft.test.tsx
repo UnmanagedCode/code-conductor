@@ -231,6 +231,35 @@ describe('Account → overage draft', () => {
     expect(records.filter((r) => r.type === 'attributes' && (r.target as Element).textContent === 'Apply').map((r) => r.oldValue), 'Apply mounts disabled and stays so').toEqual([]);
   });
 
+  // Settings' default entry (bare #settings) opens another section; the draft is already gone when Account is then picked from the nav.
+  it('reopening Settings at its default section and then picking Account never renders the discarded edit or its error, and shows the server values', async () => {
+    routes(() => ({ status: 500, json: { error: 'disk full' } }));
+    openAt('#settings/account');
+    await waitFor(() => expect(shown()).toEqual(START));
+    stage();
+    apply();
+    await waitFor(() => expect(statuses()).toEqual(REFUSED_STATUS));
+    act(() => { history.replaceState(null, '', '/#session=x'); syncRoute(); });
+    expect(document.querySelector('[data-settings-view]')).toBeNull();
+    server = { onOverage: 'none', overageThreshold: { enabled: true, value: 20 } };
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((r) => { records.push(...r); });
+    observer.observe(document.body, { subtree: true, childList: true });
+    act(() => { history.replaceState(null, '', '/#settings'); syncRoute(); });
+    await screen.findByRole('heading', { level: 2, name: SECTION_HEADING.models });
+    expect(screen.queryByRole('group', { name: 'Action on overage' }), 'positive control: Settings opened at another section').toBeNull();
+    await switchTo('account');
+    await waitFor(() => expect(shown(), 'Account shows the reloaded server values with nothing staged').toEqual({ action: ['Off'], threshold: 'true', value: '20', applyEnabled: false, unsavedHint: false }));
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+    const touched = records.flatMap((r) => [...r.addedNodes, ...r.removedNodes]).filter((n): n is Element => n instanceof Element);
+    const texts = touched.map((n) => n.textContent ?? '');
+    expect(touched.some((n) => n.querySelector('[role="group"][aria-label="Action on overage"]') !== null), 'positive control: the observer saw the card mount').toBe(true);
+    expect(texts.filter((t) => t.includes('disk full')), 'the discarded error never reaches the DOM').toEqual([]);
+    expect(texts.filter((t) => /unsaved/i.test(t)), 'nor does the unsaved hint').toEqual([]);
+    expect(statuses(), 'no status on Account').toEqual([]);
+  });
+
   // With no overage prefs in the payload the card falls back to Off with the threshold off, and switching the threshold on starts it at 85.
   it('a payload without overage prefs shows Off with no threshold, and switching the threshold on starts it at 85', async () => {
     server = {};
