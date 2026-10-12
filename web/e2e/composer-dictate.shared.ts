@@ -7,7 +7,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 /** For a spec file's `test.use`: getUserMedia answers from a fake device, with no permission prompt. */
 export const FAKE_MICROPHONE = {

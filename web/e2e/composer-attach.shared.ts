@@ -5,7 +5,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 export async function attachFlow({ page, cc }: { page: Page; cc: Parameters<typeof spawnSession>[0] }): Promise<void> {
   const { sessionId } = await spawnSession(cc, `e2e-attach-${test.info().project.name}`);

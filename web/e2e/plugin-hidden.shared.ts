@@ -3,7 +3,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { installFakePlugin, spawnSession } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Parameters<typeof installFakePlugin>[0] & Parameters<typeof spawnSession>[0] };
 

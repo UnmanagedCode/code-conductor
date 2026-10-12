@@ -1,10 +1,12 @@
-// Tests for the per-instance context-usage tracker that drives the
-// `ctx N%` header chip + session-totals popover.
+// Tests for public/usage.js: the per-instance context-usage tracker that
+// drives the `ctx N%` header chip + session-totals popover, and the
+// rate-limit chip segment.
 //
 // Two layers:
-//   1. Pure unit tests over UsageTracker + the format helpers (no DOM).
-//   2. happy-dom assertions that the chip lands in the rendered header
-//      with the right class transition across the 50% / 80% thresholds.
+//   1. Pure unit tests over UsageTracker, RateLimitTracker, rlChipSegment and
+//      the format helpers (no DOM).
+//   2. happy-dom assertions that the chip's class transitions across the
+//      50% / 80% thresholds.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -510,4 +512,126 @@ test('DOM: a seeded tracker renders a graded chip, not the empty state', async (
   tracker.apply({ kind: 'turn_end', subtype: 'success' }); // the only in-tail event
   assert.equal(fillClass(tracker.currentFillPct(model)), 'ih-usage-mid');
   assert.equal(formatPct(tracker.currentFillPct(model)), '60%');
+});
+
+// ── Rate-limit chip segment (rlChipSegment) and RateLimitTracker ──────────
+// rlChipSegment is a pure derivation returning { text, frac, isOverage }; no
+// DOM setup is needed.
+
+let _rlChipSegment, _RateLimitTracker;
+async function setupRLHelpers() {
+  if (!_rlChipSegment) {
+    const mod = await import(USAGE_URL);
+    _rlChipSegment = mod.rlChipSegment;
+    _RateLimitTracker = mod.RateLimitTracker;
+  }
+  return { rlChipSegment: _rlChipSegment, RateLimitTracker: _RateLimitTracker };
+}
+
+test('rl segment: info with utilization → correct text and frac', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'five_hour', utilization: 0.72 }, null);
+  assert.ok(seg.text.includes('5h'), 'bucket label present');
+  assert.ok(seg.text.includes('72%'), 'utilization percentage present');
+  assert.ok(Math.abs(seg.frac - 0.72) < 0.001, 'frac is 0-1 fraction');
+  assert.equal(seg.isOverage, false, 'isOverage false by default');
+});
+
+test('rl segment: info without utilization → no percentage, frac null', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'seven_day' }, null);
+  assert.ok(seg.text.includes('7d'), 'bucket label present');
+  assert.ok(!seg.text.includes('%'), 'no percentage when utilization absent');
+  assert.equal(seg.frac, null, 'frac is null when utilization absent');
+});
+
+test('rl segment: utilization 0.9 displays as 90%, not 9% or 9000%', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'five_hour', utilization: 0.9 }, null);
+  assert.ok(seg.text.includes('90%'), 'fraction 0.9 must display as 90%');
+  assert.ok(Math.abs(seg.frac - 0.9) < 0.001);
+});
+
+test('rl segment: isUsingOverage reflected in isOverage flag', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'five_hour', utilization: 0.95, isUsingOverage: true }, null);
+  assert.equal(seg.isOverage, true, 'isOverage true when isUsingOverage set');
+  assert.ok(seg.text.includes('95%'));
+});
+
+test('DOM: RateLimitTracker applies rate_limit_event and ignores other events', async () => {
+  const { RateLimitTracker } = await setupRLHelpers();
+  const tracker = new RateLimitTracker();
+  assert.equal(tracker.info, null, 'starts null');
+  // Irrelevant event — should not update info
+  tracker.apply({ kind: 'turn_end', subtype: 'success' });
+  assert.equal(tracker.info, null, 'unrelated event ignored');
+  // rate_limit_event with nested rate_limit_info
+  tracker.apply({
+    kind: 'system',
+    subtype: 'rate_limit_event',
+    data: {
+      rate_limit_info: { rateLimitType: 'five_hour', utilization: 0.6, isUsingOverage: false },
+    },
+  });
+  assert.ok(tracker.info, 'info populated after event');
+  assert.equal(tracker.info.rateLimitType, 'five_hour');
+  assert.equal(tracker.info.utilization, 0.6);
+  // reset() clears state
+  tracker.reset();
+  assert.equal(tracker.info, null, 'reset clears info');
+});
+
+// ── accountUsage fallback branch ─────────────────────────────────────────────
+// The OAuth API returns utilization on a 0-100 scale (integer %). These tests
+// lock the normalization (÷100) applied in the accountUsage fallback branch
+// of rlChipSegment against regression.
+
+test('rl segment: accountUsage utilization 67 (0-100 scale) renders as 67%', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, {
+    five_hour: { utilization: 67, resets_at: '2026-06-11T21:09:59+00:00' },
+  });
+  assert.ok(seg.text.includes('5h'), 'bucket label present');
+  assert.ok(seg.text.includes('67%'), 'renders 67% not 6700%');
+  assert.ok(Math.abs(seg.frac - 0.67) < 0.001, 'frac normalized from 0-100 to 0-1');
+});
+
+test('rl segment: accountUsage utilization 90 → frac 0.9, text shows 90%', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, {
+    five_hour: { utilization: 90, resets_at: '2026-06-11T21:09:59+00:00' },
+  });
+  assert.ok(seg.text.includes('90%'), 'displays 90%, not 9000%');
+  assert.ok(Math.abs(seg.frac - 0.9) < 0.001);
+});
+
+test('rl segment: falls back to seven_day when five_hour absent', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, { seven_day: { utilization: 40, resets_at: null } });
+  assert.ok(seg.text.includes('7d'), 'seven_day label present');
+  assert.ok(seg.text.includes('40%'), 'utilization normalized from 40/100');
+});
+
+test('rl segment: falls back to seven_day_sonnet when neither five_hour nor seven_day present', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, {
+    seven_day_sonnet: { utilization: 20, resets_at: '2026-06-14T00:59:59+00:00' },
+  });
+  assert.ok(seg.text.includes('7d Sonnet'), 'seven_day_sonnet label present');
+  assert.ok(seg.text.includes('20%'));
+});
+
+test('rl segment: null info + no usable bucket → placeholder text, null frac', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, { seven_day_opus: null });
+  assert.equal(seg.text, 'rl --', 'placeholder when all buckets absent/null');
+  assert.equal(seg.frac, null);
+});
+
+test('rl segment: null info + null accountUsage → placeholder', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, null);
+  assert.equal(seg.text, 'rl --', 'placeholder when both args null');
+  assert.equal(seg.frac, null);
 });

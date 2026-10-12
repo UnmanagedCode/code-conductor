@@ -2,7 +2,7 @@
 // Back, and where Back lands. happy-dom runs history.back() and its popstate
 // synchronously, and drops the forward entries on a replaceState after a back
 // (a browser keeps them), so Forward is asserted only in
-// web/e2e/parity/android-shell.spec.ts.
+// web/e2e/flows/android-shell.spec.ts.
 import '@/test/browserHash';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';

@@ -5,7 +5,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject, mcpCall } from './harness/api.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
 

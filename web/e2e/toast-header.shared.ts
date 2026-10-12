@@ -8,7 +8,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject, spawnSession } from './harness/api.ts';
 import { commitsView, createWorktree, openHistory } from './commits-actions.shared.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
 

@@ -8,8 +8,8 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject, mcpCall } from './harness/api.ts';
 import { resumeSeeded, type SeedRecord } from './harness/lineage.ts';
-import { next } from './parity/ui.ts';
-import { instanceIn } from './parity/questionCard.ts';
+import { next } from './flows/ui.ts';
+import { instanceIn } from './flows/questionCard.ts';
 
 type Args = { page: Page; cc: Cc };
 type Session = { project: string; id: string; sessionId: string };
@@ -81,7 +81,7 @@ async function expectLines(page: Page, shown: boolean, when: string): Promise<vo
   }
 }
 
-// ── action-groups/R2, blocks/R5 ──────────────────────────────────────────
+// ── what folds a run ─────────────────────────────────────────────────────
 
 export async function runEndersFlow({ page, cc }: Args): Promise<void> {
   // Invariant: the reader's clicks inside an open run (a card, its Arguments, the sub-agent section) never pin the run open; the turn's end folds it and the sub-agent's own run; Arguments the reader opened survive the card's re-render by its result.
@@ -107,7 +107,7 @@ export async function runEndersFlow({ page, cc }: Args): Promise<void> {
   expect(await openOf(agentCard(page).locator('[data-tool-args]')), 'the Arguments the reader opened, through the result').toBe(true);
 }
 
-// ── blocks/R5, blocks/R7 ─────────────────────────────────────────────────
+// ── tool cards ───────────────────────────────────────────────────────────
 
 export async function toolCardsFlow({ page, cc }: Args): Promise<void> {
   // Invariant: a system_bash card summarises its description and shows its command; an Agent card shows its subagent total on every viewport, inside the transcript, through closing and reopening the card and a full-page view; each per-call line carries an explaining tooltip.
@@ -151,7 +151,7 @@ export async function toolCardsFlow({ page, cc }: Args): Promise<void> {
   for (const line of await usageLines(page).all()) await expect(line, 'a per-call line explains itself').toHaveAttribute('title', /\S/);
 }
 
-// ── conversation-call-usage/R3 ───────────────────────────────────────────
+// ── per-call statistics ──────────────────────────────────────────────────
 
 export async function statisticsFlow({ page, cc }: Args): Promise<void> {
   // Invariant: the per-call lines are hidden until the session's Statistics box is ticked, per session, through a respawn, whatever debug capture does; the turn footer and the Agent total show either way.
@@ -207,7 +207,7 @@ export async function statisticsFlow({ page, cc }: Args): Promise<void> {
   await expectLines(page, true, 'after the respawn');
 }
 
-// ── transcript-context-usage/R1 ──────────────────────────────────────────
+// ── the replayed context reading ─────────────────────────────────────────
 
 /** `n` prompt/reply turns whose replies carry usage: reply i's prompt is 46,398 + 1,000·i tokens. */
 function readingTurns(n: number): SeedRecord[] {

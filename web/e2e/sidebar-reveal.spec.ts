@@ -3,8 +3,8 @@
 // included. The old UI never scrolls to a revealed row, so this is web-only.
 import { test, expect } from './harness/fixtures.ts';
 import { api, createProject, spawnSession } from './harness/api.ts';
-import { insts } from './parity/fleet.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { insts } from './flows/fleet.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 
 test.use({ ccOptions: { server: 'sidebar-reveal' } });
 

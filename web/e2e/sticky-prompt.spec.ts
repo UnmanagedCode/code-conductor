@@ -1,10 +1,10 @@
 // The /next/ sticky prompt's own browser checks: the scrollbar gutter, hiding a
-// pushed-off pin after a jump, and real touch swipes. The parity counterparts
-// are in parity/conversation.spec.ts.
+// pushed-off pin after a jump, and real touch swipes. The conversation flows
+// are in flows/conversation.spec.ts.
 import { test, expect } from './harness/fixtures.ts';
 import { createProject } from './harness/api.ts';
-import { next } from './parity/ui.ts';
-import { bringTo, offsetFromTop, reveal, sendAll, swipe, tallPrompt } from './parity/stickyPin.ts';
+import { next } from './flows/ui.ts';
+import { bringTo, offsetFromTop, reveal, sendAll, swipe, tallPrompt } from './flows/stickyPin.ts';
 
 // Headless Chromium hides scrollbars; the gutter test needs a classic one.
 test.use({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } });

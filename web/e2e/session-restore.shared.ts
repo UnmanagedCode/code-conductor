@@ -8,7 +8,7 @@ import type { Page, Route, WebSocketRoute } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
 import { seedTranscript } from './harness/transcript.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
 

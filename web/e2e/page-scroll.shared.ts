@@ -8,7 +8,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject, installFakePlugin, spawnSession, LIVE_WORKER_MODEL } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 import { commitsView, openHistory } from './commits-actions.shared.ts';
 import { SECTION_CATALOG, offeredSections, type SectionCaps } from '../src/features/settings/sections.ts';
 

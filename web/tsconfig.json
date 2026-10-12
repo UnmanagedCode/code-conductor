@@ -16,5 +16,5 @@
     "types": ["vite/client"],
     "paths": { "@/lib/core/*": ["../public/*"], "@/*": ["./src/*"] }
   },
-  "include": ["src", "base.ts", "vite.config.ts", "vitest.config.ts", "../tests/web-parity"]
+  "include": ["src", "base.ts", "vite.config.ts", "vitest.config.ts"]
 }

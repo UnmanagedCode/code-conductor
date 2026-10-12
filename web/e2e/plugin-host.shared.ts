@@ -9,7 +9,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
 import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
 
@@ -70,7 +70,7 @@ async function hiddenAndRunning(page: Page, where: string): Promise<void> {
   await expect(pluginView(page), `${where}: still hidden`).toBeHidden();
 }
 
-// ── legacy-plugin-switch/R1, plugins-frontend/R19 ────────────────────────
+// ── switching to a plugin ────────────────────────────────────────────────
 
 export async function switchFlow({ page, cc }: Args): Promise<void> {
   // Invariant: picking a plugin from the switcher while a session is open lands on it on the first pick — the URL, the view, the page and the switcher's current entry — and Conductor leads back to that session's anchor.
@@ -94,7 +94,7 @@ export async function switchFlow({ page, cc }: Args): Promise<void> {
   expect(await currentApp(page), 'and Conductor once back').toEqual(['conductor']);
 }
 
-// ── plugins-frontend/R2 ──────────────────────────────────────────────────
+// ── plugin subpaths ──────────────────────────────────────────────────────
 
 export async function subpathFlow({ page }: Args): Promise<void> {
   // Invariant: a plugin hash opens its plugin; an outside subpath change steers the open page there without a reload, also back to a subpath after the page moved itself; another plugin swaps in; a boot on a plugin hash opens it at its subpath.
@@ -126,7 +126,7 @@ export async function subpathFlow({ page }: Args): Promise<void> {
   expect(framePath(page, id)).toBe(`/plugins/${id}/deep/x`);
 }
 
-// ── legacy-plugin-keepalive/R1 ───────────────────────────────────────────
+// ── keep-alive plugins ───────────────────────────────────────────────────
 
 export async function keepAliveFlow({ page }: Args): Promise<void> {
   // Invariant: a keep-alive plugin's page keeps running while hidden behind Settings and behind Conductor — timers, its WebSocket, a live microphone — and each return shows that same page load; the switcher marks it while resident. A plain plugin's page reloads on the same round trip.

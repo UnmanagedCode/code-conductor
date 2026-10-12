@@ -5,8 +5,8 @@
 import type { Page } from '@playwright/test';
 import { createProject, mcpCall, spawnSession } from './harness/api.ts';
 import { expect, test, type Cc } from './harness/fixtures.ts';
-import { idleInst, insts, type FleetInst } from './parity/fleet.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { idleInst, insts, type FleetInst } from './flows/fleet.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 import { buildWakeStub } from '../../public/wakeCallback.ts';
 import { buildForwardFrame } from '../../public/forwardFrame.ts';
 import { buildRenewSeed } from '../../public/renewSeed.ts';

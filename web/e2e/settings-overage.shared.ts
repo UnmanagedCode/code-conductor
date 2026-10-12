@@ -4,7 +4,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect, type Cc } from './harness/fixtures.ts';
 import { api } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Shown = { action: string; threshold: boolean; value: string | null; applyEnabled: boolean };
 

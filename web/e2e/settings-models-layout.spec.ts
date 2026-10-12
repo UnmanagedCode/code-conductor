@@ -1,8 +1,8 @@
 // Settings → Models layout in the web UI across viewports and the sidebar's
 // widths: nothing overflows, the selected model reads, every select is
 // captioned, every control is tappable, and the Settings nav changes form with
-// its column. The old UI's sweep is legacy/models-responsive.spec.ts; the DOM
-// this rests on is web/src/features/settings/models/fieldLabels.test.tsx.
+// its column. The DOM this rests on is
+// web/src/features/settings/models/fieldLabels.test.tsx.
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { api } from './harness/api.ts';

@@ -10,9 +10,10 @@
 //
 // This file asserts each mirror still equals the server value it mirrors.
 // It observes them through models.js's exported getters BEFORE
-// loadModelVersions() runs — which it must never call, as that hits fetch.
-// node:test gives each file its own process, so the module's mutable state is
-// pristine here.
+// loadModelVersions() runs — which it must never call on that instance, as that
+// hits fetch. node:test gives each file its own process, so the module's
+// mutable state is pristine here. The last test checks the other side of the
+// fetch on a separate instance.
 //
 // The mirrors: DEFAULT_VERSIONS + DEFAULT_VERSION_LABELS, DEFAULT_TIER_BACKEND,
 // DEFAULT_TIER_LABELS (+ the tier list and its order), the `backends`
@@ -26,6 +27,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Window } from 'happy-dom';
 
 import {
   MODEL_FAMILIES,
@@ -113,4 +115,54 @@ test('mirror: client familyOf returns null for non-Claude and non-string ids', a
   for (const id of ['gpt-5.6-sol', 'llama3:8b', '', null, undefined, 42, {}]) {
     assert.equal(client.familyOf(id), null, `familyOf(${JSON.stringify(id)})`);
   }
+});
+
+// ── after the fetch ──────────────────────────────────────────────────────
+// The one test here that calls loadModelVersions(): it imports its own
+// instance of models.js (a distinct URL), so the pristine one above is never
+// fetched into.
+
+const TIERS = ['fast', 'balanced', 'powerful', 'frontier'];
+
+// Mirrors GET /api/settings/models for the fields models.js caches.
+function modelsPayload(tierEffort) {
+  return {
+    backends: [{ id: 'claude', label: 'Claude', managed: true }],
+    claudeFamilies: [{
+      family: 'opus', label: 'Opus', default: 'claude-opus-4-8',
+      versions: [{ id: 'claude-opus-4-8', label: 'Opus 4.8' }],
+    }],
+    tiers: TIERS.map(t => ({ tier: t, label: t })),
+    tierBackend: Object.fromEntries(TIERS.map(t => [t, { backend: 'claude', model: 'claude-opus-4-8' }])),
+    tierEffort,
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    roles: [{ role: 'conductor', label: 'Conductor', builtin: true }],
+    roleBackend: { conductor: { kind: 'tier', tier: 'powerful' } },
+    roleEffort: { conductor: { effort: 'inherit', inheritsTo: 'high' } },
+    enabledTiers: Object.fromEntries(TIERS.map(t => [t, true])),
+    defaultSpawnTier: 'powerful',
+    customModels: [], ollamaCloudModels: [], ollamaCloudTierDefaults: {},
+  };
+}
+
+test('models.js: pre-fetch reads the DEFAULT_EFFORT seed, then adopts the payload\'s defaultEffort', async () => {
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const models = await import(
+    pathToFileURL(path.resolve(__dirname, '..', 'public', 'models.js')).href + '?prefetch=1');
+
+  // Before any fetch: the seed mirrors src/effortLevels.ts DEFAULT_EFFORT, so a
+  // first paint can't advertise a level the server would never resolve.
+  for (const t of TIERS) assert.equal(models.getActiveTierEffort(t), 'high');
+
+  // After the fetch: a tier the payload omits falls back to the SHIPPED default,
+  // not to the stale seed.
+  globalThis.fetch = () => Promise.resolve({
+    ok: true, status: 200,
+    json: () => Promise.resolve({ ...modelsPayload({ balanced: 'max' }), defaultEffort: 'medium' }),
+  });
+  await models.loadModelVersions();
+  assert.equal(models.getActiveTierEffort('balanced'), 'max', 'a shipped level wins');
+  assert.equal(models.getActiveTierEffort('frontier'), 'medium', 'an absent one uses defaultEffort');
 });

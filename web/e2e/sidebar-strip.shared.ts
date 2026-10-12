@@ -5,8 +5,8 @@ import type { Page } from '@playwright/test';
 import { api, createProject, mcpCall } from './harness/api.ts';
 import { expect, test, type Cc } from './harness/fixtures.ts';
 import { appendTranscriptRecord } from './harness/transcript.ts';
-import { gone, idleInst, insts, liveModel, spawnConductor, spawnWorker, type FleetInst } from './parity/fleet.ts';
-import { next, nextSidebar } from './parity/ui.ts';
+import { gone, idleInst, insts, liveModel, spawnConductor, spawnWorker, type FleetInst } from './flows/fleet.ts';
+import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
 type Inst = FleetInst & { awaitingUser?: string | null; awaitingUserSource?: string | null; awaitingWake?: boolean };

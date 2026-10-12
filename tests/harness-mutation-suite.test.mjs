@@ -350,7 +350,7 @@ test('canaryFor dispatches by test file; the Playwright canary matches only the 
   });
   // The canary's test type is the e2e fixtures' (harness-mutation-canary.test.mjs
   // has why); its import must resolve from a spec at any depth.
-  for (const spec of ['web/e2e/settings-models-layout.spec.ts', 'web/e2e/legacy/header-compact.spec.ts']) {
+  for (const spec of ['web/e2e/settings-models-layout.spec.ts', 'web/e2e/flows/header.spec.ts']) {
     await t.test(`the Playwright canary's import resolves to the e2e fixtures from ${spec}`, () => {
       const m = /^import \{ test as __codeMutantCanary \} from '([^']+)';$/m.exec(canaryFor(spec, '', deps('desktop')).content);
       assert.ok(m, 'the canary imports its test type');

@@ -4,7 +4,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { api, spawnSession } from './harness/api.ts';
-import { next } from './parity/ui.ts';
+import { next } from './flows/ui.ts';
 
 const running = (page: Page) => page.evaluate(() => {
   const el = document.querySelector('[data-turn-indicator="working"]');

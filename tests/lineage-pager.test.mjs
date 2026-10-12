@@ -13,10 +13,9 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs, existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { assertNull } from './dom-assert.mjs';
 import { pageInstanceEvents, pagePersistedEvents, currentSegmentScope } from '../src/eventArchive.ts';
 import { adoptProject, localPlace } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
@@ -818,7 +817,7 @@ wtest('W16 no divider without a boundary: a single-segment session', async () =>
   } finally { await c.close(); }
 });
 
-// W17/W18: the rotation init lands exactly on the ring floor (tb === its seam).
+// W17: the rotation init lands exactly on the ring floor (tb === its seam).
 // With cap 1 the ring cycles 1 → 2 → 3 (trim to the last event) → 1, so an init
 // pushed onto a ring of 2 becomes the whole ring.
 async function bootInitOnFloor(project) {
@@ -858,48 +857,6 @@ wtest('W17 tb === startSeq, live: the segment frame still precedes the init, and
   } finally { await c.close(); }
 });
 
-wtest('W18 tb === startSeq, reconnect: the snapshot, the rendered walk, and rewind/fork only on the current segment', async () => {
-  const { inst, id } = await bootInitOnFloor('w18');
-  await rotate(inst, THIRD);
-  assertInitOnFloor(inst);
-  const c = await wsClient();
-  let snap;
-  try {
-    c.send({ t: 'subscribe', id });
-    snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
-  } finally { await c.close(); }
-  assert.equal(snap.currentSegmentId, THIRD, 'the snapshot names the current segment');
-  assert.equal(snap.tailSegmentId, THIRD);
-  assert.equal(snap.events.length, 1);
-  assert.ok(isInitFrame({ t: 'event', ev: snap.events[0] }, THIRD), 'the tail is the init alone, no divider');
-
-  await renderLineageInDom(id, snap, async ({ el, conversation }) => {
-    const names = { [POST]: 'POST', [THIRD]: 'THIRD' };
-    const tokens = [];
-    for (const node of el.children) {
-      let tok = null;
-      if (node.classList.contains('segment-seam')) tok = `‖${names[node.getAttribute('data-segment-id')]}`;
-      else if (node.classList.contains('history-gap')) tok = '⋯';
-      else if (node.classList.contains('user')) {
-        const m = /^(\w+) prompt \d+$/.exec(node.querySelector('.block.text')?.textContent ?? '');
-        if (m) tok = `[${m[1]}]`;
-      }
-      if (tok && !(tok.startsWith('[') && tokens[tokens.length - 1] === tok)) tokens.push(tok);
-    }
-    assert.equal(tokens.join(' '), '[pre] ‖POST [post] ‖THIRD ⋯');
-    const bubbles = [...el.querySelectorAll('.msg.user')];
-    assert.ok(bubbles.length > 0);
-    for (const b of bubbles) assertNull(b.querySelector('.user-msg-actions'), 'no rewind/fork on an earlier segment');
-
-    // The §5c segment-frame lines, then a live THIRD echo.
-    conversation.segmentId = THIRD;
-    conversation.setCurrentSegment(THIRD);
-    conversation.apply({ kind: 'user_echo', text: 'third live', userIndex: 99, _seq: 1_000_000, parentToolUseId: null });
-    const live = [...el.querySelectorAll('.msg.user')].at(-1);
-    assert.ok(live.querySelector('.user-msg-actions') !== null, 'the current segment\'s bubble offers rewind/fork');
-  });
-});
-
 wtest('W19 an L1 row whose oldest entry is the current segment: the layer\'s one gap, never also the core\'s floor', async () => {
   const { inst, id } = await bootCaseB('w19');
   assert.ok(inst.ring.trimmedBefore > inst.ring.seams[1].startSeq, 'precondition: the ring head is inside the current segment');
@@ -910,25 +867,6 @@ wtest('W19 an L1 row whose oldest entry is the current segment: the layer\'s one
   assert.equal(walk.events[0].kind, GAP, 'above everything');
   assertOnceInOrder(walk.events, 'post', 12);
   assert.ok(!walk.events.some(e => /^pre /.test(e.text ?? '')), 'nothing older is walked');
-});
-
-wtest('W20 rendered end to end: a current-segment bubble served from the live space\'s archive offers rewind/fork', async () => {
-  const { inst, id } = await bootCaseB('w20');
-  assert.ok(!inst.ringSnapshot().some(e => e.text === 'post prompt 0'), 'precondition: post prompt 0 was evicted from the ring');
-  const c = await wsClient();
-  let snap;
-  try {
-    c.send({ t: 'subscribe', id });
-    snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
-  } finally { await c.close(); }
-  assert.equal(snap.currentSegmentId, POST, 'the snapshot names the current segment');
-  await renderLineageInDom(id, snap, async ({ el }) => {
-    const bubble = (text) => [...el.querySelectorAll('.msg.user')].find(b => b.querySelector('.block.text')?.textContent === text);
-    assert.ok(bubble('post prompt 0'), 'the archive-backed live page rendered');
-    assert.ok(bubble('post prompt 0').querySelector('.user-msg-actions') !== null, 'the current segment\'s archive bubble offers rewind/fork');
-    assert.ok(bubble('pre prompt 0'), 'the older segment rendered');
-    assertNull(bubble('pre prompt 0').querySelector('.user-msg-actions'), 'the older segment\'s bubble does not');
-  });
 });
 
 wtest('W21 row #23: a rotation that never trimmed the ring stays in the live space — one page, no view', async () => {
@@ -981,46 +919,3 @@ wtest('W22 a segment frame precedes an OUTER init only: not a non-init event, no
     ], 'exactly one segment frame, directly before the outer init');
   } finally { await c.close(); }
 });
-
-// Render a lineage walk the way the browser does: the real Conversation and
-// lazy controller under happy-dom, fed the snapshot as public/wsRouter.js feeds
-// it, with the controller's fetches proxied to this server, paged until the
-// sentinel is gone. `fn` gets the conversation root and the live conversation.
-async function renderLineageInDom(id, snap, fn) {
-  const { Window } = await import('happy-dom');
-  const window = new Window({ url: 'http://localhost/' });
-  const saved = { window: globalThis.window, document: globalThis.document, HTMLElement: globalThis.HTMLElement,
-    Element: globalThis.Element, Node: globalThis.Node, fetch: globalThis.fetch };
-  const realFetch = globalThis.fetch;
-  let fetches = 0;
-  Object.assign(globalThis, { window, document: window.document, HTMLElement: window.HTMLElement,
-    Element: window.Element, Node: window.Node });
-  globalThis.fetch = (u, o) => { fetches += 1; return realFetch(typeof u === 'string' && u.startsWith('/') ? ctx.baseUrl + u : u, o); };
-  try {
-    const PUB = path.join(REPO, 'public');
-    const { Conversation } = await import(pathToFileURL(path.join(PUB, 'conversation.js')).href);
-    const { installLazyHistoryController } = await import(pathToFileURL(path.join(PUB, 'lazyHistory.js')).href);
-    document.body.innerHTML = '<div id="conversation"></div>';
-    const el = document.getElementById('conversation');
-    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 800 });
-    Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 0 });
-    const options = { onRewind: () => {}, onFork: () => {} };
-    const conversation = new Conversation(el, options);
-    assert.equal(typeof conversation.setCurrentSegment, 'function');
-    const controller = installLazyHistoryController({
-      conversationEl: el, conversation, conversationOptions: options,
-      getActiveId: () => id, getInstances: () => [{ id, status: 'idle' }],
-    });
-    // The snapshot handler's lines, then its replay.
-    conversation.clear();
-    conversation.setCurrentSegment(snap.currentSegmentId ?? null);
-    conversation.segmentId = snap.tailSegmentId ?? null;
-    for (const ev of snap.events) conversation.apply(ev);
-    controller.init(snap);
-    await waitFor(() => fetches > 0 && !el.querySelector('.history-sentinel'));
-    await fn({ el, conversation });
-  } finally {
-    Object.assign(globalThis, saved);
-    await window.happyDOM?.close?.();
-  }
-}

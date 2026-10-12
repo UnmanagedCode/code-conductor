@@ -6,9 +6,9 @@
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { createProject } from './harness/api.ts';
-import { next } from './parity/ui.ts';
-import { bringTo, offsetFromTop, sendAll, tallPrompt } from './parity/stickyPin.ts';
-import { sendWake } from './parity/foldedBubbles.ts';
+import { next } from './flows/ui.ts';
+import { bringTo, offsetFromTop, sendAll, tallPrompt } from './flows/stickyPin.ts';
+import { sendWake } from './flows/foldedBubbles.ts';
 
 type Args = { page: Page; cc: Cc };
 
@@ -55,7 +55,7 @@ async function settingsRoundTrip(page: Page, turns: number): Promise<void> {
   await expect(next.turnEnds(page), 'fixture check: the transcript is back').toHaveCount(turns);
 }
 
-// ── subagent-nesting/R2 ──────────────────────────────────────────────────
+// ── reopening a tool card ────────────────────────────────────────────────
 
 export async function cardReopenFlow({ page, cc }: Args): Promise<void> {
   // Invariant: closing and reopening a tool card keeps the Arguments the reader opened and the Result they collapsed.
@@ -77,7 +77,7 @@ export async function cardReopenFlow({ page, cc }: Args): Promise<void> {
   expect([await openOf(t.args), await openOf(t.result)], 'reopened, the card keeps Arguments open and the Result collapsed').toEqual([true, false]);
 }
 
-// ── conversation-view-return/R2 ──────────────────────────────────────────
+// ── tool cards across a view return ──────────────────────────────────────
 
 export async function toolsReturnFlow({ page, cc }: Args): Promise<void> {
   // Invariant: leaving a full-page view brings back the tool card (its Arguments and Result) and thinking block the reader set above the prompt being read, and the reader stays on that prompt.
@@ -108,7 +108,7 @@ export async function toolsReturnFlow({ page, cc }: Args): Promise<void> {
   expect(Math.abs(await offsetFromTop(transcript, alpha) - left), 'back on the prompt being read').toBeLessThanOrEqual(1);
 }
 
-// ── conversation-view-return/R3 ──────────────────────────────────────────
+// ── folds across a view return ───────────────────────────────────────────
 
 export async function foldsReturnFlow({ page, cc }: Args): Promise<void> {
   // Invariant: leaving a full-page view brings back the fold and raw views the reader set above the prompt being read, and the reader stays on that prompt.
