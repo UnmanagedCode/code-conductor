@@ -16,6 +16,8 @@ import { useDictation, type BoxDelivery } from './useDictation';
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_HEIGHT = 240;
 const HOLD_TO_DICTATE_MS = 500;
+/** Dictates from the message box; spelled as `aria-keyshortcuts` names it. */
+const DICTATE_SHORTCUT = 'Alt+Enter';
 
 let nextAttachmentId = 1;
 
@@ -42,7 +44,10 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   const sidRef = React.useRef<string | null>(null);
   const saveTimer = React.useRef<ReturnType<typeof setTimeout>>(undefined);
   const holdTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Whose hold is pending: a pointer by its id, or the key held on Send. */
+  const holdBy = React.useRef<number | 'key' | null>(null);
   const holdDidRecord = React.useRef(false);
+  const holdKey = React.useRef<string | null>(null);
   const voice = useStore(voiceStore, (s) => s);
   const dictation = useDictation();
 
@@ -62,6 +67,8 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
       : hasContent ? 'send'
       : canType && voiceOn ? 'mic' : 'send';
   const queueMode = mode === 'send' && overagePaused;
+  const dictateKeys = voice.micAvailable && voiceOn;
+  const holdOffered = mode === 'send' && dictateKeys;
 
   // ── Drafts follow the session ───────────────────────────────────────
   const flush = React.useCallback(() => {
@@ -211,25 +218,81 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     void dictation.start(sidRef.current);
   }
 
-  // A hold that started a recording swallows the click its release fires, whenever that click comes
-  // (on touch it arrives a task later); the next press starts afresh.
+  // At most one hold is pending: a gesture that starts one supersedes the pending one, whose release
+  // then neither sends nor cancels it.
+  function armHold(by: number | 'key') {
+    if (by === 'key' && typeof holdBy.current === 'number') holdDidRecord.current = true;
+    if (holdTimer.current !== null) clearTimeout(holdTimer.current);
+    holdBy.current = by;
+    holdTimer.current = setTimeout(() => {
+      holdTimer.current = null;
+      holdBy.current = null;
+      if (by !== 'key') holdDidRecord.current = true;
+      startDictation();
+    }, HOLD_TO_DICTATE_MS);
+  }
+  /** Drops the pending hold when `by` owns it. */
+  function cancelHold(by: number | 'key') {
+    if (holdBy.current !== by || holdTimer.current === null) return;
+    clearTimeout(holdTimer.current);
+    holdTimer.current = null;
+    holdBy.current = null;
+  }
+
+  // A pointer hold that started a recording, or that a key hold superseded, swallows the click its
+  // release fires, whenever that click comes (on touch it arrives a task later); the next press starts afresh.
   function onSendPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
     holdDidRecord.current = false;
     if (mode === 'mic' || mode === 'recording') { e.preventDefault(); return; }
-    if (mode === 'send' && voice.micAvailable && voiceOn) {
+    if (holdOffered) {
       // Focus stays in the box: on a phone a blur closes the keyboard, and the button moves out from
       // under the finger before the hold completes.
       e.preventDefault();
       try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      holdTimer.current = setTimeout(() => {
-        holdTimer.current = null;
-        holdDidRecord.current = true;
-        startDictation();
-      }, HOLD_TO_DICTATE_MS);
+      armHold(e.pointerId);
     }
   }
-  function onSendPointerUp() {
-    if (holdTimer.current !== null) { clearTimeout(holdTimer.current); holdTimer.current = null; }
+  function onSendPointerUp(e: React.PointerEvent<HTMLButtonElement>) {
+    cancelHold(e.pointerId);
+  }
+
+  // Space or Enter held on Send is the pointer hold from the keyboard. The browser clicks a button on
+  // Enter's keydown, again on each auto-repeat, and on Space's keyup, so a held key's every keydown and
+  // its keyup are prevented, and a release while its own hold is pending sends. They stay prevented
+  // until that release or a blur, even once the recording runs or a pointer supersedes the hold, so
+  // neither the repeats nor the release stop or send anything then; no click follows, so the hold
+  // leaves nothing for `holdDidRecord` to swallow. A blur drops the key's hold still pending.
+  function onSendKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    // Escape drops whatever hold is pending; a pointer's release then clicks into `holdDidRecord`.
+    if (e.key === 'Escape') {
+      if (typeof holdBy.current === 'number') holdDidRecord.current = true;
+      if (holdBy.current !== null) cancelHold(holdBy.current);
+      return;
+    }
+    const activates = e.key === 'Enter' || e.key === ' ';
+    if (holdKey.current !== null) {
+      if (activates) e.preventDefault();
+      return;
+    }
+    if (!activates) return;
+    // An auto-repeat never presses the button again: on Dictate it would open a second microphone.
+    if (e.repeat) { e.preventDefault(); return; }
+    holdDidRecord.current = false;
+    if (!holdOffered) return;
+    e.preventDefault();
+    holdKey.current = e.key;
+    armHold('key');
+  }
+  function onSendKeyUp(e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (e.key !== holdKey.current) return;
+    e.preventDefault();
+    holdKey.current = null;
+    if (holdBy.current === 'key') { cancelHold('key'); submit(); }
+  }
+  function onSendBlur() {
+    if (holdKey.current === null) return;
+    holdKey.current = null;
+    cancelHold('key');
   }
   function onSendClick() {
     if (holdDidRecord.current) { holdDidRecord.current = false; return; }
@@ -244,9 +307,9 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     : !canSend || !hasContent;
   const sendTitle = mode === 'recording' ? 'Recording · tap to stop and transcribe'
     : mode === 'transcribing' ? 'Transcribing…'
-    : mode === 'mic' ? (voice.micAvailable ? 'Tap to dictate · tap again to stop' : 'Install Whisper in Settings → Voice to dictate')
+    : mode === 'mic' ? (voice.micAvailable ? `Tap to dictate · tap again to stop · ${DICTATE_SHORTCUT} in the message box` : 'Install Whisper in Settings → Voice to dictate')
     : queueMode ? 'Queue message · delivered when the rate-limit window resets'
-    : voice.micAvailable && voiceOn ? 'Send (hold to dictate)' : 'Send';
+    : dictateKeys ? `Send (hold to dictate, or ${DICTATE_SHORTCUT} in the message box)` : 'Send';
 
   const placeholder = !inst ? 'Select or start a session to chat'
     : inst.modelSwitch ? 'Switching model · the session is restarting…'
@@ -323,6 +386,14 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
               else if (e.key === 'ArrowUp' && ta.selectionStart === 0) stickyPrompt.conceal();
             }
           }
+          // The shortcut toggles dictation whatever the box holds; an auto-repeat does nothing.
+          if (dictateKeys && e.key === 'Enter' && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            if (e.repeat) return;
+            if (dictation.state === 'idle') startDictation();
+            else if (dictation.state === 'recording') dictation.stop();
+            return;
+          }
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             if (!sendDisabled && mode === 'send') submit();
@@ -337,6 +408,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
         }}
         className="block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
         aria-label="Message"
+        aria-keyshortcuts={dictateKeys && canType ? DICTATE_SHORTCUT : undefined}
       />
       <div className="flex items-center gap-1 px-2 pb-2">
         <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const f = Array.from(e.target.files || []); e.target.value = ''; void addFiles(f); }} />
@@ -366,7 +438,10 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
                 disabled={sendDisabled}
                 onPointerDown={onSendPointerDown}
                 onPointerUp={onSendPointerUp}
-                onPointerCancel={() => { if (holdTimer.current) clearTimeout(holdTimer.current); holdTimer.current = null; holdDidRecord.current = false; }}
+                onPointerCancel={(e) => { cancelHold(e.pointerId); holdDidRecord.current = false; }}
+                onKeyDown={onSendKeyDown}
+                onKeyUp={onSendKeyUp}
+                onBlur={onSendBlur}
                 onClick={onSendClick}
               >
                 {mode === 'recording' ? <SquareIcon className="fill-current" />

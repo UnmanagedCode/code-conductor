@@ -1,8 +1,9 @@
 // Holding Send with text in the box: the hold threshold, a recording that keeps running after the
 // release until a tap, focus kept in the box, a cancelled press, the tooltip naming the gesture; a
 // recording that keeps running while the composer is unmounted (the user left the session view);
-// a transcript with no words; the transcription in flight, and one that fails; and a recorder that
-// fails to start.
+// a transcript with no words; the transcription in flight, and one that fails; a recorder that
+// fails to start; the same hold from Space or Enter on the focused button (short press, auto-repeat,
+// Escape, blur); and the Alt+Enter shortcut in the message box.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 
@@ -491,5 +492,468 @@ describe('the transcription', () => {
     expect(box().value, 'the typed text is unchanged').toBe('hello');
     await tap();
     expect(sentTexts(), 'and sends the typed text, untagged').toEqual(['hello']);
+  });
+});
+
+// ── Keys: happy-dom performs no keyboard activation, so these model the browser's ──
+// Enter clicks a button on an unprevented keydown (each auto-repeat included); Space clicks on its
+// keyup, unless that keydown or keyup was prevented.
+let spaceArmed = false;
+function keyDown(key: 'Enter' | ' ', { repeat = false } = {}) {
+  const proceeded = fireEvent.keyDown(button(), { key, repeat });
+  if (key === ' ' && !repeat) spaceArmed = proceeded;
+  if (key === 'Enter' && proceeded) fireEvent.click(button());
+  return proceeded;
+}
+function keyUp(key: 'Enter' | ' ') {
+  const proceeded = fireEvent.keyUp(button(), { key });
+  if (key === ' ' && proceeded && spaceArmed) fireEvent.click(button());
+  spaceArmed = false;
+  return proceeded;
+}
+const chord = ({ repeat = false } = {}) => fireEvent.keyDown(box(), { key: 'Enter', altKey: true, repeat });
+
+describe('holding Space or Enter on Send with text in the box', () => {
+  it('a short press of Enter on Send sends once, on the release', async () => {
+    mount(inst('key-enter-short'));
+    type('hello');
+    act(() => button().focus());
+    keyDown('Enter');
+    expect(sent, 'the keydown sends nothing yet').toEqual([]);
+    await wait(HOLD_MS - 1);
+    keyUp('Enter');
+    await wait(HOLD_MS * 2);
+    expect(microphone.opened, 'the microphone never opened').toBe(0);
+    expect(sent.map((s) => s.payload)).toEqual([{ id: 'i-key-enter-short', text: 'hello' }]);
+  });
+
+  it('a short press of Space on Send sends once', async () => {
+    mount(inst('key-space-short'));
+    type('hello');
+    act(() => button().focus());
+    keyDown(' ');
+    await wait(HOLD_MS - 1);
+    keyUp(' ');
+    await wait(HOLD_MS * 2);
+    expect(microphone.opened, 'the microphone never opened').toBe(0);
+    expect(sentTexts()).toEqual(['hello']);
+  });
+
+  it('holding Enter on Send to the threshold starts a recording that keeps running after the release; Space then stops it and the transcript is appended', async () => {
+    mount(inst('key-enter-hold'));
+    type('hello');
+    act(() => button().focus());
+    keyDown('Enter');
+    await wait(HOLD_MS - 1);
+    expect(microphone.opened, 'not recording a millisecond before the threshold').toBe(0);
+    await wait(1);
+    expect(label(), 'recording from the threshold on').toBe('Stop recording');
+    keyUp('Enter');
+    await wait(HOLD_MS * 2);
+    expect(label(), 'the release leaves it recording').toBe('Stop recording');
+    expect(sent, 'and sends nothing').toEqual([]);
+    expect(transcriptions, 'nothing is transcribed yet').toBe(0);
+    keyDown(' ');
+    keyUp(' ');
+    await flushMicrotasks();
+    expect(transcriptions, 'a Space press stops it and sends the audio for transcription').toBe(1);
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value, 'the transcript is appended with one space').toBe('hello spoken');
+    expect(sent).toEqual([]);
+  });
+
+  it('holding Space on Send to the threshold starts a recording; its release sends nothing and leaves it running, and Enter stops it', async () => {
+    mount(inst('key-space-hold'));
+    type('hello');
+    act(() => button().focus());
+    keyDown(' ');
+    await wait(HOLD_MS);
+    expect(label(), 'positive control: the hold started a recording').toBe('Stop recording');
+    keyUp(' ');
+    await wait(HOLD_MS * 2);
+    expect(label(), 'the release leaves it recording').toBe('Stop recording');
+    expect(sent, 'and sends nothing').toEqual([]);
+    expect(transcriptions).toBe(0);
+    keyDown('Enter');
+    keyUp('Enter');
+    await flushMicrotasks();
+    expect(transcriptions, 'an Enter press stops it').toBe(1);
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+  });
+
+  it('auto-repeats of a held key send nothing more: a short press with repeats sends once, and repeats neither send nor stop the recording a hold started', async () => {
+    mount(inst('key-repeat'));
+    type('one');
+    act(() => button().focus());
+    keyDown('Enter');
+    for (let i = 0; i < 3; i++) { await wait(100); keyDown('Enter', { repeat: true }); }
+    keyUp('Enter');
+    await flushMicrotasks();
+    expect(sentTexts(), 'a short press with repeats sends once').toEqual(['one']);
+    type('two');
+    keyDown('Enter');
+    for (let i = 0; i < 4; i++) { await wait(100); keyDown('Enter', { repeat: true }); }
+    expect(sentTexts(), 'repeats before the threshold send nothing').toEqual(['one']);
+    await wait(100);
+    expect(label(), 'positive control: the hold started a recording').toBe('Stop recording');
+    for (let i = 0; i < 5; i++) { await wait(100); keyDown('Enter', { repeat: true }); }
+    await flushMicrotasks();
+    expect(label(), 'repeats after the threshold leave it recording').toBe('Stop recording');
+    expect(transcriptions).toBe(0);
+    keyUp('Enter');
+    expect(sentTexts(), 'nor send').toEqual(['one']);
+    keyDown(' ');
+    keyUp(' ');
+    await flushMicrotasks();
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('two spoken');
+  });
+
+  it('an auto-repeat of Enter on Dictate opens the microphone once', async () => {
+    mount(inst('key-repeat-mic'));
+    act(() => button().focus());
+    expect(label(), 'positive control: the empty box offers Dictate').toBe('Dictate');
+    keyDown('Enter');
+    keyDown('Enter', { repeat: true });
+    keyDown('Enter', { repeat: true });
+    await flushMicrotasks();
+    expect(label()).toBe('Stop recording');
+    keyDown('Enter', { repeat: true });
+    keyUp('Enter');
+    await flushMicrotasks();
+    expect(microphone.opened, 'one microphone').toBe(1);
+    expect(transcriptions, 'a repeat does not stop it').toBe(0);
+    keyDown('Enter');
+    keyUp('Enter');
+    await flushMicrotasks();
+    expect(transcriptions, 'a fresh press stops it').toBe(1);
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('spoken');
+    expect(microphone).toEqual({ opened: 1, released: 1 });
+  });
+
+  it('focus leaving Send before the threshold cancels the hold: nothing is recorded and nothing is sent', async () => {
+    mount(inst('key-blur'));
+    type('hello');
+    act(() => button().focus());
+    keyDown('Enter');
+    await wait(HOLD_MS - 100);
+    act(() => box().focus());
+    await wait(HOLD_MS * 2);
+    fireEvent.keyUp(box(), { key: 'Enter' });
+    await flushMicrotasks();
+    expect(microphone.opened, 'the microphone never opened').toBe(0);
+    expect(sent, 'nothing is sent').toEqual([]);
+    expect(box().value).toBe('hello');
+    expect(label()).toBe('Send');
+  });
+
+  it("Escape before the threshold cancels the hold, and the key's release sends nothing", async () => {
+    mount(inst('key-escape'));
+    type('hello');
+    act(() => button().focus());
+    keyDown(' ');
+    await wait(HOLD_MS - 200);
+    fireEvent.keyDown(button(), { key: 'Escape' });
+    await wait(HOLD_MS * 2);
+    keyUp(' ');
+    await flushMicrotasks();
+    expect(microphone.opened, 'the microphone never opened').toBe(0);
+    expect(sent, 'the release sends nothing').toEqual([]);
+    expect(label()).toBe('Send');
+    keyDown('Enter');
+    keyUp('Enter');
+    expect(sentTexts(), 'the next short press sends').toEqual(['hello']);
+  });
+
+  it('Escape or a focus loss after the recording started leaves it running until a press', async () => {
+    mount(inst('key-late-cancel'));
+    type('hello');
+    act(() => button().focus());
+    keyDown('Enter');
+    await wait(HOLD_MS);
+    expect(label(), 'positive control: the hold started a recording').toBe('Stop recording');
+    fireEvent.keyDown(button(), { key: 'Escape' });
+    await wait(HOLD_MS);
+    expect(label(), 'Escape leaves it recording').toBe('Stop recording');
+    act(() => box().focus());
+    fireEvent.keyUp(box(), { key: 'Enter' });
+    await wait(HOLD_MS);
+    expect(label(), 'the focus loss leaves it recording').toBe('Stop recording');
+    expect(transcriptions).toBe(0);
+    expect(sent).toEqual([]);
+    act(() => button().focus());
+    keyDown(' ');
+    keyUp(' ');
+    await flushMicrotasks();
+    expect(transcriptions, 'the next press stops it').toBe(1);
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+  });
+
+  it('after a pointer release with no click, a key press on Stop recording stops it', async () => {
+    mount(inst('key-after-no-click'));
+    type('hello');
+    await holdToRecord();
+    fireEvent.pointerUp(button(), { pointerId: 1 });
+    await wait(HOLD_MS);
+    expect(label(), 'positive control: the release left it recording').toBe('Stop recording');
+    act(() => button().focus());
+    keyDown('Enter');
+    keyUp('Enter');
+    await flushMicrotasks();
+    expect(transcriptions, 'the key press stops it').toBe(1);
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+  });
+
+  it('without whisper, Enter on Send sends at once and Space on its release, and a held key records nothing', async () => {
+    voiceStore.set({ micAvailable: false });
+    mount(inst('key-no-whisper'));
+    type('one');
+    act(() => button().focus());
+    keyDown('Enter');
+    expect(sentTexts(), 'Enter sends on its keydown').toEqual(['one']);
+    keyUp('Enter');
+    type('two');
+    keyDown(' ');
+    await wait(HOLD_MS * 2);
+    expect(sentTexts(), 'a held Space sends nothing before its release').toEqual(['one']);
+    keyUp(' ');
+    await flushMicrotasks();
+    expect(sentTexts(), 'and sends on its release').toEqual(['one', 'two']);
+    expect(microphone.opened, 'the microphone never opened').toBe(0);
+  });
+});
+
+// At most one hold is pending: a gesture that starts a hold supersedes the pending one, and the
+// superseded gesture's release neither sends nor cancels the newer hold.
+describe('interleaved holds on Send: the newest gesture wins', () => {
+  it("a pointer tap during a key hold sends once; the key's later release neither sends nor records, and the next key press works", async () => {
+    mount(inst('mix-key-then-tap'));
+    type('one');
+    act(() => button().focus());
+    keyDown('Enter');
+    await wait(100);
+    pressDown();
+    release();
+    await flushMicrotasks();
+    expect(sentTexts(), 'the tap sends').toEqual(['one']);
+    await wait(100);
+    expect(keyUp('Enter'), "the key's release is still swallowed").toBe(false);
+    await wait(HOLD_MS * 2);
+    expect(sentTexts(), 'the release sends nothing').toEqual(['one']);
+    expect(microphone.opened, 'and no recording starts').toBe(0);
+    type('two');
+    keyDown('Enter');
+    keyUp('Enter');
+    expect(sentTexts(), 'a later short key press sends once').toEqual(['one', 'two']);
+    await wait(HOLD_MS * 2);
+    expect(microphone.opened).toBe(0);
+  });
+
+  it("a key press during a pointer hold supersedes it: the pointer's release neither sends nor cancels, and the key's short release sends once", async () => {
+    mount(inst('mix-pointer-then-key'));
+    type('hello');
+    act(() => button().focus());
+    pressDown();
+    await wait(200);
+    keyDown('Enter');
+    await wait(100);
+    release();
+    await flushMicrotasks();
+    expect(sent, "the superseded pointer's release sends nothing").toEqual([]);
+    await wait(HOLD_MS - 200);
+    expect(microphone.opened, "nor does the pointer's hold complete").toBe(0);
+    keyUp('Enter');
+    expect(sentTexts(), "the key's short release sends").toEqual(['hello']);
+    await wait(HOLD_MS * 2);
+    expect(sentTexts(), 'once').toEqual(['hello']);
+    expect(microphone.opened, 'and nothing records').toBe(0);
+  });
+
+  it('a key hold and a pointer hold started together open the microphone once', async () => {
+    mount(inst('mix-together'));
+    type('hello');
+    act(() => button().focus());
+    keyDown('Enter');
+    pressDown();
+    await wait(HOLD_MS);
+    expect(label(), 'positive control: the hold started a recording').toBe('Stop recording');
+    release();
+    keyUp('Enter');
+    await wait(HOLD_MS);
+    expect(label(), 'both releases leave it recording').toBe('Stop recording');
+    expect(sent).toEqual([]);
+    expect(microphone.opened, 'one microphone').toBe(1);
+    await tap();
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+    expect(microphone).toEqual({ opened: 1, released: 1 });
+  });
+
+  it("a second finger's hold supersedes the first: the first finger's release does not cancel it, and it completes on its own threshold", async () => {
+    mount(inst('mix-two-fingers'));
+    type('hello');
+    fireEvent.pointerDown(button(), { pointerId: 1 });
+    await wait(200);
+    fireEvent.pointerDown(button(), { pointerId: 2 });
+    await wait(100);
+    fireEvent.pointerUp(button(), { pointerId: 1 });
+    await wait(HOLD_MS - 101);
+    expect(microphone.opened, "the first finger's hold never completes").toBe(0);
+    await wait(1);
+    expect(label(), "the second finger's hold completes at its own threshold").toBe('Stop recording');
+    fireEvent.pointerUp(button(), { pointerId: 2 });
+    fireEvent.click(button());
+    await wait(HOLD_MS);
+    expect(label(), 'its release leaves it recording').toBe('Stop recording');
+    expect(sent).toEqual([]);
+    expect(microphone.opened).toBe(1);
+    await tap();
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+  });
+});
+
+describe('Escape on Send cancels whatever hold is pending', () => {
+  it("after a pointer supersedes a held key, Escape cancels the pointer's hold: nothing records, neither release sends, and the next gestures work", async () => {
+    mount(inst('esc-superseded'));
+    type('hello');
+    act(() => button().focus());
+    keyDown('Enter');
+    await wait(100);
+    pressDown();
+    await wait(100);
+    fireEvent.keyDown(button(), { key: 'Escape' });
+    await wait(HOLD_MS * 2);
+    expect(microphone.opened, 'nothing records').toBe(0);
+    release();
+    await flushMicrotasks();
+    expect(sent, "the pointer's release and click send nothing").toEqual([]);
+    expect(keyUp('Enter'), "the key's release is swallowed").toBe(false);
+    expect(sent, 'and sends nothing').toEqual([]);
+    expect(label()).toBe('Send');
+    keyDown('Enter');
+    keyUp('Enter');
+    expect(sentTexts(), 'the next key press sends').toEqual(['hello']);
+    type('again');
+    await tap();
+    expect(sentTexts(), 'and the next tap sends').toEqual(['hello', 'again']);
+    expect(microphone.opened).toBe(0);
+  });
+
+  it('Escape on a focused Send cancels a pointer hold: nothing records and its release sends nothing', async () => {
+    mount(inst('esc-pointer'));
+    type('hello');
+    act(() => button().focus());
+    pressDown();
+    await wait(HOLD_MS - 100);
+    fireEvent.keyDown(button(), { key: 'Escape' });
+    await wait(HOLD_MS * 2);
+    expect(microphone.opened, 'nothing records').toBe(0);
+    release();
+    await flushMicrotasks();
+    expect(sent, 'the release sends nothing').toEqual([]);
+    await tap();
+    expect(sentTexts(), 'the next tap sends').toEqual(['hello']);
+  });
+});
+
+describe('the Alt+Enter shortcut in the message box', () => {
+  it('with text in the box, Alt+Enter starts a recording and keeps the focus in the box; Alt+Enter again stops it and appends the transcript', async () => {
+    mount(inst('chord-text'));
+    type('hello');
+    act(() => box().focus());
+    expect(chord(), 'the chord is consumed').toBe(false);
+    await flushMicrotasks();
+    expect(label()).toBe('Stop recording');
+    expect(document.activeElement === box(), 'the box keeps the focus').toBe(true);
+    expect(sent, 'nothing is sent').toEqual([]);
+    chord();
+    await flushMicrotasks();
+    expect(transcriptions, 'the second chord stops it').toBe(1);
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+    expect(sent).toEqual([]);
+  });
+
+  it('on an empty box Alt+Enter starts a recording, and while it transcribes Alt+Enter does nothing', async () => {
+    mount(inst('chord-empty'));
+    act(() => box().focus());
+    chord();
+    await flushMicrotasks();
+    expect(label(), 'the chord records on an empty box').toBe('Stop recording');
+    chord();
+    await flushMicrotasks();
+    expect(label(), 'positive control: it is transcribing').toBe('Transcribing');
+    expect(chord(), 'the chord is still consumed').toBe(false);
+    await flushMicrotasks();
+    expect(microphone.opened, 'no second recording').toBe(1);
+    expect(transcriptions, 'no second transcription').toBe(1);
+    expect(label()).toBe('Transcribing');
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('spoken');
+    expect(sent).toEqual([]);
+  });
+
+  it('an auto-repeat of Alt+Enter neither stops the recording nor starts a second', async () => {
+    mount(inst('chord-repeat'));
+    type('hello');
+    act(() => box().focus());
+    chord();
+    chord({ repeat: true });
+    await flushMicrotasks();
+    expect(label()).toBe('Stop recording');
+    chord({ repeat: true });
+    chord({ repeat: true });
+    await flushMicrotasks();
+    expect(label(), 'repeats leave it recording').toBe('Stop recording');
+    expect(microphone.opened, 'one microphone').toBe(1);
+    expect(transcriptions).toBe(0);
+    chord();
+    await flushMicrotasks();
+    releaseTranscript();
+    await flushMicrotasks();
+    expect(box().value).toBe('hello spoken');
+    expect(microphone).toEqual({ opened: 1, released: 1 });
+  });
+
+  it('without whisper, Alt+Enter sends the text as Enter does, and the box names no shortcut', async () => {
+    voiceStore.set({ micAvailable: false });
+    mount(inst('chord-no-whisper'));
+    type('typed');
+    expect(box().getAttribute('aria-keyshortcuts')).toBeNull();
+    chord();
+    await wait(HOLD_MS);
+    expect(microphone.opened, 'the microphone never opened').toBe(0);
+    expect(sentTexts()).toEqual(['typed']);
+  });
+
+  it('the message box announces Alt+Enter in aria-keyshortcuts and the Send tooltip names it, only while dictation is available and the box is enabled', async () => {
+    const c = mount({ ...inst('chord-announce'), status: 'exited' });
+    expect(box().disabled, 'positive control: an exited session disables the box').toBe(true);
+    expect(box().getAttribute('aria-keyshortcuts'), 'a disabled box names no shortcut').toBeNull();
+    c.swap(inst('chord-announce'));
+    expect(box().getAttribute('aria-keyshortcuts')).toBe('Alt+Enter');
+    act(() => button().focus());
+    const tooltip = () => screen.getByRole('tooltip');
+    expect(tooltip().textContent, 'Dictate names it').toMatch(/Alt\+Enter/);
+    type('hello');
+    expect(tooltip().textContent, 'Send names it beside the hold').toMatch(/hold.*Alt\+Enter/i);
+    act(() => voiceStore.set({ micAvailable: false }));
+    expect(box().getAttribute('aria-keyshortcuts'), 'without dictation the box names no shortcut').toBeNull();
+    expect(tooltip().textContent).not.toMatch(/Alt\+Enter/);
   });
 });
