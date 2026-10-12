@@ -825,6 +825,50 @@ describe('interleaved holds on Send: the newest gesture wins', () => {
   });
 });
 
+describe('Escape on Send cancels whatever hold is pending', () => {
+  it("after a pointer supersedes a held key, Escape cancels the pointer's hold: nothing records, neither release sends, and the next gestures work", async () => {
+    mount(inst('esc-superseded'));
+    type('hello');
+    act(() => button().focus());
+    keyDown('Enter');
+    await wait(100);
+    pressDown();
+    await wait(100);
+    fireEvent.keyDown(button(), { key: 'Escape' });
+    await wait(HOLD_MS * 2);
+    expect(microphone.opened, 'nothing records').toBe(0);
+    release();
+    await flushMicrotasks();
+    expect(sent, "the pointer's release and click send nothing").toEqual([]);
+    expect(keyUp('Enter'), "the key's release is swallowed").toBe(false);
+    expect(sent, 'and sends nothing').toEqual([]);
+    expect(label()).toBe('Send');
+    keyDown('Enter');
+    keyUp('Enter');
+    expect(sentTexts(), 'the next key press sends').toEqual(['hello']);
+    type('again');
+    await tap();
+    expect(sentTexts(), 'and the next tap sends').toEqual(['hello', 'again']);
+    expect(microphone.opened).toBe(0);
+  });
+
+  it('Escape on a focused Send cancels a pointer hold: nothing records and its release sends nothing', async () => {
+    mount(inst('esc-pointer'));
+    type('hello');
+    act(() => button().focus());
+    pressDown();
+    await wait(HOLD_MS - 100);
+    fireEvent.keyDown(button(), { key: 'Escape' });
+    await wait(HOLD_MS * 2);
+    expect(microphone.opened, 'nothing records').toBe(0);
+    release();
+    await flushMicrotasks();
+    expect(sent, 'the release sends nothing').toEqual([]);
+    await tap();
+    expect(sentTexts(), 'the next tap sends').toEqual(['hello']);
+  });
+});
+
 describe('the Alt+Enter shortcut in the message box', () => {
   it('with text in the box, Alt+Enter starts a recording and keeps the focus in the box; Alt+Enter again stops it and appends the transcript', async () => {
     mount(inst('chord-text'));

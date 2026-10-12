@@ -261,12 +261,17 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   // its keyup are prevented, and a release while its own hold is pending sends. They stay prevented
   // until that release or a blur, even once the recording runs or a pointer supersedes the hold, so
   // neither the repeats nor the release stop or send anything then; no click follows, so the hold
-  // leaves nothing for `holdDidRecord` to swallow. Escape or a blur drops a hold still pending.
+  // leaves nothing for `holdDidRecord` to swallow. A blur drops the key's hold still pending.
   function onSendKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    // Escape drops whatever hold is pending; a pointer's release then clicks into `holdDidRecord`.
+    if (e.key === 'Escape') {
+      if (typeof holdBy.current === 'number') holdDidRecord.current = true;
+      if (holdBy.current !== null) cancelHold(holdBy.current);
+      return;
+    }
     const activates = e.key === 'Enter' || e.key === ' ';
     if (holdKey.current !== null) {
       if (activates) e.preventDefault();
-      else if (e.key === 'Escape') cancelHold('key');
       return;
     }
     if (!activates) return;
