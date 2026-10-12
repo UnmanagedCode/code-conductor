@@ -47,7 +47,7 @@ const agentCard = (page: Page) => agentTrigger(page).locator('xpath=..');
 const outerGroup = (page: Page) => next.transcript(page).locator('[data-group-trigger]').first();
 const subGroup = (page: Page) => agentCard(page).locator('[data-group-trigger]');
 const agentTotal = (page: Page) => agentTrigger(page).locator('[data-agent-usage]');
-const usageLines = (page: Page) => next.transcript(page).locator('[data-call-usage-line]');
+export const usageLines = (page: Page) => next.transcript(page).locator('[data-call-usage-line]');
 const openOf = (details: Locator) => details.evaluate((d) => (d as HTMLDetailsElement).open);
 
 async function openOuterGroup(page: Page): Promise<void> {
@@ -62,7 +62,7 @@ async function expectAgentTotalShown(page: Page, when: string): Promise<void> {
 }
 
 /** The session header's "Show mid-turn statistics" item, read or flipped with its menu closed again. */
-async function statisticsItem(page: Page, flip: boolean): Promise<string | null> {
+export async function statisticsItem(page: Page, flip: boolean): Promise<string | null> {
   await next.sessionHeader(page).getByRole('button', { name: 'Session actions' }).click();
   const item = page.getByRole('menuitemcheckbox', { name: 'Show mid-turn statistics' });
   if (flip) await item.click();
