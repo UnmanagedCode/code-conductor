@@ -31,7 +31,6 @@ Where the `CONVENTIONS.md` rules land in this codebase. Rationale + examples in 
 
 ## Testing
 
-- `npm test` is the gated command (runs the `pretest` typecheck, which also checks `web/`); bare `node tests/run.mjs` skips it.
-- `npm run test:web` is the Vitest suite for `web/`; it is not part of `npm test`. `npm run test:all` runs both and is the gate for any work touching `web/`.
+- `npm test` is the gate: the `pretest` typecheck (also checks `web/`), then the node suite (`tests/run.mjs`), then the `web/` Vitest suite; both suites always run and the closing summary names the red one. `npm test -- <files>` runs only those node files; `npm run test:web` (`-- <file>`) runs only Vitest; bare `node tests/run.mjs` skips the typecheck.
 - The node suite's runner is `node:test` + `node:assert` and adds no dependency (Termux).
 - Fake-binary env var: `CLAUDE_BIN`. Real-binary smoke gate: `RUN_REAL_CLAUDE=1`.

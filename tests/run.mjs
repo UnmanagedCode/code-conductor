@@ -28,6 +28,10 @@ process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
 process.env.CC_SKIP_WEB_BUILD = '1';
 // Nor install into the shared node_modules when a test restarts one of them.
 process.env.CC_SKIP_DEPS_SYNC = '1';
+// Bound a runaway test child's heap: about 4x the measured per-file peak RSS
+// (122 MB). Set here so every test child and its descendants inherit it, and so
+// the npm test gate's Vitest step (tests/gate.mjs) does not.
+process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=512`.trim();
 
 // Run-unique marker, exported BEFORE any child forks so every descendant at any
 // depth inherits it. This is how a leaked process is identified EXACTLY rather

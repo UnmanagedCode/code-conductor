@@ -1,6 +1,6 @@
 # web/e2e — the Playwright suite and its harness
 
-Real cc servers driven through Chromium: the web UI at `/`, and the harness's own self-test. Each worker boots its own cc in a scratch root with the fake `claude` CLI; live mode (opt-in) runs a real worker. Not part of `npm test` or `test:all`. What the fake CLI can and cannot reach: `docs/frontend-testing.md`.
+Real cc servers driven through Chromium: the web UI at `/`, and the harness's own self-test. Each worker boots its own cc in a scratch root with the fake `claude` CLI; live mode (opt-in) runs a real worker. Not part of `npm test`. What the fake CLI can and cannot reach: `docs/frontend-testing.md`.
 
 ## Commands
 

@@ -66,10 +66,11 @@ export type Command = {
   files: string[] | null;
 };
 
-// `npm test --ignore-scripts` skips `pretest` (the typecheck) and still runs
-// `test`, so NODE_OPTIONS stays single-sourced in package.json.
+// tests/run.mjs directly, not `npm test`: that would add the typecheck and the
+// gate's Vitest step, which `--all` runs once each in rows of their own. The heap
+// cap is set by tests/run.mjs itself.
 function nodeCommand(files: string[] | null): Command {
-  return { group: 'node', cmd: 'npm', args: ['test', '--ignore-scripts', ...(files ? ['--', ...files] : [])], env: {}, files };
+  return { group: 'node', cmd: 'node', args: ['tests/run.mjs', ...(files ?? [])], env: {}, files };
 }
 
 function vitestCommand(files: string[] | null, tmpDir: string): Command {
