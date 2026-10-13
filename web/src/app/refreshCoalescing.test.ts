@@ -38,8 +38,9 @@ async function boot() {
     return s;
   };
   const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
-  const signalOf = (url: string) => calls.find((x) => x.method === 'GET' && x.url === url)?.signal;
-  return { c, appStore, bus: ws.bus, projectReads, instanceReads, count, settled, flush, signalOf };
+  const signalsOf = (url: string) => calls.filter((x) => x.method === 'GET' && x.url === url).map((x) => x.signal);
+  const signalOf = (url: string) => signalsOf(url)[0];
+  return { c, appStore, bus: ws.bus, projectReads, instanceReads, count, settled, flush, signalOf, signalsOf };
 }
 
 afterEach(() => { stop?.(); stop = null; vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -120,6 +121,18 @@ describe('coalesced list reads', () => {
 });
 
 describe('a read that never settles', () => {
+  it('retries on a fresh signal: the first attempt\'s is aborted, the retry\'s is a different one that is not', async () => {
+    const b = await boot();
+    vi.useFakeTimers();
+    b.c.refreshInstances().catch(() => {});
+    await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+    const [first, retry] = b.signalsOf('/api/instances');
+    expect(first?.aborted, 'the hung attempt is cancelled').toBe(true);
+    expect(retry, 'the retry carries a signal').toBeDefined();
+    expect(retry === first, 'not the aborted one').toBe(false);
+    expect(retry?.aborted, 'a request on an aborted signal rejects at once, so the retry could never succeed').toBe(false);
+  });
+
   it('is aborted at its timeout and retried once, and the retry\'s answer is applied for the same callers', async () => {
     const b = await boot();
     vi.useFakeTimers();
