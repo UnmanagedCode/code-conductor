@@ -1,19 +1,21 @@
 import { test } from './harness/fixtures.ts';
 import {
-  KEEP, PLAIN, autoCollapseFlow, dragFlow, installProbes, keyboardFlow, noReloadFlow, persistFlow, phoneFlow, railGeometryFlow, sessionWidthFlow, toastClearsRailFlow,
+  KEEP, PLAIN, dragClampFlow, fullExitFlow, installProbes, keyboardFlow, narrowWindowFlow, noReloadFlow, persistFlow, phoneFlow, sessionWidthFlow,
+  toastClearsToggleFlow, toggleGeometryFlow,
 } from './plugin-dock.shared.ts';
 
 // Its own cc with two probe plugins, one keep-alive and one plain.
 test.use({ ccOptions: { server: 'plugin-dock' } });
 test.beforeAll(async ({ cc }) => { await installProbes(cc); });
 
-test('the rail sits at the right edge beside the session, and an app docks in split at the default width with no route change', railGeometryFlow);
-test('split ↔ full view never reloads a plain plugin\'s page', noReloadFlow(PLAIN));
-test('split ↔ full view never reloads a keep-alive plugin\'s page', noReloadFlow(KEEP));
-test('a handle drag crossing the iframe resizes, snaps to the rail and to full view, and a double-click toggles', dragFlow);
+test('the column holds only its mode toggle in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
+test('Dock to side and Expand to full view never reload a plain plugin\'s page', noReloadFlow(PLAIN));
+test('Dock to side and Expand to full view never reload a keep-alive plugin\'s page', noReloadFlow(KEEP));
+test('Back and Escape from the full view land on Conductor, never on split, and a switch in full costs no entry', fullExitFlow);
+test('a handle drag crossing the iframe resizes and stops at both limits, and a double-click resets the default width', dragClampFlow);
 test('the dock and sidebar handles resize from the keyboard', keyboardFlow);
-test('a window too narrow for the transcript collapses the dock to the rail, and widening restores it', autoCollapseFlow);
-test('a reload restores the docked app at its width and route, off the URL', persistFlow);
+test('a window too narrow for any split shows the plugin full-screen without writing, and Escape or a session pick closes it keeping the remembered split; a narrower window clamps split; widening restores the stored width', narrowWindowFlow);
+test('a reload restores the split plugin at its width and the page\'s own route, checked in the switcher, off the URL', persistFlow);
 test('the session width presets hold beside the dock', sessionWidthFlow);
-test('on a phone the dock is absent and the plugin view works as before', phoneFlow);
-test('a toast clears the rail and the dock handle', toastClearsRailFlow);
+test('below md the plugin view is full-page whatever the remembered mode, with no toggle', phoneFlow);
+test('a toast sits below the strip and never covers its toggle', toastClearsToggleFlow);

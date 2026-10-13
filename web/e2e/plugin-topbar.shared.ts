@@ -1,5 +1,6 @@
-// The plugin view's phone top bar: on drawer viewports the drawer button sits in a bar above the
-// plugin's page, never over it, and stays reachable while the start overlay is up.
+// The plugin view's top bar: on drawer viewports the drawer button sits in a bar above the
+// plugin's page, never over it, and stays reachable while the start overlay is up; on desktop
+// the same bar carries the plugin's name and Dock to side.
 // The bodies are shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
@@ -95,17 +96,21 @@ export async function overlayBelowBarFlow({ page }: Ctx): Promise<void> {
   await drawerOpensFrom(page, menu);
 }
 
-// Invariant: on desktop there is no bar or drawer button, and the frame fills the view.
-/** Desktop: the bar and its button are hidden and the frame is exactly the view's box. */
-export async function desktopUnchangedFlow({ page }: Ctx): Promise<void> {
-  test.skip(!isDesktop(), 'drawer viewports have the bar');
+// Invariant: on desktop the view's bar holds the plugin's name and Dock to side, no drawer button, and the frame fills the rest of the view below it.
+/** Desktop: the bar with the name and Dock to side, no drawer button, and the frame from the bar's bottom to the view's. */
+export async function desktopStripFlow({ page }: Ctx): Promise<void> {
+  test.skip(!isDesktop(), 'drawer viewports have the phone bar');
   await page.goto(`/#plugin/${PROBE.id}/`);
   await pageLoaded(page);
   const v = view(page);
-  await expect(v.getByRole('button', { name: 'Open sidebar' }).filter({ visible: true })).toHaveCount(0);
-  await expect(v.locator('header')).toBeHidden();
+  const bar = v.locator('header');
+  await expect(v.getByRole('button', { name: 'Open sidebar' })).toHaveCount(0);
+  await expect(bar).toBeVisible();
+  await expect(bar.getByRole('heading', { name: PROBE.name })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Dock to side', exact: true })).toBeVisible();
+  const barBox = await boxOf(bar, 'the bar');
   const viewBox = await boxOf(v, 'the view');
   const frameBox = await boxOf(v.locator('iframe:visible'), 'the frame');
-  expect(Math.abs(frameBox.y - viewBox.y), 'frame top = view top').toBeLessThanOrEqual(0.5);
-  expect(Math.abs(frameBox.height - viewBox.height), 'frame height = view height').toBeLessThanOrEqual(0.5);
+  expect(frameBox.y, 'the frame starts below the bar').toBeGreaterThanOrEqual(barBox.y + barBox.height - 0.5);
+  expect(Math.abs(frameBox.y + frameBox.height - (viewBox.y + viewBox.height)), 'the frame reaches the view\'s bottom edge').toBeLessThanOrEqual(0.5);
 }
