@@ -1,6 +1,7 @@
-// User bubbles start one avatar gutter right of where assistant text starts and fill to the column's
-// right edge, whatever their length, at every session width and on a phone; their attachments and
-// controls start at their text. The bodies are shared by the per-project spec files.
+// User bubbles start at the left edge of their conversation's collapsed action card and fill to the
+// column's right edge, whatever their length, at every session width, on a phone and in a sub-agent
+// panel; their attachments and controls start at their text. The bodies are shared by the per-project
+// spec files.
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
@@ -15,16 +16,12 @@ const LONG = tallPrompt('UBI-LONG');
 const list = (page: Page) => page.locator('[data-conversation] [data-session-width]').first();
 const filePicker = (page: Page) => page.locator('[data-composer] input[type="file"]');
 
-/**
- * The transcript geometry the inset rests on. `gutter` is derived from the assistant avatar: beside the
- * body (md and up) it is the avatar plus its gap; stacked above it (phone) it is the avatar's width.
- */
-async function measure(page: Page, stacked: boolean) {
-  return page.evaluate((stacked) => {
+/** The transcript geometry the user items rest on: the first action card (the root's; a sub-agent's sits inside it), whether it is collapsed, and each user bubble. */
+async function measure(page: Page) {
+  return page.evaluate(() => {
     const rect = (el: Element | null | undefined) => (el as HTMLElement).getBoundingClientRect();
     const listEl = document.querySelector('[data-conversation] [data-session-width]') as HTMLElement;
-    const avatar = rect(document.querySelector('[data-item=assistant] [data-assistant-avatar]'));
-    const body = rect(document.querySelector('[data-item=assistant] [data-assistant-body]'));
+    const trigger = document.querySelector('[data-item=assistant] [data-group-trigger]') as HTMLElement | null;
     const lr = listEl.getBoundingClientRect();
     const leftOf = (el: Element | null) => (el ? el.getBoundingClientRect().left : null);
     const bubbles = [...document.querySelectorAll('[data-item=user]')].map((item) => {
@@ -45,12 +42,12 @@ async function measure(page: Page, stacked: boolean) {
       };
     });
     return {
-      textStart: rect(document.querySelector('[data-item=assistant] [data-text-block] .md')).left,
-      gutter: stacked ? avatar.width : body.left - avatar.left,
+      cardLeft: trigger ? rect(trigger.parentElement).left : null,
+      cardCollapsed: trigger?.getAttribute('data-state') === 'closed',
       columnRight: lr.right - parseFloat(getComputedStyle(listEl).paddingRight),
       bubbles,
     };
-  }, stacked);
+  });
 }
 
 type Geometry = Awaited<ReturnType<typeof measure>>;
@@ -62,10 +59,17 @@ function pair(m: Geometry, where: string) {
   return { short: short!, long: long! };
 }
 
-function expectInset(m: Geometry, where: string): void {
-  expect(m.gutter, `${where}: fixture check: the avatar gutter is measured`).toBeGreaterThan(0);
+/** The collapsed action card's left edge, after the fixture checks that one is on screen, collapsed. */
+function cardLeftOf(m: Geometry, where: string): number {
+  expect(m.cardLeft, `${where}: fixture check: an action card is on screen`).not.toBeNull();
+  expect(m.cardCollapsed, `${where}: fixture check: the action card is collapsed`).toBe(true);
+  return m.cardLeft!;
+}
+
+function expectAligned(m: Geometry, where: string): void {
+  const cardLeft = cardLeftOf(m, where);
   for (const b of m.bubbles) {
-    expect(Math.abs(b.left - (m.textStart + m.gutter)), `${where}: ${b.tag} starts one gutter right of the assistant text`).toBeLessThanOrEqual(1);
+    expect(Math.abs(b.left - cardLeft), `${where}: ${b.tag} starts at the action card's left edge`).toBeLessThanOrEqual(1);
     expect(Math.abs(b.right - m.columnRight), `${where}: ${b.tag} ends at the column's right edge`).toBeLessThanOrEqual(1);
     expect(b.actionsLeft, `${where}: ${b.tag}'s action row is measured`).not.toBeNull();
     expect(Math.abs(b.actionsLeft! - b.textLeft), `${where}: ${b.tag}'s controls start at its text`).toBeLessThanOrEqual(1);
@@ -114,7 +118,7 @@ async function expectStrip(page: Page, where: string): Promise<void> {
 
 const shoot = async (page: Page, name: string) => test.info().attach(name, { body: await page.screenshot(), contentType: 'image/png' });
 
-// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble starts one avatar gutter right of the assistant text, ends at the column's right edge and is as wide as any other; its controls start at its text.
+// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble starts at the collapsed action card's left edge, ends at the column's right edge and is as wide as any other; its controls start at its text.
 /** Desktop: cycles every session width preset, then switches theme for the visual pass. */
 export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name !== 'desktop', 'the width presets are a desktop-layout feature');
@@ -123,12 +127,12 @@ export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   for (const label of LABELS) {
     await expect(widthButton(page, label)).toBeVisible();
     await expect(list(page)).toHaveAttribute('data-session-width', label.toLowerCase());
-    const m = await measure(page, false);
+    const m = await measure(page);
     if (label === 'Normal') {
       const { short } = pair(m, label);
-      expect(short.glyphWidth, 'positive control: the one-word text is far narrower than the inset span').toBeLessThan((m.columnRight - m.textStart - m.gutter) / 2);
+      expect(short.glyphWidth, "positive control: the one-word text is far narrower than the bubble's span").toBeLessThan((m.columnRight - cardLeftOf(m, label)) / 2);
     }
-    expectInset(m, label);
+    expectAligned(m, label);
     await shoot(page, `user-bubble-${label.toLowerCase()}`);
     await widthButton(page, label).click();
   }
@@ -141,13 +145,13 @@ export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   await shoot(page, `user-bubble-${wasDark ? 'light' : 'dark'}`);
 }
 
-// Invariants: on a phone each prompt bubble has a visible 3px right strip and no left border, and each user bubble starts one avatar width right of the assistant text, ends at the column's right edge and is as wide as any other; its controls start at its text.
-/** Drawer viewports: the same geometry at the stacked layout's inset. */
+// Invariants: on a phone each prompt bubble has a visible 3px right strip and no left border, and each user bubble starts at the collapsed action card's left edge, ends at the column's right edge and is as wide as any other; its controls start at its text.
+/** Drawer viewports: the same geometry in the stacked layout. */
 export async function narrowFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name === 'desktop', 'the stacked layout is below md');
   await sendBoth(page, cc, `e2e-user-bubble-inset-${test.info().project.name}`);
   await expectStrip(page, test.info().project.name);
-  expectInset(await measure(page, true), test.info().project.name);
+  expectAligned(await measure(page), test.info().project.name);
   await shoot(page, `user-bubble-${test.info().project.name}`);
 }
 
@@ -168,8 +172,8 @@ export async function attachmentsFlow({ page, cc }: Ctx): Promise<void> {
   expect(Math.abs(chip!.x - text!.x), "the attachment chip starts at the bubble's text").toBeLessThanOrEqual(1);
 }
 
-// Invariant: a user item inside a sub-agent panel starts one avatar gutter right of that panel's own assistant text (its bubbles have no avatar) and ends at the panel's content right edge.
-/** Every project, on the nested scenario: an Agent call whose sub-agent has a prompt and a text reply. */
+// Invariant: a user item inside a sub-agent panel starts at the left edge of that panel's own collapsed action card and ends at the panel's content right edge.
+/** Every project, on the nested scenario: an Agent call whose sub-agent has a prompt, a Read and a text reply. */
 export async function nestedFlow({ page, cc }: Ctx): Promise<void> {
   const project = test.info().project.name;
   const { sessionId } = await spawnSession(cc, `e2e-user-bubble-nested-${project}`);
@@ -185,24 +189,21 @@ export async function nestedFlow({ page, cc }: Ctx): Promise<void> {
   const nested = next.transcript(page).locator('[data-item=assistant] [data-item=user]');
   await expect(nested, 'fixture check: the sub-agent prompt shows in its panel').toContainText('SUB-PROMPT');
   await expect(next.transcript(page).locator('[data-sub-trigger] + * [data-text-block]'), "fixture check: the sub-agent's text shows").toContainText('SUB-TEXT');
+  const subCard = next.transcript(page).locator('[data-sub-trigger] + * [data-group-trigger]');
+  await expect(subCard, "fixture check: the sub-agent's run is one collapsed action card").toHaveAttribute('data-state', 'closed');
 
-  const m = await page.evaluate((stacked) => {
-    const rect = (sel: string, from: ParentNode = document) => (from.querySelector(sel) as HTMLElement).getBoundingClientRect();
+  const m = await page.evaluate(() => {
+    const rect = (sel: string, from: ParentNode) => (from.querySelector(sel) as HTMLElement).getBoundingClientRect();
     const panel = (document.querySelector('[data-sub-trigger]') as HTMLElement).nextElementSibling as HTMLElement;
-    // The root bubble's avatar: a sub-agent's bubbles have none.
-    const avatar = rect('[data-item=assistant] [data-assistant-avatar]');
-    const body = rect('[data-item=assistant] [data-assistant-body]');
     const bubble = rect('[data-item=user] [data-user-text]', panel);
     return {
-      gutter: stacked ? avatar.width : body.left - avatar.left,
-      subTextStart: rect('[data-text-block] .md', panel).left,
+      cardLeft: ((panel.querySelector('[data-group-trigger]') as HTMLElement).parentElement as HTMLElement).getBoundingClientRect().left,
       panelRight: panel.getBoundingClientRect().right - parseFloat(getComputedStyle(panel).paddingRight),
       left: bubble.left,
       right: bubble.right,
     };
-  }, project !== 'desktop');
-  expect(m.gutter, 'fixture check: the avatar gutter is measured').toBeGreaterThan(0);
-  expect(Math.abs(m.left - (m.subTextStart + m.gutter)), "the nested prompt starts one gutter right of the sub-agent's text").toBeLessThanOrEqual(1);
+  });
+  expect(Math.abs(m.left - m.cardLeft), "the nested prompt starts at the sub-agent's action card's left edge").toBeLessThanOrEqual(1);
   expect(Math.abs(m.right - m.panelRight), "the nested prompt ends at the panel's content right edge").toBeLessThanOrEqual(1);
   await nested.scrollIntoViewIfNeeded();
   await shoot(page, `user-bubble-nested-${project}`);

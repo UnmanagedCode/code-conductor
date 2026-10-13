@@ -105,16 +105,12 @@ function ViewToggle({ view, onChange }: { view: 'rendered' | 'raw'; onChange: (v
 // Single newlines inside a paragraph are line breaks people typed: keep them.
 const MD_TEXT = 'whitespace-pre-wrap';
 /**
- * Where every user-authored item starts: one avatar gutter right of where assistant text starts. At `md` and up the
- * text starts past the avatar + gap (2.75rem) and the gutter is that again; below it the text starts at
- * ASSISTANT_PROSE_INSET and the gutter is the avatar's width. The item then fills to the column's right edge.
+ * Where a root user-authored item starts: at the left edge of the conversation's action cards (`ActionGroup`), which
+ * sit at the assistant body's edge, past the avatar + gap (2.75rem) at `md` and up. Below `md` the body spans the
+ * column, and in a sub-agent panel its bubbles have no avatar, so there an item takes no inset. The item then fills to
+ * the column's right edge.
  */
-export const USER_INSET = 'ml-9.5 md:ml-22';
-/**
- * USER_INSET inside a sub-agent panel, whose bubbles have no avatar: at `md` and up the text starts at the panel's
- * content edge, so one gutter is 2.75rem; below it the text and the gutter are as at the root.
- */
-export const USER_INSET_SUB = 'ml-9.5 md:ml-11';
+export const USER_INSET = 'md:ml-11';
 /** A user bubble's horizontal padding; the attachments and the action row below it share it, so they start at its text. */
 const USER_BUBBLE_PAD_X = 'px-4';
 /** A user bubble: a soft tint and an accent strip on its right edge, the side its author speaks from; no outline. A tone adds the colours. */
@@ -285,7 +281,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
   );
   const injected = node.variant === 'wake' || node.variant === 'renew' || !!node.skill;
   return (
-    <div className={cn('group/user flex flex-col gap-1.5', model.isSub ? USER_INSET_SUB : USER_INSET)} data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
+    <div className={cn('group/user flex flex-col gap-1.5', !model.isSub && USER_INSET)} data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
       {(node.skill || node.wake || node.renew || node.forward) && <div className="space-y-2" data-user-folds>{folded}</div>}
       {node.answer ? (
         <div className={cn(USER_BUBBLE, 'bg-info/8 border-r-info/60')}>

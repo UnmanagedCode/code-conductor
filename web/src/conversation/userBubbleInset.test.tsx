@@ -1,11 +1,11 @@
-// Every user-authored item starts one avatar gutter right of where assistant text starts and fills to the
+// Every user-authored item starts at the left edge of its conversation's action cards and fills to the
 // column's right edge, with a tint and a right-edge strip as its side cue. The geometry itself is
 // web/e2e/user-bubble-inset.shared.ts (happy-dom reads 0); these pin the classes it rests on.
 import { describe, expect, it } from 'vitest';
 import { buildWakeStub } from '@shared/wakeCallback';
 import type { UiEvent } from '@shared/uiEvent';
 import { ConversationModel } from './model';
-import { USER_BUBBLE, USER_INSET, USER_INSET_SUB, USER_TONE_PROMPT } from './items';
+import { USER_BUBBLE, USER_INSET, USER_TONE_PROMPT } from './items';
 import { flush, renderModel } from './renderModel';
 import { FRUIT, show, stamped } from './questionTestkit';
 import { tool } from './testkit';
@@ -75,8 +75,8 @@ describe('user item inset', () => {
     expect(classesOf(prompt)).toEqual(expect.arrayContaining(tokens(USER_TONE_PROMPT)));
   });
 
-  // Invariant: a user item inside a sub-agent panel, whose bubbles have no avatar, carries USER_INSET_SUB (one gutter from that panel's text), and a root item keeps USER_INSET.
-  it("a sub-agent's user item takes the nested inset, a root item the root one", async () => {
+  // Invariant: a user item inside a sub-agent panel, whose bubbles have no avatar, carries no horizontal margin (its action cards start at the panel's content edge), and a root item keeps USER_INSET.
+  it("a sub-agent's user item takes no inset, a root item the root one", async () => {
     const root = await render([
       PROMPT,
       ...tool('m1', 0, 'A', 'Agent', { result: null }),
@@ -90,7 +90,7 @@ describe('user item inset', () => {
     expect(top, 'fixture check: one root user item').toHaveLength(1);
     expect(nested[0].closest('[data-item="assistant"]')!.querySelectorAll(':scope > [data-assistant-avatar]'), 'fixture check: the enclosing root bubble has its avatar').toHaveLength(1);
     expect(marginX(nested[0]), "the nested item's inset differs from the root one").not.toEqual(marginX(top[0]));
-    expect(marginX(nested[0])).toEqual(tokens(USER_INSET_SUB));
+    expect(marginX(nested[0])).toEqual([]);
     expect(marginX(top[0])).toEqual(tokens(USER_INSET));
     expect(alignClasses(nested[0])).toEqual([]);
   });
