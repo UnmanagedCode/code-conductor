@@ -26,7 +26,7 @@ import { respawnActive, syncWorktree } from '@/app/sessionActions';
 import { isSessionMuted, muteSession, mutesSignal } from '@/features/notifications/mutes';
 import { openPruneDialog, openRenameDialog, openStatsDialog, openSummaryDialog } from '@/features/dialogs/api';
 import { confirmDialog, toast } from '@/ui/feedback';
-import { StatusDot, type SessionStatus } from '@/components/app/StatusDot';
+import { Dot } from '@/features/sidebar/rows';
 import { cn } from '@/lib/utils';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 
@@ -106,15 +106,6 @@ export function modelGroups(inst: Instance): [string, Entry[]][] {
 
 async function wsAck(t: string, payload: Record<string, unknown>) {
   return send(t, payload, { ack: true });
-}
-
-function displayStatus(inst: Instance): SessionStatus {
-  if (inst.awaitingUser) return 'awaiting';
-  const s = inst.displayStatus ?? inst.status;
-  if (s === 'turn' || s === 'running' || s === 'spawning') return 'running';
-  if (s === 'crashed') return 'error';
-  if (s === 'exited') return 'stopped';
-  return 'idle';
 }
 
 export function ModeToggle({ inst }: { inst: Instance }) {
@@ -208,38 +199,41 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
     <header ref={headerRef} className="touch-pan-x touch-pinch-zoom sticky top-[env(safe-area-inset-top,0px)] z-10 flex min-h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 py-2 backdrop-blur md:px-5" data-session-header>
       <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open sidebar" onClick={onMenu}><MenuIcon /></Button>
 
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <StatusDot status={displayStatus(inst)} />
-          <h1 className="min-w-0 overflow-clip text-sm font-semibold text-ellipsis whitespace-nowrap" title={`session ${inst.sessionId ?? '?'}`}>{inst.title || inst.project}</h1>
-          {inst.modelSwitch ? (
-            <Badge variant="info" className="shrink-0"><RefreshCwIcon className="animate-spin" />Switching to {inst.modelSwitch.to}{crossed(inst.modelSwitch) ? ` on ${inst.modelSwitch.toBackend}` : ''}</Badge>
-          ) : inst.status === 'turn' && inst.interrupting ? (
-            <Badge variant="warning" className="shrink-0">Stopping…</Badge>
-          ) : inst.displayStatus && !['idle', 'turn'].includes(inst.displayStatus) ? (
-            <Badge variant={inst.displayStatus === 'crashed' ? 'destructive' : 'secondary'} className="shrink-0">{inst.displayStatus}</Badge>
-          ) : null}
-          {!inst.modelSwitch && inst.modelSwitchFailure && (
-            <Tooltip>
-              <TooltipTrigger asChild><Badge variant="destructive" className="shrink-0"><TriangleAlertIcon />Switch failed</Badge></TooltipTrigger>
-              <TooltipContent>Switch to {inst.modelSwitchFailure.to}{crossed(inst.modelSwitchFailure) ? ` on ${inst.modelSwitchFailure.toBackend}` : ''} failed: {inst.modelSwitchFailure.error}</TooltipContent>
-            </Tooltip>
-          )}
-          {resumeBadge ? (
-            <Tooltip>
-              <TooltipTrigger asChild><Badge variant="warning" className="shrink-0"><ClockIcon />{resumeBadge.text}</Badge></TooltipTrigger>
-              <TooltipContent className="max-w-64">{resumeBadge.title}</TooltipContent>
-            </Tooltip>
-          ) : inst.overageActive ? (
-            <Badge variant="warning" className="shrink-0"><ClockIcon />{formatAutoResumeTime(inst.overageResetsAt as number) || 'paused'}</Badge>
-          ) : null}
-        </div>
-        {(inst.title || worktree) && (
-          <div className="mt-0.5 flex min-w-0 items-center gap-2 pl-4 text-xs text-muted-foreground">
-            {inst.title && <span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{inst.project}</span>}
-            {worktree && <span className="flex min-w-0 items-center gap-1 font-mono"><GitBranchIcon className="size-3 shrink-0" /><span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{worktree.worktreeName}</span><span className="hidden shrink-0 sm:inline">← {worktree.baseBranch}</span></span>}
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <Dot status={inst.displayStatus ?? inst.status} awaitingWake={inst.awaitingWake} waitingOnJob={inst.waitingOnJob}
+          awaitingUser={inst.awaitingUser} awaitingUserSource={inst.awaitingUserSource} className="ring-offset-background" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="min-w-0 overflow-clip text-sm font-semibold text-ellipsis whitespace-nowrap" title={`session ${inst.sessionId ?? '?'}`}>{inst.title || inst.project}</h1>
+            {inst.modelSwitch ? (
+              <Badge variant="info" className="shrink-0"><RefreshCwIcon className="animate-spin" />Switching to {inst.modelSwitch.to}{crossed(inst.modelSwitch) ? ` on ${inst.modelSwitch.toBackend}` : ''}</Badge>
+            ) : inst.status === 'turn' && inst.interrupting ? (
+              <Badge variant="warning" className="shrink-0">Stopping…</Badge>
+            ) : inst.displayStatus && !['idle', 'turn'].includes(inst.displayStatus) ? (
+              <Badge variant={inst.displayStatus === 'crashed' ? 'destructive' : 'secondary'} className="shrink-0">{inst.displayStatus}</Badge>
+            ) : null}
+            {!inst.modelSwitch && inst.modelSwitchFailure && (
+              <Tooltip>
+                <TooltipTrigger asChild><Badge variant="destructive" className="shrink-0"><TriangleAlertIcon />Switch failed</Badge></TooltipTrigger>
+                <TooltipContent>Switch to {inst.modelSwitchFailure.to}{crossed(inst.modelSwitchFailure) ? ` on ${inst.modelSwitchFailure.toBackend}` : ''} failed: {inst.modelSwitchFailure.error}</TooltipContent>
+              </Tooltip>
+            )}
+            {resumeBadge ? (
+              <Tooltip>
+                <TooltipTrigger asChild><Badge variant="warning" className="shrink-0"><ClockIcon />{resumeBadge.text}</Badge></TooltipTrigger>
+                <TooltipContent className="max-w-64">{resumeBadge.title}</TooltipContent>
+              </Tooltip>
+            ) : inst.overageActive ? (
+              <Badge variant="warning" className="shrink-0"><ClockIcon />{formatAutoResumeTime(inst.overageResetsAt as number) || 'paused'}</Badge>
+            ) : null}
           </div>
-        )}
+          {(inst.title || worktree) && (
+            <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              {inst.title && <span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{inst.project}</span>}
+              {worktree && <span className="flex min-w-0 items-center gap-1 font-mono"><GitBranchIcon className="size-3 shrink-0" /><span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{worktree.worktreeName}</span><span className="hidden shrink-0 sm:inline">← {worktree.baseBranch}</span></span>}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="hidden items-center gap-1.5 lg:flex">
