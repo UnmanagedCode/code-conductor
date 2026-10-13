@@ -38,7 +38,7 @@ const textBlocks = (page: Page) =>
   bubble(page).locator('[data-text-block]').and(page.locator('[data-text-block]:not([data-item=assistant] [data-item=assistant] [data-text-block])'));
 
 /** Collects what each read-aloud tap sends to be spoken (the `POST /api/tts` bodies), answered with no audio. */
-async function speechSeam(page: Page): Promise<string[]> {
+export async function speechSeam(page: Page): Promise<string[]> {
   const bodies: string[] = [];
   await page.route('**/api/tts', (route) => {
     bodies.push(route.request().postData() ?? '');
