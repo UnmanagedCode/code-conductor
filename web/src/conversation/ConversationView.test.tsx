@@ -7,6 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { stickyPrompt } from '@/app/controller';
 import { ConversationView } from './ConversationView';
 import { USER_BUBBLE, USER_INSET, USER_TONE_PROMPT } from './items';
+import { alignClasses, marginX, selfAlignClasses, tokens } from './userBubbleTestkit';
 import { pinStore, STATUS_NONE, SWIPE_MIN_PX, type PinState } from './stickyPrompt';
 
 const PINNED: PinState = { kind: 'pinned', html: '<p>first</p>', shift: 0, overflowing: false, pushedOff: false };
@@ -33,12 +34,6 @@ afterEach(() => {
 // Horizontal padding utilities, with any variant prefix: px-, pl-, pr-, ps-, pe-, p-.
 const padX = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*p[xlrse]?-/.test(c)).sort();
 const capClasses = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*max-w-/.test(c)).sort();
-// Horizontal margin utilities, with any variant prefix: m-, mx-, ml-, mr-, ms-, me-.
-const marginX = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*m[lrsex]?-/.test(c)).sort();
-// Anything that caps a user item's width or pushes it to the right.
-const alignClasses = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*(?:max-w-|ml-auto$|items-end$|justify-end$|self-end$)/.test(c));
-// A constant's classes; `?? ''` lets a build without it fail at an assertion rather than a TypeError.
-const tokens = (s: string | undefined) => (s ?? '').split(/\s+/).filter(Boolean).sort();
 
 describe('pinned prompt', () => {
   // Invariant: the pin column has the transcript list's width cap and horizontal padding, so their content boxes (and the bubbles in them) coincide.
@@ -115,6 +110,7 @@ describe('pinned prompt', () => {
     expect(marginX(wrapper).length, 'the pin has a horizontal inset').toBeGreaterThan(0);
     expect(marginX(wrapper)).toEqual(tokens(USER_INSET));
     expect(alignClasses(wrapper)).toEqual([]);
+    expect(selfAlignClasses(body)).toEqual([]);
     expect(tokens(USER_BUBBLE).length, 'the shared shape has classes').toBeGreaterThan(0);
     expect(body.className.split(/\s+/)).toEqual(expect.arrayContaining([...tokens(USER_BUBBLE), ...tokens(USER_TONE_PROMPT)]));
   });

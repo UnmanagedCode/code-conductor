@@ -5,18 +5,11 @@ import { describe, expect, it } from 'vitest';
 import { buildWakeStub } from '@shared/wakeCallback';
 import type { UiEvent } from '@shared/uiEvent';
 import { ConversationModel } from './model';
-import { USER_BUBBLE, USER_INSET, USER_TONE_PROMPT } from './items';
+import { USER_BUBBLE, USER_INSET, USER_INSET_SUB, USER_TONE_PROMPT } from './items';
 import { flush, renderModel } from './renderModel';
 import { FRUIT, show, stamped } from './questionTestkit';
-
-const classesOf = (el: Element) => el.className.split(/\s+/).filter(Boolean);
-// The constants' classes; `?? ''` lets a build without them fail at an assertion rather than a TypeError.
-const tokens = (s: string | undefined) => (s ?? '').split(/\s+/).filter(Boolean).sort();
-// Horizontal margin utilities, with any variant prefix: m-, mx-, ml-, mr-, ms-, me-.
-const marginX = (el: Element) => classesOf(el).filter((c) => /^(?:[\w-]+:)*m[lrsex]?-/.test(c)).sort();
-// Anything that caps a user item's width or pushes it to the right.
-const alignClasses = (el: Element) => classesOf(el).filter((c) => /^(?:[\w-]+:)*(?:max-w-|ml-auto$|items-end$|justify-end$|self-end$)/.test(c));
-const padX = (el: Element) => classesOf(el).filter((c) => /^(?:[\w-]+:)*p[xlrse]?-/.test(c)).sort();
+import { tool } from './testkit';
+import { alignClasses, classesOf, marginX, padX, selfAlignClasses, tokens } from './userBubbleTestkit';
 
 async function render(events: UiEvent[]) {
   const m = new ConversationModel();
@@ -44,9 +37,10 @@ describe('user item inset', () => {
     for (const item of items) {
       expect(marginX(item).length, `${item.getAttribute('data-item')} item has a horizontal inset`).toBeGreaterThan(0);
       expect(marginX(item)).toEqual(tokens(USER_INSET));
-      for (const el of [item, ...item.children]) expect(alignClasses(el), `${item.getAttribute('data-item')}: ${el.className}`).toEqual([]);
+      expect(alignClasses(item), `${item.getAttribute('data-item')}: ${item.className}`).toEqual([]);
+      for (const el of item.children) expect(selfAlignClasses(el), `${item.getAttribute('data-item')} child: ${el.className}`).toEqual([]);
     }
-    for (const el of root.querySelectorAll('[data-user-text], [data-item="queued"] > div')) expect(alignClasses(el), el.className).toEqual([]);
+    for (const el of root.querySelectorAll('[data-user-text], [data-item="queued"] > div')) expect(selfAlignClasses(el), el.className).toEqual([]);
   });
 
   // Invariant: the attachments row and the action row carry the bubble's own horizontal padding, so their contents start at its text.
@@ -76,5 +70,25 @@ describe('user item inset', () => {
     expect(tokens(USER_TONE_PROMPT).length, 'the prompt tone has classes').toBeGreaterThan(0);
     for (const [name, el] of bubbles) expect(classesOf(el), `${name} has the shared shape`).toEqual(expect.arrayContaining(tokens(USER_BUBBLE)));
     expect(classesOf(prompt)).toEqual(expect.arrayContaining(tokens(USER_TONE_PROMPT)));
+  });
+
+  // Invariant: a user item inside a sub-agent panel, whose bubbles have no avatar, carries USER_INSET_SUB (one gutter from that panel's text), and a root item keeps USER_INSET.
+  it("a sub-agent's user item takes the nested inset, a root item the root one", async () => {
+    const root = await render([
+      PROMPT,
+      ...tool('m1', 0, 'A', 'Agent', { result: null }),
+      { kind: 'user_echo', text: 'child prompt', parentToolUseId: 'A' },
+      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'A', message: { content: [{ type: 'text', text: 'S1' }] } } as UiEvent,
+    ]);
+    const users = [...root.querySelectorAll('[data-item="user"]')];
+    const nested = users.filter((u) => u.parentElement!.closest('[data-item="assistant"]'));
+    const top = users.filter((u) => !u.parentElement!.closest('[data-item="assistant"]'));
+    expect(nested, 'fixture check: one user item inside the sub-agent panel').toHaveLength(1);
+    expect(top, 'fixture check: one root user item').toHaveLength(1);
+    expect(nested[0].closest('[data-item="assistant"]')!.querySelectorAll(':scope > [data-assistant-avatar]'), 'fixture check: the enclosing root bubble has its avatar').toHaveLength(1);
+    expect(marginX(nested[0]), "the nested item's inset differs from the root one").not.toEqual(marginX(top[0]));
+    expect(marginX(nested[0])).toEqual(tokens(USER_INSET_SUB));
+    expect(marginX(top[0])).toEqual(tokens(USER_INSET));
+    expect(alignClasses(nested[0])).toEqual([]);
   });
 });

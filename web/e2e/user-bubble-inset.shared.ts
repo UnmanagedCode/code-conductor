@@ -55,6 +55,13 @@ async function measure(page: Page, stacked: boolean) {
 
 type Geometry = Awaited<ReturnType<typeof measure>>;
 
+/** The one-word and the long bubble, after the fixture check that both were measured. */
+function pair(m: Geometry, where: string) {
+  const [short, long] = [m.bubbles.find((b) => b.tag === SHORT), m.bubbles.find((b) => b.tag === 'UBI-LONG')];
+  expect(short && long, `${where}: fixture check: both bubbles are measured`).toBeTruthy();
+  return { short: short!, long: long! };
+}
+
 function expectInset(m: Geometry, where: string): void {
   expect(m.gutter, `${where}: fixture check: the avatar gutter is measured`).toBeGreaterThan(0);
   for (const b of m.bubbles) {
@@ -63,9 +70,8 @@ function expectInset(m: Geometry, where: string): void {
     expect(b.actionsLeft, `${where}: ${b.tag}'s action row is measured`).not.toBeNull();
     expect(Math.abs(b.actionsLeft! - b.textLeft), `${where}: ${b.tag}'s controls start at its text`).toBeLessThanOrEqual(1);
   }
-  const [short, long] = [m.bubbles.find((b) => b.tag === SHORT), m.bubbles.find((b) => b.tag === 'UBI-LONG')];
-  expect(short && long, `${where}: fixture check: both bubbles are measured`).toBeTruthy();
-  expect(Math.abs(short!.width - long!.width), `${where}: a one-word bubble is as wide as a long one`).toBeLessThanOrEqual(1);
+  const { short, long } = pair(m, where);
+  expect(Math.abs(short.width - long.width), `${where}: a one-word bubble is as wide as a long one`).toBeLessThanOrEqual(1);
 }
 
 async function sendBoth(page: Page, cc: Ctx['cc'], project: string): Promise<void> {
@@ -88,7 +94,7 @@ export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
     await expect(list(page)).toHaveAttribute('data-session-width', label.toLowerCase());
     const m = await measure(page, false);
     if (label === 'Normal') {
-      const short = m.bubbles.find((b) => b.tag === SHORT)!;
+      const { short } = pair(m, label);
       expect(short.glyphWidth, 'positive control: the one-word text is far narrower than the inset span').toBeLessThan((m.columnRight - m.textStart - m.gutter) / 2);
     }
     expectInset(m, label);
@@ -128,4 +134,44 @@ export async function attachmentsFlow({ page, cc }: Ctx): Promise<void> {
   const chip = await item.locator('span', { hasText: 'ubi-notes.txt' }).first().boundingBox();
   const text = await item.locator('[data-user-text] .md').boundingBox();
   expect(Math.abs(chip!.x - text!.x), "the attachment chip starts at the bubble's text").toBeLessThanOrEqual(1);
+}
+
+// Invariant: a user item inside a sub-agent panel starts one avatar gutter right of that panel's own assistant text (its bubbles have no avatar) and ends at the panel's content right edge.
+/** Every project, on the nested scenario: an Agent call whose sub-agent has a prompt and a text reply. */
+export async function nestedFlow({ page, cc }: Ctx): Promise<void> {
+  const project = test.info().project.name;
+  const { sessionId } = await spawnSession(cc, `e2e-user-bubble-nested-${project}`);
+  await page.goto(`/#session=${sessionId}`);
+  await next.sendPrompt(page, 'SUB-INSET');
+  await expect(next.turnEnds(page), 'fixture check: the turn ended').toHaveCount(1);
+  const run = next.transcript(page).locator('[data-group-trigger]').first();
+  if ((await run.getAttribute('data-state')) !== 'open') await run.click();
+  await expect(run).toHaveAttribute('data-state', 'open');
+  const subTrigger = next.transcript(page).locator('[data-sub-trigger]');
+  if ((await subTrigger.getAttribute('data-state')) !== 'open') await subTrigger.click();
+  await expect(subTrigger).toHaveAttribute('data-state', 'open');
+  const nested = next.transcript(page).locator('[data-item=assistant] [data-item=user]');
+  await expect(nested, 'fixture check: the sub-agent prompt shows in its panel').toContainText('SUB-PROMPT');
+  await expect(next.transcript(page).locator('[data-sub-trigger] + * [data-text-block]'), "fixture check: the sub-agent's text shows").toContainText('SUB-TEXT');
+
+  const m = await page.evaluate((stacked) => {
+    const rect = (sel: string, from: ParentNode = document) => (from.querySelector(sel) as HTMLElement).getBoundingClientRect();
+    const panel = (document.querySelector('[data-sub-trigger]') as HTMLElement).nextElementSibling as HTMLElement;
+    // The root bubble's avatar: a sub-agent's bubbles have none.
+    const avatar = rect('[data-item=assistant] [data-assistant-avatar]');
+    const body = rect('[data-item=assistant] [data-assistant-body]');
+    const bubble = rect('[data-item=user] [data-user-text]', panel);
+    return {
+      gutter: stacked ? avatar.width : body.left - avatar.left,
+      subTextStart: rect('[data-text-block] .md', panel).left,
+      panelRight: panel.getBoundingClientRect().right - parseFloat(getComputedStyle(panel).paddingRight),
+      left: bubble.left,
+      right: bubble.right,
+    };
+  }, project !== 'desktop');
+  expect(m.gutter, 'fixture check: the avatar gutter is measured').toBeGreaterThan(0);
+  expect(Math.abs(m.left - (m.subTextStart + m.gutter)), "the nested prompt starts one gutter right of the sub-agent's text").toBeLessThanOrEqual(1);
+  expect(Math.abs(m.right - m.panelRight), "the nested prompt ends at the panel's content right edge").toBeLessThanOrEqual(1);
+  await nested.scrollIntoViewIfNeeded();
+  await shoot(page, `user-bubble-nested-${project}`);
 }
