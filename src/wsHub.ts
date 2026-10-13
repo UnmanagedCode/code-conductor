@@ -31,7 +31,7 @@ import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.t
 import { isKnownTier } from './modelVersions.ts';
 import { getTierBackend, getTierEffort, isKnownBackend, isKnownBinding } from './appSettings.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
-import type { UiEvent } from './parser.ts';
+import type { UiEvent } from '../shared/uiEvent.ts';
 import { currentSegmentScope, segmentOfSeq, insertRingSeamDividers } from './eventArchive.ts';
 
 export interface WsHubOptions {

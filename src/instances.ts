@@ -118,7 +118,7 @@ import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts
 import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { hostPlatform, type Platform } from './platform/index.ts';
 import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, ModelSwitchState, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
-import type { UiEvent } from './parser.ts';
+import type { UiEvent, UiEventOf, UserEchoAttachment } from '../shared/uiEvent.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
@@ -196,9 +196,8 @@ interface PendingSteer {
   reject: (e: Error) => void;
 }
 
-// Narrow an event's `data` payload (UiEvent's index signature is `unknown`) to
-// a record so the per-subtype field reads below stay typed.
-function evData(ev: UiEvent): Record<string, unknown> | null | undefined {
+// A system event's `data` payload as a record, for the per-subtype field reads below.
+function evData(ev: UiEventOf<'system'>): Record<string, unknown> | null | undefined {
   return ev.data as Record<string, unknown> | null | undefined;
 }
 
@@ -582,8 +581,8 @@ export class EventLog {
         && tail && tail.kind === v.kind
         && tail.msgId === v.msgId && tail.blockIdx === v.blockIdx) {
       // The parser emits delta text as a string, so the merge is string
-      // concatenation (the index-signature field is unknown).
-      tail.text = (tail.text as string) + (v.text as string);
+      // concatenation.
+      tail.text = tail.text + v.text;
       return;
     }
     v._seq = this.nextSeq;
@@ -3393,7 +3392,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
 
     const content: Array<Record<string, unknown>> = [];
-    const echoAttachments: unknown[] = [];
+    const echoAttachments: UserEchoAttachment[] = [];
     if (safeText.length) content.push({ type: 'text', text: safeText });
 
     for (const a of atts) {
@@ -6094,7 +6093,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         tiers,
         exclude,
         mirrorRoot,
-        emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
+        emit: (ev) => inst._emitUi(ev),
         // THE FAULT SURFACE, READ LAZILY THROUGH THE INSTANCE. The redirect is
         // constructed here and the FuseSession a few lines below it, so a
         // direct reference would capture `null`; and a session that is rewound
@@ -6128,7 +6127,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         if (sourceOverrideRoot) {
           inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line:
             `cc-fuse: CC_FUSE_SOURCE_OVERRIDE_ROOT=${sourceOverrideRoot} — this session's file tools are `
-            + `served from a LOCAL DIRECTORY, not from system '${redirectPlacement.systemId}'` } } as UiEvent);
+            + `served from a LOCAL DIRECTORY, not from system '${redirectPlacement.systemId}'` } });
         }
         inst.attachFuse(new FuseSession({
           plan: buildFusePlan({
@@ -6149,10 +6148,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
               // control frame was REFUSED, which the worker sees as a bare
               // -EIO; the session's stderr is where someone reading that will
               // be. `FuseSession`'s own `log` sink is not wired at this site.
-              log: (line) => inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line } } as UiEvent),
+              log: (line) => inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line } }),
             }),
           ccBootId: BOOT_ID,
-          emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
+          emit: (ev) => inst._emitUi(ev),
         }));
       }
     }

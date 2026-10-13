@@ -9,7 +9,7 @@ import path from 'node:path';
 import { orchStoreRoot } from './projects.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
-import type { UiEvent } from './parser.ts';
+import type { UiEventOf } from '../shared/uiEvent.ts';
 
 export function costsPath(): string {
   return path.join(orchStoreRoot(), 'costs.jsonl');
@@ -57,8 +57,8 @@ interface CostRow {
   cost_usd?: number;
 }
 
-// The event fields beyond `kind` reach the listener through UiEvent's index
-// signature (untyped), so every numeric/boolean read is validated here. The
+// The turn_end fields are typed, but the parser asserts rather than checks the
+// CLI values behind them, so every numeric/boolean read is validated here. The
 // SDK/parser contract supplies numbers, nulls, and booleans; anything else is
 // coerced fail-safe (0 / false) rather than persisted as garbage. See the
 // commit message for the exact coercions.
@@ -71,7 +71,7 @@ function numOrNull(v: unknown): number | null {
 // sessionId/model move on renewal/rewind/model-switch) and costsPath() reads
 // PROJECTS_ROOT live — resolving either at write time would capture whatever
 // they had become by the time the queue drained.
-function appendCostRow(inst: InstanceLike, ev: UiEvent, parentSessionId: string | null): void {
+function appendCostRow(inst: InstanceLike, ev: UiEventOf<'turn_end'>, parentSessionId: string | null): void {
   // Per-turn token totals come ONLY from the SDK `result.usage` (a genuine
   // per-turn sum). A substitution backend (e.g. the built-in `ollama` row) omits
   // `usage` from its `result` frames, so ev.usage is null there — we OMIT the four

@@ -75,6 +75,7 @@ import type { System } from './system.ts';
 import { classifyForTool, type TierEntry } from './fuse/tierTable.ts';
 import { refusalFor, refusesTool } from './fuse/faultRefusals.ts';
 import type { Fault } from './fuse/control.ts';
+import type { UiEvent } from '../../shared/uiEvent.ts';
 
 // A System cc can run one command on. Every non-local system is one
 // (registry.ts resolves a non-local id to a ProviderSystem); the type says so
@@ -171,7 +172,7 @@ export interface SessionRedirectOptions {
   // out-of-boundary refusal names.
   systemPath: string;
   forwarderUrl: string;
-  emit: (ev: unknown) => void;
+  emit: (ev: UiEvent) => void;
   // THE tier/deny artifact for this session — the SAME array the FUSE plan
   // renders its pins file from (src/instances.ts builds it once). Identity, not
   // equality: see FusePlanInput.tiers.
@@ -204,7 +205,7 @@ export class SessionRedirect {
   readonly #exclude: readonly string[];
   readonly #mirrorRoot: string;
   readonly #forwarderUrl: string;
-  readonly #emit: (ev: unknown) => void;
+  readonly #emit: (ev: UiEvent) => void;
   readonly #shellCommandTimeoutMs: number | undefined;
   readonly #maxOutputBytes: number;
   readonly #faultAt: ((p: string) => Fault | null) | undefined;

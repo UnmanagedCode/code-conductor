@@ -80,7 +80,7 @@ import { buildForwardFrame } from '../../shared/forwardFrame.ts';
 import { contextReading } from '../sessionPrune.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
-import type { UiEvent } from '../parser.ts';
+import type { UiEvent } from '../../shared/uiEvent.ts';
 import { httpError } from '../httpError.ts';
 
 // Dirty-line cap for project_status — mirror project_read/project_diff's
@@ -900,6 +900,10 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
     reason: `no session ${sessionId} is known to the orchestrator.` };
 }
 
+// get_transcript's stand-in for an event too large for any page: an MCP output
+// shape, not a UI event.
+type OmittedEvent = { _seq?: number; kind: UiEvent['kind']; omitted: true; chars: number };
+
 // Disk-backed event paging. RING-FIRST: pageInstanceEvents serves from the
 // in-memory ring and only reads the on-disk session transcript when the
 // requested window crosses trimmedBefore (i.e. asks for evicted history) —
@@ -945,10 +949,10 @@ export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessi
     nextFrom: Math.max(page.lastSeq, ...page.events.map(e => (typeof e._seq === 'number' ? e._seq : 0))) + 1,
   }).length;
   const room = MCP_RESULT_CHAR_BUDGET - frame;
-  const events: UiEvent[] = [];
+  const events: Array<UiEvent | OmittedEvent> = [];
   let used = 0;
   for (const ev of page.events) {
-    let fitted: UiEvent = ev;
+    let fitted: UiEvent | OmittedEvent = ev;
     let chars = JSON.stringify(ev).length;
     if (chars > room) {
       fitted = { _seq: ev._seq, kind: ev.kind, omitted: true, chars };

@@ -15,7 +15,7 @@
 // implemented with an incompatible type, is a compile error at the class, not
 // a silent drift across per-consumer copies.
 
-import type { UiEvent } from './parser.ts';
+import type { UiEvent } from '../shared/uiEvent.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { TranscriptPlacement } from './projects.ts';
 import type { WorktreeMeta } from './worktrees.ts';

@@ -16,9 +16,10 @@ import {
   consolidateUserContent, isSoftInterruptContent, isInterruptMarkerContent,
   isTaskNotificationContent, isLocalCommandCaveatLine, attachSkillLoad, stampCliInjected,
   stampCompactSummary, compactionEvent,
-  type UiEvent, type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
+  type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
 } from './parser.ts';
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
+import type { UiEvent } from '../shared/uiEvent.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
 import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
 import { taskNotificationFromEnqueue } from './taskNotification.ts';

@@ -12,7 +12,7 @@
 // `turn`) and src/transcript.ts (replay).
 
 import { TOOL_NAME_PREFIX } from './playbooks.ts';
-import type { UiEvent } from './parser.ts';
+import type { UiEvent } from '../shared/uiEvent.ts';
 
 // Each extends the run.
 const COUNTED_TOOLS = ['project_read', 'project_bash'].map(t => TOOL_NAME_PREFIX + t);

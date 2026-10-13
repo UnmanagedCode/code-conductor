@@ -16,7 +16,7 @@
 // a TaskStop leaves no enqueue at all, and a stop by the session ending is
 // persisted under a different status than it streamed.
 
-import type { UiEvent } from './parser.ts';
+import type { UiEvent } from '../shared/uiEvent.ts';
 
 const RENDERED_STATUSES: readonly string[] = ['completed', 'failed'];
 

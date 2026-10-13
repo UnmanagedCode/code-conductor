@@ -5,44 +5,22 @@
 // per-instance state so streaming content blocks can be merged across many
 // stream_event chunks before the matching content_block_stop arrives.
 //
-// Emitted UI event kinds:
-//   message_start           { msgId, usage }                // live context-size signal
-//   context_usage           { msgId, usage }                // fallback context-size signal (see _ctxFallbackArmed)
-//   call_usage              { msgId, outputTokens, thinkingTokens }  // a call's final output (message_delta); Instance stamps promptTokens/growthTokens
-//   text_delta              { msgId, blockIdx, text }
-//   text_end                { msgId, blockIdx }
-//   thinking_delta          { msgId, blockIdx, text }
-//   thinking_end            { msgId, blockIdx }
-//   tool_use_input_delta    { msgId, blockIdx, toolUseId, partialJson }
-//   tool_use                { msgId, blockIdx, toolUseId, name, input }
-//   tool_result             { toolUseId, content, isError, yielded?: true, agentTokens?, agentToolUses? }  // agent* live only (_handleUser)
-//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill}, cliInjected?: true, compactSummary?: true }
-//   compaction              { trigger: 'auto'|'manual'|null, preTokens, postTokens, durationMs }  // the CLI's compact_boundary, both surfaces
-//   system                  { subtype, data }
-//   hook                    { event, data }
-//   assistant_message       { msgId, message }              // final reconciled message
-//   turn_end                { usage, durationMs, durationApiMs, durationApiMsDelta, cost, costDelta, isError, stopReason, subtype }
-//   control_response        { requestId, ok, response?, error? }
-//   raw                     { line }                        // fallback for unrecognized
+// The emitted events are typed by the UiEvent union in shared/uiEvent.ts.
 //
 // The CLI's stream-json wire shapes are an UNTYPED external boundary — the
 // envelope/block/delta interfaces below declare only the fields this file
 // reads, loosely (unknown), and each read narrows at the point of use. A
 // non-conforming value fails toward a safe default rather than propagating
-// (recorded as deliberate edge-tightening in the batch commit).
+// (recorded as deliberate edge-tightening in the batch commit). The exception
+// is a wire value an event passes through unchecked: its construction asserts
+// the type the event declares.
 
 import { randomUUID } from 'node:crypto';
 import { planPathFromInput } from './planFile.ts';
 import { AWAITING_INPUT_MESSAGE, EARLIER_AWAITING_INPUT_MESSAGES } from './settings.ts';
 import { TaskStarts, taskNotificationFromFrame, type TaskFrame } from './taskNotification.ts';
-
-// UI event shape. `kind` is the discriminator; the per-kind payload fields
-// ride on the index signature (consumers read what they know).
-export interface UiEvent {
-  kind: string;
-  parentToolUseId?: string | null;
-  [key: string]: unknown;
-}
+import type { UiEvent, UiEventOf, SystemData, UserEchoAttachment, AssistantWireMessage } from '../shared/uiEvent.ts';
+import type { Usage } from '../shared/usage.ts';
 
 // ── CLI stream-json wire shapes ───────────────────────────────────────────
 
@@ -147,6 +125,12 @@ export function promptTokenSum(usage: unknown): number {
        + (u.cache_creation_input_tokens ?? 0);
 }
 
+// A CLI frame passed through whole as a `system` event. The frame is untyped
+// wire data; SystemData names the fields consumers read off it.
+function cliSystemEvent(subtype: unknown, frame: WireEnvelope): UiEventOf<'system'> {
+  return { kind: 'system', subtype: subtype as string, data: frame as SystemData };
+}
+
 export class Parser {
   currentMsgId: string | null = null;
   blocks = new Map<number, BlockState>(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
@@ -223,7 +207,7 @@ export class Parser {
       case 'control_request':  return this._handleControlRequest(obj);
       case 'keep_alive':       return [];
       default:
-        return [{ kind: 'system', subtype: obj.type ?? 'unknown', data: obj }];
+        return [cliSystemEvent(obj.type ?? 'unknown', obj)];
     }
   }
 
@@ -236,11 +220,11 @@ export class Parser {
     if (obj.subtype === 'task_notification') {
       return [taskNotificationFromFrame(obj, this._taskStarts.take((obj as TaskFrame).task_id))];
     }
-    return [{ kind: 'system', subtype: obj.subtype ?? 'unknown', data: obj }];
+    return [cliSystemEvent(obj.subtype ?? 'unknown', obj)];
   }
 
   _handleControlRequest(obj: WireEnvelope): UiEvent[] {
-    return [{ kind: 'system', subtype: 'control_request', data: obj }];
+    return [cliSystemEvent('control_request', obj)];
   }
 
   _handleControlResponse(obj: WireEnvelope): UiEvent[] {
@@ -307,7 +291,7 @@ export class Parser {
           kind: 'message_start',
           msgId: this.currentMsgId,
           usage: prompt > 0 ? usage : null,
-          model: ev.message?.model ?? null,
+          model: (ev.message?.model ?? null) as string | null,
         }];
       }
       case 'content_block_start': {
@@ -563,7 +547,7 @@ export class Parser {
         const b = raw as WireContentBlock;
         if (b.type !== 'tool_use') continue;
         events.push({
-          kind: 'tool_use', msgId, blockIdx: i,
+          kind: 'tool_use', msgId: msgId as string | null, blockIdx: i,
           toolUseId: typeof b.id === 'string' ? b.id : null,
           name: typeof b.name === 'string' ? b.name : null,
           input: b.input ?? {},
@@ -572,8 +556,8 @@ export class Parser {
     }
     events.push({
       kind: 'assistant_message',
-      msgId: msg.id ?? this.currentMsgId,
-      message: msg,
+      msgId: (msg.id ?? this.currentMsgId) as string | null,
+      message: msg as AssistantWireMessage,
     });
     return events;
   }
@@ -625,14 +609,14 @@ export class Parser {
     if (apiMs != null) this._lastApiMs = apiMs;
     return [{
       kind: 'turn_end',
-      subtype: obj.subtype ?? 'success',
-      stopReason: obj.stop_reason ?? null,
-      durationMs: obj.duration_ms ?? null,        // turn walltime (incl. tool exec), per-turn
+      subtype: (obj.subtype ?? 'success') as string,
+      stopReason: (obj.stop_reason ?? null) as string | null,
+      durationMs: (obj.duration_ms ?? null) as number | null,       // turn walltime (incl. tool exec), per-turn
       durationApiMs: apiMs,                        // raw cumulative session API time (kept for reference)
       durationApiMsDelta,                          // per-turn LLM/inference time
       cost,      // raw cumulative session total (kept for reference)
       costDelta, // actual cost of this turn
-      usage: obj.usage ?? null,
+      usage: (obj.usage ?? null) as Usage | null,
       isError: !!obj.is_error,
     }];
   }
@@ -665,13 +649,6 @@ function stampAgentTotals(events: UiEvent[], obj: WireEnvelope): void {
 // "Attached file:" isn't accidentally promoted.
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 const ATT_LINE_RE = /^Attached file:\s*`([^`]*?[\\/]\.code-conductor[\\/][^`]+?[\\/]attachments[\\/][^`]+)`\s*$/;
-
-export interface Attachment {
-  kind: 'image' | 'file';
-  path: string;
-  filename: string;
-  name: string;
-}
 
 // Sentinel on the orchestrator wind-down steers of every session recorded before
 // the drain and the overage stop became plain aborts. READ-ONLY now — nothing
@@ -753,10 +730,10 @@ export function isMidTurnNoteContent(text: unknown): boolean {
     && text.trimEnd().endsWith('</system-reminder>');
 }
 
-export function extractAttachedMarkers(text: string): { text: string; attachments: Attachment[] } {
+export function extractAttachedMarkers(text: string): { text: string; attachments: UserEchoAttachment[] } {
   const lines = text.split('\n');
   const keptLines: string[] = [];
-  const attachments: Attachment[] = [];
+  const attachments: UserEchoAttachment[] = [];
   for (const line of lines) {
     const m = line.match(ATT_LINE_RE);
     if (!m) { keptLines.push(line); continue; }
@@ -785,7 +762,7 @@ const YIELDED_RESULT_TEXTS: ReadonlySet<unknown> = new Set([AWAITING_INPUT_MESSA
 export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
   const out: UiEvent[] = [];
   const echoTexts: string[] = [];
-  const echoAttachments: Attachment[] = [];
+  const echoAttachments: UserEchoAttachment[] = [];
   for (const raw of contentBlocks) {
     if (!raw || typeof raw !== 'object') continue;
     const block = raw as WireContentBlock;
@@ -972,7 +949,8 @@ export function attachSkillLoad(events: UiEvent[], source: WireEnvelope, pending
 // A `user_echo` for a top-level (non-sub-agent) user prompt — i.e. one that
 // marks a turn boundary. Sub-agent echoes carry a parentToolUseId. Shared by
 // the event ring (instances.ts) and the paging/archive code (eventArchive.ts).
-export function isOuterUserEcho(ev: UiEvent | null | undefined): boolean {
+type OuterUserEcho = UiEventOf<'user_echo'> & { parentToolUseId?: null };
+export function isOuterUserEcho(ev: UiEvent | null | undefined): ev is OuterUserEcho {
   return ev?.kind === 'user_echo' && !ev.parentToolUseId;
 }
 
@@ -999,7 +977,7 @@ function groupBoundaryComponents(arr: UiEvent[], end: number): BoundaryInterval[
   for (let i = 0; i < end; i++) {
     const ev = arr[i];
     if (!ev) continue;
-    const toolUseId = typeof ev.toolUseId === 'string' ? ev.toolUseId : null;
+    const toolUseId = 'toolUseId' in ev && typeof ev.toolUseId === 'string' ? ev.toolUseId : null;
     if (toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
       const state = stateFor(toolUseId);
       state.head = i;
@@ -1126,8 +1104,9 @@ export function snapStartToGroupBoundary(arr: UiEvent[], start: number, end: num
 
 // The `${msgId}:${blockIdx}` half of a block key — the identity the client's
 // renderer also keys blocks by, and what the progression retire below compares.
-function blockOwner(ev: UiEvent): string { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}`; }
-function blockKey(ev: UiEvent, type: string): string { return `${blockOwner(ev)}:${type}`; }
+type BlockEvent = Pick<UiEventOf<'text_delta'>, 'msgId' | 'blockIdx'>;
+function blockOwner(ev: BlockEvent): string { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}`; }
+function blockKey(ev: BlockEvent, type: string): string { return `${blockOwner(ev)}:${type}`; }
 
 // An outer turn_end also force-resets (see header comment above).
 function isOuterTurnEnd(ev: UiEvent): boolean {
@@ -1137,7 +1116,7 @@ function isOuterTurnEnd(ev: UiEvent): boolean {
 // Null unless the event carries BOTH a msgId and a numeric blockIdx — see the
 // guard note in the class comment below.
 function namedBlock(ev: UiEvent): string | null {
-  if (typeof ev.blockIdx !== 'number' || ev.msgId == null || ev.msgId === '') return null;
+  if (!('blockIdx' in ev) || typeof ev.blockIdx !== 'number' || ev.msgId == null || ev.msgId === '') return null;
   return blockOwner(ev);
 }
 
@@ -1210,7 +1189,7 @@ export class QuiescenceScan {
   // Instance._maybeFireArmedInterrupt, and never reset except with the whole scan.
   boundarySeq = 0;
   get empty(): boolean { return this.openBlocks.size === 0 && this.pendingTools.size === 0; }
-  _open(key: string, ev: UiEvent): void {
+  _open(key: string, ev: BlockEvent): void {
     this.openBlocks.set(key, { owner: blockOwner(ev), stale: false });
   }
   // Path 1: a block's own close. Counts once — a block already marked stale by

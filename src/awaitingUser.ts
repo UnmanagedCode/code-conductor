@@ -17,7 +17,7 @@
 // real. Workers never carry the flag (Instance feeds nothing when conducted).
 
 import { isInjectedUserTurn } from '../shared/promptOrigin.ts';
-import type { UiEvent } from './parser.ts';
+import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';
 
 export type AskKind = 'question' | 'plan';
 export type AskSource = 'tool' | 'text';
@@ -105,7 +105,7 @@ export function applySummary(summary: AskSummary, incoming: AskState): AskState 
 // Top-level events only. The caller deduplicates tool asks per toolUseId.
 export function askFactsOfEvent(ev: UiEvent): AskFact[] {
   if (ev.parentToolUseId) return [];
-  const toolUseId = typeof ev.toolUseId === 'string' ? ev.toolUseId : null;
+  const toolUseId = 'toolUseId' in ev && typeof ev.toolUseId === 'string' ? ev.toolUseId : null;
   if (ev.kind === 'user_question') return [{ t: 'toolAsk', kind: 'question', toolUseId }];
   if (ev.kind === 'plan_request' && !ev.autoApproved) return [{ t: 'toolAsk', kind: 'plan', toolUseId }];
   if (ev.kind === 'user_echo') return [{ t: 'userTurn', ev }];
@@ -144,7 +144,7 @@ export class LiveAskFacts {
 
   feed(ev: UiEvent): AskFact[] {
     if (ev.parentToolUseId) return [];
-    const msgId = typeof ev.msgId === 'string' ? ev.msgId : null;
+    const msgId = 'msgId' in ev && typeof ev.msgId === 'string' ? ev.msgId : null;
     if (msgId) this.#lastMsgId = msgId;
     if (ev.kind === 'text_delta' && msgId) {
       const idx = typeof ev.blockIdx === 'number' ? ev.blockIdx : 0;
@@ -163,7 +163,7 @@ export class LiveAskFacts {
     return askFactsOfEvent(ev).filter(f => this.#firstSighting(f));
   }
 
-  #fromEnvelope(ev: UiEvent, msgId: string | null): AskFact[] {
+  #fromEnvelope(ev: UiEventOf<'assistant_message'>, msgId: string | null): AskFact[] {
     const message = ev.message as { content?: unknown } | null | undefined;
     const content = Array.isArray(message?.content) ? message.content as EnvelopeBlock[] : [];
     const facts: AskFact[] = [];

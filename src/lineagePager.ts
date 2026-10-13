@@ -29,7 +29,8 @@ import {
   pageInstanceEvents, loadStampedTranscript, pageStampedTranscript, segmentOfSeq, insertRingSeamDividers,
   type PagerSource, type Page,
 } from './eventArchive.ts';
-import { isOuterUserEcho, type UiEvent } from './parser.ts';
+import { isOuterUserEcho } from './parser.ts';
+import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';
 import type { InstanceLike, RingSeam } from './instanceTypes.ts';
 import type { TranscriptPlacement } from './projects.ts';
 import { chainFor, type LineageSegment } from './sessionLineage.ts';
@@ -112,7 +113,7 @@ export function segmentRingView(snap: RingCapture, k: number): PagerSource {
   const start = snap.seams[k].startSeq;
   const end = snap.seams[k + 1].startSeq;
   const ring = snap.ring.filter(e => e._seq >= start && e._seq < end);
-  const atSeam = snap.ring.find(e => e._seq >= end && isOuterUserEcho(e));
+  const atSeam = snap.ring.find((e): e is UiEventOf<'user_echo'> & { _seq: number } => e._seq >= end && isOuterUserEcho(e));
   const echoCount = typeof atSeam?.userIndex === 'number' ? atSeam.userIndex : snap.echoCount;
   return {
     ringSnapshot: () => ring.slice(),
