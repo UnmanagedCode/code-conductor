@@ -7,7 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { stickyPrompt } from '@/app/controller';
 import { ConversationView } from './ConversationView';
 import { USER_BUBBLE, USER_INSET, USER_TONE_PROMPT } from './items';
-import { alignClasses, marginX, selfAlignClasses, tokens } from './userBubbleTestkit';
+import { alignClasses, capClasses, marginX, padX, selfAlignClasses, tokens } from './userBubbleTestkit';
 import { pinStore, STATUS_NONE, SWIPE_MIN_PX, type PinState } from './stickyPrompt';
 
 const PINNED: PinState = { kind: 'pinned', html: '<p>first</p>', shift: 0, overflowing: false, pushedOff: false };
@@ -30,10 +30,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   act(() => pinStore.set({ pin: { kind: 'hidden' }, gutter: 0 }));
 });
-
-// Horizontal padding utilities, with any variant prefix: px-, pl-, pr-, ps-, pe-, p-.
-const padX = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*p[xlrse]?-/.test(c)).sort();
-const capClasses = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*max-w-/.test(c)).sort();
 
 describe('pinned prompt', () => {
   // Invariant: the pin column has the transcript list's width cap and horizontal padding, so their content boxes (and the bubbles in them) coincide.

@@ -227,6 +227,9 @@ export async function queuedGhostsFlow({ page, cc }: Args): Promise<void> {
   await expect(ghosts.last(), 'a message queued after the reset is not delivered').not.toHaveAttribute('data-delivered');
   await expect(delivered, 'the earlier two stay delivered').toHaveCount(2);
 
+  // Invariant: a ghost's strip is a 3px dashed right border.
+  const strip = await ghosts.first().locator(':scope > div').evaluate((el) => { const cs = getComputedStyle(el); return [cs.borderRightWidth, cs.borderRightStyle]; });
+  expect(strip, "a ghost's strip is a 3px dashed right border").toEqual(['3px', 'dashed']);
   // Invariant: a ghost's bubble has a sent prompt's edges.
   const edges = (el: Element) => { const r = el.getBoundingClientRect(); return [r.left, r.right]; };
   const [ghostLeft, ghostRight] = await ghosts.first().locator(':scope > div').evaluate(edges);

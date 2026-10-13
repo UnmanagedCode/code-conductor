@@ -82,13 +82,44 @@ async function sendBoth(page: Page, cc: Ctx['cc'], project: string): Promise<voi
   await bringTo(next.transcript(page), next.userMessages(page).nth(0), 16);
 }
 
+/** A computed colour's alpha: `… / a)` (oklch, oklab, color(), modern rgb), legacy `rgba(…, a)`, else opaque. */
+function alphaOf(colour: string): number {
+  const slash = /\/\s*([\d.]+)(%?)\s*\)$/.exec(colour);
+  if (slash) return Number(slash[1]) / (slash[2] ? 100 : 1);
+  const rgba = /^rgba\([^)]*,\s*([\d.]+)\)$/.exec(colour);
+  if (rgba) return Number(rgba[1]);
+  if (/^[a-z-]+\([^)]*\)$/.test(colour)) return 1;
+  throw new Error(`fixture check: an unparsed computed colour: ${colour}`);
+}
+
+const isDark = (page: Page) => page.evaluate(() => document.documentElement.classList.contains('dark'));
+
+/** Every prompt bubble's side cue, read from its computed style: a visibly coloured, toned 3px right strip and no left border. */
+async function expectStrip(page: Page, where: string): Promise<void> {
+  const styles = await next.transcript(page).locator('[data-user-text]').evaluateAll((els) => els.map((el) => {
+    const cs = getComputedStyle(el);
+    // The top border is 0px but keeps the base border colour every element gets: what the strip falls back to without its tone.
+    return { right: cs.borderRightWidth, left: cs.borderLeftWidth, colour: cs.borderRightColor, background: cs.backgroundColor, base: cs.borderTopColor };
+  }));
+  expect(styles.length, `${where}: fixture check: prompt bubbles are on screen`).toBeGreaterThan(0);
+  await test.info().attach(`strip-${where}`, { body: JSON.stringify(styles, null, 2), contentType: 'application/json' });
+  for (const [i, st] of styles.entries()) {
+    expect(st.right, `${where}: bubble ${i} has a 3px right strip`).toBe('3px');
+    expect(st.left, `${where}: bubble ${i} has no left border`).toBe('0px');
+    expect(alphaOf(st.colour), `${where}: bubble ${i}'s strip is visible (${st.colour})`).toBeGreaterThan(0);
+    expect(st.colour, `${where}: bubble ${i}'s strip differs from its fill`).not.toBe(st.background);
+    expect(st.colour, `${where}: bubble ${i}'s strip carries its tone, not the base border colour`).not.toBe(st.base);
+  }
+}
+
 const shoot = async (page: Page, name: string) => test.info().attach(name, { body: await page.screenshot(), contentType: 'image/png' });
 
-// Invariants: at every preset each user bubble starts one avatar gutter right of the assistant text, ends at the column's right edge and is as wide as any other; its controls start at its text.
+// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble starts one avatar gutter right of the assistant text, ends at the column's right edge and is as wide as any other; its controls start at its text.
 /** Desktop: cycles every session width preset, then switches theme for the visual pass. */
 export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name !== 'desktop', 'the width presets are a desktop-layout feature');
   await sendBoth(page, cc, 'e2e-user-bubble-inset');
+  await expectStrip(page, (await isDark(page)) ? 'dark' : 'light');
   for (const label of LABELS) {
     await expect(widthButton(page, label)).toBeVisible();
     await expect(list(page)).toHaveAttribute('data-session-width', label.toLowerCase());
@@ -101,20 +132,21 @@ export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
     await shoot(page, `user-bubble-${label.toLowerCase()}`);
     await widthButton(page, label).click();
   }
-  const isDark = () => page.evaluate(() => document.documentElement.classList.contains('dark'));
-  const wasDark = await isDark();
+  const wasDark = await isDark(page);
   await page.getByRole('button', { name: /^(Dark|Light) theme$/ }).click();
-  await expect.poll(isDark, 'the theme switched').toBe(!wasDark);
+  await expect.poll(() => isDark(page), 'the theme switched').toBe(!wasDark);
+  await expectStrip(page, wasDark ? 'light' : 'dark');
   await page.mouse.move(0, 0);
   await bringTo(next.transcript(page), next.userMessages(page).nth(0), 16);
   await shoot(page, `user-bubble-${wasDark ? 'light' : 'dark'}`);
 }
 
-// Invariants: on a phone each user bubble starts one avatar width right of the assistant text, ends at the column's right edge and is as wide as any other; its controls start at its text.
+// Invariants: on a phone each prompt bubble has a visible 3px right strip and no left border, and each user bubble starts one avatar width right of the assistant text, ends at the column's right edge and is as wide as any other; its controls start at its text.
 /** Drawer viewports: the same geometry at the stacked layout's inset. */
 export async function narrowFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name === 'desktop', 'the stacked layout is below md');
   await sendBoth(page, cc, `e2e-user-bubble-inset-${test.info().project.name}`);
+  await expectStrip(page, test.info().project.name);
   expectInset(await measure(page, true), test.info().project.name);
   await shoot(page, `user-bubble-${test.info().project.name}`);
 }

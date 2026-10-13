@@ -28,12 +28,15 @@ const ATTACHED = {
 const QUEUED: UiEvent = { kind: 'overage_message_queued', data: { text: 'QUEUED-ONE', attachmentCount: 0, ts: Date.UTC(2026, 0, 5, 9, 30), queuedCount: 1 } };
 
 describe('user item inset', () => {
-  // Invariant: every user-authored item (prompt, wake stub, attachment prompt, queued ghost) carries exactly USER_INSET as its horizontal margin, and no item, direct child or bubble is width-capped or pushed right.
+  // Invariant: every user-authored item (prompt, wake stub, attachment prompt, queued ghost) carries exactly USER_INSET as its horizontal margin, and no item, direct child or bubble is width-capped or pushed right; the folds wrapper also lets its fold cards span it.
   it('every user-authored item carries the one inset, and none is capped or pushed right', async () => {
     const root = await render([PROMPT, WAKE, ATTACHED, QUEUED]);
     const items = [...root.querySelectorAll('[data-item="user"], [data-item="queued"]')];
     expect(items.map((el) => (el as HTMLElement).dataset.item), 'fixture check: three user items and a ghost').toEqual(['user', 'user', 'user', 'queued']);
     expect(root.querySelector('[data-item="user"][data-variant="wake"] [data-fold="wake"]'), 'fixture check: the wake stub folds').not.toBeNull();
+    const folds = root.querySelector('[data-item="user"][data-variant="wake"] [data-user-folds]');
+    expect(folds, "the wake stub's folds wrapper").not.toBeNull();
+    expect(alignClasses(folds!), `folds wrapper: ${folds!.className}`).toEqual([]);
     for (const item of items) {
       expect(marginX(item).length, `${item.getAttribute('data-item')} item has a horizontal inset`).toBeGreaterThan(0);
       expect(marginX(item)).toEqual(tokens(USER_INSET));

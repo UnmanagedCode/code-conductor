@@ -286,7 +286,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
   const injected = node.variant === 'wake' || node.variant === 'renew' || !!node.skill;
   return (
     <div className={cn('group/user flex flex-col gap-1.5', model.isSub ? USER_INSET_SUB : USER_INSET)} data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
-      {(node.skill || node.wake || node.renew || node.forward) && <div className="space-y-2">{folded}</div>}
+      {(node.skill || node.wake || node.renew || node.forward) && <div className="space-y-2" data-user-folds>{folded}</div>}
       {node.answer ? (
         <div className={cn(USER_BUBBLE, 'bg-info/8 border-r-info/60')}>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-info" data-answer-head>
