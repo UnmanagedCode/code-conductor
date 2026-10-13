@@ -26,6 +26,8 @@ process.env.PROJECTS_ROOT = safeRoot.projectsRoot;
 process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
 // Spawned `node server.ts` children must not build web/dist concurrently.
 process.env.CC_SKIP_WEB_BUILD = '1';
+// Nor install into the shared node_modules when a test restarts one of them.
+process.env.CC_SKIP_DEPS_SYNC = '1';
 
 // Run-unique marker, exported BEFORE any child forks so every descendant at any
 // depth inherits it. This is how a leaked process is identified EXACTLY rather

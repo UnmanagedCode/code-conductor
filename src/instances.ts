@@ -3271,7 +3271,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // without that stat would surface a phantom row. Not a NEW state: the temp
   // flag is set at spawn time, so before the terminal latch a stranded failure
   // kept it until the next graceful restart, whose orphan sweep
-  // (scheduleRestart → orphanedTempIdsSync, plus shutdownTempSync) does this
+  // (runTempCleanup → orphanedTempIdsSync, plus shutdownTempSync) does this
   // same retirement. The latch changes WHEN the archived flag appears, not
   // WHETHER.
   //
@@ -5085,9 +5085,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
   _idleSubscriberSnapshot(): Record<string, string[]> { return this._idleHub.snapshot(); }
   _purgeIdleFor(instanceId: string, opts?: { removing?: ReadonlySet<string> }): void { return this._idleHub.purge(instanceId, opts); }
-  // Stop every wake delivery for the rest of this process — the resume-restart
-  // drain's, so no session it winds down starts another turn on the way out.
+  // Stop every wake delivery — the resume-restart drain's, so no session it
+  // winds down starts another turn on the way out — until resumeWakes(), which
+  // an aborted restart calls (abortDrain, src/resumeRestart.ts).
   suspendWakes(): void { this._idleHub.suspend(); }
+  resumeWakes(): void { this._idleHub.resume(); }
   // Sibling to _idleSubscriberSnapshot, but caller-indexed and sessionId-shaped
   // — which targets THIS instanceId OWNS, i.e. whose next turn will wake it.
   // Used by the renewal state block (src/sessionRenew.ts) to enumerate the
@@ -7021,8 +7023,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 
   // Plain-restart counterpart for a sync-stop policy that kills survivors: the
-  // CLI's children (bash, conhost) do not die with it, and `scheduleRestart`
-  // exits right after. Interrupt every busy turn and EOF every live non-temp
+  // CLI's children (bash, conhost) do not die with it, and the plain restart
+  // (`teardownInstances`, src/restart.ts) exits right after. Interrupt every busy turn and EOF every live non-temp
   // instance, wait, then tree-kill any survivor. A no-op under a policy that
   // leaves survivors: the children exit on EOF once cc is gone. (Temps are
   // handled by shutdownTempSync.)

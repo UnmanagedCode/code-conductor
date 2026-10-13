@@ -130,11 +130,16 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.equal(child.signalCode, null, 'our child must not have been signal-killed');
   assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
-  // Trigger the restart. The server may exit before the fetch resolves
-  // (response is sent immediately, then process.exit kicks in ~50ms
-  // later) — that's fine; either response or aborted connection is OK.
-  await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' })
-    .catch(() => { /* server may close socket before flush */ });
+  // Trigger the restart. The route streams NDJSON and ends it with the
+  // terminal result once the relaunch is committed, before networking goes down
+  // and ~50 ms before the exit, so the whole body arrives.
+  const res = await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /application\/x-ndjson/);
+  const streamed = (await res.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(streamed.at(-1), { type: 'result', ok: true }, `restart result\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
+  assert.equal(captured.stdout.match(/restart: spawned replacement pid=/g)?.length ?? 0, 0,
+    'the result is answered before the replacement is spawned');
 
   // Wait for the original process to exit.
   const exitCode = await new Promise((resolve) => {

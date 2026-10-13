@@ -213,8 +213,9 @@ export class IdleSubscriptionHub {
   // end is never held. Cleared with the abort qualifier — at a turn start no
   // armed wake survived into — and by purge.
   _asked: Set<string>;
-  // Set once by suspend() for the resume-restart drain: from then on nothing is
-  // delivered, so no session in the draining process starts a turn.
+  // Set by suspend() for the resume-restart drain: while set nothing is
+  // delivered, so no session in the draining process starts a turn. Cleared by
+  // resume() when the restart is aborted.
   _suspended: boolean;
   // Targets whose owners' wakes a hold decision is holding (_holds returned
   // true at their last decision point). Cleared when those wakes are consumed,
@@ -237,10 +238,16 @@ export class IdleSubscriptionHub {
     this._holding = new Set();
   }
 
-  // Stop every delivery for the rest of this process's life. Called by the
-  // resume-restart drain, whose process exits after it.
+  // Stop every delivery until resume(). Called by the resume-restart drain,
+  // whose process normally exits after it.
   suspend(): void {
     this._suspended = true;
+  }
+
+  // Deliver again: the restart that suspended delivery was aborted. A wake
+  // dropped meanwhile stays dropped; abortDrain's notice carries those waits.
+  resume(): void {
+    this._suspended = false;
   }
 
   // Driven by InstanceManager's `event` listener — EVERY instance event lands

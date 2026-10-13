@@ -27,7 +27,7 @@ import { FORWARD_FRAME_HEADER, parseForwardFrame } from './forwardFrame.ts';
 import { parsePlanDecision } from './planApproval.ts';
 import { isQuestionAnswerShape } from './userQuestionAnswers.ts';
 import {
-  RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK, REBASE_PROMPT_LEAD,
+  RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK, RESTART_ABORTED_LEAD, REBASE_PROMPT_LEAD,
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT, QUEUED_SECTION_LEAD,
 } from './injectedTurns.ts';
 
@@ -61,6 +61,7 @@ export function isInjectedUserTurn(ev: PromptOriginEvent): boolean {
   if (text.startsWith(RENEW_REQUEST_LEAD)) return true;
   if (text.startsWith(FORWARD_FRAME_HEADER)) return true;
   if (text.startsWith(RESTART_NOTICE_TRUNK)) return true;
+  if (text.startsWith(RESTART_ABORTED_LEAD)) return true;
   // An overage resume is injected only as a bare preamble; one carrying the
   // user's queued messages is how those messages reach the session.
   if (OVERAGE_BASES.some(b => text.startsWith(b)) && !text.includes(`\n\n${QUEUED_SECTION_LEAD} `)) {

@@ -1,12 +1,14 @@
 // Graceful "Resume after restart".
 //
 // Two halves:
-//   Phase 1+2 (drainAndScheduleRestart) — run in the OLD process when the user
-//   picks "Resume after restart": wind every live turn down to idle (networking
-//   stays UP so in-flight hook round-trips finish and the UI shows progress),
-//   then tear down networking, write the resume manifest (NO temp wipe — temps
-//   are carried over), SIGKILL subprocesses without deleting their jsonl, and
-//   spawn the replacement.
+//   Phase 1+2 — run in the OLD process when the user picks "Resume after
+//   restart", driven by runRestart (src/restart.ts): drainToIdle winds every
+//   live turn down to idle (networking stays UP so in-flight hook round-trips
+//   finish and the UI shows progress); then either finishDrain writes the resume
+//   manifest (NO temp wipe — temps are carried over) and closes subprocesses
+//   without deleting their jsonl, after runRestart has torn networking down, or,
+//   when the relaunch's preparation fails after the drain, abortDrain hands the
+//   sessions back.
 //   Phase 3 (restoreFromResumeManifest) — run in the NEW process on boot:
 //   re-spawn (`--resume`) the carried-over sessions, staggered, splitting them
 //   into conductors / conducted workers / others, and notify each so work
@@ -14,9 +16,6 @@
 //   were spawned under is told about its whole subtree and re-spawns them (their
 //   jsonl was preserved for exactly that).
 
-import type { Server } from 'node:http';
-import type { WebSocketServer } from 'ws';
-import { spawnReplacementAndExit } from './restart.ts';
 import { waitFor } from './waitFor.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { getOnOverageAction } from './appSettings.ts';
@@ -27,7 +26,7 @@ import {
   clearResumeManifest,
 } from './resumeManifest.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from './conduct.ts';
-import { RESTART_NOTICE_TRUNK } from '../shared/injectedTurns.ts';
+import { RESTART_NOTICE_TRUNK, RESTART_ABORTED_LEAD } from '../shared/injectedTurns.ts';
 import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary, SubtreeRow } from './instanceTypes.ts';
 
@@ -49,6 +48,12 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 export const RESUME_TEXT =
   `${RESTART_NOTICE_TRUNK} — ` +
   'pick up wherever you left off before the restart.';
+
+// Sent by abortDrain to every session the drain found with resumable work: its
+// turn was wound down and the wakes it waited on were dropped while suspended.
+export const RESTART_ABORTED_TEXT =
+  `${RESTART_ABORTED_LEAD} Your turn was wound down for it: pick up where you left off, ` +
+  'and re-drive any worker you were waiting on — its turn was wound down too and no wake will arrive for it.';
 
 // A row of the resume list (from conductedSubtreeOf). `parentSessionId` is
 // absent on a row written by a build that listed direct workers only, so absent
@@ -122,16 +127,20 @@ function waitAllIdle(instances: InstanceManagerLike, graceMs: number): Promise<{
   });
 }
 
-// Steps 1–6 of the drain: soft-stop, wait-for-idle (never forced),
-// tear down networking, write the manifest (NO temp wipe), gracefully close
-// subprocesses without deleting temp jsonl. Returns the manifest entries
-// written. Split out from drainAndScheduleRestart so tests can exercise it
-// without the process-exiting spawn. Pass server/wss null to skip networking
-// teardown.
-export async function drainToManifest({ server, wss, instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS }: {
-  server?: Server | null; wss?: WebSocketServer | null; instances?: InstanceManagerLike | null; log?: RestartLog; graceMs?: number;
-} = {}): Promise<ResumeEntry[]> {
-  if (!instances) return [];
+// What drainToIdle captured before the stop, for finishDrain or abortDrain.
+export interface DrainState {
+  // Each top-level session's spawn subtree, by instance id.
+  subtreeOf: Map<string, SubtreeRow[]>;
+  // Instance ids that had resumable work when the drain began.
+  busyAtDrain: Set<string>;
+}
+
+// Steps 1–3 of the drain: snapshot, suspend wakes, soft-stop, wait for all-idle
+// (never forced). Every live turn has ended when it resolves; networking is
+// untouched.
+export async function drainToIdle({ instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS }: {
+  instances: InstanceManagerLike; log?: RestartLog; graceMs?: number;
+}): Promise<DrainState> {
   const live = [...instances.byId.values()].filter((i) => i.proc);
 
   // (1) Snapshot each top-level session's spawn subtree BEFORE draining —
@@ -159,7 +168,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   );
 
   // From here on no wake is delivered: a session the drain winds down must not
-  // wake its owner into a turn this process would only kill in step (6). Every
+  // wake its owner into a turn this process would only kill in finishDrain. Every
   // wait it ends is carried by the resume text instead.
   instances.suspendWakes();
 
@@ -200,14 +209,14 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     }
   }
 
-  // (4) NOW tear down networking.
-  if (wss) {
-    for (const ws of wss.clients) { try { ws.terminate(); } catch { /* ignore */ } }
-    try { wss.close(); } catch { /* ignore */ }
-  }
-  if (server) { try { server.close(); } catch { /* ignore */ } }
+  return { subtreeOf, busyAtDrain };
+}
 
-  // (5) Build + write the manifest. NO writePendingTempCleanup / shutdownTempSync
+// Steps 4–5 of the drain, after the caller has torn networking down: write the
+// manifest (NO temp wipe), then gracefully close subprocesses without deleting
+// temp jsonl. Returns the manifest entries written.
+export function finishDrain({ instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog }, { subtreeOf, busyAtDrain }: DrainState): ResumeEntry[] {
+  // (4) Build + write the manifest. NO writePendingTempCleanup / shutdownTempSync
   // — carrying temps over is scoped to this path only.
   const entries: ResumeEntry[] = [];
   for (const inst of instances.byId.values()) {
@@ -291,23 +300,33 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   try { writeResumeManifest(entries); }
   catch (e) { log.warn?.('resume-restart: manifest write failed', errMsg(e)); }
 
-  // (6) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.
+  // (5) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.
   try { instances.shutdownForResumeSync(); }
   catch (e) { log.warn?.('resume-restart: shutdownForResumeSync error', errMsg(e)); }
 
   return entries;
 }
 
-export async function drainAndScheduleRestart({ server, wss, instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS }: {
-  server?: Server | null; wss?: WebSocketServer | null; instances?: InstanceManagerLike | null; log?: RestartLog; graceMs?: number;
-} = {}): Promise<void> {
-  try {
-    await drainToManifest({ server, wss, instances, log, graceMs });
-  } catch (e) {
-    log.error?.('resume-restart: drain failed; restarting anyway', e);
+// The drain without networking or a relaunch: drainToIdle, then finishDrain.
+export async function drainToManifest({ instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS }: {
+  instances?: InstanceManagerLike | null; log?: RestartLog; graceMs?: number;
+} = {}): Promise<ResumeEntry[]> {
+  if (!instances) return [];
+  return finishDrain({ instances, log }, await drainToIdle({ instances, log, graceMs }));
+}
+
+// The restart was refused after drainToIdle: deliver wakes again, and tell every
+// live non-worker session that had resumable work — the set a restore would have
+// prompted — to carry on. Workers are left to their conductor, as on a restore.
+// No manifest is written and nothing is spawned.
+export function abortDrain({ instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog }, { busyAtDrain }: DrainState): void {
+  instances.resumeWakes();
+  for (const id of busyAtDrain) {
+    const inst = instances.byId.get(id);
+    if (!inst?.proc || groupOf(inst) === 'worker') continue;
+    inst.prompt(RESTART_ABORTED_TEXT)
+      .catch((e: unknown) => log.warn?.('resume-restart: abort notice failed', errMsg(e)));
   }
-  // (7) Respawn + exit (shared with the normal restart path).
-  spawnReplacementAndExit({ log });
 }
 
 // --- Phase 3: restore on boot (new process) ------------------------------

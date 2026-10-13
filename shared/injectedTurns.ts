@@ -16,6 +16,11 @@ export const RENEW_REQUEST_LEAD: string =
 export const RESTART_NOTICE_TRUNK: string =
   '✅ CodeConductor has restarted successfully. You may resume activity now';
 
+// The opening of RESTART_ABORTED_TEXT: a resume restart whose preparation failed
+// after the drain wound turns down, so nothing was restarted.
+export const RESTART_ABORTED_LEAD: string =
+  '⚠️ CodeConductor\'s restart was aborted — nothing was restarted.';
+
 // Prompt delivered by the overage auto-resume timer to a still-alive session
 // once the rate-limit window has reset (onOverage: 'stop-resume').
 export const AUTO_RESUME_TEXT: string =

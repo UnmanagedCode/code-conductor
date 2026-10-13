@@ -1,7 +1,7 @@
 // The boot sweep, run in a FRESH PROCESS. That is the whole point of the
 // fixture: the restart arm has to prove the sweep works from the on-disk record
 // alone, with nothing left in the orchestrator's memory to help it — which is
-// exactly the situation after `scheduleRestart` calls `process.exit(0)`.
+// exactly the situation after a restart's `process.exit(0)`.
 //
 // argv[2] is the run root; PROJECTS_ROOT is derived back from it so the sweep's
 // own `fuseRunRoot()` resolves to the same place.

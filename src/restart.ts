@@ -1,21 +1,20 @@
-// Self-respawn handler for POST /api/admin/restart. Spawns a detached
-// child node process with the same argv/env/cwd and exits this one, so
-// editing server code + clicking the sidebar's "Restart server" button
-// reloads everything without the user having to ctrl+C in their shell.
+// The relaunch behind POST /api/admin/restart. Spawns a detached child node
+// process with the same argv/env/cwd and exits this one, so editing server code
+// + clicking the sidebar's "Restart server" button reloads everything without
+// the user having to ctrl+C in their shell.
 //
-// Mechanics:
-//   1. Close the WebSocket server and terminate any held-open sockets.
-//   2. Stop accepting new HTTP connections.
-//   3. Best-effort shutdown of attached instance subprocesses' stdin
-//      so they don't lose buffered writes; the subprocesses themselves
-//      survive — they're independent processes, not children of this
-//      orchestrator after the respawn.
-//   4. Spawn a detached replacement (process.execPath + the same argv
-//      + cwd + env). The child polls EADDRINUSE while binding (see
-//      listenWithRetry in server.ts), which handles the race where
-//      our listening socket hasn't fully released yet.
-//   5. Exit this process after a small delay so the 202 response can
-//      flush over the wire.
+// runRestart drives it, in two modes:
+//   - plain: archive temps and stop the instances (teardownInstances), close the
+//     WS + HTTP servers (teardownNetworking), spawn the replacement, exit;
+//   - resume: drain every live turn to idle and write the resume manifest
+//     (src/resumeRestart.ts) instead of stopping the instances outright.
+// Before either, the relaunch is prepared in THIS process (src/relaunchPrep.ts):
+// node_modules is installed when it differs from package-lock.json and the web
+// build is staged. A failed step refuses the relaunch, so cc keeps serving.
+//
+// The replacement polls EADDRINUSE while binding (listenWithRetry in
+// server.ts), which handles the race where our listening socket hasn't fully
+// released yet.
 import { spawn } from 'node:child_process';
 import { hostPlatform } from './platform/index.ts';
 import type { Server } from 'node:http';
@@ -23,9 +22,12 @@ import type { WebSocketServer } from 'ws';
 import { writePendingTempCleanup } from './tempCleanup.ts';
 import { orphanedTempIdsSync } from './sessionStore.ts';
 import { retireSegments } from './sessionLineage.ts';
+import { drainToIdle, finishDrain, abortDrain } from './resumeRestart.ts';
+import { relaunchPrep, type RelaunchPrep } from './relaunchPrep.ts';
+import type { InstanceManagerLike } from './instanceTypes.ts';
 
-// The InstanceManager surface the restart path reads. Every method is
-// optional because runTempCleanup/scheduleRestart guard each call (the
+// The InstanceManager surface the plain restart path reads. Every method is
+// optional because runTempCleanup/teardownInstances guard each call (the
 // routes inject the real manager; tests pass stubs). `tempCleanupSnapshot`
 // returns {cwd, sessionId} rows — only sessionId is consumed here.
 interface RestartManagerLike {
@@ -44,7 +46,7 @@ interface RestartLog {
 // Archive every temp session on a plain restart: live-attached ones (via
 // instances.shutdownTempSync()) AND crash-orphaned ones: a temp segment in the
 // session store with no live instance (e.g. a prior hard crash).
-// Kept separate from scheduleRestart (no process.exit inside) so it's
+// Kept separate from teardownInstances so it's
 // directly unit-testable, mirroring how shutdownTempSync/writePendingTempCleanup
 // /sweepPendingTempCleanup are already tested standalone.
 export function runTempCleanup({ instances, log = console }: { instances?: RestartManagerLike | null; log?: RestartLog } = {}): void {
@@ -85,45 +87,112 @@ export function runTempCleanup({ instances, log = console }: { instances?: Resta
   } catch (e) { log.warn?.('restart: pending-cleanup manifest write failed', e); }
 }
 
-export function scheduleRestart({ server, wss, instances, log = console }: {
-  server?: Server | null; wss?: WebSocketServer | null; instances?: RestartManagerLike | null; log?: RestartLog;
-} = {}): void {
-  // Don't await any of this; the response was already sent before we
-  // got called, and waiting for server.close() would block on the
-  // very WS connections we're about to terminate.
+// A plain restart's end for the instances: archive temps (runTempCleanup), stop
+// live CLIs, and fire the manager's shutdown. Synchronous up to the shutdown,
+// which is fire-and-forget: the replacement must not wait on it.
+export function teardownInstances({ instances, log = console }: { instances?: RestartManagerLike | null; log?: RestartLog } = {}): void {
   try {
-    if (wss) {
-      for (const ws of wss.clients) {
-        try { ws.terminate(); } catch { /* ignore */ }
-      }
-      try { wss.close(); } catch { /* ignore */ }
-    }
-    if (server) {
-      try { server.close(); } catch { /* ignore */ }
-    }
     runTempCleanup({ instances, log });
-    // Where SIGTERM is not soft, the CLI's children would outlive the exit below.
+    // Where SIGTERM is not soft, the CLI's children would outlive the exit.
     try { instances?.stopLiveSync?.(); }
     catch (e) { log.warn?.('restart: live stop error', e); }
     if (instances && typeof instances.shutdown === 'function') {
-      // Fire-and-forget — instance subprocesses outlive us. Captured before
-      // the closure so the narrowed function isn't lost (TS re-widens
-      // property accesses inside closures).
+      // Captured before the closure so the narrowed function isn't lost (TS
+      // re-widens property accesses inside closures).
       const shutdown = instances.shutdown;
       Promise.resolve().then(() => shutdown()).catch(() => {});
     }
   } catch (e) {
-    log.warn?.('restart: pre-spawn cleanup error', e);
+    log.warn?.('restart: instance teardown error', e);
   }
+}
 
-  spawnReplacementAndExit({ log });
+// Close the WebSocket server (terminating held-open sockets) and stop accepting
+// HTTP connections. Not awaited: server.close() would wait on the very
+// connections being terminated.
+export function teardownNetworking({ server, wss }: { server?: Server | null; wss?: WebSocketServer | null } = {}): void {
+  if (wss) {
+    for (const ws of wss.clients) { try { ws.terminate(); } catch { /* ignore */ } }
+    try { wss.close(); } catch { /* ignore */ }
+  }
+  if (server) { try { server.close(); } catch { /* ignore */ } }
+}
+
+export type RestartPhase = 'deps' | 'npm' | 'build' | 'drain';
+
+export interface RestartCtx {
+  server?: Server | null;
+  wss?: WebSocketServer | null;
+  instances?: InstanceManagerLike | null;
+  log?: RestartLog;
+  graceMs?: number;
+}
+
+/**
+ * One relaunch, prepared first. INVARIANT: the shared node_modules is changed
+ * only once no session is in a turn, and when it needs no change every failure
+ * is found before any session is touched:
+ *
+ * - in sync: stage the web build, then tear down and relaunch;
+ * - plain + drift: stop the instances (the user chose to drop them), install,
+ *   stage, then close networking and relaunch;
+ * - resume + drift: drain to idle, install, stage, then close networking,
+ *   finish the drain and relaunch — a failure there hands the sessions back
+ *   (abortDrain) with networking still up.
+ *
+ * A failure throws and nothing is relaunched. `onCommit` fires once the
+ * relaunch can no longer be refused, before networking goes down, so the caller
+ * can still answer its client. `flags` turn steps off: `buildWeb` the stage,
+ * `syncDeps` the dependency check.
+ */
+export async function runRestart({
+  mode, ctx, flags, prep = relaunchPrep, onChunk = () => {}, onCommit, spawnAndExit = spawnReplacementAndExit,
+}: {
+  mode: 'plain' | 'resume';
+  ctx: RestartCtx;
+  flags: { buildWeb: boolean; syncDeps: boolean };
+  prep?: RelaunchPrep;
+  onChunk?: (phase: RestartPhase, text: string) => void;
+  onCommit?: () => void;
+  spawnAndExit?: (opts: { log?: RestartLog }) => void;
+}): Promise<void> {
+  const log = ctx.log ?? console;
+  const drift = flags.syncDeps ? prep.drift() : null;
+  const stage = async () => {
+    if (!flags.buildWeb) return;
+    onChunk('build', 'Building the web UI if its sources changed\n');
+    await prep.stageWeb((t) => onChunk('build', t));
+  };
+  const install = async () => {
+    onChunk('deps', `node_modules is out of sync with package-lock.json (${drift!.reason}) — running npm install\n`);
+    await prep.installDeps((t) => onChunk('npm', t));
+  };
+  if (!drift) await stage();
+
+  const { instances } = ctx;
+  if (mode === 'resume' && instances) {
+    onChunk('drain', 'Winding live sessions down to idle\n');
+    const idle = await drainToIdle({ instances, log, graceMs: ctx.graceMs });
+    if (drift) {
+      try { await install(); await stage(); }
+      catch (e) { abortDrain({ instances, log }, idle); throw e; }
+    }
+    onCommit?.();
+    teardownNetworking(ctx);
+    finishDrain({ instances, log }, idle);
+  } else {
+    if (mode === 'plain') teardownInstances({ instances, log });
+    if (drift) { await install(); await stage(); }
+    onCommit?.();
+    teardownNetworking(ctx);
+  }
+  spawnAndExit({ log });
 }
 
 // Spawn a detached replacement node process (same execPath + argv + cwd + env)
-// and exit this one after a short delay so the in-flight 202 response can flush.
-// Shared by the normal restart (scheduleRestart) and the graceful resume restart
-// (src/resumeRestart.ts drainAndScheduleRestart). The child's listen-with-retry
-// (server.ts) handles the EADDRINUSE race while our socket releases.
+// and exit this one after a short delay so the response just ended can flush.
+// The child's listen-with-retry (server.ts) handles the EADDRINUSE race while
+// our socket releases.
 export function spawnReplacementAndExit({ log = console }: { log?: RestartLog } = {}): void {
   const args = [process.argv[1], ...process.argv.slice(2)];
   try {

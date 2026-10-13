@@ -1,8 +1,12 @@
-// The node suite never builds web/dist: every link of that chain is pinned here.
-// tests/run.mjs sets CC_SKIP_WEB_BUILD=1 for its children → server.ts's entry
-// block calls start(entryStartOptions(process.env)), which maps it to
-// buildWeb:false → start({buildWeb:false}) never invokes the build. Observed through an injected build function, so an up-to-date
-// web/dist stamp (which makes the real build a no-op) cannot hide a regression.
+// The node suite never builds web/dist and never installs into node_modules:
+// every link of that chain is pinned here. tests/run.mjs sets CC_SKIP_WEB_BUILD=1
+// and CC_SKIP_DEPS_SYNC=1 for its children → server.ts's entry block calls
+// start(entryStartOptions(process.env)), which maps them to buildWeb:false and
+// syncDeps:false → start({buildWeb:false}) never invokes the boot build, and
+// start() hands both flags to createServer as the restart route's relaunch flags.
+// The boot build is observed through an injected build function, so an
+// up-to-date web/dist stamp (which makes the real build a no-op) cannot hide a
+// regression.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -19,22 +23,34 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Read from the source, not this process's env: a CC_SKIP_WEB_BUILD exported in
 // the developer's shell would otherwise mask its removal from the runner.
-test('tests/run.mjs sets CC_SKIP_WEB_BUILD=1 before it starts any test file', async () => {
+test('tests/run.mjs sets CC_SKIP_WEB_BUILD=1 and CC_SKIP_DEPS_SYNC=1 before it starts any test file', async (t) => {
   const src = await fs.readFile(path.join(ROOT, 'tests', 'run.mjs'), 'utf8');
-  const set = src.search(/^process\.env\.CC_SKIP_WEB_BUILD = '1';$/m);
   const run = src.search(/^const stream = run\(/m);
   assert.ok(run !== -1, 'premise: the run() call is found');
-  assert.ok(set !== -1, "tests/run.mjs sets process.env.CC_SKIP_WEB_BUILD = '1'");
-  assert.ok(set < run, 'and does so before run() forks the test files');
-  assert.equal(process.env.CC_SKIP_WEB_BUILD, '1', 'so this file, one of them, inherits it');
+  for (const name of ['CC_SKIP_WEB_BUILD', 'CC_SKIP_DEPS_SYNC']) {
+    await t.test(name, () => {
+      const set = src.search(new RegExp(`^process\\.env\\.${name} = '1';$`, 'm'));
+      assert.ok(set !== -1, `tests/run.mjs sets process.env.${name} = '1'`);
+      assert.ok(set < run, 'and does so before run() forks the test files');
+      assert.equal(process.env[name], '1', 'so this file, one of them, inherits it');
+    });
+  }
 });
 
-test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1 turns the boot build off', () => {
-  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true });
-  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false });
+test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1 / CC_SKIP_DEPS_SYNC=1 turn their step off', () => {
+  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: true });
+  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false, syncDeps: true });
+  assert.deepEqual(entryStartOptions({ CC_SKIP_DEPS_SYNC: '1' }), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: false });
   for (const v of ['', '0', 'true', 'yes', ' 1']) {
     assert.equal(entryStartOptions({ CC_SKIP_WEB_BUILD: v }).buildWeb, true, JSON.stringify(v));
+    assert.equal(entryStartOptions({ CC_SKIP_DEPS_SYNC: v }).syncDeps, true, JSON.stringify(v));
   }
+});
+
+test('start() hands its buildWeb and syncDeps to createServer as the restart route\'s relaunch flags', async () => {
+  const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
+  const body = src.slice(src.indexOf('export async function start('));
+  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps } } })']);
 });
 
 test('server.ts\'s entry block starts the server with exactly start(entryStartOptions(process.env))', async () => {
