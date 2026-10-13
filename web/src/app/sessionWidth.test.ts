@@ -44,4 +44,12 @@ describe('the session width preset', () => {
     vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('denied'); });
     expect((await fresh()).sessionWidthStore.get().preset).toBe('normal');
   });
+
+  it('a localStorage write that throws still advances the preset', async () => {
+    // Invariant: an unwritable storage never stops the cycle; the store still goes Normal → Wide.
+    const m = await fresh();
+    vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    m.cycleSessionWidth();
+    expect(m.sessionWidthStore.get().preset).toBe('wide');
+  });
 });
