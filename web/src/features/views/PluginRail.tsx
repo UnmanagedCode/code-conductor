@@ -52,8 +52,10 @@ export function PluginRail({ mode, markedId, onOpen }: { mode: DockMode; markedI
       )}
       {apps.map((p) => {
         const label = appLabel(p);
+        // The docked app on a collapsed rail is current too; its name says it is not the one shown.
+        const name = p.id === markedId && mode === 'rail' ? `${label} (docked)` : label;
         return (
-          <RailButton key={p.id} label={label} appId={p.id} current={p.id === markedId} collapsed={mode === 'rail'} onClick={() => pickRailApp(p.id, mode, route, onOpen)}>
+          <RailButton key={p.id} label={name} appId={p.id} current={p.id === markedId} collapsed={mode === 'rail'} onClick={() => pickRailApp(p.id, mode, route, onOpen)}>
             <span className="flex size-5 items-center justify-center rounded-md border text-[11px] font-semibold uppercase">{label.slice(0, 1)}</span>
           </RailButton>
         );

@@ -106,7 +106,9 @@ export function useResizableWidth(o: ResizableWidthOptions) {
     e.preventDefault();
     // Collapsed, the keys only open it (as Enter does), so opening never overwrites the stored width.
     if (collapsed) { if (e.key === grow) toggle(); return; }
-    commit(clamp(start + (e.key === grow ? RESIZE_KEY_STEP : -RESIZE_KEY_STEP)));
+    const next = clamp(start + (e.key === grow ? RESIZE_KEY_STEP : -RESIZE_KEY_STEP));
+    // A key a limit stops (the shown width would not move) writes nothing, so it cannot overwrite a stored width the limit is hiding.
+    if (next !== start) commit(next);
   };
 
   return {

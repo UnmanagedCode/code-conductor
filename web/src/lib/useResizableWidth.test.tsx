@@ -77,6 +77,18 @@ describe('useResizableWidth', () => {
     expect(localStorage.getItem(KEY)).toBe('400');
   });
 
+  it('an arrow key the limit stops writes nothing', () => {
+    // Invariant: a key that does not change the width (clamped at a limit) writes no width.
+    localStorage.setItem(KEY, String(BASE.max));
+    render(<Harness />);
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    fireEvent.keyDown(handle(), { key: 'ArrowRight' });
+    expect(now()).toBe(BASE.max);
+    expect(setItem, 'no width written').not.toHaveBeenCalled();
+    fireEvent.keyDown(handle(), { key: 'ArrowLeft' });
+    expect(setItem, 'a key that moves it still writes').toHaveBeenLastCalledWith(KEY, String(BASE.max - RESIZE_KEY_STEP));
+  });
+
   it('mid-drag the handle reports the live width, not the width the drag started from', () => {
     // Invariant: aria-valuenow follows the pointer between pointerdown and pointerup.
     localStorage.setItem(KEY, '400');

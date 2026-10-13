@@ -5,7 +5,7 @@
 // page, and the dock's own place kept off the hash.
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent } from '@testing-library/react';
+import { act, fireEvent, within } from '@testing-library/react';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn(),
@@ -527,10 +527,48 @@ describe('opening the dock from the rail', () => {
     await press('Alpha');
     await press('Alpha');
     expectRail('fixture check: collapsed');
-    expect(current(), 'the docked app').toBe('Alpha');
+    expect(current(), 'the docked app').toBe('Alpha (docked)');
     await go('#plugin/beta/');
     expect(rail()!.querySelectorAll('[aria-current="true"]').length).toBe(1);
     expect(current(), 'the shown app').toBe('Beta');
+  });
+});
+
+describe('a squeezed split and the rail\'s names', () => {
+  it('an arrow key that cannot move a squeezed split writes nothing', async () => {
+    // Invariant: a key that does not change the shown width writes no width; the stored preference survives.
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(1100);
+    await drag(-W);
+    expectSplit('fixture check: docked at W');
+    const narrow = 900;
+    emitWidth(narrow);
+    await settle();
+    await key('Enter');
+    const squeezed = narrow - DOCK_RAIL_WIDTH - DOCK_TRANSCRIPT_MIN_WIDTH;
+    expectSplit('fixture check: squeezed open');
+    expect(now(), 'fixture check: squeezed to the widest fit').toBe(squeezed);
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    await key('ArrowLeft');
+    expect(now(), 'the panel did not move').toBe(squeezed);
+    expect(widthWrites(setItem), 'no width written').toEqual([]);
+    expect(localStorage.getItem(DOCK_WIDTH_STORAGE_KEY)).toBe(String(W));
+  });
+
+  it('the docked app\'s icon is named "<label> (docked)" while collapsed and "<label>" while shown, current in both', async () => {
+    // Invariant: a screen reader tells the shown app from the docked-but-collapsed one by name, while aria-current marks either.
+    await mountApp();
+    await press('Alpha');
+    const shown = within(rail()!).queryByRole('button', { name: 'Alpha' });
+    expect(shown, 'shown: named by its label').not.toBeNull();
+    expect(shown!.getAttribute('aria-current')).toBe('true');
+    await press('Alpha');
+    expectRail('fixture check: collapsed');
+    const docked = within(rail()!).queryByRole('button', { name: 'Alpha (docked)' });
+    expect(docked, 'collapsed: named as docked').not.toBeNull();
+    expect(docked!.getAttribute('aria-current')).toBe('true');
+    expect(within(rail()!).queryByRole('button', { name: 'Beta' }), 'another app keeps its label').not.toBeNull();
   });
 });
 
@@ -567,6 +605,60 @@ describe('the dock\'s own place', () => {
     expect(storedDock()?.subpath, 'the dock\'s subpath').toBe('/moved');
     expect(sharedFrame() === frame, 'the same frame node').toBe(true);
     expect(win.posted, 'nothing posted').toEqual([]);
+  });
+});
+
+describe('round-2 gaps', () => {
+  it('a squeeze ends once the stored width fits again, so the next narrowing collapses to the rail', async () => {
+    // Invariant: the transient squeeze never outlives its need; auto-collapse (criterion 8) holds after a squeezed open.
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(1100);
+    await drag(-W);
+    emitWidth(900);
+    await settle();
+    await key('Enter');
+    expectSplit('fixture check: squeezed open');
+    emitWidth(1100);
+    await settle();
+    expectSplit('fixture check: wide again');
+    expect(now(), 'fixture check: at the stored width').toBe(W);
+    emitWidth(900);
+    await settle();
+    expectRail('narrowed again');
+  });
+
+  it('a drag from a collapsed rail past the transcript limit docks its target, so Escape lands in split', async () => {
+    // Invariant: a release snapping to the full view from a closed dock opens the dock on that app first.
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(1100);
+    await press('Alpha');
+    await press('Alpha');
+    expect(storedDock(), 'fixture check: Alpha docked and closed').toMatchObject({ id: 'alpha', open: false });
+    await drag(-(1100 - DOCK_RAIL_WIDTH - DOCK_TRANSCRIPT_MIN_WIDTH + 1));
+    expect(location.hash, 'fixture check: snapped to the full view').toBe('#plugin/alpha/');
+    await escape();
+    expect(location.hash).toBe(ANCHOR);
+    expectSplit('Escape from full');
+    expect(current()).toBe('Alpha');
+  });
+
+  it('mid-drag the column follows the live panel width, before the release', async () => {
+    // Invariant: the column's width is the live width plus the rail while the pointer moves, not only after pointerup.
+    await mountApp();
+    await press('Alpha');
+    expectSplit('fixture check: docked');
+    const start = now();
+    const h = handle();
+    act(() => {
+      h.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 500, pointerId: 1 }));
+      h.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: 540, pointerId: 1 }));
+    });
+    expect(now(), 'the live width').toBe(start - 40);
+    expect(colWidth(), 'the column follows mid-drag').toBe(start - 40 + DOCK_RAIL_WIDTH);
+    act(() => { h.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: 540, pointerId: 1 })); });
+    await settle();
   });
 });
 

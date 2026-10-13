@@ -55,6 +55,6 @@ export function dockLayout(i: {
   if (i.view === 'plugin') return { mode: 'full', shownId: i.routePluginId, railShown: i.desktop && i.catalogIds.length > 0 };
   if (!i.desktop || i.view !== 'session' || !i.catalogIds.length) return { mode: 'hidden', shownId: null, railShown: false };
   const id = i.dragging ? dockTarget(i.dock.id, i.catalogIds) : i.dock.open && i.dock.id !== null && i.catalogIds.includes(i.dock.id) ? i.dock.id : null;
-  if (id !== null && canSplit(i.available) && fits(i.width, i.available)) return { mode: 'split', shownId: id, railShown: true };
+  if (id !== null && fits(i.width, i.available)) return { mode: 'split', shownId: id, railShown: true };
   return { mode: 'rail', shownId: null, railShown: true };
 }

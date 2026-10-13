@@ -136,7 +136,8 @@ export const postRoute = (from: StandIn, path: string) => postFrom(from, { cc: 1
 export const column = () => document.querySelector('[data-plugin-column]') as HTMLElement | null;
 export const host = () => document.querySelector('[data-plugin-host]') as HTMLElement | null;
 export const rail = () => document.querySelector('nav[aria-label="Plugin dock"]') as HTMLElement | null;
-export const railButton = (label: string) => rail()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`) ?? null;
+/** A rail control by label; an app's icon also while it is named as docked. */
+export const railButton = (label: string) => rail()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"], button[aria-label="${label} (docked)"]`) ?? null;
 export const dockHandle = () => document.querySelector('[role="separator"][aria-label="Resize plugin dock"]') as HTMLElement | null;
 
 /** A drag of the handle by `dx` px: down, one move, up. */

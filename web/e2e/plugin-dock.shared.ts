@@ -12,6 +12,7 @@ import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin
 import { next } from './flows/ui.ts';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH } from '../src/features/views/dockLayout.ts';
 import { RESIZE_KEY_STEP } from '../src/lib/useResizableWidth.ts';
+import { TOAST_EDGE_GAP } from '../src/ui/toastLayout.ts';
 
 type Args = { page: Page; cc: Cc };
 type Box = { x: number; y: number; width: number; height: number };
@@ -308,7 +309,7 @@ export async function phoneFlow({ page, cc }: Args): Promise<void> {
 }
 
 export async function toastClearsRailFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (6): with the rail shown, a toast ends left of the rail, clear of it and of the dock handle's hit area.
+  // Invariant (6): with the rail shown, a toast ends left of the rail, clear of it and of the dock handle's hit area; once the rail hides the same toast returns to TOAST_EDGE_GAP from the window's edge.
   desktopOnly();
   const { id, sessionId } = await spawnSession(cc, `dock-toast-${test.info().project.name}`, { worktree: true, temp: false });
   await expect.poll(async () => {
@@ -326,5 +327,13 @@ export async function toastClearsRailFlow({ page, cc }: Args): Promise<void> {
   const h = await boxOf(handle(page), 'the dock handle');
   expect(right(t), 'the toast ends left of the rail').toBeLessThanOrEqual((await boxOf(rail(page), 'the rail')).x);
   expect(right(t), 'and of the handle\'s hit area').toBeLessThanOrEqual(h.x);
+
+  // The pointer resting on the toast holds its timer while the rail hides behind a full-page view.
+  await toast.hover();
+  await page.evaluate(() => { location.hash = '#costs'; });
+  await expect(rail(page), 'fixture check: the rail hid').toHaveCount(0);
+  await expect(toast, 'fixture check: the toast is still up').toHaveCount(1);
+  const { width } = page.viewportSize()!;
+  await expect.poll(async () => right(await boxOf(toast, 'the toast')), { message: 'the toast is back at the window edge\'s gap' }).toBeCloseTo(width - TOAST_EDGE_GAP, 0);
 }
 

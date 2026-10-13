@@ -106,6 +106,18 @@ describe('the sidebar resize separator', () => {
     expect('resizing' in document.body.dataset, 'cleared at its end').toBe(false);
   });
 
+  it('mid-drag the column follows the live width, before the release', () => {
+    // Invariant: the aside's width is the live drag width while the pointer moves, not only after pointerup.
+    const handle = mount(300);
+    act(() => {
+      fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1 });
+      fireEvent.pointerMove(handle, { clientX: 540, pointerId: 1 });
+    });
+    expect(aria(handle, 'aria-valuenow'), 'the live width').toBe(340);
+    expect(widthPx(), 'the column follows mid-drag').toBe(340);
+    act(() => { fireEvent.pointerUp(handle, { clientX: 540, pointerId: 1 }); });
+  });
+
   it('a drag resizes the column and persists on release, and a double-click forgets the width', () => {
     // Invariant (characterization, green before and after the shared hook): a +40 drag from 300 lands on 340 and is stored; a double-click removes the key and shows the default.
     mount(300);

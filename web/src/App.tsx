@@ -7,6 +7,7 @@ import { useRoute } from '@/state/route';
 import { uiStore } from '@/app/ui';
 import { themeStore } from '@/app/theme';
 import { ConfirmHost, ToastHost } from '@/ui/feedback';
+import { TOAST_EDGE_GAP } from '@/ui/toastLayout';
 import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
@@ -23,8 +24,9 @@ const CostsView = lazy(() => import('@/features/views/CostsView').then((m) => ({
 
 // Toasts sit below the views' top bar at every width, so none covers its controls.
 const TOAST_OFFSET = { top: 'calc(env(safe-area-inset-top, 0px) + var(--header-height) + 0.5rem)' };
-// Beside the plugin dock's rail, toasts keep sonner's own 24px gap from the rail instead of from the window's edge.
-const TOAST_OFFSET_RAIL = { ...TOAST_OFFSET, right: `${DOCK_RAIL_WIDTH + 24}px` };
+// On desktop toasts keep TOAST_EDGE_GAP from the window's edge, or from the plugin dock's rail while it shows.
+const TOAST_OFFSET_DESKTOP = { ...TOAST_OFFSET, right: `${TOAST_EDGE_GAP}px` };
+const TOAST_OFFSET_RAIL = { ...TOAST_OFFSET, right: `${DOCK_RAIL_WIDTH + TOAST_EDGE_GAP}px` };
 
 function ViewFallback() {
   return (
@@ -72,7 +74,7 @@ export function App() {
       </div>
       <DialogsHost />
       <ConfirmHost />
-      <ToastHost theme={theme} position="top-right" offset={railShown ? TOAST_OFFSET_RAIL : TOAST_OFFSET} mobileOffset={TOAST_OFFSET} richColors closeButton />
+      <ToastHost theme={theme} position="top-right" offset={railShown ? TOAST_OFFSET_RAIL : TOAST_OFFSET_DESKTOP} mobileOffset={TOAST_OFFSET} richColors closeButton />
     </TooltipProvider>
   );
 }
