@@ -51,7 +51,7 @@ test('phone: the avatar heads the turn and the body spans the transcript width; 
     expect(Math.abs(ctl.x + ctl.width - (bodyNow.x + bodyNow.width)), 'controls end at the body\'s right edge').toBeLessThanOrEqual(1);
     expect(ctl.x, 'inside the row').toBeGreaterThanOrEqual(rowBox.x - 0.5);
     expect(ctl.x + ctl.width, 'inside the row').toBeLessThanOrEqual(rowBox.x + rowBox.width + 0.5);
-    const spans = row.locator('span');
+    const spans = row.locator('[data-turn-stats] span');
     for (let i = 0; i < await spans.count(); i++) {
       const sp = await box(spans.nth(i));
       expect(sp.x + sp.width, `figure ${i} ends before the controls`).toBeLessThanOrEqual(ctl.x + 0.5);
