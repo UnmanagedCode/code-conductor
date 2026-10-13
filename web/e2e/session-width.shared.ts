@@ -13,9 +13,6 @@ const widthButton = (page: Page, label: string) => page.locator('[data-sidebar-f
 const list = (page: Page) => page.locator('[data-conversation] [data-session-width]').first();
 const bottom = (page: Page) => page.locator('main > div[data-session-width]');
 
-/** The pin column carries the cap without the list's own side padding: the cap itself while capped, the padded container's content box at Full. */
-const pinExpected = (m: { listWidth: number; listContentWidth: number }, label: string) => (label === 'Full' ? m.listContentWidth : m.listWidth);
-
 async function measure(page: Page) {
   return page.evaluate(() => {
     const scroller = document.querySelector('[data-conversation]') as HTMLElement;
@@ -27,10 +24,23 @@ async function measure(page: Page) {
     const pinColumn = document.querySelector('[data-pinned-prompt] > [data-session-width]') as HTMLElement;
     const lr = listEl.getBoundingClientRect();
     const cs = getComputedStyle(listEl);
+    const pr = pinColumn.getBoundingClientRect();
+    const pcs = getComputedStyle(pinColumn);
+    const pinBubble = document.querySelector('[data-pinned-prompt] [data-pin-body]') as HTMLElement;
+    const liveBubble = document.querySelector('[data-item=user] [data-user-text]') as HTMLElement;
+    const pb = pinBubble.getBoundingClientRect();
+    const lb = liveBubble.getBoundingClientRect();
     return {
       listWidth: lr.width,
       listContentWidth: lr.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
       listLeft: lr.left,
+      listContentLeft: lr.left + parseFloat(cs.paddingLeft),
+      pinContentLeft: pr.left + parseFloat(pcs.paddingLeft),
+      pinContentRight: pr.right - parseFloat(pcs.paddingRight),
+      pinBubbleLeft: pb.left,
+      pinBubbleRight: pb.right,
+      liveBubbleLeft: lb.left,
+      liveBubbleRight: lb.right,
       listContentRight: lr.right - parseFloat(cs.paddingRight),
       bottomLeft: bottomEl.getBoundingClientRect().left,
       bottomWidth: bottomEl.getBoundingClientRect().width,
@@ -44,7 +54,7 @@ async function measure(page: Page) {
 }
 
 // Invariants: list width Normal < Wide < Full and Full fills the area; the transcript and bottom
-// columns stay aligned; the pin column is as wide as the list; the last assistant body tracks the list's content edge; the choice survives a reload.
+// columns stay aligned; the pin column has the list's box and content box; the pinned bubble's edges are the live prompt bubble's; the last assistant body tracks the list's content edge; the choice survives a reload.
 /** Desktop: cycles every preset on a rendered turn and measures the column. */
 export async function presetsFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name !== 'desktop', 'the width control is a desktop-layout feature');
@@ -68,7 +78,12 @@ export async function presetsFlow({ page, cc }: Ctx): Promise<void> {
     widths.push(m.listWidth);
     const tol = m.gutter / 2 + 0.5;
     expect(Math.abs(m.listLeft - m.bottomLeft), `${label}: columns aligned`).toBeLessThanOrEqual(tol);
-    expect(Math.abs(m.pinWidth - pinExpected(m, label)), `${label}: the pin column has the list's cap`).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(m.pinWidth - m.listWidth), `${label}: the pin column has the list's box`).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(m.pinContentLeft - m.listContentLeft), `${label}: the pin column's content box is the list's`).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(m.pinContentRight - m.listContentRight), `${label}: the pin column's content box is the list's`).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(m.pinBubbleRight - m.liveBubbleRight), `${label}: the pinned bubble's right edge is the live prompt's`).toBeLessThanOrEqual(1);
+    // tallPrompt's paragraphs fill both bubbles to their cap; a short prompt's live bubble would shrink to its text while the pinned one keeps the cap.
+    expect(Math.abs(m.pinBubbleLeft - m.liveBubbleLeft), `${label}: no horizontal shift into the pinned state`).toBeLessThanOrEqual(1);
     expect(Math.abs(m.bodyRight - m.listContentRight), `${label}: assistant content tracks the column edge`).toBeLessThanOrEqual(1);
     if (label !== 'Full') expect(m.listWidth, `${label} is below the available width`).toBeLessThan(m.scrollerClient - 1);
     else {
@@ -91,7 +106,10 @@ export async function presetsFlow({ page, cc }: Ctx): Promise<void> {
   await showPin();
   const after = await measure(page);
   expect(Math.abs(after.listWidth - after.scrollerClient), 'Full after reload: the list fills').toBeLessThanOrEqual(0.5);
-  expect(Math.abs(after.pinWidth - pinExpected(after, 'Full')), 'Full after reload: the pin column fills').toBeLessThanOrEqual(0.5);
+  expect(Math.abs(after.pinWidth - after.listWidth), 'Full after reload: the pin column fills').toBeLessThanOrEqual(0.5);
+  expect(Math.abs(after.pinContentLeft - after.listContentLeft), "Full after reload: the pin column's content box is the list's").toBeLessThanOrEqual(0.5);
+  expect(Math.abs(after.pinContentRight - after.listContentRight), "Full after reload: the pin column's content box is the list's").toBeLessThanOrEqual(0.5);
+  expect(Math.abs(after.pinBubbleRight - after.liveBubbleRight), "Full after reload: the pinned bubble's right edge is the live prompt's").toBeLessThanOrEqual(1);
   await expect(bottom(page)).toHaveAttribute('data-session-width', 'full');
 }
 

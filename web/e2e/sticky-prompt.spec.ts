@@ -104,3 +104,17 @@ test("a pin peeking back past the transcript's top edge is clipped to the transc
   }, [(left + right) / 2, (top + bottom) / 2] as const);
   expect(hit.inHeader, `the tap lands on ${hit.at}`).toBe(true);
 });
+
+// Invariant: the pinned bubble's right edge is the live prompt bubble's, with a real scrollbar gutter on desktop and below the md breakpoint on phone.
+test("the pinned bubble's right edge is the live prompt bubble's", async ({ page, cc }) => {
+  await startIn(page, cc, 'edge');
+  await sendAll(page, next, [tallPrompt('PIN-EDGE')]);
+  await bringTo(next.transcript(page), next.userMessages(page).nth(0), -150);
+  await reveal(page, next);
+  await expect(next.pin(page)).toHaveAttribute('role', 'button');
+  const edges = await page.evaluate(() => ({
+    pinned: (document.querySelector('[data-pinned-prompt] [data-pin-body]') as HTMLElement).getBoundingClientRect().right,
+    live: (document.querySelector('[data-item=user] [data-user-text]') as HTMLElement).getBoundingClientRect().right,
+  }));
+  expect(Math.abs(edges.pinned - edges.live)).toBeLessThanOrEqual(1);
+});

@@ -29,7 +29,30 @@ afterEach(() => {
   act(() => pinStore.set({ pin: { kind: 'hidden' }, gutter: 0 }));
 });
 
+// Horizontal padding utilities, with any variant prefix: px-, pl-, pr-, ps-, pe-, p-.
+const padX = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*p[xlrse]?-/.test(c)).sort();
+const capClasses = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*max-w-/.test(c)).sort();
+
 describe('pinned prompt', () => {
+  // Invariant: the pin column has the transcript list's width cap and horizontal padding, so their content boxes (and the bubbles in them) coincide.
+  it("the pin column carries the transcript list's horizontal padding inside its own width cap", () => {
+    const { pin, scroll } = mount();
+    show(PINNED);
+    const list = scroll.firstElementChild as Element;
+    const column = pin.querySelector(':scope > [data-session-width]') as Element;
+    expect(padX(list).length).toBeGreaterThan(0);
+    expect(capClasses(list).length).toBeGreaterThan(0);
+    expect(capClasses(column)).toEqual(capClasses(list));
+    expect(padX(column)).toEqual(padX(list));
+  });
+
+  // Invariant: the overlay adds no inset outside the column's width cap.
+  it('the pin overlay carries no horizontal padding of its own', () => {
+    const { pin } = mount();
+    show(PINNED);
+    expect(padX(pin)).toEqual([]);
+  });
+
   // Invariant: a status line is a status region with no tab stop and no title whose text tells the reader there is nothing earlier; a pinned prompt is the focusable, titled jump button; the swap goes both ways.
   it('a status line is a status region with no jump affordance; a pinned prompt is the jump button again', () => {
     const { pin } = mount();
