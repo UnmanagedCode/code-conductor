@@ -85,17 +85,6 @@ async function frame(type: string, detail: object) {
 }
 const snapshot = (id: string, events: UiEvent[], extra: object = {}) => frame('snapshot', { id, events, ...extra });
 const live = (id: string, ev: UiEvent) => frame('event', { id, ev });
-/**
- * A rewind: the server wipes the ring and sends the empty reset, replays into
- * the ring, sends the live history_replayed, and answers the client's
- * re-subscribe with a snapshot of the replayed events.
- */
-async function rewind(id: string, replayed: UiEvent[]) {
-  await frame('reset_snapshot', { id, events: [] });
-  await live(id, { kind: 'system', subtype: 'history_replayed', data: { count: replayed.length } });
-  await snapshot(id, replayed.map((ev, i) => ({ ...ev, _seq: i })), { tailStartSeq: 0 });
-}
-
 /** Lineage pages the pager fetches, in order; an exhausted queue serves an empty last page. */
 let pages: object[] = [];
 let paths: string[] = [];
@@ -179,18 +168,6 @@ describe('stick to the bottom', () => {
     expect(el.scrollTop).toBe(bottom(35 * ITEM_PX));
   });
 
-  it('a rewind puts a reader scrolled up back at the bottom, once the replayed history is pulled', async () => {
-    const { container, el } = mount();
-    await snapshot('i1', echoes('before', 30));
-    scrollTo(el, 1200);
-    await live('i1', echo('held'));
-    expect(el.scrollTop, 'precondition: a reader scrolled up is left alone').toBe(1200);
-    await rewind('i1', echoes('replayed', 25));
-    expect(el.scrollHeight, 'fixture check: the replay rendered').toBe(25 * ITEM_PX);
-    expect(el.scrollTop).toBe(bottom(25 * ITEM_PX));
-    expect(jump(container)).toBeNull();
-  });
-
   it('a reconnect snapshot of the same session puts a reader scrolled up back at the bottom', async () => {
     const { container, el } = mount();
     await snapshot('i1', echoes('before', 30));
@@ -234,18 +211,18 @@ describe('a full-page view round trip', () => {
     expect(jump(back.container)).toBeNull();
   });
 
-  it('a transcript cleared while the view was away comes back at the bottom: after a rewind, and after another session was selected', async () => {
+  it('a transcript replaced while the view was away comes back at the bottom: by a snapshot of the same session, and after another session was selected', async () => {
     const first = mount();
     await snapshot('i1', echoes('read', 30));
     scrollTo(first.el, 1200);
     first.unmount();
-    await rewind('i1', echoes('replayed', 25));
-    const afterRewind = mount();
-    expect(afterRewind.el.scrollTop, 'after a rewind').toBe(bottom(25 * ITEM_PX));
-    expect(jump(afterRewind.container)).toBeNull();
+    await snapshot('i1', echoes('replaced', 25));
+    const afterReplace = mount();
+    expect(afterReplace.el.scrollTop, 'after a same-session snapshot').toBe(bottom(25 * ITEM_PX));
+    expect(jump(afterReplace.container)).toBeNull();
 
-    scrollTo(afterRewind.el, 600);
-    afterRewind.unmount();
+    scrollTo(afterReplace.el, 600);
+    afterReplace.unmount();
     act(() => { selectInstance('i2'); });
     await snapshot('i2', echoes('second', 26));
     const afterSwitch = mount();

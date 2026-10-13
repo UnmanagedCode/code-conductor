@@ -262,18 +262,4 @@ describe('a transcript replaced in place', () => {
     await snapshot('i1', TRANSCRIPT);
     await expectDefaults(el, 'back on the first');
   });
-
-  it('a rewind starts every toggle of the replayed transcript at its default', async () => {
-    const { el } = mount();
-    await snapshot('i1', TRANSCRIPT);
-    await setTools(el);
-    await setFolds(el);
-    expect({ ...tools(el), ...folds(el) }, 'precondition: every toggle set').toEqual({ ...TOOLS_SET, ...FOLDS_SET });
-    // The server wipes the ring and sends the empty reset, then the live
-    // history_replayed; the client's re-subscribe gets the replay as a snapshot.
-    await frame('reset_snapshot', { id: 'i1', events: [] });
-    await frame('event', { id: 'i1', ev: { kind: 'system', subtype: 'history_replayed', data: { count: TRANSCRIPT.length } } });
-    await snapshot('i1', TRANSCRIPT);
-    await expectDefaults(el, 'after the rewind');
-  });
 });

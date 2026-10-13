@@ -108,3 +108,40 @@ test('a pullOnly event reaches the manager stream but never a socket', async (t)
   assert.deepEqual(seen, ['hidden', 'shown'], 'the manager stream sees both');
   assert.ok(inst.ringSnapshot().some(e => e.text === 'hidden'), 'the ring holds the pull-only event');
 });
+
+test('a second subscribe on one socket waits for the first, and a frame emitted during its build follows it once', async (t) => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let c = null;
+  t.after(async () => { if (c) await c.close(); await ctx.close(); });
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const created = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const id = created.body.id;
+  await waitFor(() => ctx.instances.get(id).status === 'idle');
+  const inst = ctx.instances.get(id);
+  inst._emitUi({ kind: 'user_echo', text: 'one' });
+  // Each build gets its own held reconstructActiveTasks.
+  const builds = [];
+  inst.reconstructActiveTasks = () => {
+    let release;
+    const held = new Promise(r => { release = r; });
+    builds.push(() => release([]));
+    return held;
+  };
+  c = await wsClient(ctx.wsUrl);
+  c.send({ t: 'subscribe', id, reqId: 's1' });
+  await waitFor(() => builds.length === 1);
+  c.send({ t: 'subscribe', id, reqId: 's2' });
+  builds[0]();
+  await c.wait(m => m.t === 'ack' && m.reqId === 's1');
+  await waitFor(() => builds.length === 2);
+  inst._emitUi({ kind: 'user_echo', text: 'during' });
+  builds[1]();
+  await c.wait(m => m.t === 'ack' && m.reqId === 's2');
+  await c.wait(m => m.t === 'event' && m.id === id && m.ev.text === 'during');
+  const snaps = c.messages.map((m, i) => [m, i]).filter(([m]) => m.t === 'snapshot' && m.id === id);
+  assert.equal(snaps.length, 2, 'two snapshots');
+  for (const [s] of snaps) assert.equal(s.events.some(e => e.text === 'during'), false, 'outside both snapshots');
+  const evAts = c.messages.map((m, i) => [m, i]).filter(([m]) => m.t === 'event' && m.id === id && m.ev.text === 'during').map(([, i]) => i);
+  assert.equal(evAts.length, 1, 'sent exactly once');
+  assert.ok(evAts[0] > snaps[1][1], `the event (${evAts[0]}) follows the second snapshot (${snaps[1][1]})`);
+});

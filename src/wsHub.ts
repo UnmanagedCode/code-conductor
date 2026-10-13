@@ -12,8 +12,9 @@
 //                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
 //                          (older history — ring and earlier segments — is paged via
 //                          GET /api/instances/:id/lineage-events)
-//                          (no frame for the instance precedes it after a subscribe;
-//                          frames emitted while it is built follow it, in order)
+//                          (no event/segment/reset_snapshot frame for the instance
+//                          precedes it after a subscribe; those emitted while it is
+//                          built follow it, in order — a status frame is not held)
 //   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...], droppedText? } // droppedText ⇒ rewind prefill
 //   { t: "event",          id, ev }                 // never a pull-only (replayed history) event
 //   { t: "segment",        id, currentSegmentId }  // before every forwarded outer system/init
@@ -156,8 +157,9 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     }
   }
 
-  // Every per-instance frame (event, segment, reset_snapshot) goes through
-  // here, so none can overtake the snapshot a subscribe is building.
+  // The event, segment and reset_snapshot frames go through here, so none of
+  // them can overtake the snapshot a subscribe is building. A status frame is
+  // not held: the client's snapshot handler does not depend on its order.
   function sendInstanceFrame(ws: WebSocket, id: string, msg: string): void {
     const held = pending.get(ws)?.get(id);
     if (held) held.push(msg);

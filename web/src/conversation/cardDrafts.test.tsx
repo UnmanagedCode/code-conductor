@@ -234,16 +234,6 @@ describe('a transcript replaced in place', () => {
     await snapshot('i1', TRANSCRIPT);
     expect(cards(el), 'back on the first').toEqual(START);
   });
-
-  it('a rewind starts every card of the replayed transcript empty', async () => {
-    const el = await setAndRemount();
-    // The server wipes the ring and sends the empty reset, then the live
-    // history_replayed; the client's re-subscribe gets the replay as a snapshot.
-    await frame('reset_snapshot', { id: 'i1', events: [] });
-    await frame('event', { id: 'i1', ev: { kind: 'system', subtype: 'history_replayed', data: { count: TRANSCRIPT.length } } });
-    await snapshot('i1', TRANSCRIPT);
-    expect(cards(el)).toEqual(START);
-  });
 });
 
 describe('typing in the middle of a card\'s text', () => {

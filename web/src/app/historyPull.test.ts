@@ -68,6 +68,12 @@ describe('a live history_replayed', () => {
     expect(b.subscribes()).toEqual([['subscribe', { id: 'i1' }]]);
   });
 
+  it('is not drawn into the conversation: the pulled snapshot carries its divider', () => {
+    b.emit('snapshot', { id: 'i1', events: [], tailStartSeq: 0 });
+    b.emit('event', { id: 'i1', ev: REPLAYED });
+    expect(b.c.conversation.items.filter((i) => i.type === 'divider')).toEqual([]);
+  });
+
   it('inside a snapshot does not re-subscribe', () => {
     b.ws.sent.length = 0;
     b.emit('snapshot', { id: 'i1', events: [...turn(0, 0), { ...REPLAYED, _seq: 3 }], tailStartSeq: 0 });
@@ -81,13 +87,15 @@ describe('a live history_replayed', () => {
     expect(b.subscribes()).toEqual([]);
   });
 
-  it('leads to a pulled snapshot that replaces the pre-pull view, and live events after it append once', () => {
+  it('leads to a pulled snapshot that replaces the pre-pull view, re-arms scroll-back, and live events after it append once', async () => {
     b.emit('snapshot', { id: 'i1', events: [], tailStartSeq: 0 });
+    await b.c.lazyHistory.loadEarlier();
+    expect(b.c.lazyHistory.state().hasMore, 'precondition: the empty pre-replay snapshot found nothing to page').toBe(false);
     b.emit('event', { id: 'i1', ev: REPLAYED });
-    b.emit('snapshot', { id: 'i1', events: [...turn(0, 0), ...turn(1, 3), ...turn(2, 6)], tailStartSeq: 0 });
-    expect(b.c.lazyHistory.isReady()).toBe(true);
-    b.emit('event', { id: 'i1', ev: { kind: 'user_echo', text: 'ask 3', _seq: 9 } });
-    b.emit('event', { id: 'i1', ev: { kind: 'text_delta', msgId: 'm2', blockIdx: 0, text: 'reply 2', _seq: 7 } });
+    b.emit('snapshot', { id: 'i1', events: [...turn(0, 10), ...turn(1, 13), ...turn(2, 16)], tailStartSeq: 10 });
+    expect(b.c.lazyHistory.state().hasMore, 'older history below the pulled tail is pageable').toBe(true);
+    b.emit('event', { id: 'i1', ev: { kind: 'user_echo', text: 'ask 3', _seq: 19 } });
+    b.emit('event', { id: 'i1', ev: { kind: 'text_delta', msgId: 'm2', blockIdx: 0, text: 'reply 2', _seq: 17 } });
     expect(rootTexts(b.c.conversation.items)).toEqual(['ask 0', 'reply 0', 'ask 1', 'reply 1', 'ask 2', 'reply 2', 'ask 3']);
   });
 });

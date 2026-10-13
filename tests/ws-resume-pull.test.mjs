@@ -14,6 +14,7 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { Instance } from '../src/instances.ts';
+import { appendModelSwitch } from '../src/sessionStore.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -151,4 +152,45 @@ test('live events after the pull continue the snapshot seq with no gap or duplic
   assert.ok(live.length > 0, 'fixture check: the turn streamed');
   for (let i = 1; i < all.length; i++) assert.ok(all[i] > all[i - 1], `seq ${all[i]} follows ${all[i - 1]}`);
   assert.equal(live[0], snapSeqs.at(-1) + 1, 'the first live seq continues the snapshot');
+});
+
+test('a replay of ledger dividers alone gets no history_replayed, so the dividers stream live', async (t) => {
+  const orig = Instance.prototype.loadHistory;
+  let release;
+  const gate = new Promise(r => { release = r; });
+  Instance.prototype.loadHistory = async function (...args) { await gate; return orig.apply(this, args); };
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let c = null;
+  t.after(async () => {
+    Instance.prototype.loadHistory = orig;
+    if (c) await c.close();
+    await ctx.close();
+  });
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+  // One assistant line with no content blocks: it replays to no UI event, so
+  // replayedCount is 0 while the file exists.
+  const sid = randomUUID();
+  const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(path.join(ctx.projectsRoot, 'a')));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${sid}.jsonl`), JSON.stringify(
+    { type: 'assistant', uuid: 'a1', message: { id: 'm_empty', role: 'assistant', model: 'claude-opus-5', content: [] } },
+  ) + '\n');
+  const created = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'a', resume: sid, mode: 'bypassPermissions' });
+  const id = created.body.id;
+  const inst = ctx.instances.get(id);
+  const switchId = randomUUID();
+  assert.equal(await appendModelSwitch(inst.sessionId, {
+    id: switchId, at: '2026-01-01T00:00:00.000Z', segment: sid, afterUuid: null,
+    from: 'claude-haiku-4-5', to: 'claude-opus-5', ok: true,
+  }), true, 'fixture check: the ledger entry landed');
+  c = await wsClient(ctx.wsUrl);
+  c.send({ t: 'subscribe', id });
+  await c.wait(m => m.t === 'snapshot' && m.id === id);
+  release();
+  await waitFor(() => inst.status === 'idle');
+  assert.ok(inst.ringSnapshot().some(e => e.data?.switchId === switchId), 'fixture check: the replay spliced the divider');
+  assert.equal(inst.ringSnapshot().some(e => e.kind === 'system' && e.subtype === 'history_replayed'), false,
+    'fixture check: replayedCount 0 — no marker');
+  const frame = await c.wait(m => m.t === 'event' && m.id === id && m.ev.data?.switchId === switchId);
+  assert.equal(frame.ev.replayed, true, 'the replayed divider itself reached the socket');
 });
