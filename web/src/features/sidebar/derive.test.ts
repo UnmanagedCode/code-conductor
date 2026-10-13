@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  clampSidebarWidth, filterOptions, filterShows, groupProjects, hasHandSession, mergeLive, revealTarget,
+  filterOptions, filterShows, groupProjects, hasHandSession, mergeLive, revealTarget,
   sessionLabel, sessionSections, sessionsTotal,
 } from './derive';
 import { deriveConductors } from '@shared/conductors';
@@ -123,15 +123,5 @@ describe('revealTarget', () => {
     expect(revealTarget({ inst: hand, projects, conductors, filter: 'cond' }).filter).toBe('hand');
     expect(revealTarget({ inst: orphan, projects, conductors, filter: 'hand' }).filter).toBe('');
     expect(revealTarget({ inst: hand, projects, conductors, filter: 'hand' }).filter).toBe(null);
-  });
-});
-
-describe('clampSidebarWidth', () => {
-  it('clamps at both ends, passes in-range values, and returns null for non-numbers', () => {
-    expect(clampSidebarWidth(100)).toBe(220);
-    expect(clampSidebarWidth(900)).toBe(560);
-    expect(clampSidebarWidth(300)).toBe(300);
-    expect(clampSidebarWidth(NaN)).toBe(null);
-    expect(clampSidebarWidth(Infinity)).toBe(null);
   });
 });

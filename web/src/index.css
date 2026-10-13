@@ -147,6 +147,10 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: 'ss01', 'cv11';
   }
+  /* A resize drag (useResizableWidth) keeps the pointer over an iframe it crosses. */
+  body[data-resizing] iframe {
+    pointer-events: none;
+  }
 }
 
 /* Rendered markdown (components/Markdown.tsx → shared/markdown.ts). */

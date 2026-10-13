@@ -22,7 +22,8 @@ import { openCosts, openSettings } from '@/features/views/api';
 import { AppSwitcher } from '@/features/views/AppSwitcher';
 import { NotifyToggle } from '@/features/notifications/NotifyToggle';
 import { cn } from '@/lib/utils';
-import { filterOwner, SIDEBAR_DEFAULT_WIDTH } from './derive';
+import { useResizableWidth } from '@/lib/useResizableWidth';
+import { filterOwner, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH_STORAGE_KEY } from './derive';
 import { lensScrollOf, setFilter, setLensScroll, useSidebarUi } from './state';
 import { useSidebarModel } from './useSidebarModel';
 import { Hint, OWNER_BAR, ownerStyle } from './rows';
@@ -30,7 +31,6 @@ import { Strip } from './Strip';
 import { ProjectsList } from './ProjectsList';
 import { ConductorsList } from './ConductorsList';
 import { RestartButton } from './RestartButton';
-import { useSidebarWidth } from './useSidebarWidth';
 import { scrollActiveIntoView } from './reveal';
 // Side-effect import: loading reveal installs its selection subscriptions, whether or not a binding above stays used.
 import './reveal';
@@ -85,7 +85,9 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
   const starting = useStore(conductStore, (s) => s.starting);
   const active = useStore(appStore, activeInstance);
   const route = useRoute();
-  const { width, handleProps } = useSidebarWidth();
+  const { width, live, handleProps } = useResizableWidth({
+    storageKey: SIDEBAR_WIDTH_STORAGE_KEY, min: SIDEBAR_MIN_WIDTH, max: SIDEBAR_MAX_WIDTH, defaultWidth: SIDEBAR_DEFAULT_WIDTH, edge: 'right', label: 'Resize sidebar',
+  });
   const liveCount = m.instances.filter((i) => i.status === 'turn' || i.displayStatus === 'running').length;
 
   const go = (fn: () => void) => () => { closeSidebarOnMobile(); fn(); };
@@ -97,7 +99,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
   return (
     <aside
       className={cn('relative flex h-full flex-col bg-sidebar text-sidebar-foreground', !mobile && 'border-r border-sidebar-border')}
-      style={mobile ? undefined : { width: width ?? SIDEBAR_DEFAULT_WIDTH }}
+      style={mobile ? undefined : { width: live ?? width }}
       data-sidebar
     >
       <div className="flex items-center gap-1 px-3 pt-[max(env(safe-area-inset-top,0px),1rem)] pb-3">
@@ -164,10 +166,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
       {!mobile && (
         <div
           {...handleProps}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          className="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize touch-none transition-colors hover:bg-primary/20 data-[active=true]:bg-primary/30"
+          className="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize touch-none outline-none transition-colors hover:bg-primary/20 focus-visible:bg-primary/30 data-[active=true]:bg-primary/30"
           data-resize-handle
         />
       )}
