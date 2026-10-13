@@ -47,7 +47,11 @@ export function AboutSection() {
     try {
       const result = await streamAction('/api/settings/self-update', (t) => selfUpdateStore.set({ log: capLog(selfUpdateStore.get().log, t) }));
       if (result?.npm && !result.npm.ok) {
-        selfUpdateStore.set({ line: { text: 'The update was pulled but npm install failed. Resolve it before restarting.', tone: 'error' } });
+        // A refusal (a linked node_modules) never ran npm: its own message says what to do.
+        const text = result.npm.ran === false && result.npm.error
+          ? `The update was pulled but its dependencies were not installed: ${result.npm.error}`
+          : 'The update was pulled but npm install failed. Resolve it before restarting.';
+        selfUpdateStore.set({ line: { text, tone: 'error' } });
         if (result.npm.tail) selfUpdateStore.set({ log: result.npm.tail });
         selfUpdateStore.set({ label: 'Retry', updating: false });
         return;

@@ -129,9 +129,10 @@ export interface RestartCtx {
 }
 
 /**
- * One relaunch, prepared first. INVARIANT: the shared node_modules is changed
- * only once no session is in a turn, and when it needs no change every failure
- * is found before any session is touched:
+ * One relaunch, prepared first. In resume mode the shared node_modules changes
+ * only once every turn has ended; in plain mode the sessions are being torn
+ * down (and never resumed) when it changes. When it needs no change every
+ * failure is found before any session is touched:
  *
  * - in sync: stage the web build, then tear down and relaunch;
  * - plain + drift: stop the instances (the user chose to drop them), install,

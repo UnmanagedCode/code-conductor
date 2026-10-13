@@ -82,6 +82,10 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { re
   };
 }
 
+// The update's npm step. `error` (a failure only) is why it failed: the install's
+// own message, or a refusal that never ran npm (`ran:false`, DEPS_LINKED).
+type NpmStep = { ran: boolean; ok: boolean; code: number; tail: string; error?: string };
+
 // Apply an update: `git pull --ff-only` in the repo root, then `npm install`
 // iff node_modules then differs from package-lock.json — drift that predates the
 // pull included. Holds the maintenance lock throughout, so it never overlaps a
@@ -107,7 +111,7 @@ export async function applySelfUpdate({
   ok: boolean;
   version: string | null;
   depsChanged: boolean;
-  npm: { ran: boolean; ok: boolean; code: number; tail: string } | null;
+  npm: NpmStep | null;
   restartRequired: boolean;
 }> {
   return withMaintenanceLock('update', async () => {
@@ -137,7 +141,7 @@ export async function applySelfUpdate({
     // node_modules (DEPS_LINKED) and a failed or unverified install are all a
     // failed npm step: the client gates its restart on npm.ok.
     let depsChanged = false;
-    let npm: { ran: boolean; ok: boolean; code: number; tail: string } | null = null;
+    let npm: NpmStep | null = null;
     try {
       const r = await ensureDependencies({ repoRoot, npmCmd, onChunk: (t) => onChunk?.('npm', t) });
       if (r.ran) { depsChanged = true; npm = { ran: true, ok: true, code: r.code, tail: r.tail }; }
@@ -147,6 +151,7 @@ export async function applySelfUpdate({
       npm = {
         ran: !!err.ran, ok: false, code: err.exitCode ?? 1,
         tail: [err.tail, err.message].filter(Boolean).join('\n').slice(-RESULT_TAIL_CAP),
+        error: err.message ?? 'npm install failed',
       };
     }
 

@@ -208,6 +208,7 @@ test('applySelfUpdate: npm install failure surfaces npm.ok false with code and t
     assert.equal(result.npm.ok, false);
     assert.equal(result.npm.code, 1);
     assert.match(result.npm.tail, /boom/);
+    assert.equal(result.npm.error, 'npm install failed (exit 1)');
     assert.equal(result.restartRequired, false, 'a failed npm install must not advertise a ready-to-restart tree');
     assert.equal(result.version, '0.2.0', 'version reflects the pulled package.json');
   } finally { await r.cleanup(); }
@@ -235,6 +236,7 @@ test('applySelfUpdate: a linked node_modules out of sync is a failed npm step th
     assert.equal(result.npm.ran, false);
     assert.equal(result.npm.ok, false);
     assert.match(result.npm.tail, /is a link to .*run npm install there/);
+    assert.match(result.npm.error, /^node_modules is out of sync with package-lock\.json \(node_modules\/a missing\) and is a link to /);
     assert.equal(result.restartRequired, false);
     await assert.rejects(fs.stat(path.join(r.clone, 'npm-marker')), { code: 'ENOENT' }, 'npm command not run');
     assert.deepEqual(await fs.readdir(shared), [], 'the linked tree is untouched');
