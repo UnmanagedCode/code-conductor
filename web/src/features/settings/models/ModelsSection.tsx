@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { BarChart3Icon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from 'lucide-react';
+import { PencilIcon, PlusIcon, Trash2Icon, XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -8,7 +8,6 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/native-select';
 import { createStore, useStore } from '@/state/createStore';
-import { openCosts } from '@/features/views/api';
 import { cn } from '@/lib/utils';
 import { SectionIntro, SettingsCard, Status, Field, RangeField } from '../ui';
 import { json, post, patch, del, errText } from '../api';
@@ -512,7 +511,6 @@ export function ModelsSection() {
             <ConductorSessionCard data={data} />
             <DebugDefaultCard />
           </div>
-          <Button variant="outline" onClick={openCosts}><BarChart3Icon /> Cost dashboard</Button>
         </>
       )}
     </div>

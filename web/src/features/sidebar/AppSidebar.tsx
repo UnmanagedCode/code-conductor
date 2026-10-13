@@ -147,7 +147,6 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
               <DropdownMenuItem onSelect={go(() => openWorkspaceDialog(null))}><LayersIcon /> New workspace</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={go(openCosts)}><BarChart3Icon /> Costs</DropdownMenuItem>
-              <DropdownMenuItem onSelect={go(() => openSettings())}><SettingsIcon /> Settings</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

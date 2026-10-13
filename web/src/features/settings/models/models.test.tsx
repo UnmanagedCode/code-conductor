@@ -410,3 +410,13 @@ describe('Models → Conductor session', () => {
     expect(sw().getAttribute('aria-checked')).toBe('false');
   });
 });
+
+describe('Models → page actions', () => {
+  // Invariant: the Cost dashboard has one entry point (the sidebar ≡ menu); the Models page carries no button to it.
+  it('the Models page has no Cost dashboard button', () => {
+    mockFetch({ 'GET /api/settings/spawn': () => ({}) });
+    show(PICK);
+    expect(select('Backend for the Fast tier')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /cost/i })).toBeNull();
+  });
+});
