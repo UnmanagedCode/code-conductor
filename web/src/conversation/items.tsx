@@ -324,7 +324,8 @@ function TextBlock({ node, view, first, isSub }: { node: TextNode; view: TextVie
   // The current render's slot: undefined until the markdown has rendered, null when its last block has no inline end.
   const [slot, setSlot] = React.useState<HTMLElement | null | undefined>(undefined);
   const renderInto = React.useCallback((el: HTMLElement, text: string) => setSlot(renderWithSpeakSlot(el, text)), []);
-  // A slot from an earlier render is detached; never portal into it once the markdown is gone or rendered without one.
+  // Forget the slot while the markdown is gone or rendered without one: otherwise the render that brings the rendered view
+  // or the voice back would mount the control for one commit into that old, detached slot, before Markdown hands over a fresh one.
   React.useLayoutEffect(() => { if (!speaks || !rendered) setSlot(undefined); }, [speaks, rendered]);
   const button = <SpeakButton text={node.buffer} nodeId={node.id} className={cn(SPEAK_INLINE, gutter && SPEAK_GUTTER, SPEAK_REVEAL)} />;
   const end = !speaks ? undefined : !rendered ? 'inline' : slot === undefined ? undefined : slot ? 'inline' : 'row';

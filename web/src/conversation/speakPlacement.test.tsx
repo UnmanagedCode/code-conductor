@@ -245,4 +245,48 @@ describe('read-aloud placement', () => {
     expect(sub!.querySelector('[data-speak-slot]'), 'no slot in the sub-agent bubble').toBeNull();
     expect(sub!.querySelector('[data-speak-end]'), 'no placement in the sub-agent bubble').toBeNull();
   });
+
+  // Pins: when the rendered view or the voice comes back, the control is never mounted, even for one commit, into the slot of an earlier render.
+  it.each([
+    {
+      arm: 'the rendered view returns from raw',
+      leave: async (b: HTMLElement) => { fireEvent.click(b.querySelector('button[aria-label="Show raw text"]')!); await flush(); },
+      back: async (b: HTMLElement) => { fireEvent.click(b.querySelector('button[aria-label="Show rendered markdown"]')!); await flush(); },
+    },
+    {
+      arm: 'the voice returns',
+      leave: async () => { act(() => { voiceStore.set({ ttsAvailable: false }); }); await flush(); },
+      back: async () => { act(() => { voiceStore.set({ ttsAvailable: true }); }); await flush(); },
+    },
+  ])('when $arm, the control mounts only in the fresh slot, never in the old one', async ({ leave, back }) => {
+    const { root } = await show(text('m1', 0, 'First.\n\nLast **one**.'));
+    const b = bubbles(root)[0];
+    const [block] = blocks(root);
+    const oldSlot = expectInlineIn(speaker(block), md(block).querySelector(':scope > p:last-child'), 'positive control: the observed slot is the one holding the control');
+    await leave(b);
+    expect(oldSlot.isConnected, 'fixture check: the old slot is detached').toBe(false);
+    expect(oldSlot.childNodes.length, 'fixture check: the old slot was emptied').toBe(0);
+
+    /** Read-aloud buttons added under `node`, with the element each was added to. */
+    const watch = (node: Node, subtree: boolean) => {
+      const seen: MutationRecord[] = [];
+      const obs = new MutationObserver((rs) => { seen.push(...rs); });
+      obs.observe(node, { childList: true, subtree });
+      return () => {
+        seen.push(...obs.takeRecords());
+        obs.disconnect();
+        return seen.flatMap((r) => [...r.addedNodes]
+          .filter((n): n is HTMLElement => n instanceof HTMLElement && /^(Read aloud|Stop reading)$/.test(n.getAttribute('aria-label') ?? ''))
+          .map((n) => ({ button: n, into: r.target })));
+      };
+    };
+    const intoOld = watch(oldSlot, false);
+    const intoBlock = watch(block, true);
+    await back(b);
+
+    const fresh = expectInlineIn(speaker(block), md(block).querySelector(':scope > p:last-child'), 'once it returns');
+    expect(fresh !== oldSlot, 'fixture check: the control sits in a fresh slot').toBe(true);
+    expect(intoBlock().some((m) => m.into === fresh), 'positive control: the observers record the control mounting in the fresh slot').toBe(true);
+    expect(intoOld().length, 'nothing was ever mounted in the old slot').toBe(0);
+  });
 });
