@@ -76,6 +76,7 @@ This file, each project's `CLAUDE.md`, everything they import, and the conductor
 - Use the language's built-in test runner unless the project already uses another framework; avoid adding dependencies.
 - When presenting an implementation plan, include an "Integration tests" section listing the actual test files, what they cover, and the run command — not a "Manual verification" section.
 - Run tests as the last implementation step and report pass/fail; don't ask the user to verify by hand.
+- Assert the contract a test's subject owes its caller or user — behavior, state transitions, emitted events/calls, returned data, accessible role/name — not incidental presentation or wording (pixel values, colors, class names, CSS text, exact copy), unless that value is itself the requirement (a protocol string, a palette a guard test enforces). Verify appearance visually, not in unit tests.
 
 ## Documentation guidelines
 Layer docs; on any behavior change, update the most specific file(s) — not just the README.
