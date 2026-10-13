@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
@@ -115,5 +116,35 @@ describe('the ≡ project-actions menu', () => {
     await act(async () => { fireEvent.pointerDown(tab); fireEvent.mouseDown(tab); });
     expect(uiStore.get().lens).toBe('conductors');
     expect(isOpen()).toBe(false);
+  });
+});
+
+describe("the phone drawer's close", () => {
+  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+
+  it("is the drawer's one close, the header row's control right after ⚙, and closes the drawer", async () => {
+    // Invariant: the drawer's single close × lives in the sidebar header row with the other header controls, so it shares their line and right edge.
+    uiStore.set({ sidebarOpen: true });
+    render(
+      <TooltipProvider>
+        <Sheet open onOpenChange={(o) => uiStore.set({ sidebarOpen: o })}>
+          <SheetContent side="left"><SheetTitle>Navigation</SheetTitle><AppSidebar mobile /></SheetContent>
+        </Sheet>
+      </TooltipProvider>,
+    );
+    await settle();
+    const closes = within(screen.getByRole('dialog')).queryAllByRole('button', { name: 'Close' });
+    expect(closes).toHaveLength(1);
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    expect(closes[0].parentElement === settings.parentElement, 'in the header row').toBe(true);
+    expect(settings.nextElementSibling === closes[0], 'right after ⚙').toBe(true);
+    fireEvent.click(closes[0]);
+    expect(uiStore.get().sidebarOpen).toBe(false);
+  });
+
+  it('the desktop column has no close', () => {
+    // Invariant: the desktop column renders no close control.
+    renderSidebar();
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
   });
 });
