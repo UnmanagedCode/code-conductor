@@ -9,6 +9,7 @@ import { voiceStore } from '@/features/voice/store';
 import { emit } from '@/app/events';
 import { stickyPrompt } from '@/app/controller';
 import type { Instance } from '@/state/types';
+import { CONDUCTOR_LABEL } from '@shared/conductors';
 import { Composer } from './Composer';
 import { createDraftStore, DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { focusPromptAfterSelect } from '@/features/session/promptFocus';
@@ -62,6 +63,14 @@ async function addFile(container: HTMLElement, name: string, type = 'image/png')
   fireEvent.change(input);
   await settle();
 }
+
+describe('placeholder', () => {
+  it('an idle untitled conductor says Message Conductor…, never .conduct', () => {
+    // Invariant: the idle placeholder names a conductor by CONDUCTOR_LABEL, not its hidden project name.
+    const c = mount(inst('s1', { project: '.conduct', title: null }));
+    expect(c.box().placeholder).toBe(`Message ${CONDUCTOR_LABEL}…`);
+  });
+});
 
 describe('send and mic modes', () => {
   it('an empty box is a mic (disabled without whisper); typing flips to Send; clearing flips back', () => {

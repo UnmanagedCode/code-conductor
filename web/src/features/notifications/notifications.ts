@@ -10,6 +10,7 @@
 // controller's notification-click handling: the SW posts a
 // `cc-notification-click` message, the page fallback dispatches the same-named
 // window event.
+import { CONDUCTOR_LABEL } from '@shared/conductors';
 import { askLabel } from '@shared/needsYou';
 import { createAttentionTracker, type AttentionInstance } from '@shared/attention';
 import { createStore } from '@/state/createStore';
@@ -150,7 +151,7 @@ export type AttentionTransition = {
 
 /** The notification for one attention transition. */
 export function attentionNotification(t: AttentionTransition): NotificationPayload {
-  const where = t.entry.conductor ? 'Conductor' : `${t.entry.projectName}${t.entry.worktreeName ? ` · ${t.entry.worktreeName}` : ''}`;
+  const where = t.entry.conductor ? CONDUCTOR_LABEL : `${t.entry.projectName}${t.entry.worktreeName ? ` · ${t.entry.worktreeName}` : ''}`;
   const title = t.kind === 'waiting'
     ? `❓ ${where} — waiting on you (${askLabel(t.ask, t.source)})`
     : t.isError ? `❌ ${where} — turn errored` : `✓ ${where} — finished`;

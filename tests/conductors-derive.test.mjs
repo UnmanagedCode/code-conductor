@@ -323,3 +323,9 @@ test('isLiveConductor reads the row\'s live flag: a live conductor is, an exited
   assert.deepEqual(live.map(c => [c.sessionId, M.isLiveConductor(c)]), [['L', true]]);
   assert.deepEqual(inactive.map(c => [c.sessionId, M.isLiveConductor(c)]).sort(), [['D', false], ['E', false]]);
 });
+
+test('projectLabel renames only the conductor project', () => {
+  assert.equal(M.projectLabel(M.CONDUCT_PROJECT), M.CONDUCTOR_LABEL);
+  assert.equal(M.projectLabel('.conduct'), 'Conductor');
+  assert.equal(M.projectLabel('demo'), 'demo');
+});

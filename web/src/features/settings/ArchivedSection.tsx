@@ -9,6 +9,7 @@ import { formatAgo } from '@/lib/time';
 import { readablePrompt } from '@shared/promptPreview';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { SectionIntro, Status } from './ui';
+import { CONDUCT_PROJECT, CONDUCTOR_LABEL } from '@shared/conductors';
 import { apiFetch } from '@shared/http';
 import { json, errText } from './api';
 
@@ -26,7 +27,7 @@ export function archivedSessionUrl(project: string, worktreeName: string | null 
 /** Conductor sessions first, the rest in the server's order. */
 export function orderGroups(groups: ArchivedGroup[]) {
   const list = Array.isArray(groups) ? groups.slice() : [];
-  const i = list.findIndex((g) => g.project === '.conduct');
+  const i = list.findIndex((g) => g.project === CONDUCT_PROJECT);
   if (i > 0) list.unshift(...list.splice(i, 1));
   return list;
 }
@@ -97,7 +98,7 @@ export function ArchivedSection() {
           <Collapsible key={g.project} className="rounded-xl border bg-card shadow-xs" data-group={g.project}>
             <CollapsibleTrigger className="group/ag flex w-full items-center gap-2 px-4 py-3 text-left">
               <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/ag:rotate-90" />
-              {g.project === '.conduct' ? <><SparklesIcon className="size-4 text-primary" /><span className="font-medium">Conductor</span></> : <span className="min-w-0 font-medium break-words">{g.project}</span>}
+              {g.project === CONDUCT_PROJECT ? <><SparklesIcon className="size-4 text-primary" /><span className="font-medium">{CONDUCTOR_LABEL}</span></> : <span className="min-w-0 font-medium break-words">{g.project}</span>}
               <span className="text-sm text-muted-foreground">({g.sessions.length})</span>
             </CollapsibleTrigger>
             <CollapsibleContent className="divide-y border-t">

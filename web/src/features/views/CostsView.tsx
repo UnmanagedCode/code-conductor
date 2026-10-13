@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ChevronRightIcon, CoinsIcon, RotateCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { projectLabel } from '@shared/conductors';
 import { apiFetch } from '@shared/http';
 import { formatDuration, fmtCost } from '@shared/usage';
 import { cn } from '@/lib/utils';
@@ -192,7 +193,7 @@ function ProjectsTable({ rows }: { rows: ProjectRow[] }) {
                     <td className="px-3 py-2 font-medium">
                       <span className="flex items-center gap-1.5">
                         <ChevronRightIcon className={cn('size-3.5 text-muted-foreground transition-transform', isOpen && 'rotate-90')} />
-                        {p.project}
+                        {projectLabel(p.project)}
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right">{fmtCost(p.cost_usd)}</td>

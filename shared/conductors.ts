@@ -13,6 +13,13 @@
 
 import { promptPreview } from './promptPreview.ts';
 
+export const CONDUCT_PROJECT = '.conduct';
+export const CONDUCTOR_LABEL = 'Conductor';
+/** A project's display name: the conductor's hidden project reads as CONDUCTOR_LABEL. */
+export function projectLabel(project: string): string {
+  return project === CONDUCT_PROJECT ? CONDUCTOR_LABEL : project;
+}
+
 export type AskKind = 'question' | 'plan';
 export type AskSource = 'tool' | 'text';
 
@@ -183,7 +190,7 @@ export function deriveConductors({ conductRows = [], instances = [] }: { conduct
     });
   }
   for (const inst of instances) {
-    if (inst.project !== '.conduct' || !inst.sessionId) continue;
+    if (inst.project !== CONDUCT_PROJECT || !inst.sessionId) continue;
     // The instance fields after onDisk are placeholders, in the order the
     // assignments below write them.
     const row: ConductorRow = bySid.get(inst.sessionId) ?? {
