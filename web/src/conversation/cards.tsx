@@ -10,6 +10,7 @@ import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { send } from '@shared/ws';
 import { appStore } from '@/state/app';
 import { ConversationModel, type PlanNode, type QuestionNode } from './model';
+import { BubbleBody } from './BubbleBody';
 
 /**
  * Deliver a card answer as a normal user turn, acked so a send that never
@@ -55,12 +56,12 @@ export function PlanCard({ node, model }: { node: PlanNode; model: ConversationM
         <span className="text-sm font-medium">Ready for approval</span>
         <span className={cn('ml-auto text-xs', node.failedReason ? 'text-destructive' : 'text-muted-foreground')} data-status>{status}</span>
       </div>
-      <div className="px-4 py-3">
+      <BubbleBody className="px-4 py-3">
         {node.ev.planPath && <div className="mb-2 font-mono text-xs text-muted-foreground">Saved to {node.ev.planPath}</div>}
         {plan.trim()
           ? <Markdown text={plan} className="whitespace-pre-wrap" />
           : <p className="text-sm text-muted-foreground italic">The plan wasn't sent inline. See the assistant output above.</p>}
-      </div>
+      </BubbleBody>
       {!node.autoApproved && (
         <div className="space-y-3 border-t px-4 py-3">
           <Textarea

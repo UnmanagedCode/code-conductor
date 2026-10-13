@@ -6,6 +6,7 @@ import { buildWakeStub, WAKE_CALLBACK_MARKER } from '@shared/wakeCallback';
 import { buildForwardFrame, FORWARD_FRAME_HEADER } from '@shared/forwardFrame';
 import { buildRenewSeed } from '@shared/renewSeed';
 import { ConversationModel, type CompactionNode } from './model';
+import { BUBBLE_BODY_MAX_HEIGHT } from './BubbleBody';
 import { flush, noActions, renderModel } from './renderModel';
 import { readJsonl, replayLines, serverModules } from './testkit';
 
@@ -376,5 +377,47 @@ describe('fold markers', () => {
       expect([...bubble.querySelectorAll('[data-fold]')].map((f) => f.getAttribute('data-fold')), kind).toEqual([kind]);
     }
     expect((await echo('hello')).bubble.querySelectorAll('[data-fold]')).toHaveLength(0);
+  });
+});
+
+describe('folded bodies scroll inside the fold', () => {
+  const frame = buildForwardFrame({ messages: ['first message with **x**'], instruction: 'Please review.' });
+  const compaction = async () => {
+    const m = new ConversationModel();
+    replayLines(m, S.replayPersistedLine, readJsonl('compaction-manual.transcript.jsonl'));
+    const { root } = renderModel(m);
+    await flush();
+    return root;
+  };
+  const kinds: [string, () => Promise<HTMLElement | Element>][] = [
+    ['skill', async () => (await echo(SKILL_TEXT, SKILL)).bubble],
+    ['wake', async () => (await echo(STUB)).bubble],
+    ['renew', async () => (await echo(buildRenewSeed({ summary: 'just some free-form prose with no headings at all.' }))).bubble],
+    ['forward', async () => (await echo(frame)).bubble],
+    ['compaction', compaction],
+  ];
+
+  // Invariant: each fold kind's body (rendered or raw) sits in one bounded scroll region; the trigger, the view toggle and Copy sit outside it.
+  it.each(kinds)('%s: the body is one bounded region, and the trigger and toolbar sit outside it', async (kind, open) => {
+    const host = await open();
+    const fold = host.querySelector(`[data-fold="${kind}"]`) as HTMLElement;
+    await toggleFold(fold);
+    const regions = fold.querySelectorAll<HTMLElement>('[data-bubble-body]');
+    expect(regions).toHaveLength(1);
+    const region = regions[0];
+    expect(region.style.maxHeight).toBe(BUBBLE_BODY_MAX_HEIGHT);
+    expect(region.style.overflowY).toBe('auto');
+    expect(region.textContent!.length).toBeGreaterThan(0);
+    expect(region.contains(fold.querySelector('[data-fold-trigger]'))).toBe(false);
+    expect(region.contains(button(fold, 'Show raw text'))).toBe(false);
+    expect(region.contains(button(fold, 'Copy text'))).toBe(false);
+    fireEvent.click(button(fold, 'Show raw text'));
+    await flush();
+    const raw = fold.querySelector('[data-view="raw"]')!;
+    const rawRegions = fold.querySelectorAll<HTMLElement>('[data-bubble-body]');
+    expect(rawRegions).toHaveLength(1);
+    expect(rawRegions[0].contains(raw)).toBe(true);
+    expect(rawRegions[0].style.maxHeight).toBe(BUBBLE_BODY_MAX_HEIGHT);
+    expect(rawRegions[0].contains(button(fold, 'Show rendered markdown'))).toBe(false);
   });
 });
