@@ -31,6 +31,10 @@ import type { ExecOptions, ExecResult, ExecSpec } from './systems/system.ts';
 // literals whose comments cross-referenced each other.
 export const GROUP_OUTPUT_CAP = 16 * 1024;
 
+// The shorter tail a failed or finished command carries back to a client (a
+// refused restart's, an update's npm step's).
+export const RESULT_TAIL_CAP = 4000;
+
 // SIGTERM → SIGKILL delay for a one-shot command. Long enough for a well-behaved
 // script to unwind, short enough that a wedged one doesn't hold the caller.
 const DEFAULT_KILL_GRACE_MS = 100;

@@ -1,10 +1,18 @@
-// Build the web frontend (web/ → web/dist/) at boot when its inputs changed
-// since the last build. "Changed" is a content hash of every input file, stored
-// beside the output, so a `git pull`, a self-update or a hand edit all rebuild
-// while a plain restart does not. Runs Vite in-process: no shell, no npx, the
-// same code path on Linux, Windows and Termux.
+// Build the web frontend (web/ → web/dist/) when its inputs changed since the
+// last build. "Changed" is a content hash of every input file, stored beside the
+// output, so a `git pull`, a self-update or a hand edit all rebuild while a plain
+// restart does not. Vite runs as a child process — still no shell and no npx,
+// the same code path on Linux, Windows and Termux — because a long-lived process
+// that has just run `npm install` holds the pre-install vite in its module cache.
 //
-// The build runs after the server is listening, so /api/health and the MCP
+// Two callers:
+//   - a relaunch (src/relaunchPrep.ts) stages the build into `web/dist.next` in
+//     the OLD process, before anything is torn down, and never touches what is
+//     served; a failure refuses the relaunch;
+//   - boot (ensureWebBuild) adopts a staged build whose stamp matches, and
+//     otherwise builds web/dist itself.
+//
+// The boot build runs after the server is listening, so /api/health and the MCP
 // endpoint answer at once (the Termux widget and the Windows launcher poll
 // them). Output goes to a temp dir and is swapped in by rename-aside, so a
 // previous build keeps serving until the new one is in place, and a failed build
@@ -19,6 +27,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { isProcessAlive } from './storeLock.ts';
+import { dependencyDrift } from './depsDrift.ts';
+import { runGroupedCommand, GROUP_OUTPUT_CAP, RESULT_TAIL_CAP } from './groupedCommand.ts';
+import { hostPlatform } from './platform/index.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WEB_ROOT = path.join(repoRoot, 'web');
@@ -30,10 +41,14 @@ const STAMP = '.source-hash';
 const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'shared')];
 const INPUT_FILES = [path.join(repoRoot, 'package-lock.json')];
 // Build output, dependencies, Playwright output and the e2e specs + fixtures
-// are not inputs; a killed build can leave a `dist.tmp-<pid>` or
-// `dist.old-<pid>` behind, which must not trigger a rebuild either.
+// are not inputs. Neither is any `dist.*` sibling: the staged `dist.next`, and
+// the `.tmp-<pid>` / `.old-<pid>` dirs a killed build leaves behind.
 const SKIP_DIRS = new Set(['dist', 'node_modules', 'test-results', 'playwright-report', 'e2e']);
-const skipDir = (name: string): boolean => SKIP_DIRS.has(name) || name.startsWith('dist.tmp-') || name.startsWith('dist.old-');
+const skipDir = (name: string): boolean => SKIP_DIRS.has(name) || name.startsWith('dist.');
+// Where a relaunch stages the next build: beside the served one, so boot adopts
+// it with one rename.
+const stagedDirOf = (distDir: string): string => `${distDir}.next`;
+const WEB_BUILD_TIMEOUT_MS = 300_000;
 
 function listFiles(dir: string, out: string[]): void {
   let entries: fs.Dirent[];
@@ -114,31 +129,106 @@ function swapIn(tmp: string, distDir: string, log: Pick<Console, 'error'>): void
   catch (e) { log.error(`web: the new build is live, but the previous one could not be removed from ${old}: ${errText(e)}`); }
 }
 
+/** Builds the UI into `outDir`; injectable so a test can stand in for Vite. */
+export type WebBuilder = (outDir: string, opts: { onChunk?: (text: string) => void }) => Promise<void>;
+
+/**
+ * `vite build` in a child of this node. `root` (the repo root by default) is
+ * the child's cwd and where vite is resolved from. Throws on a missing vite or
+ * a failed build, the latter carrying the output's `tail`.
+ */
+export async function runViteBuild(outDir: string, { onChunk, root = repoRoot }: { onChunk?: (text: string) => void; root?: string } = {}): Promise<void> {
+  const vite = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
+  if (!fs.existsSync(vite)) throw new Error('vite is not installed (node_modules/vite/bin/vite.js missing) — run npm install');
+  const r = await runGroupedCommand({
+    argv: [process.execPath, vite, 'build', '--config', 'web/vite.config.ts', '--outDir', outDir, '--emptyOutDir', '--logLevel', 'warn'],
+  }, {
+    cwd: root, env: { ...process.env, NODE_ENV: 'production' }, timeoutMs: WEB_BUILD_TIMEOUT_MS, cap: GROUP_OUTPUT_CAP, onChunk,
+  }, hostPlatform);
+  if (r.code !== 0) {
+    throw Object.assign(new Error(`vite build failed (exit ${r.code}${r.timedOut ? ', timed out' : ''})`), { tail: r.output.trimEnd().slice(-RESULT_TAIL_CAP) });
+  }
+}
+
+// Build into `<dir>.tmp-<pid>`, stamp it, then swap it in as `dir`. The tmp is
+// removed on failure.
+async function buildInto(dir: string, hash: string, build: WebBuilder, onChunk: ((text: string) => void) | undefined, log: Pick<Console, 'error'>): Promise<void> {
+  const tmp = `${dir}.tmp-${process.pid}`;
+  try {
+    await build(tmp, { onChunk });
+    fs.writeFileSync(path.join(tmp, STAMP), hash + '\n');
+    swapIn(tmp, dir, log);
+  } catch (e) {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort: the failure is what gets reported */ }
+    throw e;
+  }
+}
+
+/**
+ * The relaunch's half: make `<dist>.next` hold a build of the current sources
+ * unless `<dist>` already does. Never touches `<dist>` or the serving state, so
+ * this process keeps serving its own build, whose server code a newer UI would
+ * not match. Throws on failure, leaving no staged or tmp dir behind.
+ */
+export async function stageWebBuild(
+  { onChunk, distDir = WEB_DIST, build = runViteBuild, log = console }:
+  { onChunk?: (text: string) => void; distDir?: string; build?: WebBuilder; log?: Pick<Console, 'error'> } = {},
+): Promise<{ staged: boolean }> {
+  const staged = stagedDirOf(distDir);
+  const hash = webSourceHash();
+  if (builtHash(distDir) === hash) return { staged: false };
+  if (builtHash(staged) === hash) return { staged: true };
+  try { await buildInto(staged, hash, build, onChunk, log); }
+  catch (e) {
+    // A failed swap can leave a half-replaced staged dir; a stage is all or nothing.
+    try { fs.rmSync(staged, { recursive: true, force: true }); } catch { /* best effort */ }
+    throw e;
+  }
+  return { staged: true };
+}
+
 export type WebState = { phase: 'idle' | 'building' | 'ready' | 'failed'; error: string | null };
 const state: WebState = { phase: 'idle', error: null };
 
+const failureText = (e: unknown): string => {
+  const tail = (e as { tail?: unknown })?.tail;
+  return typeof tail === 'string' && tail ? `${errText(e)}\n${tail}` : errText(e);
+};
+
 export async function ensureWebBuild(
-  { log = console, distDir = WEB_DIST }: { log?: Pick<Console, 'log' | 'error'>; distDir?: string } = {},
+  { log = console, distDir = WEB_DIST, build = runViteBuild, drift = () => dependencyDrift(repoRoot) }:
+  { log?: Pick<Console, 'log' | 'error'>; distDir?: string; build?: WebBuilder; drift?: () => { reason: string } | null } = {},
 ): Promise<WebState> {
   const started = Date.now();
-  const tmp = `${distDir}.tmp-${process.pid}`;
+  const staged = stagedDirOf(distDir);
   // Everything, the input hash included, is inside the try: start() fires this
   // unawaited, so a rejection would be unhandled and take the server down.
   try {
     sweepLeftovers(distDir, log);
+    sweepLeftovers(staged, log);
     const hash = webSourceHash();
     if (builtHash(distDir) === hash) { Object.assign(state, { phase: 'ready', error: null }); return { ...state }; }
+    if (builtHash(staged) === hash) {
+      swapIn(staged, distDir, log);
+      Object.assign(state, { phase: 'ready', error: null });
+      log.log('web: adopted the build staged before restart');
+      return { ...state };
+    }
+    try { fs.rmSync(staged, { recursive: true, force: true }); }
+    catch (e) { log.error(`web: could not remove the stale staged build ${staged}: ${errText(e)}`); }
     state.phase = 'building';
     log.log('web: frontend sources changed — building web/dist …');
-    const { build } = await import('vite');
-    await build({ configFile: path.join(WEB_ROOT, 'vite.config.ts'), logLevel: 'warn', build: { outDir: tmp, emptyOutDir: true } });
-    fs.writeFileSync(path.join(tmp, STAMP), hash + '\n');
-    swapIn(tmp, distDir, log);
+    let output = '';
+    await buildInto(distDir, hash, build, (t) => { output += t; }, log);
+    if (output.trim()) log.log(output.trimEnd());
     Object.assign(state, { phase: 'ready', error: null });
     log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } catch (e) {
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort: the failure below is what gets reported */ }
-    Object.assign(state, { phase: 'failed', error: errText(e) });
+    let error = failureText(e);
+    let d: { reason: string } | null = null;
+    try { d = drift(); } catch { /* the hint is best effort */ }
+    if (d) error += `\n— node_modules is out of sync with package-lock.json: ${d.reason}; run npm install`;
+    Object.assign(state, { phase: 'failed', error });
     const stale = fs.existsSync(path.join(distDir, 'index.html'));
     log.error([
       '='.repeat(60),

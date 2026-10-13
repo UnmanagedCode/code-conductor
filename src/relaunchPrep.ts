@@ -13,14 +13,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { dependencyDrift } from './depsDrift.ts';
 import { httpError } from './httpError.ts';
-import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
+import { runGroupedCommand, GROUP_OUTPUT_CAP, RESULT_TAIL_CAP } from './groupedCommand.ts';
 import { hostPlatform } from './platform/index.ts';
+import { stageWebBuild } from './webBuild.ts';
 
 const NPM_TIMEOUT_MS = 300_000;
-// Length of the output tail a failure or result carries back to the client.
-export const TAIL_CAP = 4000;
 
 export type InstallResult = { ran: false } | { ran: true; ok: true; code: number; tail: string };
 
@@ -51,7 +51,7 @@ export async function ensureDependencies({
   const r = await runGroupedCommand({ shell: npmCmd }, {
     cwd: repoRoot, env: process.env, timeoutMs: NPM_TIMEOUT_MS, cap: GROUP_OUTPUT_CAP, onChunk,
   }, hostPlatform);
-  const tail = r.output.trimEnd().slice(-TAIL_CAP);
+  const tail = r.output.trimEnd().slice(-RESULT_TAIL_CAP);
   if (r.code !== 0) {
     throw httpError(500, `npm install failed (exit ${r.code}${r.timedOut ? ', timed out' : ''})`, { ran: true, exitCode: r.code, tail });
   }
@@ -74,3 +74,18 @@ export async function withMaintenanceLock<T>(kind: 'restart' | 'update', fn: () 
   try { return await fn(); }
   finally { maintenance = null; }
 }
+
+/** The relaunch's preparation steps, as runRestart (src/restart.ts) drives them; tests inject stubs. */
+export interface RelaunchPrep {
+  drift(): { reason: string } | null;
+  installDeps(onChunk: (text: string) => void): Promise<unknown>;
+  stageWeb(onChunk: (text: string) => void): Promise<unknown>;
+}
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+export const relaunchPrep: RelaunchPrep = {
+  drift: () => dependencyDrift(repoRoot),
+  installDeps: (onChunk) => ensureDependencies({ repoRoot, onChunk }),
+  stageWeb: (onChunk) => stageWebBuild({ onChunk }),
+};

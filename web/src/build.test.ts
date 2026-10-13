@@ -2,6 +2,8 @@
 // The only real Vite builds in a gated suite: src/webBuild.ts's ensureWebBuild,
 // built into temp dirs outside web/ (webSourceHash walks web/, so an output dir
 // there would change the hash between calls). Nothing here writes under web/.
+// The build runs as a child process that sets NODE_ENV=production itself, so the
+// bundle checked here is the one the server ships, whatever Vitest's NODE_ENV.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -9,26 +11,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
-import { ensureWebBuild, webHandler, webSourceHash, WEB_ROOT, type WebState } from '../../src/webBuild.ts';
+import {
+  ensureWebBuild, runViteBuild, stageWebBuild, webHandler, webSourceHash, WEB_ROOT, type WebBuilder, type WebState,
+} from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
 const log = { log: vi.fn(), error: vi.fn() };
 let first: WebState;
-const viteWarnings: string[] = [];
-
-// Vitest sets NODE_ENV=test, which makes Vite build the development bundle;
-// the server builds under production, so this build does too.
-async function productionBuild(opts: Parameters<typeof ensureWebBuild>[0]) {
-  const saved = process.env.NODE_ENV;
-  process.env.NODE_ENV = 'production';
-  try { return await ensureWebBuild(opts); } finally {
-    if (saved === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved;
-  }
-}
 
 beforeAll(async () => {
-  const warn = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { viteWarnings.push(a.join(' ')); });
-  try { first = await productionBuild({ log, distDir }); } finally { warn.mockRestore(); }
+  first = await ensureWebBuild({ log, distDir });
 }, 120_000);
 
 afterAll(() => {
@@ -71,7 +63,8 @@ describe('ensureWebBuild', () => {
     const sizes = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).map((f) => fs.statSync(path.join(assets, f)).size);
     expect(sizes.length).toBeGreaterThan(0);
     expect(Math.max(...sizes)).toBeLessThan(limitBytes);
-    expect(viteWarnings.filter((w) => /chunks are larger than/.test(w))).toEqual([]);
+    // The build's own output reaches the server log; none of it is the size warning.
+    expect(log.log.mock.calls.map((c) => String(c[0])).filter((w) => /chunks are larger than/.test(w))).toEqual([]);
   });
 
   it('every URL in index.html is root-absolute: the entry chunk, the manifest and the favicon', () => {
@@ -156,13 +149,17 @@ describe('webSourceHash over a fixture root', () => {
     try { return webSourceHash(inputs); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   };
 
-  it.each(['dist', 'node_modules', 'test-results', 'playwright-report', 'e2e', 'dist.tmp-123', 'dist.old-123'])('ignores %s', (name) => {
+  it.each([
+    'dist', 'node_modules', 'test-results', 'playwright-report', 'e2e', 'dist.tmp-123', 'dist.old-123',
+    'dist.next', 'dist.next.tmp-123', 'dist.next.old-123',
+  ])('ignores %s', (name) => {
     expect(withDir(name)).toBe(webSourceHash(inputs));
   });
 
   it('control: a new source dir, or a changed input file, changes it', () => {
     const before = webSourceHash(inputs);
     expect(withDir('probe')).not.toBe(before);
+    expect(withDir('distx')).not.toBe(before);
     fs.writeFileSync(path.join(root, 'package-lock.json'), '{"x":1}');
     expect(webSourceHash(inputs)).not.toBe(before);
   });
@@ -203,7 +200,7 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
       return realRename(from, to);
     });
     const log = quiet();
-    const result = await productionBuild({ log, distDir: dist });
+    const result = await ensureWebBuild({ log, distDir: dist });
     expect(result).toEqual({ phase: 'failed', error: expect.stringContaining('EXDEV') });
     expect(String(log.error.mock.calls[0][0])).toContain('serving the previous build');
     expect(fs.readFileSync(path.join(dist, 'index.html'), 'utf8')).toContain('previous-build');
@@ -231,7 +228,7 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
       return realRename(from, to);
     });
     const log = quiet();
-    const result = await productionBuild({ log, distDir: dist });
+    const result = await ensureWebBuild({ log, distDir: dist });
     expect(result.phase).toBe('failed');
     const error = result.error!;
     expect(error).toContain('EXDEV: injected move-in failure');
@@ -256,9 +253,179 @@ describe('ensureWebBuild failures resolve `failed`, never reject (start() fires 
       return realRm(p, opts);
     });
     const log = quiet();
-    const result = await productionBuild({ log, distDir: dist });
+    const result = await ensureWebBuild({ log, distDir: dist });
     expect(result).toEqual({ phase: 'ready', error: null });
     expect(fs.readFileSync(path.join(dist, 'index.html'), 'utf8')).not.toContain('previous-build');
     expect(log.error.mock.calls.map((c) => String(c[0]))).toEqual([expect.stringContaining('EBUSY: injected removal failure')]);
   }, 120_000);
+});
+
+// Staging (the old process, before a relaunch) and adoption (the new one, at
+// boot), with the builder injected: each fake build writes an index.html naming
+// itself, so which build is served is read off the file.
+describe('staging a build before a relaunch, and adopting it at boot', () => {
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+  const parentDir = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webstage-')); dirs.push(d); return d; };
+  const quiet = () => ({ log: vi.fn(), error: vi.fn() });
+  const builder = (label: string) => {
+    const fn = vi.fn<WebBuilder>(async (outDir) => {
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, 'index.html'), `<p>${label}</p>`);
+    });
+    return fn;
+  };
+  const failing = () => vi.fn<WebBuilder>(async (outDir) => {
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, 'partial.js'), 'x');
+    throw Object.assign(new Error('vite build failed (exit 1)'), { tail: 'error: Unexpected token' });
+  });
+  const stamped = (dir: string, label: string, hash: string) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'index.html'), `<p>${label}</p>`);
+    fs.writeFileSync(path.join(dir, '.source-hash'), `${hash}\n`);
+  };
+  const served = (dir: string) => fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  const siblings = (dir: string) => fs.readdirSync(path.dirname(dir)).filter((n) => n.startsWith(`${path.basename(dir)}.`)).sort();
+
+  it('stageWebBuild builds into <dist>.next, stamped with the source hash, and leaves <dist> as it was', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'serving', 'stale');
+    const build = builder('staged');
+    const chunks: string[] = [];
+    expect(await stageWebBuild({ distDir: dist, build, onChunk: (t) => chunks.push(t) })).toEqual({ staged: true });
+    expect(build).toHaveBeenCalledOnce();
+    expect(build.mock.calls[0][1].onChunk).toBeTypeOf('function');
+    expect(served(`${dist}.next`)).toContain('staged');
+    expect(fs.readFileSync(path.join(`${dist}.next`, '.source-hash'), 'utf8').trim()).toBe(webSourceHash());
+    expect(served(dist)).toContain('serving');
+    expect(fs.readFileSync(path.join(dist, '.source-hash'), 'utf8').trim()).toBe('stale');
+    expect(siblings(dist)).toEqual(['dist.next']);
+  });
+
+  it('stageWebBuild builds nothing when <dist> is already current, or when the staged build is', async () => {
+    const current = path.join(parentDir(), 'dist');
+    stamped(current, 'serving', webSourceHash());
+    const none = builder('x');
+    expect(await stageWebBuild({ distDir: current, build: none })).toEqual({ staged: false });
+    expect(fs.existsSync(`${current}.next`)).toBe(false);
+
+    const behind = path.join(parentDir(), 'dist');
+    stamped(behind, 'serving', 'stale');
+    stamped(`${behind}.next`, 'already staged', webSourceHash());
+    expect(await stageWebBuild({ distDir: behind, build: none })).toEqual({ staged: true });
+    expect(none).not.toHaveBeenCalled();
+    expect(served(`${behind}.next`)).toContain('already staged');
+  });
+
+  it('stageWebBuild replaces a staged build whose stamp is stale', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(`${dist}.next`, 'old staged', 'stale');
+    const build = builder('restaged');
+    expect(await stageWebBuild({ distDir: dist, build })).toEqual({ staged: true });
+    expect(build).toHaveBeenCalledOnce();
+    expect(served(`${dist}.next`)).toContain('restaged');
+  });
+
+  it('a failed stage throws with the build\'s tail, leaves no staged or tmp dir, and never touches what is served', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'serving', 'stale');
+    await expect(stageWebBuild({ distDir: dist, build: failing() }))
+      .rejects.toMatchObject({ message: 'vite build failed (exit 1)', tail: 'error: Unexpected token' });
+    expect(siblings(dist)).toEqual([]);
+    expect(served(dist)).toContain('serving');
+    // The module's serving state is not the stage's: the UI route still answers as it did, not with the stage's failure.
+    const app = express();
+    app.use(webHandler({ distDir: parentDir() }));
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const r = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/`);
+      expect(await r.text()).not.toContain('failed to build');
+    } finally { await new Promise((resolve) => server.close(resolve)); }
+  });
+
+  it('ensureWebBuild adopts a staged build whose stamp matches, without building', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'previous', 'stale');
+    stamped(`${dist}.next`, 'staged before restart', webSourceHash());
+    const build = builder('rebuilt');
+    const log = quiet();
+    expect(await ensureWebBuild({ log, distDir: dist, build })).toEqual({ phase: 'ready', error: null });
+    expect(build).not.toHaveBeenCalled();
+    expect(served(dist)).toContain('staged before restart');
+    expect(siblings(dist)).toEqual([]);
+    expect(log.log.mock.calls.map((c) => String(c[0]))).toEqual(['web: adopted the build staged before restart']);
+  });
+
+  it('ensureWebBuild discards a staged build whose stamp does not match and builds <dist>', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(`${dist}.next`, 'stale staged', 'stale');
+    const build = builder('rebuilt');
+    expect(await ensureWebBuild({ log: quiet(), distDir: dist, build })).toEqual({ phase: 'ready', error: null });
+    expect(build).toHaveBeenCalledOnce();
+    expect(served(dist)).toContain('rebuilt');
+    expect(fs.readFileSync(path.join(dist, '.source-hash'), 'utf8').trim()).toBe(webSourceHash());
+    expect(siblings(dist)).toEqual([]);
+  });
+
+  it('ensureWebBuild leaves a current <dist> and a stale staged dir alone', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'current', webSourceHash());
+    stamped(`${dist}.next`, 'stale staged', 'stale');
+    const build = builder('x');
+    expect(await ensureWebBuild({ log: quiet(), distDir: dist, build })).toEqual({ phase: 'ready', error: null });
+    expect(build).not.toHaveBeenCalled();
+    expect(served(dist)).toContain('current');
+  });
+
+  it('a failed boot build names the dependency drift when node_modules is out of sync, and only then', async () => {
+    const log = quiet();
+    const drifted = await ensureWebBuild({ log, distDir: path.join(parentDir(), 'dist'), build: failing(), drift: () => ({ reason: 'node_modules/vite missing' }) });
+    expect(drifted.phase).toBe('failed');
+    expect(drifted.error).toContain('vite build failed (exit 1)');
+    expect(drifted.error).toContain('error: Unexpected token');
+    expect(drifted.error).toContain('node_modules is out of sync with package-lock.json: node_modules/vite missing; run npm install');
+    expect(String(log.error.mock.calls[0][0])).toContain('node_modules/vite missing');
+
+    const inSync = await ensureWebBuild({ log: quiet(), distDir: path.join(parentDir(), 'dist'), build: failing(), drift: () => null });
+    expect(inSync.error).not.toContain('out of sync');
+  });
+});
+
+describe('runViteBuild', () => {
+  const roots: string[] = [];
+  afterAll(() => { for (const d of roots) fs.rmSync(d, { recursive: true, force: true }); });
+  const root = (viteJs?: string) => {
+    const r = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vitebin-'));
+    roots.push(r);
+    if (viteJs !== undefined) {
+      fs.mkdirSync(path.join(r, 'node_modules', 'vite', 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(r, 'node_modules', 'vite', 'bin', 'vite.js'), viteJs);
+    }
+    return r;
+  };
+
+  it('refuses with "vite is not installed" when node_modules/vite/bin/vite.js is missing', async () => {
+    await expect(runViteBuild(path.join(root(), 'out'), { root: root() }))
+      .rejects.toThrow('vite is not installed (node_modules/vite/bin/vite.js missing) — run npm install');
+  });
+
+  it('runs vite.js under this node, in the repo root, with the build argv and NODE_ENV=production; streams its output', async () => {
+    const r = root('console.log(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env.NODE_ENV }));');
+    const out = path.join(r, 'out');
+    let text = '';
+    await runViteBuild(out, { root: r, onChunk: (t) => { text += t; } });
+    expect(JSON.parse(text)).toEqual({
+      argv: ['build', '--config', 'web/vite.config.ts', '--outDir', out, '--emptyOutDir', '--logLevel', 'warn'],
+      cwd: fs.realpathSync(r),
+      env: 'production',
+    });
+  });
+
+  it('a non-zero exit throws naming the code, with the output tail', async () => {
+    const r = root('console.error("[vite]: Rollup failed to resolve import"); process.exit(2);');
+    await expect(runViteBuild(path.join(r, 'out'), { root: r }))
+      .rejects.toMatchObject({ message: 'vite build failed (exit 2)', tail: expect.stringContaining('Rollup failed to resolve import') });
+  });
 });
