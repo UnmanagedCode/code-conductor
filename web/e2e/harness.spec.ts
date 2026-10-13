@@ -1,7 +1,7 @@
 // The harness's own self-test, run in every project: the bundle is current, the
 // booted cc is isolated in one scratch root with its own port, the default
-// engine is the fake CLI end to end, the web UI is served at / (a /next/ link
-// lands there with its hash route), and close() removes the root.
+// engine is the fake CLI end to end, the web UI is served at /, and close()
+// removes the root.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -59,12 +59,6 @@ test('/ serves the web UI', async ({ request }) => {
   const root = await request.get('/');
   expect(root.status()).toBe(200);
   expect(await root.text()).toContain('<div id="root"></div>');
-});
-
-test('a /next/ link keeps its hash route: /next/#settings/models lands on /#settings/models', async ({ page, cc }) => {
-  await page.goto('/next/#settings/models');
-  await expect(page).toHaveURL(`${cc.url}/#settings/models`);
-  await expect(page.getByRole('heading', { name: 'Models', level: 2 })).toBeVisible();
 });
 
 test('bootCc() then close() leaves no scratch root behind', async () => {

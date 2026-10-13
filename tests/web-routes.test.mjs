@@ -1,11 +1,10 @@
-// The web UI's routes: the React UI (web/) at /, /next[/…] redirected into it,
-// /pluginBridge.js for plugin pages, and nothing of the old UI. No Vite build
+// The web UI's routes: the React UI (web/) at /, /pluginBridge.js for plugin
+// pages, and nothing of the old UI. No Vite build
 // runs here — the real server never builds under createServer, it is booted on
 // an empty dist dir, and every dist-state check runs against a fixture dist.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import net from 'node:net';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -16,25 +15,6 @@ import { webHandler, WEB_DIST } from '../src/webBuild.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const get = (url) => fetch(url, { redirect: 'manual' });
-
-/** One GET sent as a raw request line, so no client normalises the path. */
-function rawGet(baseUrl, target) {
-  const { hostname, port } = new URL(baseUrl);
-  return new Promise((resolve, reject) => {
-    const sock = net.connect(Number(port), hostname);
-    let data = '';
-    sock.setEncoding('utf8');
-    sock.on('data', (c) => { data += c; });
-    sock.on('error', reject);
-    sock.on('end', () => {
-      const head = data.split('\r\n\r\n')[0].split('\r\n');
-      const status = Number(head[0].split(' ')[1]);
-      const loc = head.find((l) => /^location:/i.test(l));
-      resolve({ status, location: loc ? loc.slice(loc.indexOf(':') + 1).trim() : null });
-    });
-    sock.write(`GET ${target} HTTP/1.1\r\nHost: ${hostname}\r\nConnection: close\r\n\r\n`);
-  });
-}
 
 test('the real server, booted with no build', async (t) => {
   const distDir = await mkdtemp('cc-web-routes-nodist-');
@@ -47,40 +27,6 @@ test('the real server, booted with no build', async (t) => {
       const html = await r.text();
       assert.match(html, /http-equiv="refresh"/);
       assert.doesNotMatch(html, /\/app\.js/);
-    });
-
-    await t.test('/next, /next/ and /next/<path> redirect 301 to the same path under /, keeping the query', async () => {
-      for (const [from, to] of [
-        ['/next', '/'],
-        ['/next/', '/'],
-        ['/next?x=1', '/?x=1'],
-        ['/next/manifest.webmanifest', '/manifest.webmanifest'],
-        ['/next/assets/a.js?v=2', '/assets/a.js?v=2'],
-      ]) {
-        const r = await get(baseUrl + from);
-        assert.equal(r.status, 301, from);
-        assert.equal(r.headers.get('location'), to, from);
-      }
-    });
-
-    await t.test('/next/ followed by slashes or backslashes and a <host> redirects to a path on this origin, never off it', async () => {
-      for (const [from, to] of [
-        ['/next///evil.example/x', '/evil.example/x'],
-        ['/next//evil.example/x', '/evil.example/x'],
-        ['/next////evil.example', '/evil.example'],
-        ['/next/\\evil.example', '/evil.example'],
-        ['/next/\\/evil.example', '/evil.example'],
-      ]) {
-        const r = await rawGet(baseUrl, from);
-        assert.deepEqual(r, { status: 301, location: to }, from);
-        assert.equal(new URL(r.location, baseUrl).origin, new URL(baseUrl).origin, `${from}: Location stays on this origin`);
-      }
-    });
-
-    await t.test('/next is matched by path segment: /nextfoo is not redirected', async () => {
-      const r = await rawGet(baseUrl, '/nextfoo');
-      assert.ok(r.status < 300 || r.status >= 400, `status ${r.status}`);
-      assert.equal(r.location, null);
     });
 
     await t.test('the old UI is gone: /legacy, /legacy/, /app.js, /styles.css and /planApproval.ts answer 404', async () => {

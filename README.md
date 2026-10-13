@@ -51,7 +51,7 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 
 **Install on Android.** Chrome → ⋮ → **Install app** / **Add to home screen**. Uses the Web App Manifest (`web/public/manifest.webmanifest`) + icons + Service Worker (`web/public/sw.js`) for standalone-mode launch.
 
-**Web UI.** `web/` is the React UI, served at `/`; `/next` and `/next/<path>` redirect there (301, path and query kept). The server builds `web/` into `web/dist/` at start when its sources changed (`src/webBuild.ts`). `shared/` holds the TypeScript modules the UI shares with the server and the node tests, imported in `web/` as `@shared/*`. Detail: [docs/features.md](docs/features.md) → The UI; build, mounts and layout: [docs/architecture.md](docs/architecture.md) → `src/webBuild.ts`, `web/`.
+**Web UI.** `web/` is the React UI, served at `/`. The server builds `web/` into `web/dist/` at start when its sources changed (`src/webBuild.ts`). `shared/` holds the TypeScript modules the UI shares with the server and the node tests, imported in `web/` as `@shared/*`. Detail: [docs/features.md](docs/features.md) → The UI; build, mounts and layout: [docs/architecture.md](docs/architecture.md) → `src/webBuild.ts`, `web/`.
 
 **Browser tests and visual debug.** One Playwright harness in `web/e2e/` (`npm run test:e2e`): each worker boots a scratch-rooted cc with the fake CLI, opt-in live mode runs a real worker on an access-token-only credentials copy, and `node web/e2e/harness/snap.ts` screenshots a page; see [`web/e2e/README.md`](web/e2e/README.md). Not part of `npm test`. Mutation testing over the node, Vitest and Playwright suites: [`harness/mutation/README.md`](harness/mutation/README.md).
 

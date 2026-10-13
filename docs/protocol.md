@@ -440,7 +440,6 @@ Mounted after `/api`, `/mcp` and `/plugins` (`server.ts`), so they never shadow 
 | Path | Answer |
 |---|---|
 | `/` | The web UI (`web/dist/index.html`, `webHandler()` in `src/webBuild.ts`) and its assets, `sw.js`, `manifest.webmanifest` and icons, all root-absolute. With no build yet: **503** `text/html`, a self-refreshing "Building the interface…" page. After a failed build with no previous `web/dist` to serve: **503** `text/plain` naming the error; the API stays up |
-| `/next`, `/next/`, `/next/<path>` | **301** → the same path and query under `/` (`retiredNextRedirect()` in `src/webBuild.ts`). The `Location` is always a path on this origin: leading slashes and backslashes after `/next/` collapse to one `/`, so `/next///host/x` → `/host/x` and `/next/\host` → `/host`. Segment match: `/nextfoo` is not redirected. The browser carries the fragment across (`/next/#settings/models` → `/#settings/models`) |
 | `GET /pluginBridge.js` | `web/src/features/views/pluginBridge.js`, an explicit `server.ts` route, served whether or not the web build exists |
 | anything else | **404** (Express's default). Nothing in `shared/` is served |
 
