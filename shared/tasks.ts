@@ -12,6 +12,8 @@
 // src/taskReconstruct.js (used to reconstruct out-of-tail task state). Keep the
 // two in sync when changing create-id binding, rollover, or the completion edge.
 
+import type { UiEvent, UiEventOf } from './uiEvent.ts';
+
 const CREATE_ID_RE = /Task #(\d+) created/;
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | (string & {});
@@ -21,26 +23,19 @@ type TaskInfo = { subject: string | null; description: string | null };
 type PendingCreate = { subject?: string; description?: string; activeForm?: string | null };
 type TextBlock = { text?: string } | null | undefined;
 
-// A tool_use / tool_result UI event's fields (src/parser.ts) the tracker reads.
-export type TaskEvent = {
-  kind?: string;
-  parentToolUseId?: string | null;
-  name?: string;
-  toolUseId?: string;
-  input?: {
-    subject?: string;
-    description?: string;
-    activeForm?: string;
-    status?: TaskStatus;
-    taskId?: string | number | null;
-  } | null;
-  content?: unknown;
+// A TaskCreate / TaskUpdate tool_use's input, as the tracker reads it.
+type TaskInput = {
+  subject?: string;
+  description?: string;
+  activeForm?: string;
+  status?: TaskStatus;
+  taskId?: string | number | null;
 };
 
 export class TaskTracker {
   declare tasks: Map<string, Task>;
-  declare _pendingCreates: Map<string | undefined, PendingCreate>;
-  declare _pendingResults: Map<string | undefined, TaskEvent>;
+  declare _pendingCreates: Map<string | null, PendingCreate>;
+  declare _pendingResults: Map<string | null, UiEventOf<'tool_result'>>;
   declare _infoHistory: Map<string, TaskInfo>;
   declare _listeners: Set<(tracker: TaskTracker) => void>;
   declare completedBatches: { tasks: ListedTask[] }[];
@@ -122,7 +117,7 @@ export class TaskTracker {
   // Shared task-creation logic, called from both the normal path (live:
   // tool_use first, then tool_result) and the replay path (jsonl: tool_result
   // first, then tool_use).
-  _applyCreate(input: PendingCreate, resultEv: TaskEvent): void {
+  _applyCreate(input: PendingCreate, resultEv: UiEventOf<'tool_result'>): void {
     const content = typeof resultEv.content === 'string'
       ? resultEv.content
       : Array.isArray(resultEv.content)
@@ -147,12 +142,12 @@ export class TaskTracker {
     this._notify();
   }
 
-  apply(ev: TaskEvent | null | undefined): void {
+  apply(ev: UiEvent | null | undefined): void {
     if (!ev || typeof ev !== 'object') return;
     if (ev.parentToolUseId) return; // a sub-agent's todo list is not the outer agent's
     if (ev.kind === 'tool_use') {
       if (ev.name === 'TaskCreate') {
-        const input = ev.input ?? {};
+        const input = (ev.input ?? {}) as TaskInput;
         // Replay path: tool_result may have arrived before this tool_use
         // (persisted jsonl writes type:"user" mid-turn, type:"assistant" at
         // turn end). If a buffered result is waiting, consume it now.
@@ -170,7 +165,7 @@ export class TaskTracker {
         return;
       }
       if (ev.name === 'TaskUpdate') {
-        const input = ev.input ?? {};
+        const input = (ev.input ?? {}) as TaskInput;
         const id = input.taskId != null ? String(input.taskId) : null;
         if (!id) return;
         // Persistent history follows renames + description edits even

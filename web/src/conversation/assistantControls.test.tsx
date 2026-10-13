@@ -10,7 +10,7 @@ import { voiceStore } from '@/features/voice/store';
 import * as tts from '@/features/voice/tts';
 import { startVoice } from '@/features/voice';
 import { conversation } from '@/app/controller';
-import type { UiEvent } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { ConversationModel, userActionsForStatus, type AssistantNode, type TextNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 import { groupsOf, text, thinking, tool } from './testkit';
@@ -191,7 +191,7 @@ describe('copy', () => {
   it('a plan card with no assistant bubble before it is in no copy', async () => {
     const { m, root } = await show([
       { kind: 'user_echo', text: 'go', userIndex: 0 },
-      { kind: 'plan_request', toolUseId: 'p1', plan: 'ORPHAN-PLAN' },
+      { kind: 'plan_request', toolUseId: 'p1', plan: 'ORPHAN-PLAN', planPath: null },
       ...text('m1', 0, 'X'),
     ]);
     expect(m.items.map((i) => i.type), 'fixture check: the card comes before the only bubble').toEqual(['user', 'plan', 'assistant']);
@@ -220,7 +220,7 @@ describe('copy', () => {
     ]);
     expect(bubbles(root), 'fixture check: the call opened a bubble').toHaveLength(1);
     expect(names(bubbles(root)[0]), 'precondition: a bubble of only a tool call has no controls').toEqual([]);
-    await live(m, [{ kind: 'plan_request', toolUseId: 'plan1', plan: '# Only a plan' }]);
+    await live(m, [{ kind: 'plan_request', toolUseId: 'plan1', plan: '# Only a plan', planPath: null }]);
     expect(names(bubbles(root)[0])).toEqual(OFFERS_RAW);
     expect(await copyOf(bubbles(root)[0])).toBe('# Only a plan');
   });
@@ -492,7 +492,7 @@ describe('replay and lazy pages', () => {
       ...thinking('m1', 1, 'hmm'),
       ...tool('m1', 2, 'tu1', 'Bash', { input: { command: 'ls' }, result: 'out' }),
       ...text('m1', 3, 'second **b**'),
-      { kind: 'plan_request', toolUseId: 'pl1', plan: 'the plan' },
+      { kind: 'plan_request', toolUseId: 'pl1', plan: 'the plan', planPath: null },
     ];
     const streamed = new ConversationModel();
     for (const ev of events()) streamed.apply(ev);

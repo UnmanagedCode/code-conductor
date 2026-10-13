@@ -73,10 +73,10 @@ describe('last-response age', () => {
 describe('task panel', () => {
   const create = (id: string, tu: string, subject: string, n: string) => {
     const t = getTaskTracker(id);
-    t.apply({ kind: 'tool_use', name: 'TaskCreate', toolUseId: tu, input: { subject } });
-    t.apply({ kind: 'tool_result', toolUseId: tu, content: `Task #${n} created successfully: ${subject}` });
+    t.apply({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, name: 'TaskCreate', toolUseId: tu, input: { subject } });
+    t.apply({ kind: 'tool_result', toolUseId: tu, content: `Task #${n} created successfully: ${subject}`, isError: false, finishedAt: 0 });
   };
-  const complete = (id: string, taskId: string) => getTaskTracker(id).apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: `u${taskId}`, input: { taskId, status: 'completed' } });
+  const complete = (id: string, taskId: string) => getTaskTracker(id).apply({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, name: 'TaskUpdate', toolUseId: `u${taskId}`, input: { taskId, status: 'completed' } });
 
   it('batches rows, keeps done rows, hides when all are done and restarts after a finished batch', () => {
     // Invariant: the panel shows every task of an open batch (done ones kept), disappears once all are done, and a new TaskCreate starts a fresh batch holding only the new row.

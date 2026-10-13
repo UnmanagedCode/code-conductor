@@ -14,7 +14,7 @@ import { parseRenewSeed } from '@shared/renewSeed';
 import { parseForwardFrame, splitForwardedMessages } from '@shared/forwardFrame';
 import { promptOrigin } from '@shared/promptOrigin';
 import { normalizeQuestions, parseCanonicalUserQuestionAnswers } from '@shared/userQuestionAnswers';
-import type { UiEvent } from '@/state/types';
+import type { CompletedTask, SystemData, UiEvent, UiEventOf } from '@shared/uiEvent';
 import { splitResultContent } from './format';
 
 // ── Node types ───────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ export type ToolNode = Base & {
   /** The card, its sub-agent section, and its Arguments. */
   reader: { open: boolean; subOpen: boolean; argsOpen: boolean };
 };
-export type CallUsageNode = Base & { type: 'call_usage'; ev: UiEvent };
+export type CallUsageNode = Base & { type: 'call_usage'; ev: UiEventOf<'call_usage'> };
 export type GroupChild = ThinkingNode | ToolNode | ResultNode | CallUsageNode;
 export type GroupNode = Base & { type: 'group'; children: GroupChild[]; open: boolean; userToggled: boolean };
 export type AssistantChild = TextNode | GroupNode | CallUsageNode;
@@ -92,11 +92,11 @@ export type UserNode = Base & {
   reader: { view: TextView; foldOpen: boolean; foldView: TextView };
 };
 /** `reader.open`: a task notification's fold. */
-export type SystemNode = Base & { type: 'system'; ev: UiEvent; reader: { open: boolean } };
-export type TurnEndNode = Base & { type: 'turn_end'; ev: UiEvent };
+export type SystemNode = Base & { type: 'system'; ev: UiEventOf<'system'>; reader: { open: boolean } };
+export type TurnEndNode = Base & { type: 'turn_end'; ev: UiEventOf<'turn_end'> };
 export type PlanNode = Base & {
   type: 'plan';
-  ev: UiEvent;
+  ev: UiEventOf<'plan_request'>;
   autoApproved: boolean;
   submitted: false | 'approve' | 'reject';
   failedReason: string | null;
@@ -110,7 +110,7 @@ export type AnswerState =
   | { kind: 'custom'; text: string };
 export type QuestionNode = Base & {
   type: 'question';
-  toolUseId: string;
+  toolUseId: string | null;
   questions: any[];
   answers: AnswerState[];
   drafts: string[];
@@ -120,8 +120,8 @@ export type QuestionNode = Base & {
   answered: boolean;
   failedReason: string | null;
 };
-export type TaskCompletionNode = Base & { type: 'task_completion'; tasks: { id: string; subject: string }[] };
-export type QueuedNode = Base & { type: 'queued'; ev: UiEvent; delivered: boolean };
+export type TaskCompletionNode = Base & { type: 'task_completion'; tasks: CompletedTask[] };
+export type QueuedNode = Base & { type: 'queued'; ev: UiEventOf<'overage_message_queued'>; delivered: boolean };
 export type CompactionNode = Base & {
   type: 'compaction';
   state: 'running' | 'done' | 'failed';
@@ -160,7 +160,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 
 /** Which system events the conversation shows; the rest is per-turn noise. */
-export function shouldRenderSystem(ev: UiEvent): boolean {
+export function shouldRenderSystem(ev: UiEventOf<'system'>): boolean {
   const sub = ev.subtype;
   if (sub === 'rate_limit_event') {
     const status = ev.data?.rate_limit_info?.status;
@@ -181,7 +181,7 @@ export function userActionsForStatus(status: string | null | undefined) {
 }
 
 /** Whether a result outside its call's card starts open: short or showing an image, and neither failed nor handed to the user. */
-function looseResultOpens(ev: UiEvent): boolean {
+function looseResultOpens(ev: UiEventOf<'tool_result'>): boolean {
   if (ev.isError || ev.yielded) return false;
   const { text, images } = splitResultContent(ev.content);
   return images.length > 0 || text.length < LOOSE_RESULT_OPEN_MAX;
@@ -193,6 +193,9 @@ function answersToLock(questions: any[], text: string): AnswerState[] {
 
 let nextId = 1;
 const newId = () => `n${nextId++}`;
+
+/** A content block's address, as the streamed events and the envelope reconcile both supply it. */
+type BlockRef = { kind: UiEvent['kind']; msgId: string | null; blockIdx: number };
 
 // ── The model ────────────────────────────────────────────────────────────
 
@@ -206,9 +209,9 @@ export type ModelOptions = {
   segmentId?: string | null;
   /** For a batch rendered off the live model: reads the live current segment. */
   currentSegmentGetter?: (() => string | null) | null;
-  answeredQuestions?: Map<string, string> | null;
-  questionNodes?: Map<string, QuestionNode> | null;
-  planNodes?: Map<string, PlanNode> | null;
+  answeredQuestions?: Map<string | null, string> | null;
+  questionNodes?: Map<string | null, QuestionNode> | null;
+  planNodes?: Map<string | null, PlanNode> | null;
   /** Fired when an outer assistant text block finalizes (TTS auto-speak). */
   onAssistantText?: ((node: TextNode) => void) | null;
 };
@@ -228,14 +231,14 @@ export class ConversationModel {
   private currentSegmentGetter: (() => string | null) | null;
   onAssistantText: ((node: TextNode) => void) | null;
 
-  questionNodes: Map<string, QuestionNode>;
-  planNodes: Map<string, PlanNode>;
-  answeredQuestions: Map<string, string>;
+  questionNodes: Map<string | null, QuestionNode>;
+  planNodes: Map<string | null, PlanNode>;
+  answeredQuestions: Map<string | null, string>;
   private blocksByKey = new Map<string, TextNode | ThinkingNode | ToolNode>();
-  toolBlocks = new Map<string, ToolNode>();
+  toolBlocks = new Map<string | null, ToolNode>();
   private seenSeq = new Set<number>();
-  private messageWraps = new Map<string, AssistantNode>();
-  private reconcileCounts = new Map<string, number>();
+  private messageWraps = new Map<string | null, AssistantNode>();
+  private reconcileCounts = new Map<string | null, number>();
   private subConvs = new Map<string, ConversationModel>();
   private activeWrap: AssistantNode | null = null;
   private activeThinkingKey: string | null = null;
@@ -243,9 +246,9 @@ export class ConversationModel {
   leadingAssistantWrap: AssistantNode | null = null;
   private sawSegmentCloser = false;
   /** Live sub-agent events whose parent Agent block isn't rendered yet. */
-  orphanChildEvents = new Map<string, UiEvent[]>();
+  orphanChildEvents = new Map<string | null, UiEvent[]>();
   /** Live call_usage events whose message isn't rendered yet, by msgId: a tail or page can start between the two. */
-  orphanCallUsage = new Map<string, UiEvent>();
+  orphanCallUsage = new Map<string, UiEventOf<'call_usage'>>();
   private pendingCompaction: CompactionNode | null = null;
   private compaction: CompactionNode | null = null;
 
@@ -387,9 +390,9 @@ export class ConversationModel {
       this.seenSeq.add(ev._seq);
     }
     if (ev.parentToolUseId) {
-      if (this.routeChildEvent(ev)) return;
+      if (this.routeChildEvent(ev, ev.parentToolUseId)) return;
       if (!this.isSub && !this.toolBlocks.has(ev.parentToolUseId)) {
-        this.parkChildEvent(ev);
+        this.parkChildEvent(ev, ev.parentToolUseId);
         return;
       }
     }
@@ -462,7 +465,7 @@ export class ConversationModel {
     this.touch(node);
   }
 
-  questionSendFailed(toolUseId: string, reason: string) {
+  questionSendFailed(toolUseId: string | null, reason: string) {
     const node = this.questionNodes.get(toolUseId);
     if (!node || !node.submitted || node.answered) return;
     node.submitted = false;
@@ -481,7 +484,7 @@ export class ConversationModel {
     this.touch(node);
   }
 
-  planSendFailed(toolUseId: string, reason: string) {
+  planSendFailed(toolUseId: string | null, reason: string) {
     const node = this.planNodes.get(toolUseId);
     if (!node || !node.submitted || node.autoApproved) return;
     node.submitted = false;
@@ -525,16 +528,16 @@ export class ConversationModel {
 
   // ── Routing ───────────────────────────────────────────────────────────
 
-  private routeChildEvent(ev: UiEvent): boolean {
-    const parent = this.toolBlocks.get(ev.parentToolUseId);
+  private routeChildEvent(ev: UiEvent, parentId: string): boolean {
+    const parent = this.toolBlocks.get(parentId);
     if (!parent || parent.name !== 'Agent') {
-      for (const sub of this.subConvs.values()) if (sub.routeChildEvent(ev)) return true;
+      for (const sub of this.subConvs.values()) if (sub.routeChildEvent(ev, parentId)) return true;
       return false;
     }
-    let sub = this.subConvs.get(ev.parentToolUseId);
+    let sub = this.subConvs.get(parentId);
     if (!sub) {
       sub = new ConversationModel({ isSub: true, host: parent, root: this.root, onAssistantText: null });
-      this.subConvs.set(ev.parentToolUseId, sub);
+      this.subConvs.set(parentId, sub);
       parent.sub = sub;
       this.touch(parent);
     }
@@ -542,25 +545,25 @@ export class ConversationModel {
     return true;
   }
 
-  private parkChildEvent(ev: UiEvent) {
-    let parked = this.orphanChildEvents.get(ev.parentToolUseId);
+  private parkChildEvent(ev: UiEvent, parentId: string) {
+    let parked = this.orphanChildEvents.get(parentId);
     if (!parked) {
       parked = [];
-      this.orphanChildEvents.set(ev.parentToolUseId, parked);
+      this.orphanChildEvents.set(parentId, parked);
     }
     parked.push(ev);
     if (parked.length > 500) parked.shift();
   }
 
   /** Register a tool block a lazy page rendered and replay its parked children in arrival order. */
-  adoptToolBlock(toolUseId: string, block: ToolNode) {
+  adoptToolBlock(toolUseId: string | null, block: ToolNode) {
     if (!toolUseId || !block || this.toolBlocks.has(toolUseId)) return;
     this.toolBlocks.set(toolUseId, block);
     const parked = this.orphanChildEvents.get(toolUseId);
     this.orphanChildEvents.delete(toolUseId);
     if (!parked) return;
     this.batch(() => {
-      for (const ev of parked) if (!this.routeChildEvent(ev)) this.renderEvent(ev);
+      for (const ev of parked) if (!this.routeChildEvent(ev, toolUseId)) this.renderEvent(ev);
     });
   }
 
@@ -601,12 +604,21 @@ export class ConversationModel {
         return;
       case 'raw':
         return this.pushRoot(this.make<SystemNode>({ type: 'system', ev: { kind: 'system', subtype: 'raw', data: { line: ev.line } }, reader: { open: false } }, this));
+      // Drawn by nothing in the transcript (the header trackers read some of them).
+      case 'message_start':
+      case 'context_usage':
+      case 'hook':
+      case 'control_response':
+        return;
       default:
+        // Exhaustive: a kind added to UiEvent without a case above fails typecheck here.
+        // At runtime an unknown kind (a newer server) still lands here and is dropped.
+        ev satisfies never;
         return;
     }
   }
 
-  private renderSystemEvent(ev: UiEvent) {
+  private renderSystemEvent(ev: UiEventOf<'system'>) {
     if (ev.subtype === 'thinking_tokens') {
       const n = ev.data?.estimated_tokens ?? 0;
       const block = this.activeThinkingKey ? this.blocksByKey.get(this.activeThinkingKey) : null;
@@ -692,7 +704,7 @@ export class ConversationModel {
     this.sawSegmentCloser = true;
   }
 
-  private appendStreaming(ev: UiEvent, type: 'text' | 'thinking', delta: string) {
+  private appendStreaming(ev: BlockRef, type: 'text' | 'thinking', delta: string) {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`;
     let block = this.blocksByKey.get(key) as TextNode | ThinkingNode | undefined;
     if (!block) {
@@ -716,7 +728,7 @@ export class ConversationModel {
     return true;
   }
 
-  private finalizeBlock(ev: UiEvent) {
+  private finalizeBlock(ev: BlockRef) {
     const t = ev.kind === 'text_end' ? 'text' : 'thinking';
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${t}`;
     const block = this.blocksByKey.get(key) as TextNode | ThinkingNode | undefined;
@@ -725,7 +737,7 @@ export class ConversationModel {
     if (t === 'text' && !this.isSub && block?.type === 'text' && block.buffer) this.onAssistantText?.(block);
   }
 
-  private renderThinkingStart(ev: UiEvent) {
+  private renderThinkingStart(ev: BlockRef) {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:thinking`;
     if (this.blocksByKey.has(key)) return;
     const block = this.make<ThinkingNode>({ type: 'thinking', buffer: '', finalized: false, redacted: false, tokens: 0, reader: { open: false } }, null);
@@ -734,7 +746,7 @@ export class ConversationModel {
     this.activeThinkingKey = key;
   }
 
-  private renderThinkingRedacted(ev: UiEvent) {
+  private renderThinkingRedacted(ev: BlockRef & { estimatedTokens?: number }) {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:thinking`;
     let block = this.blocksByKey.get(key) as ThinkingNode | undefined;
     if (!block) {
@@ -747,7 +759,7 @@ export class ConversationModel {
     this.touch(block);
   }
 
-  private renderToolStart(ev: UiEvent) {
+  private renderToolStart(ev: UiEventOf<'tool_use_start' | 'tool_use'>) {
     if (ev.toolUseId) {
       if (this.toolBlocks.has(ev.toolUseId)) return;
     } else if (this.blocksByKey.has(`${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`)) {
@@ -763,7 +775,7 @@ export class ConversationModel {
     this.appendToWrap(this.ensureMessageWrap(ev.msgId), block, true);
   }
 
-  private renderToolInputDelta(ev: UiEvent) {
+  private renderToolInputDelta(ev: UiEventOf<'tool_use_input_delta'>) {
     const block = this.toolBlocks.get(ev.toolUseId);
     if (!block) return;
     block.partialJson += ev.partialJson ?? '';
@@ -774,7 +786,7 @@ export class ConversationModel {
     this.touch(block);
   }
 
-  private renderToolFinal(ev: UiEvent) {
+  private renderToolFinal(ev: UiEventOf<'tool_use'>) {
     let block = this.toolBlocks.get(ev.toolUseId);
     if (!block) {
       this.renderToolStart(ev);
@@ -791,10 +803,10 @@ export class ConversationModel {
     this.touch(block);
   }
 
-  private renderToolResult(ev: UiEvent) {
+  private renderToolResult(ev: UiEventOf<'tool_result'>) {
     const block = this.toolBlocks.get(ev.toolUseId);
     const agentUsage = Number.isFinite(ev.agentTokens)
-      ? { tokens: ev.agentTokens, toolUses: Number.isFinite(ev.agentToolUses) ? ev.agentToolUses : null }
+      ? { tokens: ev.agentTokens as number, toolUses: Number.isFinite(ev.agentToolUses) ? ev.agentToolUses as number : null }
       : null;
     const result = this.make<ResultNode>({
       type: 'result', toolUseId: ev.toolUseId ?? null, content: ev.content, isError: !!ev.isError, yielded: !!ev.yielded, agentUsage,
@@ -816,7 +828,7 @@ export class ConversationModel {
     }
   }
 
-  private reconcileAssistantMessage(ev: UiEvent) {
+  private reconcileAssistantMessage(ev: UiEventOf<'assistant_message'>) {
     const msgId = ev.msgId;
     const blocks: any[] = Array.isArray(ev.message?.content) ? ev.message.content : [];
     const base = this.reconcileCounts.get(msgId) ?? 0;
@@ -844,7 +856,7 @@ export class ConversationModel {
     this.reconcileCounts.set(msgId, base + blocks.length);
   }
 
-  private renderCallUsage(ev: UiEvent) {
+  private renderCallUsage(ev: UiEventOf<'call_usage'>) {
     const wrap = this.messageWraps.get(ev.msgId);
     if (!wrap) {
       // A message's blocks precede its call_usage, so with no wrap yet the message is on an older page: only renderPage consumes this.
@@ -866,7 +878,7 @@ export class ConversationModel {
 
   // ── Cards ─────────────────────────────────────────────────────────────
 
-  private renderPlanRequest(ev: UiEvent) {
+  private renderPlanRequest(ev: UiEventOf<'plan_request'>) {
     if (this.planNodes.has(ev.toolUseId)) return;
     const node = this.make<PlanNode>({ type: 'plan', ev, autoApproved: !!ev.autoApproved, submitted: false, failedReason: null, feedback: '' }, this);
     this.planNodes.set(ev.toolUseId, node);
@@ -879,7 +891,7 @@ export class ConversationModel {
     this.closeAssistantSegment();
   }
 
-  private renderUserQuestion(ev: UiEvent) {
+  private renderUserQuestion(ev: UiEventOf<'user_question'>) {
     if (this.questionNodes.has(ev.toolUseId)) return;
     const questions = normalizeQuestions(ev.questions);
     const node = this.make<QuestionNode>({
@@ -911,7 +923,7 @@ export class ConversationModel {
     this.touch(node);
   }
 
-  private lockAnsweredCard(ev: UiEvent) {
+  private lockAnsweredCard(ev: UiEventOf<'user_echo'>) {
     const toolUseId = ev.questionAnswer?.toolUseId;
     if (!toolUseId) return;
     this.answeredQuestions.set(toolUseId, ev.text ?? '');
@@ -921,7 +933,7 @@ export class ConversationModel {
 
   // ── User echoes ───────────────────────────────────────────────────────
 
-  private renderUserEcho(ev: UiEvent) {
+  private renderUserEcho(ev: UiEventOf<'user_echo'>) {
     const compaction = this.compaction;
     let compactionBelow: CompactionNode | null = null;
     const evText: string = ev.text ?? '';
@@ -966,9 +978,9 @@ export class ConversationModel {
       displayText: !skill && !wake && !renew ? text : '',
       transcribed, skill, wake, renew, forward, answer,
       attachments: Array.isArray(ev.attachments) ? ev.attachments : [],
-      userIndex: Number.isInteger(ev.userIndex) ? ev.userIndex : null,
+      userIndex: Number.isInteger(ev.userIndex) ? ev.userIndex as number : null,
       segmentId: this.segmentId,
-      origin: this.isSub ? 'synthetic' : hasUserText ? promptOrigin(ev as any) : 'synthetic',
+      origin: this.isSub ? 'synthetic' : hasUserText ? promptOrigin(ev) : 'synthetic',
       reader: { view: 'rendered', foldOpen: false, foldView: 'rendered' },
     }, this);
     this.pushRoot(node);
@@ -999,15 +1011,15 @@ export class ConversationModel {
     this.touch(node);
   }
 
-  private renderCompaction(ev: UiEvent) {
+  private renderCompaction(ev: UiEventOf<'compaction'>) {
     const node = this.pendingCompaction ?? this.appendCompaction();
     this.pendingCompaction = null;
-    this.fillCompaction(node, ev as any);
+    this.fillCompaction(node, ev);
     this.compaction = node;
   }
 
-  private renderCompactionStatus(ev: UiEvent): boolean {
-    const d = ev.data ?? {};
+  private renderCompactionStatus(ev: UiEventOf<'system'>): boolean {
+    const d: SystemData = ev.data ?? {};
     if (ev.subtype === 'status') {
       if (d.status === 'compacting') {
         if (!this.pendingCompaction) this.compaction = this.pendingCompaction = this.appendCompaction();
@@ -1022,7 +1034,7 @@ export class ConversationModel {
     return !!this.pendingCompaction && (ev.subtype === 'init' || ev.subtype === 'model_changed');
   }
 
-  private failPendingCompaction(error: string | null) {
+  private failPendingCompaction(error: string | null | undefined) {
     const node = this.pendingCompaction;
     if (!node) return;
     node.state = 'failed';
@@ -1042,7 +1054,7 @@ export class ConversationModel {
     this.closeAssistantSegment();
   }
 
-  private renderSegmentSeam(ev: UiEvent) {
+  private renderSegmentSeam(ev: UiEventOf<'segment_seam'>) {
     this.pushRoot(this.make<DividerNode>({ type: 'divider', kind: 'seam', segmentId: ev.segmentId ?? null }, this));
     this.closeAssistantSegment();
     this.segmentId = ev.segmentId ?? null;

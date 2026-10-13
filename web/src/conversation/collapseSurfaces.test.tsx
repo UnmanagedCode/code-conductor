@@ -8,8 +8,8 @@ import { describe, expect, it } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
 import { ConversationModel } from './model';
 import { flush, renderModel } from './renderModel';
-import { assistants, tool } from './testkit';
-import type { UiEvent } from '@/state/types';
+import { assistants, tool, toolResult } from './testkit';
+import type { UiEvent } from '@shared/uiEvent';
 
 type Surfaces = { card: string | null; sub: string | null; args: boolean | null; result: boolean | null };
 
@@ -20,7 +20,7 @@ function agentCard(): ConversationModel {
     { kind: 'tool_use_start', msgId: 'm0', blockIdx: 0, toolUseId: 'A', name: 'Agent' },
     { kind: 'tool_use', msgId: 'm0', blockIdx: 0, toolUseId: 'A', name: 'Agent', input: { description: 'search', prompt: 'go' } },
     { kind: 'text_delta', msgId: 'c1', blockIdx: 0, text: 'child one', parentToolUseId: 'A' },
-    { kind: 'tool_result', toolUseId: 'A', content: 'done' },
+    toolResult({ toolUseId: 'A', content: 'done' }),
   ] as UiEvent[]) m.apply(ev);
   return m;
 }
@@ -113,8 +113,8 @@ describe('a sub-agent that arrived on an older page', () => {
       { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Agent', input: {}, _seq: 2, parentToolUseId: null },
       { kind: 'tool_use_start', msgId: 'msub', blockIdx: 0, toolUseId: 'inner', name: 'Bash', _seq: 3, parentToolUseId: 'tu1' },
       { kind: 'tool_use', msgId: 'msub', blockIdx: 0, toolUseId: 'inner', name: 'Bash', input: { command: 'ls' }, _seq: 4, parentToolUseId: 'tu1' },
-      { kind: 'tool_result', toolUseId: 'inner', content: 'out', isError: false, _seq: 5, parentToolUseId: 'tu1' },
-      { kind: 'tool_result', toolUseId: 'tu1', content: 'done', isError: false, _seq: 6, parentToolUseId: null },
+      toolResult({ toolUseId: 'inner', content: 'out', isError: false, _seq: 5, parentToolUseId: 'tu1' }),
+      toolResult({ toolUseId: 'tu1', content: 'done', isError: false, _seq: 6, parentToolUseId: null }),
     ], null, null);
     live.prependPage(page, null);
     const { root } = renderModel(live);
@@ -142,11 +142,11 @@ describe('a result', () => {
     const m = new ConversationModel();
     for (const ev of [
       ...tool('m1', 0, 'carded', 'Read', { result: at(600), isError: true }),
-      { kind: 'tool_result', toolUseId: 'loose-599', content: at(599) },
-      { kind: 'tool_result', toolUseId: 'loose-600', content: at(600) },
-      { kind: 'tool_result', toolUseId: 'loose-failed', content: 'boom', isError: true },
-      { kind: 'tool_result', toolUseId: 'loose-yielded', content: 'over to you', yielded: true },
-      { kind: 'tool_result', toolUseId: 'loose-image', content: [image, { type: 'text', text: at(600) }] },
+      toolResult({ toolUseId: 'loose-599', content: at(599) }),
+      toolResult({ toolUseId: 'loose-600', content: at(600) }),
+      toolResult({ toolUseId: 'loose-failed', content: 'boom', isError: true }),
+      toolResult({ toolUseId: 'loose-yielded', content: 'over to you', yielded: true }),
+      toolResult({ toolUseId: 'loose-image', content: [image, { type: 'text', text: at(600) }] }),
     ] as UiEvent[]) m.apply(ev);
     const { root } = renderModel(m);
     await flush();

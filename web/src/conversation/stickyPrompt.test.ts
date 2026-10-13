@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStickyPrompt, pickPinned, pinStore, STATUS_LOADING, STATUS_NONE, STATUS_FAILED, SWIPE_MIN_PX, trackSwipes } from './stickyPrompt';
 import { ConversationModel, type UserNode } from './model';
+import type { UiEvent } from '@shared/uiEvent';
 import { createLazyHistory } from './lazyHistory';
 import { flush, renderModel } from './renderModel';
 import { cleanup } from '@testing-library/react';
@@ -46,7 +47,8 @@ describe('pickPinned', () => {
 describe('prompt origin stamping', () => {
   const origin = (ev: object, isSub = false) => {
     const m = new ConversationModel({ isSub });
-    m.apply({ kind: 'user_echo', userIndex: 1, ...ev });
+    // Partial attachments: only the fields promptOrigin reads.
+    m.apply({ kind: 'user_echo', userIndex: 1, ...ev } as UiEvent);
     return (m.items[0] as UserNode).origin;
   };
   it('typed prompts are typed; attachment-only, slash commands, answers and sub-agent prompts are synthetic', () => {

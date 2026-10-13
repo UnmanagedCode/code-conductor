@@ -13,7 +13,8 @@ import { bus } from '@shared/ws';
 import { conversation, lazyHistory, startController, stopController } from '@/app/controller';
 import { getUsageTracker } from '@/app/trackers';
 import { appStore } from '@/state/app';
-import type { Instance, UiEvent } from '@/state/types';
+import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { ConversationView } from './ConversationView';
 import { flush } from './renderModel';
 

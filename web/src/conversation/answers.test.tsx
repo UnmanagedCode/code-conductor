@@ -18,6 +18,7 @@ vi.mock('@shared/ws', () => ({
 import { formatUserQuestionAnswers, parseUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { buildWakeStub } from '@shared/wakeCallback';
 import { appStore } from '@/state/app';
+import type { UiEventOf } from '@shared/uiEvent';
 import { ConversationModel, type UserNode } from './model';
 import { createLazyHistory } from './lazyHistory';
 import { flush, renderModel } from './renderModel';
@@ -275,7 +276,7 @@ describe('question card locking', () => {
       'a JSON-escape spelling of a label': 'Answer to "Pick a fruit": "\\u0041pple"',
       'an untrimmed note': 'Answer to "Pick a fruit": "Banana" (note: " ripe ")',
     };
-    const echoOf = (text: string) => ({ kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions: [FRUIT] } });
+    const echoOf = (text: string): UiEventOf<'user_echo'> => ({ kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions: [FRUIT] } });
     function rawNoPick(root: HTMLElement, card: HTMLElement, name: string) {
       const bubble = root.querySelector('[data-item="user"][data-variant="answer"]') as HTMLElement | null;
       expect(bubble, `${name}: an answer bubble`).not.toBeNull();
@@ -332,8 +333,8 @@ describe('question card locking', () => {
 
   describe('a card whose question text is not a string', () => {
     const questions: any[] = [{ question: false, options: [{ label: 'Apple' }, { label: 'Banana' }] }];
-    const card = { kind: 'user_question', toolUseId: 'tu_q', questions };
-    const echo = (text: string) => ({ kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions } });
+    const card: UiEventOf<'user_question'> = { kind: 'user_question', toolUseId: 'tu_q', questions };
+    const echo = (text: string): UiEventOf<'user_echo'> => ({ kind: 'user_echo', userIndex: 0, text, questionAnswer: { toolUseId: 'tu_q', questions } });
 
     it('a foreign answer text locks the older-page card with no pick, without throwing', async () => {
       const live = new ConversationModel();

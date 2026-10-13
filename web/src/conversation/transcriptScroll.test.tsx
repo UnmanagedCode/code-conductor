@@ -13,7 +13,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { bus } from '@shared/ws';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
-import type { Instance, UiEvent } from '@/state/types';
+import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { ConversationView } from './ConversationView';
 import { flush } from './renderModel';
 

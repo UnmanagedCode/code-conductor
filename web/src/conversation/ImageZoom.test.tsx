@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { ConversationModel } from './model';
-import { feed, tool } from './testkit';
+import { feed, tool, toolResult } from './testkit';
 import { flush, renderModel } from './renderModel';
 
 const SRC = 'data:image/png;base64,QkJCQg==';
@@ -10,7 +10,7 @@ async function withToolImage() {
   const m = new ConversationModel();
   feed(m, [
     ...tool('m1', 0, 't1', 'Read', { result: null, input: { file_path: 'x.png' } }),
-    { kind: 'tool_result', toolUseId: 't1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'QkJCQg==' } }] },
+    toolResult({ toolUseId: 't1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'QkJCQg==' } }] }),
   ]);
   const r = renderModel(m);
   await flush();

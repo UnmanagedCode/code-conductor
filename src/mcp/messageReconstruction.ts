@@ -14,7 +14,8 @@ import { loadPersistedTranscript } from '../transcript.ts';
 // one place for both the paging and the message-selection reads.
 import { stampArchiveEvents } from '../eventArchive.ts';
 import type { InstanceLike } from '../instanceTypes.ts';
-import { isOuterUserEcho, type UiEvent } from '../parser.ts';
+import { isOuterUserEcho } from '../parser.ts';
+import type { UiEvent } from '../../shared/uiEvent.ts';
 import { normalizeQuestions, type Question } from '../../shared/userQuestionAnswers.ts';
 
 // Per-message text cap for get_recent_messages raw blocks — mirror
@@ -42,21 +43,10 @@ export function capText(s: unknown, cap: number): { text: string; truncated: boo
   return { text: Buffer.from(str, 'utf8').subarray(0, cap).toString('utf8'), truncated: true };
 }
 
-// A ring/archive event narrowed to the fields this engine reads. `_seq` is
-// required because every ring event carries it. The boundary into this type is
-// a single narrowing cast in reconstructMessages (`events as ReconEvent[]`) —
-// ring and replayed events both carry these fields, and ReconEvent is
-// assignable to UiEvent, so the cast is one-directional.
-interface ReconEvent extends UiEvent {
-  msgId?: string | null;
-  blockIdx?: number;
-  text?: string;
-  name?: string;
-  input?: Record<string, unknown> | null;
-  toolUseId?: string | null;
-  message?: { content?: unknown } | null;
-  _seq: number;
-}
+// A ring/archive event. `_seq` is required because every ring event carries it;
+// the boundary into this type is a single cast in reconstructMessages
+// (`events as ReconEvent[]`).
+type ReconEvent = UiEvent & { _seq: number };
 
 // A block inside a reconstructed message's `blocks` array — either a
 // `tool_use` (from the delta or reconciled path) or a `thinking` block.
@@ -119,7 +109,7 @@ export function reconstructMessages(events: UiEvent[], includeThinking: boolean)
   for (let i = ring.length - 1; i >= 0; i--) {
     const ev = ring[i];
     if (ev.parentToolUseId) continue; // ignore sub-agent content
-    if (!ev.msgId) continue;
+    if (!('msgId' in ev) || !ev.msgId) continue;
     if (ev.kind !== 'text_delta' && ev.kind !== 'text_end'
         && ev.kind !== 'assistant_message' && ev.kind !== 'tool_use') continue;
     if (seen.has(ev.msgId)) continue;
@@ -257,7 +247,7 @@ export function ringTurnIndex(ring: ReconEvent[]): TurnIndex {
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (ev.kind === 'turn_end') { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
-    if (ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
+    if ('msgId' in ev && ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
       firstSeqByMsgId.set(ev.msgId, ev._seq);
     }
   }
@@ -281,7 +271,7 @@ export function diskTurnIndex(events: ReconEvent[]): TurnIndex {
   for (const ev of events) {
     if (ev.parentToolUseId) continue;
     if (isOuterUserEcho(ev)) { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
-    if (ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
+    if ('msgId' in ev && ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
       firstSeqByMsgId.set(ev.msgId, ev._seq);
     }
   }
@@ -421,7 +411,7 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
   const d: SegmentSeqs = { next: 0, textSeq: null, planSeq: null, questionsSeq: null };
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
-    if (ev.msgId !== targetMsgId) continue;
+    if (!('msgId' in ev) || ev.msgId !== targetMsgId) continue;
     if (ev.kind === 'text_delta') {
       const idx = ev.blockIdx as number; // text_delta always carries blockIdx
       if (!byBlock.has(idx)) {

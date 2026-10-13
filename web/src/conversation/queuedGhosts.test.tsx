@@ -4,10 +4,10 @@
 // queued after that is a ghost of its own until the next reset.
 import { describe, expect, it } from 'vitest';
 import { act } from '@testing-library/react';
-import type { UiEvent } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { ConversationModel } from './model';
 import { flush, renderModel } from './renderModel';
-import { text } from './testkit';
+import { text, turnEnd } from './testkit';
 
 const queued = (body: string, attachmentCount = 0): UiEvent =>
   ({ kind: 'overage_message_queued', data: { text: body, attachmentCount, ts: Date.UTC(2026, 0, 5, 9, 30), queuedCount: 1 } });
@@ -31,7 +31,7 @@ describe('queued ghosts', () => {
     m.applyEvents([
       { kind: 'user_echo', text: 'before', userIndex: 0 },
       ...text('m0', 0, 'reply'),
-      { kind: 'turn_end', subtype: 'success' },
+      turnEnd({ subtype: 'success' }),
       queued('QUEUED-ONE'),
       queued('QUEUED-TWO', 1),
     ]);

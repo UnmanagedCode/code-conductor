@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ConversationModel, type AssistantNode, type GroupNode, type RootItem } from './model';
 import { summarizeGroup } from './tools';
 import { compactionLabel } from './format';
-import type { UiEvent } from '@/state/types';
+import type { UiEvent, UiEventOf } from '@shared/uiEvent';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.resolve(here, '../../../tests/fixtures');
@@ -47,7 +47,7 @@ export const feed = (m: ConversationModel, evs: UiEvent[]) => { for (const ev of
 
 // The server injects a model_changed ahead of every CLI init (the model the
 // session switched to); live fixtures replay that the same way.
-export const MODEL_CHANGED = { kind: 'system', subtype: 'model_changed', data: { from: 'claude-haiku-4-5-20251001', to: 'claude-haiku-4-5' } };
+export const MODEL_CHANGED = { kind: 'system', subtype: 'model_changed', data: { from: 'claude-haiku-4-5-20251001', to: 'claude-haiku-4-5' } } satisfies UiEvent;
 
 export function feedFrames(m: ConversationModel, parser: ServerParser, frames: any[]) {
   for (const frame of frames) {
@@ -62,6 +62,19 @@ export function replayLines(m: ConversationModel, replay: (line: any) => UiEvent
   for (const line of lines) for (const ev of replay(line)) apply(m, ev);
 }
 
+/**
+ * A tool_result fixture. `finishedAt` (and `isError`) may be left out, as most fixtures do: a card's
+ * elapsed time then reads off the render clock, which their assertions rely on.
+ */
+export const toolResult = (fields: Omit<UiEventOf<'tool_result'>, 'kind' | 'isError' | 'finishedAt'> & Partial<UiEventOf<'tool_result'>>): UiEvent =>
+  ({ kind: 'tool_result', ...fields }) as UiEvent;
+
+/** A turn_end with every figure unknown (null, as the parser emits it), overridden by `fields`. */
+export const turnEnd = (fields: Partial<UiEventOf<'turn_end'>> = {}): UiEventOf<'turn_end'> => ({
+  kind: 'turn_end', subtype: 'success', stopReason: null, durationMs: null, durationApiMs: null, durationApiMsDelta: null,
+  cost: null, costDelta: null, usage: null, isError: false, ...fields,
+});
+
 export const thinking = (msgId: string, blockIdx: number, text = 'pondering'): UiEvent[] => [
   { kind: 'thinking_start', msgId, blockIdx },
   { kind: 'thinking_delta', msgId, blockIdx, text },
@@ -72,12 +85,12 @@ export const text = (msgId: string, blockIdx: number, body: string): UiEvent[] =
   { kind: 'text_end', msgId, blockIdx },
 ];
 export function tool(msgId: string, blockIdx: number, id: string, name: string,
-  { result = 'ok' as string | null, isError = false, yielded = false, input = { command: 'x' } as object } = {}): UiEvent[] {
+  { result = 'ok' as string | null, isError = false, yielded = false, input = { command: 'x' } as Record<string, unknown> } = {}): UiEvent[] {
   const evs: UiEvent[] = [
     { kind: 'tool_use_start', msgId, blockIdx, toolUseId: id, name },
     { kind: 'tool_use', msgId, blockIdx, toolUseId: id, name, input },
   ];
-  if (result !== null) evs.push({ kind: 'tool_result', toolUseId: id, content: result, isError, ...(yielded ? { yielded: true } : {}) });
+  if (result !== null) evs.push(toolResult({ toolUseId: id, content: result, isError, ...(yielded ? { yielded: true } : {}) }));
   return evs;
 }
 

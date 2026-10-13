@@ -5,7 +5,8 @@
 // order by Instance._emitUi (live) and loadPersistedTranscript (disk); the
 // stamp lives on the UI event only and is never sent to the CLI.
 
-import { isOuterUserEcho, type UiEvent } from './parser.ts';
+import { isOuterUserEcho } from './parser.ts';
+import type { UiEvent } from '../shared/uiEvent.ts';
 import { isUserQuestionAnswerText, type Question } from '../shared/userQuestionAnswers.ts';
 
 export class QuestionAnswerCorrelator {

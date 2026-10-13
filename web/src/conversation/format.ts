@@ -2,7 +2,7 @@
 // turn-end and per-call usage, compaction labels. Ported from the old block
 // renderers so the wording stays what users and tests know.
 import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL, fmtCost, formatTokens, formatPct } from '@shared/usage';
-import type { UiEvent } from '@/state/types';
+import type { SystemData, UiEventOf } from '@shared/uiEvent';
 
 /** Tools whose input is one shell command ({command, description?}). */
 export const SHELL_TOOLS = new Set(['Bash', 'PowerShell', 'mcp__code-conductor__project_bash', 'mcp__code-conductor__system_bash']);
@@ -116,7 +116,7 @@ const OVERAGE_DISABLED_LABEL: Record<string, string> = { out_of_credits: 'out of
 export type SystemLine = { label: string; text: string; tone: 'muted' | 'warn' | 'error'; title?: string | null };
 
 /** A kept system event as one annotated line. */
-export function systemLine({ subtype, data }: UiEvent): SystemLine {
+export function systemLine({ subtype, data }: UiEventOf<'system'>): SystemLine {
   const switchFailed = subtype === 'model_switch_failed' && !data?.cancelled;
   const warn = subtype === 'playbook_warn' || subtype === 'read_nudge' || switchFailed;
   const errorish = subtype === 'crashed' || subtype === 'spawn_error' || subtype === 'renew_error' || subtype === 'auto_stop_overage';
@@ -164,7 +164,7 @@ export function systemLine({ subtype, data }: UiEvent): SystemLine {
         return `${(data?.cacheCreation ?? 0).toLocaleString()} tokens written to cache, ${(data?.cacheRead ?? 0).toLocaleString()} served`;
       case 'rate_limit_event': {
         const info = data?.rate_limit_info ?? {};
-        const window = (RL_WINDOW_LABEL as Record<string, string>)[info.rateLimitType] ?? info.rateLimitType ?? 'usage';
+        const window = (RL_WINDOW_LABEL as Record<string, string>)[info.rateLimitType as string] ?? info.rateLimitType ?? 'usage';
         const resetWhen = formatResetWhen(info.resetsAt);
         if (info.status === 'allowed_warning') {
           const util = typeof info.utilization === 'number' ? Math.round(info.utilization * 100) : null;
@@ -174,7 +174,7 @@ export function systemLine({ subtype, data }: UiEvent): SystemLine {
           let line = `${window} limit reached${resetWhen ? ` · ${resetWhen}` : ''}`;
           if (info.isUsingOverage) line += ' · on overage';
           else if (info.overageStatus === 'rejected') {
-            line += ` · overage unavailable (${OVERAGE_DISABLED_LABEL[info.overageDisabledReason] ?? info.overageDisabledReason ?? 'unavailable'})`;
+            line += ` · overage unavailable (${OVERAGE_DISABLED_LABEL[info.overageDisabledReason as string] ?? info.overageDisabledReason ?? 'unavailable'})`;
           }
           return line;
         }
@@ -188,7 +188,7 @@ export function systemLine({ subtype, data }: UiEvent): SystemLine {
 }
 
 /** A background task's folded line: name · status · exit code (an Agent task has none). */
-export function taskNotificationHeadline(data: any): string {
+export function taskNotificationHeadline(data: SystemData): string {
   const exit = data?.exitCode != null ? ` · exit ${data.exitCode}` : '';
   return `${data?.name ?? data?.task_id ?? '?'} · ${data?.status ?? '?'}${exit}`;
 }
@@ -198,7 +198,7 @@ function growthPrefix(growth: number | null | undefined) {
 }
 
 /** One API call's figures, from a live `call_usage` event. */
-export function callUsageText({ promptTokens, growthTokens, outputTokens, thinkingTokens }: UiEvent): string {
+export function callUsageText({ promptTokens, growthTokens, outputTokens, thinkingTokens }: UiEventOf<'call_usage'>): string {
   const parts: string[] = [];
   if (promptTokens != null) parts.push(`${growthPrefix(growthTokens)}ctx ${formatTokens(promptTokens)}`);
   parts.push(`out ${formatTokens(outputTokens)}${thinkingTokens ? ` (${formatTokens(thinkingTokens)} thinking)` : ''}`);
@@ -209,7 +209,7 @@ export const CALL_USAGE_TITLE = "Prompt size of this API call (exact). Growth = 
 
 export type TurnEndParts = { ok: boolean; stopReason: string | null; duration: string | null; cost: string | null; context: string | null; tokens: string | null };
 
-export function turnEndParts({ durationMs, cost, costDelta, usage, isError, stopReason, contextTokens, contextWindowTokens, contextGrowthTokens }: UiEvent): TurnEndParts {
+export function turnEndParts({ durationMs, cost, costDelta, usage, isError, stopReason, contextTokens, contextWindowTokens, contextGrowthTokens }: UiEventOf<'turn_end'>): TurnEndParts {
   const displayCost = costDelta ?? cost;
   let context: string | null = null;
   if (contextTokens != null && Number.isFinite(contextTokens)) {

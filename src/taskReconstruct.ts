@@ -16,6 +16,8 @@
 // live/tail path, synthesized client-side in wsRouter.js). Callers assemble it
 // into the events they deliver.
 
+import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';
+
 const CREATE_ID_RE = /Task #(\d+) created/;
 
 // The in-flight batch records are stored id-less (the id is the Map key) and
@@ -42,18 +44,8 @@ export interface ReconstructResult {
   hadOrphanUpdate: boolean;
 }
 
-// The events are the parser's UI events (tool_use / tool_result); only the
-// fields this pass reads are declared. `_seq` is stamped on every ring/archive
-// event, so it is required here.
-export interface TaskEvent {
-  kind?: string;
-  name?: string;
-  input?: unknown;
-  content?: unknown;
-  toolUseId?: string | null;
-  parentToolUseId?: string | null;
-  _seq: number;
-}
+// `_seq` is stamped on every ring/archive event, so it is required here.
+type SeqUiEvent = UiEvent & { _seq: number };
 
 // The TaskCreate/TaskUpdate input payloads are untyped wire JSON — read
 // defensively (each consumer narrows the field it uses).
@@ -75,7 +67,7 @@ function blockText(b: unknown): string {
   return typeof text === 'string' ? text : '';
 }
 
-function resultText(ev: TaskEvent): string {
+function resultText(ev: UiEventOf<'tool_result'>): string {
   if (typeof ev.content === 'string') return ev.content;
   if (!Array.isArray(ev.content)) return '';
   return ev.content.map(blockText).join('\n');
@@ -87,10 +79,10 @@ function resultText(ev: TaskEvent): string {
 //                 batch snapshot (same shape wsRouter passes to task_completion).
 //   activeAtEnd — the current in-flight batch as a task list, or [] when there
 //                 is no batch / every task in it is already completed.
-export function reconstructTasks(events: TaskEvent[]): ReconstructResult {
+export function reconstructTasks(events: SeqUiEvent[]): ReconstructResult {
   const tasks = new Map<string, StoredTask>(); // id -> { subject, description, activeForm, status }
   const pendingCreates = new Map<string | null, TaskInput>(); // toolUseId -> { subject, description, activeForm }
-  const pendingResults = new Map<string | null, TaskEvent>(); // toolUseId -> resultEv (replay ordering)
+  const pendingResults = new Map<string | null, UiEventOf<'tool_result'>>(); // toolUseId -> resultEv (replay ordering)
   const completions: TaskCompletion[] = [];
   // True when a non-deleted TaskUpdate referenced an id whose TaskCreate is
   // absent from the scanned events — the signal that the create was evicted
@@ -110,7 +102,7 @@ export function reconstructTasks(events: TaskEvent[]): ReconstructResult {
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([id, t]) => ({ id, ...t }));
 
-  const applyCreate = (input: TaskInput, resultEv: TaskEvent) => {
+  const applyCreate = (input: TaskInput, resultEv: UiEventOf<'tool_result'>) => {
     const m = resultText(resultEv).match(CREATE_ID_RE);
     if (!m) return;
     const id = m[1];

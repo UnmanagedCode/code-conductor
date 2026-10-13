@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { formatUserQuestionAnswers, normalizeQuestions, type UserQuestionAnswer } from '@shared/userQuestionAnswers';
 import { ConversationModel, type AssistantNode, type GroupNode, type ToolNode, type QuestionNode, type UserNode } from './model';
+import type { UiEvent } from '@shared/uiEvent';
+import { toolResult } from './testkit';
 
-const text = (msgId: string, t: string, blockIdx = 0) => [
+const text = (msgId: string, t: string, blockIdx = 0): UiEvent[] => [
   { kind: 'text_delta', msgId, blockIdx, text: t },
   { kind: 'text_end', msgId, blockIdx },
 ];
-const tool = (msgId: string, toolUseId: string, name: string, input: object, blockIdx = 0) => [
+const tool = (msgId: string, toolUseId: string, name: string, input: Record<string, unknown>, blockIdx = 0): UiEvent[] => [
   { kind: 'tool_use_start', msgId, blockIdx, toolUseId, name },
   { kind: 'tool_use', msgId, blockIdx, toolUseId, name, input },
 ];
@@ -36,7 +38,7 @@ describe('ConversationModel', () => {
     const m = new ConversationModel();
     m.applyEvents([
       ...tool('m1', 't1', 'Read', { file_path: 'a.ts' }),
-      { kind: 'tool_result', toolUseId: 't1', content: 'ok' },
+      toolResult({ toolUseId: 't1', content: 'ok' }),
       ...tool('m2', 't2', 'Bash', { command: 'ls' }),
       ...text('m3', 'Done.'),
     ]);
@@ -79,7 +81,7 @@ describe('ConversationModel', () => {
 
   it('records the plan on the bubble it closes and opens a fresh bubble after it', () => {
     const m = new ConversationModel();
-    m.applyEvents([...text('a', 'Here is my plan'), { kind: 'plan_request', toolUseId: 'p1', plan: '1. do it' }, ...text('b', 'later')]);
+    m.applyEvents([...text('a', 'Here is my plan'), { kind: 'plan_request', toolUseId: 'p1', plan: '1. do it', planPath: null }, ...text('b', 'later')]);
     expect(m.items.map((i) => i.type)).toEqual(['assistant', 'plan', 'assistant']);
     expect((m.items[0] as AssistantNode).planText).toBe('1. do it');
     expect(ConversationModel.assistantCopyText(m.items[0] as AssistantNode)).toBe('Here is my plan\n\n1. do it');
@@ -112,7 +114,7 @@ describe('ConversationModel', () => {
     m.applyEvents([
       { kind: 'system', subtype: 'status', data: { status: 'compacting' } },
       { kind: 'system', subtype: 'init', data: { model: 'x' } },
-      { kind: 'compaction', trigger: 'auto', preTokens: 1000, postTokens: 100 },
+      { kind: 'compaction', trigger: 'auto', preTokens: 1000, postTokens: 100, durationMs: null },
       { kind: 'user_echo', text: 'summary', compactSummary: true },
     ]);
     expect(m.items).toHaveLength(1);

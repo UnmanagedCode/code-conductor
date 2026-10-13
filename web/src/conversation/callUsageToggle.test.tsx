@@ -12,7 +12,8 @@ import { bus } from '@shared/ws';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { isCallUsageShown, setCallUsageShown } from '@/app/ui';
 import { appStore } from '@/state/app';
-import type { Instance, UiEvent } from '@/state/types';
+import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { closeDialog, openStatsDialog } from '@/features/dialogs/api';
 import { StatsDialog } from '@/features/dialogs/SessionDialogs';
 import { ConversationView } from './ConversationView';
@@ -27,9 +28,9 @@ const inst = (id: string, sessionId: string | null, extra: Partial<Instance> = {
 const TURN: UiEvent[] = [
   { kind: 'user_echo', text: 'go', userIndex: 0 },
   ...tool('m1', 0, 'tu1', 'Read'),
-  { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200 },
+  { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null },
   ...text('m2', 0, 'reply'),
-  { kind: 'call_usage', msgId: 'm2', promptTokens: 41_000, growthTokens: 1_000, outputTokens: 90 },
+  { kind: 'call_usage', msgId: 'm2', promptTokens: 41_000, growthTokens: 1_000, outputTokens: 90, thinkingTokens: null },
 ];
 
 async function frame(type: string, detail: object) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { callUsageText, describeToolInput, splitResultContent, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { shouldRenderSystem } from './model';
-import type { UiEvent } from '@/state/types';
+import type { UiEvent, UiEventOf } from '@shared/uiEvent';
 
 describe('describeToolInput', () => {
   it('Bash prefers its description, falls back to the command; PowerShell summarises identically', () => {
@@ -108,11 +108,15 @@ describe('tool results', () => {
 });
 
 describe('turn footer and per-call usage', () => {
-  const BASE = { kind: 'turn_end', durationMs: 1200, cost: 9, costDelta: 0.0123, usage: { input_tokens: 10, output_tokens: 252 }, stopReason: 'end_turn' };
+  const BARE: UiEventOf<'turn_end'> = {
+    kind: 'turn_end', subtype: 'success', stopReason: null, durationMs: null, durationApiMs: null, durationApiMsDelta: null,
+    cost: null, costDelta: null, usage: null, isError: false,
+  };
+  const BASE: UiEventOf<'turn_end'> = { ...BARE, durationMs: 1200, cost: 9, costDelta: 0.0123, usage: { input_tokens: 10, output_tokens: 252 }, stopReason: 'end_turn' };
 
   it('shows the turn cost (costDelta, never the session total) at 4dp, nothing when unknown', () => {
     expect(turnEndParts({ ...BASE, costDelta: 1 }).cost).toBe('$1.0000');
-    expect(turnEndParts({ kind: 'turn_end' }).cost).toBeNull();
+    expect(turnEndParts(BARE).cost).toBeNull();
   });
 
   it('the ctx segment: with a window, alone without one, and absent without a reading', () => {
@@ -127,8 +131,8 @@ describe('turn footer and per-call usage', () => {
     expect(turnEndParts({ ...BASE, contextTokens: 35_000, contextWindowTokens: null, contextGrowthTokens: 3_200 }).context).toBe('+3.2k → ctx 35k');
     expect(turnEndParts({ ...BASE, contextTokens: 35_000, contextWindowTokens: 200_000, contextGrowthTokens: -1_500 }).context).toBe('-1.5k → ctx 35k / 200k (18%)');
     for (const g of [3_200, -1_500, 0]) {
-      const turn = turnEndParts({ kind: 'turn_end', contextTokens: 35_000, contextGrowthTokens: g }).context!;
-      const call = callUsageText({ kind: 'call_usage', promptTokens: 35_000, growthTokens: g, outputTokens: 10 });
+      const turn = turnEndParts({ ...BARE, contextTokens: 35_000, contextGrowthTokens: g }).context!;
+      const call = callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 35_000, growthTokens: g, outputTokens: 10, thinkingTokens: null });
       expect(turn.slice(0, turn.indexOf('ctx'))).toBe(call.slice(0, call.indexOf('ctx')));
     }
   });
@@ -139,8 +143,8 @@ describe('turn footer and per-call usage', () => {
   });
 
   it('a call line shows growth, context and output with its thinking portion', () => {
-    expect(callUsageText({ kind: 'call_usage', promptTokens: 40_000, growthTokens: 3_200, outputTokens: 1_500, thinkingTokens: 900 })).toBe('+3.2k → ctx 40k · out 1.5k (900 thinking)');
-    expect(callUsageText({ kind: 'call_usage', promptTokens: 40_000, growthTokens: null, outputTokens: 12 })).toBe('ctx 40k · out 12');
+    expect(callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 3_200, outputTokens: 1_500, thinkingTokens: 900 })).toBe('+3.2k → ctx 40k · out 1.5k (900 thinking)');
+    expect(callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: null, outputTokens: 12, thinkingTokens: null })).toBe('ctx 40k · out 12');
   });
 
   it('a call line drops its growth with no baseline, its thinking clause when thinking is 0 or unknown, and its context segment when the prompt is unknown; negative growth keeps its sign', () => {

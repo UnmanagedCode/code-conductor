@@ -3,7 +3,7 @@
 // replay (src/transcript.ts) so the two can't drift.
 
 import { readFileSync } from 'node:fs';
-import type { UiEvent } from './parser.ts';
+import type { UiEvent } from '../shared/uiEvent.ts';
 
 const PLAN_DIR_RE = /[\\/]\.claude[\\/]plans[\\/]/;
 

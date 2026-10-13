@@ -67,7 +67,7 @@ import { backgroundJobsNote } from './backgroundJobs.ts';
 import { buildWakeStub, markPlainStub } from '../shared/wakeCallback.ts';
 import { askFactsOfEvent } from './awaitingUser.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
-import type { UiEvent } from './parser.ts';
+import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';
 
 // The heartbeat interval for EVERY armed wake, AND the ceiling `set_idle_timeout`
 // / `idleTimeoutSeconds` will accept (seconds at the MCP boundary, ms here —
@@ -533,9 +533,8 @@ export class IdleSubscriptionHub {
   // still 'idle' at this moment for BOTH mechanisms — microseconds before a
   // renewal's prompt() flips it. That is also why prune's future MCP exposure needs
   // no change here.
-  _onRotationComplete(targetInstanceId: string, ev: UiEvent): void {
-    const data = (ev as { data?: { comesUpIdle?: unknown } }).data;
-    if (data?.comesUpIdle !== true) return;
+  _onRotationComplete(targetInstanceId: string, ev: UiEventOf<'system'>): void {
+    if (ev.data?.comesUpIdle !== true) return;
     const inst = this.manager.byId.get(targetInstanceId);
     if (inst && this._holds(inst)) return;
     this._consume(targetInstanceId, { announce: true });

@@ -34,6 +34,7 @@ import { scanProcesses, membersOf, type ProcRow, type RawScan } from './procScan
 import { reclaimProcess, type OrphanReclaim } from './orphans.ts';
 import { ControlServer } from './control.ts';
 import { localDirSource, type RemoteSource } from './remoteSource.ts';
+import type { UiEvent } from '../../../shared/uiEvent.ts';
 
 export interface Deadlines {
   // Per-step bounds. Every one of them is a BOUND, not a wait: a step that
@@ -386,7 +387,7 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
 }
 
 interface Sinks {
-  emit?: (ev: unknown) => void;
+  emit?: (ev: UiEvent) => void;
   log?: { warn: (...args: unknown[]) => void };
 }
 

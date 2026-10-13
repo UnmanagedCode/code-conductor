@@ -57,7 +57,8 @@
 
 import type { TranscriptPlacement } from './projects.ts';
 import { loadPersistedTranscript, replayPersistedText } from './transcript.ts';
-import { hasHeadlessChildIn, isOuterUserEcho, lastQuiescentAtOrBefore, snapStartToQuiescent, type UiEvent } from './parser.ts';
+import { hasHeadlessChildIn, isOuterUserEcho, lastQuiescentAtOrBefore, snapStartToQuiescent } from './parser.ts';
+import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';
 import { reconstructTasks, type TaskCompletion, type TaskRecord } from './taskReconstruct.ts';
 import type { InstanceLike, RingSeam } from './instanceTypes.ts';
 
@@ -83,10 +84,7 @@ function firstIndexAtOrAbove(arr: SeqEvent[], seq: number): number {
 // carry an absolute `userIndex` (stamped by Instance._emitUi / buildArchive).
 // Synthetic events (`history_gap`, `task_completion`) have neither and are
 // represented as plain UiEvent.
-export interface SeqEvent extends UiEvent {
-  _seq: number;
-  userIndex?: number;
-}
+export type SeqEvent = UiEvent & { _seq: number };
 
 // One page of history, as every entry point below returns it.
 export interface Page { events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number }
@@ -142,7 +140,7 @@ function correlationKey(ev: UiEvent): string | null {
   if (switchId != null) return `msw ${switchId}`;
   if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
   if (isNotifiedTask(ev) && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${(ev.data as { status?: unknown }).status}`;
-  if (typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number') return `${ev.kind} ${ev.msgId} ${ev.blockIdx}`;
+  if ('blockIdx' in ev && typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number') return `${ev.kind} ${ev.msgId} ${ev.blockIdx}`;
   return null;
 }
 
@@ -200,7 +198,7 @@ function modelSwitchIdOf(ev: UiEvent): string | null {
   return typeof id === 'string' && id ? id : null;
 }
 
-function isNotifiedTask(ev: UiEvent): boolean {
+function isNotifiedTask(ev: UiEvent): ev is UiEventOf<'system'> & { subtype: 'task_notification' } {
   return ev.kind === 'system' && ev.subtype === 'task_notification'
     && (ev.data as { notified?: unknown } | undefined)?.notified === true;
 }
@@ -253,7 +251,7 @@ function cutFromEchoAnchor(flat: SeqEvent[], anchor: number, includeAnchorEcho: 
 // correlates into the file at index k, E's twin is the last outer echo in the
 // file at or before k. Returns twin − E, or null when no ring turn correlates.
 function calibrateEchoOffset(ring: SeqEvent[], flat: SeqEvent[], flatIndex: Map<string, number>): number | null {
-  let echo: SeqEvent | null = null;
+  let echo: (SeqEvent & UiEventOf<'user_echo'>) | null = null;
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (isOuterUserEcho(ev)) {
@@ -265,7 +263,8 @@ function calibrateEchoOffset(ring: SeqEvent[], flat: SeqEvent[], flatIndex: Map<
     const k = key == null ? undefined : flatIndex.get(key);
     if (k == null) continue;
     for (let i = k; i >= 0; i--) {
-      if (isOuterUserEcho(flat[i])) return (flat[i].userIndex as number) - (echo.userIndex as number);
+      const twin = flat[i];
+      if (isOuterUserEcho(twin)) return (twin.userIndex as number) - (echo.userIndex as number);
     }
     return null;
   }
@@ -407,7 +406,7 @@ export async function buildArchive({ place, sessionId, ring, trimmedBefore, user
       cut = correlated;
       includeAnchorEcho = false;
     } else {
-      const firstEcho = ring.find(ev => isOuterUserEcho(ev) && typeof ev.userIndex === 'number');
+      const firstEcho = ring.find((ev): ev is SeqEvent & UiEventOf<'user_echo'> => isOuterUserEcho(ev) && typeof ev.userIndex === 'number');
       const anchor = fileOrdinal(firstEcho ? firstEcho.userIndex as number : userEchoCount);
       if (anchor == null) return uncalibrated;
       cut = cutFromEchoAnchor(flat, anchor - 1, true);

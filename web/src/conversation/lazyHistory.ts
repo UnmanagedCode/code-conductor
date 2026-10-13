@@ -7,7 +7,7 @@
 import { apiFetch } from '@shared/http';
 import type { AssistantNode, ConversationModel } from './model';
 import { createStore } from '@/state/createStore';
-import type { UiEvent } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 
 const MAX_EMPTY_PAGES = 3;
 

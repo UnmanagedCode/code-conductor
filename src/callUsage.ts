@@ -17,7 +17,7 @@
 // nor the cache-miss bookkeeping reads it.
 
 import { contextReading } from './sessionPrune.ts';
-import type { UiEvent } from './parser.ts';
+import type { UiEventOf } from '../shared/uiEvent.ts';
 
 export class CallUsageTracker {
   // The open call — the last one whose message_start reached the tracker — and
@@ -56,7 +56,7 @@ export class CallUsageTracker {
     if (prompt != null) this._prompt = prompt;
   }
 
-  stamp(ev: UiEvent): void {
+  stamp(ev: UiEventOf<'call_usage'>): void {
     const open = this._isOpen(ev.msgId);
     const prompt = open ? this._prompt : null;
     const baseline = open ? this._baseline : null;

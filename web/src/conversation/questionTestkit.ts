@@ -4,15 +4,17 @@ import { within } from '@testing-library/react';
 import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { ConversationModel } from './model';
 import { flush, noActions, renderModel } from './renderModel';
+import { turnEnd } from './testkit';
+import type { UiEventOf } from '@shared/uiEvent';
 
 export const FRUIT = { header: 'Fruit', question: 'Pick a fruit', multiSelect: false, options: [{ label: 'Apple' }, { label: 'Banana' }] };
 export const TOPPINGS = { header: 'Toppings', question: 'Pick toppings', multiSelect: true, options: [{ label: 'Nuts' }, { label: 'Cream' }, { label: 'Syrup' }] };
 export const SIZE = { question: 'Pick a size', options: [{ label: 'S' }, { label: 'L' }] };
 
-export const CARD = (questions: any[] = [FRUIT], toolUseId = 'tu_q') => ({ kind: 'user_question', toolUseId, questions });
-export const CARD_RESULT = { kind: 'tool_result', toolUseId: 'tu_q', content: 'handed to user', isError: true, yielded: true };
-export const TURN_END = { kind: 'turn_end' };
-export const stamped = (questions: any[], answers: any[], toolUseId = 'tu_q') => ({
+export const CARD = (questions: any[] = [FRUIT], toolUseId = 'tu_q'): UiEventOf<'user_question'> => ({ kind: 'user_question', toolUseId, questions });
+export const CARD_RESULT: UiEventOf<'tool_result'> = { kind: 'tool_result', toolUseId: 'tu_q', content: 'handed to user', isError: true, yielded: true, finishedAt: 0 };
+export const TURN_END = turnEnd();
+export const stamped = (questions: any[], answers: any[], toolUseId = 'tu_q'): UiEventOf<'user_echo'> => ({
   kind: 'user_echo', userIndex: 4, text: formatUserQuestionAnswers(questions, answers), questionAnswer: { toolUseId, questions },
 });
 export const banana = () => stamped([FRUIT], [{ kind: 'option', label: 'Banana', note: 'ripe ones only' }]);
