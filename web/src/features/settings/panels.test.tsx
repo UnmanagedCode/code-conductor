@@ -11,6 +11,7 @@ vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
 vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => {}) }));
 
 import { resumeSession } from '@/app/sessionActions';
+import { refreshInstances, refreshProjects } from '@/app/controller';
 import { applyModels } from '@/app/models';
 import { modelsSettingsStore, loadModelsSettings } from './models/store';
 import type { ModelsPayload } from './models/logic';
@@ -802,6 +803,26 @@ describe('Archived', () => {
     expect(err).toHaveBeenCalledTimes(2);
     expect(resumeSession).not.toHaveBeenCalled();
     err.mockRestore();
+  });
+
+  // The list refreshes after an archive change run unawaited: a refused one is logged, never an unhandled rejection, and the restore goes on to resume.
+  it('a refused list refresh after a Restore is logged, and the session is still resumed', async () => {
+    vi.mocked(resumeSession).mockClear();
+    vi.mocked(refreshProjects).mockRejectedValueOnce(new Error('projects read refused'));
+    vi.mocked(refreshInstances).mockRejectedValueOnce(new Error('instances read refused'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockFetch({ 'GET /api/archived': () => groups, 'POST /api/projects/p/sessions/s1/restore': () => ({ ok: true }) });
+      wrap(<ArchivedSection />);
+      await screen.findByText(/archived sessions/);
+      fireEvent.click(screen.getByRole('button', { name: /^p/ }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
+      await waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+      expect(warn.mock.calls.map((c) => (c[1] as Error).message).sort()).toEqual(['instances read refused', 'projects read refused']);
+      await waitFor(() => expect(resumeSession).toHaveBeenCalledWith({ projectName: 'p', worktreeName: undefined, sessionId: 's1' }));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('an accepted Restore and an accepted Delete each mark every place\'s session list stale, exactly once', async () => {

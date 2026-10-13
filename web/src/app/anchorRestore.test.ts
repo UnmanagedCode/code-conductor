@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeStashedAnchor, stashCurrentAnchorForRelaunch } from '@shared/anchor';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import type { Instance, Project } from '@/state/types';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -352,5 +353,44 @@ describe('restoring the URL-named session on first connect', () => {
     await click;
     expect(b.active()).toBe(Y.id);
     expect(location.hash).toBe('#session=s-y');
+  });
+});
+
+describe('a first connect whose list read is refused', () => {
+  it('a refused projects read is logged, the last project list is kept, and the named session still opens and is subscribed', async () => {
+    history.replaceState(null, '', '/#session=s-a');
+    const b = await boot();
+    const kept = [{ name: 'kept-project' }];
+    b.appStore.set({ projects: kept as unknown as Project[] });
+    routeFetch({
+      'GET /api/projects': () => ({ status: 500, json: { error: 'projects read refused' } }),
+      'GET /api/workspaces': () => ({ json: [] }),
+      'GET /api/conductors/projects': () => ({ json: {} }),
+      'GET /api/instances': () => ({ json: [A] }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await b.open();
+    expect(warn.mock.calls.map((c) => (c[1] as Error).message)).toEqual(['projects read refused']);
+    expect(b.appStore.get().projects).toEqual(kept);
+    expect(b.active()).toBe('iA');
+    expect(location.hash).toBe('#session=s-a');
+    expect(b.subscribes()).toEqual(['iA']);
+  });
+
+  it('a refused instances read is logged, the last instance list is kept, and the active session is re-subscribed', async () => {
+    const b = await boot();
+    b.appStore.set({ instances: [A] as Instance[], activeId: 'iA' });
+    routeFetch({
+      'GET /api/projects': () => ({ json: [] }),
+      'GET /api/workspaces': () => ({ json: [] }),
+      'GET /api/conductors/projects': () => ({ json: {} }),
+      'GET /api/instances': () => ({ status: 503, json: { error: 'instances read refused' } }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await b.open();
+    expect(warn.mock.calls.map((c) => (c[1] as Error).message)).toEqual(['instances read refused']);
+    expect(b.ids()).toEqual(['iA']);
+    expect(b.active()).toBe('iA');
+    expect(b.subscribes()).toEqual(['iA']);
   });
 });

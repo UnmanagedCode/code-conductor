@@ -3,10 +3,10 @@
 // `capabilities()` is null until a load succeeds. A failed load is not
 // remembered: `loadCapabilities()` resolves null and the next call retries.
 
+import { apiFetch } from './http.ts';
+
 // The platform's flags by name (Platform.capabilities, src/platform/).
 export type Capabilities = Record<string, boolean>;
-
-import { apiFetch } from './http.ts';
 
 let loaded: Capabilities | null = null;
 let pending: Promise<Capabilities | null> | null = null;

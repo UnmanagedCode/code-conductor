@@ -175,6 +175,20 @@ describe('Add project dialog', () => {
     expect(refreshProjects).not.toHaveBeenCalled();
   });
 
+  // The refresh after an accepted adopt is caught like the POST's own failure: its reason lands on the form and the dialog stays open.
+  it('an accepted adopt whose project refresh is refused shows the refusal and keeps the dialog', async () => {
+    vi.mocked(refreshProjects).mockRejectedValueOnce(new Error('project list unreadable'));
+    const calls = stub({ 'POST /api/projects/external': () => OK });
+    await renderAdopt();
+    typeName('api');
+    setPath('/root/api');
+    add();
+    await waitFor(() => expect(alertText()).toBe('project list unreadable'));
+    expect(posts(calls)).toHaveLength(1);
+    expect(refreshProjects).toHaveBeenCalledTimes(1);
+    expect(dialogStore.get().adoptProject).toBeTruthy();
+  });
+
   // Only a candidate that is a git repository carries the git badge; a plain one still lists its relPath.
   it('a git repository candidate wears a git badge and a plain one does not', async () => {
     stub();
