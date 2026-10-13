@@ -1,10 +1,11 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runGit, getProjectUpstreamStatus } from './worktrees.ts';
+import { getProjectUpstreamStatus } from './worktrees.ts';
 import { runGitLive, fetchOriginBounded } from './gitLive.ts';
 import { httpError } from './httpError.ts';
-import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
+import { RESULT_TAIL_CAP } from './groupedCommand.ts';
+import { ensureDependencies, withMaintenanceLock } from './relaunchPrep.ts';
 // Self-update operates on cc's OWN checkout — always the local system, never a
 // project on one.
 import { localSystem, LOCAL_SYSTEM_ID } from './systems/registry.ts';
@@ -15,9 +16,10 @@ import { pullPastGeneratedConventions } from './conventionsCheckout.ts';
 // Conductor self-update — the app's own version of the Plugin Library update
 // path (src/plugins/library.ts). The conductor is distributed as a git clone
 // (README quick start), so "update" == `git pull --ff-only` in the repo root,
-// then `npm install` if the pull moved a dependency manifest, then a restart
-// so the running node process loads the new files. This module owns the
-// git/npm half; the restart is the caller's step (the client hands off to the
+// then `npm install` if node_modules differs from the pulled package-lock.json
+// (ensureDependencies, src/relaunchPrep.ts), then a restart so the running node
+// process loads the new files. This module owns the git/npm half; the restart
+// — which also stages the web build — is the caller's step (the client hands off to the
 // restart+resume engine after a successful apply — see performRestart in
 // web/src/features/sidebar/restart.ts), keeping this a pure git/npm action like
 // pluginLibrary.update().
@@ -33,12 +35,6 @@ function defaultRepoRoot(): string {
   return process.env.SELF_UPDATE_REPO_ROOT || MODULE_REPO_ROOT;
 }
 
-const NPM_TIMEOUT_MS = 300_000;     // installs pull deps — same budget as postPull hooks
-const TAIL_CAP = 4000;              // error/result tail length, matching library.ts
-
-// A pull that touches one of these means dependencies may have shifted, so an
-// `npm install` is run before the restart. Anything else is code-only.
-const DEP_FILES = new Set(['package-lock.json', 'package.json']);
 
 async function readVersion(repoRoot: string): Promise<string | null> {
   try {
@@ -47,15 +43,6 @@ async function readVersion(repoRoot: string): Promise<string | null> {
     // npm requires a string version — a non-string is malformed → null.
     return typeof pkg.version === 'string' ? pkg.version : null;
   } catch { return null; }
-}
-
-// Streamed `npm install` (via `bash -lc` so a custom command string works),
-// detached with a process-group timeout/kill — npm spawns grandchildren a
-// plain kill would orphan. Never rejects; resolves {code, output}.
-function runNpmInstall(cmd: string, cwd: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<{ code: number; output: string }> {
-  return runGroupedCommand({ shell: cmd }, {
-    cwd, env: process.env, timeoutMs: NPM_TIMEOUT_MS, cap: GROUP_OUTPUT_CAP, onChunk,
-  }, hostPlatform).then(r => ({ code: r.code, output: r.output.trimEnd() }));
 }
 
 // { version, upstream, behind, canCheck, updateAvailable }. Mirrors
@@ -96,7 +83,9 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { re
 }
 
 // Apply an update: `git pull --ff-only` in the repo root, then `npm install`
-// iff the pull moved a dependency manifest. `--ff-only` never mutates on
+// iff node_modules then differs from package-lock.json — drift that predates the
+// pull included. Holds the maintenance lock throughout, so it never overlaps a
+// restart; contention is refused 409 before onValidated. `--ff-only` never mutates on
 // failure (diverged/dirty/no-remote all refuse cleanly) — surface the tail;
 // the only pre-pull change is the discard of cc's own generated files, which
 // the regeneration after the pull restores either way.
@@ -106,7 +95,7 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { re
 // here (the client owns it via the existing restart+resume engine).
 export async function applySelfUpdate({
   repoRoot = defaultRepoRoot(),
-  npmCmd = process.env.SELF_UPDATE_NPM_CMD || 'npm install',
+  npmCmd,
   onChunk,
   onValidated,
 }: {
@@ -121,51 +110,50 @@ export async function applySelfUpdate({
   npm: { ran: boolean; ok: boolean; code: number; tail: string } | null;
   restartRequired: boolean;
 }> {
-  const before = await runGit(localSystem(), repoRoot, ['rev-parse', 'HEAD']);
-  const beforeSha = before.code === 0 ? before.stdout.trim() : '';
+  return withMaintenanceLock('update', async () => {
+    onValidated?.();
 
-  onValidated?.();
+    // A checkout registered as a project carries cc's own regenerated
+    // CONVENTIONS.md/CLAUDE.md; they are discarded before the pull and
+    // regenerated after it (src/conventionsCheckout.ts). An unregistered one is
+    // never written by cc, so it is pulled untouched — and so is one paired only
+    // with a project on another system, which regeneration would write through
+    // while classification reads this local tree.
+    const self = await findSelfProject(repoRoot);
+    const project = self && self.system === LOCAL_SYSTEM_ID ? self.name : null;
+    await pullPastGeneratedConventions({
+      system: localSystem(), dir: repoRoot, project,
+      note: (t) => onChunk?.('pull', t),
+      run: async () => {
+        const pull = await runGitLive(['pull', '--ff-only'], repoRoot, { onChunk: (t) => onChunk?.('pull', t), platform: hostPlatform });
+        if (pull.code !== 0) {
+          const tail = (pull.stderr || pull.stdout || '').slice(-RESULT_TAIL_CAP);
+          throw httpError(502, 'git pull --ff-only failed', { tail });
+        }
+      },
+    });
 
-  // A checkout registered as a project carries cc's own regenerated
-  // CONVENTIONS.md/CLAUDE.md; they are discarded before the pull and
-  // regenerated after it (src/conventionsCheckout.ts). An unregistered one is
-  // never written by cc, so it is pulled untouched — and so is one paired only
-  // with a project on another system, which regeneration would write through
-  // while classification reads this local tree.
-  const self = await findSelfProject(repoRoot);
-  const project = self && self.system === LOCAL_SYSTEM_ID ? self.name : null;
-  await pullPastGeneratedConventions({
-    system: localSystem(), dir: repoRoot, project,
-    note: (t) => onChunk?.('pull', t),
-    run: async () => {
-      const pull = await runGitLive(['pull', '--ff-only'], repoRoot, { onChunk: (t) => onChunk?.('pull', t), platform: hostPlatform });
-      if (pull.code !== 0) {
-        const tail = (pull.stderr || pull.stdout || '').slice(-TAIL_CAP);
-        throw httpError(502, 'git pull --ff-only failed', { tail });
-      }
-    },
+    // `depsChanged` = node_modules differed from the pulled lock. A linked
+    // node_modules (DEPS_LINKED) and a failed or unverified install are all a
+    // failed npm step: the client gates its restart on npm.ok.
+    let depsChanged = false;
+    let npm: { ran: boolean; ok: boolean; code: number; tail: string } | null = null;
+    try {
+      const r = await ensureDependencies({ repoRoot, npmCmd, onChunk: (t) => onChunk?.('npm', t) });
+      if (r.ran) { depsChanged = true; npm = { ran: true, ok: true, code: r.code, tail: r.tail }; }
+    } catch (e) {
+      const err = e as { message?: string; ran?: boolean; exitCode?: number; tail?: string };
+      depsChanged = true;
+      npm = {
+        ran: !!err.ran, ok: false, code: err.exitCode ?? 1,
+        tail: [err.tail, err.message].filter(Boolean).join('\n').slice(-RESULT_TAIL_CAP),
+      };
+    }
+
+    // Truthful restart signal: a failed npm install must NOT advertise a
+    // ready-to-restart tree (the client already gates on npm.ok, but the field
+    // shouldn't lie).
+    const restartRequired = npm ? npm.ok : true;
+    return { ok: true, version: await readVersion(repoRoot), depsChanged, npm, restartRequired };
   });
-
-  // Which tracked files did the pull move? If any is a dependency manifest,
-  // run npm install before the restart so the new deps are on disk. If the
-  // pre-pull HEAD read failed (no beforeSha) we can't diff — err toward safety
-  // and run npm rather than risk booting with stale deps.
-  let depsChanged = true;
-  if (beforeSha) {
-    const diff = await runGit(localSystem(), repoRoot, ['diff', '--name-only', `${beforeSha}..HEAD`]);
-    depsChanged = diff.code !== 0
-      || diff.stdout.split('\n').map(s => s.trim()).some(f => DEP_FILES.has(f));
-  }
-
-  let npm: { ran: boolean; ok: boolean; code: number; tail: string } | null = null;
-  if (depsChanged) {
-    const r = await runNpmInstall(npmCmd, repoRoot, { onChunk: (t) => onChunk?.('npm', t) });
-    npm = { ran: true, ok: r.code === 0, code: r.code, tail: (r.output ?? '').slice(-TAIL_CAP) };
-  }
-
-  // Truthful restart signal: a failed npm install must NOT advertise a
-  // ready-to-restart tree (the client already gates on npm.ok, but the field
-  // shouldn't lie).
-  const restartRequired = depsChanged ? (npm?.ok ?? false) : true;
-  return { ok: true, version: await readVersion(repoRoot), depsChanged, npm, restartRequired };
 }

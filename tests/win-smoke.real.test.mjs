@@ -402,7 +402,11 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     await launch();
     const seed = path.join(work, 'seed');
     await git(work, 'clone', '-q', originDir, seed);
-    // A package.json edit (depsChanged) is what makes the update run npm install.
+    // The update installs only when node_modules differs from package-lock.json:
+    // drop a client-only package (bundled into web/dist, never loaded by the
+    // server) so the update has drift to repair. The package.json edit is the
+    // commit that makes an update available.
+    fs.rmSync(path.join(appDir, 'node_modules', 'sonner'), { recursive: true, force: true });
     const pj = path.join(seed, 'package.json');
     const raw = fs.readFileSync(pj, 'utf8');
     const eol = raw.includes('\r\n') ? '\r\n' : '\n';
@@ -421,6 +425,7 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     const result = body.split('\n').filter(Boolean).map(l => JSON.parse(l)).find(o => o.type === 'result');
     assert.ok(result?.ok, fail(`update failed: ${body.slice(-600)}`));
     assert.ok(result.result.npm?.ran && result.result.npm?.ok, `npm install: ${JSON.stringify(result.result.npm)}`);
+    assert.ok(fs.existsSync(path.join(appDir, 'node_modules', 'sonner', 'package.json')), 'npm install restored the dropped package');
     assert.equal(await git(appDir, 'rev-parse', 'HEAD'), newHead);
     const mark = fs.statSync(logFile).size;
     await call('POST', '/api/admin/restart', {});
