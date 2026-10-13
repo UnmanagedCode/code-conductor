@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
 import { voiceStore } from './store';
 import { speakStore, toggleSpeak } from './tts';
 
-export function SpeakButton({ text, nodeId }: { text: string; nodeId: string }) {
+export function SpeakButton({ text, nodeId, className }: { text: string; nodeId: string; className?: string }) {
   const available = useStore(voiceStore, (s) => s.ttsAvailable);
   const speaking = useStore(speakStore, (s) => s.activeNodeId === nodeId);
   if (!available) return null;
@@ -24,7 +24,7 @@ export function SpeakButton({ text, nodeId }: { text: string; nodeId: string }) 
           aria-pressed={speaking}
           data-speaking={speaking || undefined}
           onClick={(e) => { e.stopPropagation(); toggleSpeak(text, nodeId); }}
-          className={cn('size-7 text-muted-foreground', speaking && 'text-primary')}
+          className={cn('size-7 text-muted-foreground', speaking && 'text-primary', className)}
         >
           {speaking ? <SquareIcon className="size-3 fill-current" /> : <Volume2Icon className="size-3.5" />}
         </Button>

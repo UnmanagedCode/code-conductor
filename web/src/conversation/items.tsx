@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
   CodeXmlIcon, FileTextIcon, GitForkIcon, ListChecksIcon, MailIcon, MicIcon, PaperclipIcon, RecycleIcon,
@@ -11,6 +12,8 @@ import { CopyButton } from '@/components/CopyButton';
 import { Markdown } from '@/components/Markdown';
 import { OctopusHead } from '@/components/mascot/Octopus';
 import { SpeakButton } from '@/features/voice/SpeakButton';
+import { voiceStore } from '@/features/voice/store';
+import { useStore } from '@/state/createStore';
 import { cn } from '@/lib/utils';
 import { parseRenewSeed, splitSummarySections } from '@shared/renewSeed';
 import { splitForwardedMessages } from '@shared/forwardFrame';
@@ -20,6 +23,7 @@ import { fieldText, PlanCard, QuestionCard } from './cards';
 import { BubbleBody } from './BubbleBody';
 import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { ImageZoom } from './ImageZoom';
+import { renderWithSpeakSlot, SPEAK_GUTTER, SPEAK_INLINE, SPEAK_REVEAL } from './speakSlot';
 
 export type BubbleActions = {
   canRewind: boolean;
@@ -306,12 +310,42 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
 
 // ── Assistant ────────────────────────────────────────────────────────────
 
-function TextBlockView({ node, view }: { node: TextNode; view: 'rendered' | 'raw' }) {
+/**
+ * One text block of an assistant bubble. A finished block's read-aloud sits after its last word, in a slot the
+ * markdown render appends to its last paragraph, list item, heading or quote, or on a row of its own when the block
+ * ends in anything else. Every block but the bubble's first (whose gutter holds the avatar) moves it into the gutter at `md` and up.
+ */
+function TextBlock({ node, view, first, isSub }: { node: TextNode; view: TextView; first: boolean; isSub: boolean }) {
+  const ttsAvailable = useStore(voiceStore, (s) => s.ttsAvailable);
+  const speaks = node.finalized && !isSub && ttsAvailable;
+  const gutter = speaks && !first;
   // A streaming block shows its raw deltas; it renders markdown once finalized.
-  if (!node.finalized || view === 'raw') {
-    return <div className="text-[15px] leading-relaxed whitespace-pre-wrap">{node.buffer}{!node.finalized && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-primary/60 align-text-bottom" />}</div>;
-  }
-  return <Markdown text={node.buffer} className={MD_TEXT} />;
+  const rendered = node.finalized && view !== 'raw';
+  // The current render's slot: undefined until the markdown has rendered, null when its last block has no inline end.
+  const [slot, setSlot] = React.useState<HTMLElement | null | undefined>(undefined);
+  const renderInto = React.useCallback((el: HTMLElement, text: string) => setSlot(renderWithSpeakSlot(el, text)), []);
+  // A slot from an earlier render is detached; never portal into it once the markdown is gone or rendered without one.
+  React.useLayoutEffect(() => { if (!speaks || !rendered) setSlot(undefined); }, [speaks, rendered]);
+  const button = <SpeakButton text={node.buffer} nodeId={node.id} className={cn(SPEAK_INLINE, gutter && SPEAK_GUTTER, SPEAK_REVEAL)} />;
+  const end = !speaks ? undefined : !rendered ? 'inline' : slot === undefined ? undefined : slot ? 'inline' : 'row';
+  return (
+    <div data-text-block data-speak-end={end} data-speak-gutter={gutter || undefined} className={cn(speaks && 'group/speak relative')}>
+      <div className={ASSISTANT_PROSE_INSET}>
+        {rendered
+          ? <Markdown text={node.buffer} className={MD_TEXT} renderInto={speaks ? renderInto : undefined} />
+          : (
+            <div className="text-[15px] leading-relaxed whitespace-pre-wrap">
+              {node.buffer}
+              {!node.finalized && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-primary/60 align-text-bottom" />}
+              {speaks && <span data-speak-slot>{button}</span>}
+            </div>
+          )}
+      </div>
+      {rendered && end === 'inline' && slot && createPortal(button, slot)}
+      {/* In the gutter the row holds only an out-of-flow button; as a block box it collapses, letting the code's margin through. */}
+      {rendered && end === 'row' && <div data-speak-slot className={cn('flex', gutter && 'md:block')}>{button}</div>}
+    </div>
+  );
 }
 
 /** Phone-only inset of an assistant turn's prose, so it does not sit flush with the action cards' border; cards and controls keep the transcript edge. */
@@ -330,16 +364,8 @@ function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx })
         </div>
       )}
       <div data-assistant-body className="min-w-0 md:flex-1 space-y-3">
-        {node.children.map((c) => {
-          // Each finished block carries its own read-aloud, right after the text it reads.
-          if (c.type === 'text') {
-            return (
-              <div key={c.id} data-text-block>
-                <div className={ASSISTANT_PROSE_INSET}><TextBlockView node={c} view={node.view} /></div>
-                {c.finalized && !ctx.model.isSub && <div className={cn('flex', ASSISTANT_CONTROLS_REVEAL)}><SpeakButton text={c.buffer} nodeId={c.id} /></div>}
-              </div>
-            );
-          }
+        {node.children.map((c, i) => {
+          if (c.type === 'text') return <TextBlock key={c.id} node={c} view={node.view} first={i === 0} isSub={ctx.model.isSub} />;
           if (c.type === 'group') return <ActionGroup key={c.id} node={c} rev={c.rev} ctx={ctx} />;
           return <CallUsageLine key={c.id} node={c} />;
         })}
