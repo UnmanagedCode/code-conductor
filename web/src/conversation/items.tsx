@@ -309,11 +309,11 @@ function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx })
   return (
     <div className="group/asst flex gap-3" data-item="assistant">
       {!ctx.model.isSub && (
-        <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/15">
+        <div data-assistant-avatar className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/15">
           <OctopusHead className="size-6" />
         </div>
       )}
-      <div className="min-w-0 flex-1 space-y-3">
+      <div data-assistant-body className="min-w-0 flex-1 space-y-3">
         {node.children.map((c) => {
           // Each finished block carries its own read-aloud, right after the text it reads.
           if (c.type === 'text') {
