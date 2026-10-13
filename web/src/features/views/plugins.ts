@@ -19,16 +19,25 @@
 //     is not started again.
 //
 // Parent side of the bridge (the root /pluginBridge.js, ./pluginBridge.js, runs in the frame):
-// child `route` messages mirror into the hash with the route store's
-// replaceHash (no history entry, no hashchange, no reload loop), so the store
-// always reads the hash the frame is at and an outside change back to an
-// earlier subpath still reads as a change; an outside subpath change is
-// forwarded as `navigate`.
+// child `route` messages from the shown frame go through the RouteMirror
+// `enter` was given — into the hash in full view (the route store's
+// replaceHash: no history entry, no hashchange, no reload loop), into the
+// dock's saved subpath in split — so whatever names the frame's place always
+// reads where the frame is, and an outside change back to an earlier subpath
+// still reads as a change; an outside subpath change is forwarded as `navigate`.
 import { ApiError, apiFetch, apiResponse, readApiBody } from '@shared/http';
 import { createSignal, createStore } from '@/state/createStore';
 import { replaceHash } from '@/state/route';
 
 export type PluginTarget = { id: string; subpath: string };
+/** Where the shown frame's own navigation is recorded. */
+export type RouteMirror = (id: string, path: string) => void;
+
+/** The full view's mirror: the frame's route is the hash. */
+export const hashMirror: RouteMirror = (id, path) => {
+  const hash = `#plugin/${id}${path}`;
+  if (location.hash !== hash) replaceHash(hash);
+};
 type Record_ = { id: string; subpath: string; frame: HTMLIFrameElement };
 type Current = PluginTarget | Record_;
 
@@ -54,6 +63,7 @@ class PluginFrames {
   private sharedTarget: PluginTarget | null = null;
   private current: Current | null = null;
   private token = 0;
+  private mirror: RouteMirror = hashMirror;
   readonly resident = new Map<string, Record_>();
 
   constructor() {
@@ -166,8 +176,7 @@ class PluginFrames {
     for (const r of this.resident.values()) r.frame.hidden = r !== record;
     this.current = record;
     if (target.subpath === '/' || target.subpath === record.subpath) {
-      const hash = `#plugin/${record.id}${record.subpath}`;
-      if (location.hash !== hash) replaceHash(hash);
+      this.mirror(record.id, record.subpath);
     } else {
       record.subpath = target.subpath;
       record.frame.contentWindow?.postMessage({ cc: 1, type: 'navigate', path: target.subpath }, location.origin);
@@ -204,8 +213,9 @@ class PluginFrames {
     }
   }
 
-  /** Enter or move within the plugin space. */
-  enter(target: PluginTarget) {
+  /** Enter or move within the plugin space; `mirror` records the shown frame's own navigation from here on, even when nothing else changes. */
+  enter(target: PluginTarget, mirror: RouteMirror = hashMirror) {
+    this.mirror = mirror;
     const cur = this.current;
     if (!cur || cur.id !== target.id) { void this.load(target); return; }
     if (target.subpath !== cur.subpath) {
@@ -251,7 +261,7 @@ class PluginFrames {
     // A path without its leading slash would splice into the id part of the hash.
     if (d.type === 'route' && typeof d.path === 'string' && d.path.startsWith('/')) {
       record.subpath = d.path;
-      if (active) replaceHash(`#plugin/${record.id}${d.path}`);
+      if (active) this.mirror(record.id, d.path);
     }
   }
 }

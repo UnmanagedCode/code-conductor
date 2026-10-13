@@ -20,8 +20,8 @@ export type ResizableWidthOptions = {
   label: string;
   /** aria-valuemin reads 0: collapse is a reachable value. */
   collapsible?: boolean;
-  /** aria-valuenow reads 0, and a drag or key starts from 0. */
-  collapsed?: boolean;
+  /** aria-valuenow reads 0, and a drag or key starts from 0. A function is given the preferred width, for a caller whose collapse depends on it. */
+  collapsed?: boolean | ((preferred: number) => boolean);
   /** Pointer release at the unclamped width; false = the caller handled it (a snap), commit nothing. Default: commit. */
   onRelease?: (raw: number) => boolean;
   /** Double-click and Enter. Default: remove the key (back to defaultWidth). */
@@ -56,7 +56,8 @@ export function useResizableWidth(o: ResizableWidthOptions) {
   const clamp = (n: number) => Math.min(ceiling, Math.max(o.min, n));
   const preferred = stored ?? Math.max(o.min, o.defaultWidth);
   const width = clamp(preferred);
-  const start = o.collapsed ? 0 : width;
+  const collapsed = typeof o.collapsed === 'function' ? o.collapsed(preferred) : !!o.collapsed;
+  const start = collapsed ? 0 : width;
   const sign = o.edge === 'right' ? 1 : -1;
 
   const commit = (w: number) => {
@@ -106,7 +107,7 @@ export function useResizableWidth(o: ResizableWidthOptions) {
     if (e.key === 'Enter') { e.preventDefault(); toggle(); return; }
     if (e.key !== grow && e.key !== shrink) return;
     e.preventDefault();
-    if (e.key === shrink && o.collapsed) return;
+    if (e.key === shrink && collapsed) return;
     commit(clamp(start + (e.key === grow ? RESIZE_KEY_STEP : -RESIZE_KEY_STEP)));
   };
 

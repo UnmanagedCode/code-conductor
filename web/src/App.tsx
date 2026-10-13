@@ -37,7 +37,7 @@ function MainView() {
     case 'review': return <ReviewView />;
     case 'commits': return <CommitsView />;
     case 'costs': return <CostsView />;
-    case 'plugin': return null; // PluginView stays mounted below (keep-alive frames)
+    case 'plugin': return null; // PluginView, the always-mounted column right of this slot, fills the row (keep-alive frames)
     default: return <SessionView />;
   }
 }
@@ -45,7 +45,6 @@ function MainView() {
 export function App() {
   const sidebarOpen = useStore(uiStore, (s) => s.sidebarOpen);
   const theme = useStore(themeStore, (s) => s.resolved);
-  const route = useRoute();
   return (
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
@@ -63,7 +62,7 @@ export function App() {
           <Suspense fallback={<ViewFallback />}>
             <MainView />
           </Suspense>
-          <PluginView active={route.view === 'plugin'} />
+          <PluginView />
         </div>
       </div>
       <DialogsHost />
