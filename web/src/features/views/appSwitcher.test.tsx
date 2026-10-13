@@ -125,6 +125,19 @@ describe('the app switcher', () => {
     await closeMenu();
   });
 
+  it('shows the open plugin\'s nav label, not its name, on the trigger itself', async () => {
+    // Invariant: while a plugin whose navLabel differs from its name is current, the switcher trigger shows the navLabel.
+    net.catalog = [app('ka', 'Keep Plugin', { navLabel: 'Keeper' }), app('pl', 'Plain')];
+    net.status = { ka: keepRow(), pl: plainRow() };
+    await mountApp();
+    expect(switcher()!.textContent, 'fixture check: on Conductor the trigger reads the sidebar title, so its text renders').toBeTruthy();
+    await go('#plugin/ka/');
+    expect(location.hash, 'fixture check: the plugin is open').toBe('#plugin/ka/');
+    const text = switcher()!.textContent ?? '';
+    expect(text, 'the trigger reads the nav label').toContain('Keeper');
+    expect(text, 'and not the name').not.toContain('Keep Plugin');
+  });
+
   it('a plugin dropped from the switcher while its view is open leaves Conductor as the one current entry', async () => {
     net.catalog = [app('ka', 'Keep'), app('pl', 'Plain')];
     net.status = { ka: keepRow(), pl: plainRow() };
