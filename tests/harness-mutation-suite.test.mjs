@@ -61,8 +61,8 @@ test('planCommands: narrow mode never typechecks; --all typechecks first and run
     const cmds = planCommands('narrow', groups, { project: 'desktop', projects: PROJECTS, tmpDir });
     assert.deepEqual(cmds.map((c) => c.group), ['node', 'vitest', 'playwright']);
     const [node, vitest, pw] = cmds;
-    assert.equal(node.cmd, 'npm');
-    assert.deepEqual(node.args, ['test', '--ignore-scripts', '--', 'tests/a.test.mjs']);
+    assert.equal(node.cmd, 'node');
+    assert.deepEqual(node.args, ['tests/run.mjs', 'tests/a.test.mjs']);
     assert.equal(vitest.cmd, 'npx');
     assert.deepEqual(vitest.args, ['vitest', 'run', '--config', 'web/vitest.config.ts', '--reporter=json',
       `--outputFile=${vitest.report}`, 'web/src/b.test.ts']);
@@ -81,8 +81,12 @@ test('planCommands: narrow mode never typechecks; --all typechecks first and run
     const cmds = planCommands('all', new Map(), { project: 'desktop', projects: PROJECTS, tmpDir });
     assert.deepEqual(cmds.map((c) => c.group), ['typecheck', 'node', 'vitest']);
     assert.deepEqual(cmds[0].args, ['run', 'typecheck']);
-    assert.deepEqual(cmds[1].args, ['test', '--ignore-scripts']);
+    // The node row is tests/run.mjs, not the `npm test` gate, which would run
+    // Vitest a second time; Vitest gets exactly one row.
+    assert.equal(cmds[1].cmd, 'node');
+    assert.deepEqual(cmds[1].args, ['tests/run.mjs']);
     assert.ok(!cmds[2].args.some((a) => a.endsWith('.test.ts')));
+    assert.equal(cmds.filter((c) => c.args.includes('web/vitest.config.ts')).length, 1);
   });
 
   await t.test('the Playwright project comes from the option and an unknown one is refused', () => {

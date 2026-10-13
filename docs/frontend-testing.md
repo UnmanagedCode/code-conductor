@@ -57,7 +57,7 @@ How the web UI (`web/`) is tested: its Vitest and Playwright suites ([Suites](#s
 
 Injecting a fixture at the network boundary still exercises the real module.
 
-**Headless checks are not gated.** The Playwright suite runs under `npm run test:e2e`, and a mutation run can score a mutant with any spec (`harness/mutation/README.md`), but no spec is part of `npm test` or `test:all`. A headless PASS with no in-suite counterpart pins nothing against regression. Where an invariant must hold, it needs a suite test.
+**Headless checks are not gated.** The Playwright suite runs under `npm run test:e2e`, and a mutation run can score a mutant with any spec (`harness/mutation/README.md`), but no spec is part of `npm test`. A headless PASS with no in-suite counterpart pins nothing against regression. Where an invariant must hold, it needs a suite test.
 
 ## Suites
 
@@ -65,8 +65,7 @@ Injecting a fixture at the network boundary still exercises the real module.
 
 | Command | Runs |
 |---|---|
-| `npm run test:web` | Vitest over `web/src/**/*.test.{ts,tsx}` (config: `web/vitest.config.ts`, environment `happy-dom`, setup `web/src/test/setup.ts`). Not part of `npm test` |
-| `npm run test:all` | `npm test && npm run test:web`: red if either suite is. The gate for work touching `web/` |
+| `npm run test:web` | Vitest over `web/src/**/*.test.{ts,tsx}` (config: `web/vitest.config.ts`, environment `happy-dom`, setup `web/src/test/setup.ts`). Also the last step of `npm test` |
 | `npm run test:e2e` | Playwright over `web/e2e/**/*.spec.ts` (config: `web/playwright.config.ts`), projects `desktop`, `phone` and `android` (`web/e2e/README.md` → Projects). Not gated |
 | `npm run typecheck` | `tsc --noEmit` (server, `harness/**/*.ts`), `tsc -p web` (UI, strict) and `tsc -p web/e2e` (the Playwright suite and harness); `pretest` runs it |
 

@@ -57,7 +57,7 @@ command. A mutant is routed by the **test file** its refs name, never by the sou
 
 | test file | runner | command `suite.ts` runs (cwd = repo root) |
 |---|---|---|
-| `tests/<name>.test.mjs` (top level only, as `tests/run.mjs` discovers) | node | `npm test --ignore-scripts -- <files>` |
+| `tests/<name>.test.mjs` (top level only, as `tests/run.mjs` discovers) | node | `node tests/run.mjs <files>` |
 | `web/src/**/*.test.ts(x)` (`web/vitest.config.ts` `include`) | Vitest | `npx vitest run --config web/vitest.config.ts --reporter=json …` |
 | `web/e2e/**/*.spec.ts` | Playwright | `npx playwright test --config web/playwright.config.ts --project=<P> --reporter=json …` |
 
@@ -75,7 +75,7 @@ in one mutant's refs is fine: each runner gets its own files and the counts are 
 
 **Mutant commands never typecheck; the baseline does.** `baselineCommand` (`suite.ts --all`) runs
 `npm run typecheck`, then the whole node suite, then the whole Vitest suite, and a typecheck failure
-reads as a build break. A mutant's narrow command skips `pretest` (`--ignore-scripts`), so a mutant
+reads as a build break. A mutant's narrow command never runs the typecheck (its node row calls `tests/run.mjs` directly), so a mutant
 that only breaks a type gets a behavioural verdict from the tests it names — an `x && false`-style
 mutant never reads `ERROR (scope-empty)` through a pretest red.
 
@@ -151,9 +151,9 @@ shared by several projects would fail the canary, and a real kill, once per proj
    all-skipped file reports a *green* narrow baseline and the mutant reads `SURVIVED`, not
    `ERROR (scope-empty)`. RATIONALE.md §5 lists today's gates and how to re-derive them.
 
-4. **A build step the node suite needs belongs in `test` (or `tests/run.mjs`), never in `pretest`.**
-   Every mutant command skips `pretest`, so a step there would leave mutants judged against stale
-   output.
+4. **A build step the node suite needs belongs in `tests/run.mjs`, never in `pretest` or the `npm test`
+   gate (`tests/gate.mjs`).** A mutant's node row calls `tests/run.mjs` directly, so a step anywhere
+   else would leave mutants judged against stale output.
 
 ## Declared non-behavioural mutants — waive, do not file
 
@@ -202,7 +202,9 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
   A mutant that breaks an awaited event can take tens of seconds to fail — that is not a hang.
   `TIMEOUT` means the run outlived the deadline in force: a real hang, or a correctly failing
   mutant whose chain of `waitFor` expiries is longer than that deadline. RATIONALE.md §7.1 lists
-  the shapes; re-measure the second at whole-suite scope (`narrowCommand: "npm test"`).
+  the shapes; re-measure the second at whole-suite scope (`narrowCommand: "node harness/mutation/suite.ts --all"`;
+  framed output, so it is counted — `npm test`'s is not — and a type-breaking mutant reads as a build
+  break there).
 
 ## Artifacts
 

@@ -13,9 +13,8 @@
     "build": "vite build --config web/vite.config.ts",
     "typecheck": "tsc --noEmit && tsc -p shared && tsc -p web && tsc -p web/tsconfig.bridge.json && tsc -p web/e2e",
     "pretest": "npm run typecheck",
-    "test": "NODE_OPTIONS=--max-old-space-size=512 node tests/run.mjs",
+    "test": "node tests/gate.mjs",
     "test:web": "vitest run --config web/vitest.config.ts",
-    "test:all": "npm test && npm run test:web",
     "test:e2e": "playwright test --config web/playwright.config.ts",
     "gate:systems": "node tests/systems-gate.mjs",
     "start:isolated": "bash scripts/run-isolated.sh"

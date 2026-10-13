@@ -26,10 +26,9 @@ cd code-conductor
 npm install            # express, ws, typescript + @types/node (dev)
 npm start              # http://127.0.0.1:8787  (process title: code-conductor)
 npm run typecheck      # tsc --noEmit — strict; also runs before every npm test (pretest)
-npm test               # integration suite (node:test)
+npm test               # typecheck, node:test suite, then the web Vitest suite — the gate
 RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
-npm run test:web       # web UI suite (Vitest, web/) — not part of npm test
-npm run test:all       # npm test && npm run test:web — the gate for work touching web/
+npm run test:web       # web UI suite only (Vitest, web/)
 npm run test:e2e       # web UI end-to-end (Playwright; first: npx playwright install chromium)
 npm run dev:web        # Vite dev server for web/, proxying the API to a running cc (CC_DEV_SERVER)
 npm run build          # build web/ into web/dist/ by hand (the server also builds it at start and before a restart)
@@ -54,7 +53,7 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 
 **Web UI.** `web/` is the React UI, served at `/`; `/next` and `/next/<path>` redirect there (301, path and query kept). The server builds `web/` into `web/dist/` at start when its sources changed (`src/webBuild.ts`). `shared/` holds the TypeScript modules the UI shares with the server and the node tests, imported in `web/` as `@shared/*`. Detail: [docs/features.md](docs/features.md) → The UI; build, mounts and layout: [docs/architecture.md](docs/architecture.md) → `src/webBuild.ts`, `web/`.
 
-**Browser tests and visual debug.** One Playwright harness in `web/e2e/` (`npm run test:e2e`): each worker boots a scratch-rooted cc with the fake CLI, opt-in live mode runs a real worker on an access-token-only credentials copy, and `node web/e2e/harness/snap.ts` screenshots a page; see [`web/e2e/README.md`](web/e2e/README.md). Not part of `npm test` or `test:all`. Mutation testing over the node, Vitest and Playwright suites: [`harness/mutation/README.md`](harness/mutation/README.md).
+**Browser tests and visual debug.** One Playwright harness in `web/e2e/` (`npm run test:e2e`): each worker boots a scratch-rooted cc with the fake CLI, opt-in live mode runs a real worker on an access-token-only credentials copy, and `node web/e2e/harness/snap.ts` screenshots a page; see [`web/e2e/README.md`](web/e2e/README.md). Not part of `npm test`. Mutation testing over the node, Vitest and Playwright suites: [`harness/mutation/README.md`](harness/mutation/README.md).
 
 ## Features
 

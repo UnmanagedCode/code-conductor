@@ -363,8 +363,8 @@ reason this section exists rather than living beside the values.
 
 | Field | Value | Why |
 |---|---|---|
-| `baselineCommand` | `node harness/mutation/suite.ts --all` | `npm run typecheck`, then the whole node suite (`npm test --ignore-scripts`), then the whole Vitest suite. The typecheck lives here and only here, so a type break is a build break of the tree under test, never a mutant's verdict. No Playwright: a browser run is opt-in by naming a spec. |
-| `testCommand` | `node harness/mutation/suite.ts {tests}` | The default substitution (no custom `substitute`) passes space-joined single-quoted repo-relative test paths; `suite.ts` routes each to its runner by path. The node row is `npm test --ignore-scripts -- <files>`: `--ignore-scripts` skips `pretest` (the typecheck) and still runs `test`, which keeps `NODE_OPTIONS=--max-old-space-size=512` defined in one place (`package.json`). |
+| `baselineCommand` | `node harness/mutation/suite.ts --all` | `npm run typecheck`, then the whole node suite (`node tests/run.mjs`), then the whole Vitest suite. The typecheck lives here and only here, so a type break is a build break of the tree under test, never a mutant's verdict. No Playwright: a browser run is opt-in by naming a spec. |
+| `testCommand` | `node harness/mutation/suite.ts {tests}` | The default substitution (no custom `substitute`) passes space-joined single-quoted repo-relative test paths; `suite.ts` routes each to its runner by path. The node row is `node tests/run.mjs <files>`: it runs neither the typecheck nor the `npm test` gate's Vitest step, and the heap cap is single-sourced in `tests/run.mjs`. |
 | `runner` | `custom` | One adapter per config, three runners: `parse.mjs` binds `scoring.ts` to the shipped `node-test` adapter (its `describe >` path recovery and canary, unchanged) and the shipped `vitest` canary, and adds the Vitest and Playwright report parsing those adapters lack for this layout (the shipped `vitest` parser reads the default reporter's console output, not a JSON report). It exports no `scopeOf`/`substitute`/`canNameFilter`, so the node-test defaults apply — file-part scopes and `refsNameFiles: true` — and a mutant's narrow canary stays eligible. Proven here by the `baseline` canary gate and a narrow canary per suite. |
 | `isolation` | `in-place` | Full reasoning in §2 above. The conclusion is decided-and-deferred, not infeasible: copy mode *works* here with one `setup` hook and costs ~5% of wall clock at best (§6) — it is rejected on honesty (§2.2's three green-for-the-wrong-reason assertions) and on the ≤8% ceiling (§6), not on feasibility. Also: the suite boots real express+ws servers on ephemeral ports and forks child processes. |
 | `timeoutMs` | `300000` | Sized for the slow case, not the ~89 s (§1, `suite.ts --all`) baseline this host measures — a low-core/Termux host is a multiple of that. It is the deadline only for commands with no unmutated reference — the full-suite baseline, each narrow baseline, the `setup`/`teardown` hooks. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. A mutant run gets the derived `hang` deadline instead (next row), which this value only caps. The suite's own per-file bound is `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`); the 60 s in `tests/run.mjs` is node's **per-test** timeout (§6). |
@@ -399,7 +399,7 @@ Measured: each `idle-wake-*` file run alone through the narrow command under the
 recipe, 16 cores, load average 25–41:
 
 ```bash
-ORCH_SUBSCRIBE_TIMEOUT_MS=999 npm test -- tests/idle-wake-<file>.test.mjs
+ORCH_SUBSCRIBE_TIMEOUT_MS=999 node tests/run.mjs tests/idle-wake-<file>.test.mjs
 ```
 
 `ORCH_SUBSCRIBE_TIMEOUT_MS=999` collapses `DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS`
@@ -441,7 +441,9 @@ on 16 cores — 6.6 s under the floor.
   while the floor binds, and above the floor while `factor × referenceMs` stays under the chain's
   duration. A loaded narrow baseline (6.2 s → 62 s above) lets it finish, so the verdict depends on
   load at both measurements. Re-measure it at whole-suite scope
-  (`narrowCommand: "npm test"`), whose reference lifts the deadline to the `timeoutMs` cap.
+  (`narrowCommand: "node harness/mutation/suite.ts --all"` — framed output, so it is counted, where
+  `npm test`'s is not; a type-breaking mutant reads as a build break there), whose reference lifts
+  the deadline to the `timeoutMs` cap.
 - **A spinning mutant** (a busy loop) is a real hang; `TIMEOUT` is correct. Rewrite the mutant.
 - **A mutant that leaves a child process alive** is ended by the suite's Layer-B leak guard
   (`LEAK_GRACE_MS`, `tests/hangGuardConfig.mjs`), and reads `ERROR`/`IMPRECISE`, not `KILLED`.

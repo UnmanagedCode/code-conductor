@@ -24,7 +24,7 @@
 //   * shared, because that is the entire win — one run warms the next run, the
 //     gate's second row, and every mutation iteration. A per-run directory pays
 //     the cold compile every time and is worth roughly nothing to the mutation
-//     harness, whose iterations are narrow `npm test -- <file>` invocations;
+//     harness, whose iterations are narrow `node tests/run.mjs <file>` invocations;
 //   * per worktree (repo root, not os.tmpdir()), because sibling worktrees on this
 //     box run concurrent mutation campaigns. A shared tmpdir location would let
 //     one checkout's size-bound wipe delete entries out from under another's live

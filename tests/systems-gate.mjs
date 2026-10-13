@@ -229,7 +229,6 @@ if (typecheck.code !== 0) {
   const rows = await Promise.all(CONFIGS.map((config, i) => run(['node', 'tests/run.mjs'], {
     [LOCAL_PROVIDER_ENV]: argvs[i],
     [LOCAL_REMOTE_ENV]: config.remoteId ?? undefined,
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=512`.trim(),
   }, `[${i + 1}] `)));
   const results = CONFIGS.map((config, i) => ({ ...config, ...rows[i] }));
 
