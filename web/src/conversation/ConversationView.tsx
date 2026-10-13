@@ -14,7 +14,7 @@ import { userActionsForStatus, type ConversationModel } from './model';
 import type { RenderCtx } from './tools';
 import { cn } from '@/lib/utils';
 
-/** Side padding shared by the transcript list and the sticky-pin overlay, which must stay aligned. */
+/** Side padding of the transcript list and the sticky-pin column. Each carries it inside its own width cap, so their content boxes, and the user bubbles in them, line up. */
 const TRANSCRIPT_PAD_X = 'px-3 md:px-6';
 
 /**
@@ -168,11 +168,11 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
         title={pin.kind === 'pinned' ? 'Jump to this prompt' : undefined}
         onClick={() => stickyPrompt.jumpToPinned()}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stickyPrompt.jumpToPinned(); } }}
-        className={cn('absolute left-0 top-0 z-10 touch-pan-x touch-pinch-zoom', TRANSCRIPT_PAD_X, pin.kind === 'pinned' ? 'cursor-pointer' : 'cursor-default')}
+        className={cn('absolute left-0 top-0 z-10 touch-pan-x touch-pinch-zoom', pin.kind === 'pinned' ? 'cursor-pointer' : 'cursor-default')}
         style={{ right: gutter, ...(pin.kind === 'pinned' && pin.shift ? { transform: `translateY(${pin.shift}px)` } : {}) }}
         data-pinned-prompt
       >
-        <div data-session-width={preset} className={cn('mx-auto pt-2', SESSION_COLUMN_MAX_W[preset])}>
+        <div data-session-width={preset} className={cn('mx-auto pt-2', SESSION_COLUMN_MAX_W[preset], TRANSCRIPT_PAD_X)}>
           {pin.kind === 'status' ? (
             <div className="rounded-xl border bg-card/95 px-4 py-2 text-center text-xs text-muted-foreground shadow-md backdrop-blur">{pin.text}</div>
           ) : pin.kind === 'pinned' ? (
