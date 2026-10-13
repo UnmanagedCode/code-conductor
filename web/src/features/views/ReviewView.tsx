@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useStore } from '@/state/createStore';
 import { cn } from '@/lib/utils';
+import { apiFetch } from '@shared/http';
 import { viewStore } from './api';
 import { ViewMessage, ViewShell } from './ViewShell';
 
@@ -11,15 +12,6 @@ export type DiffFileSummary = { path: string; oldPath?: string; status?: string;
 export type DiffSummary = { files?: DiffFileSummary[]; totalAdds?: number; totalDels?: number; totalFiles?: number; commitMessage?: string };
 type Hunk = { header: string; lines: { type: string; content: string }[] };
 type FileDetail = { hunks: Hunk[]; oversized?: boolean; truncated?: boolean; adds?: number; dels?: number; bytes?: number };
-
-async function getJson(url: string) {
-  const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${res.status}`);
-  }
-  return res.json();
-}
 
 /** The summary URL with `path=<file>` added: one file's hunks, fetched lazily. */
 export function fileDiffUrl(summaryUrl: string, path: string) {
@@ -87,7 +79,7 @@ export function FileCard({ file, summaryUrl }: { file: DiffFileSummary; summaryU
   const load = React.useCallback(async () => {
     setState({ phase: 'loading' });
     try {
-      const json = await getJson(fileDiffUrl(summaryUrl, file.path));
+      const json = await apiFetch<any>(fileDiffUrl(summaryUrl, file.path), { cache: 'no-store' });
       if (alive.current) setState({ phase: 'loaded', detail: json.file });
     } catch (e: any) {
       if (alive.current) setState({ phase: 'error', error: e.message });
@@ -140,7 +132,7 @@ export function ReviewView() {
     if (!url) return;
     let live = true;
     setState({ phase: 'loading' });
-    getJson(url)
+    apiFetch<any>(url, { cache: 'no-store' })
       .then((data) => live && setState({ phase: 'loaded', data }))
       .catch((e) => live && setState({ phase: 'error', error: e.message }));
     return () => { live = false; };

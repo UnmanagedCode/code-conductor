@@ -17,6 +17,7 @@ import {
   getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackends, getBackendLabel,
   getBackendModels, getEffortLevels, CLAUDE_BACKEND,
 } from '@shared/models';
+import { ApiError, apiFetch } from '@shared/http';
 import { autoResumeBadge, formatAutoResumeTime } from '@shared/usage';
 import { send, stickyPrompt } from '@/app/controller';
 import { trackSwipes } from '@/conversation/stickyPrompt';
@@ -39,6 +40,13 @@ export const RESTART_BUSY_TITLE = 'Switching restarts the session. Wait for the 
 
 export const isEnforcing = (level?: string) => level !== 'warn';
 const isBetweenTurns = (inst: Instance) => inst.status === 'idle';
+
+/** The debug route's own failure answers `{ok:false, reason}` with no `error`: its reason, else none. */
+function debugRefusal(e: unknown): string | null {
+  if (!(e instanceof ApiError)) return null;
+  const body = e.body as { error?: unknown; reason?: unknown } | null;
+  return typeof body?.error !== 'string' && typeof body?.reason === 'string' ? body.reason : null;
+}
 
 type ModelSwitch = NonNullable<Instance['modelSwitch']>;
 /** A restart switch (or its failure) that crossed backends: the badges then name the target's backend. */
@@ -167,12 +175,11 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
 
   async function startDebug() {
     try {
-      const r = await fetch(`/api/instances/${inst.id}/debug`, { method: 'POST' });
-      const result = await r.json();
-      if (!r.ok || !result.ok) throw new Error(result.error ?? result.reason ?? 'failed to enable debug');
+      const result = await apiFetch<{ ok?: boolean; debugDir?: string } | null>(`/api/instances/${inst.id}/debug`, { method: 'POST' });
+      if (!result?.ok) throw new Error('failed to enable debug');
       toast.success('Debug capture started', `Writing to ${result.debugDir}`);
     } catch (e: any) {
-      toast.error('Could not enable debug capture', e.message);
+      toast.error('Could not enable debug capture', debugRefusal(e) ?? e.message);
     }
   }
 

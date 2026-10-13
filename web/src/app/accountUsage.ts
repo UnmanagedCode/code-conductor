@@ -1,6 +1,7 @@
 // Account-level usage from GET /api/usage (the server caches the OAuth
 // endpoint). Its tightest bucket also seeds the rate-limit tracker, so the
 // usage chip has a value before any session emits a rate_limit_event.
+import { apiFetch } from '@shared/http';
 import { RL_BUCKET_KEYS } from '@shared/usage';
 import { createStore } from '@/state/createStore';
 import { rateLimits, trackerSignal } from './trackers';
@@ -13,10 +14,8 @@ let generation = 0;
 export async function refreshAccountUsage() {
   const g = generation;
   try {
-    const r = await fetch('/api/usage', { cache: 'no-store' });
-    if (!r.ok) return;
-    const j = await r.json();
-    if (g !== generation || j.usage == null) return; // keep the last good reading
+    const j = await apiFetch<any>('/api/usage', { cache: 'no-store' });
+    if (g !== generation || j?.usage == null) return; // keep the last good reading
     accountUsageStore.set({ usage: j.usage, stale: !!j.stale });
     const key = RL_BUCKET_KEYS.find((k: string) => j.usage[k]);
     if (key) {

@@ -18,6 +18,7 @@ vi.mock('@shared/ws', () => ({
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { voiceStore } from '@/features/voice/store';
 import { toast } from '@/ui/feedback';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import type { Instance } from '@/state/types';
 import { Composer } from './Composer';
 import { DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS } from './drafts';
@@ -492,6 +493,37 @@ describe('the transcription', () => {
     expect(box().value, 'the typed text is unchanged').toBe('hello');
     await tap();
     expect(sentTexts(), 'and sends the typed text, untagged').toEqual(['hello']);
+  });
+
+  // The toast carries the server's `error` alone, with no status prefix and no raw body around it.
+  it("a transcription refused with a JSON error toasts the server's reason alone", async () => {
+    const body = { error: 'whisper.cpp not installed' };
+    vi.stubGlobal('fetch', vi.fn(async () => { transcriptions++; return { ok: false, status: 503, json: async () => body, text: async () => JSON.stringify(body) }; }));
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => '');
+    mount(inst('failed-reason'));
+    type('hello');
+    await holdToRecord();
+    release();
+    await tap();
+    await flushMicrotasks();
+    expect(transcriptions, 'positive control: the audio went for transcription').toBe(1);
+    expect(error.mock.calls).toEqual([['Transcription failed', 'whisper.cpp not installed']]);
+    expect(label(), 'the composer is idle again').toBe('Send');
+  });
+
+  // A transcription with no server toasts the one unreachable message, not the browser's wording.
+  it('a transcription with no server toasts the unreachable message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { transcriptions++; throw new TypeError('Failed to fetch'); }));
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => '');
+    mount(inst('failed-offline'));
+    type('hello');
+    await holdToRecord();
+    release();
+    await tap();
+    await flushMicrotasks();
+    expect(transcriptions, 'positive control: the audio went for transcription').toBe(1);
+    expect(error.mock.calls).toEqual([['Transcription failed', SERVER_UNREACHABLE_MESSAGE]]);
+    expect(label(), 'the composer is idle again').toBe('Send');
   });
 });
 

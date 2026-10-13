@@ -7,6 +7,7 @@
 import * as React from 'react';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { apiFetch } from '@shared/http';
 
 export const PATH_PICKER_DEBOUNCE_MS = 250;
 export const TRANSIENT_REFUSAL_CODES = new Set(['LIST_TIMEOUT', 'ETIMEDOUT', 'ETRANSPORT', 'SYSTEM_UNREACHABLE']);
@@ -96,9 +97,7 @@ export function PathInput({ id, value, onChange, placement, resetKey, placeholde
     setNote(`Listing ${s.dir}…`);
     let data: any;
     try {
-      const res = await fetch('/api/fs/dirs?' + params, { signal: ctl.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      data = await res.json();
+      data = await apiFetch('/api/fs/dirs?' + params, { signal: ctl.signal });
     } catch (e: any) {
       if (mySeq !== seq.current || e?.name === 'AbortError') return;
       inflightDir.current = null;

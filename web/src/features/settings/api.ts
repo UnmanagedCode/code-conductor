@@ -1,10 +1,7 @@
 // Fetch helpers for the Settings routes: every route answers JSON (errors as
-// {error, tail?}); the install/update routes stream NDJSON progress.
-
-export class HttpError extends Error {
-  tail?: string;
-  status?: number;
-}
+// {error, tail?}, thrown as @shared/http's ApiError); the install/update routes
+// stream NDJSON progress.
+import { ApiError, apiFetch, apiResponse, readApiBody } from '@shared/http';
 
 export async function json<T = any>(url: string, init?: Omit<RequestInit, 'body'> & { body?: any }): Promise<T> {
   const opts: RequestInit = { cache: 'no-store', ...(init as RequestInit) };
@@ -12,15 +9,8 @@ export async function json<T = any>(url: string, init?: Omit<RequestInit, 'body'
     opts.body = JSON.stringify(init.body);
     opts.headers = { 'content-type': 'application/json', ...(init.headers || {}) };
   }
-  const r = await fetch(url, opts);
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    const err = new HttpError((data && data.error) || `HTTP ${r.status}`);
-    err.status = r.status;
-    if (data?.tail) err.tail = data.tail;
-    throw err;
-  }
-  return data as T;
+  // A non-JSON 2xx reads as {} here, not apiFetch's null.
+  return ((await apiFetch<T | null>(url, opts)) ?? {}) as T;
 }
 
 export const post = <T = any>(url: string, body?: unknown) => json<T>(url, { method: 'POST', body: body ?? {} });
@@ -41,21 +31,13 @@ export async function streamAction(
   method = 'POST',
   { body, fetchImpl = fetch }: { body?: unknown; fetchImpl?: typeof fetch } = {},
 ): Promise<any> {
-  const r = await fetchImpl(path, {
+  const r = await apiResponse(path, {
     method,
     cache: 'no-store',
     ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
-  });
+  }, fetchImpl);
   const ct = r.headers.get('content-type') || '';
-  if (!ct.includes('ndjson')) {
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      const err = new HttpError(data.error || `HTTP ${r.status}`);
-      if (data.tail) err.tail = data.tail;
-      throw err;
-    }
-    return data;
-  }
+  if (!ct.includes('ndjson')) return (await readApiBody(r)) ?? {};
   const reader = r.body!.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -75,11 +57,7 @@ export async function streamAction(
     if (done) break;
   }
   if (!final) throw new Error('stream ended unexpectedly');
-  if (!final.ok) {
-    const err = new HttpError(final.error || 'operation failed');
-    if (final.tail) err.tail = final.tail;
-    throw err;
-  }
+  if (!final.ok) throw new ApiError(final.error || 'operation failed', r.status, final);
   return final.result;
 }
 

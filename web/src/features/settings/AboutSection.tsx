@@ -5,7 +5,8 @@ import { OctopusBadge } from '@/components/mascot/Octopus';
 import { performRestart } from '@/features/sidebar/restart';
 import { createStore, useStore } from '@/state/createStore';
 import { SettingsCard, Status, LogBox } from './ui';
-import { json, errText, streamAction, capLog, HttpError } from './api';
+import { ApiError } from '@shared/http';
+import { json, errText, streamAction, capLog } from './api';
 
 export type SelfUpdateStatus = { version?: string; upstream?: string | null; ahead?: number | null; behind?: number | null; canCheck?: boolean; diverged?: boolean; updateAvailable?: boolean };
 
@@ -68,7 +69,7 @@ export function AboutSection() {
       }
     } catch (e) {
       selfUpdateStore.set({ line: { text: `Update failed: ${errText(e)}`, tone: 'error' } });
-      if ((e as HttpError).tail) selfUpdateStore.set({ log: (e as HttpError).tail! });
+      if (e instanceof ApiError && e.tail) selfUpdateStore.set({ log: e.tail });
       selfUpdateStore.set({ label: 'Update', updating: false });
     }
   }

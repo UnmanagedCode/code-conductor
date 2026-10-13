@@ -157,6 +157,15 @@ describe('performRestart against the streamed restart', () => {
     expect(appStore.get().sidebarStatus?.text).toBe('Restart refused: a restart or update is already in progress (update) — cc is still running');
   });
 
+  it('a refusal answered as plain JSON carries the server\'s tail and never reloads', async () => {
+    // Invariant: the non-streamed refusal is an ApiError like the streamed one, so its `tail` reaches the outcome.
+    const s = server(() => new Response(JSON.stringify({ error: 'build failed', tail: 'tsc: 3 errors' }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    const reload = vi.fn();
+    expect(await performRestart({ resume: false }, { fetchImpl: s.fetchImpl, reload })).toEqual({ ok: false, error: 'build failed', tail: 'tsc: 3 errors' });
+    expect(reload).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith('Restart refused — cc is still running', 'build failed');
+  });
+
   it('a connection that drops before a result still waits for a replacement and reloads', async () => {
     // Invariant: only a refusal the server answered stops the restart; a dropped connection is the old process going down.
     const s = server(() => { s.relaunched(); throw new TypeError('fetch failed'); });

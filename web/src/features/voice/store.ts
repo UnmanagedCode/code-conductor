@@ -2,6 +2,7 @@
 // (read aloud). Settings → Voice updates it after an install or a model switch.
 import { createStore } from '@/state/createStore';
 import { loadCapabilities } from '@shared/capabilities';
+import { apiFetch } from '@shared/http';
 
 export const voiceStore = createStore({
   /** The platform has voice at all (GET /api/health capabilities.voice). */
@@ -17,26 +18,21 @@ export const voiceStore = createStore({
 
 export async function probeMic() {
   try {
-    const r = await fetch('/api/transcribe/status', { cache: 'no-store' });
-    if (!r.ok) return;
-    const { available } = await r.json();
-    voiceStore.set({ micAvailable: !!available });
+    const d = await apiFetch<{ available?: boolean } | null>('/api/transcribe/status', { cache: 'no-store' });
+    voiceStore.set({ micAvailable: !!d?.available });
   } catch { /* leave the mic off */ }
 }
 
 /** Piper availability, then the auto-speak preference and rate (Settings → Voice → Speech). */
 export async function probeTts() {
   try {
-    const r = await fetch('/api/tts/status', { cache: 'no-store' });
-    if (r.ok) voiceStore.set({ ttsAvailable: !!(await r.json()).available });
+    const d = await apiFetch<{ available?: boolean } | null>('/api/tts/status', { cache: 'no-store' });
+    voiceStore.set({ ttsAvailable: !!d?.available });
   } catch { /* leave TTS off */ }
   try {
-    const r = await fetch('/api/settings/tts', { cache: 'no-store' });
-    if (r.ok) {
-      const d = await r.json();
-      const rate = Number(d.rate);
-      voiceStore.set({ ttsEnabled: !!d.enabled, ...(Number.isFinite(rate) && rate > 0 ? { ttsRate: rate } : {}) });
-    }
+    const d = await apiFetch<{ enabled?: boolean; rate?: unknown } | null>('/api/settings/tts', { cache: 'no-store' });
+    const rate = Number(d?.rate);
+    voiceStore.set({ ttsEnabled: !!d?.enabled, ...(Number.isFinite(rate) && rate > 0 ? { ttsRate: rate } : {}) });
   } catch { /* preferences default off */ }
 }
 

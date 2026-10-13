@@ -1,3 +1,4 @@
+import { apiFetch } from '@shared/http';
 import { createStore, useStore } from '@/state/createStore';
 import { toast } from '@/ui/feedback';
 import { EMPTY_DRAFT, draftStore, joinDictation } from './drafts';
@@ -45,10 +46,8 @@ function deliver(startedIn: string | null, text: string) {
 
 async function transcribe(blob: Blob, startedIn: string | null) {
   try {
-    const res = await fetch('/api/transcribe', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const { text } = await res.json();
-    deliver(startedIn, text ?? '');
+    const answer = await apiFetch<{ text?: string } | null>('/api/transcribe', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
+    deliver(startedIn, answer?.text ?? '');
   } catch (e: any) {
     toast.error('Transcription failed', e?.message || String(e));
   } finally {

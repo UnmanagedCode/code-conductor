@@ -153,6 +153,25 @@ describe('Voice → Dictation', () => {
     expect(gets(calls, '/api/settings/transcribe/install/status')).toBe(0);
   });
 
+  // A 409 means an install is already running: the poll starts and shows its log, and nothing reads as a failure.
+  it('an install refused with 409 joins the running install: its status is polled and no failure is shown', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls = mockFetch({
+      'GET /api/settings/transcribe': () => transcribe(),
+      'GET /api/settings/tts': () => tts(),
+      'POST /api/settings/transcribe/install': () => ({ status: 409, json: { error: 'an install is already running' } }),
+      'GET /api/settings/transcribe/install/status': () => ({ running: true, log: 'already building' }),
+    });
+    show();
+    await waitFor(() => expect(badge('Dictation', 'large')).toBe('not installed'));
+    fireEvent.click(card('Dictation').querySelector('[data-item="large"]')!);
+    fireEvent.click(within(card('Dictation')).getByRole('button', { name: 'Install Large (1.1 GB)' }));
+    await waitFor(() => expect(card('Dictation').querySelector('pre')?.textContent).toBe('already building'));
+    expect(gets(calls, '/api/settings/transcribe/install/status')).toBeGreaterThanOrEqual(1);
+    expect(within(card('Dictation')).getByText('Installing…')).toBeTruthy();
+    expect(within(card('Dictation')).queryByText(/Install failed to start/)).toBeNull();
+  });
+
   // After an install, mic availability comes from the reloaded catalog's own answer, never assumed.
   it('an install that ends without whisper available keeps the mic hidden', async () => {
     const calls = mockFetch({

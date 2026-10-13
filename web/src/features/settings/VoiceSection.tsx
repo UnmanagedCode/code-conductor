@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { voiceStore } from '@/features/voice/store';
 import { cn } from '@/lib/utils';
 import { SectionIntro, SettingsCard, Status, LogBox, RangeField } from './ui';
+import { ApiError, apiFetch } from '@shared/http';
 import { json, post, errText } from './api';
 
 const POLL_MS = 1500;
@@ -129,11 +130,14 @@ export function InstallableCatalog({ kind, onAvailability, onData, children }: {
   async function install(item: Item) {
     setLog('');
     try {
-      const r = await fetch(`${kind.base}/install`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [kind.pickKey]: item.name }) });
-      if (r.status === 409) setHint('An install is already running.');
-      else if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      await apiFetch(`${kind.base}/install`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [kind.pickKey]: item.name }) });
       beginPoll();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setHint('An install is already running.');
+        beginPoll();
+        return;
+      }
       setHint(`Install failed to start: ${errText(e)}`);
     }
   }

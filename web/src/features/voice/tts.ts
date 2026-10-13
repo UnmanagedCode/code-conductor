@@ -6,6 +6,7 @@
 //
 // `speakStore.activeNodeId` names the message whose button shows "stop": the
 // one the user tapped, or the auto-spoken one once its segment starts playing.
+import { apiResponse } from '@shared/http';
 import { mdToSpeech } from '@shared/md-to-speech';
 import { TtsQueue } from '@shared/tts-queue';
 import { createStore } from '@/state/createStore';
@@ -128,7 +129,7 @@ async function playSingle(text: string): Promise<void> {
   try { await ctx.resume(); } catch { /* ignore */ }
   let res: Response;
   try {
-    res = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: text, signal: s.controller.signal });
+    res = await apiResponse('/api/tts', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: text, signal: s.controller.signal });
   } catch { s.resolve?.(); return done; }
   if (!res.ok || !res.body) { s.resolve?.(); return done; }
   const reader = res.body.getReader();

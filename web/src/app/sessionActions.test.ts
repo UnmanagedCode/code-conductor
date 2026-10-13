@@ -21,6 +21,7 @@ vi.mock('./controller', () => ({
 }));
 
 import { CLOSE_TITLES, closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';
@@ -30,12 +31,16 @@ import {
 
 type Call = { url: string; method: string; body: any };
 let calls: Call[] = [];
-function stubFetch(route: (c: Call) => { status?: number; body?: any }) {
+/** A route answers `{status, body}`, `{status, html: true}` (a body that is not JSON), or an Error (fetch rejects, as with no server). */
+function stubFetch(route: (c: Call) => { status?: number; body?: any; html?: boolean } | Error) {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
     const c = { url, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(c);
-    const { status = 200, body = {} } = route(c);
-    return { ok: status < 400, status, json: async () => body };
+    const answer = route(c);
+    if (answer instanceof Error) throw answer;
+    const { status = 200, body = {}, html = false } = answer;
+    const json = html ? async () => { throw new SyntaxError("Unexpected token '<', \"<html>\"... is not valid JSON"); } : async () => body;
+    return { ok: status < 400, status, json };
   }));
 }
 
@@ -146,6 +151,15 @@ describe('closing a session', () => {
     expect(controller.refreshInstances).not.toHaveBeenCalled();
   });
 
+  // A stop with no server names the one unreachable message, not the browser's wording.
+  it('a stop with no server names the unreachable message', async () => {
+    stubFetch(() => new TypeError('Failed to fetch'));
+    await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle' });
+    expect(calls).toEqual([{ url: '/api/instances/i1', method: 'DELETE', body: undefined }]);
+    expect(toasts).toEqual([['error', 'Could not stop the session', SERVER_UNREACHABLE_MESSAGE]]);
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+  });
+
   it('a temp or not-live session is archived after confirming; declining sends nothing', async () => {
     stubFetch(() => ({ body: { ok: true } }));
     await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle', temp: true });
@@ -163,6 +177,33 @@ describe('closing a session', () => {
     await archiveSession({ projectName: '.conduct', sessionId: 'cs' });
     expect(calls.map((c) => c.url)).toEqual(['/api/projects/.conduct/sessions/cs/archive', '/api/projects/.conduct/sessions/cs/archive?force=1']);
     expect(appStore.get().activeId).toBeNull();
+  });
+
+  // The 409 retry's own refusal is the one toasted, after exactly the two POSTs; nothing is refreshed.
+  it('a forced archive the server refuses toasts the retry\'s error', async () => {
+    stubFetch((c) => (c.url.endsWith('?force=1') ? { status: 500, body: { error: 'archive dir unwritable' } } : { status: 409, body: { error: 'session is running' } }));
+    await archiveSession({ projectName: 'p', sessionId: 's1' });
+    expect(calls.map((c) => [c.method, c.url])).toEqual([['POST', '/api/projects/p/sessions/s1/archive'], ['POST', '/api/projects/p/sessions/s1/archive?force=1']]);
+    expect(toasts).toEqual([['error', 'Could not archive the session', 'archive dir unwritable']]);
+    expect(controller.refreshProjects).not.toHaveBeenCalled();
+  });
+
+  // A synthetic session's kill answered 404 is an instance already gone, so the archive goes on; any other refusal toasts and refreshes nothing.
+  it('a synthetic archive treats a 404 kill as done and toasts any other refusal without refreshing', async () => {
+    appStore.set({ instances: [{ id: 'i3', sessionId: 's3', project: 'p', status: 'idle', mode: 'x' }] });
+    stubFetch(() => ({ status: 404, body: { error: 'instance not found' } }));
+    await archiveSession({ projectName: 'p', sessionId: 's3', synthetic: true });
+    expect(calls).toEqual([{ url: '/api/instances/i3', method: 'DELETE', body: undefined }]);
+    expect(toasts).toEqual([]);
+    expect(controller.refreshProjects).toHaveBeenCalledTimes(1);
+
+    calls = [];
+    vi.mocked(controller.refreshProjects).mockClear();
+    stubFetch(() => ({ status: 500, body: { error: 'kill timed out' } }));
+    await archiveSession({ projectName: 'p', sessionId: 's3', synthetic: true });
+    expect(calls).toEqual([{ url: '/api/instances/i3', method: 'DELETE', body: undefined }]);
+    expect(toasts).toEqual([['error', 'Could not archive the session', 'kill timed out']]);
+    expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
   it('a conductor that is not open leaves the selection alone; a synthetic one is killed by instance id', async () => {
@@ -227,6 +268,24 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(toasts).toHaveLength(0);
     await resumeSession({ projectName: 'p', sessionId: 's1' });
     expect(toasts[0]).toEqual(['error', 'Resume failed', 'busy']);
+  });
+
+  // A refusal whose body is not JSON (a proxy's HTML) names its status, never a parse error.
+  it('a user resume refused with an HTML body toasts HTTP 500', async () => {
+    stubFetch(() => ({ status: 500, html: true }));
+    await resumeSession({ projectName: 'p', sessionId: 's1' });
+    expect(toasts).toEqual([['error', 'Resume failed', 'HTTP 500']]);
+  });
+
+  // Only a server answer sends a silent resume looking for a live owner; with no server it neither refreshes nor toasts.
+  it('a silent resume with no server neither refreshes nor toasts', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubFetch(() => new TypeError('Failed to fetch'));
+    await resumeSession({ projectName: 'p', sessionId: 's1', silent: true });
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.selectInstance).not.toHaveBeenCalled();
+    expect(toasts).toEqual([]);
+    warn.mockRestore();
   });
 
   it('rewind and fork POST the bubble\'s index and its exact text; a fork selects the new instance with a gesture', async () => {

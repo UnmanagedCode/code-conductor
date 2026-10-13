@@ -13,6 +13,8 @@
 // builds need is applied server-side too (canonicalizeModel). A client mirror
 // of either would be a second source of truth that drifts.
 
+import { apiFetch } from './http.ts';
+
 // A tier's {backend, model} binding; a missing backend is Claude (backendIdOf).
 export type Binding = { backend?: string; model: string };
 // A backend registry row.
@@ -170,8 +172,7 @@ export function applyModelsPayload(data: ModelsCatalog): void {
 
 export async function loadModelVersions(): Promise<Record<string, Binding>> {
   try {
-    const r = await fetch('/api/settings/models', { cache: 'no-store' });
-    if (r.ok) applyModelsPayload(await r.json());
+    applyModelsPayload(await apiFetch<ModelsCatalog>('/api/settings/models', { cache: 'no-store' }));
   } catch { /* keep defaults */ }
   return activeTierBackend;
 }
