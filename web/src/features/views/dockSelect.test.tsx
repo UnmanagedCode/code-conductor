@@ -24,7 +24,7 @@ import { dockStore, readDockState } from './dock';
 import { DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
 import {
   ACTIVE, checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, emitWidth, endHost, go, keepRow, mountApp, net, pickApp, plainRow,
-  pressColumn, resetHost, residentFrame, sessionShown, settle, sharedFrame, shownFrames, stubResizeObserver, viewOpen,
+  postRoute, pressColumn, resetHost, residentFrame, sessionShown, settle, sharedFrame, shownFrames, standInWindow, stubResizeObserver, viewOpen,
 } from './test/pluginHost';
 
 const ANCHOR = '#session=sess-1';
@@ -32,6 +32,7 @@ const OTHER: Instance = { id: 'i2', project: 'p', status: 'idle', sessionId: 'se
 /** A main row one px too narrow for the smallest split beside the transcript floor. */
 const NARROW = DOCK_PANEL_MIN_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH - 1;
 const WIDE = 1100;
+const GAMMA = { id: 'gamma', name: 'Gamma', enabled: true, hasFrontend: true, frontendKeepAlive: false, state: 'ready' };
 
 /** Escape, as the user presses it with nothing else open. */
 async function escape() {
@@ -164,7 +165,6 @@ describe('the switcher selects the plugin on screen', () => {
 });
 
 describe('a pick over a covering view', () => {
-  const GAMMA = { id: 'gamma', name: 'Gamma', enabled: true, hasFrontend: true, frontendKeepAlive: false, state: 'ready' };
   /** Opens a full-page view and waits until it shows (Settings loads lazily). */
   async function cover(open: () => void, selector: string) {
     await act(async () => { open(); });
@@ -214,6 +214,48 @@ describe('a pick over a covering view', () => {
     expectSplit('the pick');
     expect(dockStore.get().id).toBe('gamma');
     expect(await checkedNow()).toEqual(['gamma']);
+  });
+});
+
+describe('a pick while a full view shows', () => {
+  it('with split remembered, a pick from a linked full view opens the next plugin full, replacing the entry', async () => {
+    // Invariant (F4): a switch while a full view shows stays full, even with split remembered.
+    net.catalog = [...DOCK_CATALOG, GAMMA];
+    net.status.gamma = plainRow();
+    await mountApp();
+    await dockSplit('beta');
+    await go('#plugin/alpha/');
+    expect(dockStore.get(), 'fixture check: split remembered, nothing docked').toMatchObject({ id: null, mode: 'split' });
+    const entries = history.length;
+    await pickApp('gamma');
+    expect(location.hash).toBe('#plugin/gamma/');
+    expect(history.length, 'the entry replaced').toBe(entries);
+    expect(sessionShown(), 'not docked beside the session').toBe(false);
+    expect(dockStore.get().id).toBeNull();
+  });
+});
+
+describe('Dock to side', () => {
+  it('a route the frame publishes while Dock to side\'s Back is still in flight leaves the new split selected', async () => {
+    // Invariant: only entering a plugin view ends split; a route change within the full view, before Back lands, keeps the dock Dock to side wrote.
+    await mountApp();
+    await pickApp('alpha');
+    expect(history.state?.ccView, 'fixture check: the full view was pushed, so Dock to side steps back').toBe(1);
+    const win = standInWindow(sharedFrame()!);
+    // Chromium queues a Back; happy-dom runs it in-call. Hold it, as the browser does, until the frame has posted.
+    const historyBack = vi.spyOn(history, 'back').mockImplementation(() => {});
+    await pressColumn('Dock to side');
+    expect(historyBack, 'fixture check: Dock to side stepped back').toHaveBeenCalledTimes(1);
+    expect(location.hash, 'fixture check: Back not landed yet').toBe('#plugin/alpha/');
+    postRoute(win, '/moved');
+    await settle();
+    expect(location.hash, 'fixture check: the frame\'s route reached the hash').toBe('#plugin/alpha/moved');
+    expect(dockStore.get().id, 'the dock survives the in-view route change').toBe('alpha');
+    historyBack.mockRestore();
+    await back();
+    expect(location.hash).toBe(ANCHOR);
+    expectSplit('Back landed');
+    expect(await checkedNow()).toEqual(['alpha']);
   });
 });
 

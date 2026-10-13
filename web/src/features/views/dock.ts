@@ -71,7 +71,7 @@ export function selectApp(id: string, desktop: boolean) {
     openPlugin(id);
     return;
   }
-  // The route moves first, so nothing beneath the covering view (a plugin's full view, which ends split) can clear the pick.
+  // The anchor write lands on the session whatever history holds beneath; stepping back could enter a plugin's full view, which ends split and so the pick.
   if (view !== 'session') showActiveSession();
   dockStore.set({ id, subpath: '/' });
 }
