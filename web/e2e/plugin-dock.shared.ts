@@ -162,14 +162,14 @@ export function noReloadFlow(p: ProbePlugin) {
 }
 
 export async function dragFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (3): the handle drags over the plugin's iframe, snaps to the rail below the minimum and to the full view (one history entry) past the transcript limit, reopens from the rail, and a double-click toggles rail ↔ the width it had.
+  // Invariant (3): a drag keeps working while the pointer crosses the plugin's iframe (pointer capture carries it in Chromium; this does not show the body[data-resizing] rule is needed), snaps to the rail below the minimum and to the full view (one history entry) past the transcript limit, reopens from the rail, and a double-click toggles rail ↔ the width it had.
   desktopOnly();
   await onSession(page, cc, 'drag');
   await dockAtW(page, PLAIN);
   await loaded(page, PLAIN.id, 'docked');
 
   await dragHandle(page, 150);
-  await expect(handle(page), 'dragged right over the iframe').toHaveAttribute('aria-valuenow', String(W - 150));
+  await expect(handle(page), 'dragged right, crossing the iframe').toHaveAttribute('aria-valuenow', String(W - 150));
   expect(Math.abs((await boxOf(section(page), 'the section')).width - (W - 150)), 'the section follows').toBeLessThanOrEqual(1);
 
   expect(W - 150 - 200, 'fixture check: the next drag ends below the minimum').toBeLessThan(DOCK_PANEL_MIN_WIDTH);
@@ -261,21 +261,30 @@ export async function persistFlow({ page, cc }: Args): Promise<void> {
 }
 
 export async function sessionWidthFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (10): beside the dock each session width preset keeps its maximum and the transcript never runs under the column.
+  // Invariant (10): beside the dock the session width presets still apply — Normal is capped at its maximum in a transcript wider than it, Wide grows past it within its own — and the transcript never runs under the column.
   desktopOnly();
   await onSession(page, cc, 'width');
   const list = page.locator('[data-conversation] [data-session-width]').first();
   await expect(list).toBeVisible();
-  await dockAtW(page, PLAIN);
+  await railApp(page, PLAIN).click();
+  await expectSplit(page, 'docked');
+  await dragHandle(page, DOCK_PANEL_DEFAULT_WIDTH - DOCK_PANEL_MIN_WIDTH);
+  await expect(handle(page), 'fixture check: docked at the minimum').toHaveAttribute('aria-valuenow', String(DOCK_PANEL_MIN_WIDTH));
+  const [[, normalMax]] = PRESET_MAX;
+  expect((await boxOf(main(page), 'the transcript')).width, 'fixture check: the transcript is wider than Normal\'s maximum').toBeGreaterThan(normalMax + 1);
+  const widths: Record<string, number> = {};
   for (const [label, max] of PRESET_MAX) {
     const button = page.locator('[data-sidebar-footer]').getByRole('button', { name: `Session width: ${label}` });
     if (!(await button.count())) await page.locator('[data-sidebar-footer]').getByRole('button', { name: /^Session width:/ }).click();
     await expect(button).toBeVisible();
     await expect(list).toHaveAttribute('data-session-width', label.toLowerCase());
     const l = await boxOf(list, `${label}: the list`);
+    widths[label] = l.width;
     expect(l.width, `${label}: no wider than its maximum`).toBeLessThanOrEqual(max + 0.5);
     expect(right(l), `${label}: left of the column`).toBeLessThanOrEqual((await boxOf(column(page), 'the column')).x + 0.5);
   }
+  expect(Math.abs(widths.Normal - normalMax), 'Normal is capped at its maximum').toBeLessThanOrEqual(0.5);
+  expect(widths.Wide, 'Wide grows past Normal\'s maximum').toBeGreaterThan(normalMax + 1);
 }
 
 export async function phoneFlow({ page, cc }: Args): Promise<void> {

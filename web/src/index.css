@@ -147,7 +147,7 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: 'ss01', 'cv11';
   }
-  /* A resize drag (useResizableWidth) keeps the pointer over an iframe it crosses. */
+  /* A safeguard for engines where pointer capture does not retarget over an iframe; in Chromium setPointerCapture alone carries a resize drag (useResizableWidth) across one. */
   body[data-resizing] iframe {
     pointer-events: none;
   }

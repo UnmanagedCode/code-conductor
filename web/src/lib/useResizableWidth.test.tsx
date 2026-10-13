@@ -77,6 +77,20 @@ describe('useResizableWidth', () => {
     expect(localStorage.getItem(KEY)).toBe('400');
   });
 
+  it('mid-drag the handle reports the live width, not the width the drag started from', () => {
+    // Invariant: aria-valuenow follows the pointer between pointerdown and pointerup.
+    localStorage.setItem(KEY, '400');
+    render(<Harness />);
+    act(() => {
+      fireEvent.pointerDown(handle(), { clientX: 500, pointerId: 1 });
+      fireEvent.pointerMove(handle(), { clientX: 540, pointerId: 1 });
+    });
+    expect(seen.live).toBe(440);
+    expect(now(), 'the live width').toBe(440);
+    act(() => { fireEvent.pointerUp(handle(), { clientX: 540, pointerId: 1 }); });
+    expect(now()).toBe(440);
+  });
+
   it('preferred is the stored width uncapped by max, and width is it capped', () => {
     // Invariant: a ceiling that shrinks (a narrower window) caps the shown width without forgetting the stored preference.
     localStorage.setItem(KEY, '900');

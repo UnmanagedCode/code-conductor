@@ -110,7 +110,8 @@ describe('the plugin dock', () => {
     await mountApp();
     expect(rail()).toBeNull();
     expect(dockHandle()).toBeNull();
-    expect(column()?.dataset.dockMode ?? 'hidden').toBe('hidden');
+    expect(column(), 'the column is mounted').not.toBeNull();
+    expect(column()!.dataset.dockMode).toBe('hidden');
     expect(viewOpen()).toBe(false);
   });
 
@@ -532,3 +533,40 @@ describe('opening the dock from the rail', () => {
     expect(current(), 'the shown app').toBe('Beta');
   });
 });
+
+describe('the dock\'s own place', () => {
+  it('a drag from the rail opens the docked app, not the first in the catalog', async () => {
+    // Invariant: dockTarget prefers the docked app while the catalog lists it.
+    await mountApp();
+    await press('Beta');
+    await press('Beta');
+    expectRail('fixture check: Beta docked and collapsed');
+    await drag(-W);
+    expectSplit('dragged open');
+    expect(current()).toBe('Beta');
+    expect(residentFrame('beta'), 'Beta\'s frame').not.toBeNull();
+    expect(sharedFrame(), 'no Alpha frame').toBeNull();
+  });
+
+  it('the docked app\'s navigation in the full view carries back into split with no stale navigate', async () => {
+    // Invariant: fullMirror records the docked plugin's route into the dock as well as the hash, so Escape back to split posts nothing and keeps the frame.
+    await mountApp();
+    await press('Alpha');
+    const frame = sharedFrame()!;
+    expect(frame, 'fixture check: Alpha\'s frame').not.toBeNull();
+    const win = standInWindow(frame);
+    await press('Expand to full view');
+    expect(location.hash, 'fixture check: full view').toBe('#plugin/alpha/');
+    postRoute(win, '/moved');
+    await settle();
+    expect(location.hash, 'the hash follows in full view').toBe('#plugin/alpha/moved');
+    await escape();
+    expect(location.hash).toBe(ANCHOR);
+    expectSplit('Escape from full');
+    expect(current()).toBe('Alpha');
+    expect(storedDock()?.subpath, 'the dock\'s subpath').toBe('/moved');
+    expect(sharedFrame() === frame, 'the same frame node').toBe(true);
+    expect(win.posted, 'nothing posted').toEqual([]);
+  });
+});
+
