@@ -104,8 +104,18 @@ function ViewToggle({ view, onChange }: { view: 'rendered' | 'raw'; onChange: (v
 
 // Single newlines inside a paragraph are line breaks people typed: keep them.
 const MD_TEXT = 'whitespace-pre-wrap';
-/** Widest a user bubble grows; wider on a phone, where the transcript has no avatar gutter to spare. */
-export const USER_BUBBLE_MAX_W = 'max-w-[92%] md:max-w-[85%]';
+/**
+ * Where every user-authored item starts: one avatar gutter right of where assistant text starts. At `md` and up the
+ * text starts past the avatar + gap (2.75rem) and the gutter is that again; below it the text starts at
+ * ASSISTANT_PROSE_INSET and the gutter is the avatar's width. The item then fills to the column's right edge.
+ */
+export const USER_INSET = 'ml-9.5 md:ml-22';
+/** A user bubble's horizontal padding; the attachments and the action row below it share it, so they start at its text. */
+const USER_BUBBLE_PAD_X = 'px-4';
+/** A user bubble: a soft tint and an accent strip on its right edge, the side its author speaks from; no outline. A tone adds the colours. */
+export const USER_BUBBLE = `rounded-l-2xl rounded-r-md border-r-[3px] py-2.5 ${USER_BUBBLE_PAD_X}`;
+/** The tone of a prompt a person typed (and of the sticky pin that repeats one). */
+export const USER_TONE_PROMPT = 'bg-primary/10 dark:bg-primary/15 border-r-primary/60';
 
 function UserText({ text, view }: { text: string; view: 'rendered' | 'raw' }) {
   return view === 'raw'
@@ -196,7 +206,7 @@ function WakeBody({ body }: { body: string }) {
 function Attachments({ list, resolve }: { list: any[]; resolve?: (f: string) => string | null }) {
   if (!list.length) return null;
   return (
-    <div className="flex flex-wrap justify-end gap-2">
+    <div className={cn('flex flex-wrap gap-2', USER_BUBBLE_PAD_X)} data-user-attachments>
       {list.map((a, i) => {
         if (a?.kind === 'image') {
           const src = typeof a.dataBase64 === 'string'
@@ -270,25 +280,22 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
   );
   const injected = node.variant === 'wake' || node.variant === 'renew' || !!node.skill;
   return (
-    <div className="group/user flex flex-col items-end gap-1.5" data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
-      {(node.skill || node.wake || node.renew || node.forward) && <div className={`w-full ${USER_BUBBLE_MAX_W} space-y-2`}>{folded}</div>}
+    <div className={cn('group/user flex flex-col gap-1.5', USER_INSET)} data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
+      {(node.skill || node.wake || node.renew || node.forward) && <div className="space-y-2">{folded}</div>}
       {node.answer ? (
-        <div className={`${USER_BUBBLE_MAX_W} rounded-2xl rounded-br-md border border-info/25 bg-info/8 px-4 py-3`}>
+        <div className={cn(USER_BUBBLE, 'bg-info/8 border-r-info/60')}>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-info" data-answer-head>
             <CircleCheckIcon className="size-3.5" /> {node.answer.questions.length > 1 ? `Answered · ${node.answer.questions.length} questions` : 'Answered'}
           </div>
           {node.answer.answers ? <AnswerSummary answer={node.answer} /> : <UserText text={node.displayText} view={view} />}
         </div>
       ) : node.displayText ? (
-        <div data-user-text className={cn(
-          USER_BUBBLE_MAX_W, 'rounded-2xl rounded-br-md px-4 py-2.5 ring-1',
-          injected ? 'bg-muted ring-border' : 'bg-primary/10 ring-primary/15 dark:bg-primary/15',
-        )}>
+        <div data-user-text className={cn(USER_BUBBLE, injected ? 'bg-muted border-r-muted-foreground/40' : USER_TONE_PROMPT)}>
           <UserText text={node.displayText} view={view} />
         </div>
       ) : null}
       <Attachments list={node.attachments} resolve={actions?.resolveAttachmentUrl} />
-      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+      <div className={cn('flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100', USER_BUBBLE_PAD_X)} data-user-actions>
         {node.transcribed && (
           <Tooltip><TooltipTrigger asChild><span className="px-1 text-muted-foreground" data-voice-badge><MicIcon className="size-3.5" /></span></TooltipTrigger><TooltipContent>Transcribed from voice</TooltipContent></Tooltip>
         )}
@@ -491,8 +498,8 @@ function QueuedView({ node }: { node: QueuedNode }) {
   try { if (d.ts) clock = new Date(d.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { /* bad ts */ }
   // Delivered, the ghost stays where it was queued, dimmed, above the turn that delivered it.
   return (
-    <div className={cn('flex justify-end', node.delivered && 'opacity-40')} data-item="queued" data-delivered={node.delivered || undefined}>
-      <div className={`${USER_BUBBLE_MAX_W} rounded-2xl rounded-br-md border border-dashed px-4 py-2.5 text-muted-foreground`}>
+    <div className={cn(USER_INSET, node.delivered && 'opacity-40')} data-item="queued" data-delivered={node.delivered || undefined}>
+      <div className={cn('border border-dashed', USER_BUBBLE, 'border-r-muted-foreground/40 text-muted-foreground')}>
         <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase">
           <ClockIcon className="size-3" /> Queued{clock && ` · ${clock}`}
           {d.attachmentCount > 0 && <span className="flex items-center gap-0.5"><PaperclipIcon className="size-3" />{d.attachmentCount}</span>}

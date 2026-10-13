@@ -226,4 +226,11 @@ export async function queuedGhostsFlow({ page, cc }: Args): Promise<void> {
   await expect(ghosts).toHaveText([/QUEUED-ONE/, /QUEUED-TWO/, /QUEUED-THREE/]);
   await expect(ghosts.last(), 'a message queued after the reset is not delivered').not.toHaveAttribute('data-delivered');
   await expect(delivered, 'the earlier two stay delivered').toHaveCount(2);
+
+  // Invariant: a ghost's bubble has a sent prompt's edges.
+  const edges = (el: Element) => { const r = el.getBoundingClientRect(); return [r.left, r.right]; };
+  const [ghostLeft, ghostRight] = await ghosts.first().locator(':scope > div').evaluate(edges);
+  const [promptLeft, promptRight] = await transcript.locator('[data-user-text]').first().evaluate(edges);
+  expect(Math.abs(ghostLeft - promptLeft), "a ghost starts where a sent prompt's bubble does").toBeLessThanOrEqual(1);
+  expect(Math.abs(ghostRight - promptRight), "a ghost ends where a sent prompt's bubble does").toBeLessThanOrEqual(1);
 }

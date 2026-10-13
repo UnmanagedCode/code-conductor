@@ -9,7 +9,7 @@ import { forkActiveSession, rewindActiveSession } from '@/app/sessionActions';
 import { peekTaskTracker } from '@/app/trackers';
 import { uiStore } from '@/app/ui';
 import { SESSION_COLUMN_MAX_W, sessionWidthStore } from '@/app/sessionWidth';
-import { ItemsList, USER_BUBBLE_MAX_W, type BubbleActions } from './items';
+import { ItemsList, USER_BUBBLE, USER_INSET, USER_TONE_PROMPT, type BubbleActions } from './items';
 import { userActionsForStatus, type ConversationModel } from './model';
 import type { RenderCtx } from './tools';
 import { cn } from '@/lib/utils';
@@ -176,10 +176,10 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
           {pin.kind === 'status' ? (
             <div className="rounded-xl border bg-card/95 px-4 py-2 text-center text-xs text-muted-foreground shadow-md backdrop-blur">{pin.text}</div>
           ) : pin.kind === 'pinned' ? (
-            <div className={`ml-auto ${USER_BUBBLE_MAX_W} rounded-2xl rounded-br-md bg-background/90 shadow-md ring-1 ring-primary/20 backdrop-blur`}>
+            <div className={cn(USER_INSET, 'rounded-l-2xl rounded-r-md bg-background/90 shadow-md ring-1 ring-primary/20 backdrop-blur')}>
               <div
                 data-pin-body
-                className={cn('md max-h-[calc(5lh_+_1.25rem)] overflow-hidden rounded-2xl rounded-br-md bg-primary/10 px-4 py-2.5', pin.overflowing && '[mask-image:linear-gradient(to_bottom,black_calc(100%_-_1.5lh),transparent)]')}
+                className={cn('md max-h-[calc(5lh_+_1.25rem)] overflow-hidden', USER_BUBBLE, USER_TONE_PROMPT, pin.overflowing && '[mask-image:linear-gradient(to_bottom,black_calc(100%_-_1.5lh),transparent)]')}
                 dangerouslySetInnerHTML={{ __html: pin.html }}
               />
             </div>
