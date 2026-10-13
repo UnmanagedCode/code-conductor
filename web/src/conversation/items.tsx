@@ -33,12 +33,20 @@ export const ItemsList = React.memo(function ItemsList({ model, ctx, actions }: 
   const cur = model.currentSegment();
   return (
     <>
-      {model.items.map((it) => (
+      {model.items.map((it, i) => repeatsUsageAbove(model.items[i - 1], it) ? null : (
         <RootItemView key={it.id} node={it} rev={it.rev} ctx={ctx} actions={actions} currentSegment={cur} />
       ))}
     </>
   );
 });
+
+/** A usage line that renders the same as the one right above it: the CLI re-reports usage on every API call. */
+function repeatsUsageAbove(above: RootItem | undefined, it: RootItem): boolean {
+  if (it.type !== 'system' || it.ev.subtype !== 'rate_limit_event') return false;
+  if (above?.type !== 'system' || above.ev.subtype !== 'rate_limit_event') return false;
+  const a = systemLine(above.ev), b = systemLine(it.ev);
+  return a.text === b.text && a.tone === b.tone && a.title === b.title;
+}
 
 const RootItemView = React.memo(function RootItemView({ node, ctx, actions, currentSegment }: {
   node: RootItem; rev: number; ctx: RenderCtx; actions: BubbleActions | null; currentSegment: string | null;
