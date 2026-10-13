@@ -54,7 +54,7 @@ export function App() {
           <AppSidebar />
         </div>
         <Sheet open={sidebarOpen} onOpenChange={(o) => uiStore.set({ sidebarOpen: o })}>
-          <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 focus:outline-none md:hidden" onOpenAutoFocus={focusContent}>
+          <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 md:hidden" onOpenAutoFocus={focusContent}>
             <SheetTitle className="sr-only">Navigation</SheetTitle>
             <AppSidebar mobile />
           </SheetContent>

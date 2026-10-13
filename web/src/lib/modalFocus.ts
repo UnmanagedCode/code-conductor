@@ -1,6 +1,7 @@
 // Focus handling for the app's Radix modals. None has a Radix Trigger — each opens from a store or local state — so
 // Radix's close hands focus to a Trigger that is not there, and it falls to the page.
 import * as React from 'react';
+import { isTextEntry, TOUCH_QUERY } from '@/lib/textEntry';
 
 /**
  * `onOpenAutoFocus` that focuses the modal's own content instead of its first control. Preventing the
@@ -63,11 +64,83 @@ export function useReturnFocus(open: boolean) {
 /** Provided by `Dialog` and `Sheet` (`web/src/components/ui/`), consumed by their content. */
 export const ReturnFocusContext = React.createContext<ReturnType<typeof useReturnFocus> | null>(null);
 
-/** The content's `ref` and `onCloseAutoFocus`: the caller's own handler first, then the return when it did not prevent it. */
-export function useContentReturnFocus(onCloseAutoFocus?: (e: Event) => void) {
+/**
+ * The latest elements focus was sent to, newest last: a modal still trapping focus (the phone drawer behind a confirm
+ * it raised) sends an `autoFocus` straight back out, and only these events name where it was headed.
+ */
+const recentlySent: Element[] = [];
+let tracking = false;
+function trackFocusSends() {
+  if (tracking) return;
+  tracking = true;
+  const note = (el: EventTarget | null) => {
+    if (!(el instanceof Element)) return;
+    recentlySent.push(el);
+    if (recentlySent.length > 8) recentlySent.shift();
+  };
+  window.addEventListener('focusin', (e) => note(e.target), true);
+  window.addEventListener('focusout', (e) => note(e.relatedTarget), true);
+}
+
+/** Each modal content seen mounting → the control its markup's `autoFocus` focused then, if any. */
+const autoFocused = new WeakMap<Element, HTMLElement | null>();
+
+/**
+ * Holds the content's `autoFocus` target until the focus trap can take it. React focuses it as the content mounts,
+ * a render before Radix's trap attaches; the trap then finds focus already inside, skips its opening auto-focus and
+ * never learns the focused control, so it cannot pull focus back when a closing menu or drawer takes it. Blurred
+ * here, the target is focused again from the opening auto-focus (`openFocus`), which the trap sees. A target a
+ * still-trapping modal sent focus back from is found among the elements focus was recently sent to.
+ */
+function holdAutoFocus(node: HTMLElement) {
+  if (autoFocused.has(node)) return;
+  const active = document.activeElement;
+  const target = node.contains(active) ? active : recentlySent.findLast((el) => node.contains(el)) ?? null;
+  autoFocused.set(node, target instanceof HTMLElement ? target : null);
+  if (target === active && target instanceof HTMLElement) target.blur();
+}
+
+/** The first control Tab would reach in `root`: Radix's own opening target when no control auto-focuses. */
+function firstTabbable(root: HTMLElement): HTMLElement | null {
+  for (const el of root.querySelectorAll<HTMLElement>('a[href], button, input:not([type="hidden"]), select, textarea, [tabindex]')) {
+    if (el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.getClientRects().length > 0) return el;
+  }
+  return null;
+}
+
+/**
+ * The opening focus: the `autoFocus` target, else Radix's default (the first control, else the content). On a touch
+ * device a text-field target opens on the content instead, so no soft keyboard covers the modal as it opens.
+ */
+function openFocus(e: Event) {
+  const content = e.currentTarget as HTMLElement;
+  const held = autoFocused.get(content);
+  if (window.matchMedia(TOUCH_QUERY).matches && isTextEntry(held ?? firstTabbable(content))) {
+    e.preventDefault();
+    content.focus();
+  } else if (held) {
+    e.preventDefault();
+    held.focus();
+  }
+}
+
+/**
+ * The content's `ref`, `onOpenAutoFocus` and `onCloseAutoFocus`: each handler runs the caller's own first, then the
+ * opening focus or the return when the caller did not prevent it.
+ */
+export function useContentFocus(onOpenAutoFocus?: (e: Event) => void, onCloseAutoFocus?: (e: Event) => void) {
+  trackFocusSends();
   const rf = React.useContext(ReturnFocusContext);
+  const register = rf?.register;
   return {
-    ref: rf?.register,
+    ref: React.useCallback((node: HTMLElement | null) => {
+      register?.(node);
+      if (node) holdAutoFocus(node);
+    }, [register]),
+    onOpenAutoFocus: (e: Event) => {
+      onOpenAutoFocus?.(e);
+      if (!e.defaultPrevented) openFocus(e);
+    },
     onCloseAutoFocus: (e: Event) => {
       onCloseAutoFocus?.(e);
       if (!e.defaultPrevented) rf?.onCloseAutoFocus(e);

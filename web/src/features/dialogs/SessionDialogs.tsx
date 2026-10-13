@@ -154,7 +154,7 @@ export function SummaryDialog() {
   const key = useOpenKey(slot);
   return (
     <Dialog open={!!slot} onOpenChange={(o) => { if (!o) closeDialog('summary'); }}>
-      {slot && <DialogContent className="sm:max-w-2xl focus:outline-none" data-dialog="summary" onOpenAutoFocus={focusContent}><SummaryBody key={key} sessionId={slot.sessionId} /></DialogContent>}
+      {slot && <DialogContent className="sm:max-w-2xl" data-dialog="summary" onOpenAutoFocus={focusContent}><SummaryBody key={key} sessionId={slot.sessionId} /></DialogContent>}
     </Dialog>
   );
 }
@@ -241,7 +241,7 @@ export function StatsDialog() {
   const key = useOpenKey(slot);
   return (
     <Dialog open={!!slot} onOpenChange={(o) => { if (!o) closeDialog('stats'); }}>
-      {slot && <DialogContent className="sm:max-w-lg focus:outline-none" data-dialog="stats" onOpenAutoFocus={focusContent}><StatsBody key={key} sessionId={slot.sessionId} /></DialogContent>}
+      {slot && <DialogContent className="sm:max-w-lg" data-dialog="stats" onOpenAutoFocus={focusContent}><StatsBody key={key} sessionId={slot.sessionId} /></DialogContent>}
     </Dialog>
   );
 }
@@ -377,7 +377,7 @@ export function PruneDialog() {
   const key = useOpenKey(slot);
   return (
     <Dialog open={!!slot} onOpenChange={(o) => { if (!o) closeDialog('prune'); }}>
-      {slot && <DialogContent className="sm:max-w-lg focus:outline-none" data-dialog="prune" onOpenAutoFocus={focusContent}><PruneBody key={key} instanceId={slot.instanceId} /></DialogContent>}
+      {slot && <DialogContent className="sm:max-w-lg" data-dialog="prune" onOpenAutoFocus={focusContent}><PruneBody key={key} instanceId={slot.instanceId} /></DialogContent>}
     </Dialog>
   );
 }
