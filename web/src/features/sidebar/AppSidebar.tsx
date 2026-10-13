@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   BarChart3Icon, FolderInputIcon, FolderPlusIcon, LayersIcon, LoaderCircleIcon, MenuIcon, MoonIcon,
-  SettingsIcon, SparklesIcon, SunIcon, WifiOffIcon,
+  SettingsIcon, SparklesIcon, SunIcon, WifiOffIcon, XIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -99,7 +99,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
       style={mobile ? undefined : { width: width ?? SIDEBAR_DEFAULT_WIDTH }}
       data-sidebar
     >
-      <div className={cn('flex items-center gap-1 px-3 pt-[max(env(safe-area-inset-top,0px),1rem)] pb-3', mobile && 'pr-12')}>
+      <div className="flex items-center gap-1 px-3 pt-[max(env(safe-area-inset-top,0px),1rem)] pb-3">
         <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
           <OctopusMark className="size-6" />
         </div>
@@ -108,6 +108,11 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
         <HeaderButton label={route.view === 'settings' ? 'Close settings' : 'Settings'} onClick={toggleSettings}>
           <SettingsIcon />
         </HeaderButton>
+        {mobile && (
+          <HeaderButton label="Close" onClick={closeSidebarOnMobile}>
+            <XIcon />
+          </HeaderButton>
+        )}
       </div>
 
       <div className="px-3">

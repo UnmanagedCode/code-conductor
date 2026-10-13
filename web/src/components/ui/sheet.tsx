@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Dialog as SheetPrimitive } from 'radix-ui';
-import { XIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ReturnFocusContext, useContentFocus, useReturnFocus } from '@/lib/modalFocus';
 
@@ -33,10 +32,6 @@ function SheetContent({ className, children, side = 'left', onOpenAutoFocus, onC
         onCloseAutoFocus={focus.onCloseAutoFocus}
       >
         {children}
-        <SheetPrimitive.Close className="absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:outline-hidden">
-          <XIcon className="size-4" />
-          <span className="sr-only">Close</span>
-        </SheetPrimitive.Close>
       </SheetPrimitive.Content>
     </SheetPrimitive.Portal>
   );
