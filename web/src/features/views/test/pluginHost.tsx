@@ -130,3 +130,46 @@ export function postFrom(from: StandIn, data: unknown) {
 
 /** The bridge in `from`'s frame reports its route, as a plugin page's own navigation does. */
 export const postRoute = (from: StandIn, path: string) => postFrom(from, { cc: 1, type: 'route', path });
+
+// ── the plugin dock (the desktop column beside the session) ─────────────────
+
+export const column = () => document.querySelector('[data-plugin-column]') as HTMLElement | null;
+export const host = () => document.querySelector('[data-plugin-host]') as HTMLElement | null;
+export const rail = () => document.querySelector('nav[aria-label="Plugin dock"]') as HTMLElement | null;
+/** A rail control by label; an app's icon also while it is named as docked. */
+export const railButton = (label: string) => rail()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"], button[aria-label="${label} (docked)"]`) ?? null;
+export const dockHandle = () => document.querySelector('[role="separator"][aria-label="Resize plugin dock"]') as HTMLElement | null;
+
+/** A drag of the handle by `dx` px: down, one move, up. */
+export function dragBy(el: HTMLElement, dx: number) {
+  act(() => {
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 500, pointerId: 1 }));
+    el.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: 500 + dx, pointerId: 1 }));
+  });
+  act(() => {
+    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: 500 + dx, pointerId: 1 }));
+  });
+}
+
+type Observed = { cb: (entries: unknown[]) => void; targets: Set<Element> };
+const observed: Observed[] = [];
+
+/** Replaces happy-dom's ResizeObserver (whose observe never calls back) with one `emitWidth` drives; `endHost` unstubs it. */
+export function stubResizeObserver() {
+  observed.length = 0;
+  vi.stubGlobal('ResizeObserver', class {
+    private rec: Observed;
+    constructor(cb: (entries: unknown[]) => void) { this.rec = { cb, targets: new Set() }; observed.push(this.rec); }
+    observe(el: Element) { this.rec.targets.add(el); }
+    unobserve(el: Element) { this.rec.targets.delete(el); }
+    disconnect() { this.rec.targets.clear(); }
+  });
+}
+
+/** The main row (the plugin column's parent) reports a content width of `px`. */
+export function emitWidth(px: number) {
+  const row = column()?.parentElement;
+  act(() => {
+    for (const o of observed) if (row && o.targets.has(row)) o.cb([{ target: row, contentRect: { width: px } }]);
+  });
+}

@@ -12,7 +12,7 @@ const LONG = 'Extremely_Long_Unbreakable_Token_For_Layout_Testing.v2';
 const LONG_SLUG = 'extremely-long-slug-for-layout-test-ab';
 const EPS = 0.5;
 
-// SIDEBAR_WIDTH_STORAGE_KEY (web/src/features/sidebar/useSidebarWidth.ts) and the
+// SIDEBAR_WIDTH_STORAGE_KEY (web/src/features/sidebar/derive.ts) and the
 // clamp's min, default and max (derive.ts); `settle` checks each one lands.
 const SIDEBAR_KEY = 'code-conductor:sidebar-width';
 const SIDEBARS = [220, 288, 560];

@@ -221,7 +221,4 @@ export function dotState(s: { status?: string | null; awaitingWake?: boolean; wa
 export const SIDEBAR_MIN_WIDTH = 220;
 export const SIDEBAR_MAX_WIDTH = 560;
 export const SIDEBAR_DEFAULT_WIDTH = 288;
-
-export function clampSidebarWidth(n: number): number | null {
-  return Number.isFinite(n) ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, n)) : null;
-}
+export const SIDEBAR_WIDTH_STORAGE_KEY = 'code-conductor:sidebar-width';
