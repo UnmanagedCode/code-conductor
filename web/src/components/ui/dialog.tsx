@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
 import { XIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ReturnFocusContext, useContentReturnFocus, useReturnFocus } from '@/lib/modalFocus';
+import { ReturnFocusContext, useContentFocus, useReturnFocus } from '@/lib/modalFocus';
 
 /** Every app modal opens from state, never a Trigger: the root reads its opener for the content's focus return. */
 function Dialog(props: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -21,20 +21,21 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
     />
   );
 }
-function DialogContent({ className, children, showCloseButton = true, onCloseAutoFocus, ...props }: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
-  const returnFocus = useContentReturnFocus(onCloseAutoFocus);
+function DialogContent({ className, children, showCloseButton = true, onOpenAutoFocus, onCloseAutoFocus, ...props }: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
+  const focus = useContentFocus(onOpenAutoFocus, onCloseAutoFocus);
   return (
     <DialogPrimitive.Portal>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          'fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-xl border bg-background p-6 shadow-xl duration-200 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 sm:max-w-lg',
+          'fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-xl border bg-background p-6 shadow-xl duration-200 focus:outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 sm:max-w-lg',
           className,
         )}
         {...props}
-        ref={returnFocus.ref}
-        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
+        ref={focus.ref}
+        onOpenAutoFocus={focus.onOpenAutoFocus}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
       >
         {children}
         {showCloseButton && (

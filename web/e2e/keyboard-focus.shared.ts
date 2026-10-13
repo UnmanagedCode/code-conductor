@@ -9,6 +9,8 @@ import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
 type Key = 'Enter' | ' ';
+/** How a person activates a control: Enter with keyboard focus on it, a mouse click, or a tap. */
+export type Act = (page: Page, control: Locator) => Promise<void>;
 
 const label = (s: string) => `e2e-kf-${s}-${test.info().project.name}`;
 const KEYS: Key[] = ['Enter', ' '];
@@ -26,6 +28,8 @@ async function press(page: Page, control: Locator, key: Key) {
   await expect(control).toBeFocused();
   await page.keyboard.press(key);
 }
+
+export const byKey: Act = (page, control) => press(page, control, 'Enter');
 
 /** The session behind `sid` was not opened: no anchor names it and its row is not the selected one. */
 async function notOpened(page: Page, row: Locator, sid: string, what: string) {
@@ -134,7 +138,7 @@ export async function rowKeysFlow({ page, cc }: Ctx): Promise<void> {
 }
 
 /** Whether keyboard focus is inside `scope`. */
-const focusInside = (scope: Locator) => scope.evaluate((el) => el.contains(document.activeElement));
+export const focusInside = (scope: Locator) => scope.evaluate((el) => el.contains(document.activeElement));
 
 /** Focuses `scope`'s first or last tabbable control (in tab order, visible, enabled). */
 function focusEdge(scope: Locator, edge: 'first' | 'last') {
@@ -148,13 +152,13 @@ function focusEdge(scope: Locator, edge: 'first' | 'last') {
 }
 
 /** Escape, once no tooltip is left mounted: a tooltip Tab opened and is still closing takes the Escape first. */
-async function escape(page: Page) {
+export async function escape(page: Page) {
   await expect(page.locator('[data-slot="tooltip-content"]')).toHaveCount(0);
   await page.keyboard.press('Escape');
 }
 
 /** Tab and Shift+Tab stay inside `scope` from where focus opened, and wrap at both ends. */
-async function trapHolds(page: Page, scope: Locator, what: string) {
+export async function trapHolds(page: Page, scope: Locator, what: string) {
   expect(await focusInside(scope), `${what}: focus is inside on open`).toBe(true);
   await page.keyboard.press('Tab');
   expect(await focusInside(scope), `${what}: Tab from the opening focus stays inside`).toBe(true);
@@ -178,12 +182,12 @@ const DIALOGS = [
 
 // Invariant: each ⋮ dialog takes focus as it opens, Tab and Shift+Tab never leave it, and closing it puts focus back on
 // the ⋮ button it was opened from.
-export async function sessionDialogsFlow({ page, cc }: Ctx): Promise<void> {
+export const sessionDialogsFlow = (act: Act, slug = 'dialogs') => async ({ page, cc }: Ctx): Promise<void> => {
   test.setTimeout(120_000);
-  const P = label('dialogs');
+  const P = label(slug);
   await createProject(cc, P);
   const s = await idleSession(cc, P, false);
-  await seedTranscript(cc, s.id, label('dialogs'));
+  await seedTranscript(cc, s.id, label(slug));
   await next.open(page);
   const row = await next.sessionRow(page, P, s.sessionId);
   await expect.poll(async () => next.sessionRowLive(row)).toBe(true);
@@ -193,28 +197,30 @@ export async function sessionDialogsFlow({ page, cc }: Ctx): Promise<void> {
 
   for (const { which, item } of DIALOGS) {
     await test.step(`${item}`, async () => {
-      await press(page, actions, 'Enter');
+      await act(page, actions);
       const entry = page.getByRole('menuitem', { name: item, exact: true });
       await expect(entry).toBeVisible();
-      await press(page, entry, 'Enter');
+      await act(page, entry);
       const dialog = page.locator(`[role="dialog"][data-dialog="${which}"]`);
       await expect(dialog).toBeVisible();
       await expect.poll(() => focusInside(dialog), { message: `${item}: focus moves inside as it opens` }).toBe(true);
+      await settled(page);
+      expect(await focusInside(dialog), `${item}: focus is still inside once the menu has gone`).toBe(true);
       await trapHolds(page, dialog, item);
       await escape(page);
       await expect(dialog).toBeHidden();
       await expect(actions, `${item}: closing returns focus to Session actions`).toBeFocused();
     });
   }
-}
+};
 
 // Invariant: the phone navigation drawer takes focus as it opens, Tab and Shift+Tab never leave it, and Escape puts
 // focus back on the Open sidebar button.
-export async function drawerFlow({ page }: Ctx): Promise<void> {
+export const drawerFlow = (act: Act) => async ({ page }: Ctx): Promise<void> => {
   test.skip(test.info().project.name === 'desktop', 'the drawer is md:hidden; desktop has the sidebar column');
   await next.open(page);
   const opener = page.getByRole('button', { name: 'Open sidebar' }).filter({ visible: true }).first();
-  await press(page, opener, 'Enter');
+  await act(page, opener);
   const drawer = page.locator('[data-slot="sheet-content"][data-state="open"]');
   await expect(drawer).toBeVisible();
   await expect.poll(() => focusInside(drawer), { message: 'focus moves inside as the drawer opens' }).toBe(true);
@@ -222,95 +228,115 @@ export async function drawerFlow({ page }: Ctx): Promise<void> {
   await escape(page);
   await expect(drawer).toHaveCount(0);
   await expect(opener, 'Escape returns focus to Open sidebar').toBeFocused();
-}
+};
 
 type Opened = { dialog: Locator; returnsTo: Locator };
-type ReturnCtx = { page: Page; project: string; session: { id: string; sessionId: string } };
+export type ReturnCtx = { page: Page; project: string; session: { id: string; sessionId: string } };
 
-const drawerViewport = () => test.info().project.name !== 'desktop';
+/** The sidebar is the phone drawer below the md breakpoint: Pixel 7, or a narrow desktop window. */
+const drawerViewport = (page: Page) => (page.viewportSize()?.width ?? 0) < 768;
 const sidebarOpener = (page: Page) => page.getByRole('button', { name: 'Open sidebar' }).filter({ visible: true }).first();
+const openDrawer = (page: Page) => page.locator('[data-slot="sheet-content"][data-state="open"]');
 
-/** The sidebar with keyboard focus inside it: on a phone the drawer, opened by Enter on Open sidebar. */
-async function sidebarByKeyboard(page: Page) {
-  if (drawerViewport() && !(await page.locator('[data-slot="sheet-content"][data-state="open"]').count())) {
-    await press(page, sidebarOpener(page), 'Enter');
-    await expect(page.locator('[data-slot="sheet-content"][data-state="open"]')).toBeVisible();
+/** The sidebar, shown by `act` on Open sidebar where it is the drawer. */
+async function sidebarBy(page: Page, act: Act) {
+  if (drawerViewport(page) && !(await openDrawer(page).count())) {
+    await act(page, sidebarOpener(page));
+    await expect(openDrawer(page)).toBeVisible();
   }
-  return nextSidebar(page);
+  return drawerViewport(page) ? openDrawer(page).locator('[data-sidebar]') : nextSidebar(page);
 }
 
-/** A sidebar project-menu item: on a phone the menu closes the drawer first, so focus returns to Open sidebar. */
-async function projectMenuItem(page: Page, item: string, dialog: Locator): Promise<Opened> {
-  const sb = await sidebarByKeyboard(page);
+/** A sidebar project-menu item: in the drawer the menu closes the drawer first, so focus returns to Open sidebar. */
+async function projectMenuItem(page: Page, act: Act, item: string, dialog: Locator): Promise<Opened> {
+  const sb = await sidebarBy(page, act);
   const trigger = sb.getByRole('button', { name: 'Project actions' });
-  const returnsTo = drawerViewport() ? sidebarOpener(page) : trigger;
-  await press(page, trigger, 'Enter');
-  await press(page, page.getByRole('menuitem', { name: item, exact: true }), 'Enter');
+  const returnsTo = drawerViewport(page) ? sidebarOpener(page) : trigger;
+  await act(page, trigger);
+  await act(page, page.getByRole('menuitem', { name: item, exact: true }));
   return { dialog, returnsTo };
 }
 
-async function rowButton(page: Page, row: string, name: string, dialog: Locator): Promise<Opened> {
-  const sb = await sidebarByKeyboard(page);
+async function rowButton(page: Page, act: Act, row: string, name: string, dialog: Locator): Promise<Opened> {
+  const sb = await sidebarBy(page, act);
   const button = sb.locator(row).getByRole('button', { name, exact: true });
-  await press(page, button, 'Enter');
+  await act(page, button);
   return { dialog, returnsTo: button };
 }
 
-/** Every dialog the web UI opens, by the control a keyboard user opens it from. */
-export const RETURNS: { name: string; open: (c: ReturnCtx) => Promise<Opened> }[] = [
+/** Every dialog the web UI opens, by the control a person opens it from. */
+export const RETURNS: { name: string; open: (c: ReturnCtx, act: Act) => Promise<Opened> }[] = [
   {
     name: 'Rename',
-    open: async ({ page, project, session }) => {
+    open: async ({ page, project, session }, act) => {
       const row = await next.sessionRow(page, project, session.sessionId);
       await row.click();
       await expect(next.sessionHeader(page).locator(`[title="session ${session.sessionId}"]`)).toBeVisible();
       const actions = next.sessionHeader(page).getByRole('button', { name: 'Session actions' });
-      await press(page, actions, 'Enter');
-      await press(page, page.getByRole('menuitem', { name: 'Rename', exact: true }), 'Enter');
+      await act(page, actions);
+      await act(page, page.getByRole('menuitem', { name: 'Rename', exact: true }));
       return { dialog: page.locator('[role="dialog"][data-dialog="rename"]'), returnsTo: actions };
     },
   },
-  { name: 'Spawn', open: ({ page, project }) => rowButton(page, `[data-project-row="${project}"]`, 'New session', page.locator('[role="dialog"][data-dialog="spawn"]')) },
-  { name: 'Delete project', open: ({ page, project }) => rowButton(page, `[data-project-row="${project}"]`, 'Delete project', page.locator('[role="dialog"][data-dialog="delete-project"]')) },
+  { name: 'Spawn', open: ({ page, project }, act) => rowButton(page, act, `[data-project-row="${project}"]`, 'New session', page.locator('[role="dialog"][data-dialog="spawn"]')) },
+  { name: 'Delete project', open: ({ page, project }, act) => rowButton(page, act, `[data-project-row="${project}"]`, 'Delete project', page.locator('[role="dialog"][data-dialog="delete-project"]')) },
   {
     name: 'a row action confirm',
-    open: ({ page, session }) => rowButton(page, `[data-session-row="${session.sessionId}"] > [data-row]`, 'Archive session (keeps history)', page.getByRole('dialog', { name: /^Archive session / })),
+    open: ({ page, session }, act) => rowButton(page, act, `[data-session-row="${session.sessionId}"] > [data-row]`, 'Archive session (keeps history)', page.getByRole('dialog', { name: /^Archive session / })),
   },
-  { name: 'New project', open: ({ page }) => projectMenuItem(page, 'New project', page.locator('[role="dialog"][data-dialog="new-project"]')) },
-  { name: 'Add existing directory', open: ({ page }) => projectMenuItem(page, 'Add existing directory', page.locator('[role="dialog"][data-dialog="adopt-project"]')) },
-  { name: 'New workspace', open: ({ page }) => projectMenuItem(page, 'New workspace', page.locator('[role="dialog"][data-dialog="workspace"]')) },
+  { name: 'New project', open: ({ page }, act) => projectMenuItem(page, act, 'New project', page.locator('[role="dialog"][data-dialog="new-project"]')) },
+  { name: 'Add existing directory', open: ({ page }, act) => projectMenuItem(page, act, 'Add existing directory', page.locator('[role="dialog"][data-dialog="adopt-project"]')) },
+  { name: 'New workspace', open: ({ page }, act) => projectMenuItem(page, act, 'New workspace', page.locator('[role="dialog"][data-dialog="workspace"]')) },
   {
     name: 'Restart',
-    open: async ({ page }) => {
-      const sb = await sidebarByKeyboard(page);
+    open: async ({ page }, act) => {
+      const sb = await sidebarBy(page, act);
       const button = sb.locator('[data-restart]');
-      await press(page, button, 'Enter');
+      await act(page, button);
       return { dialog: page.locator('[role="dialog"][data-restart-dialog]'), returnsTo: button };
     },
   },
 ];
+
+/** Past every closing menu and drawer, and a frame more: where a person's next key lands. */
+export async function settled(page: Page) {
+  await expect(page.locator('[role="menu"]')).toHaveCount(0);
+  await expect(page.locator('[data-slot="sheet-content"][data-state="closed"]')).toHaveCount(0);
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50))));
+}
+
+/** A project with a live temp session, and `row`'s dialog opened in it by `act` (see `opens`). */
+export async function openedBy(page: Page, cc: Cc, row: (typeof RETURNS)[number], act: Act, slug: string): Promise<Opened> {
+  const project = label(`${slug}-${row.name.replace(/\W+/g, '-').toLowerCase()}`);
+  await createProject(cc, project);
+  // A live temp session: the row confirm's Archive, Rename's session, and the Restart dialog (asked only with live sessions).
+  const session = await idleSession(cc, project, true);
+  await next.open(page);
+  await expect.poll(async () => next.sessionRowLive(await next.sessionRow(page, project, session.sessionId))).toBe(true);
+  if (drawerViewport(page)) {
+    await escape(page);
+    await expect(openDrawer(page)).toHaveCount(0);
+  }
+  return opens(page, row, act, { page, project, session });
+}
+
+/** `row`'s dialog opened by `act`: focus is inside as it opens, and still inside once the opening has settled. */
+export async function opens(page: Page, row: (typeof RETURNS)[number], act: Act, ctx: ReturnCtx): Promise<Opened> {
+  const opened = await row.open(ctx, act);
+  await expect(opened.dialog).toBeVisible();
+  await expect.poll(() => focusInside(opened.dialog), { message: `${row.name}: focus moves inside as it opens` }).toBe(true);
+  // A menu or drawer the opening closed finishes leaving first, as it would before any person's next key.
+  await settled(page);
+  expect(await focusInside(opened.dialog), `${row.name}: focus is still inside once the menu and drawer have gone`).toBe(true);
+  return opened;
+}
 
 // Invariant: a dialog opened from a control hands focus back to that control when it closes — to a menu's trigger for a
 // menu item, and to Open sidebar when the control sat in the phone drawer the dialog's opening closed.
 export function returnFlow(row: (typeof RETURNS)[number]) {
   return async ({ page, cc }: Ctx): Promise<void> => {
     test.setTimeout(90_000);
-    const project = label(`ret-${row.name.replace(/\W+/g, '-').toLowerCase()}`);
-    await createProject(cc, project);
-    // A live temp session: the row confirm's Archive, Rename's session, and the Restart dialog (asked only with live sessions).
-    const session = await idleSession(cc, project, true);
-    await next.open(page);
-    await expect.poll(async () => next.sessionRowLive(await next.sessionRow(page, project, session.sessionId))).toBe(true);
-    if (drawerViewport()) {
-      await escape(page);
-      await expect(page.locator('[data-slot="sheet-content"][data-state="open"]')).toHaveCount(0);
-    }
-    const { dialog, returnsTo } = await row.open({ page, project, session });
-    await expect(dialog).toBeVisible();
-    await expect.poll(() => focusInside(dialog), { message: `${row.name}: focus moves inside as it opens` }).toBe(true);
-    // A drawer the opening closed finishes leaving first, as it would before any person's next key.
-    await expect(page.locator('[data-slot="sheet-content"][data-state="closed"]')).toHaveCount(0);
-    expect(await focusInside(dialog), `${row.name}: focus is still inside once the drawer has gone`).toBe(true);
+    const { dialog, returnsTo } = await openedBy(page, cc, row, byKey, 'ret');
     await escape(page);
     await expect(dialog).toBeHidden();
     await expect(returnsTo, `${row.name}: closing returns focus to the control that opened it`).toBeFocused();
@@ -320,12 +346,12 @@ export function returnFlow(row: (typeof RETURNS)[number]) {
 // Invariant: a dialog's close leaves focus where its own action put it. Start session focuses the prompt bar in an animation
 // frame that can run before or after the closing dialog's focus return; either way the prompt bar keeps focus.
 export async function keepsActionFocusFlow({ page, cc }: Ctx): Promise<void> {
-  test.skip(drawerViewport(), 'a touch device never focuses the prompt bar on select');
+  test.skip(test.info().project.name !== 'desktop', 'a touch device never focuses the prompt bar on select');
   const project = label('keep');
   await createProject(cc, project);
   await next.open(page);
   await next.lens(page, 'projects');
-  const sb = await sidebarByKeyboard(page);
+  const sb = await sidebarBy(page, byKey);
   await press(page, sb.locator(`[data-project-row="${project}"]`).getByRole('button', { name: 'New session', exact: true }), 'Enter');
   const dialog = page.locator('[role="dialog"][data-dialog="spawn"]');
   await expect(dialog).toBeVisible();
