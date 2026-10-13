@@ -109,7 +109,7 @@ test('a pullOnly event reaches the manager stream but never a socket', async (t)
   assert.ok(inst.ringSnapshot().some(e => e.text === 'hidden'), 'the ring holds the pull-only event');
 });
 
-test('a second subscribe on one socket waits for the first, and a frame emitted during its build follows it once', async (t) => {
+test('a second subscribe on one socket does not start building until the first is sent, and a frame emitted during its build follows it once', async (t) => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   let c = null;
   t.after(async () => { if (c) await c.close(); await ctx.close(); });
@@ -131,6 +131,14 @@ test('a second subscribe on one socket waits for the first, and a frame emitted 
   c.send({ t: 'subscribe', id, reqId: 's1' });
   await waitFor(() => builds.length === 1);
   c.send({ t: 'subscribe', id, reqId: 's2' });
+  // A socket's messages are dispatched in order, so once this probe is acked the
+  // server has run s2's handler up to its first await — far enough to have
+  // started build 2 had it not queued behind build 1.
+  c.send({ t: 'unsubscribe', id: 'no-such-instance', reqId: 'probe' });
+  await c.wait(m => m.t === 'ack' && m.reqId === 'probe');
+  assert.equal(builds.length, 1, 'build 2 waits while build 1 is held');
+  assert.equal(c.messages.some(m => m.t === 'ack' && m.reqId === 's2'), false, 's2 not acked yet');
+  assert.equal(c.messages.some(m => m.t === 'snapshot'), false, 'no snapshot yet');
   builds[0]();
   await c.wait(m => m.t === 'ack' && m.reqId === 's1');
   await waitFor(() => builds.length === 2);

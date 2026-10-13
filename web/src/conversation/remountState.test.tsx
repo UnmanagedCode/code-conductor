@@ -1,8 +1,8 @@
 // What the reader opened, closed or flipped to raw in the transcript, as a full-page
 // view (Settings, review, …) leaves it: the view unmounts and mounts again on the same
 // transcript, and every toggle comes back as the reader left it. A transcript replaced in
-// place (a reconnect's snapshot, another session, a rewind) starts every toggle at its
-// default again.
+// place (a reconnect's snapshot, another session) starts every toggle at its default
+// again.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 

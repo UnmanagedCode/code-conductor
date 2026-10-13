@@ -68,7 +68,7 @@ describe('a live history_replayed', () => {
     expect(b.subscribes()).toEqual([['subscribe', { id: 'i1' }]]);
   });
 
-  it('is not drawn into the conversation: the pulled snapshot carries its divider', () => {
+  it('adds no divider to the conversation', () => {
     b.emit('snapshot', { id: 'i1', events: [], tailStartSeq: 0 });
     b.emit('event', { id: 'i1', ev: REPLAYED });
     expect(b.c.conversation.items.filter((i) => i.type === 'divider')).toEqual([]);

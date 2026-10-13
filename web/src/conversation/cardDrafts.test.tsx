@@ -2,8 +2,8 @@
 // and the question card's tab, picks and note. A full-page view (Settings, review, …)
 // unmounts the transcript and mounts it again on the same model, and every card comes back
 // as the reader left it; a sent plan keeps the feedback it sent, and one whose send failed
-// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session,
-// a rewind) starts every card empty. Typing in the middle of a card's text keeps the caret.
+// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session)
+// starts every card empty. Typing in the middle of a card's text keeps the caret.
 // A card that paged in from an older page re-opens after a failed send the same way.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
