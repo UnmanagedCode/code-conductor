@@ -263,6 +263,8 @@ class PluginFrames {
 export const pluginFrames = new PluginFrames();
 
 export type PluginRow = { id: string; name: string; navLabel?: string | null; enabled?: boolean; hasFrontend?: boolean; frontendKeepAlive?: boolean; state?: string };
+/** A plugin's name as the app switcher and the plugin view's top bar show it. */
+export const appLabel = (p: Pick<PluginRow, 'name' | 'navLabel'>) => p.navLabel || p.name;
 
 /** Plugins that contribute a frontend the app switcher offers. */
 export const catalogStore = createStore<{ apps: PluginRow[] }>({ apps: [] });
