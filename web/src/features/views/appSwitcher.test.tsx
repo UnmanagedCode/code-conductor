@@ -138,6 +138,16 @@ describe('the app switcher', () => {
     expect(text, 'and not the name').not.toContain('Keep Plugin');
   });
 
+  it('shows the open plugin\'s name on the trigger when it has no nav label', async () => {
+    // Invariant: while a plugin with no navLabel is current, the switcher trigger shows its name, never blank.
+    net.catalog = [app('ka', 'Keep Plugin', { navLabel: 'Keeper' }), app('pl', 'Plain')];
+    net.status = { ka: keepRow(), pl: plainRow() };
+    await mountApp();
+    await go('#plugin/pl/');
+    expect(location.hash, 'fixture check: the plugin is open').toBe('#plugin/pl/');
+    expect(switcher()!.textContent, 'the trigger reads the name').toContain('Plain');
+  });
+
   it('a plugin dropped from the switcher while its view is open leaves Conductor as the one current entry', async () => {
     net.catalog = [app('ka', 'Keep'), app('pl', 'Plain')];
     net.status = { ka: keepRow(), pl: plainRow() };
