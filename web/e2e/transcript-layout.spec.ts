@@ -1,5 +1,5 @@
 // The phone transcript layout in a real browser: below `md` the avatar heads the turn and the
-// body spans the transcript width; at `md` and up the avatar sits beside the body, which
+// body spans the transcript width, its prose inset from the card border; at `md` and up the avatar sits beside the body, which
 // fills the rest of the row. On both the turn footer lines up with the body (a regression
 // guard: the footer's avatar-width indent must not return under the stacked layout).
 import { test, expect } from './harness/fixtures.ts';
@@ -33,6 +33,15 @@ test('phone: the avatar heads the turn and the body spans the transcript width; 
   }
   expect(Math.abs(footer.x - body.x), 'footer lines up with body').toBeLessThan(1);
 
+  if (name === 'phone') {
+    // Prose is inset from the action card's border, which stays at the transcript edge.
+    const card = await box(bubble.locator('[data-assistant-body] [class*=border]').first());
+    const prose = await box(bubble.locator('[data-text-block] p').first());
+    expect(prose.x, 'prose inset from the card border').toBeGreaterThan(card.x + 2);
+  } else {
+    const prose = await box(bubble.locator('[data-text-block] p').first());
+    expect(prose.x, 'desktop prose flush with the body').toBeLessThan(body.x + 0.5);
+  }
   await next.userMessages(page).last().scrollIntoViewIfNeeded();
   await test.info().attach('transcript', { body: await page.screenshot(), contentType: 'image/png' });
 });

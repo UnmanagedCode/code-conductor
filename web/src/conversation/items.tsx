@@ -306,6 +306,9 @@ function TextBlockView({ node, view }: { node: TextNode; view: 'rendered' | 'raw
   return <Markdown text={node.buffer} className={MD_TEXT} />;
 }
 
+/** Phone-only inset of an assistant turn's prose, so it does not sit flush with the action cards' border; cards and controls keep the transcript edge. */
+const ASSISTANT_PROSE_INSET = 'px-1.5 md:px-0';
+
 // The bubble's controls show while it is hovered or one of them has focus, and always where nothing hovers.
 const ASSISTANT_CONTROLS_REVEAL = 'opacity-0 transition-opacity group-hover/asst:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
 
@@ -324,7 +327,7 @@ function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx })
           if (c.type === 'text') {
             return (
               <div key={c.id} data-text-block>
-                <TextBlockView node={c} view={node.view} />
+                <div className={ASSISTANT_PROSE_INSET}><TextBlockView node={c} view={node.view} /></div>
                 {c.finalized && !ctx.model.isSub && <div className={cn('flex', ASSISTANT_CONTROLS_REVEAL)}><SpeakButton text={c.buffer} nodeId={c.id} /></div>}
               </div>
             );
