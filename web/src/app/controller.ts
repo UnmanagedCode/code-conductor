@@ -355,6 +355,10 @@ export function startController() {
     const k = m.ev?.kind;
     if (HEADER_EVENTS.has(k) || (k === 'system' && HEADER_SYSTEM.has(m.ev?.subtype))) trackerSignal.bump();
     if (m.id !== appStore.get().activeId) return;
+    // A live history_replayed: the server put a resume/respawn/rewind's
+    // history in the ring without streaming it. Pull it as a reload does — the
+    // snapshot tail (which carries this divider) plus lazy scroll-back.
+    if (k === 'system' && m.ev.subtype === 'history_replayed') { subscribe(m.id); return; }
     conversation.apply(m.ev);
     if (tracker.completedBatches.length > prev) {
       conversation.apply({ kind: 'task_completion', tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });

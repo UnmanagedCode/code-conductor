@@ -611,9 +611,10 @@ export class EventLog {
   // text_delta slot's `.text` GROWS in place (push folds later same-block deltas
   // in) until its block closes. Growth is APPEND-ONLY: the slot is never shrunk,
   // replaced by a new object, or renumbered, so a consumer holding a shallow
-  // snapshot across an `await` (ringSnapshot → pageInstanceEvents, snapshotTail →
-  // wsHub) can only ever observe a longer prefix-extension of the same `_seq`,
-  // never a torn or duplicated one. The only hazard is a consumer that re-reads
+  // snapshot across an `await` (ringSnapshot → pageInstanceEvents) can only
+  // ever observe a longer prefix-extension of the same `_seq`, never a torn or
+  // duplicated one (wsHub's subscribe copies its slice instead — see
+  // Instance.snapshotTail). The only hazard is a consumer that re-reads
   // the same `_seq` slot later expecting byte-stable text, or that merges/pages
   // by array position instead of by `_seq`.
   toArray(): Array<UiEvent & { _seq: number }> { return this.buf.slice(); }
@@ -1548,14 +1549,12 @@ export class Instance extends EventEmitter implements InstanceLike {
   // child cannot be rendered (lazy paging reunites them only on a page that
   // holds the head too). INVARIANT (see EventLog.toArray): a still-open
   // thinking_delta or text_delta slot in the returned slice keeps growing its
-  // `.text` in place until its block closes. Safe to serialize async — NOT
-  // because wsHub is synchronous (it subscribes the socket BEFORE calling this
-  // and awaits reconstructActiveTasks before sending), but because growth is
-  // append-only and the client clears before replaying a snapshot
-  // (web/src/app/controller.ts), so live frames emitted inside that window are
-  // discarded in favour of the grown slot. Only unsafe to re-read a slot
-  // expecting byte-stable text or to page/merge by array position rather than
-  // `_seq`.
+  // `.text` in place until its block closes. wsHub's subscribe therefore
+  // copies the slice in the same synchronous step that subscribes the socket
+  // and starts holding its frames, and sends the held frames (seq-less folded
+  // deltas included) after the snapshot — so the copy plus the held frames is
+  // exact across its await. Unsafe to re-read a slot expecting byte-stable text
+  // or to page/merge by array position rather than `_seq`.
   snapshotTail(max?: number): UiEvent[] {
     const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
     const cap = (typeof max === 'number' && Number.isInteger(max) && max > 0) ? max
@@ -1760,7 +1759,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // at launch already owns everything before the process started, so replayed
   // events must not reach the awaiting-user reducer (a replayed real user_echo
   // would clear a hydrated ask that no replayed turn_end restores).
-  _emitUi(ev: UiEvent, { replayed = false }: { replayed?: boolean } = {}): void {
+  // `pullOnly` (also loadHistory's alone) keeps the event off every socket: it
+  // fills the ring and the manager stream, and a client pulls it through a
+  // snapshot after the live `history_replayed` that follows it (wsHub).
+  _emitUi(ev: UiEvent, { replayed = false, pullOnly = false }: { replayed?: boolean; pullOnly?: boolean } = {}): void {
     // Track the ephemeral live thinking-token count for the OPEN thinking
     // block (the per-token thinking_tokens events are never retained — see
     // EventLog.push). Funneled here alongside userIndex so every emit path
@@ -1853,8 +1855,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // after emit() would miss the WS frame.
     this.ring.push(wrapped); // stamps wrapped._seq
     // `replayed` rides along so the manager can keep replayed history out of the
-    // wake hubs (see the hub registrations in InstanceManager's constructor).
-    this.emit('event', wrapped, replayed);
+    // wake hubs (see the hub registrations in InstanceManager's constructor);
+    // `pullOnly` so wsHub keeps it off the sockets.
+    this.emit('event', wrapped, replayed, pullOnly);
     if (!replayed && !this.conducted) {
       for (const fact of this._liveAsk.feed(wrapped)) {
         const next = reduceAsk(this._awaitingUser, fact);
@@ -2028,8 +2031,15 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._kickLineageWrite(() => dropSegment(backingId, { unlessLast: true }));
       return; // silent no-op for the replay itself
     }
+    // The bulk replay is pull-only exactly when a live `history_replayed`
+    // follows it in this same synchronous run: that marker is the subscribed
+    // client's cue to re-subscribe and take the history as a snapshot tail plus
+    // lineage paging, the way a reload does, instead of one frame per event. A
+    // file of spliced model-switch dividers alone (replayedCount 0) gets no
+    // marker, so it streams.
+    const pullOnly = result.replayedCount > 0;
     for (const line of result.lines) {
-      for (const ev of line.events) this._emitUi(ev, { replayed: true });
+      for (const ev of line.events) this._emitUi(ev, { replayed: true, pullOnly });
     }
     if (result.lastLeafUuid) this._lastLeafUuid = result.lastLeafUuid;
     // The wipe reset the live tracker; without this an ExitPlanMode after a
@@ -6158,7 +6168,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       }
     }
 
-    inst.on('event', (ev: UiEvent, replayed?: boolean) => this.emit('event', { id, ev, replayed: replayed === true }));
+    inst.on('event', (ev: UiEvent, replayed?: boolean, pullOnly?: boolean) =>
+      this.emit('event', { id, ev, replayed: replayed === true, pullOnly: pullOnly === true }));
     // The Instance signals (rather than self-handles) an overage trip — central
     // routing lives on the manager where the idle-wake graph is reachable.
     inst.on('overage', (info: { resetsAt: number | null }) => this._handleOverageTrip(inst, info));

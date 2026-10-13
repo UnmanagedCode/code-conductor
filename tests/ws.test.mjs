@@ -438,6 +438,11 @@ test('the replayed reading reaches an already-subscribed client (the rewind/resp
     assert.equal('model' in frame.ev, false,
       'model deliberately omitted so the instance tagged model owns the window denominator');
     assert.deepEqual(inst.lastContextUsage, CTX_USAGE, 're-seeded by the replay');
+    // The replayed history itself is pulled, not streamed: the live
+    // history_replayed is the client's cue to re-subscribe for it.
+    await c.wait(m => m.t === 'event' && m.id === id && m.ev.kind === 'system' && m.ev.subtype === 'history_replayed');
+    assert.equal(c.messages.some(m => m.t === 'event' && m.id === id && m.ev.kind === 'text_delta' && m.ev.text === 'prior answer'), false,
+      'no replayed event reaches the subscribed socket');
   } finally {
     if (c) await c.close();
     await close();

@@ -269,9 +269,11 @@ describe('a transcript replaced in place', () => {
     await setTools(el);
     await setFolds(el);
     expect({ ...tools(el), ...folds(el) }, 'precondition: every toggle set').toEqual({ ...TOOLS_SET, ...FOLDS_SET });
-    // The server wipes the ring, sends the empty reset, then streams the replay as live frames.
+    // The server wipes the ring and sends the empty reset, then the live
+    // history_replayed; the client's re-subscribe gets the replay as a snapshot.
     await frame('reset_snapshot', { id: 'i1', events: [] });
-    for (const ev of TRANSCRIPT) await frame('event', { id: 'i1', ev });
+    await frame('event', { id: 'i1', ev: { kind: 'system', subtype: 'history_replayed', data: { count: TRANSCRIPT.length } } });
+    await snapshot('i1', TRANSCRIPT);
     await expectDefaults(el, 'after the rewind');
   });
 });

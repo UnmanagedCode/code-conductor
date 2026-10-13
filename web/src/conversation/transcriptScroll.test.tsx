@@ -85,10 +85,15 @@ async function frame(type: string, detail: object) {
 }
 const snapshot = (id: string, events: UiEvent[], extra: object = {}) => frame('snapshot', { id, events, ...extra });
 const live = (id: string, ev: UiEvent) => frame('event', { id, ev });
-/** A rewind: the server wipes the ring, sends the empty reset, then streams the replay as live frames. */
+/**
+ * A rewind: the server wipes the ring and sends the empty reset, replays into
+ * the ring, sends the live history_replayed, and answers the client's
+ * re-subscribe with a snapshot of the replayed events.
+ */
 async function rewind(id: string, replayed: UiEvent[]) {
   await frame('reset_snapshot', { id, events: [] });
-  for (const ev of replayed) await live(id, ev);
+  await live(id, { kind: 'system', subtype: 'history_replayed', data: { count: replayed.length } });
+  await snapshot(id, replayed.map((ev, i) => ({ ...ev, _seq: i })), { tailStartSeq: 0 });
 }
 
 /** Lineage pages the pager fetches, in order; an exhausted queue serves an empty last page. */
@@ -174,7 +179,7 @@ describe('stick to the bottom', () => {
     expect(el.scrollTop).toBe(bottom(35 * ITEM_PX));
   });
 
-  it('a rewind puts a reader scrolled up back at the bottom, following the replay as it streams in', async () => {
+  it('a rewind puts a reader scrolled up back at the bottom, once the replayed history is pulled', async () => {
     const { container, el } = mount();
     await snapshot('i1', echoes('before', 30));
     scrollTo(el, 1200);

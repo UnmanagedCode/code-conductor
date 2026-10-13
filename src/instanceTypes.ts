@@ -253,8 +253,8 @@ export interface InstanceLike {
   // EventEmitter 'event' channel (UI events) alongside 'status'.
   readonly worktree: WorktreeMeta | null;
   promoteToNormal(): Promise<InstanceSummary>;
-  on(event: 'event', cb: (ev: UiEvent | null) => void): void;
-  off(event: 'event', cb: (ev: UiEvent | null) => void): void;
+  on(event: 'event', cb: (ev: UiEvent | null, replayed?: boolean, pullOnly?: boolean) => void): void;
+  off(event: 'event', cb: (ev: UiEvent | null, replayed?: boolean, pullOnly?: boolean) => void): void;
   // Resume-restart reads/writes (src/resumeRestart.ts). `firstPrompt` is the
   // session's first-prompt line, read + written on the restored instance.
   readonly conducted: boolean;
@@ -342,7 +342,9 @@ export interface InstanceManagerLike {
   // sessionId), and called synchronously from SessionRenewController's turn_end
   // handling (src/idleSubscriptions.ts documents why synchronously).
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void;
-  on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null }) => void): void;
+  // `replayed`: jsonl history (kept out of the wake hubs); `pullOnly`: kept off
+  // every socket (wsHub) — see Instance._emitUi.
+  on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null; replayed?: boolean; pullOnly?: boolean }) => void): void;
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;

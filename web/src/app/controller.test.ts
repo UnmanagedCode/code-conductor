@@ -173,6 +173,24 @@ describe('routing session data', () => {
     expect(prefills).toEqual(['two']);
   });
 
+  it('a reset_snapshot followed by a live history_replayed re-subscribes and the pulled snapshot re-inits scroll-back', async () => {
+    const b = await boot({ instances: [{ id: 'A' }] });
+    b.c.selectInstance('A');
+    b.emit('snapshot', { id: 'A', events: [{ kind: 'user_echo', text: 'one', _seq: 1 }], tailStartSeq: 1 });
+    b.emit('reset_snapshot', { id: 'A', events: [] });
+    expect(b.c.lazyHistory.state().hasMore, 'the reset leaves scroll-back with nothing to page').toBe(false);
+    b.ws.sent.length = 0;
+    b.emit('event', { id: 'A', ev: { kind: 'system', subtype: 'history_replayed', data: { count: 1 } } });
+    expect(b.ws.sent).toEqual([['subscribe', { id: 'A' }]]);
+    b.emit('snapshot', { id: 'A', events: [{ kind: 'user_echo', text: 'replayed', _seq: 40 }], tailStartSeq: 40 });
+    expect(b.c.lazyHistory.state()).toMatchObject({ ready: true, hasMore: true });
+    b.fetch.mockClear();
+    await b.c.lazyHistory.loadEarlier();
+    const lineage = b.fetch.mock.calls.map(([url]) => url).filter((url) => url.includes('/lineage-events'));
+    expect(lineage).toHaveLength(1);
+    expect(lineage[0]).toContain('before=40');
+  });
+
   it('a fork\'s first snapshot carries its dropped prompt; a segment frame moves the current segment', async () => {
     const b = await boot({ instances: [{ id: 'F' }] });
     const events = await import('./events');

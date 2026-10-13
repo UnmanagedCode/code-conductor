@@ -237,9 +237,11 @@ describe('a transcript replaced in place', () => {
 
   it('a rewind starts every card of the replayed transcript empty', async () => {
     const el = await setAndRemount();
-    // The server wipes the ring, sends the empty reset, then streams the replay as live frames.
+    // The server wipes the ring and sends the empty reset, then the live
+    // history_replayed; the client's re-subscribe gets the replay as a snapshot.
     await frame('reset_snapshot', { id: 'i1', events: [] });
-    for (const ev of TRANSCRIPT) await frame('event', { id: 'i1', ev });
+    await frame('event', { id: 'i1', ev: { kind: 'system', subtype: 'history_replayed', data: { count: TRANSCRIPT.length } } });
+    await snapshot('i1', TRANSCRIPT);
     expect(cards(el)).toEqual(START);
   });
 });
