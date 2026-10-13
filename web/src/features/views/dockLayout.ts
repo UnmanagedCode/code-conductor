@@ -1,7 +1,7 @@
-// The plugin column's mode, derived (DOM-free) from the route, the breakpoint,
-// the dock state and the room the main row leaves: hidden, an icon rail, a
-// split beside the transcript, or the full view.
-import type { MainView } from '@/state/route';
+// The plugin column's mode, derived from the route, the breakpoint, the dock
+// state and the room the main row leaves: hidden, an icon rail, a split beside
+// the transcript, or the full view. DOM-free (no JSX, no `@/` imports) so the
+// e2e suite imports its constants as well.
 
 /** px, the icon rail. */
 export const DOCK_RAIL_WIDTH = 32;
@@ -33,7 +33,8 @@ export function dockTarget(dockId: string | null, catalogIds: string[]): string 
 
 export function dockLayout(i: {
   desktop: boolean;
-  view: MainView;
+  /** The route's view (MainView in state/route.ts). */
+  view: string;
   routePluginId: string | null;
   catalogIds: string[];
   dock: { id: string | null; open: boolean };

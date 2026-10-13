@@ -126,7 +126,7 @@ export function PluginView() {
           data-resize-handle="plugin-dock"
         />
       )}
-      <section className={cn('relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background', !shown && 'hidden')} aria-hidden={!shown} data-view="plugin">
+      <section className={cn('relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background', mode === 'split' && 'border-l', !shown && 'hidden')} aria-hidden={!shown} data-view="plugin">
         <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur md:hidden">
           <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}>
             <MenuIcon />
