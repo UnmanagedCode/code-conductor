@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ConversationModel } from './model';
 import { feed, shape, text, tool } from './testkit';
 import { flush, renderModel } from './renderModel';
+import { systemLine } from './format';
 
 const R = 1792285200;
 const rl = (over: Record<string, unknown> = {}): any => ({
@@ -57,5 +58,38 @@ describe('usage divider de-duplication', () => {
     const l = lines(root);
     expect(l).toHaveLength(2);
     expect(l[0].textContent).not.toBe(l[1].textContent);
+  });
+
+  describe('only usage lines take part', () => {
+    const pillText = () => systemLine(rl()).text;
+    const stderr = () => ({ kind: 'system', subtype: 'stderr', data: { line: pillText() } });
+    const count = (root: HTMLElement, subtype: string) => root.querySelectorAll(`[data-subtype="${subtype}"]`).length;
+
+    it('a non-usage line above an identical-looking pill does not hide the pill', async () => {
+      // Invariant: the predecessor must itself be a usage line to suppress the pill.
+      const { root } = await shown([stderr(), rl()]);
+      expect(count(root, 'rate_limit_event')).toBe(1);
+    });
+
+    it('a non-usage line below an identical-looking pill is not hidden', async () => {
+      // Invariant: the line being hidden must itself be a usage line; the pill above does not suppress it.
+      const { root } = await shown([rl(), stderr()]);
+      expect(count(root, 'rate_limit_event')).toBe(1);
+      expect(count(root, 'stderr')).toBe(1);
+    });
+  });
+
+  it('the first pill of a run stays mounted when an identical repeat arrives', async () => {
+    // Invariant: the kept pill is the first of the run (same element, no remount), not the latest.
+    const m = new ConversationModel();
+    feed(m, [rl()]);
+    const { root } = renderModel(m);
+    await flush();
+    const first = lines(root)[0];
+    expect(first).toBeDefined();
+    feed(m, [rl()]);
+    await flush();
+    expect(lines(root)).toHaveLength(1);
+    expect(lines(root)[0]).toBe(first);
   });
 });
