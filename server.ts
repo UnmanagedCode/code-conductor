@@ -32,7 +32,7 @@ import { setPluginConductorConventionsProvider } from './src/conductorConvention
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
-import { WEB_ROOT, ensureWebBuild, retiredNextRedirect, webHandler } from './src/webBuild.ts';
+import { WEB_ROOT, ensureWebBuild, webHandler } from './src/webBuild.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -134,7 +134,6 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   // Plugin pages load the bridge from here. It is served from its source, not
   // the web build, so it answers with no build in place.
   app.get('/pluginBridge.js', (_req, res) => res.sendFile(PLUGIN_BRIDGE));
-  app.use('/next', retiredNextRedirect());
   // The web UI at the root. `webDistDir` is for tests; it defaults to web/dist.
   app.use(webHandler(webDistDir ? { distDir: webDistDir } : {}));
 
