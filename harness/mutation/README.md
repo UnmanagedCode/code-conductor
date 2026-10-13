@@ -151,9 +151,9 @@ shared by several projects would fail the canary, and a real kill, once per proj
    all-skipped file reports a *green* narrow baseline and the mutant reads `SURVIVED`, not
    `ERROR (scope-empty)`. RATIONALE.md §5 lists today's gates and how to re-derive them.
 
-4. **A build step the node suite needs belongs in `test` (or `tests/run.mjs`), never in `pretest`.**
-   Every mutant command skips `pretest`, so a step there would leave mutants judged against stale
-   output.
+4. **A build step the node suite needs belongs in `tests/run.mjs`, never in `pretest` or the `npm test`
+   gate (`tests/gate.mjs`).** A mutant's node row calls `tests/run.mjs` directly, so a step anywhere
+   else would leave mutants judged against stale output.
 
 ## Declared non-behavioural mutants — waive, do not file
 
