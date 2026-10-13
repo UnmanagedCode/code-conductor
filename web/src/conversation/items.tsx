@@ -37,9 +37,15 @@ export const ItemsList = React.memo(function ItemsList({ model, ctx, actions }: 
   const cur = model.currentSegment();
   return (
     <>
-      {model.items.map((it, i) => repeatsUsageAbove(model.items[i - 1], it) ? null : (
-        <RootItemView key={it.id} node={it} rev={it.rev} ctx={ctx} actions={actions} currentSegment={cur} />
-      ))}
+      {model.items.map((it, i) => {
+        if (repeatsUsageAbove(model.items[i - 1], it)) return null;
+        // A dropped repeat always follows a rendered usage line, so adjacency in model.items is adjacency in the DOM.
+        const carries = controlsCarrier(model.items[i - 1], it) ? model.items[i - 1] as AssistantNode : null;
+        return (
+          <RootItemView key={it.id} node={it} rev={it.rev} ctx={ctx} actions={actions} currentSegment={cur}
+            controlsBelow={controlsCarrier(it, model.items[i + 1])} carries={carries} carriesRev={carries?.rev ?? -1} />
+        );
+      })}
     </>
   );
 });
@@ -52,14 +58,24 @@ function repeatsUsageAbove(above: RootItem | undefined, it: RootItem): boolean {
   return a.text === b.text && a.tone === b.tone && a.title === b.title;
 }
 
-const RootItemView = React.memo(function RootItemView({ node, ctx, actions, currentSegment }: {
+/** The bubble directly above a turn-end row: its raw toggle and copy move onto that row. */
+function controlsCarrier(above: RootItem | undefined, it: RootItem | undefined): above is AssistantNode {
+  return it?.type === 'turn_end' && above?.type === 'assistant';
+}
+
+function assistantHasText(node: AssistantNode): boolean {
+  return node.children.some((c) => c.type === 'text') || !!node.planText;
+}
+
+const RootItemView = React.memo(function RootItemView({ node, ctx, actions, currentSegment, controlsBelow, carries }: {
   node: RootItem; rev: number; ctx: RenderCtx; actions: BubbleActions | null; currentSegment: string | null;
+  controlsBelow: boolean; carries: AssistantNode | null; carriesRev: number;
 }) {
   switch (node.type) {
     case 'user': return <UserBubble node={node} model={ctx.model} actions={actions} currentSegment={currentSegment} />;
-    case 'assistant': return <AssistantBubble node={node} ctx={ctx} />;
+    case 'assistant': return <AssistantBubble node={node} ctx={ctx} controlsBelow={controlsBelow} />;
     case 'system': return <SystemLineView node={node} model={ctx.model} />;
-    case 'turn_end': return <TurnEndView node={node} />;
+    case 'turn_end': return <TurnEndView node={node} carries={carries} model={ctx.model} />;
     case 'plan': return <div data-item="plan"><PlanCard node={node} model={ctx.model} /></div>;
     case 'question': return <div data-item="question"><QuestionCard node={node} model={ctx.model} /></div>;
     case 'task_completion': return <TaskCompletionView node={node} />;
@@ -67,7 +83,8 @@ const RootItemView = React.memo(function RootItemView({ node, ctx, actions, curr
     case 'compaction': return <CompactionView node={node} model={ctx.model} />;
     case 'divider': return <DividerView node={node} />;
   }
-}, (a, b) => a.node === b.node && a.rev === b.rev && a.actions === b.actions && a.currentSegment === b.currentSegment && a.ctx === b.ctx);
+}, (a, b) => a.node === b.node && a.rev === b.rev && a.actions === b.actions && a.currentSegment === b.currentSegment && a.ctx === b.ctx
+  && a.controlsBelow === b.controlsBelow && a.carries === b.carries && a.carriesRev === b.carriesRev);
 
 // ── User ─────────────────────────────────────────────────────────────────
 
@@ -354,9 +371,20 @@ const ASSISTANT_PROSE_INSET = 'px-1.5 md:px-0';
 
 // The bubble's controls show while it is hovered or one of them has focus, and always where nothing hovers.
 const ASSISTANT_CONTROLS_REVEAL = 'opacity-0 transition-opacity group-hover/asst:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+// On the turn-end row the controls belong to the bubble above it, so hovering either reveals them.
+const TURN_END_CONTROLS_REVEAL = `${ASSISTANT_CONTROLS_REVEAL} [[data-item=assistant]:hover+[data-item=turn-end]_&]:opacity-100`;
 
-function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx }) {
-  const hasText = node.children.some((c) => c.type === 'text') || !!node.planText;
+/** The raw/rendered toggle and copy of one assistant bubble, wherever they are placed. */
+function AssistantControls({ node, model, className }: { node: AssistantNode; model: ConversationModel; className: string }) {
+  return (
+    <div className={cn('flex items-center gap-0.5', className)}>
+      <ViewToggle view={node.view} onChange={(v) => model.setAssistantView(node, v)} />
+      <CopyButton getText={() => ConversationModel.assistantCopyText(node)} label="Copy message" />
+    </div>
+  );
+}
+
+function AssistantBubble({ node, ctx, controlsBelow }: { node: AssistantNode; ctx: RenderCtx; controlsBelow: boolean }) {
   return (
     <div className="group/asst flex flex-col gap-2 md:flex-row md:gap-3" data-item="assistant">
       {!ctx.model.isSub && (
@@ -370,11 +398,8 @@ function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx })
           if (c.type === 'group') return <ActionGroup key={c.id} node={c} rev={c.rev} ctx={ctx} />;
           return <CallUsageLine key={c.id} node={c} />;
         })}
-        {hasText && (
-          <div className={cn('flex items-center gap-0.5', ASSISTANT_CONTROLS_REVEAL)}>
-            <ViewToggle view={node.view} onChange={(v) => ctx.model.setAssistantView(node, v)} />
-            <CopyButton getText={() => ConversationModel.assistantCopyText(node)} label="Copy message" />
-          </div>
+        {assistantHasText(node) && !controlsBelow && (
+          <AssistantControls node={node} model={ctx.model} className={cn('justify-end', ASSISTANT_CONTROLS_REVEAL)} />
         )}
       </div>
     </div>
@@ -426,18 +451,21 @@ function SystemLineView({ node, model }: { node: SystemNode; model: Conversation
   );
 }
 
-function TurnEndView({ node }: { node: TurnEndNode }) {
+function TurnEndView({ node, carries, model }: { node: TurnEndNode; carries: AssistantNode | null; model: ConversationModel }) {
   const p = turnEndParts(node.ev);
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 md:pl-11 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
-      <span className={cn('flex items-center gap-1', p.ok ? 'text-success' : 'text-destructive')}>
-        {p.ok ? <CircleCheckIcon className="size-3.5" /> : <CircleAlertIcon className="size-3.5" />}
-        {p.ok ? 'Done' : 'Turn failed'}{p.stopReason && p.stopReason !== 'end_turn' && ` · ${p.stopReason}`}
-      </span>
-      {p.duration && <span>{p.duration}</span>}
-      {p.cost && <span>{p.cost}</span>}
-      {p.context && <span>{p.context}</span>}
-      {p.tokens && <span>{p.tokens}</span>}
+    <div className="group/asst flex items-center gap-x-3 md:pl-11 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+        <span className={cn('flex items-center gap-1', p.ok ? 'text-success' : 'text-destructive')}>
+          {p.ok ? <CircleCheckIcon className="size-3.5" /> : <CircleAlertIcon className="size-3.5" />}
+          {p.ok ? 'Done' : 'Turn failed'}{p.stopReason && p.stopReason !== 'end_turn' && ` · ${p.stopReason}`}
+        </span>
+        {p.duration && <span>{p.duration}</span>}
+        {p.cost && <span>{p.cost}</span>}
+        {p.context && <span>{p.context}</span>}
+        {p.tokens && <span>{p.tokens}</span>}
+      </div>
+      {carries && assistantHasText(carries) && <AssistantControls node={carries} model={model} className={`shrink-0 ${TURN_END_CONTROLS_REVEAL}`} />}
     </div>
   );
 }

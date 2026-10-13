@@ -5,7 +5,7 @@
 // marked delivered, when the usage window resets, and a read-aloud of its own on every
 // finished text block of the bubble, which reads that block.
 // The bodies are shared by the per-project spec files; this module declares no tests.
-import type { Page, WebSocketRoute } from '@playwright/test';
+import type { Locator, Page, WebSocketRoute } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject } from './harness/api.ts';
 import { next } from './flows/ui.ts';
@@ -26,7 +26,9 @@ const fakeOnly = (cc: Cc) => test.skip(cc.engine === 'live', "the flows drive th
 
 /** The held turn's bubble, found by its first block's text. */
 const bubble = (page: Page) => next.transcript(page).locator('[data-item=assistant]').filter({ hasText: 'Intro with' });
-const control = (page: Page, name: string) => bubble(page).getByRole('button', { name, exact: true });
+/** The turn-end row directly under the held bubble; it carries the bubble's controls once the turn has ended. */
+const turnEndBelow = (page: Page) => bubble(page).locator('xpath=following-sibling::*[1][@data-item="turn-end"]');
+const control = (page: Page, name: string) => bubble(page).or(turnEndBelow(page)).getByRole('button', { name, exact: true });
 /** The live region beside the bubble's copy button, in the row of its controls. */
 const copyAnnouncement = (page: Page) => control(page, 'Copy message').locator('xpath=..').locator('[aria-live]');
 const clipboard = (page: Page) => page.evaluate(() => navigator.clipboard.readText());
@@ -88,8 +90,10 @@ export async function liveControlsFlow({ page, cc }: Args): Promise<void> {
   await control(page, 'Show raw text').click();
   await expect(control(page, 'Show rendered markdown'), 'the toggle now offers the rendered view').toHaveCount(1);
   await expect(bubble(page), 'the finished block shows its source').toContainText('Intro with **one**');
+  await expect(bubble(page).getByRole('button', { name: 'Copy message', exact: true }), 'mid-stream the copy is in the bubble').toHaveCount(1);
   await release(page, cc, s);
   await expect(bubble(page), 'the block that was streaming finishes raw').toContainText('Streamed **so far** and done.');
+  await expect(turnEndBelow(page).getByRole('button', { name: 'Copy message', exact: true }), 'once the turn ends the copy is on the turn-end row').toHaveCount(1);
   await copy(page);
   await expect.poll(() => clipboard(page), { message: 'copy takes the whole text once the block has finished' }).toBe(COPY_FINISHED);
 }
@@ -98,8 +102,32 @@ export async function controlsReturnFlow({ page, cc }: Args): Promise<void> {
   // Invariant: read-aloud stays through switching the bubble to raw and back; the raw view the reader set survives a full-page view; a reload's replay gives the same controls, copy and raw view as the live stream.
   fakeOnly(cc);
   const s = await heldRun(page, cc, 'return');
+  await expect(bubble(page).getByRole('button', { name: 'Copy message', exact: true }), 'fixture check: mid-stream the controls are in the bubble').toHaveCount(1);
   await release(page, cc, s);
   await expect(bubble(page), 'precondition: the bubble renders its markdown').not.toContainText('**');
+  await expect(next.turnEnds(page), 'fixture check: the turn ended').toHaveCount(1);
+  const row = turnEndBelow(page);
+  for (const name of ['Copy message', 'Show raw text']) {
+    await expect(row.getByRole('button', { name, exact: true }), `${name} sits on the turn-end row`).toHaveCount(1);
+    await expect(bubble(page).getByRole('button', { name, exact: true }), `${name} is not in the bubble`).toHaveCount(0);
+  }
+  const edge = async (loc: Locator) => { const b = (await loc.boundingBox())!; return b.x + b.width; };
+  const gap = (await edge(row.getByRole('button', { name: 'Copy message', exact: true }))) - (await edge(bubble(page).locator('[data-assistant-body]')));
+  expect(Math.abs(gap), "the controls end at the bubble column's right edge").toBeLessThanOrEqual(1);
+  const wrapper = row.getByRole('button', { name: 'Copy message', exact: true }).locator('xpath=..');
+  const hoverNone = await page.evaluate(() => matchMedia('(hover: none)').matches);
+  if (hoverNone) {
+    await expect(wrapper, 'where nothing hovers the controls always show').toHaveCSS('opacity', '1');
+  } else {
+    await page.mouse.move(0, 0);
+    await expect(wrapper, 'with the pointer clear the controls are hidden').toHaveCSS('opacity', '0');
+    await bubble(page).hover();
+    await expect(wrapper, 'hovering the bubble reveals them').toHaveCSS('opacity', '1');
+    await page.mouse.move(0, 0);
+    await expect(wrapper).toHaveCSS('opacity', '0');
+    await row.hover();
+    await expect(wrapper, 'hovering the turn-end row reveals them').toHaveCSS('opacity', '1');
+  }
   await expect(control(page, 'Read aloud'), 'each of its two finished blocks offers read-aloud').toHaveCount(2);
 
   await control(page, 'Show raw text').click();
