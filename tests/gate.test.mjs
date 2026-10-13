@@ -71,6 +71,7 @@ test('npm test gate', async (t) => {
       assert.ok(!fs.existsSync(marker), 'no suite may start after one is signalled');
       const { code, summary } = gateExit(suites, results);
       assert.equal(code, 143);
+      assert.match(summary, /node FAILED \(SIGTERM\)/);
       assert.match(summary, /web NOT RUN/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
