@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
-  BarChart3Icon, FolderInputIcon, FolderPlusIcon, LayersIcon, LoaderCircleIcon, MenuIcon, MoonIcon,
-  SettingsIcon, SparklesIcon, SunIcon, WifiOffIcon, XIcon,
+  BarChart3Icon, FoldHorizontalIcon, FolderInputIcon, FolderPlusIcon, LayersIcon, LoaderCircleIcon, MenuIcon, MoonIcon, MoveHorizontalIcon,
+  SettingsIcon, SparklesIcon, SunIcon, UnfoldHorizontalIcon, WifiOffIcon, XIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -15,6 +15,7 @@ import { appStore, activeInstance } from '@/state/app';
 import { closeView, useRoute } from '@/state/route';
 import { closeSidebarOnMobile, setLens, uiStore } from '@/app/ui';
 import { themeStore, toggleTheme } from '@/app/theme';
+import { SESSION_WIDTH_LABEL, cycleSessionWidth, sessionWidthStore, type SessionWidth } from '@/app/sessionWidth';
 import { conductStore, startConducting } from '@/features/dialogs/conduct';
 import { openAdoptProjectDialog, openNewProjectDialog, openWorkspaceDialog } from '@/features/dialogs/api';
 import { openCosts, openSettings } from '@/features/views/api';
@@ -158,7 +159,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
         </div>
       </div>
 
-      <Footer />
+      <Footer mobile={mobile} />
 
       {!mobile && (
         <div
@@ -183,7 +184,22 @@ function ThemeButton() {
   );
 }
 
-function Footer() {
+const WIDTH_ICON: Record<SessionWidth, React.ReactNode> = {
+  normal: <FoldHorizontalIcon />,
+  wide: <UnfoldHorizontalIcon />,
+  full: <MoveHorizontalIcon />,
+};
+
+function SessionWidthButton() {
+  const preset = useStore(sessionWidthStore, (s) => s.preset);
+  return (
+    <HeaderButton label={`Session width: ${SESSION_WIDTH_LABEL[preset]}`} onClick={cycleSessionWidth}>
+      {WIDTH_ICON[preset]}
+    </HeaderButton>
+  );
+}
+
+function Footer({ mobile }: { mobile: boolean }) {
   const status = useStore(appStore, (s) => s.sidebarStatus);
   const connection = useStore(appStore, (s) => s.connection);
   const everDropped = useStore(appStore, (s) => s.everDropped);
@@ -203,6 +219,7 @@ function Footer() {
           <><LoaderCircleIcon className="size-3.5 animate-spin" /> Connecting…</>
         )}
       </div>
+      {!mobile && <SessionWidthButton />}
       <ThemeButton />
       <RestartButton />
     </div>
