@@ -7,8 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
 import { ConversationModel, type GroupNode, type ToolNode } from './model';
 import { flush, renderModel } from './renderModel';
-import { assistants, feed, groupsOf, groupText, text, tool } from './testkit';
-import type { UiEvent } from '@/state/types';
+import { assistants, feed, groupsOf, groupText, text, tool, toolResult } from './testkit';
+import type { UiEvent, UiEventOf } from '@shared/uiEvent';
 
 const onlyGroup = (m: ConversationModel) => groupsOf(assistants(m)[0])[0];
 
@@ -75,7 +75,7 @@ describe('run-enders', () => {
       { kind: 'system', subtype: 'auto_resume', data: { count: 2 } },
       { kind: 'system', subtype: 'stderr', data: { line: 'a warning from the CLI' } },
       { kind: 'system', subtype: 'cache_miss', data: { cacheCreation: 10, cacheRead: 2 } },
-    ] as UiEvent[];
+    ] satisfies UiEventOf<'system'>[];
     for (const note of notes) {
       const m = new ConversationModel();
       feed(m, tool('m1', 0, 'tu1', 'Bash'));
@@ -97,7 +97,7 @@ describe("the reader's clicks inside an open group", () => {
       ...tool('m1', 0, 'A', 'Agent', { result: null, input: { description: 'survey' } }),
       { kind: 'text_delta', msgId: 'ms', blockIdx: 0, text: 'sub reply', parentToolUseId: 'A' },
       { kind: 'text_end', msgId: 'ms', blockIdx: 0, parentToolUseId: 'A' },
-      { kind: 'tool_result', toolUseId: 'A', content: 'done', isError: false },
+      toolResult({ toolUseId: 'A', content: 'done', isError: false }),
     ]);
     const g = onlyGroup(m);
     const agent = g.children[0] as ToolNode;

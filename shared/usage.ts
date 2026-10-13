@@ -28,18 +28,7 @@ export type Usage = {
   cache_creation_input_tokens?: number;
 };
 
-// The UI event fields (src/parser.ts) UsageTracker reads.
-export type UsageEvent = {
-  kind?: string;
-  subtype?: string;
-  data?: { model?: string; to?: string; [k: string]: unknown } | null;
-  replayed?: boolean;
-  usage?: Usage | null;
-  model?: string;
-  cost?: number;
-  costDelta?: number;
-  durationMs?: number;
-};
+import type { UiEvent } from './uiEvent.ts';
 
 export type UsageTotals = {
   inputTokens: number;
@@ -86,7 +75,7 @@ export class UsageTracker {
     if (usage && typeof usage === 'object') this.lastUsage = usage;
   }
 
-  apply(ev: UsageEvent | null | undefined): void {
+  apply(ev: UiEvent | null | undefined): void {
     if (!ev || typeof ev !== 'object') return;
     if (ev.kind === 'system' && ev.subtype === 'init') {
       const m = ev.data?.model;

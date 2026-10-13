@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ConversationModel, type GroupNode, type ToolNode } from './model';
-import { assistants, feed, groupsOf, groupText, text, thinking, tool } from './testkit';
+import { assistants, feed, groupsOf, groupText, text, thinking, tool, toolResult, turnEnd } from './testkit';
 
 const twoRunFeed = () => [
   ...thinking('m1', 0),
@@ -65,7 +65,7 @@ describe('action groups', () => {
   const closers: [string, object][] = [
     ['user_echo', { kind: 'user_echo', text: 'next' }],
     ['turn_end', { kind: 'turn_end', durationMs: 1 }],
-    ['plan_request', { kind: 'plan_request', toolUseId: 'p1', plan: 'x' }],
+    ['plan_request', { kind: 'plan_request', toolUseId: 'p1', plan: 'x', planPath: null }],
     ['user_question', { kind: 'user_question', toolUseId: 'q1', questions: [] }],
     ['history_gap', { kind: 'history_gap' }],
     ['segment_seam', { kind: 'segment_seam', segmentId: 's2' }],
@@ -86,9 +86,9 @@ describe('action groups', () => {
     it(`${name} folds a group on the reused floating wrap`, () => {
       const m = new ConversationModel();
       feed(m, [
-        { kind: 'tool_result', toolUseId: 'orphan1', content: 'a' },
+        toolResult({ toolUseId: 'orphan1', content: 'a' }),
         ...text('m1', 0, 'prose'),
-        { kind: 'tool_result', toolUseId: 'orphan2', content: 'b' },
+        toolResult({ toolUseId: 'orphan2', content: 'b' }),
       ]);
       const stranded = groupsOf(assistants(m)[0])[1];
       expect(stranded.open).toBe(true);
@@ -104,7 +104,7 @@ describe('action groups', () => {
     m.apply({ kind: 'system', subtype: 'playbook_warn', data: { tool: 'x' } });
     m.apply({ kind: 'system', subtype: 'task_notification', data: { notified: true, status: 'completed' } });
     expect(onlyGroup(m).open).toBe(true);
-    feed(m, [{ kind: 'tool_result', toolUseId: 'tu1', content: 'ok' }]);
+    feed(m, [toolResult({ toolUseId: 'tu1', content: 'ok' })]);
     expect((onlyGroup(m).children[0] as ToolNode).status).toBe('done');
   });
 
@@ -178,8 +178,8 @@ describe('action groups', () => {
     feed(m, [
       ...tool('m1', 0, 'agent1', 'Agent', { result: null }),
       { kind: 'assistant_message', msgId: 's1', parentToolUseId: 'agent1', message: { content: [{ type: 'tool_use', id: 'sub-t1', name: 'Read', input: {} }] } },
-      { kind: 'tool_result', toolUseId: 'sub-t1', parentToolUseId: 'agent1', content: 'nope', isError: true },
-      { kind: 'tool_result', toolUseId: 'agent1', content: 'done' },
+      toolResult({ toolUseId: 'sub-t1', parentToolUseId: 'agent1', content: 'nope', isError: true }),
+      toolResult({ toolUseId: 'agent1', content: 'done' }),
     ]);
     const outer = onlyGroup(m);
     const agent = outer.children[0] as ToolNode;
@@ -198,20 +198,20 @@ describe('action groups', () => {
     const a2 = groupsOf(assistants(a1.sub!)[0])[0].children[0] as ToolNode;
     const deep = groupsOf(assistants(a2.sub!)[0])[0];
     expect(deep.open).toBe(true);
-    m.apply({ kind: 'turn_end' });
+    m.apply(turnEnd());
     expect(deep.open).toBe(false);
   });
 
   it('an errored orphan tool_result counts toward the error clause', () => {
     const m = new ConversationModel();
-    feed(m, [...tool('m1', 0, 't1', 'Bash'), { kind: 'tool_result', toolUseId: 'nope', content: 'x', isError: true }]);
+    feed(m, [...tool('m1', 0, 't1', 'Bash'), toolResult({ toolUseId: 'nope', content: 'x', isError: true })]);
     expect(groupText(onlyGroup(m))).toBe('2 actions · Bash, tool_result · 1 error');
   });
 
   it('a tool_result or bare thinking_delta with no head still joins the group', () => {
     const m = new ConversationModel();
     feed(m, [
-      { kind: 'tool_result', toolUseId: 'nohead', content: 'x' },
+      toolResult({ toolUseId: 'nohead', content: 'x' }),
       { kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: 'cut off mid-block' },
     ]);
     const wrap = assistants(m)[0];
@@ -247,7 +247,7 @@ describe('action groups', () => {
     it('a yielded orphan result is not counted as an error; a real one beside it is', () => {
       const m = new ConversationModel();
       feed(m, [
-        { kind: 'tool_result', toolUseId: 'o1', content: 'x', isError: true, yielded: true },
+        toolResult({ toolUseId: 'o1', content: 'x', isError: true, yielded: true }),
         ...tool('m1', 0, 't2', 'Bash', { isError: true }),
       ]);
       expect(groupText(onlyGroup(m))).toBe('2 actions · tool_result, Bash · 1 error');

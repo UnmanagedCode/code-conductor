@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { ConversationModel, type AssistantNode, type GroupNode } from './model';
 import { feed, groupText, text, thinking, tool } from './testkit';
 import { isCallUsageShown, setCallUsageShown, uiStore } from '@/app/ui';
+import type { UiEventOf } from '@shared/uiEvent';
 
-const usage = (msgId: string) => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200 });
+const usage = (msgId: string): UiEventOf<'call_usage'> => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null });
 
 describe('per-call usage lines', () => {
   it('after a thinking + parallel-tool call the line joins the open group, and the tally ignores it', () => {

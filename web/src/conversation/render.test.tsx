@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fireEvent, within } from '@testing-library/react';
 import { ConversationModel } from './model';
-import { feed, readJsonl, serverModules, text, tool } from './testkit';
+import { feed, readJsonl, serverModules, text, tool, toolResult } from './testkit';
 import { flush, renderModel } from './renderModel';
+import type { UiEventOf } from '@shared/uiEvent';
 
 let S: Awaited<ReturnType<typeof serverModules>>;
 beforeAll(async () => { S = await serverModules(); });
@@ -80,10 +81,10 @@ describe('tool cards', () => {
   });
 
   it('a foreground Agent result with subagent totals shows the usage badge (singular for one use); none without totals', async () => {
-    const withTotals = await shown([...tool('m1', 0, 'a1', 'Agent', { result: null }), { kind: 'tool_result', toolUseId: 'a1', content: 'done', agentTokens: 42_000, agentToolUses: 1 }]);
+    const withTotals = await shown([...tool('m1', 0, 'a1', 'Agent', { result: null }), toolResult({ toolUseId: 'a1', content: 'done', agentTokens: 42_000, agentToolUses: 1 })]);
     expandAll(withTotals.root);
     expect(withTotals.root.textContent).toContain('subagent 42k ctx · 1 tool use');
-    const unknownCount = await shown([...tool('m1', 0, 'a1', 'Agent', { result: null }), { kind: 'tool_result', toolUseId: 'a1', content: 'done', agentTokens: 42_000 }]);
+    const unknownCount = await shown([...tool('m1', 0, 'a1', 'Agent', { result: null }), toolResult({ toolUseId: 'a1', content: 'done', agentTokens: 42_000 })]);
     expect(unknownCount.root.textContent).toContain('subagent 42k ctx');
     expect(unknownCount.root.textContent).not.toContain('tool use');
     const none = await shown(tool('m1', 0, 'a1', 'Agent'));
@@ -93,7 +94,7 @@ describe('tool cards', () => {
   it('results: images render lazily as images, small text opens, long text truncates with a show-full control', async () => {
     const { root } = await shown([
       ...tool('m1', 0, 't1', 'Read', { result: null, input: { file_path: 'x.png' } }),
-      { kind: 'tool_result', toolUseId: 't1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] },
+      toolResult({ toolUseId: 't1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] }),
       ...tool('m1', 1, 't2', 'Bash', { result: 'y'.repeat(5000) }),
     ]);
     expandAll(root);
@@ -135,7 +136,7 @@ describe('annotations', () => {
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu8', name: 'mcp__code-conductor__project_read' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu8', name: 'mcp__code-conductor__project_read', input: {} },
       { kind: 'system', subtype: 'read_nudge', data: { text: 'n' } },
-      { kind: 'tool_result', toolUseId: 'tu8', content: 'file bytes RESULT-MARK' },
+      toolResult({ toolUseId: 'tu8', content: 'file bytes RESULT-MARK' }),
     ]);
     const group = (m.items[0] as any).children[0];
     expect(group.open).toBe(true);
@@ -161,10 +162,10 @@ describe('background task notifications (real fixtures)', () => {
     expect(failed.getAttribute('data-tone')).toBe('warn');
     const ok = root.querySelector('[data-subtype="task_notification"]') as HTMLDetailsElement;
     expect(ok.open).toBe(false);
-    const tn = evs.find((e) => e.subtype === 'task_notification' && e.toolUseId === C1)!;
-    expect(ok.querySelector('[data-fold-body]')!.textContent).toContain(tn.data.summary);
-    expect(ok.querySelector('[data-headline]')!.textContent).not.toContain(tn.data.output_file);
-    const fg = evs.find((e) => e.subtype === 'task_notification' && e.toolUseId === C7)!;
+    const tn = evs.find((e): e is UiEventOf<'system'> => e.kind === 'system' && e.subtype === 'task_notification' && e.toolUseId === C1)!;
+    expect(ok.querySelector('[data-fold-body]')!.textContent).toContain(tn.data!.summary);
+    expect(ok.querySelector('[data-headline]')!.textContent).not.toContain(tn.data!.output_file);
+    const fg = evs.find((e) => e.kind === 'system' && e.subtype === 'task_notification' && e.toolUseId === C7)!;
     expect((await shown([fg])).root.querySelector('[data-subtype]')).toBeNull();
   });
 

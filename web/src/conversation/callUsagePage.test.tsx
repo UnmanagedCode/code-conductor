@@ -11,10 +11,11 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { bus } from '@shared/ws';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
-import type { Instance, UiEvent } from '@/state/types';
+import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { ConversationView } from './ConversationView';
 import { ConversationModel, type AssistantNode } from './model';
-import { text, tool } from './testkit';
+import { text, tool, turnEnd } from './testkit';
 import { flush, renderModel } from './renderModel';
 import { CALL_USAGE_TITLE } from './format';
 
@@ -38,8 +39,8 @@ describe('call usage on a lazily loaded page', () => {
     expect(usageLines(bare)).toHaveLength(0);
     const withUsage = await pageRendered([
       ...base,
-      { kind: 'call_usage', msgId: 'm1', promptTokens: 61_000, growthTokens: 2_000, outputTokens: 310 },
-      { kind: 'call_usage', msgId: 'm2', promptTokens: 63_000, growthTokens: 1_500, outputTokens: 120 },
+      { kind: 'call_usage', msgId: 'm1', promptTokens: 61_000, growthTokens: 2_000, outputTokens: 310, thinkingTokens: null },
+      { kind: 'call_usage', msgId: 'm2', promptTokens: 63_000, growthTokens: 1_500, outputTokens: 120, thinkingTokens: null },
     ]);
     expect(usageLines(withUsage)).toHaveLength(2);
   });
@@ -48,15 +49,15 @@ describe('call usage on a lazily loaded page', () => {
 // ── A call_usage ahead of its message ────────────────────────────────────
 
 const inst = (id: string): Instance => ({ id, project: 'p', status: 'idle', sessionId: `s-${id}`, mode: 'default' });
-const usage = (msgId: string, seq: number): UiEvent => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, _seq: seq });
+const usage = (msgId: string, seq: number): UiEvent => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null, _seq: seq });
 const seqd = (evs: UiEvent[], from: number): UiEvent[] => evs.map((e, i) => ({ ...e, _seq: from + i }));
 
 /** m1's turn up to its reply's text_end: seqs 1–3. */
 const M1_PAGE: UiEvent[] = seqd([{ kind: 'user_echo', text: 'first', userIndex: 0 }, ...text('m1', 0, 'm1 reply')], 1);
 /** A tail starting on m1's call_usage, between its text_end and the turn's end. */
-const TAIL_ON_USAGE: UiEvent[] = [usage('m1', 4), { kind: 'turn_end', subtype: 'success', _seq: 5 }];
+const TAIL_ON_USAGE: UiEvent[] = [usage('m1', 4), turnEnd({ subtype: 'success', _seq: 5 })];
 /** A later turn, for a tail that carries no call_usage. */
-const LATER_TAIL: UiEvent[] = seqd([{ kind: 'user_echo', text: 'later', userIndex: 1 }, ...text('m2', 0, 'm2 reply'), { kind: 'turn_end', subtype: 'success' }], 10);
+const LATER_TAIL: UiEvent[] = seqd([{ kind: 'user_echo', text: 'later', userIndex: 1 }, ...text('m2', 0, 'm2 reply'), turnEnd({ subtype: 'success' })], 10);
 
 const mount = () => {
   const r = render(<TooltipProvider><ConversationView /></TooltipProvider>);
@@ -178,13 +179,13 @@ describe('a call_usage that arrives before its message', () => {
     const el = mount();
     const m9Page = seqd([{ kind: 'user_echo', text: 'other', userIndex: 0 }, ...text('m9', 0, 'm9 reply')], 1);
     servePages({ 4: { events: M1_PAGE, nextBefore: null }, 20: { events: m9Page, nextBefore: null } });
-    await snapshot('i1', [usage('m9', 4), { kind: 'turn_end', subtype: 'success', _seq: 5 }], 4);
+    await snapshot('i1', [usage('m9', 4), turnEnd({ subtype: 'success', _seq: 5 })], 4);
     await loadEarlier();
     expect(bubbleReading(bubbleOf(el, 'm1 reply')), 'the page renders without a stray line').toEqual(['m1 reply']);
     expect(usageLines(el)).toHaveLength(0);
     expect(conversation.orphanCallUsage.has('m9'), 'still held, harmlessly').toBe(true);
     act(() => { selectInstance('i2'); });
-    await snapshot('i2', seqd([{ kind: 'user_echo', text: 'later', userIndex: 1 }, { kind: 'turn_end', subtype: 'success' }], 20), 20);
+    await snapshot('i2', seqd([{ kind: 'user_echo', text: 'later', userIndex: 1 }, turnEnd({ subtype: 'success' })], 20), 20);
     expect(conversation.orphanCallUsage.size, 'the switch dropped it').toBe(0);
     await loadEarlier();
     expect(bubbleReading(bubbleOf(el, 'm9 reply')), 'another session\'s page with the same message id gets no line').toEqual(['m9 reply']);

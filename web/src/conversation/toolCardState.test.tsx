@@ -8,8 +8,8 @@ import { act, fireEvent } from '@testing-library/react';
 import { ConversationModel, type ToolNode } from './model';
 import { flush, renderModel } from './renderModel';
 import { CALL_USAGE_TITLE } from './format';
-import { assistants, feed, groupsOf, groupText, tool } from './testkit';
-import type { UiEvent } from '@/state/types';
+import { assistants, feed, groupsOf, groupText, tool, toolResult } from './testkit';
+import type { UiEvent } from '@shared/uiEvent';
 
 const q = (root: Element, sel: string) => root.querySelector(sel) as HTMLElement | null;
 /** The card's root: its trigger's parent holds the card content and the sub-agent section. */
@@ -59,7 +59,7 @@ describe('tool card bodies', () => {
     const passes: [string, UiEvent[]][] = [
       ['input completing', [{ kind: 'tool_use_input_delta', msgId: 'm1', blockIdx: 0, toolUseId: 'f1', partialJson: '"bar"}' }]],
       ['final input', [{ kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'f1', name: 'SomeFutureTool', input: { foo: 'bar' } }]],
-      ['result', [{ kind: 'tool_result', toolUseId: 'f1', content: 'ok', isError: false }]],
+      ['result', [toolResult({ toolUseId: 'f1', content: 'ok', isError: false })]],
     ];
     for (const [name, evs] of passes) {
       await apply(m, evs);
@@ -95,7 +95,7 @@ describe('tool card bodies', () => {
 describe('per-call usage and subagent totals', () => {
   it('a per-call usage line explains itself in its tooltip and is no action: no card, not tallied', async () => {
     const m = new ConversationModel();
-    feed(m, [...tool('m1', 0, 'tu1', 'Read'), { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200 }]);
+    feed(m, [...tool('m1', 0, 'tu1', 'Read'), { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null }]);
     const { root } = renderModel(m);
     await flush();
     expect(q(root, '[data-group-trigger]')?.getAttribute('data-state'), 'fixture check: the run is open').toBe('open');
@@ -112,7 +112,7 @@ describe('per-call usage and subagent totals', () => {
     const m = new ConversationModel();
     feed(m, [
       ...tool('m1', 0, 'A', 'Agent', { result: null, input: { description: 'survey' } }),
-      { kind: 'tool_result', toolUseId: 'A', content: 'done', isError: false, agentTokens: 48_200, agentToolUses: 3 },
+      toolResult({ toolUseId: 'A', content: 'done', isError: false, agentTokens: 48_200, agentToolUses: 3 }),
     ]);
     const first = renderModel(m);
     await flush();

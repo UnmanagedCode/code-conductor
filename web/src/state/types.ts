@@ -115,10 +115,3 @@ export type SessionRow = {
   awaitingUserSource?: 'tool' | 'text' | null;
   [k: string]: unknown;
 };
-
-/** A UI event as the server's parser emits it (src/parser.ts). */
-export type UiEvent = {
-  kind: string;
-  _seq?: number;
-  [k: string]: any;
-};

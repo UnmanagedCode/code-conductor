@@ -3,12 +3,13 @@ import { within } from '@testing-library/react';
 import { ConversationModel, userActionsForStatus, type AssistantNode, type ToolNode, type UserNode } from './model';
 import { createLazyHistory } from './lazyHistory';
 import { flush, noActions, renderModel } from './renderModel';
-import { groupsOf, text, thinking, tool } from './testkit';
+import { groupsOf, text, thinking, tool, turnEnd } from './testkit';
+import type { UiEvent, UiEventOf } from '@shared/uiEvent';
 
 let seq = 1000;
-const echo = (t: string, extra: object = {}) => ({ kind: 'user_echo', text: t, userIndex: seq % 97, _seq: seq--, ...extra });
-const seam = (segmentId: string) => ({ kind: 'segment_seam', segmentId });
-const gap = () => ({ kind: 'history_gap' });
+const echo = (t: string, extra: Partial<UiEventOf<'user_echo'>> = {}): UiEventOf<'user_echo'> => ({ kind: 'user_echo', text: t, userIndex: seq % 97, _seq: seq--, ...extra });
+const seam = (segmentId: string): UiEventOf<'segment_seam'> => ({ kind: 'segment_seam', segmentId });
+const gap = (): UiEventOf<'history_gap'> => ({ kind: 'history_gap' });
 const page = (events: any[], extra: object) => ({ events, hasMore: true, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: 'D', ...extra });
 
 /** Readable root sequence: user texts, ‖seam dividers, ⋯ gaps, ↺ replay dividers, A assistants. */
@@ -93,7 +94,7 @@ describe('lineage paging', () => {
 
   it('C3 a segment seam is a "context renewed" divider and a merge barrier', () => {
     const m = new ConversationModel();
-    for (const ev of [...text('m1', 0, 'before'), seam('C'), { kind: 'text_delta', msgId: 'm2', blockIdx: 0, text: 'after' }]) m.apply(ev);
+    for (const ev of [...text('m1', 0, 'before'), seam('C'), { kind: 'text_delta', msgId: 'm2', blockIdx: 0, text: 'after' }] satisfies UiEvent[]) m.apply(ev);
     expect(tokens(m)).toEqual(['A', '‖C', 'A']);
   });
 
@@ -267,7 +268,7 @@ describe('page merging', () => {
   it('a page that begins at a compaction exposes no leading envelope to merge upward', () => {
     const work = [...tool('m1', 0, 't1', 'Bash'), ...text('m1', 1, 'done')];
     expect(new ConversationModel().renderPage(work, null, null).leadingAssistantWrap).toBeTruthy();
-    const withCompaction = new ConversationModel().renderPage([{ kind: 'compaction', trigger: 'auto' }, ...work], null, null);
+    const withCompaction = new ConversationModel().renderPage([{ kind: 'compaction', trigger: 'auto', preTokens: null, postTokens: null, durationMs: null }, ...work], null, null);
     expect(withCompaction.leadingAssistantWrap).toBeNull();
   });
 
@@ -316,11 +317,11 @@ describe('page merging', () => {
     const groupCount = (m: ConversationModel) => (m.items.filter((i) => i.type === 'assistant') as AssistantNode[]).flatMap(groupsOf).length;
     const ended = new ConversationModel();
     for (const ev of tool('mB', 0, 'tB', 'Read', { result: null })) ended.apply(ev);
-    ended.prependPage(ended.renderPage([{ kind: 'user_echo', text: 'older' }, ...tool('mA', 0, 'tA', 'Bash'), { kind: 'turn_end' }], null, null), ended.leadingAssistantWrap);
+    ended.prependPage(ended.renderPage([{ kind: 'user_echo', text: 'older' }, ...tool('mA', 0, 'tA', 'Bash'), turnEnd()], null, null), ended.leadingAssistantWrap);
     expect(groupCount(ended)).toBe(2);
 
     const below = new ConversationModel();
-    below.apply({ kind: 'turn_end' });
+    below.apply(turnEnd());
     for (const ev of tool('mB', 0, 'tB', 'Read', { result: null })) below.apply(ev);
     expect(below.leadingAssistantWrap).toBeTruthy();
     below.prependPage(below.renderPage([{ kind: 'user_echo', text: 'older' }, ...tool('mA', 0, 'tA', 'Bash')], null, null), below.leadingAssistantWrap);

@@ -10,11 +10,12 @@ vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { conversation, lazyHistory } from '@/app/controller';
 import { appStore } from '@/state/app';
-import type { Instance, UiEvent } from '@/state/types';
+import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { ConversationView } from './ConversationView';
 import { ConversationModel, type AssistantNode } from './model';
 import { flush, renderModel } from './renderModel';
-import { groupsOf, thinking, tool } from './testkit';
+import { groupsOf, thinking, tool, toolResult } from './testkit';
 
 const inst = (id: string): Instance => ({ id, project: 'p', status: 'idle', sessionId: `s-${id}`, mode: 'default' });
 
@@ -23,7 +24,7 @@ const ARCHIVED_TURN: UiEvent[] = [
   { kind: 'user_echo', text: 'old prompt', userIndex: 3, _seq: 10, parentToolUseId: null },
   { kind: 'tool_use_start', msgId: 'mOld', blockIdx: 0, toolUseId: 'tuOld', name: 'Bash', _seq: 11, parentToolUseId: null },
   { kind: 'tool_use', msgId: 'mOld', blockIdx: 0, toolUseId: 'tuOld', name: 'Bash', input: { command: 'ls' }, _seq: 12, parentToolUseId: null },
-  { kind: 'tool_result', toolUseId: 'tuOld', content: 'file.txt', isError: false, _seq: 13, parentToolUseId: null },
+  toolResult({ toolUseId: 'tuOld', content: 'file.txt', isError: false, _seq: 13, parentToolUseId: null }),
   { kind: 'text_delta', msgId: 'mOld', blockIdx: 1, text: 'archived reply', _seq: 14, parentToolUseId: null },
   { kind: 'text_end', msgId: 'mOld', blockIdx: 1, _seq: 15, parentToolUseId: null },
 ];
@@ -73,7 +74,7 @@ describe('a lineage page', () => {
       { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Agent', input: {}, _seq: 2, parentToolUseId: null },
       { kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: 'sub-agent reply', _seq: 3, parentToolUseId: 'tu1' },
       { kind: 'text_end', msgId: 'msub', blockIdx: 0, _seq: 4, parentToolUseId: 'tu1' },
-      { kind: 'tool_result', toolUseId: 'tu1', content: 'done', isError: false, _seq: 5, parentToolUseId: null },
+      toolResult({ toolUseId: 'tu1', content: 'done', isError: false, _seq: 5, parentToolUseId: null }),
     ], null, null);
     expect(page.orphanChildEvents.size, 'nothing parked').toBe(0);
     const { root } = renderModel(page);

@@ -6,11 +6,12 @@ import path from 'node:path';
 import { fireEvent } from '@testing-library/react';
 import { ConversationModel, type ThinkingNode, type ToolNode } from './model';
 import { thinkingLabel } from './tools';
-import { assistants, groupsOf, serverModules } from './testkit';
+import { assistants, groupsOf, serverModules, toolResult } from './testkit';
 import { flush, renderModel } from './renderModel';
+import type { UiEventOf } from '@shared/uiEvent';
 
 const thinkingOf = (m: ConversationModel, i = 0) => groupsOf(assistants(m)[0])[0].children[i] as ThinkingNode;
-const tokens = (n: number, seq?: number) => ({ kind: 'system', subtype: 'thinking_tokens', ...(seq ? { _seq: seq } : {}), data: { estimated_tokens: n, estimated_tokens_delta: n } });
+const tokens = (n: number, seq?: number): UiEventOf<'system'> => ({ kind: 'system', subtype: 'thinking_tokens', ...(seq ? { _seq: seq } : {}), data: { estimated_tokens: n, estimated_tokens_delta: n } });
 
 describe('thinking blocks', () => {
   it('a live token count shows while thinking; the last value wins', () => {
@@ -79,7 +80,7 @@ describe('thinking blocks', () => {
 describe('sub-agent nesting', () => {
   it('a depth-2 child routes into the nested sub-conversation, not parked', () => {
     const m = new ConversationModel();
-    m.apply({ kind: 'tool_use', toolUseId: 'A', name: 'Agent', input: {}, parentToolUseId: null });
+    m.apply({ kind: 'tool_use', msgId: null, blockIdx: 0, toolUseId: 'A', name: 'Agent', input: {}, parentToolUseId: null });
     m.apply({ kind: 'assistant_message', msgId: 'sub', parentToolUseId: 'A', message: { id: 'sub', content: [{ type: 'tool_use', id: 'B', name: 'Agent', input: {} }] } });
     m.apply({ kind: 'text_delta', msgId: 'deep', blockIdx: 0, text: 'deep', parentToolUseId: 'B' });
     m.apply({ kind: 'text_end', msgId: 'deep', blockIdx: 0, parentToolUseId: 'B' });
@@ -98,7 +99,7 @@ describe('sub-agent nesting', () => {
 
   it('a mistagged child of a non-Agent tool renders at the outer level', () => {
     const m = new ConversationModel();
-    m.apply({ kind: 'tool_use', toolUseId: 'bash1', name: 'Bash', input: { command: 'x' } });
+    m.apply({ kind: 'tool_use', msgId: null, blockIdx: 0, toolUseId: 'bash1', name: 'Bash', input: { command: 'x' } });
     m.apply({ kind: 'user_echo', text: 'stray', parentToolUseId: 'bash1' });
     expect(m.toolBlocks.get('bash1')!.sub).toBeNull();
     expect(m.items.some((i) => i.type === 'user')).toBe(true);
@@ -124,7 +125,7 @@ describe('sub-agent nesting', () => {
 
     fireEvent.click(subTrigger());
     m.apply({ kind: 'assistant_message', msgId: 'c2', parentToolUseId: 'A', message: { id: 'c2', content: [{ type: 'text', text: 'three' }] } });
-    m.apply({ kind: 'tool_result', toolUseId: 'A', content: 'done' });
+    m.apply(toolResult({ toolUseId: 'A', content: 'done' }));
     await flush();
     expect(subTrigger().getAttribute('data-state')).toBe('closed');
     expect(toolTrigger().getAttribute('data-state')).toBe('open');

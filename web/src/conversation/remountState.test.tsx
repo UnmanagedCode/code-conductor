@@ -12,12 +12,13 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { bus } from '@shared/ws';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
-import type { Instance, UiEvent } from '@/state/types';
+import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { buildForwardFrame } from '@shared/forwardFrame';
 import { buildWakeStub } from '@shared/wakeCallback';
 import { ConversationView } from './ConversationView';
 import { flush } from './renderModel';
-import { text, thinking, tool } from './testkit';
+import { text, thinking, tool, toolResult, turnEnd } from './testkit';
 
 const inst = (id: string): Instance => ({ id, project: 'p', status: 'idle', sessionId: `s-${id}`, mode: 'default' });
 
@@ -34,15 +35,15 @@ const TRANSCRIPT: UiEvent[] = [
   { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'A', name: 'Agent' },
   { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'A', name: 'Agent', input: { description: 'search', prompt: 'go' } },
   { kind: 'text_delta', msgId: 'c1', blockIdx: 0, text: 'child one', parentToolUseId: 'A' },
-  { kind: 'tool_result', toolUseId: 'A', content: LONG },
+  toolResult({ toolUseId: 'A', content: LONG }),
   ...tool('m1', 1, 'B', 'Read', { input: { file_path: '/b' }, result: 'b contents' }),
   ...thinking('m1', 2, 'deep thought'),
   ...text('m1', 3, 'reply'),
-  { kind: 'turn_end', subtype: 'success' },
+  turnEnd({ subtype: 'success' }),
   { kind: 'user_echo', text: buildForwardFrame({ messages: ['forwarded body'], instruction: 'please **review**' }), userIndex: 1 },
   { kind: 'user_echo', text: buildWakeStub({ targetSessionId: 'w1', payloadText: '{"sessionId":"w1"}\nwake **body**' }), userIndex: 2 },
   { kind: 'system', subtype: 'task_notification', data: { notified: true, status: 'completed', name: 'bg', summary: 'task summary' } },
-  { kind: 'compaction', trigger: 'manual', preTokens: 1000, postTokens: 100 },
+  { kind: 'compaction', trigger: 'manual', preTokens: 1000, postTokens: 100, durationMs: null },
   { kind: 'user_echo', text: 'compaction **summary**', compactSummary: true },
 ];
 

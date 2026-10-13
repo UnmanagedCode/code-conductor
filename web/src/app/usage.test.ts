@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RateLimitTracker, RL_BUCKET_KEYS, UsageTracker, rlChipSegment, type RateLimitInfo } from '@shared/usage';
+import type { UiEvent } from '@shared/uiEvent';
+import { turnEnd } from '@/conversation/testkit';
 
 const M1 = 'claude-haiku-4-5';
 const M2 = 'claude-opus-4-8';
@@ -11,8 +13,8 @@ const rl = (fields: RateLimitInfo) => ({ kind: 'system', subtype: 'rate_limit_ev
 describe('context reading (UsageTracker)', () => {
   it('model_changed drops the reading but keeps cumulative totals and adopts the new model', () => {
     const t = new UsageTracker();
-    t.apply({ kind: 'message_start', model: M1, usage: OLD_USAGE });
-    t.apply({ kind: 'turn_end', usage: { input_tokens: 5, output_tokens: 7 }, costDelta: 0.5, durationMs: 1000 });
+    t.apply({ kind: 'message_start', msgId: 'm1', model: M1, usage: OLD_USAGE });
+    t.apply(turnEnd({ usage: { input_tokens: 5, output_tokens: 7 }, costDelta: 0.5, durationMs: 1000 }));
     expect(t.currentContextSize()).toBe(190_000);
     const cum = { ...t.cum! };
     t.apply({ kind: 'system', subtype: 'model_changed', data: { from: M1, to: M2 } });
@@ -22,9 +24,9 @@ describe('context reading (UsageTracker)', () => {
   });
 
   it('the next usage-bearing frame of either kind restores the reading', () => {
-    for (const next of [{ kind: 'message_start', model: M2, usage: NEW_USAGE }, { kind: 'context_usage', usage: NEW_USAGE }]) {
+    for (const next of [{ kind: 'message_start', msgId: 'm2', model: M2, usage: NEW_USAGE }, { kind: 'context_usage', msgId: 'm2', usage: NEW_USAGE }] satisfies UiEvent[]) {
       const t = new UsageTracker();
-      t.apply({ kind: 'message_start', model: M1, usage: OLD_USAGE });
+      t.apply({ kind: 'message_start', msgId: 'm1', model: M1, usage: OLD_USAGE });
       t.apply({ kind: 'system', subtype: 'model_changed', data: { from: M1, to: M2 } });
       t.apply(next);
       expect(t.currentContextSize()).toBe(420_000);
@@ -33,7 +35,7 @@ describe('context reading (UsageTracker)', () => {
 
   it('a model_changed without `to` still drops the reading and keeps the model', () => {
     const t = new UsageTracker();
-    t.apply({ kind: 'message_start', model: M1, usage: OLD_USAGE });
+    t.apply({ kind: 'message_start', msgId: 'm1', model: M1, usage: OLD_USAGE });
     t.apply({ kind: 'system', subtype: 'model_changed', data: {} });
     expect(t.currentContextSize()).toBeNull();
     expect(t.effectiveModel()).toBe(M1);
@@ -51,13 +53,14 @@ describe('context reading (UsageTracker)', () => {
 
   it('context_usage latches the reading without counting a turn; turn_end never clobbers it; a null block leaves it', () => {
     const t = new UsageTracker();
-    t.apply({ kind: 'context_usage', usage: DELTA_USAGE });
+    t.apply({ kind: 'context_usage', msgId: 'm1', usage: DELTA_USAGE });
     expect(t.currentContextSize()).toBe(60_000);
     expect(t.cum!.turns).toBe(0);
-    t.apply({ kind: 'turn_end', usage: { input_tokens: 9_000_000, cache_read_input_tokens: 7_000_000 } });
+    t.apply(turnEnd({ usage: { input_tokens: 9_000_000, cache_read_input_tokens: 7_000_000 } }));
     expect(t.currentContextSize()).toBe(60_000);
     expect(t.cum!.turns).toBe(1);
-    t.apply({ kind: 'context_usage', usage: null });
+    // A null block the type forbids: pins the tracker's own `&& ev.usage` guard.
+    t.apply({ kind: 'context_usage', msgId: 'm1', usage: null } as unknown as UiEvent);
     expect(t.currentContextSize()).toBe(60_000);
   });
 });

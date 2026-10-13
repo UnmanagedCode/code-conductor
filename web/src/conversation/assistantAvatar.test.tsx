@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { ConversationModel, type AssistantNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 import { groupsOf, text, tool } from './testkit';
-import type { UiEvent } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 
 async function show(events: UiEvent[], m = new ConversationModel()) {
   m.applyEvents(events);

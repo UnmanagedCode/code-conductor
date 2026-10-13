@@ -20,6 +20,8 @@ import { ConfirmHost, toast } from '@/ui/feedback';
 import { stickyPrompt } from '@/app/controller';
 import { SWIPE_MIN_PX } from '@/conversation/stickyPrompt';
 import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
+import { turnEnd } from '@/conversation/testkit';
 import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGroups, runningBackendOf } from './SessionHeader';
 import { UsageChip } from './UsageChip';
 import { Dot } from '@/features/sidebar/rows';
@@ -649,7 +651,7 @@ describe('context + rate-limit chip', () => {
 
   it('a known reading against a known window shows the percentage; the tooltip names both figures', () => {
     getUsageTracker('c1').reset();
-    getUsageTracker('c1').apply({ kind: 'message_start', usage: { input_tokens: 60_000 } });
+    getUsageTracker('c1').apply({ kind: 'message_start', msgId: 'm1', usage: { input_tokens: 60_000 } });
     wrap(<UsageChip inst={base({ id: 'c1', contextWindowTokens: 200_000 })} />);
     expect(chip().textContent).toMatch(/^30%/);
     expect(chip().title).toContain('Context: 60,000/200,000 tokens');
@@ -658,7 +660,7 @@ describe('context + rate-limit chip', () => {
   it('unknown capacity (null, 0 or absent) names the used tokens and invents no denominator; no reading gets the first-turn tooltip', () => {
     for (const win of [null, 0, undefined]) {
       getUsageTracker('c2').reset();
-      getUsageTracker('c2').apply({ kind: 'message_start', usage: { input_tokens: 46_398 } });
+      getUsageTracker('c2').apply({ kind: 'message_start', msgId: 'm1', usage: { input_tokens: 46_398 } });
       const r = wrap(<UsageChip inst={base({ id: 'c2', contextWindowTokens: win as any })} />);
       expect(chip().textContent).toMatch(/^ctx —/);
       expect(chip().title).toContain('Context: 46,398 tokens used (capacity unknown)');
@@ -672,7 +674,7 @@ describe('context + rate-limit chip', () => {
   it('a model switch drops the reading: `ctx —`, never the old count over the new window', () => {
     const t = getUsageTracker('c4');
     t.reset();
-    t.apply({ kind: 'message_start', model: 'a', usage: { input_tokens: 190_000 } });
+    t.apply({ kind: 'message_start', msgId: 'm1', model: 'a', usage: { input_tokens: 190_000 } });
     t.apply({ kind: 'system', subtype: 'model_changed', data: { from: 'a', to: 'b' } });
     wrap(<UsageChip inst={base({ id: 'c4', contextWindowTokens: 1_000_000 })} />);
     expect(chip().textContent).toMatch(/^ctx —/);
@@ -688,7 +690,7 @@ describe('context + rate-limit chip', () => {
   it('the popover: totals, the Cost row suppressed for a substitution backend, usage limits tightest first, Fable only when scoped', async () => {
     const t = getUsageTracker('c5');
     t.reset();
-    t.apply({ kind: 'turn_end', usage: { input_tokens: 10, output_tokens: 5 }, costDelta: 0.25, durationMs: 2000 });
+    t.apply(turnEnd({ usage: { input_tokens: 10, output_tokens: 5 }, costDelta: 0.25, durationMs: 2000 }));
     accountUsageStore.set({ usage: { seven_day: { utilization: 38 }, five_hour: { utilization: 45 }, limits: [{ scope: { model: { display_name: 'Fable' } }, percent: 12 }] }, stale: false });
     const r = wrap(<UsageChip inst={base({ id: 'c5' })} />);
     await act(async () => { fireEvent.click(chip()); });
@@ -709,7 +711,7 @@ describe('context + rate-limit chip', () => {
 
   it('a window of 1 is a known capacity: the tooltip names 250,000/1 and never "capacity unknown"', () => {
     getUsageTracker('c7').reset();
-    getUsageTracker('c7').apply({ kind: 'message_start', usage: { input_tokens: 250_000 } });
+    getUsageTracker('c7').apply({ kind: 'message_start', msgId: 'm1', usage: { input_tokens: 250_000 } });
     wrap(<UsageChip inst={base({ id: 'c7', contextWindowTokens: 1 })} />);
     expect(chip().title).toContain('Context: 250,000/1 tokens');
     expect(chip().title).not.toContain('capacity unknown');
@@ -719,8 +721,9 @@ describe('context + rate-limit chip', () => {
   it('null usage blocks from message_start and context_usage leave `ctx —` and the first-turn tooltip', () => {
     const t = getUsageTracker('c8');
     t.reset();
-    t.apply({ kind: 'message_start', usage: null });
-    t.apply({ kind: 'context_usage', usage: null });
+    t.apply({ kind: 'message_start', msgId: 'm1', usage: null });
+    // A null block the type forbids (the parser never emits one): pins the tracker's own `&& ev.usage` guard.
+    t.apply({ kind: 'context_usage', msgId: 'm1', usage: null } as unknown as UiEvent);
     wrap(<UsageChip inst={base({ id: 'c8' })} />);
     expect(chip().textContent).toMatch(/^ctx —/);
     expect(chip().title.startsWith('Context usage appears after the first turn.')).toBe(true);
@@ -737,8 +740,8 @@ describe('context + rate-limit chip', () => {
     t.reset();
     for (const usage of [HAIKU_U1, HAIKU_U2]) {
       t.apply({ kind: 'system', subtype: 'init', data: { model: HAIKU } });
-      t.apply({ kind: 'message_start', model: 'claude-haiku-4-5-20251001', usage });
-      t.apply({ kind: 'turn_end', usage });
+      t.apply({ kind: 'message_start', msgId: 'm1', model: 'claude-haiku-4-5-20251001', usage });
+      t.apply(turnEnd({ usage }));
     }
     wrap(<UsageChip inst={base({ id: 'c9', model: HAIKU, contextWindowTokens: 200_000 })} />);
     expect(chip().textContent).toMatch(/^14%/);
@@ -748,9 +751,9 @@ describe('context + rate-limit chip', () => {
   it('after a switch to a model with no known window, the carried window and the next reading render a percentage, not `ctx —`', () => {
     const t = getUsageTracker('c10');
     t.reset();
-    t.apply({ kind: 'message_start', model: HAIKU, usage: HAIKU_U1 });
+    t.apply({ kind: 'message_start', msgId: 'm1', model: HAIKU, usage: HAIKU_U1 });
     t.apply({ kind: 'system', subtype: 'model_changed', data: { from: HAIKU, to: 'claude-future-9' } });
-    t.apply({ kind: 'message_start', model: 'claude-future-9', usage: HAIKU_U2 });
+    t.apply({ kind: 'message_start', msgId: 'm1', model: 'claude-future-9', usage: HAIKU_U2 });
     wrap(<UsageChip inst={base({ id: 'c10', model: 'claude-future-9', contextWindowTokens: 200_000 })} />);
     expect(chip().textContent).toMatch(/^14%/);
   });

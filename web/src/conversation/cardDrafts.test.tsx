@@ -24,23 +24,25 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { bus } from '@shared/ws';
 import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
-import type { Instance, UiEvent } from '@/state/types';
+import type { Instance } from '@/state/types';
+import type { UiEvent } from '@shared/uiEvent';
 import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { ConversationView } from './ConversationView';
 import { ConversationModel } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 import { FRUIT, SIZE } from './questionTestkit';
+import { turnEnd } from './testkit';
 
 const inst = (id: string): Instance => ({ id, project: 'p', status: 'idle', sessionId: `s-${id}`, mode: 'default' });
 
 /** Two plan cards and two two-question cards, each still awaiting the reader. */
 const TRANSCRIPT: UiEvent[] = [
   { kind: 'user_echo', text: 'plan it', userIndex: 0 },
-  { kind: 'plan_request', toolUseId: 'p1', plan: '# One' },
-  { kind: 'plan_request', toolUseId: 'p2', plan: '# Two' },
+  { kind: 'plan_request', toolUseId: 'p1', plan: '# One', planPath: null },
+  { kind: 'plan_request', toolUseId: 'p2', plan: '# Two', planPath: null },
   { kind: 'user_question', toolUseId: 'q1', questions: [FRUIT, SIZE] },
   { kind: 'user_question', toolUseId: 'q2', questions: [FRUIT, SIZE] },
-  { kind: 'turn_end', subtype: 'success' },
+  turnEnd({ subtype: 'success' }),
 ];
 
 // ── Driving the view ─────────────────────────────────────────────────────
@@ -245,7 +247,7 @@ describe('a transcript replaced in place', () => {
 describe('typing in the middle of a card\'s text', () => {
   it('a plan card\'s feedback keeps the caret where the reader typed', async () => {
     const m = new ConversationModel();
-    m.apply({ kind: 'plan_request', toolUseId: 'p1', plan: '# One' });
+    m.apply({ kind: 'plan_request', toolUseId: 'p1', plan: '# One', planPath: null });
     const { root } = renderModel(m, noActions);
     await flush();
     expect(await typeMidText(textbox(plans(root)[0]))).toBe('aXYbc');
@@ -264,14 +266,14 @@ describe('a card from an older page', () => {
   /** The snapshot's tail starts at seq 10; the page below it carries a plan card and a question card. */
   const OLDER: UiEvent[] = [
     { kind: 'user_echo', text: 'plan it', userIndex: 0, _seq: 1 },
-    { kind: 'plan_request', toolUseId: 'p-old', plan: '# Older', _seq: 2 },
+    { kind: 'plan_request', toolUseId: 'p-old', plan: '# Older', planPath: null, _seq: 2 },
     { kind: 'user_question', toolUseId: 'q-old', questions: [FRUIT], _seq: 3 },
-    { kind: 'turn_end', subtype: 'success', _seq: 4 },
+    turnEnd({ subtype: 'success', _seq: 4 }),
   ];
   const TAIL: UiEvent[] = [
     { kind: 'user_echo', text: 'plan again', userIndex: 1, _seq: 10 },
-    { kind: 'plan_request', toolUseId: 'p-new', plan: '# Newer', _seq: 11 },
-    { kind: 'turn_end', subtype: 'success', _seq: 12 },
+    { kind: 'plan_request', toolUseId: 'p-new', plan: '# Newer', planPath: null, _seq: 11 },
+    turnEnd({ subtype: 'success', _seq: 12 }),
   ];
 
   /** Shows `id`'s tail, then pages OLDER in above it, as scrolling up does. */

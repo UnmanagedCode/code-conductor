@@ -3,6 +3,7 @@ import { ConversationModel, type CompactionNode } from './model';
 import {
   apply, assistants, compactionLabels, feedFrames, groupsOf, groupText, readJsonl, replayLines, serverModules, shape, systemSubtypes, users,
 } from './testkit';
+import type { UiEvent } from '@shared/uiEvent';
 
 let S: Awaited<ReturnType<typeof serverModules>>;
 beforeAll(async () => { S = await serverModules(); });
@@ -149,7 +150,7 @@ describe('compaction bubble', () => {
   }
 
   describe('absorption of the command output is scoped to a compaction', () => {
-    const stdoutEcho = { kind: 'user_echo', text: '<local-command-stdout>x</local-command-stdout>' };
+    const stdoutEcho: UiEvent = { kind: 'user_echo', text: '<local-command-stdout>x</local-command-stdout>' };
     it('a lone stdout echo with no compaction still renders as a user bubble', () => {
       const m = new ConversationModel();
       apply(m, stdoutEcho);
@@ -157,14 +158,14 @@ describe('compaction bubble', () => {
     });
     it('after assistant content closes the window, a stdout echo renders', () => {
       const m = new ConversationModel();
-      apply(m, { kind: 'compaction', trigger: 'auto', preTokens: 5, postTokens: 1 });
+      apply(m, { kind: 'compaction', trigger: 'auto', preTokens: 5, postTokens: 1, durationMs: null });
       apply(m, { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'continuing' });
       apply(m, stdoutEcho);
       expect(users(m)).toHaveLength(1);
     });
     it('any other echo ends the window', () => {
       const m = new ConversationModel();
-      apply(m, { kind: 'compaction', trigger: 'auto', preTokens: 5, postTokens: 1 });
+      apply(m, { kind: 'compaction', trigger: 'auto', preTokens: 5, postTokens: 1, durationMs: null });
       apply(m, { kind: 'user_echo', text: 'next prompt' });
       apply(m, stdoutEcho);
       expect(users(m)).toHaveLength(2);

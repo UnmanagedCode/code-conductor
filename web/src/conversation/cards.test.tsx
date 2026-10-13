@@ -12,7 +12,7 @@ vi.mock('@shared/ws', () => ({
   },
 }));
 
-import { formatUserQuestionAnswers, type UserQuestionAnswer } from '@shared/userQuestionAnswers';
+import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '@shared/userQuestionAnswers';
 import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { appStore } from '@/state/app';
 import { ConversationModel, type QuestionNode } from './model';
@@ -331,8 +331,10 @@ describe('question card', () => {
       m.apply({ kind: 'user_echo', text: 'Banana', userIndex: 2, questionAnswer: { toolUseId: 'tu_q', questions: [FRUIT] } });
       expect(m.items[0]).toMatchObject({ answered: true, answers: [{ kind: 'none' }] });
       const weird = new ConversationModel();
-      weird.prependPage(weird.renderPage([{ kind: 'user_question', toolUseId: 'w', questions: [{ question: 42, options: [] }] }], null, null), null);
-      expect(() => weird.apply({ kind: 'user_echo', text: 'x', questionAnswer: { toolUseId: 'w', questions: [{ question: 42 }] } })).not.toThrow();
+      // Malformed on purpose: a numeric question text the Question type forbids.
+      const bad = [{ question: 42, options: [] }] as unknown as Question[];
+      weird.prependPage(weird.renderPage([{ kind: 'user_question', toolUseId: 'w', questions: bad }], null, null), null);
+      expect(() => weird.apply({ kind: 'user_echo', text: 'x', questionAnswer: { toolUseId: 'w', questions: [{ question: 42 }] as unknown as Question[] } })).not.toThrow();
     });
   });
 });
