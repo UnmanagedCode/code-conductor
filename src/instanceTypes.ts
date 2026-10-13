@@ -350,6 +350,7 @@ export interface InstanceManagerLike {
   conductedSubtreeOf(rootId: string): SubtreeRow[];
   isIdleCaller(instanceId: string): boolean;
   suspendWakes(): void;
+  resumeWakes(): void;
   shutdownForResumeSync(): void;
   create(input: CreateInstanceInput): Promise<InstanceLike>;
   _inUsageWindowFlow(inst: InstanceLike): boolean;
@@ -389,8 +390,8 @@ export interface InstanceManagerLike {
   reevaluateOverageResumes(): void;
   syncOveragePolicy(): void;
   forceUsageTick(): Promise<unknown>;
-  // Restart surface (src/restart.ts / resumeRestart.ts) — the restart routes
-  // pass the manager to scheduleRestart/drainAndScheduleRestart as the
+  // Restart surface (src/restart.ts / resumeRestart.ts) — the restart route
+  // passes the manager to runRestart, whose plain path reads the
   // RestartManagerLike subset.
   shutdownTempSync(): void;
   tempCleanupSnapshot(): Array<{ place: TranscriptPlacement; sessionId: string }>;

@@ -667,3 +667,17 @@ test('suspended wakes deliver nothing on any path', async () => {
   assert.equal(r.hub.subscribers.get('C')?.has('P'), true, 'the release consumed nothing');
   await r.teardown();
 });
+
+// Invariant: resumeWakes (an aborted restart's abortDrain) lifts the suspension —
+// a turn end after it wakes its owner again.
+test('resumed wakes deliver again after a suspension', async () => {
+  const r = rig();
+  const P = r.mk('P'), W = r.mk('W');
+  r.own(P, W); r.start(W);
+  r.instances.suspendWakes();
+  r.instances.resumeWakes();
+  r.end(W);
+  await until(() => P.calls.length === 1);
+  assert.equal(P.calls.length, 1);
+  await r.teardown();
+});

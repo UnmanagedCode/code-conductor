@@ -3,8 +3,8 @@
 // under `systems/fuse/run/` at boot is dead by construction.
 //
 // This is LOAD-BEARING, not defence in depth. Nothing about a running process
-// is persisted anywhere else in cc, and `scheduleRestart` fires
-// `instances.shutdown()` and then `process.exit(0)` ~50 ms later — so the
+// is persisted anywhere else in cc, and a plain restart (`teardownInstances`) fires
+// `instances.shutdown()` and then exits without awaiting it — so the
 // in-process teardown provably does not finish, and the two synchronous
 // shutdown paths (shutdownTempSync, shutdownForResumeSync) cannot run it at all
 // because it is async. This is what covers all three.

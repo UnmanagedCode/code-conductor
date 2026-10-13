@@ -32,7 +32,7 @@ npm run test:web       # web UI suite (Vitest, web/) — not part of npm test
 npm run test:all       # npm test && npm run test:web — the gate for work touching web/
 npm run test:e2e       # web UI end-to-end (Playwright; first: npx playwright install chromium)
 npm run dev:web        # Vite dev server for web/, proxying the API to a running cc (CC_DEV_SERVER)
-npm run build          # build web/ into web/dist/ by hand (the server also builds it at start)
+npm run build          # build web/ into web/dist/ by hand (the server also builds it at start and before a restart)
 PORT=8790 npm run start:isolated   # an isolated cc: scratch projects root + empty Claude config dir (CC_ISOLATED_ROOT), no Claude login
 ```
 
@@ -195,8 +195,9 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
   - **Upgrading strands existing remote transcripts.** Sessions already on disk for a project on a non-local system stay at `~/.claude/projects/<encodeCwd(systemPath)>/`, which cc no longer reads: they stop listing, locating, reading and resuming. Nothing is deleted — the jsonls remain, and the CLI prunes its own `projects/` after ~30 days. There is deliberately no migration.
 - **Remote Systems, the FUSE-union chroot and Voice are per-platform capabilities** (`Platform.capabilities`) — hidden in the UI and refused with a stable code on a platform that turns them off; table in [docs/architecture.md](docs/architecture.md) → `src/platform/`.
 - **Windows: a kill takes up to ~5 s** (an interrupted turn is given time to exit cleanly).
-- **The first start after a `web/` change rebuilds the web UI** — the previous build keeps serving meanwhile; only when no build exists yet does `/` show "Building the interface…" (and refresh itself) until it finishes.
-- **A failed web build with no previous build leaves no UI** — `/` answers `503 text/plain` naming the build error until a build succeeds; the API, MCP and plugin routes stay up. The server log has the details.
+- **A restart or update installs and builds before relaunching** — the sidebar **Restart** (and Settings → About → **Update**, through it) runs `npm install` when `node_modules` differs from `package-lock.json`, and builds the web UI, in the running server; a failure refuses the restart and cc keeps running. cc never installs into a `node_modules` that is a symlink (a worktree's); it refuses and names where to run `npm install`.
+- **A cold start after a `web/` change rebuilds the web UI** (`npm start`, `conductor.sh`, the Windows launcher) — the previous build keeps serving meanwhile; only when no build exists yet does `/` show "Building the interface…" (and refresh itself) until it finishes. A cold start installs nothing.
+- **A failed cold-start build with no previous build leaves no UI** — `/` answers `503 text/plain` naming the build error (and the dependency drift, when `node_modules` is out of sync) until a build succeeds; the API, MCP and plugin routes stay up. The server log has the details.
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
 - **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
 - **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — you are woken when the worker's turn ends.

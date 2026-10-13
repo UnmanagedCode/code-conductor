@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
-import { buildRoutes } from './src/routes.ts';
+import { buildRoutes, type RelaunchOptions } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
 import { InstanceManager, sweepSessionTmpDirs } from './src/instances.ts';
@@ -45,7 +45,7 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager({ claudeLauncher, platform }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
@@ -125,7 +125,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
     onSuccess: () => { claudeAuthStatus.invalidate(); invalidateAccountUsage(); },
   });
   app.use('/api', buildRoutes({
-    instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
+    instances, serverCtx, relaunch, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
     claudeLogin, claudeAuthStatus: claudeAuthStatus.get,
   }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
@@ -198,13 +198,20 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 }
 
 // What the entry block passes to start(), read from the environment. Only
-// CC_SKIP_WEB_BUILD=1 turns the boot build off; tests/run.mjs sets it so the
-// `node server.ts` children the suite spawns never build web/dist.
-export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean } {
-  return { port: Number(env.PORT ?? 8787), host: env.HOST ?? '127.0.0.1', buildWeb: env.CC_SKIP_WEB_BUILD !== '1' };
+// CC_SKIP_WEB_BUILD=1 turns the web build off (at boot and before a restart),
+// and only CC_SKIP_DEPS_SYNC=1 the dependency install before a restart;
+// tests/run.mjs sets both so the `node server.ts` children the suite spawns
+// never build web/dist or install into the shared node_modules.
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean } {
+  return {
+    port: Number(env.PORT ?? 8787),
+    host: env.HOST ?? '127.0.0.1',
+    buildWeb: env.CC_SKIP_WEB_BUILD !== '1',
+    syncDeps: env.CC_SKIP_DEPS_SYNC !== '1',
+  };
 }
 
-export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, webBuild = ensureWebBuild }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean; webBuild?: () => Promise<unknown> } = {}) {
+export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild = ensureWebBuild }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown> } = {}) {
   warnIfNodeUnsupported();
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
@@ -221,7 +228,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   } catch { /* diagnostic only */ }
   // Belt-and-braces cleanup for temp sessions whose jsonl re-appeared after
   // the previous process exited (orphaned subagent writes etc.). The manifest
-  // is written by scheduleRestart in src/restart.ts.
+  // is written by runTempCleanup in src/restart.ts.
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
   // Reclaim session-tmp directories a previous process left behind. They hold
@@ -245,7 +252,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   // unlinks pending-resume.json, which names the sessions it must keep.
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost } = createServer({ platform });
+  const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps } } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)

@@ -16,11 +16,11 @@ import { formatUserQuestionAnswers, isQuestionAnswerShape } from '../shared/user
 import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../shared/forwardFrame.ts';
 import { buildApprovePrompt, buildRejectPrompt, parsePlanDecision } from '../shared/planApproval.ts';
 import {
-  RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK, REBASE_PROMPT_LEAD,
+  RENEW_REQUEST_LEAD, RESTART_NOTICE_TRUNK, RESTART_ABORTED_LEAD, REBASE_PROMPT_LEAD,
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT,
 } from '../shared/injectedTurns.ts';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
-import { RESUME_TEXT, buildWorkersResumeText } from '../src/resumeRestart.ts';
+import { RESUME_TEXT, RESTART_ABORTED_TEXT, buildWorkersResumeText } from '../src/resumeRestart.ts';
 import { buildCombinedResumeText } from '../src/overageResume.ts';
 import { buildRebasePrompt } from '../src/worktrees.ts';
 
@@ -54,6 +54,8 @@ const NOTICES = {
   'renew request lead alone': RENEW_REQUEST_LEAD,
   'renew reseed': buildRenewSeed({ summary: '## Live work roster\n- none', stateBlock: 'state' }),
   'restart trunk alone': RESTART_NOTICE_TRUNK,
+  'restart-aborted notice (RESTART_ABORTED_TEXT)': RESTART_ABORTED_TEXT,
+  'restart-aborted lead alone': RESTART_ABORTED_LEAD,
 };
 const SLASH = {
   '/clear': '/clear',

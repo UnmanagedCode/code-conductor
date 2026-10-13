@@ -184,7 +184,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // ── ARM 4 ────────────────────────────────────────────────────────────────
   // PINS: the ORCHESTRATOR-RESTART path, which is the one nothing in-process
   // covers. `shutdownForResumeSync` cannot run the mount teardown — it is async
-  // and `scheduleRestart` calls `process.exit(0)` ~50 ms later — so a restart
+  // and the restart calls `process.exit(0)` ~50 ms later — so a restart
   // genuinely leaves a LIVE daemon, a LIVE anchor and LIVE mounts behind, owned
   // by nothing. Only the boot sweep, reading the on-disk record, can reclaim
   // them.

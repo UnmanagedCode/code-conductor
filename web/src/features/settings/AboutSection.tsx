@@ -47,13 +47,25 @@ export function AboutSection() {
     try {
       const result = await streamAction('/api/settings/self-update', (t) => selfUpdateStore.set({ log: capLog(selfUpdateStore.get().log, t) }));
       if (result?.npm && !result.npm.ok) {
-        selfUpdateStore.set({ line: { text: 'The update was pulled but npm install failed. Resolve it before restarting.', tone: 'error' } });
+        // A refusal (a linked node_modules) never ran npm: its own message says what to do.
+        const text = result.npm.ran === false && result.npm.error
+          ? `The update was pulled but its dependencies were not installed: ${result.npm.error}`
+          : 'The update was pulled but npm install failed. Resolve it before restarting.';
+        selfUpdateStore.set({ line: { text, tone: 'error' } });
         if (result.npm.tail) selfUpdateStore.set({ log: result.npm.tail });
         selfUpdateStore.set({ label: 'Retry', updating: false });
         return;
       }
       selfUpdateStore.set({ line: { text: 'Update applied. Restarting…', tone: 'ok' } });
-      void performRestart({ resume: true });
+      const restart = await performRestart({ resume: true });
+      if (!restart.ok) {
+        // The pull landed but this process keeps serving the version it booted.
+        selfUpdateStore.set({
+          line: { text: `Updated, but the restart was refused: ${restart.error}. cc is still running the previous version; fix it and restart.`, tone: 'error' },
+          updating: false, canUpdate: false, label: 'Update',
+        });
+        if (restart.tail) selfUpdateStore.set({ log: restart.tail });
+      }
     } catch (e) {
       selfUpdateStore.set({ line: { text: `Update failed: ${errText(e)}`, tone: 'error' } });
       if ((e as HttpError).tail) selfUpdateStore.set({ log: (e as HttpError).tail! });

@@ -31,12 +31,21 @@ export const del = <T = any>(url: string) => json<T>(url, { method: 'DELETE' });
 export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
- * POST a streaming action (`{type:'chunk',text}` lines, then one
+ * POST a streaming action (`{type:'chunk',text,phase?}` lines, then one
  * `{type:'result', ok, result|error, tail?}`). A non-NDJSON answer (an early
- * refusal) is handled as plain JSON.
+ * refusal) is handled as plain JSON. `body` is sent as JSON.
  */
-export async function streamAction(path: string, onChunk: (text: string) => void, method = 'POST'): Promise<any> {
-  const r = await fetch(path, { method, cache: 'no-store' });
+export async function streamAction(
+  path: string,
+  onChunk: (text: string, phase?: string) => void,
+  method = 'POST',
+  { body, fetchImpl = fetch }: { body?: unknown; fetchImpl?: typeof fetch } = {},
+): Promise<any> {
+  const r = await fetchImpl(path, {
+    method,
+    cache: 'no-store',
+    ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  });
   const ct = r.headers.get('content-type') || '';
   if (!ct.includes('ndjson')) {
     const data = await r.json().catch(() => ({}));
@@ -60,7 +69,7 @@ export async function streamAction(path: string, onChunk: (text: string) => void
       buf = buf.slice(idx + 1);
       if (!line) continue;
       const evt = JSON.parse(line);
-      if (evt.type === 'chunk') onChunk(evt.text);
+      if (evt.type === 'chunk') onChunk(evt.text, evt.phase);
       else if (evt.type === 'result') final = evt;
     }
     if (done) break;

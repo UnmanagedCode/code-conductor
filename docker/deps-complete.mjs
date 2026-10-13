@@ -1,14 +1,11 @@
-// Exits 0 when node_modules in the current directory holds every runtime
-// dependency package.json names, 1 (listing the missing ones) otherwise.
-// Checks for node_modules/<dep>/package.json on disk: require.resolve cannot,
-// since a package's `exports` may hide its package.json.
-import fs from 'node:fs';
-import path from 'node:path';
+// Exits 0 when node_modules in the current directory matches package-lock.json,
+// 1 (naming the first offender) otherwise. The rule is src/depsDrift.ts's, the
+// one cc's own restart and self-update use; an --omit=dev install reads as in
+// sync because no dev package is on disk.
+import { dependencyDrift } from '../src/depsDrift.ts';
 
-const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-const missing = Object.keys(pkg.dependencies ?? {})
-  .filter((d) => !fs.existsSync(path.join('node_modules', d, 'package.json')));
-if (missing.length) {
-  console.error(`node_modules is missing: ${missing.join(', ')}`);
+const drift = dependencyDrift(process.cwd());
+if (drift) {
+  console.error(`node_modules is out of sync with package-lock.json: ${drift.reason}`);
   process.exit(1);
 }

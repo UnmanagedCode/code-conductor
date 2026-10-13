@@ -1,8 +1,8 @@
 // docker/deps-complete.mjs is the container entrypoint's "is node_modules
-// installed?" probe: it exits 0 only when every runtime dependency in the
-// checkout's package.json has a node_modules/<dep>/package.json, so a
-// node_modules installed before a dependency was added gets repaired. The
-// entrypoint's deps block is run here too, with a stub npm on PATH.
+// installed?" probe: a thin wrapper over src/depsDrift.ts that exits 0 only when
+// node_modules matches package-lock.json, so a node_modules installed before a
+// dependency was added or bumped gets repaired. The entrypoint's deps block is
+// run here too, with a stub npm on PATH.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,35 +15,59 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROBE = path.resolve(__dirname, '..', 'docker', 'deps-complete.mjs');
 const ENTRYPOINT = path.resolve(__dirname, '..', 'docker', 'entrypoint.sh');
+const DRIFT = path.resolve(__dirname, '..', 'src', 'depsDrift.ts');
 
+// A checkout locking runtime a@1.0.0 and b@2.0.0 plus the dev-only d@1.0.0, with
+// `installed` (name → version) on disk. The probe and the module it imports are
+// copied in at their repo-relative paths, as the entrypoint runs them.
+const LOCK = { 'node_modules/a': { version: '1.0.0' }, 'node_modules/b': { version: '2.0.0' }, 'node_modules/d': { version: '1.0.0', dev: true } };
 function checkout(installed) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-deps-complete-'));
-  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { a: '^1.0.0', b: '^2.0.0' } }));
-  for (const d of installed) {
+  fs.writeFileSync(path.join(dir, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': {}, ...LOCK } }));
+  for (const [d, version] of Object.entries(installed)) {
     fs.mkdirSync(path.join(dir, 'node_modules', d), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'node_modules', d, 'package.json'), JSON.stringify({ name: d }));
+    fs.writeFileSync(path.join(dir, 'node_modules', d, 'package.json'), JSON.stringify({ name: d, version }));
   }
+  fs.mkdirSync(path.join(dir, 'docker'));
+  fs.copyFileSync(PROBE, path.join(dir, 'docker', 'deps-complete.mjs'));
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.copyFileSync(DRIFT, path.join(dir, 'src', 'depsDrift.ts'));
   return dir;
 }
+const probe = (dir) => spawnSync(process.execPath, ['docker/deps-complete.mjs'], { cwd: dir, encoding: 'utf8' });
 
-test('a node_modules missing any runtime dependency is incomplete; one with all of them is complete', (t) => {
-  const partial = checkout(['a']);
-  const full = checkout(['a', 'b']);
-  t.after(() => { fs.rmSync(partial, { recursive: true, force: true }); fs.rmSync(full, { recursive: true, force: true }); });
+test('the probe exits 1 naming the offender on a drifted node_modules, 0 on an in-sync one', async (t) => {
+  const dirs = [];
+  t.after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+  const run = (installed) => { const d = checkout(installed); dirs.push(d); return probe(d); };
 
-  const missing = spawnSync(process.execPath, [PROBE], { cwd: partial, encoding: 'utf8' });
-  assert.equal(missing.status, 1, `partial install: ${missing.stderr}`);
-  const complete = spawnSync(process.execPath, [PROBE], { cwd: full, encoding: 'utf8' });
-  assert.equal(complete.status, 0, `full install: ${complete.stderr}`);
+  await t.test('a runtime dependency missing', () => {
+    const r = run({ a: '1.0.0' });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /node_modules\/b missing/);
+  });
+  await t.test('a runtime dependency at another version than the lock', () => {
+    const r = run({ a: '1.0.0', b: '1.9.0' });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /node_modules\/b 1\.9\.0 ≠ lock 2\.0\.0/);
+  });
+  await t.test('every runtime dependency at its locked version, no dev package (an --omit=dev install)', () => {
+    const r = run({ a: '1.0.0', b: '2.0.0' });
+    assert.equal(r.status, 0, r.stderr);
+  });
+  await t.test('a full install with the dev package too', () => {
+    const r = run({ a: '1.0.0', b: '2.0.0', d: '1.0.0' });
+    assert.equal(r.status, 0, r.stderr);
+  });
 });
 
 test('a dependency directory with no package.json in it (an interrupted install) is incomplete', (t) => {
-  const dir = checkout(['a', 'b']);
+  const dir = checkout({ a: '1.0.0', b: '2.0.0' });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.rmSync(path.join(dir, 'node_modules', 'b', 'package.json'));
   assert.ok(fs.existsSync(path.join(dir, 'node_modules', 'b')), 'fixture check: the directory itself is still there');
 
-  const r = spawnSync(process.execPath, [PROBE], { cwd: dir, encoding: 'utf8' });
+  const r = probe(dir);
   assert.equal(r.status, 1, `stderr: ${r.stderr}`);
 });
 
@@ -58,13 +82,9 @@ test("the entrypoint runs the probe from the checkout and, only when it fails, r
   const stubs = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-deps-npm-'));
   const npmLog = path.join(stubs, 'npm.log');
   fs.writeFileSync(path.join(stubs, 'npm'), `#!/bin/sh\necho "$*" >> "${npmLog}"\n`, { mode: 0o755 });
-  const partial = checkout(['a']);
-  const full = checkout(['a', 'b']);
+  const partial = checkout({ a: '1.0.0' });
+  const full = checkout({ a: '1.0.0', b: '2.0.0' });
   t.after(() => { for (const d of [stubs, partial, full]) fs.rmSync(d, { recursive: true, force: true }); });
-  for (const dir of [partial, full]) {
-    fs.mkdirSync(path.join(dir, 'docker'));
-    fs.copyFileSync(PROBE, path.join(dir, 'docker', 'deps-complete.mjs'));
-  }
 
   const run = (repoDir) => {
     fs.rmSync(npmLog, { force: true });

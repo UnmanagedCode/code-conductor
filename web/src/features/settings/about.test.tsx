@@ -6,7 +6,7 @@ import { ndjsonStream } from './test/ndjson';
 vi.mock('@/app/sessionActions', () => ({ resumeSession: vi.fn(async () => {}) }));
 vi.mock('@/app/controller', () => ({ refreshProjects: vi.fn(async () => {}), refreshInstances: vi.fn(async () => {}) }));
 vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
-vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => {}) }));
+vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => ({ ok: true })) }));
 
 import { performRestart } from '@/features/sidebar/restart';
 import { AboutSection, selfUpdateStore } from './AboutSection';
@@ -84,6 +84,21 @@ describe('About', () => {
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
   });
 
+  // A pulled update whose restart is refused leaves the old version running: the line says so and to fix it, the refusal's tail lands in the log, and no Update is offered again.
+  it('a restart refused after the pull says cc still runs the previous version, with the tail in the log', async () => {
+    vi.mocked(performRestart).mockResolvedValueOnce({ ok: false, error: 'vite build failed (exit 1)', tail: 'error: Unexpected token' });
+    const stream = ndjsonStream();
+    mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
+    render(<AboutSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    act(() => { stream.push({ type: 'chunk', text: 'pulled\n' }); stream.push({ type: 'result', ok: true, result: {} }); stream.end(); });
+    await waitFor(() => expect(line()).toBe('Updated, but the restart was refused: vite build failed (exit 1). cc is still running the previous version; fix it and restart.'));
+    expect(within(versionCard()).getByRole('status').dataset.tone).toBe('error');
+    expect(log()).toBe('error: Unexpected token');
+    expect(performRestart).toHaveBeenCalledWith({ resume: true });
+    expect(buttons()).toEqual([]);
+  });
+
   // A pulled tree whose npm install failed is never booted: no restart, the npm tail replaces the log, and the button re-arms as Retry.
   it('an npm failure after the pull stops before the restart, shows its tail and offers Retry', async () => {
     const stream = ndjsonStream();
@@ -101,6 +116,22 @@ describe('About', () => {
     expect(performRestart).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2));
+  });
+
+  // A refusal that never ran npm (a linked node_modules) names its own reason, not an npm failure; its tail stays in the log and Retry is offered.
+  it('a DEPS_LINKED refusal after the pull shows its own message, never "npm install failed"', async () => {
+    // Invariant: when npm.ran is false the line carries the refusal's message (npm.error) and the log its tail, and nothing restarts.
+    const refusal = 'node_modules is out of sync with package-lock.json (node_modules/vite missing) and is a link to /shared/node_modules, which cc does not install into — run npm install there.';
+    const stream = ndjsonStream();
+    mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
+    render(<AboutSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    act(() => { stream.push({ type: 'result', ok: true, result: { npm: { ran: false, ok: false, code: 1, error: refusal, tail: refusal } } }); stream.end(); });
+    await waitFor(() => expect(line()).toBe(`The update was pulled but its dependencies were not installed: ${refusal}`));
+    expect(line()).not.toContain('npm install failed');
+    expect(log()).toBe(refusal);
+    expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Retry', false]]);
+    expect(performRestart).not.toHaveBeenCalled();
   });
 
   // Reopening About after a finished or failed update starts a fresh check with clean state: no stale Retry, no stale log.

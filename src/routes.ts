@@ -30,8 +30,8 @@ import {
 import { buildPluginApi } from './plugins/api.ts';
 import type { PluginHostApiLike, PluginLibraryApiLike } from './plugins/api.ts';
 import { buildPlaybookApi } from './playbookApi.ts';
-import { scheduleRestart } from './restart.ts';
-import { drainAndScheduleRestart } from './resumeRestart.ts';
+import { runRestart, type RestartPhase } from './restart.ts';
+import { withMaintenanceLock, type RelaunchPrep } from './relaunchPrep.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
@@ -323,6 +323,15 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
+// What POST /admin/restart runs beyond the server handles: which preparation
+// steps are on (server.ts maps CC_SKIP_WEB_BUILD / CC_SKIP_DEPS_SYNC onto
+// `flags`), and — for tests — the steps themselves and the respawn.
+export interface RelaunchOptions {
+  flags: { buildWeb: boolean; syncDeps: boolean };
+  prep?: RelaunchPrep;
+  spawnAndExit?: () => void;
+}
+
 // Body-patch shapes for /settings/models/prefs. The setters own validation
 // (unknown tier/role/level, bad binding → 400), so each field is asserted to
 // the setter's input type and the runtime value passes through unchanged.
@@ -333,10 +342,11 @@ interface RoleBackendPatch { role: string; backend?: unknown }
 interface TierEffortPatch { tier: TierName; effort?: unknown }
 interface RoleEffortPatch { role: string; effort?: unknown }
 
-export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus }:
+export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus }:
   {
     instances?: InstanceManagerLike | null;
     serverCtx?: ServerCtx | null;
+    relaunch?: RelaunchOptions;
     pluginHost?: PluginHostApiLike | null;
     pluginLibrary?: PluginLibraryApiLike | null;
     playbookGate?: PlaybookGate | null;
@@ -372,10 +382,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     }
   }
 
-  // Self-respawn the orchestrator. Sends 202 immediately, then spawns
-  // a detached replacement node process and exits. Frontend's existing
-  // 1s WS reconnect loop handles the brief downtime. No-op if the
-  // server context wasn't wired (in-process test boot).
   // Cheap liveness + per-process identity probe. The client restart flow polls
   // this for a CHANGED bootId to confirm it's talking to the replacement
   // process, not the old one still up during a resume drain (see bootId.ts).
@@ -383,14 +389,39 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     res.json({ ok: true, app: 'code-conductor', pid: process.pid, bootId: BOOT_ID, capabilities });
   });
 
-  r.post('/admin/restart', (req, res) => {
-    res.status(202).json({ ok: true });
-    if (!serverCtx) return;
-    const ctx = { server: serverCtx.server, wss: serverCtx.wss, instances };
-    // `resume:true` ⇒ graceful drain → restart → resurrect (carries temps
-    // over). Otherwise the normal hard restart (wipes temps).
-    if (jsonBody(req).resume) drainAndScheduleRestart(ctx);
-    else scheduleRestart(ctx);
+  // Self-respawn the orchestrator (runRestart, src/restart.ts): prepare, tear
+  // down, spawn a detached replacement, exit. `resume:true` drains live turns
+  // and resurrects them after (carrying temps over); otherwise a plain restart
+  // (temps archived). Streams NDJSON like the self-update below: chunks per
+  // phase, then one result line — `ok:true` once the relaunch is committed and
+  // before networking goes down, `ok:false` when a step refused it and cc keeps
+  // running. A restart or update already in progress answers 409 as plain JSON.
+  // No-op 202 if the server context wasn't wired (in-process test boot).
+  r.post('/admin/restart', (req, res, next) => {
+    if (!serverCtx) { res.status(202).json({ ok: true }); return; }
+    const mode = jsonBody(req).resume ? 'resume' : 'plain';
+    let streaming = false;
+    const write = (obj: unknown) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
+    withMaintenanceLock('restart', () => {
+      streaming = true;
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-store');
+      res.flushHeaders();
+      return runRestart({
+        mode,
+        ctx: { server: serverCtx.server, wss: serverCtx.wss, instances },
+        flags: relaunch.flags,
+        prep: relaunch.prep,
+        spawnAndExit: relaunch.spawnAndExit,
+        onChunk: (phase: RestartPhase, text: string) => write({ type: 'chunk', phase, text }),
+        onCommit: () => { write({ type: 'result', ok: true }); res.end(); },
+      });
+    }).catch((e: unknown) => {
+      if (!streaming) { next(e); return; }
+      if (res.writableEnded) { console.error('restart: failed after it was committed:', errMessage(e)); return; }
+      write({ type: 'result', ok: false, ...errorBody(e), tail: (e as { tail?: unknown }).tail });
+      res.end();
+    });
   });
 
   // Conductor self-update — the app's own git-pull update path, surfaced on

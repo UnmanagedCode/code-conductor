@@ -7,7 +7,7 @@
 // orphans can keep writing to `<sid>/<subagent-sid>.jsonl` after our parent
 // process has already exited, undoing the in-process cleanup.
 //
-// To cover that, `scheduleRestart` writes a manifest to
+// To cover that, `runTempCleanup` (src/restart.ts) writes a manifest to
 // `<orchStoreRoot>/pending-temp-cleanup.json` listing every temp session
 // that needs cleanup. On boot, `sweepPendingTempCleanup` reads the manifest,
 // archives each entry (jsonl kept, subagents dir deleted), then unlinks the

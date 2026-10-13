@@ -21,8 +21,8 @@ const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 // disk. The async `_handleExit` cleanup races process.exit(), so the temp
 // jsonl + subagents dir survived the restart and reappeared in the sidebar
 // as ordinary persistent sessions. `InstanceManager.shutdownTempSync()`
-// performs the cleanup synchronously, and `scheduleRestart` calls it before
-// exiting.
+// performs the cleanup synchronously, and a plain restart calls it (through
+// runTempCleanup) before exiting.
 
 let ctx, baseUrl, instances, claudeProjectsRoot, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });

@@ -130,11 +130,16 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.equal(child.signalCode, null, 'our child must not have been signal-killed');
   assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
-  // Trigger the restart. The server may exit before the fetch resolves
-  // (response is sent immediately, then process.exit kicks in ~50ms
-  // later) — that's fine; either response or aborted connection is OK.
-  await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' })
-    .catch(() => { /* server may close socket before flush */ });
+  // Trigger the restart. The route streams NDJSON and ends it with the
+  // terminal result once the relaunch is committed, before networking goes down
+  // and ~50 ms before the exit, so the whole body arrives.
+  const res = await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /application\/x-ndjson/);
+  const streamed = (await res.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  // Which of the result and the spawn comes first is pinned deterministically by
+  // tests/restart-orchestration.test.mjs; across two pipes here it would race.
+  assert.deepEqual(streamed.at(-1), { type: 'result', ok: true }, `restart result\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
 
   // Wait for the original process to exit.
   const exitCode = await new Promise((resolve) => {
@@ -249,7 +254,8 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   // Assert the wait actually saw the exit, as test 1 does. What this and test
   // 1's matching assertion pin (measured, not assumed): a SYNCHRONOUS HANG in
   // the pre-exit path — a `while (true) {}` in runTempCleanup is killed by
-  // both, since scheduleRestart calls it unconditionally on every restart.
+  // both, since teardownInstances (src/restart.ts, via runRestart) calls it
+  // unconditionally on every plain restart.
   // They do NOT pin `setTimeout(() => process.exit(0), 50)` in src/restart.ts:
   // commenting it out SURVIVES both tests, because after server.close() +
   // wss.close() + the detached spawn the parent's loop drains and it exits 0
