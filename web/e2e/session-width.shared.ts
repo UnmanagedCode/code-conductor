@@ -8,8 +8,8 @@ import { bringTo, reveal, sendAll, tallPrompt } from './flows/stickyPin.ts';
 
 type Ctx = { page: Page; cc: Parameters<typeof spawnSession>[0] };
 
-const LABELS = ['Normal', 'Wide', 'Full'] as const;
-const widthButton = (page: Page, label: string) => page.locator('[data-sidebar-footer]').getByRole('button', { name: `Session width: ${label}` });
+export const LABELS = ['Normal', 'Wide', 'Full'] as const;
+export const widthButton = (page: Page, label: string) => page.locator('[data-sidebar-footer]').getByRole('button', { name: `Session width: ${label}` });
 const list = (page: Page) => page.locator('[data-conversation] [data-session-width]').first();
 const bottom = (page: Page) => page.locator('main > div[data-session-width]');
 
@@ -81,7 +81,7 @@ export async function presetsFlow({ page, cc }: Ctx): Promise<void> {
     expect(Math.abs(m.pinContentLeft - m.listContentLeft), `${label}: the pin column's content box is the list's`).toBeLessThanOrEqual(0.5);
     expect(Math.abs(m.pinContentRight - m.listContentRight), `${label}: the pin column's content box is the list's`).toBeLessThanOrEqual(0.5);
     expect(Math.abs(m.pinBubbleRight - m.liveBubbleRight), `${label}: the pinned bubble's right edge is the live prompt's`).toBeLessThanOrEqual(1);
-    // tallPrompt's paragraphs fill both bubbles to their cap; a short prompt's live bubble would shrink to its text while the pinned one keeps the cap.
+    // Both bubbles span the column from the user inset to its right edge, whatever the prompt's length.
     expect(Math.abs(m.pinBubbleLeft - m.liveBubbleLeft), `${label}: no horizontal shift into the pinned state`).toBeLessThanOrEqual(1);
     expect(Math.abs(m.bodyRight - m.listContentRight), `${label}: assistant content tracks the column edge`).toBeLessThanOrEqual(1);
     if (label !== 'Full') expect(m.listWidth, `${label} is below the available width`).toBeLessThan(m.scrollerClient - 1);

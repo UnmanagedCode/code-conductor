@@ -6,6 +6,8 @@ vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { stickyPrompt } from '@/app/controller';
 import { ConversationView } from './ConversationView';
+import { USER_BUBBLE, USER_INSET, USER_TONE_PROMPT } from './items';
+import { alignClasses, capClasses, marginX, padX, selfAlignClasses, tokens } from './userBubbleTestkit';
 import { pinStore, STATUS_NONE, SWIPE_MIN_PX, type PinState } from './stickyPrompt';
 
 const PINNED: PinState = { kind: 'pinned', html: '<p>first</p>', shift: 0, overflowing: false, pushedOff: false };
@@ -28,10 +30,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   act(() => pinStore.set({ pin: { kind: 'hidden' }, gutter: 0 }));
 });
-
-// Horizontal padding utilities, with any variant prefix: px-, pl-, pr-, ps-, pe-, p-.
-const padX = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*p[xlrse]?-/.test(c)).sort();
-const capClasses = (el: Element) => el.className.split(/\s+/).filter((c) => /^(?:[\w-]+:)*max-w-/.test(c)).sort();
 
 describe('pinned prompt', () => {
   // Invariant: the pin column has the transcript list's width cap and horizontal padding, so their content boxes (and the bubbles in them) coincide.
@@ -97,6 +95,20 @@ describe('pinned prompt', () => {
     show({ ...PINNED, pushedOff: false });
     expect(pin.hidden).toBe(false);
     expect(pin.querySelector('[data-pin-body]') === body).toBe(true);
+  });
+
+  // Invariant: the pinned bubble has the live user item's inset (no cap, not pushed right) and the live prompt bubble's shape and tone.
+  it("the pinned bubble carries the live bubble's inset and shape", () => {
+    const { pin } = mount();
+    show(PINNED);
+    const body = pin.querySelector('[data-pin-body]')!;
+    const wrapper = body.parentElement!;
+    expect(marginX(wrapper).length, 'the pin has a horizontal inset').toBeGreaterThan(0);
+    expect(marginX(wrapper)).toEqual(tokens(USER_INSET));
+    expect(alignClasses(wrapper)).toEqual([]);
+    expect(selfAlignClasses(body)).toEqual([]);
+    expect(tokens(USER_BUBBLE).length, 'the shared shape has classes').toBeGreaterThan(0);
+    expect(body.className.split(/\s+/)).toEqual(expect.arrayContaining([...tokens(USER_BUBBLE), ...tokens(USER_TONE_PROMPT)]));
   });
 
   it("the pin's right edge follows the scrollbar gutter the controller measured", () => {
