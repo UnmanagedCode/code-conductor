@@ -47,5 +47,8 @@ export function openSettings(section?: string) {
 }
 
 export function openPlugin(id: string, subpath = '') {
-  openView(`#plugin/${encodeURIComponent(id)}/${subpath}`);
+  const hash = `#plugin/${encodeURIComponent(id)}/${subpath}`;
+  // A switch between plugins replaces the entry, so a plugin visit costs one entry and Back lands on the conductor.
+  if (location.hash.startsWith('#plugin/')) replaceHash(hash);
+  else openView(hash);
 }

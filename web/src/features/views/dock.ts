@@ -1,20 +1,24 @@
-// The plugin dock's state: which plugin sits in the desktop column beside the
-// session, at which subpath, and whether it is open or collapsed to the rail.
+// The plugin dock's state: which plugin sits in split beside the session, at
+// which subpath, and the mode a pick from Conductor opens. The full view is the
+// route (`#plugin/<id>/<subpath>`) and split is this store; they never coexist.
 // It is the user's place, not a route: persisted per browser, never in the hash.
 import { createStore } from '@/state/createStore';
-import type { Route } from '@/state/route';
+import { routeStore } from '@/state/route';
+import { on } from '@/app/events';
 import { openPlugin } from './api';
-import { leaveView } from './ViewShell';
-import { hashMirror, type RouteMirror } from './plugins';
-import type { DockMode } from './dockLayout';
+import { leaveView, showActiveSession } from './ViewShell';
+import type { RouteMirror } from './plugins';
 
-export type DockState = { id: string | null; subpath: string; open: boolean };
+/** The mode a pick from Conductor opens; written only by the column's toggle. */
+export type DockPref = 'full' | 'split';
+/** `id` is the plugin in split, so it is set only while `mode` is 'split'. */
+export type DockState = { id: string | null; subpath: string; mode: DockPref };
 
 export const DOCK_STORAGE_KEY = 'code-conductor:plugin-dock';
 /** The split panel's width, owned by the resize hook. */
 export const DOCK_WIDTH_STORAGE_KEY = 'code-conductor:plugin-dock-width';
 
-const CLOSED: DockState = { id: null, subpath: '/', open: false };
+const NOTHING: DockState = { id: null, subpath: '/', mode: 'full' };
 
 export function readDockState(): DockState {
   try {
@@ -22,22 +26,37 @@ export function readDockState(): DockState {
     const valid = v !== null && typeof v === 'object'
       && (v.id === null || typeof v.id === 'string')
       && typeof v.subpath === 'string' && v.subpath.startsWith('/')
-      && typeof v.open === 'boolean';
-    return valid ? { id: v.id, subpath: v.subpath, open: v.open } : CLOSED;
+      && (v.mode === 'full' || v.mode === 'split')
+      && (v.id === null || v.mode === 'split');
+    return valid ? { id: v.id, subpath: v.subpath, mode: v.mode } : NOTHING;
   } catch {
-    return CLOSED;
+    return NOTHING;
   }
 }
 
 export const dockStore = createStore<DockState>(readDockState());
 
 dockStore.subscribe(() => {
-  const { id, subpath, open } = dockStore.get();
-  try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ id, subpath, open })); } catch { /* storage unavailable */ }
+  const { id, subpath, mode } = dockStore.get();
+  try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ id, subpath, mode })); } catch { /* storage unavailable */ }
 });
 
-/** Whether the plugin column shows its rail (desktop, beside the session or in the full view); the app clears its toasts from it. */
-export const railStore = createStore<{ shown: boolean }>({ shown: false });
+/** Full and split never coexist: entering the full view (a pick, Expand, a link, Forward) ends split, so leaving it lands on Conductor. Only the transition clears, so Dock to side can select while the route is still leaving the plugin. */
+let inPlugin = routeStore.get().route.view === 'plugin';
+if (inPlugin && dockStore.get().id !== null) closeDock();
+routeStore.subscribe(() => {
+  const now = routeStore.get().route.view === 'plugin';
+  if (now && !inPlugin && dockStore.get().id !== null) closeDock();
+  inPlugin = now;
+});
+
+/** Whether the plugin column fills the main row: the full view, or a split too narrow to fit; `App` hides the main slot while it does. */
+export const dockFullStore = createStore<{ full: boolean }>({ full: false });
+
+/** A session pick closes a full-screen plugin, as in the full view. Only a user's pick: the first-connect restore keeps what a reload restored. */
+on('select', ({ userGesture }) => {
+  if (userGesture && dockFullStore.get().full) closeDock();
+});
 
 /** Split: the docked frame's own navigation is remembered as the dock's subpath. */
 export const dockMirror: RouteMirror = (id, path) => {
@@ -45,49 +64,35 @@ export const dockMirror: RouteMirror = (id, path) => {
   if (id === cur.id && path !== cur.subpath) dockStore.set({ subpath: path });
 };
 
-/** Full view: the frame's navigation goes into the hash, and into the dock when it is the docked plugin, so docking back sends no stale navigate. */
-export const fullMirror: RouteMirror = (id, path) => {
-  hashMirror(id, path);
-  dockMirror(id, path);
-};
-
-/** Dock `id` open; a different plugin starts at its root. */
-export function openDock(id: string) {
-  const cur = dockStore.get();
-  dockStore.set({ id, open: true, subpath: id === cur.id ? cur.subpath : '/' });
-}
-
-export function collapseDock() {
-  dockStore.set({ open: false });
-}
-
-/** Dock `id` at `subpath` and leave the full view (Back, or the session's anchor). */
-export function dockFromFull(id: string, subpath: string) {
-  dockStore.set({ id, subpath, open: true });
-  leaveView();
-}
-
-/** Plugin `id` in the full view: the docked one at the subpath it is on, another at its root. */
-export function expandApp(id: string) {
-  const { id: docked, subpath } = dockStore.get();
-  openPlugin(id, id === docked ? subpath.slice(1) : '');
-}
-
-/** The docked plugin in the full view, at the subpath it is on. */
-export function expandDocked() {
-  const { id } = dockStore.get();
-  if (id) expandApp(id);
-}
-
-/** A rail icon: on the rail `openFromRail` opens it; in split it collapses the docked one or swaps; in full it docks it beside the session. */
-export function pickRailApp(id: string, mode: DockMode, route: Route, openFromRail: (id: string) => void) {
-  const cur = dockStore.get();
-  if (mode === 'full') {
-    dockFromFull(id, id === route.pluginId ? `/${route.pluginPath}` : id === cur.id ? cur.subpath : '/');
-  } else if (mode === 'split') {
-    if (id === cur.id) collapseDock();
-    else openDock(id);
-  } else {
-    openFromRail(id);
+/** The switcher's pick: the full view below md, from a plugin view, or with full remembered; else split beside the session, closing a view that covers it. */
+export function selectApp(id: string, desktop: boolean) {
+  const { view } = routeStore.get().route;
+  if (!desktop || view === 'plugin' || dockStore.get().mode === 'full') {
+    openPlugin(id);
+    return;
   }
+  // The anchor write lands on the session whatever history holds beneath; stepping back could enter a plugin's full view, which ends split and so the pick.
+  if (view !== 'session') showActiveSession();
+  dockStore.set({ id, subpath: '/' });
+}
+
+/** Nothing in split; the remembered mode stays. */
+export function closeDock() {
+  dockStore.set({ id: null, subpath: '/' });
+}
+
+/** Split → full: remembers full and opens the docked plugin's full view at its subpath (entering it ends split). */
+export function expandDock() {
+  const { id, subpath } = dockStore.get();
+  if (!id) return;
+  dockStore.set({ mode: 'full' });
+  openPlugin(id, subpath.slice(1));
+}
+
+/** Full → split: remembers split on the full view's plugin at its page's route, and leaves the full view. */
+export function dockFullView() {
+  const { pluginId, pluginPath } = routeStore.get().route;
+  if (!pluginId) return;
+  dockStore.set({ id: pluginId, subpath: `/${pluginPath}`, mode: 'split' });
+  leaveView();
 }

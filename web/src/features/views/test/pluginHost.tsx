@@ -2,8 +2,8 @@
 // answered at `fetch`, each frame given a stand-in window that records what the
 // host posts to it (happy-dom loads no frame document), and the bridge's route
 // messages dispatched as a frame posts them.
-import { act, render } from '@testing-library/react';
-import { vi } from 'vitest';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { expect, vi } from 'vitest';
 import { App } from '@/App';
 import { appStore } from '@/state/app';
 import { syncRoute } from '@/state/route';
@@ -135,9 +135,20 @@ export const postRoute = (from: StandIn, path: string) => postFrom(from, { cc: 1
 
 export const column = () => document.querySelector('[data-plugin-column]') as HTMLElement | null;
 export const host = () => document.querySelector('[data-plugin-host]') as HTMLElement | null;
-export const rail = () => document.querySelector('nav[aria-label="Plugin dock"]') as HTMLElement | null;
-/** A rail control by label; an app's icon also while it is named as docked. */
-export const railButton = (label: string) => rail()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"], button[aria-label="${label} (docked)"]`) ?? null;
+/** The `aria-label` of every button in the plugin column, in DOM order. */
+export const columnButtons = () => [...(column()?.querySelectorAll('button') ?? [])].map((b) => b.getAttribute('aria-label'));
+/** Clicks the column button named `label`, asserted present. */
+export async function pressColumn(label: string) {
+  const b = column()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`) ?? null;
+  expect(b, `the column's "${label}" control`).not.toBeNull();
+  await act(async () => { fireEvent.click(b!); });
+  await settle();
+}
+/** The session view is mounted and no `[hidden]` ancestor hides it. */
+export const sessionShown = () => {
+  const s = document.querySelector('[data-view="session"]');
+  return s !== null && s.closest('[hidden]') === null;
+};
 export const dockHandle = () => document.querySelector('[role="separator"][aria-label="Resize plugin dock"]') as HTMLElement | null;
 
 /** A drag of the handle by `dx` px: down, one move, up. */
@@ -172,4 +183,59 @@ export function emitWidth(px: number) {
   act(() => {
     for (const o of observed) if (row && o.targets.has(row)) o.cb([{ target: row, contentRect: { width: px } }]);
   });
+}
+
+// ── the app switcher (the sidebar header's Radix DropdownMenu) ──────────────
+
+/** The sidebar column outside the phone drawer. */
+export const sidebar = () => [...document.querySelectorAll('[data-sidebar]')].find((e) => !e.closest('[data-slot="sheet-content"]')) as HTMLElement;
+export const switcher = () => within(sidebar()).queryByRole('button', { name: 'Switch app' });
+
+/** Opens the switcher's menu (focus + ArrowDown, as Radix opens on a keyboard press) and returns it. While it is open Radix hides the rest from role queries. */
+export async function openSwitcher(): Promise<HTMLElement> {
+  const trigger = switcher()!;
+  await act(async () => { trigger.focus(); fireEvent.keyDown(trigger, { key: 'ArrowDown' }); });
+  await settle();
+  return screen.getByRole('menu');
+}
+export async function closeSwitcher() {
+  await act(async () => { fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }); });
+  await settle();
+}
+/** The menu's entries in order, whatever their item role: Conductor, then one per plugin. */
+export const switcherEntries = (menu: HTMLElement) => [...menu.querySelectorAll('[role^="menuitem"]')] as HTMLElement[];
+/** An entry's plugin id; the Conductor entry carries none. */
+export const entryId = (e: HTMLElement) => e.getAttribute('data-app-id') ?? 'conductor';
+/** The ids of the entries marked current. */
+export const checkedApps = (menu: HTMLElement) => switcherEntries(menu).filter((e) => e.getAttribute('aria-checked') === 'true').map(entryId);
+/** The ids of the checked entries, read by opening and closing the menu. */
+export async function checkedNow(): Promise<string[]> {
+  const menu = await openSwitcher();
+  const out = checkedApps(menu);
+  await closeSwitcher();
+  return out;
+}
+/** Picks the entry `id` ('conductor' for Conductor) from the switcher. */
+export async function pickApp(id: string) {
+  const menu = await openSwitcher();
+  const entry = switcherEntries(menu).find((e) => entryId(e) === id);
+  expect(entry, `the switcher's "${id}" entry`).toBeTruthy();
+  await act(async () => { fireEvent.click(entry!); });
+  await settle();
+}
+
+// ── the dock fixture shared by the dock suites ──────────────────────────────
+
+/** Two apps, one plain and one keep-alive, in catalog order. */
+export const DOCK_CATALOG: PluginRow[] = [
+  { id: 'alpha', name: 'Alpha', enabled: true, hasFrontend: true, frontendKeepAlive: false, state: 'ready' },
+  { id: 'beta', name: 'Beta', enabled: true, hasFrontend: true, frontendKeepAlive: true, state: 'ready' },
+];
+
+/** Plugin `id` in split: picked (the full view, with nothing remembered), then Dock to side. */
+export async function dockSplit(id: string) {
+  await pickApp(id);
+  await pressColumn('Dock to side');
+  expect(viewOpen(), `fixture check: ${id} split, its section shown`).toBe(true);
+  expect(sessionShown(), `fixture check: ${id} split, beside the session`).toBe(true);
 }

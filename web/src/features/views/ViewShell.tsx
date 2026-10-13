@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Kbd } from '@/components/ui/kbd';
 import { appStore, activeInstance } from '@/state/app';
-import { closeView } from '@/state/route';
+import { closeView, syncRoute } from '@/state/route';
+import { writeSessionAnchor } from '@shared/anchor';
 import { uiStore } from '@/app/ui';
 import { cn } from '@/lib/utils';
 
@@ -13,18 +14,24 @@ export function leaveView() {
   closeView(activeInstance(appStore.get())?.sessionId ?? null);
 }
 
-/** Escape closes the view, unless a dialog or menu is open (it closes those first). */
-export function useEscapeToClose(enabled = true) {
+/** Show the active session by writing its anchor, never history.back(): no entry beneath is known to be the session's (a deep link, a stacked view). */
+export function showActiveSession() {
+  writeSessionAnchor(activeInstance(appStore.get())?.sessionId ?? null);
+  syncRoute();
+}
+
+/** Escape runs `onClose` (default: leave the view), unless a dialog or menu is open (it closes those first). */
+export function useEscapeToClose(enabled = true, onClose: () => void = leaveView) {
   React.useEffect(() => {
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       if (document.querySelector('[role="dialog"][data-state="open"], [role="menu"][data-state="open"]')) return;
-      leaveView();
+      onClose();
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [enabled]);
+  }, [enabled, onClose]);
 }
 
 /** The frame every full-page view shares: back button, title, stats, actions, scrolling body. */

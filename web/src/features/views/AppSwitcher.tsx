@@ -9,21 +9,22 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { OctopusMark } from '@/components/mascot/Octopus';
 import { useSignal, useStore } from '@/state/createStore';
-import { appStore, activeInstance } from '@/state/app';
-import { syncRoute, useRoute } from '@/state/route';
-import { writeSessionAnchor } from '@shared/anchor';
+import { useRoute } from '@/state/route';
 import { closeSidebarOnMobile } from '@/app/ui';
 import { pluginsChangedSignal } from '@/features/settings/pluginsSignal';
-import { openPlugin } from './api';
+import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { appLabel, catalogStore, pluginFrames, refreshCatalog, residentSignal, RESIDENT_SUFFIX } from './plugins';
+import { shownApp } from './dockLayout';
+import { closeDock, dockStore, selectApp } from './dock';
+import { showActiveSession } from './ViewShell';
 
 /** The Conductor entry's value in the switcher's radio group; no plugin id is empty. */
 const CONDUCTOR = '';
 
-/** Back to Conductor: the active session's anchor, never history.back() (no usable entry on a deep link). */
+/** Back to Conductor: no plugin in split, and the active session. */
 export function exitToConductor() {
-  writeSessionAnchor(activeInstance(appStore.get())?.sessionId ?? null);
-  syncRoute();
+  closeDock();
+  showActiveSession();
   closeSidebarOnMobile();
 }
 
@@ -31,6 +32,8 @@ export function exitToConductor() {
 export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: React.ReactNode }) {
   const apps = useStore(catalogStore, (s) => s.apps);
   const route = useRoute();
+  const dockId = useStore(dockStore, (s) => s.id);
+  const desktop = useMediaQuery(WIDE_QUERY);
   useSignal(residentSignal);
   const pluginsRev = useSignal(pluginsChangedSignal);
   React.useEffect(() => { void refreshCatalog(); }, [pluginsRev]);
@@ -43,7 +46,7 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
       </div>
     );
   }
-  const currentId = route.view === 'plugin' ? route.pluginId : null;
+  const currentId = shownApp({ desktop, view: route.view, routePluginId: route.pluginId, catalogIds: apps.map((p) => p.id), dockId });
   const current = apps.find((p) => p.id === currentId) ?? null;
   const live = new Set(pluginFrames.residentIds());
   return (
@@ -61,7 +64,7 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Apps</DropdownMenuLabel>
-        {/* The current app is the checked entry (Conductor while the route names no listed plugin). Picking the open plugin, or Conductor from Conductor, changes nothing; picking Conductor while the route names an unlisted plugin leaves its view. */}
+        {/* The checked entry is the plugin on screen, full or split (Conductor while none, or the route names an unlisted plugin). Picking the shown plugin, or Conductor from Conductor, changes nothing; picking Conductor while the route names an unlisted plugin leaves its view. */}
         <DropdownMenuRadioGroup value={current?.id ?? CONDUCTOR}>
           <DropdownMenuRadioItem value={CONDUCTOR} onSelect={() => { if (currentId) exitToConductor(); }}>
             <OctopusMark className="size-4 text-primary" />
@@ -69,7 +72,7 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
           </DropdownMenuRadioItem>
           <DropdownMenuSeparator />
           {apps.map((p) => (
-            <DropdownMenuRadioItem key={p.id} value={p.id} onSelect={() => { if (currentId !== p.id) openPlugin(p.id); }} data-app-id={p.id}>
+            <DropdownMenuRadioItem key={p.id} value={p.id} onSelect={() => { if (currentId !== p.id) selectApp(p.id, desktop); }} data-app-id={p.id}>
               <PlugIcon />
               <span className="flex-1 truncate">{appLabel(p) + (live.has(p.id) ? RESIDENT_SUFFIX : '')}</span>
             </DropdownMenuRadioItem>
