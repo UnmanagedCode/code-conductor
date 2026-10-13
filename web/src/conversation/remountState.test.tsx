@@ -1,8 +1,8 @@
 // What the reader opened, closed or flipped to raw in the transcript, as a full-page
 // view (Settings, review, …) leaves it: the view unmounts and mounts again on the same
 // transcript, and every toggle comes back as the reader left it. A transcript replaced in
-// place (a reconnect's snapshot, another session, a rewind) starts every toggle at its
-// default again.
+// place (a reconnect's snapshot, another session) starts every toggle at its default
+// again.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 
@@ -261,17 +261,5 @@ describe('a transcript replaced in place', () => {
     act(() => { selectInstance('i1'); });
     await snapshot('i1', TRANSCRIPT);
     await expectDefaults(el, 'back on the first');
-  });
-
-  it('a rewind starts every toggle of the replayed transcript at its default', async () => {
-    const { el } = mount();
-    await snapshot('i1', TRANSCRIPT);
-    await setTools(el);
-    await setFolds(el);
-    expect({ ...tools(el), ...folds(el) }, 'precondition: every toggle set').toEqual({ ...TOOLS_SET, ...FOLDS_SET });
-    // The server wipes the ring, sends the empty reset, then streams the replay as live frames.
-    await frame('reset_snapshot', { id: 'i1', events: [] });
-    for (const ev of TRANSCRIPT) await frame('event', { id: 'i1', ev });
-    await expectDefaults(el, 'after the rewind');
   });
 });

@@ -12,8 +12,11 @@
 //                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
 //                          (older history — ring and earlier segments — is paged via
 //                          GET /api/instances/:id/lineage-events)
+//                          (no event/segment/reset_snapshot frame for the instance
+//                          precedes it after a subscribe; those emitted while it is
+//                          built follow it, in order — a status frame is not held)
 //   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...], droppedText? } // droppedText ⇒ rewind prefill
-//   { t: "event",          id, ev }
+//   { t: "event",          id, ev }                 // never a pull-only (replayed history) event
 //   { t: "segment",        id, currentSegmentId }  // before every forwarded outer system/init
 //   { t: "status",         id, status, sessionId, mode, model, autoApprovePlan, playbookEnforcement,
 //                          interrupting, modelSwitch, modelSwitchFailure }
@@ -41,6 +44,9 @@ export interface WsHubOptions {
 
 export function attachWsHub({ wss, instances }: WsHubOptions): void {
   const subscribers = new Map<string, Set<WebSocket>>(); // instanceId -> Set<ws>
+  // Per-instance frames held back from a socket while its subscribe snapshot is
+  // being built (ws -> instanceId -> frames), flushed right after the snapshot.
+  const pending = new WeakMap<WebSocket, Map<string, string[]>>();
 
   function subsFor(id: string): Set<WebSocket> {
     let s = subscribers.get(id);
@@ -48,7 +54,10 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     return s;
   }
 
-  instances.on('event', ({ id, ev }: { id: string; ev: UiEvent | null }) => {
+  instances.on('event', ({ id, ev, pullOnly }: { id: string; ev: UiEvent | null; pullOnly?: boolean }) => {
+    // Replayed history reaches a client through the snapshot it pulls after
+    // the live `history_replayed`, never as one frame per event.
+    if (pullOnly) return;
     const subs = subscribers.get(id);
     if (subs) {
       const inst = instances.get(id);
@@ -63,7 +72,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       }
       const out = inst && ev ? insertRingSeamDividers([ev], inst.ring.seams, inst.ring.trimmedBefore) : [ev];
       for (const e of out) frames.push(JSON.stringify({ t: 'event', id, ev: e }));
-      for (const ws of subs) for (const msg of frames) safeSend(ws, msg);
+      for (const ws of subs) for (const msg of frames) sendInstanceFrame(ws, id, msg);
     }
   });
 
@@ -127,14 +136,15 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
 
   // Rewind: server-side, the instance's ring buffer was just wiped and the
   // subprocess respawned against a truncated jsonl. Subscribers need to
-  // drop their current conversation DOM before the replayed events from
-  // the new spawn start landing — that's what `reset_snapshot` does. Same
-  // shape as `snapshot` so the client can apply it through the same path.
+  // drop their current conversation DOM before the new spawn's history
+  // lands — that's what `reset_snapshot` does; the history itself follows as a
+  // pulled snapshot after the live `history_replayed`. Same shape as
+  // `snapshot` so the client can apply it through the same path.
   instances.on('snapshot_reset', (snap: { id: string }) => {
     const subs = subscribers.get(snap.id);
     if (!subs) return;
     const msg = JSON.stringify({ t: 'reset_snapshot', ...snap });
-    for (const ws of subs) safeSend(ws, msg);
+    for (const ws of subs) sendInstanceFrame(ws, snap.id, msg);
   });
 
   function broadcastAll(msg: string): void {
@@ -147,7 +157,99 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     }
   }
 
+  // The event, segment and reset_snapshot frames go through here, so none of
+  // them can overtake the snapshot a subscribe is building. A status frame is
+  // not held: the client's snapshot handler does not depend on its order.
+  function sendInstanceFrame(ws: WebSocket, id: string, msg: string): void {
+    const held = pending.get(ws)?.get(id);
+    if (held) held.push(msg);
+    else safeSend(ws, msg);
+  }
+
+  // The subscribe snapshot. Everything it carries from the ring is captured in
+  // ONE synchronous step together with joining the subscriber set and starting
+  // the hold, and the tail is copied there: an open text/thinking slot grows in
+  // place (EventLog.push folds later same-block deltas into it and emits them
+  // seq-less), so a copy taken later would also hold a delta the held frames
+  // carry. The snapshot is therefore the ring as of the capture and the held
+  // frames are exactly what was emitted after it — the client appends a held
+  // delta onto the frozen slot as it does for any mid-block subscribe — so
+  // nothing at the seam is lost or doubled however long the await runs
+  // (reconstructActiveTasks can read the archive).
+  async function sendSnapshot(ws: WebSocket, id: string, inst: InstanceLike): Promise<void> {
+    subsFor(id).add(ws);
+    const held: string[] = [];
+    let mine = pending.get(ws);
+    if (!mine) { mine = new Map(); pending.set(ws, mine); }
+    mine.set(id, held);
+    try {
+      // Tail-only snapshot: at most ORCH_SNAPSHOT_TAIL (default DEFAULT_SNAPSHOT_TAIL)
+      // trailing events, snapped to a turn boundary. tailStartSeq > 0
+      // tells the client older history exists — it lazy-loads it via
+      // GET /api/instances/:id/lineage-events?before=<seq>.
+      const tail = inst.snapshotTail();
+      const trimmedBefore = inst.ring.trimmedBefore;
+      const tailStartSeq = tail.length ? Number(tail[0]._seq) : trimmedBefore;
+      const tailSegmentId = segmentOfSeq(inst.ring.seams, tailStartSeq) ?? inst.backingSessionId ?? null;
+      const currentSegmentId = currentSegmentScope(inst).segmentId ?? null;
+      const events: UiEvent[] = insertRingSeamDividers(tail, inst.ring.seams, trimmedBefore).map(ev => ({ ...ev }));
+      const liveThinkingTokens = inst.liveThinkingTokens;
+      const lastContextUsage = inst.lastContextUsage;
+      const tasksAtTailStart = await inst.reconstructActiveTasks(tailStartSeq);
+      // Re-attach the ephemeral thinking-token counter when a block is
+      // still streaming (the per-token events aren't retained in the ring
+      // — see EventLog.push). Appended LAST so the client applies it to
+      // the reconstructed open thinking block; seq-less so it never enters
+      // dedup/paging.
+      if (liveThinkingTokens != null) {
+        events.push({ kind: 'system', subtype: 'thinking_tokens',
+          data: { estimated_tokens: liveThinkingTokens } });
+      }
+      // Fork prefill rides the new instance's first snapshot as
+      // `droppedText` (consumed once — later subscribes get null),
+      // the inline analogue of rewind's `reset_snapshot` droppedText.
+      const droppedText = inst.consumePrefill();
+      safeSend(ws, JSON.stringify({
+        t: 'snapshot',
+        id: inst.id,
+        project: inst.project,
+        status: inst.status,
+        mode: inst.mode,
+        sessionId: inst.sessionId,
+        autoApprovePlan: !!inst.autoApprovePlan,
+        playbookEnforcement: inst.playbookEnforcement,
+        interrupting: !!inst.interrupting,
+        events,
+        tailStartSeq,
+        trimmedBefore,
+        // Provenance of the tail's first event, and the segment rewind/fork
+        // may act on — the client keys its user-bubble actions on the two.
+        tailSegmentId,
+        currentSegmentId,
+        // In-flight task batch as of the tail start, so the client panel
+        // reflects a batch whose TaskCreate is below the tail.
+        tasksAtTailStart,
+        // Current context-size reading (last message_start.usage, or
+        // context_usage.usage on a backend whose message_start is
+        // all-zero), so the client's UsageTracker seeds correctly when the
+        // tail's quiescent snap left every message_start below the window —
+        // the case for a turn whose final text block is longer than the
+        // tail — and, for a context_usage reading, at any tail length,
+        // since that kind is never retained. A FIELD, not
+        // an appended event like the thinking counter above: a synthetic
+        // message_start in events[] would also reach conversation.apply.
+        lastContextUsage,
+        ...(droppedText != null ? { droppedText } : {}),
+      }));
+    } finally {
+      // Flushed even when the build threw, so no live frame is lost.
+      mine.delete(id);
+      for (const msg of held) safeSend(ws, msg);
+    }
+  }
+
   wss.on('connection', (ws) => {
+    let subscribeChain: Promise<void> = Promise.resolve();
     ws.on('message', async (raw) => {
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; }
@@ -162,63 +264,11 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
         switch (t) {
           case 'subscribe': {
             if (!inst || !id) { reply(false, 'unknown instance'); return; }
-            subsFor(id).add(ws);
-            // Tail-only snapshot: at most ORCH_SNAPSHOT_TAIL (default DEFAULT_SNAPSHOT_TAIL)
-            // trailing events, snapped to a turn boundary. tailStartSeq > 0
-            // tells the client older history exists — it lazy-loads it via
-            // GET /api/instances/:id/events?before=<seq>.
-            const tail = inst.snapshotTail();
-            const tailStartSeq = tail.length ? Number(tail[0]._seq) : inst.ring.trimmedBefore;
-            // Captured with the tail, before the await below.
-            const tailSegmentId = segmentOfSeq(inst.ring.seams, tailStartSeq) ?? inst.backingSessionId ?? null;
-            const currentSegmentId = currentSegmentScope(inst).segmentId ?? null;
-            const events = insertRingSeamDividers(tail, inst.ring.seams, inst.ring.trimmedBefore);
-            const tasksAtTailStart = await inst.reconstructActiveTasks(tailStartSeq);
-            // Re-attach the ephemeral thinking-token counter when a block is
-            // still streaming (the per-token events aren't retained in the ring
-            // — see EventLog.push). Appended LAST so the client applies it to
-            // the reconstructed open thinking block; seq-less so it never enters
-            // dedup/paging. tailStartSeq/tasks are computed from ring events above.
-            if (inst.liveThinkingTokens != null) {
-              events.push({ kind: 'system', subtype: 'thinking_tokens',
-                data: { estimated_tokens: inst.liveThinkingTokens } });
-            }
-            // Fork prefill rides the new instance's first snapshot as
-            // `droppedText` (consumed once — later subscribes get null),
-            // the inline analogue of rewind's `reset_snapshot` droppedText.
-            const droppedText = inst.consumePrefill();
-            safeSend(ws, JSON.stringify({
-              t: 'snapshot',
-              id: inst.id,
-              project: inst.project,
-              status: inst.status,
-              mode: inst.mode,
-              sessionId: inst.sessionId,
-              autoApprovePlan: !!inst.autoApprovePlan,
-              playbookEnforcement: inst.playbookEnforcement,
-              interrupting: !!inst.interrupting,
-              events,
-              tailStartSeq,
-              trimmedBefore: inst.ring.trimmedBefore,
-              // Provenance of the tail's first event, and the segment rewind/fork
-              // may act on — the client keys its user-bubble actions on the two.
-              tailSegmentId,
-              currentSegmentId,
-              // In-flight task batch as of the tail start, so the client panel
-              // reflects a batch whose TaskCreate is below the tail.
-              tasksAtTailStart,
-              // Current context-size reading (last message_start.usage, or
-              // context_usage.usage on a backend whose message_start is
-              // all-zero), so the client's UsageTracker seeds correctly when the
-              // tail's quiescent snap left every message_start below the window —
-              // the case for a turn whose final text block is longer than the
-              // tail — and, for a context_usage reading, at any tail length,
-              // since that kind is never retained. A FIELD, not
-              // an appended event like the thinking counter above: a synthetic
-              // message_start in events[] would also reach conversation.apply.
-              lastContextUsage: inst.lastContextUsage,
-              ...(droppedText != null ? { droppedText } : {}),
-            }));
+            // Serialized per connection: two subscribes on one socket never
+            // build their snapshots, or hold its frames, at the same time.
+            const run = subscribeChain.then(() => sendSnapshot(ws, id, inst));
+            subscribeChain = run.catch(() => {});
+            await run;
             reply(true);
             return;
           }

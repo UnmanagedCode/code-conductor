@@ -2,8 +2,8 @@
 // and the question card's tab, picks and note. A full-page view (Settings, review, …)
 // unmounts the transcript and mounts it again on the same model, and every card comes back
 // as the reader left it; a sent plan keeps the feedback it sent, and one whose send failed
-// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session,
-// a rewind) starts every card empty. Typing in the middle of a card's text keeps the caret.
+// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session)
+// starts every card empty. Typing in the middle of a card's text keeps the caret.
 // A card that paged in from an older page re-opens after a failed send the same way.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
@@ -233,14 +233,6 @@ describe('a transcript replaced in place', () => {
     act(() => { selectInstance('i1'); });
     await snapshot('i1', TRANSCRIPT);
     expect(cards(el), 'back on the first').toEqual(START);
-  });
-
-  it('a rewind starts every card of the replayed transcript empty', async () => {
-    const el = await setAndRemount();
-    // The server wipes the ring, sends the empty reset, then streams the replay as live frames.
-    await frame('reset_snapshot', { id: 'i1', events: [] });
-    for (const ev of TRANSCRIPT) await frame('event', { id: 'i1', ev });
-    expect(cards(el)).toEqual(START);
   });
 });
 
