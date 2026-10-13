@@ -53,7 +53,15 @@ export function AboutSection() {
         return;
       }
       selfUpdateStore.set({ line: { text: 'Update applied. Restarting…', tone: 'ok' } });
-      void performRestart({ resume: true });
+      const restart = await performRestart({ resume: true });
+      if (!restart.ok) {
+        // The pull landed but this process keeps serving the version it booted.
+        selfUpdateStore.set({
+          line: { text: `Updated, but the restart was refused: ${restart.error}. cc is still running the previous version; fix it and restart.`, tone: 'error' },
+          updating: false, canUpdate: false, label: 'Update',
+        });
+        if (restart.tail) selfUpdateStore.set({ log: restart.tail });
+      }
     } catch (e) {
       selfUpdateStore.set({ line: { text: `Update failed: ${errText(e)}`, tone: 'error' } });
       if ((e as HttpError).tail) selfUpdateStore.set({ log: (e as HttpError).tail! });

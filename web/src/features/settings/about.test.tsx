@@ -6,7 +6,7 @@ import { ndjsonStream } from './test/ndjson';
 vi.mock('@/app/sessionActions', () => ({ resumeSession: vi.fn(async () => {}) }));
 vi.mock('@/app/controller', () => ({ refreshProjects: vi.fn(async () => {}), refreshInstances: vi.fn(async () => {}) }));
 vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
-vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => {}) }));
+vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => ({ ok: true })) }));
 
 import { performRestart } from '@/features/sidebar/restart';
 import { AboutSection, selfUpdateStore } from './AboutSection';
@@ -82,6 +82,21 @@ describe('About', () => {
     expect(performRestart).toHaveBeenCalledWith({ resume: true });
     // After a successful update nothing re-arms Update while the restart is in flight.
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
+  });
+
+  // A pulled update whose restart is refused leaves the old version running: the line says so and to fix it, the refusal's tail lands in the log, and no Update is offered again.
+  it('a restart refused after the pull says cc still runs the previous version, with the tail in the log', async () => {
+    vi.mocked(performRestart).mockResolvedValueOnce({ ok: false, error: 'vite build failed (exit 1)', tail: 'error: Unexpected token' });
+    const stream = ndjsonStream();
+    mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
+    render(<AboutSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    act(() => { stream.push({ type: 'chunk', text: 'pulled\n' }); stream.push({ type: 'result', ok: true, result: {} }); stream.end(); });
+    await waitFor(() => expect(line()).toBe('Updated, but the restart was refused: vite build failed (exit 1). cc is still running the previous version; fix it and restart.'));
+    expect(within(versionCard()).getByRole('status').dataset.tone).toBe('error');
+    expect(log()).toBe('error: Unexpected token');
+    expect(performRestart).toHaveBeenCalledWith({ resume: true });
+    expect(buttons()).toEqual([]);
   });
 
   // A pulled tree whose npm install failed is never booted: no restart, the npm tail replaces the log, and the button re-arms as Retry.
