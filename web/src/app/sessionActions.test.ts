@@ -18,6 +18,7 @@ vi.mock('./controller', () => ({
   selectInstance: vi.fn(),
   send: vi.fn(),
   subscribe: vi.fn(),
+  ensureSubscribed: vi.fn(),
 }));
 
 import { CLOSE_TITLES, closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
@@ -338,26 +339,27 @@ describe('promote, resume, rewind, fork, delete', () => {
 });
 
 describe('resuming the active session', () => {
-  it('respawnActive POSTs the active instance\'s respawn route, refreshes and resubscribes; a refusal toasts Resume failed', async () => {
+  it('respawnActive POSTs the active instance\'s respawn route, refreshes and subscribes it unless it already is; a refusal toasts Resume failed', async () => {
     stubFetch(() => ({ body: { ok: true } }));
     appStore.set({ activeId: 'A' });
     await respawnActive();
     expect(calls.map((c) => [c.url, c.method])).toEqual([['/api/instances/A/respawn', 'POST']]);
     expect(controller.refreshInstances).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(controller.subscribe).mock.calls).toEqual([['A']]);
+    expect(vi.mocked(controller.ensureSubscribed).mock.calls).toEqual([['A']]);
+    expect(controller.subscribe).not.toHaveBeenCalled();
     expect(toasts).toEqual([]);
 
     calls = [];
     vi.mocked(controller.refreshInstances).mockClear();
     vi.mocked(controller.send).mockClear();
-    vi.mocked(controller.subscribe).mockClear();
+    vi.mocked(controller.ensureSubscribed).mockClear();
     stubFetch(() => ({ status: 409, body: { error: 'instance is already running' } }));
     await respawnActive();
     expect(calls.map((c) => [c.url, c.method])).toEqual([['/api/instances/A/respawn', 'POST']]);
     expect(toasts).toEqual([['error', 'Resume failed', 'instance is already running']]);
     expect(controller.refreshInstances).not.toHaveBeenCalled();
     expect(controller.send).not.toHaveBeenCalled();
-    expect(controller.subscribe).not.toHaveBeenCalled();
+    expect(controller.ensureSubscribed).not.toHaveBeenCalled();
 
     calls = [];
     toasts.length = 0;

@@ -35,18 +35,26 @@ export const stickyPrompt = createStickyPrompt({
 
 // ── REST refreshers ──────────────────────────────────────────────────────
 
+/** How long one list read may run before it is abandoned: well past a cold `/api/projects` under load. */
+export const READ_TIMEOUT_MS = 15_000;
+
 /**
  * Reads of one list, never overlapping: at most one in flight plus one trailing
  * read, however many `refresh()` calls arrive. Hints come in bursts (two
  * projects created together; a status flip's `instances` and `projects`), so a
- * call made while a read is in flight shares the one trailing read, which starts
- * once that read settles (landed or failed). A call's promise therefore settles
- * only after a read that started after the call, so when a refresh resolves the
- * store holds a list at least as new as that refresh, and reads cannot land out
- * of order. `supersede()` drops the result of the read in flight (a trailing read
- * started later is unaffected): for a change the in-flight read cannot reflect.
+ * call made while a read is in flight JOINS the one trailing read, which starts
+ * once that read settles (landed, failed or timed out). A joining call's promise
+ * therefore settles only after a read that started after the call, so when it
+ * resolves the store holds a list at least as new as that call, and reads cannot
+ * land out of order. A call that starts a read settles when that read does.
+ * `supersede()` drops the result of the read in flight (a trailing read started
+ * later is unaffected), for a change that read cannot reflect; the call that
+ * started it still settles when it does, with its result unapplied.
+ *
+ * A read still running after `READ_TIMEOUT_MS` is aborted and fails like any
+ * other failed read, so one hung request never holds every later refresh.
  */
-function coalescedReads<T>(read: () => Promise<T>, apply: (data: T) => void) {
+function coalescedReads<T>(read: (signal: AbortSignal) => Promise<T>, apply: (data: T) => void) {
   type Waiter = { resolve: () => void; reject: (e: unknown) => void };
   let generation = 0;
   let running = false;
@@ -56,7 +64,20 @@ function coalescedReads<T>(read: () => Promise<T>, apply: (data: T) => void) {
     const mine = generation;
     running = true;
     const p = (async () => {
-      const data = await read();
+      const ctl = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          ctl.abort();
+          reject(new Error(`list read timed out after ${READ_TIMEOUT_MS} ms`));
+        }, READ_TIMEOUT_MS);
+      });
+      let data: T;
+      try {
+        data = await Promise.race([read(ctl.signal), timedOut]);
+      } finally {
+        clearTimeout(timer);
+      }
       if (mine === generation) apply(data);
     })();
     const settled = () => {
@@ -83,11 +104,11 @@ function coalescedReads<T>(read: () => Promise<T>, apply: (data: T) => void) {
   };
 }
 
-const projectReads = coalescedReads(() => Promise.all([
-    apiFetch('/api/projects'),
-    apiFetch('/api/workspaces').catch(() => []),
-    apiFetch('/api/projects/.conduct/sessions').catch(() => []),
-    apiFetch('/api/conductors/projects').catch(() => ({})),
+const projectReads = coalescedReads((signal) => Promise.all([
+    apiFetch('/api/projects', { signal }),
+    apiFetch('/api/workspaces', { signal }).catch(() => []),
+    apiFetch('/api/projects/.conduct/sessions', { signal }).catch(() => []),
+    apiFetch('/api/conductors/projects', { signal }).catch(() => ({})),
   ]), ([projects, workspaces, conductSessions, conductorSpawns]) => {
   appStore.set({
     projects: Array.isArray(projects) ? projects : [],
@@ -99,7 +120,7 @@ const projectReads = coalescedReads(() => Promise.all([
 export const refreshProjects = projectReads.refresh;
 
 const instanceReads = coalescedReads(
-  () => apiFetch<Instance[]>('/api/instances'),
+  (signal) => apiFetch<Instance[]>('/api/instances', { signal }),
   (data: Instance[]) => {
     instancesLanded = true;
     appStore.set({ instances: Array.isArray(data) ? data : [] });
@@ -144,6 +165,11 @@ let subscribedSinceOpen: string | null = null;
 export function subscribe(id: string | null) {
   subscribedSinceOpen = id;
   if (id) send('subscribe', { id });
+}
+
+/** Subscribe `id` unless it is already the session subscribed on this socket: a second subscribe costs a second server snapshot and a second history read. */
+export function ensureSubscribed(id: string) {
+  if (id !== subscribedSinceOpen) subscribe(id);
 }
 
 export function selectInstance(id: string | null, opts: SelectOptions = {}) {
@@ -385,7 +411,7 @@ export function startController() {
     // A newer open owns the socket now, and re-subscribes the active session itself.
     if (gen !== opens) return;
     const { activeId, instances } = appStore.get();
-    if (activeId && activeId !== subscribedSinceOpen && instances.some((i) => i.id === activeId)) send('subscribe', { id: activeId });
+    if (activeId && activeId !== subscribedSinceOpen && instances.some((i) => i.id === activeId)) subscribe(activeId);
   });
 
   connect();

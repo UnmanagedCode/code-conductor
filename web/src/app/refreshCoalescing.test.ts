@@ -38,10 +38,11 @@ async function boot() {
     return s;
   };
   const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
-  return { c, appStore, bus: ws.bus, projectReads, instanceReads, count, settled, flush };
+  const signalOf = (url: string) => calls.find((x) => x.method === 'GET' && x.url === url)?.signal;
+  return { c, appStore, bus: ws.bus, projectReads, instanceReads, count, settled, flush, signalOf };
 }
 
-afterEach(() => { stop?.(); stop = null; vi.restoreAllMocks(); });
+afterEach(() => { stop?.(); stop = null; vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('coalesced list reads', () => {
   it('a burst of refreshes costs one read in flight and one trailing read, and every caller resolves after the trailing one', async () => {
@@ -115,5 +116,60 @@ describe('coalesced list reads', () => {
     b.instanceReads[2].release({ json: [{ id: 'i2', sessionId: 's2' }] });
     await vi.waitFor(() => expect(next.done).toBe(true));
     expect(b.appStore.get().instances.map((i) => i.id)).toEqual(['i2']);
+  });
+});
+
+describe('a read that never settles', () => {
+  it('times out: its callers reject like a failed read, its fetch is aborted, and the trailing read runs', async () => {
+    const b = await boot();
+    vi.useFakeTimers();
+    const first = b.settled(b.c.refreshInstances());
+    const second = b.settled(b.c.refreshInstances());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.instanceReads, 'fixture check: the first read is in flight, the second call waits').toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+    expect(first.error, 'the hung read\'s caller is rejected, as for a failed read').toBeInstanceOf(Error);
+    expect(b.signalOf('/api/instances')?.aborted, 'the hung request is cancelled').toBe(true);
+    expect(b.instanceReads, 'the trailing read starts after the timeout').toHaveLength(2);
+    b.instanceReads[1].release({ json: [{ id: 'i1', sessionId: 's1' }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(second.done).toBe(true);
+    expect(second.error).toBeNull();
+    expect(b.appStore.get().instances.map((i) => i.id)).toEqual(['i1']);
+  });
+
+  it('applies nothing if it answers after its timeout', async () => {
+    const b = await boot();
+    vi.useFakeTimers();
+    const first = b.settled(b.c.refreshInstances());
+    await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+    expect(first.error).toBeInstanceOf(Error);
+    b.instanceReads[0].release({ json: [{ id: 'late', sessionId: 'sl' }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.appStore.get().instances).toEqual([]);
+  });
+
+  it('leaves the next hint a fresh read of its own', async () => {
+    const b = await boot();
+    vi.useFakeTimers();
+    b.c.refreshInstances().catch(() => {});
+    await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+    b.bus.dispatchEvent(new CustomEvent('instances'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.instanceReads, 'no hung read is left to queue behind').toHaveLength(2);
+    b.instanceReads[1].release({ json: [{ id: 'i2', sessionId: 's2' }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.appStore.get().instances.map((i) => i.id)).toEqual(['i2']);
+  });
+
+  it('leaves no timer running once a read has landed', async () => {
+    const b = await boot();
+    vi.useFakeTimers();
+    const p = b.settled(b.c.refreshInstances());
+    await vi.advanceTimersByTimeAsync(0);
+    b.instanceReads[0].release({ json: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.done).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

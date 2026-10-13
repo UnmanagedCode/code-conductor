@@ -90,4 +90,23 @@ describe('Conduct selects the conductor before any list read lands', () => {
     expect(b.active()).toBe('o1');
     expect(location.hash).toBe('#session=s-o');
   });
+
+  it('an `instances` subscriber sees the adopted conductor in the store at the moment of adoption', async () => {
+    const b = await boot();
+    const { on } = await import('@/app/events');
+    const seen: string[][] = [];
+    on('instances', () => { seen.push(b.ids()); });
+    b.c.adoptInstance(conductor);
+    expect(seen[0], 'the first `instances` emit comes with the adopted row already stored').toEqual(['c1']);
+  });
+
+  it('an `instances` subscriber sees an already-listed instance replaced by the adopted one', async () => {
+    const b = await boot();
+    const { on } = await import('@/app/events');
+    b.appStore.set({ instances: [{ ...conductor, status: 'idle' }] });
+    const seen: string[] = [];
+    on('instances', () => { seen.push(b.appStore.get().instances[0]?.status ?? ''); });
+    b.c.adoptInstance(conductor);
+    expect(seen[0]).toBe('starting');
+  });
 });

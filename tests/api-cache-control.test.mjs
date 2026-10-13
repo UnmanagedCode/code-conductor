@@ -40,6 +40,14 @@ test('every /api JSON response is Cache-Control: no-store', async (t) => {
       assert.equal(res.headers.get('cache-control'), 'no-store');
     });
   }
+  // express.json refuses a malformed body before any handler runs: that 400 is an /api answer too.
+  await t.test('POST /api/instances with a malformed JSON body', async () => {
+    const res = await fetch(`${ctx.baseUrl}/api/instances`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{not json',
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+  });
 });
 
 test('a route that sets its own Cache-Control keeps it', async () => {
