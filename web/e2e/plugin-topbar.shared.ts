@@ -55,6 +55,8 @@ export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
   const barBox = await boxOf(bar, 'the bar');
   const frameBox = await boxOf(v.locator('iframe:visible'), 'the frame');
   const menuBox = await boxOf(menu, 'the drawer button');
+  const viewBox = await boxOf(v, 'the view');
+  expect(Math.abs(frameBox.y + frameBox.height - (viewBox.y + viewBox.height)), 'the frame reaches the view\'s bottom edge').toBeLessThanOrEqual(0.5);
   expect(frameBox.y, 'the frame starts below the bar').toBeGreaterThanOrEqual(barBox.y + barBox.height - 0.5);
   expect(menuBox.x, 'button within the bar (left)').toBeGreaterThanOrEqual(barBox.x - 0.5);
   expect(menuBox.y, 'button within the bar (top)').toBeGreaterThanOrEqual(barBox.y - 0.5);
