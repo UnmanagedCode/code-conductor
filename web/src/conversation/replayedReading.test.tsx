@@ -6,10 +6,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { bus } from '@/lib/core/ws.js';
+import { bus } from '@shared/ws';
 import { conversation, lazyHistory, startController, stopController } from '@/app/controller';
 import { getUsageTracker } from '@/app/trackers';
 import { appStore } from '@/state/app';

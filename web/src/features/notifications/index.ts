@@ -1,7 +1,7 @@
 // Starts browser notifications for top-level sessions that start waiting on
 // the user or finish, registers the service worker (also what makes the PWA
 // installable), and installs the standalone-PWA external-link handler.
-import { stashCurrentAnchorForRelaunch } from '@/lib/core/anchor.js';
+import { stashCurrentAnchorForRelaunch } from '@shared/anchor';
 import { on } from '@/app/events';
 import { appStore, activeInstance } from '@/state/app';
 import { routeStore } from '@/state/route';

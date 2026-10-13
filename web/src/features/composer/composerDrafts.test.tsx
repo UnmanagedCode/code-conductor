@@ -8,7 +8,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 
 type Sent = { type: string; payload: { id?: string; text?: string } };
 const sent: Sent[] = [];
-vi.mock('@/lib/core/ws.js', () => ({
+vi.mock('@shared/ws', () => ({
   bus: new EventTarget(),
   connect: () => {},
   send: (type: string, payload: Sent['payload']) => { sent.push({ type, payload }); },

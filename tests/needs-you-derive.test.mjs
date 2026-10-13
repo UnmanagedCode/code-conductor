@@ -1,5 +1,5 @@
 // Pure derivations behind the needs-you strip and the waiting-on-you ring
-// (public/needsYou.js). No DOM.
+// (shared/needsYou.ts). No DOM.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,9 +7,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
-const N = await import(pathToFileURL(path.join(PUB, 'needsYou.js')).href);
-const { deriveConductors } = await import(pathToFileURL(path.join(PUB, 'conductors.js')).href);
+const PUB = path.resolve(__dirname, '..', 'shared');
+const N = await import(pathToFileURL(path.join(PUB, 'needsYou.ts')).href);
+const { deriveConductors } = await import(pathToFileURL(path.join(PUB, 'conductors.ts')).href);
 
 const cond = (sid, o = {}) => ({
   id: `inst-${sid}`, project: '.conduct', sessionId: sid, status: 'idle', createdAt: 1000, ...o,

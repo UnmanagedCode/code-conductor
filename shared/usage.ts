@@ -19,10 +19,46 @@
 // anything it didn't recognise to 200k — a fabricated cap that a real session
 // was observed blowing past 256k input tokens without ever hitting.
 //
+
+// A usage block, as message_start / context_usage / turn_end carry it.
+export type Usage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
+// The UI event fields (src/parser.ts) UsageTracker reads.
+export type UsageEvent = {
+  kind?: string;
+  subtype?: string;
+  data?: { model?: string; to?: string; [k: string]: unknown } | null;
+  replayed?: boolean;
+  usage?: Usage | null;
+  model?: string;
+  cost?: number;
+  costDelta?: number;
+  durationMs?: number;
+};
+
+export type UsageTotals = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+  cost: number;
+  turns: number;
+  durationMs: number;
+};
+
 export class UsageTracker {
+  declare model: string | null;
+  declare lastUsage: Usage | null;
+  declare cum: UsageTotals;
+
   constructor() { this.reset(); }
 
-  reset() {
+  reset(): void {
     this.model = null;        // from system/init.data.model (authoritative)
     this.lastUsage = null;    // last usage-bearing message_start/context_usage block
     this.cum = {
@@ -46,11 +82,11 @@ export class UsageTracker {
   // next turn. A context_usage reading is never in the tail at all, so for that
   // kind the seed is the only path, not a backstop. Called right after reset() and BEFORE the tail
   // replay, so an in-tail message_start still wins.
-  seedContext(usage) {
+  seedContext(usage: Usage | null | undefined): void {
     if (usage && typeof usage === 'object') this.lastUsage = usage;
   }
 
-  apply(ev) {
+  apply(ev: UsageEvent | null | undefined): void {
     if (!ev || typeof ev !== 'object') return;
     if (ev.kind === 'system' && ev.subtype === 'init') {
       const m = ev.data?.model;
@@ -132,7 +168,7 @@ export class UsageTracker {
 
   // Most recent turn's prompt size, in tokens. Null when no turn has
   // landed yet (just-spawned instance with no usage data).
-  currentContextSize() {
+  currentContextSize(): number | null {
     const u = this.lastUsage;
     if (!u) return null;
     return (u.input_tokens ?? 0)
@@ -144,16 +180,16 @@ export class UsageTracker {
   // landed yet, or the server reports the model's capacity as unknown. Null
   // renders as `ctx —`; there is deliberately no fallback denominator, because a
   // guessed one is indistinguishable from a measured one in the UI.
-  currentFillPct(windowTokens) {
+  currentFillPct(windowTokens: number | null | undefined): number | null {
     const used = this.currentContextSize();
     if (used == null) return null;
-    if (!Number.isFinite(windowTokens) || windowTokens <= 0) return null;
+    if (typeof windowTokens !== 'number' || !Number.isFinite(windowTokens) || windowTokens <= 0) return null;
     return used / windowTokens;
   }
 
   // Effective model used by currentFillPct(), surfaced so the popover
   // can label the limit accurately.
-  effectiveModel(modelOverride) {
+  effectiveModel(modelOverride?: string | null): string | null {
     return this.model || modelOverride || null;
   }
 }
@@ -162,21 +198,21 @@ export class UsageTracker {
 // Kept here (not in app.js) so the test file can assert their output
 // without spinning up happy-dom.
 
-export function formatTokens(n) {
+export function formatTokens(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return '—';
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + 'k';
   return String(n);
 }
 
-export function formatPct(frac) {
+export function formatPct(frac: number | null | undefined): string {
   if (frac == null || !Number.isFinite(frac)) return '—';
   const pct = frac * 100;
   if (pct < 1 && pct > 0) return '<1%';
   return Math.round(pct) + '%';
 }
 
-export function formatDuration(ms) {
+export function formatDuration(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
   const s = Math.round(ms / 1000);
   if (s < 60) return s + 's';
@@ -193,9 +229,9 @@ export function formatDuration(ms) {
 // Callers that must show nothing at all for an unknown cost keep their own
 // `!= null` guard OUTSIDE this helper (blocks.js's turn-end line,
 // notifications.js's body, header.js's ollama row).
-export function fmtCost(n) { return `$${(n ?? 0).toFixed(4)}`; }
+export function fmtCost(n: number | null | undefined): string { return `$${(n ?? 0).toFixed(4)}`; }
 
-export function fillClass(frac) {
+export function fillClass(frac: number | null | undefined): string {
   if (frac == null) return 'ih-usage-empty';
   if (frac < 0.5) return 'ih-usage-low';
   if (frac < 0.8) return 'ih-usage-mid';
@@ -207,14 +243,33 @@ export function fillClass(frac) {
 // account-wide, not per-session). app.js instantiates one and feeds all
 // events + periodic fetch results through it.
 
+// A rate_limit_event's info (the CLI's rate_limit_info). The fields the
+// chip reads are named; the rest pass through the merge untouched.
+export type RateLimitInfo = {
+  utilization?: number | null;
+  rateLimitType?: string;
+  isUsingOverage?: boolean;
+  resetsAt?: number;
+  [k: string]: unknown;
+};
+
+// A system/rate_limit_event, nested (rate_limit_info) or flat.
+export type RateLimitEvent = {
+  kind?: string;
+  subtype?: string;
+  data?: (RateLimitInfo & { rate_limit_info?: RateLimitInfo }) | null;
+};
+
 export class RateLimitTracker {
+  declare info: RateLimitInfo | null;
+
   constructor() { this.reset(); }
 
-  reset() {
+  reset(): void {
     this.info = null; // latest merged rate_limit_info (null until first event)
   }
 
-  apply(ev) {
+  apply(ev: RateLimitEvent | null | undefined): void {
     if (ev?.kind !== 'system' || ev.subtype !== 'rate_limit_event') return;
     const raw = ev.data ?? {};
     // Accept both nested (rate_limit_info) and flat shapes defensively.
@@ -223,27 +278,27 @@ export class RateLimitTracker {
       // Merge onto existing info: incoming wins for keys it carries, but skip
       // null/undefined so a field the message didn't know about never clobbers
       // a good value from a prior event (e.g. isUsingOverage survives re-fetch).
-      const patch = Object.fromEntries(Object.entries(incoming).filter(([, v]) => v != null));
+      const patch: RateLimitInfo = Object.fromEntries(Object.entries(incoming).filter(([, v]) => v != null));
       this.info = this.info ? { ...this.info, ...patch } : patch;
     }
   }
 }
 
 // Format the resetsAt Unix timestamp as a local time string, e.g. "resets 6:40pm".
-export function formatResetTime(unixSecs) {
+export function formatResetTime(unixSecs: number | null | undefined): string | null {
   if (!unixSecs || !Number.isFinite(unixSecs)) return null;
   const d = new Date(unixSecs * 1000);
   return 'resets ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 // An overage auto-resume time's clock, e.g. "6:40pm".
-function formatAutoResumeClock(unixSecs) {
+function formatAutoResumeClock(unixSecs: number | null | undefined): string | null {
   if (!unixSecs || !Number.isFinite(unixSecs)) return null;
   return new Date(unixSecs * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 // Format an overage auto-resume time, e.g. "resumes at 6:40pm".
-export function formatAutoResumeTime(unixSecs) {
+export function formatAutoResumeTime(unixSecs: number | null | undefined): string | null {
   const clock = formatAutoResumeClock(unixSecs);
   return clock && 'resumes at ' + clock;
 }
@@ -253,7 +308,10 @@ export function formatAutoResumeTime(unixSecs) {
 // `compact` is the strip-entry form, "2 · ⏸ 6:40pm", sized to leave a 280px
 // entry its title; its tooltip leads with the full wording the header chip
 // shows.
-export function autoResumeBadge({ autoResumeAt, queuedCount }, { compact = false } = {}) {
+export function autoResumeBadge(
+  { autoResumeAt, queuedCount }: { autoResumeAt?: number | null; queuedCount?: number | null },
+  { compact = false }: { compact?: boolean } = {},
+): { text: string; title: string } | null {
   if (!autoResumeAt) return null;
   const n = queuedCount || 0;
   const text = formatAutoResumeTime(autoResumeAt) + (n > 0 ? ` · ${n} queued` : '');
@@ -272,12 +330,13 @@ export function autoResumeBadge({ autoResumeAt, queuedCount }, { compact = false
 // (rlChipSegment, and accountUsage.js's fetch merge) and the row order of the header
 // popover's Usage-limits block. A second list would let the chip and the
 // popover disagree about which window matters most.
-export const RL_BUCKET_KEYS = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
+export const RL_BUCKET_KEYS = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'] as const;
+export type RlBucketKey = typeof RL_BUCKET_KEYS[number];
 
 // Long-form window label, for contexts where "5h"/"7d" (RL_BUCKET_LABEL) reads
 // too terse — e.g. a parsed rate_limit_event line in the conversation, or the
 // header popover's Usage-limits rows.
-export const RL_WINDOW_LABEL = {
+export const RL_WINDOW_LABEL: Record<RlBucketKey, string> = {
   five_hour:        '5-hour',
   seven_day:        '7-day',
   seven_day_sonnet: '7-day Sonnet',
@@ -287,7 +346,7 @@ export const RL_WINDOW_LABEL = {
 // Like formatResetTime, but includes the weekday when the reset is more than
 // ~24h out (e.g. "resets Sat 5:00pm") — a bare time-of-day is ambiguous once
 // it's not "later today".
-export function formatResetWhen(unixSecs) {
+export function formatResetWhen(unixSecs: number | null | undefined): string | null {
   if (!unixSecs || !Number.isFinite(unixSecs)) return null;
   const d = new Date(unixSecs * 1000);
   const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -302,17 +361,23 @@ export function formatResetWhen(unixSecs) {
 //   info        – globalRLTracker.info (from rate_limit_event; may be null)
 //   accountUsage – OAuth fetch result keyed by bucket (may be null)
 // Returns { text, frac, isOverage } where frac is 0–1 or null.
-const RL_BUCKET_LABEL = {
+const RL_BUCKET_LABEL: Partial<Record<string, string>> = {
   five_hour:        '5h',
   seven_day:        '7d',
   seven_day_sonnet: '7d Sonnet',
   seven_day_opus:   '7d Opus',
 };
 
-export function rlChipSegment(info, accountUsage) {
+// An account usage bucket (GET /api/usage): utilization in percent.
+export type RlBucket = { utilization?: number | null };
+export type AccountBuckets = Partial<Record<RlBucketKey, RlBucket | null>>;
+
+export type RlChipSegment = { text: string; frac: number | null; isOverage: boolean };
+
+export function rlChipSegment(info: RateLimitInfo | null | undefined, accountUsage: AccountBuckets | null | undefined): RlChipSegment {
   if (info) {
     const util = typeof info.utilization === 'number' ? info.utilization : null;
-    const label = RL_BUCKET_LABEL[info.rateLimitType];
+    const label = RL_BUCKET_LABEL[String(info.rateLimitType)];
     const prefix = label ? `rl ${label}` : 'rl';
     const text = util != null ? `${prefix} ${Math.round(util * 100)}%` : `${prefix} --`;
     return { text, frac: util, isOverage: info.isUsingOverage === true };

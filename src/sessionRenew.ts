@@ -32,8 +32,8 @@
 //              can never make us reseed into the wrong session.
 
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
-import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../public/renewSeed.ts';
-import { RENEW_REQUEST_LEAD } from '../public/injectedTurns.ts';
+import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../shared/renewSeed.ts';
+import { RENEW_REQUEST_LEAD } from '../shared/injectedTurns.ts';
 
 // Defensive ceiling: if `/clear` never rotates the session (the real CLI always
 // does — this only guards a wedged/hung subprocess), abandon the pending
@@ -79,7 +79,7 @@ interface ManagerEvent {
 // `summary` argument description in src/mcp/tools.ts (a worker renewing on its
 // own initiative reads it there) and buildRenewRequest below (a worker answering
 // a conductor's request reads it in the prompt). The heading titles themselves
-// are owned by RENEW_SUMMARY_SECTIONS (../public/renewSeed.ts), which the client
+// are owned by RENEW_SUMMARY_SECTIONS (../shared/renewSeed.ts), which the client
 // reads back to split the rendered summary into labelled sections.
 const S = RENEW_SUMMARY_SECTIONS;
 export const RENEW_SUMMARY_TEMPLATE =

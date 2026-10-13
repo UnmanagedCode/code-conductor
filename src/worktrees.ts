@@ -25,7 +25,7 @@ import {
 } from './systems/transcriptKey.ts';
 import { classifySpawnError, type FsErrorCode } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
-import { REBASE_PROMPT_LEAD } from '../public/injectedTurns.ts';
+import { REBASE_PROMPT_LEAD } from '../shared/injectedTurns.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 

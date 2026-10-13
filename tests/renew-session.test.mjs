@@ -19,9 +19,9 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.ts';
+import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import { RENEW_SUMMARY_TEMPLATE, LINEAGE_RETRY_ATTEMPTS } from '../src/sessionRenew.ts';
-import { MECHANICAL_STATE_HEADER } from '../public/renewSeed.ts';
+import { MECHANICAL_STATE_HEADER } from '../shared/renewSeed.ts';
 import { isConducted, isTemp, isArchived, getTitle, getSessionMode } from '../src/sessionStore.ts';
 import { rotate } from './segmentChain.mjs';
 import { encodeCwd } from '../src/projects.ts';
@@ -122,7 +122,7 @@ test('renew_session drives a /clear that rotates the session in place and reseed
       (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-XYZ'));
     assert.ok(seedEcho, 'summary was injected as a user turn on the cleared session');
     assert.ok(seedEcho.text.includes('MECHANICAL STATE'), 'mechanical state block was appended to the seed');
-    // buildStateBlock writes exactly MECHANICAL_STATE_HEADER (public/renewSeed.ts) as its
+    // buildStateBlock writes exactly MECHANICAL_STATE_HEADER (shared/renewSeed.ts) as its
     // first line — the client's parseRenewSeed splits on this exact string, so a drift
     // here would silently break the renew-seed bubble's state section.
     assert.ok(seedEcho.text.includes(MECHANICAL_STATE_HEADER), 'the state block header matches the shared MECHANICAL_STATE_HEADER exactly');

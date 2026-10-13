@@ -11,7 +11,7 @@
     "start": "node server.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
-    "typecheck": "tsc --noEmit && tsc -p web && tsc -p web/e2e",
+    "typecheck": "tsc --noEmit && tsc -p shared && tsc -p web && tsc -p web/tsconfig.bridge.json && tsc -p web/e2e",
     "pretest": "npm run typecheck",
     "test": "NODE_OPTIONS=--max-old-space-size=512 node tests/run.mjs",
     "test:web": "vitest run --config web/vitest.config.ts",

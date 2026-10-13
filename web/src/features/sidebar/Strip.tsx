@@ -1,6 +1,5 @@
-import { isStripEmpty, entryReason } from '@/lib/core/needsYou.js';
-import { deriveStrip } from './core';
-import { autoResumeBadge } from '@/lib/core/usage.js';
+import { deriveStrip, isStripEmpty, entryReason, type StripEntry } from '@shared/needsYou';
+import { autoResumeBadge } from '@shared/usage';
 import * as React from 'react';
 import { ChevronRightIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -35,7 +34,7 @@ export function Strip({ m }: { m: SidebarModel }) {
     return next;
   });
   if (isStripEmpty(g)) return null;
-  const unreadOf = (e: any, group: Group) => group === 'finished' && (m.unread.get(e.sessionId) ?? 0) > 0;
+  const unreadOf = (e: StripEntry, group: Group) => group === 'finished' && (m.unread.get(e.sessionId) ?? 0) > 0;
   return (
     <div className={cn('mx-3 mt-3 space-y-1.5 rounded-xl border px-1.5 py-1.5', g.waiting.length ? 'border-warning/35 bg-warning/6' : 'bg-card/60')} data-strip>
       {(Object.keys(HEADS) as Group[]).filter((name) => g[name].length > 0).map((name) => {

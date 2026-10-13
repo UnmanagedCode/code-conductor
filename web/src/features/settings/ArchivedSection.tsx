@@ -6,7 +6,7 @@ import { refreshInstances, refreshProjects } from '@/app/controller';
 import { emit } from '@/app/events';
 import { resumeSession } from '@/app/sessionActions';
 import { formatAgo } from '@/lib/time';
-import { readablePrompt } from '@/lib/core/promptPreview.ts';
+import { readablePrompt } from '@shared/promptPreview';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { SectionIntro, Status } from './ui';
 import { json, errText } from './api';

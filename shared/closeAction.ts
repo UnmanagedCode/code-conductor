@@ -6,17 +6,19 @@
 // A disk row has no instance, and `isLiveStatus(null)` is true, so a missing
 // instanceId or status is never live.
 
-import { isLiveStatus } from './conductors.js';
+import { isLiveStatus } from './conductors.ts';
+
+export type CloseAction = 'stop' | 'archive';
 
 // A live persistent session stops (transcript kept, resumable); a live temp
 // session or one that is not live is archived.
-export function closeActionOf({ instanceId, status, temp }) {
+export function closeActionOf({ instanceId, status, temp }: { instanceId?: string | null; status?: string | null; temp?: boolean }): CloseAction {
   const live = !!instanceId && !!status && isLiveStatus(status);
   return live && !temp ? 'stop' : 'archive';
 }
 
-export const CLOSE_TITLES = { stop: 'Stop session', archive: 'Archive session (keeps history)' };
+export const CLOSE_TITLES: Record<CloseAction, string> = { stop: 'Stop session', archive: 'Archive session (keeps history)' };
 
 // A stop kills running work unless the session is plain idle. `displayStatus`
 // only overlays live states, so turn, running and spawning all count as busy.
-export function stopNeedsConfirm(status) { return status !== 'idle'; }
+export function stopNeedsConfirm(status: string | null | undefined): boolean { return status !== 'idle'; }

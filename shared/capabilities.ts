@@ -3,10 +3,13 @@
 // `capabilities()` is null until a load succeeds. A failed load is not
 // remembered: `loadCapabilities()` resolves null and the next call retries.
 
-let loaded = null;
-let pending = null;
+// The platform's flags by name (Platform.capabilities, src/platform/).
+export type Capabilities = Record<string, boolean>;
 
-export function loadCapabilities() {
+let loaded: Capabilities | null = null;
+let pending: Promise<Capabilities | null> | null = null;
+
+export function loadCapabilities(): Promise<Capabilities | null> {
   pending ??= (async () => {
     try {
       const r = await fetch('/api/health', { cache: 'no-store' });
@@ -23,6 +26,6 @@ export function loadCapabilities() {
   return pending;
 }
 
-export function capabilities() {
+export function capabilities(): Capabilities | null {
   return loaded;
 }

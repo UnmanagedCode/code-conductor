@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
-import { formatAutoResumeTime } from '@/lib/core/usage.js';
+import { formatAutoResumeTime } from '@shared/usage';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({

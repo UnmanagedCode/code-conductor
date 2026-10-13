@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatUserQuestionAnswers, normalizeQuestions, type UserQuestionAnswer } from '../../../public/userQuestionAnswers.ts';
+import { formatUserQuestionAnswers, normalizeQuestions, type UserQuestionAnswer } from '@shared/userQuestionAnswers';
 import { ConversationModel, type AssistantNode, type GroupNode, type ToolNode, type QuestionNode, type UserNode } from './model';
 
 const text = (msgId: string, t: string, blockIdx = 0) => [

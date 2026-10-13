@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 const sent: [string, any, any][] = [];
-vi.mock('@/lib/core/ws.js', () => ({
+vi.mock('@shared/ws', () => ({
   bus: new EventTarget(),
   connect: () => {},
   send: (t: string, payload: any, opts: any = {}) => { sent.push([t, payload, opts]); return opts.ack ? Promise.resolve({ ok: true }) : undefined; },
@@ -17,10 +17,10 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { accountUsageStore, refreshAccountUsage } from '@/app/accountUsage';
 import { rateLimits } from '@/app/trackers';
-import type { Instance } from '@/state/types';
+import type { Instance, InstanceWorktree } from '@/state/types';
 import { SessionView } from './SessionView';
 
-const WORKTREE = { worktreeName: 'wt-a', baseBranch: 'main' };
+const WORKTREE: InstanceWorktree = { worktreeName: 'wt-a', branch: 'code-conductor/wt-a', baseBranch: 'main', baseSha: 'abcdef012345', postWorktreeCreate: null };
 const inst = (id: string, extra: Partial<Instance> = {}): Instance => ({
   id, project: `proj-${id}`, status: 'idle', displayStatus: 'idle', sessionId: `sess-${id}`, mode: 'bypassPermissions',
   model: 'claude-opus-5-5', backend: 'claude', effort: 'high', contextWindowTokens: 200_000, ...extra,
@@ -59,7 +59,7 @@ beforeEach(() => {
 
 describe('SessionView', () => {
   it('an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent', () => {
-    seed({ instances: [inst('A', { worktree: WORKTREE as any })], activeId: 'A' });
+    seed({ instances: [inst('A', { worktree: WORKTREE })], activeId: 'A' });
     renderView();
     expect(header()).not.toBeNull();
     expect(screen.getByRole('button', { name: 'Sync' })).toBeTruthy();
@@ -72,7 +72,7 @@ describe('SessionView', () => {
   });
 
   it('selecting the live instance again brings the header back with an enabled ⋮ and Change model', async () => {
-    const a = inst('A', { worktree: WORKTREE as any });
+    const a = inst('A', { worktree: WORKTREE });
     seed({ instances: [a], activeId: 'A' });
     renderView();
     act(() => appStore.set({ instances: [] }));

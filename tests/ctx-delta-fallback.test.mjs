@@ -24,7 +24,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { Instance } from '../src/instances.ts';
-import { UsageTracker } from '../public/usage.js';
+import { UsageTracker } from '../shared/usage.ts';
 import { bootServer, api, waitFor } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

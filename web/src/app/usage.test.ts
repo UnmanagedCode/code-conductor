@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { RateLimitTracker, RL_BUCKET_KEYS, UsageTracker, rlChipSegment } from '@/lib/core/usage.js';
+import { RateLimitTracker, RL_BUCKET_KEYS, UsageTracker, rlChipSegment, type RateLimitInfo } from '@shared/usage';
 
 const M1 = 'claude-haiku-4-5';
 const M2 = 'claude-opus-4-8';
 const OLD_USAGE = { input_tokens: 10_000, cache_read_input_tokens: 180_000 };
 const NEW_USAGE = { input_tokens: 20_000, cache_read_input_tokens: 400_000 };
 const DELTA_USAGE = { input_tokens: 60_000 };
-const rl = (fields: object) => ({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: fields } });
+const rl = (fields: RateLimitInfo) => ({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: fields } });
 
 describe('context reading (UsageTracker)', () => {
   it('model_changed drops the reading but keeps cumulative totals and adopts the new model', () => {

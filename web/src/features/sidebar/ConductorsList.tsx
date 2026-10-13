@@ -1,8 +1,8 @@
 import { ChevronRightIcon } from 'lucide-react';
-import { conductorTitle, sessionFromInstance, stageText, workersOf } from '@/lib/core/conductors.js';
-import { conductorColor } from '@/lib/core/conductorColor.js';
+import { conductorTitle, hasSessionId, isLiveConductor, sessionFromInstance, stageText, workersOf, type ConductorChip, type ConductorRow } from '@shared/conductors';
+import { conductorColor } from '@shared/conductorColor';
 import { cn } from '@/lib/utils';
-import type { Instance, Project } from '@/state/types';
+import type { Instance, Project, Worktree } from '@/state/types';
 import { resumeSession } from '@/app/sessionActions';
 import { selectInstance } from '@/app/controller';
 import { CONDUCT_PROJECT, chipsOf, wtName } from './derive';
@@ -11,11 +11,11 @@ import { Ago, CloseButton, Dot, dotTitle, ProjectRow, PromoteButton, rowName, Se
 import type { SidebarModel } from './useSidebarModel';
 
 function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel; workers: Instance[]; projectName: string; worktreeName: string | null }) {
-  const rows = workers.filter((w) => w.sessionId).map(sessionFromInstance)
-    .sort((a: any, b: any) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
+  const rows = workers.filter(hasSessionId).map(sessionFromInstance)
+    .sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
   return (
     <ul className="ml-3 space-y-px border-l border-sidebar-border pl-1.5">
-      {rows.map((s: any) => (
+      {rows.map((s) => (
         <SessionRow
           key={s.sessionId}
           session={s}
@@ -32,8 +32,8 @@ function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel
 }
 
 /** A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees. */
-function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips: any[] }) {
-  const workers = workersOf(sid, m.instances) as Instance[];
+function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips: ConductorChip[] }) {
+  const workers = workersOf(sid, m.instances);
   const byName = new Map(m.projects.map((p) => [p.name, p]));
   return (
     <ul className="space-y-0.5 py-1 pl-1" data-conductor-tree>
@@ -48,7 +48,7 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
           if (!byWt.has(n)) byWt.set(n, []);
           byWt.get(n)!.push(w);
         }
-        const listed = new Map<string, any>((Array.isArray(p.worktrees) ? p.worktrees : []).map((w: any) => [w.worktreeName, w]));
+        const listed = new Map<string, Worktree>((Array.isArray(p.worktrees) ? p.worktrees : []).map((w) => [w.worktreeName, w]));
         const recorded = (chip.worktrees as string[]).filter((n) => listed.has(n) && !byWt.has(n));
         const names = [...byWt.keys(), ...recorded].sort((a, b) => a.localeCompare(b));
         return (
@@ -59,7 +59,7 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
               <ul className="ml-3 space-y-px border-l border-sidebar-border pl-1.5">
                 {names.map((n) => {
                   const ws = byWt.get(n);
-                  const wt = listed.get(n) ?? { ...(ws![0].worktree as any), worktreeName: n };
+                  const wt: Worktree = listed.get(n) ?? { ...ws![0].worktree, worktreeName: n };
                   return (
                     <li key={n} data-idle={!ws || undefined}>
                       <WorktreeHead project={chip.project} wt={wt} readOnly dim={!ws} />
@@ -76,7 +76,7 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
   );
 }
 
-function ConductorBlock({ m, c, open }: { m: SidebarModel; c: any; open: boolean }) {
+function ConductorBlock({ m, c, open }: { m: SidebarModel; c: ConductorRow; open: boolean }) {
   const sid: string = c.sessionId;
   const { text, untitled } = conductorTitle(c);
   const chips = chipsOf(sid, m.instances, m.spawns, m.registered);
@@ -130,7 +130,7 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: any; open: boolean
           <Ago ms={c.lastActivity} />
           <UnreadPill n={unread} />
         </button>
-        {c.live && c.instanceTemp && (
+        {isLiveConductor(c) && c.instanceTemp && (
           <PromoteButton getArgs={() => ({ projectName: CONDUCT_PROJECT, instanceId: c.instanceId, preview: text })} />
         )}
         {!c.live && (
@@ -143,7 +143,7 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: any; open: boolean
       <div className="flex flex-wrap gap-1 pt-0.5 pb-1.5 pl-8" data-chips>
         {chips.length === 0
           ? <span className="text-[11px] text-muted-foreground/70 italic">no live workers</span>
-          : chips.map((ch: any) => (
+          : chips.map((ch) => (
             <span
               key={`${ch.live ? 'live' : 'idle'}:${ch.project}`}
               data-chip={ch.live ? 'live' : 'idle'}

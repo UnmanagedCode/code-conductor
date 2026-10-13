@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   formatUserQuestionAnswers, parseUserQuestionAnswers, isUserQuestionAnswerText,
   parseCanonicalUserQuestionAnswers,
-} from '../public/userQuestionAnswers.ts';
+} from '../shared/userQuestionAnswers.ts';
 
 // ── Round-trip: for every canonical answer, parse inverts format exactly ─────
 

@@ -1,4 +1,4 @@
-// Pins the contract of the one client-side fetch helper — public/http.js's
+// Pins the contract of the one client-side fetch helper — shared/http.ts's
 // apiFetch, the client counterpart of src/httpError.ts.
 //
 // Invariant: apiFetch returns the PARSED JSON body on success, and on failure
@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { apiFetch } = await import(
-  pathToFileURL(path.resolve(__dirname, '..', 'public', 'http.js')).href);
+  pathToFileURL(path.resolve(__dirname, '..', 'shared', 'http.ts')).href);
 
 // Minimal Response stand-in: `json()` either resolves the parsed body or
 // rejects the way a real Response does on a non-JSON payload.

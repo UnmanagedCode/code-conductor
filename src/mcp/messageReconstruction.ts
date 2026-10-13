@@ -15,7 +15,7 @@ import { loadPersistedTranscript } from '../transcript.ts';
 import { stampArchiveEvents } from '../eventArchive.ts';
 import type { InstanceLike } from '../instanceTypes.ts';
 import { isOuterUserEcho, type UiEvent } from '../parser.ts';
-import { normalizeQuestions, type Question } from '../../public/userQuestionAnswers.ts';
+import { normalizeQuestions, type Question } from '../../shared/userQuestionAnswers.ts';
 
 // Per-message text cap for get_recent_messages raw blocks — mirror
 // project_read/project_diff's bounded-output pattern so no tool can emit an

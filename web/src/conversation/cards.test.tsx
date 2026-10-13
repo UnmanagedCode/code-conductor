@@ -3,7 +3,7 @@ import { fireEvent, within } from '@testing-library/react';
 
 const sent: { t: string; payload: any; opts: any }[] = [];
 let ackBehavior: (t: string) => Promise<unknown> = () => Promise.resolve({ ok: true });
-vi.mock('@/lib/core/ws.js', () => ({
+vi.mock('@shared/ws', () => ({
   bus: new EventTarget(),
   connect: () => {},
   send: (t: string, payload: any, opts: any = {}) => {
@@ -12,8 +12,8 @@ vi.mock('@/lib/core/ws.js', () => ({
   },
 }));
 
-import { formatUserQuestionAnswers, type UserQuestionAnswer } from '../../../public/userQuestionAnswers.ts';
-import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.ts';
+import { formatUserQuestionAnswers, type UserQuestionAnswer } from '@shared/userQuestionAnswers';
+import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { appStore } from '@/state/app';
 import { ConversationModel, type QuestionNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';

@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { conversation, lazyHistory } from '@/app/controller';

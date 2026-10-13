@@ -1,7 +1,7 @@
 // Voice availability, shared by the composer (dictation) and the transcript
 // (read aloud). Settings → Voice updates it after an install or a model switch.
 import { createStore } from '@/state/createStore';
-import { loadCapabilities } from '@/lib/core/capabilities.js';
+import { loadCapabilities } from '@shared/capabilities';
 
 export const voiceStore = createStore({
   /** The platform has voice at all (GET /api/health capabilities.voice). */

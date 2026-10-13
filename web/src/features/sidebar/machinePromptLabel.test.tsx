@@ -4,9 +4,9 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { uiStore } from '@/app/ui';
 import { conductor, conductorOpenOf, conductorRowOf, hand, labelOf, openOf, proj, seed, stripEntryOf, stripLabelOf, worker } from '@/test/sidebarFleet';
 import { selectOptions } from '@/test/radixSelect';
-import { buildWakeStub } from '@/lib/core/wakeCallback.ts';
-import { buildForwardFrame } from '@/lib/core/forwardFrame.ts';
-import { buildRenewSeed } from '@/lib/core/renewSeed.ts';
+import { buildWakeStub } from '@shared/wakeCallback';
+import { buildForwardFrame } from '@shared/forwardFrame';
+import { buildRenewSeed } from '@shared/renewSeed';
 import { readJsonl } from '@/conversation/testkit';
 
 vi.mock('@/app/controller', () => ({
@@ -229,22 +229,22 @@ describe('a machine-written first prompt in a sidebar label', () => {
 
 describe('promptPreview at load', () => {
   afterEach(() => {
-    vi.doUnmock('@/lib/core/renewSeed.ts');
-    vi.doUnmock('@/lib/core/forwardFrame.ts');
+    vi.doUnmock('@shared/renewSeed');
+    vi.doUnmock('@shared/forwardFrame');
     vi.resetModules();
   });
 
   it('refuses to load when the renew preamble has no first sentence to recognise it by', async () => {
     // Invariant: a lead that would be empty, so match every prompt, fails loudly at load instead.
     vi.resetModules();
-    vi.doMock('@/lib/core/renewSeed.ts', () => ({ RENEW_SEED_PREAMBLE: 'a preamble with no sentence end' }));
-    await expect(import('@/lib/core/promptPreview.ts')).rejects.toThrow('RENEW_SEED_PREAMBLE');
+    vi.doMock('@shared/renewSeed', () => ({ RENEW_SEED_PREAMBLE: 'a preamble with no sentence end' }));
+    await expect(import('@shared/promptPreview')).rejects.toThrow('RENEW_SEED_PREAMBLE');
   });
 
   it('refuses to load when the forward header has no first line to recognise it by', async () => {
     // Invariant: as above, for the forward frame's header.
     vi.resetModules();
-    vi.doMock('@/lib/core/forwardFrame.ts', () => ({ FORWARD_FRAME_HEADER: 'a header on one line' }));
-    await expect(import('@/lib/core/promptPreview.ts')).rejects.toThrow('FORWARD_FRAME_HEADER');
+    vi.doMock('@shared/forwardFrame', () => ({ FORWARD_FRAME_HEADER: 'a header on one line' }));
+    await expect(import('@shared/promptPreview')).rejects.toThrow('FORWARD_FRAME_HEADER');
   });
 });

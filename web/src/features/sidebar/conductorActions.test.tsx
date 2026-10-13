@@ -3,7 +3,7 @@ import { act, fireEvent, render, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
-import { CLOSE_TITLES } from '@/lib/core/closeAction.js';
+import { CLOSE_TITLES } from '@shared/closeAction';
 import { blockOf, conductor, conductorRowOf, el, inactiveGroup, proj, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
 
 const selectInstance = vi.fn();
@@ -342,6 +342,17 @@ describe('↑ Make persistent on a conductor row', () => {
     for (const sid of ['P', 'E', 'C', 'D']) expect(promoteOf(conductorRowOf(sid)), sid).toEqual([]);
     expect(closeOf(conductorRowOf('P'))).toEqual([]);
     for (const sid of ['E', 'C', 'D']) expect(archiveOf(conductorRowOf(sid)).length, sid).toBe(1);
+  });
+
+  it('the ↑ follows liveness, not temp: of two temp conductors only the live one has it, and the dead one archives instead', async () => {
+    // Invariant: ↑ is offered on a live temp conductor; a temp conductor whose instance exited is not live, so it gets no ↑ and its row's close is the archive.
+    sidebarStore.set({ inactiveOpen: true });
+    seed({ instances: [conductor('L', { temp: true }), conductor('X', { temp: true, status: 'exited' })] });
+    renderSidebar();
+    await settle();
+    expect(promoteOf(conductorRowOf('L')).length).toBe(1);
+    expect(promoteOf(conductorRowOf('X'))).toEqual([]);
+    expect(archiveOf(conductorRowOf('X')).length).toBe(1);
   });
 
   it("a conductor's ↑ promotes it through promoteSession with its instance id and shown label, titled or untitled, and never selects or resumes", async () => {

@@ -14,7 +14,7 @@ vi.mock('@/app/sessionActions', () => ({
   performProjectDelete: vi.fn(async () => {}),
   applySessionTitle: vi.fn(async () => 't'),
 }));
-vi.mock('@/lib/core/capabilities.js', () => ({
+vi.mock('@shared/capabilities', () => ({
   loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true, fuseUnion: true })),
   capabilities: vi.fn(() => null),
 }));
@@ -22,7 +22,7 @@ vi.mock('@/lib/core/capabilities.js', () => ({
 import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openAdoptProjectDialog } from './api';
 import { refreshProjects } from '@/app/controller';
-import { loadCapabilities } from '@/lib/core/capabilities.js';
+import { loadCapabilities } from '@shared/capabilities';
 import { held, routeFetch, type Route, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listed, listedAnswer, pathNote, system, typePath } from '@/test/placementDriver';
 

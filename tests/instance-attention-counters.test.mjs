@@ -1,5 +1,5 @@
 // The live-only attention counters on Instance.summary() (liveTurnEnds,
-// lastTurnError, liveAsks), read by public/attention.js, and the 'status'
+// lastTurnError, liveAsks), read by shared/attention.ts, and the 'status'
 // emissions that carry each transition input to the instances hint. A bare
 // Instance driven through _handleStdoutLine, no subprocess.
 

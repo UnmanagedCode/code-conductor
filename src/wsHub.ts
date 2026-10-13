@@ -246,7 +246,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             // the normal case for all three. On a model that
             // silently drops a mid-turn injection the text is parked behind a
             // block-edge stop instead. `reply(true)` stays in this tick either way:
-            // public/ws.js rejects a pending ack after 10s and sendCardAnswer's
+            // shared/ws.ts rejects a pending ack after 10s and sendCardAnswer's
             // onFail re-opens the card, so waiting on the unbounded stop would make
             // every deferred card answer falsely report failure.
             await inst.promptOrQueueSteer(String(msg.text ?? ''), atts);

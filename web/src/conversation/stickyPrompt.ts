@@ -5,7 +5,7 @@
 // older history in until one is (lazyHistory.loadUntil).
 //
 // DOM geometry by necessity: which bubble is "above the fold" is a layout fact.
-import { isPinEligible } from '../../../public/promptOrigin.ts';
+import { isPinEligible } from '@shared/promptOrigin';
 import { createStore } from '@/state/createStore';
 
 const SCROLLED_PAST = -1;

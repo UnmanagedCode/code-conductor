@@ -1,7 +1,7 @@
 // Pure text for the conversation's lines: tool summaries, system annotations,
 // turn-end and per-call usage, compaction labels. Ported from the old block
 // renderers so the wording stays what users and tests know.
-import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL, fmtCost, formatTokens, formatPct } from '@/lib/core/usage.js';
+import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL, fmtCost, formatTokens, formatPct } from '@shared/usage';
 import type { UiEvent } from '@/state/types';
 
 /** Tools whose input is one shell command ({command, description?}). */

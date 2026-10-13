@@ -296,7 +296,7 @@ test('unchanged: the cache-miss stamps on turn_end do not depend on call_usage',
 });
 
 test('unchanged: a UsageTracker fed call_usage ends where one fed none does', async (t) => {
-  const { UsageTracker } = await import('../public/usage.js');
+  const { UsageTracker } = await import('../shared/usage.ts');
   const { events } = await runScenario(t);
   assert.ok(events.some(e => e.kind === 'call_usage'), 'premise');
   const all = new UsageTracker();

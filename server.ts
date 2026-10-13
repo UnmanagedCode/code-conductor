@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
@@ -32,10 +32,10 @@ import { setPluginConductorConventionsProvider } from './src/conductorConvention
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
-import { ensureWebBuild, retiredNextRedirect, webHandler } from './src/webBuild.ts';
+import { WEB_ROOT, ensureWebBuild, retiredNextRedirect, webHandler } from './src/webBuild.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(__dirname, 'public');
+// The child side of the plugin bridge, beside its parent side (plugins.ts).
+const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
 
 // The shared mutable handle server.ts populates with the http server + wss once
 // they exist (route handlers read them at request time). Structural match for
@@ -131,9 +131,9 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
-  // Plugin pages load the bridge from here; it ships in public/, not in the
-  // web build, so it answers with no build in place.
-  app.get('/pluginBridge.js', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pluginBridge.js')));
+  // Plugin pages load the bridge from here. It is served from its source, not
+  // the web build, so it answers with no build in place.
+  app.get('/pluginBridge.js', (_req, res) => res.sendFile(PLUGIN_BRIDGE));
   app.use('/next', retiredNextRedirect());
   // The web UI at the root. `webDistDir` is for tests; it defaults to web/dist.
   app.use(webHandler(webDistDir ? { distDir: webDistDir } : {}));

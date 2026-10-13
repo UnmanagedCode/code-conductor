@@ -19,7 +19,7 @@ const SETTLE_MS = 40;
 
 const { InstanceManager } = await import('../src/instances.ts');
 const { posixPlatform } = await import('../src/platform/posix.ts');
-const { WAKE_BODY_SEP } = await import('../public/wakeCallback.ts');
+const { WAKE_BODY_SEP } = await import('../shared/wakeCallback.ts');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // Delivery is a microtask plus an async fold — a short beat settles it.

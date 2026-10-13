@@ -7,8 +7,8 @@ import {
   A, ALPHA, B, BRAVO, COLOUR, FLEET_UI, NO_BAR, barOf, blockOf, conductor, conductorDotOf, conductorRowOf, el, fleet,
   proj, seed, seedFleet, stripEntryOf, worker,
 } from '@/test/sidebarFleet';
-import { conductorColor } from '@/lib/core/conductorColor.js';
-import { formatAutoResumeTime } from '@/lib/core/usage.js';
+import { conductorColor } from '@shared/conductorColor';
+import { formatAutoResumeTime } from '@shared/usage';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({

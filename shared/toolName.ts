@@ -17,24 +17,30 @@
 // browser can't import src/.
 export const CC_MCP_SERVER = 'code-conductor';
 
-function sentence(s) {
+function sentence(s: string): string | null {
   const t = s.replace(/[_-]+/g, ' ').trim();
   return t ? t[0].toUpperCase() + t.slice(1) : null;
 }
 
-function stripCode(id) {
+function stripCode(id: string): string {
   return id.startsWith('code-') && id.length > 5 ? id.slice(5) : id;
 }
 
-function serverChip(s) {
+function serverChip(s: string): string {
   const base = s.startsWith('claude_ai_') && s.length > 10 ? s.slice(10) : s;
   return base.replace(/_+/g, ' ').trim() || s;
 }
 
-// → { raw, kind: 'builtin'|'cc'|'plugin'|'mcp', chip: string|null, label }
-export function formatToolName(raw) {
+export type ToolNameParts = {
+  raw: string | null | undefined;
+  kind: 'builtin' | 'cc' | 'plugin' | 'mcp';
+  chip: string | null;
+  label: string;
+};
+
+export function formatToolName(raw: string | null | undefined): ToolNameParts {
   if (typeof raw !== 'string' || !raw) return { raw, kind: 'builtin', chip: null, label: raw || 'tool' };
-  const verbatim = { raw, kind: 'builtin', chip: null, label: raw };
+  const verbatim: ToolNameParts = { raw, kind: 'builtin', chip: null, label: raw };
   if (!raw.startsWith('mcp__')) return verbatim;
   const rest = raw.slice(5);
   const i = rest.indexOf('__');
@@ -57,7 +63,7 @@ export function formatToolName(raw) {
 }
 
 // The one-line text form, for surfaces that render plain text (the action-group tally).
-export function toolNamePlain(raw) {
+export function toolNamePlain(raw: string | null | undefined): string {
   const { chip, label } = formatToolName(raw);
   return chip ? `${chip}: ${label}` : label;
 }

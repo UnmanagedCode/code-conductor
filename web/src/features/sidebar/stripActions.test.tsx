@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { uiStore } from '@/app/ui';
-import { CLOSE_TITLES } from '@/lib/core/closeAction.js';
-import { entryReason } from '@/lib/core/needsYou.js';
-import { autoResumeBadge } from '@/lib/core/usage.js';
+import { CLOSE_TITLES } from '@shared/closeAction';
+import { entryReason } from '@shared/needsYou';
+import { autoResumeBadge } from '@shared/usage';
 import { conductor, conductorRowOf, hand, proj, seed, stripBadgeOf, stripClosesOf, stripEntryOf, stripSids, wt } from '@/test/sidebarFleet';
 
 const selectInstance = vi.fn();

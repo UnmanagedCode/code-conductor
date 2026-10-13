@@ -12,11 +12,12 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSignal, useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
-import { apiFetch } from '@/lib/core/http.js';
+import type { Instance, PostWorktreeHook } from '@/state/types';
+import { apiFetch } from '@shared/http';
 import {
   backendIdOf, CLAUDE_BACKEND, getActiveDefaultSpawnTier, getActiveTierBackend, getActiveTierEffort, getActiveTierEnabled,
   getEffortLevels, getTierLabel, getTierList, getVersionLabel,
-} from '@/lib/core/models.js';
+} from '@shared/models';
 import { modelsSignal } from '@/app/models';
 import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
 import { beginGesture, gestureOvertaken } from '@/app/gestures';
@@ -37,7 +38,7 @@ export function defaultSpawnTier(): string {
 
 /** Tiers offered: the enabled ones; when every tier is off, the fallback tier alone. */
 export function visibleTiers(): string[] {
-  const tiers = getTierList() as string[];
+  const tiers = getTierList();
   const on = tiers.filter((t) => getActiveTierEnabled(t));
   return on.length ? on : [defaultSpawnTier()];
 }
@@ -46,8 +47,6 @@ function tierSublabel(tier: string) {
   const b = getActiveTierBackend(tier);
   return backendIdOf(b) !== CLAUDE_BACKEND ? b.model : getVersionLabel(b.model);
 }
-
-type Hook = { ran: boolean; timedOut?: boolean; exitCode?: number; durationMs?: number; truncated?: boolean; output?: string };
 
 function SpawnBody({ project, worktreeIntent }: { project: string; worktreeIntent: string | null }) {
   useSignal(modelsSignal);
@@ -63,7 +62,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
   const [advanced, setAdvanced] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
-  const [hook, setHook] = React.useState<Hook | null>(null);
+  const [hook, setHook] = React.useState<PostWorktreeHook | null>(null);
 
   const tiers = visibleTiers();
   // A tier disabled in Settings while the dialog is open falls back to the default.
@@ -106,13 +105,13 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
       autoApprovePlan: mode === 'plan' || undefined,
     };
     try {
-      const inst = await apiFetch('/api/instances', {
+      const inst = await apiFetch<Instance>('/api/instances', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       });
       await refreshProjects();
       await refreshInstances();
       if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });
-      const h: Hook | undefined = inst.worktree?.postWorktreeCreate;
+      const h: PostWorktreeHook | null | undefined = inst.worktree?.postWorktreeCreate;
       if (h?.ran) setHook(h);
       else closeDialog('spawn');
     } catch (e: any) {
@@ -198,7 +197,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
                 <SelectTrigger id="sd-effort" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value={DEFAULT_EFFORT}>Default ({getActiveTierEffort(tier)})</SelectItem>
-                  {(getEffortLevels() as string[]).map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                  {getEffortLevels().map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

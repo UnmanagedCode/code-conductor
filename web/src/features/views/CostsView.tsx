@@ -2,7 +2,7 @@ import * as React from 'react';
 import { ChevronRightIcon, CoinsIcon, RotateCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatDuration, fmtCost } from '@/lib/core/usage.js';
+import { formatDuration, fmtCost } from '@shared/usage';
 import { cn } from '@/lib/utils';
 import { ViewMessage, ViewShell } from './ViewShell';
 

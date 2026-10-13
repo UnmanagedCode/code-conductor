@@ -6,7 +6,7 @@ Always read `README.md` at the project root before exploring the codebase. It ha
 
 When `README.md` doesn't go deep enough, load the relevant detail file — every doc named below is a layer under `CONVENTIONS.md`'s "update the most specific file" rule:
 - **Feature / UI behavior** → `docs/features.md`
-- **The web UI** → `web/`, the React UI served at `/`; its shared client modules are `public/` files reached through the `@/lib/core/*` alias. Build, mounts and layout: `docs/architecture.md` → `src/webBuild.ts`, `web/`
+- **The web UI** → `web/`, the React UI served at `/`; its shared client modules are `shared/` files reached through the `@shared/*` alias. Build, mounts and layout: `docs/architecture.md` → `src/webBuild.ts`, `web/`
 - **Backend registry (launch templates + env), custom models, tiers/roles, Claude context windows** → `docs/models.md`
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
@@ -24,7 +24,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 
 Where the `CONVENTIONS.md` rules land in this codebase. Rationale + examples in `docs/architecture.md` → "Conventions".
 
-- Thin wiring: UI feature logic lives in `web/src/features/<area>/` (DOM-free logic in the `@/lib/core` modules, the transcript model in `web/src/conversation/`); `main.tsx`/`App.tsx` only mount and start features. A feature opens another feature's dialog or view only through the `open*` APIs (`features/dialogs/api.ts`, `features/views/api.ts`) and otherwise imports only its store, action or component modules; `web/src/app/` imports no feature and reaches them through `app/events.ts`.
+- Thin wiring: UI feature logic lives in `web/src/features/<area>/` (DOM-free logic in the `@shared` modules, the transcript model in `web/src/conversation/`); `main.tsx`/`App.tsx` only mount and start features. A feature opens another feature's dialog or view only through the `open*` APIs (`features/dialogs/api.ts`, `features/views/api.ts`) and otherwise imports only its store, action or component modules; `web/src/app/` imports no feature and reaches them through `app/events.ts`.
 - One implementation across surfaces: git/worktree/diff/session logic lives once in `src/worktrees.ts` + siblings, imported by both `routes.ts` and `mcp/handlers.ts`.
 - Single-source catalogs: `modelVersions`/`whisperModels`/`ttsModels` own the authoritative list + allow-list server-side; the client fetches them.
 - Migrations go in `migrations/` (see `migrations/migrations.md`). cc has no external API clients, so the whole MCP/REST surface is unstable-by-design; the only read-time-tolerance exception is the Claude CLI's session jsonls.

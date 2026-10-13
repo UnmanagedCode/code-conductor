@@ -8,8 +8,8 @@ import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { peekTaskTracker, trackerSignal } from '@/app/trackers';
 import { selectInstance, send } from '@/app/controller';
-import { runLabel, waitingOn } from '@/lib/core/needsYou.js';
-import { readablePrompt } from '@/lib/core/promptPreview.ts';
+import { runLabel, waitingOn } from '@shared/needsYou';
+import { readablePrompt } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 

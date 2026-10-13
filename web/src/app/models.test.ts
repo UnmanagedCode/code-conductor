@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getBackendModels } from '@/lib/core/models.js';
+import { getBackendModels } from '@shared/models';
 import { loadModels, modelsSignal } from './models';
 
 afterEach(() => { vi.unstubAllGlobals(); });

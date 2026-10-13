@@ -3,7 +3,7 @@ import { act, fireEvent, render, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
-import { CLOSE_TITLES } from '@/lib/core/closeAction.js';
+import { CLOSE_TITLES } from '@shared/closeAction';
 import { blockOf, conductor, el, hand, inactiveGroup, proj, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
 
 const selectInstance = vi.fn();
@@ -102,11 +102,11 @@ describe('conductor chips', () => {
       projects: ['alpha', 'zeta', 'older', 'newer', 'tie-b', 'tie-a'].map((n) => proj(n)),
       instances: [conductor('A'), worker('w1', 'A', 'zeta'), worker('w2', 'A', 'alpha')],
       conductorSpawns: { A: [
-        { project: 'older', lastSpawnAt: 1 },
-        { project: 'tie-b', lastSpawnAt: 2 },
-        { project: 'zeta', lastSpawnAt: 5 },
-        { project: 'newer', lastSpawnAt: 3 },
-        { project: 'tie-a', lastSpawnAt: 2 },
+        { project: 'older', lastSpawnAt: '2026-01-01T00:00:00Z' },
+        { project: 'tie-b', lastSpawnAt: '2026-01-02T00:00:00Z' },
+        { project: 'zeta', lastSpawnAt: '2026-01-05T00:00:00Z' },
+        { project: 'newer', lastSpawnAt: '2026-01-03T00:00:00Z' },
+        { project: 'tie-a', lastSpawnAt: '2026-01-02T00:00:00Z' },
       ] },
     });
     renderSidebar();
@@ -120,8 +120,8 @@ describe('conductor chips', () => {
       projects: [proj('kept'), proj('other')],
       instances: [conductor('A'), conductor('B')],
       conductorSpawns: {
-        A: [{ project: 'removed', lastSpawnAt: 2 }, { project: 'kept', lastSpawnAt: 1 }],
-        B: [{ project: 'gone-1', lastSpawnAt: 2 }, { project: 'gone-2', lastSpawnAt: 1 }],
+        A: [{ project: 'removed', lastSpawnAt: '2026-01-02T00:00:00Z' }, { project: 'kept', lastSpawnAt: '2026-01-01T00:00:00Z' }],
+        B: [{ project: 'gone-1', lastSpawnAt: '2026-01-02T00:00:00Z' }, { project: 'gone-2', lastSpawnAt: '2026-01-01T00:00:00Z' }],
       },
     });
     renderSidebar();
@@ -138,8 +138,8 @@ describe('conductor chips', () => {
       instances: [conductor('A')],
       conductSessions: [{ sessionId: 'D', title: 'Done', lastActivity: 1 }],
       conductorSpawns: {
-        A: [{ project: 'p', lastSpawnAt: 1 }],
-        D: [{ project: 'p', lastSpawnAt: 1 }, { project: 'q', lastSpawnAt: 2 }],
+        A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z' }],
+        D: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z' }, { project: 'q', lastSpawnAt: '2026-01-02T00:00:00Z' }],
       },
     });
     renderSidebar();
@@ -151,7 +151,7 @@ describe('conductor chips', () => {
 
   it('a chip whose project gains a live worker moves to its place among the live chips, and goes back to idle when the worker goes', async () => {
     // Invariant: a project is one chip, live while it has a live owned worker and idle otherwise, placed by the live or idle ordering.
-    const base = { projects: [proj('m'), proj('b'), proj('z')], conductorSpawns: { A: [{ project: 'b', lastSpawnAt: 3 }, { project: 'z', lastSpawnAt: 2 }] } };
+    const base = { projects: [proj('m'), proj('b'), proj('z')], conductorSpawns: { A: [{ project: 'b', lastSpawnAt: '2026-01-03T00:00:00Z' }, { project: 'z', lastSpawnAt: '2026-01-02T00:00:00Z' }] } };
     seed({ ...base, instances: [conductor('A'), worker('wm', 'A', 'm')] });
     renderSidebar();
     await settle();
@@ -168,7 +168,7 @@ describe('conductor chips', () => {
     renderSidebar();
     await settle();
     expect(chipsOf('A')).toEqual({ chips: [], placeholder: true });
-    act(() => appStore.set({ conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1 }] } }));
+    act(() => appStore.set({ conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z' }] } }));
     expect(chipsOf('A')).toEqual({ chips: ['p:idle'], placeholder: false });
   });
 
@@ -177,7 +177,7 @@ describe('conductor chips', () => {
     seed({
       projects: [proj('p'), proj('q')],
       instances: [conductor('A'), worker('w', 'A', 'p')],
-      conductorSpawns: { A: [{ project: 'q', lastSpawnAt: 1 }] },
+      conductorSpawns: { A: [{ project: 'q', lastSpawnAt: '2026-01-01T00:00:00Z' }] },
     });
     renderSidebar();
     await settle();
@@ -244,6 +244,20 @@ describe('expanded conductor tree', () => {
     for (const l of ['New session', 'Delete project', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.archive]) expect(projects.has(l), `positive control: ${l}`).toBe(true);
   });
 
+  it('a worker with no session yet gets no row in the tree, beside its sibling that has one', async () => {
+    // Invariant: worker rows are session rows; an owned instance still spawning (sessionId null) renders none.
+    seed({
+      projects: [proj('proj')],
+      instances: [conductor('A'), worker('wd', 'A', 'proj'), worker('spawning', 'A', 'proj', null, { sessionId: null, id: 'i-spawning' })],
+    });
+    renderSidebar();
+    await settle();
+    const tree = expand('A');
+    expect(workerRows(tree)).toEqual(['wd']);
+    expect(tree.textContent).toContain('wd prompt');
+    expect(tree.textContent).not.toContain('spawning prompt');
+  });
+
   it("the tree shows only this conductor's workers", async () => {
     // Invariant: a conductor's tree lists its own workers; another conductor's worker in the same worktree and a hand session are absent.
     seed(treeFixture());
@@ -258,7 +272,7 @@ describe('expanded conductor tree', () => {
     seed({
       projects: [proj('idle-b'), proj('live-p'), proj('idle-a', { worktrees: [wt('wt')] })],
       instances: [conductor('A'), worker('w', 'A', 'live-p')],
-      conductorSpawns: { A: [{ project: 'idle-b', lastSpawnAt: 1 }, { project: 'idle-a', lastSpawnAt: 2 }] },
+      conductorSpawns: { A: [{ project: 'idle-b', lastSpawnAt: '2026-01-01T00:00:00Z' }, { project: 'idle-a', lastSpawnAt: '2026-01-02T00:00:00Z' }] },
     });
     renderSidebar();
     await settle();
@@ -273,7 +287,7 @@ describe('expanded conductor tree', () => {
     seed({
       projects: [proj('p'), proj('q')],
       conductSessions: [{ sessionId: 'D', title: 'Done', lastActivity: 1 }],
-      conductorSpawns: { D: [{ project: 'p', lastSpawnAt: 1 }, { project: 'removed', lastSpawnAt: 3 }, { project: 'q', lastSpawnAt: 2 }] },
+      conductorSpawns: { D: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z' }, { project: 'removed', lastSpawnAt: '2026-01-03T00:00:00Z' }, { project: 'q', lastSpawnAt: '2026-01-02T00:00:00Z' }] },
     });
     renderSidebar();
     await settle();
@@ -284,7 +298,7 @@ describe('expanded conductor tree', () => {
 
   it('a tree project flipping idle → live gains its worker rows in the same item, and loses them when the worker goes', async () => {
     // Invariant: the project's tree item survives the flip both ways; only its worker rows come and go.
-    const base = { projects: [proj('p')], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1 }] } };
+    const base = { projects: [proj('p')], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z' }] } };
     seed({ ...base, instances: [conductor('A')] });
     renderSidebar();
     await settle();
@@ -303,7 +317,7 @@ describe('expanded conductor tree', () => {
     seed({
       projects: [proj('p', { worktrees: [wt('wt-z'), wt('wt-a'), wt('unrecorded')] })],
       instances: [conductor('A')],
-      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1, worktrees: ['wt-z', 'deleted', 'wt-a'] }] },
+      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['wt-z', 'deleted', 'wt-a'] }] },
     });
     renderSidebar();
     await settle();
@@ -324,7 +338,7 @@ describe('expanded conductor tree', () => {
     seed({
       projects: [proj('p', { worktrees: [wt('wt-b'), wt('wt-a')] })],
       instances: [conductor('A'), worker('w', 'A', 'p', 'wt-b')],
-      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1, worktrees: ['wt-b', 'wt-a'] }] },
+      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['wt-b', 'wt-a'] }] },
     });
     renderSidebar();
     await settle();
@@ -336,7 +350,7 @@ describe('expanded conductor tree', () => {
 
   it('a recorded worktree going live gains its worker rows in the same item and head, and goes back to idle when the worker goes', async () => {
     // Invariant: the worktree item and its head survive the flip both ways; the idle mark and the worker rows follow the live worker.
-    const base = { projects: [proj('p', { worktrees: [wt('wt')] })], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1, worktrees: ['wt'] }] } };
+    const base = { projects: [proj('p', { worktrees: [wt('wt')] })], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['wt'] }] } };
     seed({ ...base, instances: [conductor('A')] });
     renderSidebar();
     await settle();
@@ -356,7 +370,7 @@ describe('expanded conductor tree', () => {
 
   it("a recorded worktree dropped from the project's worktrees leaves the tree, and the project row stays", async () => {
     // Invariant: a recorded worktree shows only while the project lists it.
-    seed({ projects: [proj('p', { worktrees: [wt('wt')] })], instances: [conductor('A')], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1, worktrees: ['wt'] }] } });
+    seed({ projects: [proj('p', { worktrees: [wt('wt')] })], instances: [conductor('A')], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['wt'] }] } });
     renderSidebar();
     await settle();
     expand('A');
@@ -370,7 +384,7 @@ describe('expanded conductor tree', () => {
     seed({
       projects: [proj('p', { worktrees: [wt('wt')] })],
       instances: [conductor('A'), conductor('B'), worker('bw', 'B', 'p', 'wt')],
-      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1, worktrees: ['wt'] }] },
+      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['wt'] }] },
     });
     renderSidebar();
     await settle();
@@ -384,7 +398,7 @@ describe('expanded conductor tree', () => {
 
   it('commit history and review on a recorded-only worktree open that project and worktree', async () => {
     // Invariant: a recorded-only worktree's commit history and review address its (project, worktree) pair.
-    seed({ projects: [proj('p', { worktrees: [wt('wt')] })], instances: [conductor('A')], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1, worktrees: ['wt'] }] } });
+    seed({ projects: [proj('p', { worktrees: [wt('wt')] })], instances: [conductor('A')], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['wt'] }] } });
     renderSidebar();
     await settle();
     const item = worktreeItem(expand('A'), 'wt')!;
@@ -404,7 +418,7 @@ describe('expanded conductor tree', () => {
       instances: [conductor('A'), worker('w', 'A', 'p', 'live', {
         worktree: { worktreeName: 'live', branch: 'cc/instance', baseBranch: 'dev', baseSha: 'instsha00000000', mergeStatus: { ahead: 9, behind: 9 } },
       })],
-      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: 1, worktrees: ['rec'] }] },
+      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['rec'] }] },
     });
     renderSidebar();
     await settle();

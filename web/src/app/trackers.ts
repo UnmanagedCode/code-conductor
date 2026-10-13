@@ -1,8 +1,8 @@
 // Per-instance task + context-usage trackers and the account-wide rate-limit
-// tracker. The trackers are the pure classes from lib/core; `trackerSignal`
+// tracker. The trackers are the pure classes in shared/; `trackerSignal`
 // tells React something in them changed.
-import { TaskTracker } from '@/lib/core/tasks.js';
-import { UsageTracker, RateLimitTracker } from '@/lib/core/usage.js';
+import { TaskTracker } from '@shared/tasks';
+import { UsageTracker, RateLimitTracker } from '@shared/usage';
 import { createSignal } from '@/state/createStore';
 
 export const trackerSignal = createSignal();

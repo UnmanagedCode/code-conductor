@@ -11,7 +11,7 @@ vi.mock('@/app/sessionActions', () => ({
   performProjectDelete: vi.fn(async () => {}),
   applySessionTitle: vi.fn(async () => 't'),
 }));
-vi.mock('@/lib/core/capabilities.js', () => ({
+vi.mock('@shared/capabilities', () => ({
   loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true, fuseUnion: true })),
   capabilities: () => null,
 }));

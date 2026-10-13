@@ -2,7 +2,7 @@
 // offered (no live session and no registered idle chip), whichever lens shows:
 // a filter nothing offers is one nothing can clear.
 import { appStore } from '@/state/app';
-import { deriveConductors } from './core';
+import { deriveConductors } from '@shared/conductors';
 import { filterOptions, filterOwner } from './derive';
 import { setFilter, sidebarStore } from './state';
 

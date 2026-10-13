@@ -101,7 +101,7 @@ test('the real server, booted with no build', async (t) => {
       const r = await get(baseUrl + '/pluginBridge.js');
       assert.equal(r.status, 200);
       assert.match(r.headers.get('content-type') ?? '', /javascript/);
-      assert.equal(await r.text(), await fs.readFile(path.join(__dirname, '..', 'public', 'pluginBridge.js'), 'utf8'));
+      assert.equal(await r.text(), await fs.readFile(path.join(__dirname, '..', 'web', 'src', 'features', 'views', 'pluginBridge.js'), 'utf8'));
     });
   } finally { await close(); }
 });

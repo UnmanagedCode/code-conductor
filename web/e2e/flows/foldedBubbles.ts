@@ -3,7 +3,7 @@
 // a sideways-overflow probe. Declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '../harness/fixtures.ts';
-import { buildWakeStub } from '../../../public/wakeCallback.ts';
+import { buildWakeStub } from '../../../shared/wakeCallback.ts';
 import type { Ui } from './ui.ts';
 
 export const WAKE_PAYLOAD = '{"sessionId":"wakeparity","source":"live"}\nWAKE-PROSE first paragraph with **bold** words\n\n# WAKE-HEAD plan\n\nWAKE-TAIL closing paragraph';

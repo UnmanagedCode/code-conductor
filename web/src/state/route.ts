@@ -4,7 +4,7 @@
 // opened with a history push and closed with history.back(), so the browser's
 // back button and Escape behave alike.
 import { createStore, useStore } from './createStore';
-import { readSessionAnchor, writeSessionAnchor } from '@/lib/core/anchor.js';
+import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
 
 export type MainView = 'session' | 'settings' | 'costs' | 'commits' | 'review' | 'plugin';
 

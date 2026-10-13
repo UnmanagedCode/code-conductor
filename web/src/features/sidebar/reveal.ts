@@ -5,7 +5,7 @@
 // instance isn't listed yet (a resume in flight) is revealed when it appears.
 import { appStore } from '@/state/app';
 import { on } from '@/app/events';
-import { deriveConductors } from './core';
+import { deriveConductors } from '@shared/conductors';
 import { revealTarget } from './derive';
 import { setConductorOpen, setFilter, setSessionsOpen, setWorkspaceOpen, setWorktreesOpen, sidebarStore } from './state';
 

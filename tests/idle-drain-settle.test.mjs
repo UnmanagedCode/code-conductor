@@ -34,7 +34,7 @@ const { InstanceManager, Instance } = await import('../src/instances.ts');
 const { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, seedSessionJsonl } =
   await import('./helpers.mjs');
 const { taskNotificationEvent } = await import('../src/taskNotification.ts');
-const { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } = await import('../public/wakeCallback.ts');
+const { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } = await import('../shared/wakeCallback.ts');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');

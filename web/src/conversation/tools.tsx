@@ -8,9 +8,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CopyButton } from '@/components/CopyButton';
-import { formatToolName, toolNamePlain } from '@/lib/core/toolName.js';
-import { lineDiff, diffStats } from '@/lib/core/diff.js';
-import { formatTokens } from '@/lib/core/usage.js';
+import { formatToolName, toolNamePlain } from '@shared/toolName';
+import { lineDiff, diffStats } from '@shared/diff';
+import { formatTokens } from '@shared/usage';
 import { cn } from '@/lib/utils';
 import type { ConversationModel, GroupChild, GroupNode, ResultNode, ThinkingNode, ToolNode, CallUsageNode } from './model';
 import { CALL_USAGE_TITLE, callUsageText, describeToolInput, formatElapsed, renderKindFor, splitResultContent, type DescribeCtx } from './format';
@@ -285,7 +285,7 @@ function renderArgs(node: ToolNode, model: ConversationModel): React.ReactNode {
     if (kind === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
       const ops = lineDiff(input.old_string, input.new_string);
       const { adds, dels } = diffStats(ops);
-      return <DiffTable head={input.file_path ?? ''} stats={`+${adds} −${dels}`} lines={ops.map((o: any) => ({ type: opType(o.op), text: o.text }))} />;
+      return <DiffTable head={input.file_path ?? ''} stats={`+${adds} −${dels}`} lines={ops.map((o) => ({ type: opType(o.op), text: o.text }))} />;
     }
     if (kind === 'Write' && typeof input.content === 'string') {
       const lines = input.content.split('\n');
@@ -296,7 +296,7 @@ function renderArgs(node: ToolNode, model: ConversationModel): React.ReactNode {
       const ops = lineDiff(input.old_source ?? '', input.new_source);
       const { adds, dels } = diffStats(ops);
       const label = `${input.notebook_path ?? ''}${input.cell_id ? ` · cell ${input.cell_id}` : ''}${input.edit_mode ? ` · ${input.edit_mode}` : ''}`;
-      return <DiffTable head={label} stats={`+${adds} −${dels}`} lines={ops.map((o: any) => ({ type: opType(o.op), text: o.text }))} />;
+      return <DiffTable head={label} stats={`+${adds} −${dels}`} lines={ops.map((o) => ({ type: opType(o.op), text: o.text }))} />;
     }
     let json = '';
     try { json = JSON.stringify(input, null, 2); } catch { json = node.partialJson; }

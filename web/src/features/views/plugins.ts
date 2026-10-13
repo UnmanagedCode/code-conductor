@@ -18,7 +18,7 @@
 //     a renewed frame that is on screen reloads in place, a disqualified one
 //     is not started again.
 //
-// Parent side of the bridge (the root /pluginBridge.js, served from public/, runs in the frame):
+// Parent side of the bridge (the root /pluginBridge.js, ./pluginBridge.js, runs in the frame):
 // child `route` messages mirror into the hash with the route store's
 // replaceHash (no history entry, no hashchange, no reload loop), so the store
 // always reads the hash the frame is at and an outside change back to an

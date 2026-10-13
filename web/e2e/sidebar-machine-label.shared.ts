@@ -7,9 +7,9 @@ import { createProject, mcpCall, spawnSession } from './harness/api.ts';
 import { expect, test, type Cc } from './harness/fixtures.ts';
 import { idleInst, insts, type FleetInst } from './flows/fleet.ts';
 import { next, nextSidebar } from './flows/ui.ts';
-import { buildWakeStub } from '../../public/wakeCallback.ts';
-import { buildForwardFrame } from '../../public/forwardFrame.ts';
-import { buildRenewSeed } from '../../public/renewSeed.ts';
+import { buildWakeStub } from '../../shared/wakeCallback.ts';
+import { buildForwardFrame } from '../../shared/forwardFrame.ts';
+import { buildRenewSeed } from '../../shared/renewSeed.ts';
 
 type Ctx = { page: Page; cc: Cc };
 /** An instance as `/api/instances` lists it, with the first prompt the server stored. */

@@ -4,12 +4,12 @@
 // picked before the socket opened (its subscribe dropped) and the active session
 // across a reconnect are subscribed by the open.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { consumeStashedAnchor } from '@/lib/core/anchor.js';
+import { consumeStashedAnchor } from '@shared/anchor';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 
 type Link = { socket: number; open: boolean; answer: ((id: string) => object) | null };
 
-vi.mock('@/lib/core/ws.js', () => {
+vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
   const sent: [string, unknown, number][] = [];
   const link: Link = { socket: 0, open: false, answer: null };
@@ -39,7 +39,7 @@ let stop: (() => void) | null = null;
 async function boot({ holdProjects = false } = {}) {
   stop?.();
   vi.resetModules();
-  const ws = (await import('@/lib/core/ws.js')) as unknown as { bus: EventTarget; sent: [string, unknown, number][]; link: Link };
+  const ws = (await import('@shared/ws')) as unknown as { bus: EventTarget; sent: [string, unknown, number][]; link: Link };
   ws.sent.length = 0;
   Object.assign(ws.link, { socket: 0, open: false, answer: null });
   const reads: Held[] = [];

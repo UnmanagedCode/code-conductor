@@ -1,4 +1,4 @@
-// Tests for public/forwardFrame.ts's parse side: parseForwardFrame recovers
+// Tests for shared/forwardFrame.ts's parse side: parseForwardFrame recovers
 // { payload, instruction } from exactly what buildForwardFrame writes, and
 // splitForwardedMessages recovers the per-message bodies from the payload.
 // Pure — no DOM. The worker-visible bytes themselves are pinned against the
@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   FORWARD_FRAME_HEADER, FORWARD_FRAME_FOOTER,
   buildForwardFrame, parseForwardFrame, splitForwardedMessages,
-} from '../public/forwardFrame.ts';
+} from '../shared/forwardFrame.ts';
 
 const H = FORWARD_FRAME_HEADER;
 const F = FORWARD_FRAME_FOOTER;

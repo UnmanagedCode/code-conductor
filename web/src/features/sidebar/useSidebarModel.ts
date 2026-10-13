@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { useSignal, useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
-import { deriveConductors, ownersByPlace, ownerLabel, unreadBySession } from './core';
+import { deriveConductors, ownersByPlace, ownerLabel } from '@shared/conductors';
+import { unreadBySession } from '@shared/unreadMarks';
 import { filterOptions, partitionInstances } from './derive';
 import { sessionsCache, sessionsSignal } from './state';
 

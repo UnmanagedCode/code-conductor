@@ -2,8 +2,9 @@
 // Strips syntax characters (bold markers, backticks, list bullets, etc.) so
 // Piper doesn't read them aloud. Only the audio text is affected — visual
 // rendering always uses the original buffer.
-export function mdToSpeech(text) {
-  if (typeof text !== 'string') return '';
+export function mdToSpeech(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  let text = input;
 
   // 1. Fenced code blocks — replace entire block with a short placeholder.
   //    Reading code aloud is unintelligible; the placeholder tells the listener
@@ -33,7 +34,7 @@ export function mdToSpeech(text) {
   text = text.replace(/~~([^~\n]+)~~/g, '$1');
 
   // 8. Images — speak alt text if present, else drop entirely.
-  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => alt.trim() || '');
+  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_: string, alt: string) => alt.trim() || '');
 
   // 9. Links — speak link text, drop the URL.
   text = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
@@ -53,7 +54,7 @@ export function mdToSpeech(text) {
   // 14. Table separator rows (|---|---| style).
   text = text.replace(/^\|?[\s\-|:]+\|[\s\-|:]+\|?\s*$/gm, '');
   // Table data rows — strip pipes, join cells with em-dash.
-  text = text.replace(/^\|(.*)\|\s*$/gm, (_, row) =>
+  text = text.replace(/^\|(.*)\|\s*$/gm, (_: string, row: string) =>
     row.split('|').map(c => c.trim()).filter(Boolean).join(' — ')
   );
 

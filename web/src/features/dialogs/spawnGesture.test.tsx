@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
-vi.mock('@/lib/core/capabilities.js', () => ({
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
+vi.mock('@shared/capabilities', () => ({
   loadCapabilities: vi.fn(async () => ({ remoteSystems: true, voice: true, fuseUnion: true })),
   capabilities: () => null,
 }));

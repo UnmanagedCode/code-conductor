@@ -1,8 +1,8 @@
 // User-triggered session / project / worktree mutations, shared by the
 // sidebar, the session header, the conversation and the commit-history view.
-import { apiFetch } from '@/lib/core/http.js';
-import { closeActionOf, stopNeedsConfirm } from '@/lib/core/closeAction.js';
-import { readSessionAnchor, writeSessionAnchor } from '@/lib/core/anchor.js';
+import { apiFetch } from '@shared/http';
+import { closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
+import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
 import { appStore, activeInstance } from '@/state/app';
 import { syncRoute } from '@/state/route';
 import type { Instance, Project } from '@/state/types';
@@ -113,7 +113,7 @@ export async function forkActiveSession(userMessageIndex: number, text: string) 
   if (!ok) return;
   const gesture = beginGesture();
   try {
-    const { instance } = await apiFetch(`/api/instances/${encodeURIComponent(id)}/fork`, {
+    const { instance } = await apiFetch<{ instance: Instance }>(`/api/instances/${encodeURIComponent(id)}/fork`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userMessageIndex, text }),
     });
     await refreshProjects();
@@ -150,7 +150,7 @@ export type CloseArgs = {
   temp?: boolean;
 };
 
-/** A session's ×: one step down from where it is (closeAction.js decides stop vs archive). */
+/** A session's ×: one step down from where it is (closeAction.ts decides stop vs archive). */
 export function closeSession(args: CloseArgs) {
   return closeActionOf({ instanceId: args.instanceId ?? null, status: args.status ?? null, temp: !!args.temp }) === 'stop' ? stopSession(args) : archiveSession(args);
 }
@@ -256,8 +256,20 @@ export async function applySessionTitle(sessionId: string, title: string): Promi
 
 export type WorktreeTarget = { project: string; worktree: string };
 
+/** The body of a worktree sync / merge / lock / rebase-prompt route (src/worktrees.ts). */
+export type WorktreeOpResult = {
+  ok: boolean;
+  reason?: string;
+  action?: string;
+  newSha?: string;
+  behind?: number;
+  branch?: string;
+  baseBranch?: string;
+  [k: string]: unknown;
+};
+
 function worktreeSession({ project, worktree }: WorktreeTarget): Instance | undefined {
-  const mine = instances().filter((i) => i.project === project && (i.worktree as any)?.worktreeName === worktree);
+  const mine = instances().filter((i) => i.project === project && i.worktree?.worktreeName === worktree);
   const live = mine.filter((i) => i.status !== 'crashed' && i.status !== 'exited');
   return live.find((i) => i.id === activeId()) ?? live[0] ?? mine.find((i) => i.id === activeId()) ?? mine[0];
 }
@@ -273,7 +285,7 @@ export async function syncWorktree(target?: WorktreeTarget | null) {
     ? `/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/sync`
     : `/api/instances/${id}/sync`;
   try {
-    const result = await apiFetch(url, { method: 'POST' });
+    const result = await apiFetch<WorktreeOpResult>(url, { method: 'POST' });
     if (!result.ok) {
       toast.error('Cannot sync', result.reason);
       return result;
@@ -292,7 +304,7 @@ export async function syncWorktree(target?: WorktreeTarget | null) {
   }
 }
 
-async function offerRebasePrompt(inst: Instance | undefined, result: any) {
+async function offerRebasePrompt(inst: Instance | undefined, result: WorktreeOpResult) {
   const what = result.action === 'commit-required'
     ? `has uncommitted changes and is ${result.behind} commit(s) behind ${result.baseBranch}`
     : `conflicts with ${result.baseBranch}. The automatic rebase was aborted, so nothing changed`;
@@ -308,7 +320,7 @@ async function offerRebasePrompt(inst: Instance | undefined, result: any) {
   });
   if (!ok) return;
   try {
-    const sent = await apiFetch(`/api/instances/${inst.id}/rebase-prompt`, { method: 'POST' });
+    const sent = await apiFetch<WorktreeOpResult>(`/api/instances/${inst.id}/rebase-prompt`, { method: 'POST' });
     if (!sent.ok) toast.error('Cannot ask the agent to rebase', sent.reason);
     else toast.success('Rebase prompt sent', 'Watch the conversation for REBASE_DONE, then merge from the commit history.');
   } catch (e: any) {
@@ -324,7 +336,7 @@ export async function mergeWorktree(target: WorktreeTarget) {
   });
   if (!ok) return null;
   try {
-    const result = await apiFetch(`/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/merge`, { method: 'POST' });
+    const result = await apiFetch<WorktreeOpResult>(`/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/merge`, { method: 'POST' });
     if (result.ok) {
       toast.success('Merged into parent', `Now at ${result.newSha?.slice(0, 12) ?? '?'}.`);
       await refreshProjectsAfterOp();
@@ -340,7 +352,7 @@ export async function mergeWorktree(target: WorktreeTarget) {
 
 export async function setWorktreeLock(target: WorktreeTarget, locked: boolean) {
   try {
-    const result = await apiFetch(`/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/lock`, {
+    const result = await apiFetch<WorktreeOpResult>(`/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/lock`, {
       method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ locked }),
     });
     if (result.ok) await refreshProjectsAfterOp();

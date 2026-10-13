@@ -16,8 +16,8 @@ import type { Instance } from '@/state/types';
 import {
   getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackends, getBackendLabel,
   getBackendModels, getEffortLevels, CLAUDE_BACKEND,
-} from '@/lib/core/models.js';
-import { autoResumeBadge, formatAutoResumeTime } from '@/lib/core/usage.js';
+} from '@shared/models';
+import { autoResumeBadge, formatAutoResumeTime } from '@shared/usage';
 import { send, stickyPrompt } from '@/app/controller';
 import { trackSwipes } from '@/conversation/stickyPrompt';
 import { modelsSignal } from '@/app/models';
@@ -90,12 +90,12 @@ export function modelGroups(inst: Instance): [string, Entry[]][] {
     if (!groups.has(id)) groups.set(id, []);
     groups.get(id)!.push({ target: { tier }, label: getTierLabel(tier), state: modelEntryState(inst, binding), selected: isRunning(id, binding.model), model: binding.model });
   }
-  for (const { id } of getBackends() as { id: string }[]) {
+  for (const { id } of getBackends()) {
     if (id === CLAUDE_BACKEND) continue;
     if (!groups.has(id)) groups.set(id, []);
     const group = groups.get(id)!;
     const tierModels = new Set(group.map((e) => e.model));
-    for (const { model, label } of getBackendModels(id) as { model: string; label: string }[]) {
+    for (const { model, label } of getBackendModels(id)) {
       if (tierModels.has(model)) continue;
       const binding = { backend: id, model };
       group.push({ target: binding, label, state: modelEntryState(inst, binding), selected: isRunning(id, model), model });
@@ -105,7 +105,7 @@ export function modelGroups(inst: Instance): [string, Entry[]][] {
 }
 
 async function wsAck(t: string, payload: Record<string, unknown>) {
-  return send(t, payload, { ack: true }) as Promise<unknown>;
+  return send(t, payload, { ack: true });
 }
 
 function displayStatus(inst: Instance): SessionStatus {
@@ -154,7 +154,7 @@ export function ModeToggle({ inst }: { inst: Instance }) {
 export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => void }) {
   useSignal(modelsSignal);
   useSignal(mutesSignal);
-  const worktree = (inst.worktree as any)?.worktreeName ? (inst.worktree as any) : null;
+  const worktree = inst.worktree?.worktreeName ? inst.worktree : null;
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
   // Sync sits in the bar from md up and in ⋮ below it; the one query places it
   // and decides whether a stopped worktree session has a ⋮ at all.
@@ -163,7 +163,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   const between = isBetweenTurns(inst);
   const muted = isSessionMuted(inst.sessionId);
   const enforcing = isEnforcing(inst.playbookEnforcement);
-  const resumeBadge = autoResumeBadge(inst as any);
+  const resumeBadge = autoResumeBadge(inst);
   React.useSyncExternalStore(uiStore.subscribe, () => uiStore.get().callUsageShown);
   const showCallUsage = isCallUsageShown(inst.sessionId);
 

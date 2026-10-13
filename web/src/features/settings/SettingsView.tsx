@@ -7,7 +7,7 @@ import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { closeView, replaceHash, useRoute } from '@/state/route';
 import { uiStore } from '@/app/ui';
-import { loadCapabilities } from '@/lib/core/capabilities.js';
+import { loadCapabilities } from '@shared/capabilities';
 import { cn } from '@/lib/utils';
 import { ModelsSection } from './models/ModelsSection';
 import { loadModelsSettings } from './models/store';
@@ -58,7 +58,7 @@ export function SettingsView() {
     void loadModelsSettings();
     clearConventionsListErrors();
     resetPluginNotes();
-    loadCapabilities().then((c: any) => { setCaps(c); setCapsLoaded(true); });
+    loadCapabilities().then((c) => { setCaps(c); setCapsLoaded(true); });
   }, []);
 
   // A section this platform lacks (a stale link) lands on the first one.

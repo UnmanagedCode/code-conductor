@@ -1,10 +1,8 @@
 // The sidebar flow files' shared fleet helpers: spawning conductors and their workers, waiting on instances, and conductor colours as the page resolves them.
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
+import { conductorColor } from '../../../shared/conductorColor.ts';
 import { api, LIVE_WORKER_MODEL, mcpCall } from '../harness/api.ts';
 import { expect, type Cc } from '../harness/fixtures.ts';
-import { REPO_ROOT } from '../harness/boot.ts';
 
 export type FleetInst = { id: string; sessionId: string; status: string; temp?: boolean; ownerSessionId?: string | null };
 
@@ -37,11 +35,8 @@ export async function spawnWorker(cc: Cc, caller: string, args: Record<string, u
   return idleInst(cc, (i) => i.sessionId === sessionId, `worker ${sessionId} idle`);
 }
 
-const CONDUCTOR_COLOR = pathToFileURL(path.join(REPO_ROOT, 'public', 'conductorColor.js')).href;
-
 /** A conductor's colour from the module the page derives it with, resolved by the page as a computed rgb(). */
 export async function colourOf(page: Page, sid: string): Promise<string> {
-  const { conductorColor } = await import(CONDUCTOR_COLOR) as { conductorColor: (sessionId: string) => string };
   return page.evaluate((css) => {
     const probe = document.createElement('i');
     probe.style.color = css;

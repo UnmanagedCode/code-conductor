@@ -1,9 +1,9 @@
-// public/closeAction.js: the × of a session row / strip entry is ONE step down
+// shared/closeAction.ts: the × of a session row / strip entry is ONE step down
 // from where the session is — a live persistent session is stopped (transcript
 // kept), a live temp or not-live one is archived — and which stops ask first.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeActionOf, stopNeedsConfirm } from '../public/closeAction.js';
+import { closeActionOf, stopNeedsConfirm } from '../shared/closeAction.ts';
 
 test('closeActionOf: one step down — stop only a live persistent session', async (t) => {
   const cases = [

@@ -53,7 +53,7 @@ const BLOCKED = { ok: true, action: 'rebase-conflict', ahead: 1, behind: 1, bran
 const SENT = { ok: true, action: 'rebase-prompt-sent', blocker: 'conflict' };
 const inst = (id: string, worktree: string | null, extra: Partial<Instance> = {}): Instance => ({
   id, project: 'demo', sessionId: `sid-${id}-abcdef`, status: 'idle', mode: 'plan', title: `title ${id}`,
-  worktree: worktree ? ({ worktreeName: worktree } as any) : null, ...extra,
+  worktree: worktree ? { worktreeName: worktree, branch: `code-conductor/${worktree}`, baseBranch: 'main', baseSha: 'abcdef012345', postWorktreeCreate: null } : null, ...extra,
 });
 const setState = (activeId: string | null, instances: Instance[]) => appStore.set({ activeId, instances });
 const posts = (suffix: string) => calls.filter((c) => c.url.endsWith(suffix));
@@ -150,7 +150,7 @@ describe('targeted worktree sync', () => {
     bodies = { sync: { ok: true, action: 'fast-forwarded', newSha: 'abcdef0123456789' } };
     const result = await syncWorktree(TARGET);
     expect(calls).toEqual([{ url: '/api/projects/demo/worktrees/wt-a/sync', method: 'POST' }]);
-    expect(result.action).toBe('fast-forwarded');
+    expect(result?.action).toBe('fast-forwarded');
     expect(controller.refreshProjects).toHaveBeenCalledTimes(1);
   });
 
@@ -223,7 +223,7 @@ describe('targeted worktree sync', () => {
     bodies = { sync: { ok: false, reason: 'parent is dirty' } };
     const result = await syncWorktree(TARGET);
     expect(toastText()).toMatch(/Cannot sync\nparent is dirty/);
-    expect(result.ok).toBe(false);
+    expect(result?.ok).toBe(false);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
@@ -261,7 +261,7 @@ describe('merge and lock', () => {
     bodies = { merge: { ok: false, reason: 'worktree is behind main — click Sync first' } };
     const result = await mergeWorktree(TARGET);
     expect(toastText()).toMatch(/Cannot merge\nworktree is behind main — click Sync first/);
-    expect(result.ok).toBe(false);
+    expect(result?.ok).toBe(false);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
@@ -297,7 +297,7 @@ describe('merge and lock', () => {
     bodies = { lock: { ok: false, reason: 'nope' } };
     const result = await setWorktreeLock(TARGET, true);
     expect(toastText()).toMatch(/Cannot change the lock\nnope/);
-    expect(result.ok).toBe(false);
+    expect(result?.ok).toBe(false);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 });

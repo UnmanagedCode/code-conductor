@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, waitFor } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 
-vi.mock('@/lib/core/ws.js', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
+vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: vi.fn(async () => []),
   closeSession: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('@/app/sessionActions', () => ({
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
 vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => null }));
 
-const { bus } = await import('@/lib/core/ws.js');
+const { bus } = await import('@shared/ws');
 const { startController, stopController } = await import('@/app/controller');
 const { appStore } = await import('@/state/app');
 const { uiStore } = await import('@/app/ui');

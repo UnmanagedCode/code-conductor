@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { Instance } from '@/state/types';
 
-vi.mock('@/lib/core/ws.js', () => {
+vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
   const sent: [string, unknown][] = [];
   return { bus, sent, connect: vi.fn(), send: vi.fn((t: string, payload: unknown) => { sent.push([t, payload]); }) };
@@ -29,7 +29,7 @@ async function boot() {
   const c = await import('./controller');
   const { appStore } = await import('@/state/app');
   const { SubagentPanel } = await import('@/features/session/SessionPanels');
-  const ws = await import('@/lib/core/ws.js') as unknown as { sent: [string, unknown][] };
+  const ws = await import('@shared/ws') as unknown as { sent: [string, unknown][] };
   appStore.set({ instances: [conductor, worker, pinged] });
   c.startController();
   stopPrevious = c.stopController;

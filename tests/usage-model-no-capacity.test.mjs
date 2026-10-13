@@ -1,6 +1,6 @@
 // The client derives NO context capacity from the model it observed.
 //
-// usage.js's header records that the hardcoded family→window table was
+// usage.ts's header records that the hardcoded family→window table was
 // deleted: the server resolves capacity once from the concrete
 // {backend, exact model} pair and ships it as `contextWindowTokens`. The
 // client cannot redo that — `message_start` reports a bare model id with the
@@ -31,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODEL_FAMILIES } from '../src/modelVersions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const USAGE_URL = pathToFileURL(path.resolve(__dirname, '..', 'public', 'usage.js')).href;
+const USAGE_URL = pathToFileURL(path.resolve(__dirname, '..', 'shared', 'usage.ts')).href;
 
 // Every catalog id, plus the tagged launch form of any version that carries a
 // launchTag (what the session actually launched with), plus two ids the
@@ -46,7 +46,7 @@ const MODEL_IDS = [
   'claude-future-9',
 ];
 
-// The two paths that write `this.model` (usage.js apply()).
+// The two paths that write `this.model` (usage.ts apply()).
 const SEED_VIA = {
   init: (t, id) => t.apply({ kind: 'system', subtype: 'init', data: { model: id } }),
   model_changed: (t, id) => t.apply({ kind: 'system', subtype: 'model_changed', data: { to: id } }),

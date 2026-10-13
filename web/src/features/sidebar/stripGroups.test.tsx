@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { uiStore } from '@/app/ui';
-import { entryReason, needsYouTitle } from '@/lib/core/needsYou.js';
+import { entryReason, needsYouTitle } from '@shared/needsYou';
 import { chooseOption } from '@/test/radixSelect';
 import {
   conductor, conductorRowOf, hand, proj, seed, stripEntryOf, stripGroups, stripHeadCounts, stripLabelOf, stripSids, worker,

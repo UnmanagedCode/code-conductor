@@ -5,9 +5,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Markdown } from '@/components/Markdown';
 import { cn } from '@/lib/utils';
-import { buildApprovePrompt, buildRejectPrompt } from '../../../public/planApproval.ts';
-import { formatUserQuestionAnswers } from '../../../public/userQuestionAnswers.ts';
-import { send } from '@/lib/core/ws.js';
+import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
+import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
+import { send } from '@shared/ws';
 import { appStore } from '@/state/app';
 import { ConversationModel, type PlanNode, type QuestionNode } from './model';
 
@@ -17,7 +17,7 @@ import { ConversationModel, type PlanNode, type QuestionNode } from './model';
  * the card instead of leaving it "sending…" forever.
  */
 function sendCardAnswer(instanceId: string, text: string, onFail: (reason: string) => void) {
-  (send('prompt', { id: instanceId, text }, { ack: true }) as Promise<unknown>).catch((e: Error) => onFail(e?.message || 'send failed'));
+  send('prompt', { id: instanceId, text }, { ack: true }).catch((e: Error) => onFail(e?.message || 'send failed'));
 }
 
 export function PlanCard({ node, model }: { node: PlanNode; model: ConversationModel }) {

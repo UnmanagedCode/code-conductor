@@ -220,7 +220,7 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
 });
 
 test('snapshot carries lastContextUsage when the tail holds no message_start', async () => {
-  // The ctx chip is fed ONLY by message_start (public/usage.js) and the client
+  // The ctx chip is fed ONLY by message_start (shared/usage.ts) and the client
   // rebuilds its UsageTracker from the snapshot tail alone. A turn whose content
   // outruns the tail leaves every message_start below the window, so the reading
   // has to ride the frame as a field instead.

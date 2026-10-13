@@ -1,8 +1,8 @@
 // Canonical AskUserQuestion answer formatting — the single source of truth
 // for the text delivered to a worker when a question is answered.
 //
-// Lives under public/ with the client modules the web UI shares with the
-// server. It is DOM-free on purpose so BOTH surfaces call ONE function — no fork:
+// Lives in shared/ with the modules the web UI shares with the server.
+// It is DOM-free on purpose so BOTH surfaces call ONE function — no fork:
 //   - the UI question card (web/src/conversation/cards.tsx formats the submit
 //     text, web/src/conversation/model.ts reverses it on replay), and
 //   - the answer_question MCP tool (src/mcp/handlers.ts imports it directly),

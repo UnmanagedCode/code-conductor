@@ -6,7 +6,9 @@
 // added on the new side. Returned in interleaved order ready for a
 // unified-diff style render.
 
-export function lineDiff(oldText, newText) {
+export type DiffOp = { op: '=' | '-' | '+'; text: string };
+
+export function lineDiff(oldText: string | null | undefined, newText: string | null | undefined): DiffOp[] {
   const a = (oldText ?? '').split('\n');
   const b = (newText ?? '').split('\n');
   // Strip trailing empty line from trailing newline split so it doesn't
@@ -19,16 +21,16 @@ export function lineDiff(oldText, newText) {
 
   // Compute shortest edit script via Myers'.
   const max = N + M;
-  const v = new Map();
+  const v = new Map<number, number>();
   v.set(1, 0);
-  const trace = [];
+  const trace: Map<number, number>[] = [];
   let done = false;
   for (let d = 0; d <= max && !done; d++) {
     const snapshot = new Map(v);
     trace.push(snapshot);
     for (let k = -d; k <= d; k += 2) {
       let x;
-      const down = !v.has(k - 1) || (v.has(k + 1) && v.get(k - 1) < v.get(k + 1));
+      const down = !v.has(k - 1) || (v.has(k + 1) && v.get(k - 1)! < v.get(k + 1)!);
       if (down) x = v.get(k + 1) ?? 0;
       else x = (v.get(k - 1) ?? 0) + 1;
       let y = x - k;
@@ -39,12 +41,12 @@ export function lineDiff(oldText, newText) {
   }
 
   // Backtrack.
-  const ops = [];
+  const ops: DiffOp[] = [];
   let x = N, y = M;
   for (let d = trace.length - 1; d > 0 && (x > 0 || y > 0); d--) {
     const vPrev = trace[d];
     const k = x - y;
-    const down = !vPrev.has(k - 1) || (vPrev.has(k + 1) && vPrev.get(k - 1) < vPrev.get(k + 1));
+    const down = !vPrev.has(k - 1) || (vPrev.has(k + 1) && vPrev.get(k - 1)! < vPrev.get(k + 1)!);
     const kPrev = down ? k + 1 : k - 1;
     const xPrev = vPrev.get(kPrev) ?? 0;
     const yPrev = xPrev - kPrev;
@@ -59,7 +61,7 @@ export function lineDiff(oldText, newText) {
 }
 
 // Counts of additions / deletions in a diff. Equal lines don't count.
-export function diffStats(ops) {
+export function diffStats(ops: readonly DiffOp[]): { adds: number; dels: number } {
   let adds = 0, dels = 0;
   for (const o of ops) {
     if (o.op === '+') adds++;

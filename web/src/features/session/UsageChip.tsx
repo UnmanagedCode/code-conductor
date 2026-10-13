@@ -3,8 +3,8 @@ import { useStore, useSignal } from '@/state/createStore';
 import type { Instance } from '@/state/types';
 import {
   formatTokens, formatPct, formatDuration, formatResetTime, rlChipSegment, RL_BUCKET_KEYS, RL_WINDOW_LABEL, fmtCost,
-} from '@/lib/core/usage.js';
-import { CLAUDE_BACKEND } from '@/lib/core/models.js';
+} from '@shared/usage';
+import { CLAUDE_BACKEND } from '@shared/models';
 import { getUsageTracker, rateLimits, trackerSignal } from '@/app/trackers';
 import { accountUsageStore } from '@/app/accountUsage';
 import { cn } from '@/lib/utils';
@@ -42,7 +42,7 @@ export function UsageChip({ inst }: { inst: Instance }) {
   const frac: number | null = usage.currentFillPct(win);
   const used: number | null = usage.currentContextSize();
   const rl = rlChipSegment(rateLimits.info, account);
-  const c = usage.cum!;
+  const c = usage.cum;
   const modelLabel = usage.effectiveModel(inst.modelSwitch?.from ?? inst.model) ?? '(account default)';
 
   const title = [
@@ -55,11 +55,11 @@ export function UsageChip({ inst }: { inst: Instance }) {
 
   const buckets: { label: string; util: number | null; reset: string | null }[] = [];
   if (account) {
-    for (const key of RL_BUCKET_KEYS as string[]) {
+    for (const key of RL_BUCKET_KEYS) {
       const b = account[key];
       if (!b) continue;
       buckets.push({
-        label: (RL_WINDOW_LABEL as Record<string, string>)[key] ?? key,
+        label: RL_WINDOW_LABEL[key] ?? key,
         util: typeof b.utilization === 'number' ? b.utilization / 100 : null,
         reset: b.resets_at ? formatResetTime(new Date(b.resets_at).getTime() / 1000) : null,
       });

@@ -24,7 +24,7 @@ import { PluginsSection } from './PluginsSection';
 import { pluginsChangeStore, pluginsChangedSignal } from './pluginsSignal';
 import { on } from '@/app/events';
 import { ConfirmHost, toast } from '@/ui/feedback';
-import { buildWakeStub } from '@/lib/core/wakeCallback.ts';
+import { buildWakeStub } from '@shared/wakeCallback';
 import { readJsonl } from '@/conversation/testkit';
 
 const DRAFTS = [modelsDraftStore.get(), backendsDraftStore.get(), systemsDraftStore.get()] as const;

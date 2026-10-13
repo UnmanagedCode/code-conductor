@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/core/ws.js', () => {
+vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
   const sent: any[] = [];
   return { bus, sent, connect: vi.fn(), send: vi.fn((t: string, payload: any) => { sent.push([t, payload]); }) };
@@ -18,7 +18,7 @@ let stopPrevious: (() => void) | null = null;
 async function boot({ instances = [] as any[], locate = null as null | ((sid: string) => any) } = {}) {
   stopPrevious?.();
   vi.resetModules();
-  const ws: any = await import('@/lib/core/ws.js');
+  const ws: any = await import('@shared/ws');
   ws.sent.length = 0;
   const actions: any = await import('./sessionActions');
   const fetch = vi.fn(async (url: string) => {
@@ -156,9 +156,9 @@ describe('routing session data', () => {
     const b = await boot({ instances: [{ id: 'A' }] });
     b.rateLimits.apply({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { utilization: 0.8 } } });
     b.emit('snapshot', { id: 'A', events: [{ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { utilization: 0.1 } }, _seq: 1 }] });
-    expect(b.rateLimits.info.utilization).toBe(0.8);
+    expect(b.rateLimits.info?.utilization).toBe(0.8);
     b.emit('event', { id: 'A', ev: { kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { utilization: 0.3 } } } });
-    expect(b.rateLimits.info.utilization).toBe(0.3);
+    expect(b.rateLimits.info?.utilization).toBe(0.3);
   });
 
   it('a reset_snapshot (rewind) rebuilds the conversation and drops the prompt back into the composer', async () => {
@@ -292,7 +292,7 @@ describe('refreshing projects', () => {
   }
 
   it('GET /api/conductors/projects becomes appStore.conductorSpawns, the Conductors lens\'s idle-chip source', async () => {
-    const body = { C: [{ project: 'p', lastSpawnAt: 1 }] };
+    const body = { C: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }] };
     conductors = { body };
     const { c, appStore } = await load();
     await c.refreshProjects();
@@ -300,7 +300,7 @@ describe('refreshing projects', () => {
   });
 
   it('a non-ok or rejected conductors fetch replaces the spawns with an empty map', async () => {
-    const body = { C: [{ project: 'p', lastSpawnAt: 1 }] };
+    const body = { C: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }] };
     const { c, appStore } = await load();
     conductors = { body };
     await c.refreshProjects();

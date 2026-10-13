@@ -5,7 +5,7 @@
 // node compared against null/undefined by a positive equal-family assertion
 // never reaches assert's serializer.* It bounds the damage from the shapes
 // `tests/dom-assert-scan.mjs` is structurally blind to (a subject whose
-// DOM-ness lives in a `public/` return value — `conv.emptyNode`,
+// DOM-ness lives in a source return value — `conv.emptyNode`,
 // `main.leadingAssistantWrap`, `batch.leadingWrap` — and any new shape the
 // scanner does not recognise), converting a 33-120 s stall into a named
 // AssertionError.

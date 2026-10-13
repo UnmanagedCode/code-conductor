@@ -4,13 +4,13 @@ import {
   ServerOffIcon, Trash2Icon, XIcon, FileDiffIcon, ArchiveIcon, SquareIcon,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { conductorColor } from '@/lib/core/conductorColor.js';
-import { closeActionOf, CLOSE_TITLES } from '@/lib/core/closeAction.js';
-import { needsYouTitle, runLabel } from '@/lib/core/needsYou.js';
-import { promptPreview } from '@/lib/core/promptPreview.ts';
+import { conductorColor } from '@shared/conductorColor';
+import { closeActionOf, CLOSE_TITLES } from '@shared/closeAction';
+import { needsYouTitle, runLabel } from '@shared/needsYou';
+import { promptPreview } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
-import type { Project } from '@/state/types';
+import type { Project, Worktree } from '@/state/types';
 import { closeSession, promoteSession, removeWorktree, resumeSession, type CloseArgs } from '@/app/sessionActions';
 import { selectInstance } from '@/app/controller';
 import { closeSidebarOnMobile } from '@/app/ui';
@@ -239,7 +239,7 @@ function upstreamTitle(ms: { ahead: number; behind: number; upstream: string }) 
   return `${ms.behind} commit(s) behind ${ms.upstream} — pull to catch up`;
 }
 
-function worktreeTitle(ms: { ahead: number; behind: number }, base: string) {
+function worktreeTitle(ms: { ahead: number; behind: number }, base: string | undefined) {
   if (ms.ahead > 0 && ms.behind > 0) return `${ms.ahead} commit(s) ahead of ${base}, ${ms.behind} behind — rebase, then fast-forward`;
   if (ms.ahead > 0) return `${ms.ahead} commit(s) ahead of ${base} — fast-forward parent to land them`;
   return `${ms.behind} commit(s) behind ${base} — click Sync to catch up`;
@@ -313,7 +313,7 @@ export function ProjectRow({ project: p, readOnly = false, liveCount = 0, instan
 // ── Worktree head ────────────────────────────────────────────────────────
 
 export function WorktreeHead({ project, wt, readOnly = false, owner = null, ownerTitle, dim = false, chevron }: {
-  project: string; wt: any; readOnly?: boolean; owner?: string | null; ownerTitle?: (sid: string) => string; dim?: boolean; chevron?: React.ReactNode;
+  project: string; wt: Worktree; readOnly?: boolean; owner?: string | null; ownerTitle?: (sid: string) => string; dim?: boolean; chevron?: React.ReactNode;
 }) {
   const ms = wt.mergeStatus;
   return (
