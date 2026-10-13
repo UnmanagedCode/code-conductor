@@ -100,24 +100,39 @@ function holdAutoFocus(node: HTMLElement) {
   if (target === active && target instanceof HTMLElement) target.blur();
 }
 
-/** The first control Tab would reach in `root`: Radix's own opening target when no control auto-focuses. */
+/** Whether `el` can take focus now: still on the page and not disabled. */
+const focusable = (el: HTMLElement) => el.isConnected && !(el as HTMLButtonElement).disabled;
+
+/** Hidden the way Radix's focus scope judges it: `visibility: hidden` itself, or `display: none` up to `root`. */
+function hidden(el: HTMLElement, root: HTMLElement) {
+  if (getComputedStyle(el).visibility === 'hidden') return true;
+  for (let n: HTMLElement | null = el; n && n !== root; n = n.parentElement) if (getComputedStyle(n).display === 'none') return true;
+  return false;
+}
+
+/** Radix's own opening target when no control auto-focuses: the first tabbable, visible control that is not a link. */
 function firstTabbable(root: HTMLElement): HTMLElement | null {
-  for (const el of root.querySelectorAll<HTMLElement>('a[href], button, input:not([type="hidden"]), select, textarea, [tabindex]')) {
-    if (el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.getClientRects().length > 0) return el;
+  for (const el of root.querySelectorAll<HTMLElement>('*')) {
+    if (el.tagName === 'A' || el.hidden || (el.tagName === 'INPUT' && (el as HTMLInputElement).type === 'hidden')) continue;
+    if (el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && !hidden(el, root)) return el;
   }
   return null;
 }
 
 /**
- * The opening focus: the `autoFocus` target, else Radix's default (the first control, else the content). On a touch
- * device a text-field target opens on the content instead, so no soft keyboard covers the modal as it opens.
+ * The opening focus: the `autoFocus` target while it can still take focus, else the first control, else the content.
+ * On a touch device a text-field target opens on the content instead, so no soft keyboard covers the modal as it
+ * opens; there the target is judged and focused here. Elsewhere, with no `autoFocus` target, Radix's default runs.
  */
 function openFocus(e: Event) {
   const content = e.currentTarget as HTMLElement;
-  const held = autoFocused.get(content);
-  if (window.matchMedia(TOUCH_QUERY).matches && isTextEntry(held ?? firstTabbable(content))) {
+  const auto = autoFocused.get(content);
+  const held = auto && focusable(auto) ? auto : null;
+  if (window.matchMedia(TOUCH_QUERY).matches) {
+    const target = held ?? firstTabbable(content);
     e.preventDefault();
-    content.focus();
+    if (target && !isTextEntry(target)) target.focus();
+    if (document.activeElement !== target) content.focus();
   } else if (held) {
     e.preventDefault();
     held.focus();

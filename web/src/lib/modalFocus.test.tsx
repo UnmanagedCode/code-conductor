@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -74,6 +75,52 @@ describe('the opening focus of Dialog and Sheet', () => {
     cleanup();
     const confirm = await open('button');
     expect(document.activeElement, 'a button: the button').toBe([...confirm.querySelectorAll('button')].find((b) => b.textContent === 'Confirm'));
+  });
+
+  it('an autofocus field gone before the opening auto-focus leaves focus inside: the first control takes it', async () => {
+    pointer();
+    function SelfGone() {
+      const [show, setShow] = useState(true);
+      useEffect(() => { setShow(false); }, []);
+      return show ? <input aria-label="Name" autoFocus /> : null;
+    }
+    function Root({ open }: { open: boolean }) {
+      return (
+        <Dialog open={open}>
+          <DialogContent showCloseButton={false}><DialogTitle>Gone</DialogTitle><DialogDescription>d</DialogDescription><SelfGone /><button>After</button></DialogContent>
+        </Dialog>
+      );
+    }
+    const r = render(<Root open={false} />);
+    await act(async () => { r.rerender(<Root open />); });
+    await act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+    expect(document.querySelector('input'), 'fixture: the field unmounted').toBeNull();
+    expect(document.activeElement?.textContent).toBe('After');
+  });
+
+  /** A dialog with no autoFocus, opened by the second render. */
+  async function openPlain(body: React.ReactNode) {
+    const Root = ({ open }: { open: boolean }) => (
+      <Dialog open={open}>
+        <DialogContent showCloseButton={false}><DialogTitle>Plain</DialogTitle><DialogDescription>d</DialogDescription>{body}</DialogContent>
+      </Dialog>
+    );
+    const r = render(<Root open={false} />);
+    await act(async () => { r.rerender(<Root open />); });
+    await act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+    return document.querySelector<HTMLElement>('[role="dialog"]')!;
+  }
+
+  it('on touch, a dialog with no autoFocus whose first control is a text field opens on the content', async () => {
+    touch();
+    const dialog = await openPlain(<><input aria-label="Name" /><button>OK</button></>);
+    expect(document.activeElement).toBe(dialog);
+  });
+
+  it('on touch, a visibility: hidden text field before a visible button is not the opening target: the button takes focus', async () => {
+    touch();
+    await openPlain(<><input aria-label="Ghost" style={{ visibility: 'hidden' }} /><button>Real</button></>);
+    expect(document.activeElement?.textContent).toBe('Real');
   });
 
   it("an autofocus that a still-trapped modal bounced out keeps its target: a confirm opened from the drawer opens on its confirm button", async () => {
