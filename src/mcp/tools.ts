@@ -31,7 +31,8 @@ const IDLE_TIMEOUT_SECONDS_PROP = {
 };
 
 // The Bash `description` argument, shared verbatim by project_bash and
-// system_bash: it is the transcript's subject line for both (public/blocks.js),
+// system_bash: it is the transcript's subject line for both
+// (web/src/conversation/format.ts),
 // so the guidance cannot differ between them.
 const BASH_DESCRIPTION_PROP = {
   type: 'string',
@@ -142,7 +143,8 @@ export function buildTools(): Tool[] {
         'ExitPlanMode) or `text` (a turn that ended asking). It is sticky, never set on a conducted ' +
         'worker, and not derived for an archived row here. A send over MCP (send_prompt, ' +
         'answer_question, approve_plan, reject_plan) counts as a real user message and clears it. ' +
-        'The rendering omits pid / createdAt, and shows ' +
+        'The rendering omits pid / createdAt, names a firstPrompt the server or the CLI wrote (`Wake: …`, ' +
+        '`Forwarded worker output`, `Context renewed`) rather than printing it raw, and shows ' +
         'temp / conducted / debug / overage / auto-resume / resumes-hot / owner / awaiting-user only ' +
         'when they deviate from ' +
         'their default — so anything on a `flags` line is news. ' +

@@ -11,8 +11,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Parser } from '../src/parser.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
-const USAGE_URL = pathToFileURL(path.join(PUB, 'usage.js')).href;
+const PUB = path.resolve(__dirname, '..', 'shared');
+const USAGE_URL = pathToFileURL(path.join(PUB, 'usage.ts')).href;
 
 // Build a minimal result event matching the CLI's stream-json shape.
 function resultEvent(totalCostUsd, extra = {}) {

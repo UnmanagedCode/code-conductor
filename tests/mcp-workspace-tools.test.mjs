@@ -123,14 +123,17 @@ test('set_project_workspace assigns, clears with null, and auto-registers the ne
     'a cleared workspace renders nothing — it is back at its default');
 });
 
-test('set_project_workspace refuses the hidden .conduct project', async () => {
+test('set_project_workspace refuses the hidden .conduct project with a 400', async () => {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   const { body } = await rpc('tools/call', {
     name: 'set_project_workspace',
     arguments: { project: '.conduct', workspace: 'Anything' },
   });
   assert.equal(body.result.isError, true);
-  assert.match(body.result.content[0].text, /cannot be assigned/i);
+  assert.equal(body.result.content[0].text, 'the .conduct project cannot be assigned to a workspace (HTTP 400)');
+  assert.deepEqual(JSON.parse(body.result.content[1].text), {
+    error: 'the .conduct project cannot be assigned to a workspace', code: 'BAD_REQUEST', statusCode: 400,
+  });
 });
 
 test('rename_workspace atomically moves every member project', async () => {

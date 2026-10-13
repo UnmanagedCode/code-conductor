@@ -8,7 +8,7 @@ import {
   listProjects, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
-  findSessionLocation, writeProjectMeta, projectsBySystem, setProjectRemote,
+  findSessionLocation, projectsBySystem, setProjectRemote, setProjectWorkspace,
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName, placeOf, projectRootPlace, type TranscriptPlacement,
 } from './projects.ts';
@@ -36,6 +36,7 @@ import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
+import { projectsOperation } from './projectsChanged.ts';
 import { pageLineageEvents } from './lineagePager.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
@@ -356,10 +357,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // src/playbookApi.ts; there is no write route.
   r.use('/playbooks', buildPlaybookApi({ playbookGate }));
 
-  // Nudge every connected client to re-fetch /api/projects. Mirrors the
-  // hint that wsHub.ts broadcasts on instance lifecycle events — used
-  // here when a route mutates project state outside that channel (e.g.
-  // workspace assignment).
+  // Nudge every connected client to re-fetch /api/projects, for a route that
+  // changes what it reports outside cc's project, workspace and worktree
+  // records (e.g. a session title). Those records signal themselves
+  // (src/projectsChanged.ts), so their routes call nothing here.
   function broadcastProjects(): void {
     const wss = serverCtx?.wss;
     if (!wss) return;
@@ -396,7 +397,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // Settings → About. GET reports version + git-behind detection; POST applies
   // (`git pull --ff-only` + conditional `npm install`), streamed as NDJSON.
   // The client hands off to the restart+resume flow after a successful apply
-  // (see public/restartFlow.js); the POST itself never restarts the process.
+  // (performRestart, web/src/features/sidebar/restart.ts); the POST itself never
+  // restarts the process.
   r.get('/settings/self-update', async (req, res, next) => {
     try { res.json(await getSelfUpdateStatus()); } catch (e) { next(e); }
   });
@@ -623,8 +625,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   // Mounted before the `/projects/:name` param routes so `external` can't be
   // read as a project name. Soft refusals return 200 with {ok:false, code,
   // reason} — same contract as POST /projects/:name/worktrees/:wt/merge — so a caller can
-  // render the reason inline instead of parsing a 4xx body. No
-  // broadcastProjects(), matching POST /projects.
+  // render the reason inline instead of parsing a 4xx body. The `projects`
+  // hint comes from adoptProject itself (src/projectsChanged.ts).
   r.post('/projects/external', async (req, res, next) => {
     try {
       const { name, path: targetPath, system, remoteId, onStaleRecord } = jsonBody(req);
@@ -678,8 +680,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       const deleteDirectory = jsonBody(req).deleteDirectory === true;
       let killed = 0;
       if (instances) killed = await instances.removeAllForProject(proj.name);
-      await removeAllWorktreesForProject(proj.name);
-      const deleted = await deleteProject(proj.name, { deleteDirectory });
+      // One `projects` signal for the whole cascade, every worktree included.
+      const deleted = await projectsOperation(async () => {
+        await removeAllWorktreesForProject(proj.name);
+        return deleteProject(proj.name, { deleteDirectory });
+      });
       invalidate(proj.name);
       // `directoryDeleted` repeats after the click what the confirm dialog
       // stated before it: deleting a project deregisters it, and the tree goes
@@ -693,29 +698,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   });
 
   // Assign or clear the project's workspace. Body: {workspace: string|null}.
-  // An empty string is treated as null (clears the field). Workspace names
-  // are validated in writeProjectMeta — see validateWorkspace() in projects.ts.
-  // Setting a non-null workspace auto-registers it (so newly-named
-  // workspaces appear in /api/workspaces). A successful write broadcasts
-  // the `projects` WS hint so connected sidebars re-fetch and rebucket
-  // immediately, including the `+ Workspace` dialog if it's open.
+  // setProjectWorkspace (projects.ts) is the implementation, shared with MCP
+  // set_project_workspace: "" clears, a new name is auto-registered, `.conduct`
+  // is refused, and the change sends one `projects` hint.
   r.put('/projects/:name/workspace', async (req, res, next) => {
     try {
-      if (req.params.name === CONDUCT_PROJECT_NAME) {
-        throw Object.assign(
-          new Error('the .conduct project cannot be assigned to a workspace'),
-          { statusCode: 400 },
-        );
-      }
-      await getProject(req.params.name);
-      const raw = jsonBody(req).workspace;
-      const target = raw === '' || raw === undefined ? null : raw;
-      const meta = await writeProjectMeta(req.params.name, { workspace: target as string | null });
-      if (meta.workspace) {
-        try { await addWorkspace(meta.workspace); } catch { /* validation already ran in writeProjectMeta */ }
-      }
-      broadcastProjects();
-      res.json({ ok: true, name: req.params.name, workspace: meta.workspace ?? null });
+      const result = await setProjectWorkspace(req.params.name, jsonBody(req).workspace);
+      res.json({ ok: true, ...result });
     } catch (e) { next(e); }
   });
 
@@ -747,7 +736,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
         { liveInstanceIds: () => (instances ? instances.sessionIdsForProject(req.params.name) : []) },
       );
       invalidate(req.params.name);
-      broadcastProjects();
       res.json({ ok: true, ...result });
     } catch (e) {
       // The 409 is RENDERED HERE rather than handed to the shared error
@@ -779,7 +767,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     try {
       const name = jsonBody(req).name as string;
       const result = await addWorkspace(name);
-      broadcastProjects();
       res.status(result.added ? 201 : 200).json({ ok: true, ...result });
     } catch (e) { next(e); }
   });
@@ -787,7 +774,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
   r.delete('/workspaces/:name', async (req, res, next) => {
     try {
       const result = await removeWorkspace(req.params.name);
-      broadcastProjects();
       res.json({ ok: true, ...result });
     } catch (e) { next(e); }
   });
@@ -796,7 +782,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     try {
       const newName = jsonBody(req).name as string;
       const result = await renameWorkspace(req.params.name, newName);
-      broadcastProjects();
       res.json({ ok: true, ...result });
     } catch (e) { next(e); }
   });
@@ -1110,7 +1095,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       if (typeof locked !== 'boolean') throw httpError(400, 'locked must be a boolean');
       const result = await setWorktreeLock(req.params.name, req.params.wt, locked);
       invalidate(req.params.name);
-      broadcastProjects();
       res.json({ ok: true, ...result });
     } catch (e) { next(e); }
   });
@@ -1196,7 +1180,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
     } catch (e) { next(e); }
   });
 
-  // The browser marks the turn end it showed the human (public/viewedMarker.js).
+  // The browser marks the turn end it showed the human (web/src/app/viewedMarker.ts).
   // No MCP equivalent, by design: a conductor's reads never count as viewed.
   // The broadcast is the live instances' `turn_marks` event (setTurnMarks).
   r.post('/sessions/:sessionId/viewed', async (req, res, next) => {
@@ -1910,7 +1894,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary, p
       efforts: EFFORT_LEVELS,
       // The end of the precedence chain, shipped so a client fallback lands on the
       // level the SERVER would actually resolve rather than on the first level in
-      // the catalog (see buildEffortPicker, public/settings.js).
+      // the catalog (see EffortPicker, web/src/features/settings/models/ModelsSection.tsx).
       defaultEffort: DEFAULT_EFFORT,
       roles: allRoles,
       roleBackend,

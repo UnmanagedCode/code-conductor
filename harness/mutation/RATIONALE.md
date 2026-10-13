@@ -30,6 +30,12 @@ conditions.
 - Catalog under test: **10 mutants across 10 distinct source files** (deliberately, so Phase A pays
   10 distinct narrow baselines), 9 expected `KILLED` + 1 deliberate `SURVIVED`. Measured
   2026-08-12; the bench scripts and raw artifacts were not kept — see §9 for how to redo it.
+- **Every figure above and in §6 was measured with `npm test` as `baselineCommand`** (the pretest
+  typecheck, then the node suite), not today's `node harness/mutation/suite.ts --all`, which adds the
+  Vitest suite. Today's baseline command on the same host (16 cores, node v24.18.0), 2026-10-10, one
+  run, `/proc/loadavg` 2.52 at start: **88.8 s** wall, 8973 tests (8948 pass / 0 fail / 25 skipped,
+  node + Vitest), ~4.0 MB of stdout against code-mutant's 8 MiB capture cap — the node section is
+  the same volume `npm test` prints, and the Vitest section is ids and statuses only.
 - **Do not re-cite any number below without these conditions**, and specifically not for a catalog
   with a different files-to-mutants ratio; §6 explains why that ratio is the dominant variable.
 
@@ -162,7 +168,7 @@ the data and the derivation.
 
 **§5.1 Snapshot of the gates — a starting point to re-derive, not a fact to trust.**
 Re-derived with (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
-sort -u`) → **five** of the seven below: `RUN_DOCKER_SYSTEM` was added after the snapshot, and
+sort -u`) → **four** of the six below: `RUN_DOCKER_SYSTEM` was added after the snapshot, and
 **two** gates the grep above misses because each is read in a shared helper rather than a
 `*.test.mjs` — `RUN_CLI_CONTRACT` in `tests/cliContractCase.mjs` and `RUN_FUSE_LIFECYCLE` in
 `tests/fuseGateCase.mjs`. Re-derive with
@@ -172,7 +178,6 @@ sort -u`) → **five** of the seven below: `RUN_DOCKER_SYSTEM` was added after t
 |---|---|
 | `RUN_REAL_CLAUDE` | real spawn + stream-json parsing, Bash tool call, AskUserQuestion (`smoke.real` 3); pruned-session resume + read-before-edit re-arm (`prune.real` 1); shell-env bundle restoring rg/find (`claudeShellEnv` 1); real `renew_session` backing-id rotation with a pinned public id (`renew-session` 1) |
 | `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
-| `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
 | `RUN_FUSE_LIFECYCLE` | the FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (the four `fuse-*.real` files over `tests/fuseGateCase.mjs`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **NARROWED by the policy split**: `policy.h` includes no libfuse header, so `tests/fuse-union-policy.test.mjs` now proves the tier resolution, the ancestor derivation, the synthetic node, the marking policy, the resolution cache, the frame codec and the refusal log deterministically (see the capability row below). What is left here, and is genuinely only observable here — all four in `fuse-union-mount.real`: that the libfuse op bodies CALL the policy (R3); `route()`'s host arm and its no-fallback rule (R2); that `mount --bind` succeeds onto a synthetic node (R3); the socket transport itself and that a dead cc is REPORTED as an error rather than wedging the mount (R6). **`-EIO` on a dead cc is NOT in that set** — the driver's `b12` drives it deterministically through the injected transport. **And two claims no arm covers at all**, recorded rather than assigned to one: that `fuse_get_context()->pid` is a TID in practice (measured, but the instrument that produced the measurement no longer exists), and that the marking event fires on the CLI's own first read of its binary (not load-bearing — `bootstrap.sh` fires it deliberately). |
 | `RUN_DOCKER_SYSTEM` | the docker-backed `System` provider against a real daemon (`systems-docker`). Needs a docker socket. |
@@ -260,10 +265,12 @@ Two consequences worth knowing before filing a verdict:
 - A mutant that declares **neither** `expectFail` nor `expectPass` does not map to "nothing" and
   does not map to the whole suite: in counted mode `planNarrowing` **throws**
   (`cannot narrow without at least one entry in expectFail or expectPass`). Only `learn` mode falls
-  back to `baselineCommand`, i.e. the whole `npm test`.
+  back to `baselineCommand`, i.e. `suite.ts --all` (typecheck, the whole node suite, the whole
+  Vitest suite).
 - `harness/mutation/config.json` therefore has **no scope list to maintain**. `tests/run.mjs`
-  auto-discovers `tests/*.test.mjs`, so a new test file is inside `baselineCommand` the moment it
-  exists, and inside `{tests}` the moment a mutant names it.
+  auto-discovers `tests/*.test.mjs` and Vitest its `include`, so a new test file is inside
+  `baselineCommand` the moment it exists, and inside `{tests}` the moment a mutant names it. A
+  Playwright spec is inside `{tests}` only: no baseline runs a browser.
 
 **§5.2 The recipe.** The skip count is host- and gate-dependent — re-derive it, don't trust a fixed
 number (13 at measurement time, per §1):
@@ -290,8 +297,8 @@ npm test -- tests/<file>.test.mjs 2>&1 | grep -E '^﹣|^ℹ skipped'
 
 ### §6 Runtime structure, and why `--jobs` cannot pay here
 
-The measured case against the other half of copy mode. All figures under §1's conditions unless
-marked otherwise.
+The measured case against the other half of copy mode. All figures under §1's conditions — the
+`npm test` baseline — unless marked otherwise.
 
 - **In-place control: 142299 ms** (`run --all --in-place --json`, jobs clamped to 1); a second
   in-place pass landed at 141670 ms, so ~142 s is stable for this host and is the number any
@@ -356,11 +363,11 @@ reason this section exists rather than living beside the values.
 
 | Field | Value | Why |
 |---|---|---|
-| `baselineCommand` | `npm test` | The project's real entry point (`package.json` script, README quick start). Using the script rather than its expansion keeps `NODE_OPTIONS=--max-old-space-size=512` defined in one place. |
-| `testCommand` | `npm test -- {tests}` | `npm test -- <files>` forwards positionals to `tests/run.mjs`, which accepts a list of file paths. The adapter substitutes space-joined single-quoted repo-relative paths. |
-| `runner` | `node-test` | `tests/run.mjs` is bespoke but pipes through `new spec()` from `node:test/reporters` — the same reporter the adapter is pinned to. Counters (`ℹ tests/pass/fail/skipped`) land on stdout; the `✖ failing tests:` block carries `test at <repo-relative path>`, because the spec reporter emits `relative(process.cwd(), file)` and the runner resolves its args against the same cwd. A full green run trips none of the adapter's `compileError` probes. Proven here by the `baseline` canary gate. |
+| `baselineCommand` | `node harness/mutation/suite.ts --all` | `npm run typecheck`, then the whole node suite (`npm test --ignore-scripts`), then the whole Vitest suite. The typecheck lives here and only here, so a type break is a build break of the tree under test, never a mutant's verdict. No Playwright: a browser run is opt-in by naming a spec. |
+| `testCommand` | `node harness/mutation/suite.ts {tests}` | The default substitution (no custom `substitute`) passes space-joined single-quoted repo-relative test paths; `suite.ts` routes each to its runner by path. The node row is `npm test --ignore-scripts -- <files>`: `--ignore-scripts` skips `pretest` (the typecheck) and still runs `test`, which keeps `NODE_OPTIONS=--max-old-space-size=512` defined in one place (`package.json`). |
+| `runner` | `custom` | One adapter per config, three runners: `parse.mjs` binds `scoring.ts` to the shipped `node-test` adapter (its `describe >` path recovery and canary, unchanged) and the shipped `vitest` canary, and adds the Vitest and Playwright report parsing those adapters lack for this layout (the shipped `vitest` parser reads the default reporter's console output, not a JSON report). It exports no `scopeOf`/`substitute`/`canNameFilter`, so the node-test defaults apply — file-part scopes and `refsNameFiles: true` — and a mutant's narrow canary stays eligible. Proven here by the `baseline` canary gate and a narrow canary per suite. |
 | `isolation` | `in-place` | Full reasoning in §2 above. The conclusion is decided-and-deferred, not infeasible: copy mode *works* here with one `setup` hook and costs ~5% of wall clock at best (§6) — it is rejected on honesty (§2.2's three green-for-the-wrong-reason assertions) and on the ≤8% ceiling (§6), not on feasibility. Also: the suite boots real express+ws servers on ephemeral ports and forks child processes. |
-| `timeoutMs` | `300000` | Sized for the slow case, not the ~57 s (§1) full-suite baseline this host measures — a low-core/Termux host is a multiple of that. It is the deadline only for commands with no unmutated reference — the full-suite baseline, each narrow baseline, the `setup`/`teardown` hooks. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. A mutant run gets the derived `hang` deadline instead (next row), which this value only caps. The suite's own per-file bound is `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`); the 60 s in `tests/run.mjs` is node's **per-test** timeout (§6). |
+| `timeoutMs` | `300000` | Sized for the slow case, not the ~89 s (§1, `suite.ts --all`) baseline this host measures — a low-core/Termux host is a multiple of that. It is the deadline only for commands with no unmutated reference — the full-suite baseline, each narrow baseline, the `setup`/`teardown` hooks. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. A mutant run gets the derived `hang` deadline instead (next row), which this value only caps. The suite's own per-file bound is `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`); the 60 s in `tests/run.mjs` is node's **per-test** timeout (§6). |
 | `hang` | `{factor: 10, floorMs: 50000}` | The mutant-run deadline, derived from that scope's narrow baseline. `factor` restates the runner default so the whole derivation is visible here; `floorMs` is raised so a mutant that breaks an awaited event fails as `KILLED` rather than `TIMEOUT`, while staying under node's per-test timeout so a real hang still reads `TIMEOUT`. Bounds, measurements and residue in §7.1. |
 | `baseBranch` | `main` | The real integration branch. Unset, `run`'s empty-diff-vs-base gate reports `not-established` and checks nothing — a branch with no committed work would read as a clean sweep. |
 
@@ -368,8 +375,10 @@ Defaults left alone: `preserve` (in-place copies nothing, and `node_modules` is 
 the primary checkout), `jobs` (clamped to 1 in-place regardless — see §6 for why chasing it wouldn't
 pay even if it weren't), `setup`/`teardown` (nothing to build or reset in-place).
 
-There is no `parse.mjs`: the shipped `node-test` adapter parses this suite's output correctly, and a
-custom parser would have to reimplement its canary injection for no parsing gain.
+`parse.mjs` exists because no shipped adapter covers three runners in one command. It reuses the
+shipped node-test parser and canary rather than reimplementing them, and it is the one file that
+imports code-mutant's internals: `scoring.ts` stays plugin-free so `npm test`
+(`tests/harness-mutation-suite.test.mjs`) can load it on a machine with no plugins.
 
 ### §7.1 The hang floor
 

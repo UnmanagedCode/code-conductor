@@ -20,11 +20,9 @@
 // Go-native `tsgo` shim (its module exports only `version`/`versionMajorMinor`,
 // no `createSourceFile`), there is no acorn/babel/espree in `node_modules`, and
 // `CONVENTIONS.md` forbids adding a dependency. A line regex is not sufficient
-// either: it over-matches prose (the comment at
-// `tests/header-playbook-enforcement.test.mjs:165-169` names
-// `assert.equal(node, null)` in English) and misses multi-line-formatted calls
-// (`tests/notifications.test.mjs:200,208,213`). So: blank non-code, then walk
-// balanced brackets.
+// either: it over-matches prose (a comment naming `assert.equal(node, null)`
+// in English) and misses multi-line-formatted calls. So: blank non-code, then
+// walk balanced brackets.
 //
 // Scan direction. The obvious direction — enumerate every legitimate
 // primitive-vs-null comparison in `tests/` and allow-list them — is
@@ -247,7 +245,7 @@ export function findNullishEqualityCalls(stripped) {
 // no DOM-valued definition in the same file, is INDISTINGUISHABLE from the
 // legitimate primitive-vs-null comparisons in `tests/`:
 // `main.leadingAssistantWrap` has exactly the shape of
-// `inst.autoResumeAt`. Their DOM-ness lives in the RETURN VALUES of `public/`
+// `inst.autoResumeAt`. Their DOM-ness lives in the RETURN VALUES of source
 // code and is not present in the test's syntax at all, so no amount of scanner
 // work reaches them. They are covered by `tests/dom-assert-tripwire.mjs` at
 // runtime; do NOT close the gap with a hand-maintained name list, which rots
@@ -301,9 +299,7 @@ function hasCollectionSignal(expr) {
 }
 
 // A `.document` tail is accepted as well as bare `document`: `window.document.x`
-// is the dominant style in this tree (tests/costs-view.test.mjs:25,
-// tests/plugins-frontend.test.mjs:79, tests/default-playbook-frontend.test.mjs:48),
-// and `activeElement` genuinely can be null, so a latent-passing site is
+// is a style tests in this tree use, and `activeElement` genuinely can be null, so a latent-passing site is
 // realistic. Measured after widening: still zero false positives over every
 // legitimate primitive-vs-null comparison in `tests/`.
 function isDocumentReceiver(receiver) {
@@ -382,10 +378,10 @@ export function domValuedTail(subject, domNames = new Set()) {
 // contaminate it. Within a file a name counts as DOM if it has ANY DOM-valued
 // definition — biased toward catching; measured to cost 0 false positives.
 //
-// Object-literal properties count too, and are not decoration: the pre-sweep
-// site `assert.equal(btn, null)` at `tests/blocks.test.mjs` binds its name
-// through `return { block, btn: block.body.querySelector('.tts-speak') }` and a
-// declaration-only index misses it. The property arm requires the name to
+// Object-literal properties count too, and are not decoration: a site
+// `assert.equal(btn, null)` whose name is bound through
+// `return { block, btn: block.body.querySelector('.tts-speak') }` is missed by a
+// declaration-only index. The property arm requires the name to
 // follow `{`, `,` or a line start so a ternary's `cond ? a : node` does not
 // index `a`.
 

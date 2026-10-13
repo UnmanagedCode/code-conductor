@@ -1,0 +1,460 @@
+import * as React from 'react';
+import {
+  ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
+  CodeXmlIcon, FileTextIcon, GitForkIcon, ListChecksIcon, MailIcon, MicIcon, PaperclipIcon, RecycleIcon,
+  RotateCcwIcon, ShrinkIcon, TriangleAlertIcon, TypeIcon,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { CopyButton } from '@/components/CopyButton';
+import { Markdown } from '@/components/Markdown';
+import { OctopusHead } from '@/components/mascot/Octopus';
+import { SpeakButton } from '@/features/voice/SpeakButton';
+import { cn } from '@/lib/utils';
+import { parseRenewSeed, splitSummarySections } from '@shared/renewSeed';
+import { splitForwardedMessages } from '@shared/forwardFrame';
+import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
+import { ActionGroup, CallUsageLine, type RenderCtx } from './tools';
+import { fieldText, PlanCard, QuestionCard } from './cards';
+import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
+import { ImageZoom } from './ImageZoom';
+
+export type BubbleActions = {
+  canRewind: boolean;
+  canFork: boolean;
+  onRewind: (userIndex: number, text: string) => void;
+  onFork: (userIndex: number, text: string) => void;
+  resolveAttachmentUrl: (filename: string) => string | null;
+};
+
+export const ItemsList = React.memo(function ItemsList({ model, ctx, actions }: { model: ConversationModel; rev: number; ctx: RenderCtx; actions: BubbleActions | null }) {
+  const cur = model.currentSegment();
+  return (
+    <>
+      {model.items.map((it) => (
+        <RootItemView key={it.id} node={it} rev={it.rev} ctx={ctx} actions={actions} currentSegment={cur} />
+      ))}
+    </>
+  );
+});
+
+const RootItemView = React.memo(function RootItemView({ node, ctx, actions, currentSegment }: {
+  node: RootItem; rev: number; ctx: RenderCtx; actions: BubbleActions | null; currentSegment: string | null;
+}) {
+  switch (node.type) {
+    case 'user': return <UserBubble node={node} model={ctx.model} actions={actions} currentSegment={currentSegment} />;
+    case 'assistant': return <AssistantBubble node={node} ctx={ctx} />;
+    case 'system': return <SystemLineView node={node} model={ctx.model} />;
+    case 'turn_end': return <TurnEndView node={node} />;
+    case 'plan': return <div data-item="plan"><PlanCard node={node} model={ctx.model} /></div>;
+    case 'question': return <div data-item="question"><QuestionCard node={node} model={ctx.model} /></div>;
+    case 'task_completion': return <TaskCompletionView node={node} />;
+    case 'queued': return <QueuedView node={node} />;
+    case 'compaction': return <CompactionView node={node} model={ctx.model} />;
+    case 'divider': return <DividerView node={node} />;
+  }
+}, (a, b) => a.node === b.node && a.rev === b.rev && a.actions === b.actions && a.currentSegment === b.currentSegment && a.ctx === b.ctx);
+
+// ── User ─────────────────────────────────────────────────────────────────
+
+function ViewToggle({ view, onChange }: { view: 'rendered' | 'raw'; onChange: (v: 'rendered' | 'raw') => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" aria-label={view === 'raw' ? 'Show rendered markdown' : 'Show raw text'}
+          onClick={(e) => { e.stopPropagation(); onChange(view === 'raw' ? 'rendered' : 'raw'); }}>
+          {view === 'raw' ? <TypeIcon className="size-3.5" /> : <CodeXmlIcon className="size-3.5" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{view === 'raw' ? 'Show rendered markdown' : 'Show raw text'}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// Single newlines inside a paragraph are line breaks people typed: keep them.
+const MD_TEXT = 'whitespace-pre-wrap';
+
+function UserText({ text, view }: { text: string; view: 'rendered' | 'raw' }) {
+  return view === 'raw'
+    ? <div className="text-[15px] leading-relaxed whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</div>
+    : <Markdown text={text} className={MD_TEXT} />;
+}
+
+function Folded({ icon, title, children, tone = 'muted', kind, multiline = false, open, onOpenChange }: {
+  icon: React.ReactNode; title: React.ReactNode; children: () => React.ReactNode; tone?: 'muted' | 'info'; kind: string; multiline?: boolean;
+  open: boolean; onOpenChange: (open: boolean) => void;
+}) {
+  // The body is built on first expand and kept afterwards: Radix renders no
+  // children while closed, so forceMount keeps the built body mounted and
+  // `hidden` hides it.
+  const [opened, setOpened] = React.useState(open);
+  return (
+    <Collapsible open={open} onOpenChange={(o) => { onOpenChange(o); if (o) setOpened(true); }} className={cn('rounded-xl border bg-card', tone === 'info' && 'border-info/30')} data-fold={kind}>
+      <CollapsibleTrigger className="group/fold flex w-full items-center gap-2 px-3 py-2 text-left text-sm" data-fold-trigger>
+        <span className="shrink-0 text-muted-foreground">{icon}</span>
+        <span className={cn('min-w-0 flex-1', multiline ? 'whitespace-pre-line wrap-anywhere' : 'truncate')} data-fold-title>{title}</span>
+        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/fold:rotate-90" />
+      </CollapsibleTrigger>
+      <CollapsibleContent forceMount hidden={!open} className="border-t px-3 py-3">{opened && children()}</CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function FoldedBody({ text, render, view, onViewChange }: { text: string; render?: () => React.ReactNode; view: TextView; onViewChange: (view: TextView) => void }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex justify-end gap-0.5">
+        <ViewToggle view={view} onChange={onViewChange} />
+        <CopyButton getText={() => text} label="Copy text" />
+      </div>
+      {view === 'raw' ? <pre className="text-sm whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</pre> : render ? render() : <Markdown text={text} className={MD_TEXT} />}
+    </div>
+  );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-1">
+      <div className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">{label}</div>
+      {children}
+    </section>
+  );
+}
+
+function RenewBody({ text }: { text: string }) {
+  const parsed = parseRenewSeed(text);
+  if (!parsed) return <Markdown text={text} />;
+  return (
+    <div className="space-y-4">
+      {splitSummarySections(parsed.summary).map((s: { title: string | null; body: string }, i: number) => (
+        <Section key={i} label={s.title ?? 'Handoff summary'}><Markdown text={s.body} className={MD_TEXT} /></Section>
+      ))}
+      {parsed.followUp && <Section label="Conductor's follow-up directive"><Markdown text={parsed.followUp} className={MD_TEXT} /></Section>}
+      {parsed.state && <Section label="Mechanical state (server-generated)"><pre className="text-xs whitespace-pre-wrap text-muted-foreground">{parsed.state}</pre></Section>}
+    </div>
+  );
+}
+
+function ForwardBody({ payload }: { payload: string }) {
+  const bodies: string[] = splitForwardedMessages(payload);
+  return (
+    <div className="space-y-4">
+      {bodies.map((b, i) => (
+        <Section key={i} label={bodies.length > 1 ? `Message ${i + 1}/${bodies.length}` : 'Forwarded output'}><Markdown text={b} className={MD_TEXT} /></Section>
+      ))}
+    </div>
+  );
+}
+
+function WakeBody({ body }: { body: string }) {
+  const nl = body.indexOf('\n');
+  const meta = nl === -1 ? body : body.slice(0, nl);
+  const rest = nl === -1 ? '' : body.slice(nl + 1);
+  return (
+    <div className="space-y-2">
+      <div className="font-mono text-xs wrap-anywhere text-muted-foreground" data-wake-meta>{meta}</div>
+      <Markdown text={rest} className={MD_TEXT} />
+    </div>
+  );
+}
+
+function Attachments({ list, resolve }: { list: any[]; resolve?: (f: string) => string | null }) {
+  if (!list.length) return null;
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      {list.map((a, i) => {
+        if (a?.kind === 'image') {
+          const src = typeof a.dataBase64 === 'string'
+            ? `data:${a.mediaType || 'image/png'};base64,${a.dataBase64}`
+            : a.filename && resolve ? resolve(a.filename) : null;
+          if (src) return <ImageZoom key={i} src={src} alt={a.name || 'Attached image'} className="max-h-48 rounded-xl border" />;
+        }
+        return (
+          <span key={i} className="flex items-center gap-1.5 rounded-lg border bg-card px-2 py-1 text-xs">
+            <PaperclipIcon className="size-3.5 text-muted-foreground" />
+            {a?.name ?? a?.path ?? 'file'}
+            {a?.path && <span className="text-muted-foreground">({a.path})</span>}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function AnswerSummary({ answer }: { answer: NonNullable<UserNode['answer']> }) {
+  if (!answer.answers) return null;
+  return (
+    <div className="space-y-2">
+      {answer.questions.map((q: any, i: number) => {
+        const a = answer.answers![i];
+        return (
+          <div key={i} className="space-y-1" data-kind={a.kind}>
+            <div className="text-xs text-muted-foreground">{fieldText(q?.header) && <span className="mr-1 font-semibold uppercase">{fieldText(q.header)}</span>}{fieldText(q?.question) ?? ''}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {a.kind === 'option' && <span className="rounded-full bg-primary/12 px-2 py-0.5 text-sm text-primary" data-choice>{a.label}</span>}
+              {a.kind === 'multi' && a.labels.map((l: string) => <span key={l} className="rounded-full bg-primary/12 px-2 py-0.5 text-sm text-primary" data-choice>{l}</span>)}
+              {a.kind === 'custom' && <span className="text-sm" data-custom>{a.text}</span>}
+              {a.kind === 'none' && <span className="text-sm text-muted-foreground italic" data-skipped>skipped</span>}
+            </div>
+            {a.note && <div className="text-xs text-muted-foreground" data-note>— {a.note}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; model: ConversationModel; actions: BubbleActions | null; currentSegment: string | null }) {
+  const view = node.reader.view;
+  const setView = (v: TextView) => model.setReader(node, { view: v });
+  const fold = { open: node.reader.foldOpen, onOpenChange: (o: boolean) => model.setReader(node, { foldOpen: o }) };
+  const body = { view: node.reader.foldView, onViewChange: (v: TextView) => model.setReader(node, { foldView: v }) };
+  const hasTextControls = !!node.displayText && !(node.answer && node.answer.answers);
+  const canAct = !model.isSub && !!actions && node.userIndex != null && (currentSegment == null || node.segmentId === currentSegment);
+  const folded = (
+    <>
+      {node.skill && (
+        <Folded kind="skill" icon={<BookOpenIcon className="size-4" />} title={`Loading skill: ${node.skill.name}`} {...fold}>
+          {() => <FoldedBody text={node.skill!.text} {...body} />}
+        </Folded>
+      )}
+      {node.wake && (node.wake.body
+        ? <Folded kind="wake" multiline icon={<BellIcon className="size-4" />} title={node.wake.summary} {...fold}>{() => <FoldedBody text={node.wake!.body!} render={() => <WakeBody body={node.wake!.body!} />} {...body} />}</Folded>
+        : <div className="flex items-start gap-2 rounded-xl border bg-card px-3 py-2 text-sm whitespace-pre-line wrap-anywhere text-muted-foreground" data-wake-plain><BellIcon className="mt-0.5 size-4 shrink-0" />{node.wake.summary}</div>)}
+      {node.renew && (
+        <Folded kind="renew" icon={<RecycleIcon className="size-4" />} title="Context renewed · handoff summary" tone="info" {...fold}>
+          {() => <FoldedBody text={node.renew!.text} render={() => <RenewBody text={node.renew!.text} />} {...body} />}
+        </Folded>
+      )}
+      {node.forward && (
+        <Folded kind="forward" icon={<MailIcon className="size-4" />} title={`Forwarded worker output · ${node.forward.count} message${node.forward.count === 1 ? '' : 's'}`} {...fold}>
+          {() => <FoldedBody text={node.forward!.payload} render={() => <ForwardBody payload={node.forward!.payload} />} {...body} />}
+        </Folded>
+      )}
+    </>
+  );
+  const injected = node.variant === 'wake' || node.variant === 'renew' || !!node.skill;
+  return (
+    <div className="group/user flex flex-col items-end gap-1.5" data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
+      {(node.skill || node.wake || node.renew || node.forward) && <div className="w-full max-w-[85%] space-y-2">{folded}</div>}
+      {node.answer ? (
+        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-info/25 bg-info/8 px-4 py-3">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-info" data-answer-head>
+            <CircleCheckIcon className="size-3.5" /> {node.answer.questions.length > 1 ? `Answered · ${node.answer.questions.length} questions` : 'Answered'}
+          </div>
+          {node.answer.answers ? <AnswerSummary answer={node.answer} /> : <UserText text={node.displayText} view={view} />}
+        </div>
+      ) : node.displayText ? (
+        <div data-user-text className={cn(
+          'max-w-[85%] rounded-2xl rounded-br-md px-4 py-2.5 ring-1',
+          injected ? 'bg-muted ring-border' : 'bg-primary/10 ring-primary/15 dark:bg-primary/15',
+        )}>
+          <UserText text={node.displayText} view={view} />
+        </div>
+      ) : null}
+      <Attachments list={node.attachments} resolve={actions?.resolveAttachmentUrl} />
+      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+        {node.transcribed && (
+          <Tooltip><TooltipTrigger asChild><span className="px-1 text-muted-foreground" data-voice-badge><MicIcon className="size-3.5" /></span></TooltipTrigger><TooltipContent>Transcribed from voice</TooltipContent></Tooltip>
+        )}
+        {hasTextControls && (
+          <>
+            <ViewToggle view={view} onChange={setView} />
+            <CopyButton getText={() => node.displayText} label="Copy message" />
+          </>
+        )}
+        {canAct && (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" disabled={!actions!.canRewind} aria-label="Rewind to before this message"
+                  onClick={() => actions!.onRewind(node.userIndex!, node.rawText)}>
+                  <RotateCcwIcon className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Rewind to before this message</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" disabled={!actions!.canFork} aria-label="Fork a new session from here"
+                  onClick={() => actions!.onFork(node.userIndex!, node.rawText)}>
+                  <GitForkIcon className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Fork a new session from here</TooltipContent>
+            </Tooltip>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Assistant ────────────────────────────────────────────────────────────
+
+function TextBlockView({ node, view }: { node: TextNode; view: 'rendered' | 'raw' }) {
+  // A streaming block shows its raw deltas; it renders markdown once finalized.
+  if (!node.finalized || view === 'raw') {
+    return <div className="text-[15px] leading-relaxed whitespace-pre-wrap">{node.buffer}{!node.finalized && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-primary/60 align-text-bottom" />}</div>;
+  }
+  return <Markdown text={node.buffer} className={MD_TEXT} />;
+}
+
+// The bubble's controls show while it is hovered or one of them has focus, and always where nothing hovers.
+const ASSISTANT_CONTROLS_REVEAL = 'opacity-0 transition-opacity group-hover/asst:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+
+function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx }) {
+  const hasText = node.children.some((c) => c.type === 'text') || !!node.planText;
+  return (
+    <div className="group/asst flex gap-3" data-item="assistant">
+      {!ctx.model.isSub && (
+        <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/15">
+          <OctopusHead className="size-6" />
+        </div>
+      )}
+      <div className="min-w-0 flex-1 space-y-3">
+        {node.children.map((c) => {
+          // Each finished block carries its own read-aloud, right after the text it reads.
+          if (c.type === 'text') {
+            return (
+              <div key={c.id} data-text-block>
+                <TextBlockView node={c} view={node.view} />
+                {c.finalized && !ctx.model.isSub && <div className={cn('flex', ASSISTANT_CONTROLS_REVEAL)}><SpeakButton text={c.buffer} nodeId={c.id} /></div>}
+              </div>
+            );
+          }
+          if (c.type === 'group') return <ActionGroup key={c.id} node={c} rev={c.rev} ctx={ctx} />;
+          return <CallUsageLine key={c.id} node={c} />;
+        })}
+        {hasText && (
+          <div className={cn('flex items-center gap-0.5', ASSISTANT_CONTROLS_REVEAL)}>
+            <ViewToggle view={node.view} onChange={(v) => ctx.model.setAssistantView(node, v)} />
+            <CopyButton getText={() => ConversationModel.assistantCopyText(node)} label="Copy message" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Annotations ──────────────────────────────────────────────────────────
+
+function SystemLineView({ node, model }: { node: SystemNode; model: ConversationModel }) {
+  const ev = node.ev;
+  if (ev.subtype === 'task_notification') {
+    const d = ev.data ?? {};
+    const failed = d.status === 'failed';
+    return (
+      <details
+        open={node.reader.open}
+        onToggle={(e) => { if (e.currentTarget.open !== node.reader.open) model.setReader(node, { open: e.currentTarget.open }); }}
+        className={cn('group/tn rounded-lg border px-3 py-2 text-sm', failed ? 'border-warning/40 bg-warning/8' : 'bg-card')} data-subtype="task_notification" data-tone={failed ? 'warn' : 'muted'}>
+        <summary className="flex cursor-pointer items-center gap-2 select-none">
+          <ListChecksIcon className={cn('size-4', failed ? 'text-warning' : 'text-muted-foreground')} />
+          <span data-headline>{taskNotificationHeadline(d)}</span>
+        </summary>
+        <div className="mt-2 space-y-1 text-muted-foreground" data-fold-body>
+          <div>{d.summary ?? ''}</div>
+          {d.output_file && <div className="font-mono text-xs">output: {d.output_file}</div>}
+        </div>
+      </details>
+    );
+  }
+  const line = systemLine(ev);
+  const Icon = line.tone === 'warn' ? TriangleAlertIcon : line.tone === 'error' ? CircleAlertIcon : ArrowRightLeftIcon;
+  if (ev.subtype === 'stderr' || ev.subtype === 'raw') {
+    return <pre className="overflow-x-auto rounded-lg bg-muted/50 px-3 py-1.5 font-mono text-xs text-muted-foreground" data-subtype={ev.subtype} data-tone={line.tone}>{line.text}</pre>;
+  }
+  return (
+    <div className="flex items-center gap-3 text-xs" data-subtype={ev.subtype} data-tone={line.tone} title={line.title ?? undefined}>
+      <div className="h-px flex-1 bg-border" />
+      <span className={cn(
+        'flex max-w-[85%] items-center gap-1.5 rounded-full border px-2.5 py-1',
+        line.tone === 'warn' && 'border-warning/40 bg-warning/8 text-warning',
+        line.tone === 'error' && 'border-destructive/40 bg-destructive/8 text-destructive',
+        line.tone === 'muted' && 'bg-background text-muted-foreground',
+      )}>
+        <Icon className="size-3 shrink-0" />
+        <span className="min-w-0 break-words" data-detail>{line.text}</span>
+      </span>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function TurnEndView({ node }: { node: TurnEndNode }) {
+  const p = turnEndParts(node.ev);
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-11 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
+      <span className={cn('flex items-center gap-1', p.ok ? 'text-success' : 'text-destructive')}>
+        {p.ok ? <CircleCheckIcon className="size-3.5" /> : <CircleAlertIcon className="size-3.5" />}
+        {p.ok ? 'Done' : 'Turn failed'}{p.stopReason && p.stopReason !== 'end_turn' && ` · ${p.stopReason}`}
+      </span>
+      {p.duration && <span>{p.duration}</span>}
+      {p.cost && <span>{p.cost}</span>}
+      {p.context && <span>{p.context}</span>}
+      {p.tokens && <span>{p.tokens}</span>}
+    </div>
+  );
+}
+
+function TaskCompletionView({ node }: { node: TaskCompletionNode }) {
+  return (
+    <div className="rounded-xl border border-success/30 bg-success/5 px-4 py-3">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-success">
+        <ListChecksIcon className="size-4" /> Tasks · {node.tasks.length}/{node.tasks.length} done
+      </div>
+      <ul className="space-y-1 text-sm">
+        {node.tasks.map((t) => (
+          <li key={t.id} className="flex items-start gap-2"><CircleCheckIcon className="mt-0.5 size-3.5 shrink-0 text-success" /><span>{t.subject}</span></li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function QueuedView({ node }: { node: QueuedNode }) {
+  const d = node.ev.data ?? {};
+  let clock = '';
+  try { if (d.ts) clock = new Date(d.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { /* bad ts */ }
+  // Delivered, the ghost stays where it was queued, dimmed, above the turn that delivered it.
+  return (
+    <div className={cn('flex justify-end', node.delivered && 'opacity-40')} data-item="queued" data-delivered={node.delivered || undefined}>
+      <div className="max-w-[85%] rounded-2xl rounded-br-md border border-dashed px-4 py-2.5 text-muted-foreground">
+        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase">
+          <ClockIcon className="size-3" /> Queued{clock && ` · ${clock}`}
+          {d.attachmentCount > 0 && <span className="flex items-center gap-0.5"><PaperclipIcon className="size-3" />{d.attachmentCount}</span>}
+        </div>
+        <div className="text-[15px] whitespace-pre-wrap">{d.text ?? ''}</div>
+      </div>
+    </div>
+  );
+}
+
+function CompactionView({ node, model }: { node: CompactionNode; model: ConversationModel }) {
+  const label = compactionLabel(node);
+  const icon = <ShrinkIcon className={cn('size-4', node.state === 'running' && 'animate-pulse', node.state === 'failed' && 'text-destructive')} />;
+  if (node.summary == null) {
+    return <div className="flex items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm text-muted-foreground">{icon}{label}</div>;
+  }
+  return (
+    <Folded kind="compaction" icon={icon} title={label} open={node.reader.open} onOpenChange={(o) => model.setReader(node, { open: o })}>
+      {() => <FoldedBody text={node.summary!} view={node.reader.view} onViewChange={(v) => model.setReader(node, { view: v })} />}
+    </Folded>
+  );
+}
+
+function DividerView({ node }: { node: DividerNode }) {
+  const label = node.kind === 'gap' ? 'Earlier messages unavailable'
+    : node.kind === 'seam' ? 'Context renewed'
+    : `${node.count ?? 0} prior message${node.count === 1 ? '' : 's'} replayed · new turn below`;
+  return (
+    <div className="flex items-center gap-3 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase" data-divider={node.kind}>
+      <div className="h-px flex-1 bg-border" />
+      {node.kind === 'seam' ? <RecycleIcon className="size-3" /> : <FileTextIcon className="size-3" />}
+      {label}
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}

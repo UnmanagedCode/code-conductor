@@ -121,8 +121,8 @@ export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
 //   AskUserQuestion: the question card is rebuilt entirely from
 //   `input.questions` on replay (transcript.ts), and the answer is recovered by
 //   STRING-MATCHING the question text and option labels against the user echo
-//   that follows (public/userQuestionAnswers.js, driven from
-//   public/conversation.js). Squeezing either side leaves the human with an
+//   that follows (shared/userQuestionAnswers.ts, driven from
+//   web/src/conversation/model.ts). Squeezing either side leaves the human with an
 //   unreadable question and silently drops the answer off the card.
 //
 //   Core conductor MCP calls: the orchestration record — what was spawned,
@@ -646,7 +646,7 @@ function usageCalibration(records: PruneRecord[]): { factor: number; steps: numb
   return { factor, steps, calibrated: true };
 }
 
-// The ctx chip's reading (public/usage.js currentContextSize) for a latched
+// The ctx chip's reading (shared/usage.ts currentContextSize) for a latched
 // usage object, or null when there is none — the real baseline both the
 // analysis route and prune_session report beside the estimate.
 export function contextReading(usage: unknown): number | null {

@@ -25,7 +25,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { isDomNode } from './domNode.mjs';
 import { assertNull } from './dom-assert.mjs';
-import { scanSource, scanFile, scanTestsDir } from './dom-assert-scan.mjs';
+import { scanSource, scanTestsDir } from './dom-assert-scan.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRIPWIRE = pathToFileURL(path.join(__dirname, 'dom-assert-tripwire.mjs')).href;
@@ -140,10 +140,16 @@ for (const c of IMMUNE_CASES) {
   });
 }
 
-test('T3 pins: the real prose comment naming assert.equal(node, null) is not flagged', () => {
-  // tests/header-playbook-enforcement.test.mjs explains the rule in English
-  // across several comment lines. A line regex would flag it.
-  assert.deepStrictEqual(scanFile(path.join(__dirname, 'header-playbook-enforcement.test.mjs')), []);
+test('T3 pins: a multi-line prose comment naming assert.equal(node, null) is not flagged', () => {
+  // A comment explaining the rule in English across several lines, the way a
+  // test documents why it uses assert.ok. A line regex would flag it.
+  const src = [
+    '  // assert.ok on a boolean, NOT assert.equal(node, null): handing a happy-dom',
+    "  // node to assert's diff serializer makes it recurse the DOM and the runner dies",
+    '  // with SIGKILL, so a future re-add would crash the suite instead of naming a',
+    '  // failure.',
+  ].join('\n');
+  assert.deepStrictEqual(scanSource(src, 'fixture.mjs'), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -283,7 +289,7 @@ test('T7 pins: the tripwire is installed in this child and converts a node-vs-nu
   // Assert installation FIRST so this test cannot pass vacuously if the
   // execArgv preload in tests/run.mjs is ever removed.
   assert.equal(assert.equal.__domTripwire, true,
-    'tripwire not installed — the public/-valued gap in the scan is unguarded');
+    'tripwire not installed — the source-valued gap in the scan is unguarded');
   // A node-ISH plain object, never a live node: if the tripwire were ever
   // absent this fails instantly instead of stalling the suite for 33-120s.
   assert.throws(

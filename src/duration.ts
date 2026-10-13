@@ -11,7 +11,7 @@
 //       150 → <1s         (sub-second: ms are never shown)
 //   0 / negative / non-finite → 0s
 //
-// Distinct from `public/usage.js`'s `formatDuration`, which is UI-only: spaced,
+// Distinct from `shared/usage.ts`'s `formatDuration`, which is UI-only: spaced,
 // capped at two components, and `—` for null. The two contracts stay separate.
 export function humanizeDuration(ms: number): string {
   if (typeof ms !== 'number' || !isFinite(ms) || ms <= 0) return '0s';

@@ -1,4 +1,4 @@
-// public/ws.js's {ack:true} send timer — what it holds and for how long.
+// shared/ws.ts's {ack:true} send timer — what it holds and for how long.
 //
 // Two mechanisms with different jobs, and this file pins both because either one
 // alone is a different, weaker guarantee (card 2026-0344):
@@ -15,7 +15,7 @@
 // what stops the fix being "delete the timer". Driven with mock timers: no real
 // sleep.
 //
-// It drives the REAL public/ws.js over tests/fakeSocket.mjs, the same fake the two
+// It drives the REAL shared/ws.ts over tests/fakeSocket.mjs, the same fake the two
 // header files use, so what is asserted is the module the browser loads.
 
 import { test } from 'node:test';
@@ -24,10 +24,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installFakeSocket } from './fakeSocket.mjs';
 
-const PUB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-// ws.js reads `location` to build its URL; nothing here asserts on the URL.
+const PUB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'shared');
+// ws.ts reads `location` to build its URL; nothing here asserts on the URL.
 globalThis.location = { protocol: 'http:', host: 'localhost:0' };
-const ws = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);
+const ws = await import(pathToFileURL(path.join(PUB, 'ws.ts')).href);
 
 // The shared fake acks every frame carrying a reqId. The two variants below
 // SUBCLASS it rather than paste a second copy: they differ only in what comes
@@ -89,7 +89,7 @@ test('an acked send leaves no timer behind — the handle is cleared, not merely
 test('an unacked send still rejects with `timeout` at the 10s deadline', async (t) => {
   // The contract tests/ws-deferred-steer.test.mjs names. Mock timers, so nothing
   // waits ten real seconds — and note the mock's handle carries no `unref`, which
-  // is why ws.js guards that call.
+  // is why ws.ts guards that call.
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const sent = [];
   installVariant(sent, () => null); // the server never answers

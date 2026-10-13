@@ -1,14 +1,13 @@
-// Regression tests for the bug where a UI card answer (AskUserQuestion /
-// plan Approve-Reject) was parked in a browser-local Map instead of sent,
-// because public/app.js's sendOrQueuePrompt only sent when the instance was
-// idle and otherwise queued for the next `status:'idle'` WS frame.
+// A UI card answer (AskUserQuestion / plan Approve-Reject) is sent the moment
+// it is clicked, mid-turn included — never parked client-side until the next
+// `status:'idle'` WS frame.
 //
-// The gate assumed the `can_use_tool` deny leaves the instance idle before a
-// human can click. It does not: the deny releases the tool call, but anything
-// already queued in the CLI's stdin — in a conducted session, a wake callback
-// from a finished worker — is injected right after and the SAME turn keeps
-// running. Answers clicked in that window were withheld and then replayed as
-// their own turn afterwards, out of order.
+// An idle gate would assume the `can_use_tool` deny leaves the instance idle
+// before a human can click. It does not: the deny releases the tool call, but
+// anything already queued in the CLI's stdin — in a conducted session, a wake
+// callback from a finished worker — is injected right after and the SAME turn
+// keeps running. Answers clicked in that window would be withheld and then
+// replayed as their own turn afterwards, out of order.
 //
 // The scenario fixture reproduces exactly that shape: the deny step emits the
 // is_error tool_result but NO `result`, so the turn stays open, and `result` is
@@ -24,7 +23,7 @@ import { bootServer, api, waitFor, userStdinLines } from './helpers.mjs';
 import { promises as fs } from 'node:fs';
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
 import { addCustomModel } from '../src/appSettings.ts';
-import { isUserQuestionAnswerText } from '../public/userQuestionAnswers.js';
+import { isUserQuestionAnswerText } from '../shared/userQuestionAnswers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-canusetool-question-continues.json');
@@ -39,7 +38,7 @@ const QUESTIONS = [{
   multiSelect: false,
   options: [{ label: 'Apple' }, { label: 'Banana' }],
 }];
-// Exactly what public/app.js's onUserQuestionSubmit sends for an Apple pick
+// Exactly what the question card's submit (web/src/conversation/cards.tsx) sends for an Apple pick
 // (formatUserQuestionAnswers single-question short form).
 const ANSWER_TEXT = 'Answer to "Pick a fruit": "Apple"';
 // The wake callback IdleSubscriptionHub.deliver injects when a subscribed
@@ -128,12 +127,12 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
     await upToOpenQuestion(ctx, c);
     assert.equal(ctx.instances.get(id).status, 'turn', 'precondition: still mid-turn');
 
-    // The UI answer, in the exact shape public/app.js now sends it — no
-    // status check, no extra fields beyond the composer's own payload.
+    // The UI answer, in the shape sendCardAnswer (web/src/conversation/cards.tsx)
+    // sends it minus its ack `reqId` — no status check.
     c.send({ t: 'prompt', id, text: ANSWER_TEXT });
 
-    // Under the OLD gated client this send never happened, the fake never
-    // emitted `result`, and this wait times out.
+    // An idle-gated client never makes this send, the fake never emits
+    // `result`, and this wait times out.
     const turnEnd = await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
     assert.equal(turnEnd.ev.isError, false);
 

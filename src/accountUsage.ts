@@ -19,7 +19,7 @@
 
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { claudeConfigDir } from './projects.ts';
+import { claudeConfigDir } from './claudeConfigDir.ts';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CACHE_TTL_MS  = 180_000;

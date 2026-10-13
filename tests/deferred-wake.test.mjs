@@ -15,7 +15,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { InstanceManager } from '../src/instances.ts';
-import { parseWakeCallback } from '../public/wakeCallback.js';
+import { parseWakeCallback } from '../shared/wakeCallback.ts';
 
 const instances = new InstanceManager();
 after(() => instances.shutdown().catch(() => {}));

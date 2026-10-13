@@ -2,7 +2,7 @@
 // review, single-commit diff, uncommitted working tree). Each surface has a
 // summary endpoint (per-file numstat/name-status, no cap — safe for any
 // change size) and a per-file endpoint (full hunks for one path, fetched
-// lazily by public/review.js when a card is expanded).
+// lazily by web/src/features/views/ReviewView.tsx when a card is expanded).
 //
 // The MCP project_diff handler (src/mcp/handlers.ts) shares DIFF_BYTE_CAP,
 // assertValidBaseRef, parseNumstat and parseNameStatus with this module —
@@ -175,8 +175,8 @@ export function parseNameStatus(out: string | undefined): NameStatusRow[] {
   return rows;
 }
 
-// git --name-status codes -> the status words the client CSS/icon map expect
-// (.review-status-added|deleted|modified|renamed, STATUS_ICON in public/review.js).
+// git --name-status codes -> the status words the client's status map keys on
+// (STATUS in web/src/features/views/ReviewView.tsx).
 const NAME_STATUS_STATUS: Record<string, string> = {
   A: 'added', D: 'deleted', R: 'renamed', C: 'copied', M: 'modified', T: 'modified',
 };

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
+const PUB = path.resolve(__dirname, '..', 'shared');
 
 async function setup(initialHref = 'http://localhost/') {
   const window = new Window({ url: initialHref });
@@ -19,7 +19,7 @@ async function setup(initialHref = 'http://localhost/') {
   globalThis.URLSearchParams = window.URLSearchParams;
   // Cache-bust the module import so each test gets a fresh evaluation
   // against the current globals (happy-dom's location is per-Window).
-  const url = pathToFileURL(path.join(PUB, 'anchor.js')).href + `?t=${Math.random()}`;
+  const url = pathToFileURL(path.join(PUB, 'anchor.ts')).href + `?t=${Math.random()}`;
   const mod = await import(url);
   return { window, ...mod };
 }
@@ -80,6 +80,39 @@ test('writeSessionAnchor URL-encodes session ids with special characters', async
   assert.ok(window.location.hash.includes('a%20b%2Fc%3Fd'));
   // ...but URLSearchParams decodes back to the original on read.
   assert.equal(readSessionAnchor(), 'a b/c?d');
+});
+
+test('pushSessionAnchor adds a history entry, unlike writeSessionAnchor', async () => {
+  const { window, writeSessionAnchor, pushSessionAnchor } = await setup('http://localhost/app');
+  const before = window.history.length;
+  writeSessionAnchor('conductor-a');
+  assert.equal(window.history.length, before);
+  pushSessionAnchor('worker-b');
+  assert.equal(window.history.length, before + 1);
+  assert.equal(window.location.hash, '#session=worker-b');
+  assert.equal(window.location.pathname, '/app');
+});
+
+test('pushSessionAnchor URL-encodes session ids, and readSessionAnchor reads them back', async () => {
+  const { window, pushSessionAnchor, readSessionAnchor } = await setup('http://localhost/');
+  pushSessionAnchor('a b/c?d');
+  assert.ok(window.location.hash.includes('a%20b%2Fc%3Fd'));
+  assert.equal(readSessionAnchor(), 'a b/c?d');
+});
+
+test('pushSessionAnchor(null) clears the hash', async () => {
+  const { window, pushSessionAnchor, readSessionAnchor } = await setup('http://localhost/app#session=old');
+  pushSessionAnchor(null);
+  assert.equal(window.location.hash, '');
+  assert.equal(window.location.pathname, '/app');
+  assert.equal(readSessionAnchor(), null);
+});
+
+test('pushSessionAnchor(null) on an empty hash adds no history entry', async () => {
+  const { window, pushSessionAnchor } = await setup('http://localhost/');
+  const before = window.history.length;
+  pushSessionAnchor(null);
+  assert.equal(window.history.length, before);
 });
 
 function memStorage() {

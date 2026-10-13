@@ -78,7 +78,7 @@ function appendCostRow(inst: InstanceLike, ev: UiEvent, parentSessionId: string 
   // token fields rather than persist fabricated 0s. (The only other token
   // signal, message_start.usage, is a last-value-wins context-size snapshot,
   // not a summable per-turn total — summing it would double-count.) Mirrors the
-  // client UsageTracker guard in public/usage.js. The conditional spread keeps
+  // client UsageTracker guard in shared/usage.ts. The conditional spread keeps
   // the fields in-position so Anthropic rows (usage always present) serialize
   // byte-identically. Read side treats a non-Claude row (no cost_usd) as
   // token-unknown, so the omission drives an honest `—` in the #costs dashboard.

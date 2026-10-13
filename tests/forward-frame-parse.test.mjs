@@ -1,4 +1,4 @@
-// Tests for public/forwardFrame.js's parse side: parseForwardFrame recovers
+// Tests for shared/forwardFrame.ts's parse side: parseForwardFrame recovers
 // { payload, instruction } from exactly what buildForwardFrame writes, and
 // splitForwardedMessages recovers the per-message bodies from the payload.
 // Pure — no DOM. The worker-visible bytes themselves are pinned against the
@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   FORWARD_FRAME_HEADER, FORWARD_FRAME_FOOTER,
   buildForwardFrame, parseForwardFrame, splitForwardedMessages,
-} from '../public/forwardFrame.js';
+} from '../shared/forwardFrame.ts';
 
 const H = FORWARD_FRAME_HEADER;
 const F = FORWARD_FRAME_FOOTER;
@@ -129,6 +129,10 @@ test('splitForwardedMessages scans backwards and falls back to one body on incon
   });
   await t.test('a single body opening with a 1/2 boundary and no 2/2 stays one body', () => {
     const payload = '--- message 1/2 ---\nlooks like a boundary but is the whole message';
+    assert.deepEqual(splitForwardedMessages(payload), [payload]);
+  });
+  await t.test('a payload opening with a 1/1 boundary is returned byte-identical', () => {
+    const payload = '--- message 1/1 ---\nthe only message';
     assert.deepEqual(splitForwardedMessages(payload), [payload]);
   });
   await t.test('a payload with no boundary is one body', () => {

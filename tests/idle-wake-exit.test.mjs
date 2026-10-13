@@ -15,7 +15,7 @@ import {
   setupIdleWake, callTool, spawnReady, spawnReadyWithScenario, restWorker,
   SCENARIO_OPEN,
 } from './idleWakeCase.mjs';
-import { parseWakeCallback } from '../public/wakeCallback.js';
+import { parseWakeCallback } from '../shared/wakeCallback.ts';
 
 let baseUrl, instances;
 setupIdleWake((c) => { ({ baseUrl, instances } = c); });

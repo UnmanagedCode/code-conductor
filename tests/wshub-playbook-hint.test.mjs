@@ -73,7 +73,7 @@ test('a playbook_changed emit delivers exactly one {t:"instances"} frame and no 
   } finally { await client.close(); await hub.close(); }
 });
 
-// The attention notifier (public/attention.js) detects only on an
+// The attention notifier (shared/attention.ts) detects only on an
 // /api/instances refresh, so every manager event that can move a session into
 // Waiting or Finished must reach clients as an `instances` hint.
 for (const [event, payload] of [

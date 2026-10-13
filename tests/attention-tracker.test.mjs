@@ -1,4 +1,4 @@
-// The attention tracker (public/attention.js): which successive /api/instances
+// The attention tracker (shared/attention.ts): which successive /api/instances
 // lists make a top-level session ENTER the needs-you strip's Waiting or
 // Finished group. Pure; one invariant per test.
 
@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { createAttentionTracker } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'attention.js')).href);
+const { createAttentionTracker } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'attention.ts')).href);
 
 const hand = (sid, o = {}) => ({
   id: `i-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: false, ownerSessionId: null,

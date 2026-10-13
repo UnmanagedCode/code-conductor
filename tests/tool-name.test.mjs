@@ -1,11 +1,11 @@
-// public/toolName.js — the display parse of a tool's wire name.
+// shared/toolName.ts — the display parse of a tool's wire name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { formatToolName, toolNamePlain } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'toolName.js')).href);
+const { formatToolName, toolNamePlain } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'toolName.ts')).href);
 
 function check(t, raw, kind, chip, label) {
   return t.test(raw ?? String(raw), () => {

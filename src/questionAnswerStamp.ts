@@ -6,7 +6,7 @@
 // stamp lives on the UI event only and is never sent to the CLI.
 
 import { isOuterUserEcho, type UiEvent } from './parser.ts';
-import { isUserQuestionAnswerText, type Question } from '../public/userQuestionAnswers.js';
+import { isUserQuestionAnswerText, type Question } from '../shared/userQuestionAnswers.ts';
 
 export class QuestionAnswerCorrelator {
   #pending: { toolUseId: string | null; questions: Question[] } | null = null;

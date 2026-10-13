@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { TtsQueue } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'tts-queue.js')).href);
+const { TtsQueue } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'tts-queue.ts')).href);
 
 // Drain all pending micro/macro tasks.
 const flush = () => new Promise(r => setTimeout(r, 0));

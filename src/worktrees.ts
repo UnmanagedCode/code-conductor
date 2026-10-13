@@ -17,6 +17,7 @@ import {
   getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot, localWorktreesRoot, writeFileAtomic,
 } from './projects.ts';
 import { withLock } from './storeLock.ts';
+import { markProjectsChanged } from './projectsChanged.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
 import { getSystem } from './appSettings.ts';
 import {
@@ -24,7 +25,7 @@ import {
 } from './systems/transcriptKey.ts';
 import { classifySpawnError, type FsErrorCode } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
-import { REBASE_PROMPT_LEAD } from '../public/injectedTurns.js';
+import { REBASE_PROMPT_LEAD } from '../shared/injectedTurns.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
@@ -339,6 +340,7 @@ export async function getHeadBranchAndSha(system: System, projectPath: string): 
 // worktree that vanishes from every listing, so its merge and delete 404.
 async function writeMeta(project: string, worktreeName: string, meta: WorktreeMeta): Promise<void> {
   await writeFileAtomic(metaPath(project, worktreeName), JSON.stringify(meta, null, 2) + '\n');
+  markProjectsChanged();
 }
 
 // THE read-modify-write of an existing record: re-read under the record's
@@ -1646,6 +1648,7 @@ async function checkoutIsProtectable(system: System, wt: WorktreeMeta): Promise<
 async function dropWorktreeStoreEntry(projectName: string, worktreeName: string): Promise<void> {
   try { await fs.rm(worktreeStoreDir(projectName, worktreeName), { recursive: true, force: true }); }
   catch { /* best-effort */ }
+  markProjectsChanged();
 }
 
 // Default / maximum number of commits returned by getProjectCommits.
@@ -1796,7 +1799,7 @@ export async function getProjectCommits(
   // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI/%P are all single-line.
   // %P = parent SHAs (space-separated): empty for the root commit, ≥2 for a merge.
   // --topo-order, not git's default committer-date order: the frontend's lane
-  // assignment (computeGraph, public/commits.js) requires that no parent precede
+  // assignment (computeGraph, web/src/features/views/graph.ts) requires that no parent precede
   // its child. A rebase stamps a whole branch with one committer second, the date
   // sort key goes constant, and the emitted order degenerates — branch points
   // then attach to the wrong rows, and lanes end abruptly where the rail gives

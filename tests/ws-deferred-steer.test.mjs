@@ -147,7 +147,7 @@ test('E-T1 a WS prompt frame into a flagged mid-turn instance defers to a post-s
 
 test('E-T2 the frame ack resolves while the steer is still parked, not at the block edge', async () => {
   // Invariant: `{t:'ack', ok:true}` arrives while the steer is parked and BEFORE
-  // any boundary event. public/ws.js rejects a pending ack after 10s and
+  // any boundary event. shared/ws.ts rejects a pending ack after 10s and
   // sendCardAnswer's onFail re-opens the card, so an ack that waited on the
   // unbounded block-edge stop would make every deferred card answer falsely
   // report failure.

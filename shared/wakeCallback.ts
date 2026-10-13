@@ -1,0 +1,64 @@
+// Shared (server + client) marker format for the idle-wake stub.
+//
+// When a worker finishes a turn while its conductor is idle, the
+// orchestrator folds the worker's recent-message content (the SAME payload a
+// default get_recent_messages call returns) directly into the injected wake
+// prompt so the conductor doesn't need a follow-up MCP round-trip. The stub is
+// tagged with an in-band marker so the conductor's UI can render it as a special
+// collapsible bubble — summary always visible, folded payload collapsed. Being
+// in-band (like the <transcribed> / soft-interrupt markers) means it survives
+// resume/replay: the persisted user turn re-emits the same text.
+//
+// Imported by src/idleSubscriptions.ts (build) and
+// web/src/conversation/model.ts (parse), mirroring shared/userQuestionAnswers.ts's cross-boundary sharing.
+
+export const WAKE_CALLBACK_MARKER: string = '[[cc:wake-callback]]';
+// Separates the always-visible summary line from the collapsible folded payload.
+export const WAKE_BODY_SEP: string = '\n[[cc:wake-body]]\n';
+
+// Build the folded wake stub sent to (and rendered for) the conductor. The
+// summary names the worker + says what happened and that the recent output is
+// already inline; the body is the flattened get_recent_messages payload. An
+// optional `note` (server-side wording, e.g. a declined renewal request) is
+// prefixed into the summary, so it lands in the always-visible line rather than
+// the collapsed body. An optional `jobsNote` (the worker's still-running
+// background jobs) is appended to the summary on its own lines, for the same
+// reason.
+export function buildWakeStub({ targetSessionId, payloadText, note = null, jobsNote = null }: {
+  targetSessionId: string;
+  payloadText: string;
+  note?: string | null;
+  jobsNote?: string | null;
+}): string {
+  const summary =
+    (note ? `${note} ` : '') +
+    `Worker \`${targetSessionId}\` finished its turn. ` +
+    `Its recent output is folded in below (equivalent to a default ` +
+    `\`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` call), ` +
+    `so you do NOT need to call get_recent_messages again — read it and decide the next step.` +
+    (jobsNote ? `\n${jobsNote}` : '');
+  return `${WAKE_CALLBACK_MARKER}${summary}${WAKE_BODY_SEP}${payloadText}`;
+}
+
+// Wrap a body-less wake stub — the heartbeat pointer, the live mid-turn steering
+// pointer, and the force-abort INTERRUPTED pointer — with the marker so the UI
+// renders it as a wake bubble WITHOUT a collapsible body: no WAKE_BODY_SEP,
+// nothing to fold. For the interrupted stub that is load-bearing rather than
+// incidental: the separator's presence is this module's "finished result" signal,
+// so folding partial aborted output would make it indistinguishable from a
+// completion at a glance. parseWakeCallback
+// degrades the separator-less result to { summary, body:'' }, which the client
+// uses to pick a plain summary line over a <details>.
+export function markPlainStub(summary: string): string {
+  return `${WAKE_CALLBACK_MARKER}${summary}`;
+}
+
+// Parse a user-echo text into { summary, body } when it is a wake-callback stub,
+// else null. A stub without the body separator degrades to summary-only.
+export function parseWakeCallback(text: unknown): { summary: string; body: string } | null {
+  if (typeof text !== 'string' || !text.startsWith(WAKE_CALLBACK_MARKER)) return null;
+  const rest = text.slice(WAKE_CALLBACK_MARKER.length);
+  const idx = rest.indexOf(WAKE_BODY_SEP);
+  if (idx === -1) return { summary: rest, body: '' };
+  return { summary: rest.slice(0, idx), body: rest.slice(idx + WAKE_BODY_SEP.length) };
+}

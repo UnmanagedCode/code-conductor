@@ -1,5 +1,5 @@
 // Pure derivations behind the sidebar's Conductors lens and ownership colour
-// (public/conductors.js, public/conductorColor.js). No DOM.
+// (shared/conductors.ts, shared/conductorColor.ts). No DOM.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,9 +7,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
-const M = await import(pathToFileURL(path.join(PUB, 'conductors.js')).href);
-const { conductorColor } = await import(pathToFileURL(path.join(PUB, 'conductorColor.js')).href);
+const PUB = path.resolve(__dirname, '..', 'shared');
+const M = await import(pathToFileURL(path.join(PUB, 'conductors.ts')).href);
+const { conductorColor } = await import(pathToFileURL(path.join(PUB, 'conductorColor.ts')).href);
 
 const HSL = /^hsl\((\d+) (\d+)% (\d+)%\)$/;
 
@@ -305,4 +305,21 @@ test('instanceTemp comes from a live instance; a disk-only row is false', () => 
   });
   const temp = Object.fromEntries([...live, ...inactive].map(c => [c.sessionId, c.instanceTemp]));
   assert.deepEqual(temp, { disk: false, both: true, only: true, normal: false });
+});
+
+test('hasSessionId is true exactly for an instance that has a session', () => {
+  assert.equal(M.hasSessionId({ sessionId: 'sid-1' }), true);
+  for (const sessionId of [null, '']) assert.equal(M.hasSessionId({ sessionId }), false, JSON.stringify(sessionId));
+});
+
+test('isLiveConductor reads the row\'s live flag: a live conductor is, an exited or disk-only one is not', () => {
+  const { live, inactive } = M.deriveConductors({
+    conductRows: [{ sessionId: 'D', lastActivity: 1 }],
+    instances: [
+      { id: 'i-L', sessionId: 'L', project: '.conduct', status: 'idle', temp: true },
+      { id: 'i-E', sessionId: 'E', project: '.conduct', status: 'exited', temp: true },
+    ],
+  });
+  assert.deepEqual(live.map(c => [c.sessionId, M.isLiveConductor(c)]), [['L', true]]);
+  assert.deepEqual(inactive.map(c => [c.sessionId, M.isLiveConductor(c)]).sort(), [['D', false], ['E', false]]);
 });

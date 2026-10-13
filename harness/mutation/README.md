@@ -8,7 +8,7 @@ mutation-prove coverage claims via `/code-mutant:prove`. `config.json` is commit
 **Open [RATIONALE.md](RATIONALE.md) only when you need the *why***: it holds the reasoning behind
 `config.json`'s values, the measured case against copy mode and `--jobs`, and the recipe for
 re-deriving the env-gate list when the flags change. Reach for it if you are about to change
-`config.json`, disagree with one of the three rules below, or suspect a verdict is a harness
+`config.json`, disagree with one of the rules below, or suspect a verdict is a harness
 artefact rather than a coverage finding. You do not need it to run a pass.
 
 ## Run a pass
@@ -49,7 +49,71 @@ node harness/mutation/run.mjs probe \
 `baseline` needs a **clean tree** (`git status --porcelain` empty) — mutation runs against committed
 state.
 
-## Three project-specific rules
+## Three suites
+
+`config.json` runs `runner: "custom"`: `parse.mjs` binds `scoring.ts` (routing, commands, report
+reduction) to code-mutant's shipped node-test and vitest adapters, and `suite.ts` is the test
+command. A mutant is routed by the **test file** its refs name, never by the source it mutates:
+
+| test file | runner | command `suite.ts` runs (cwd = repo root) |
+|---|---|---|
+| `tests/<name>.test.mjs` (top level only, as `tests/run.mjs` discovers) | node | `npm test --ignore-scripts -- <files>` |
+| `web/src/**/*.test.ts(x)` (`web/vitest.config.ts` `include`) | Vitest | `npx vitest run --config web/vitest.config.ts --reporter=json …` |
+| `web/e2e/**/*.spec.ts` | Playwright | `npx playwright test --config web/playwright.config.ts --project=<P> --reporter=json …` |
+
+Any other file is refused (exit 2, nothing on stdout), and so is a requested file its runner did not
+run — both read `ERROR` with a narrow baseline that "ran ZERO tests", never a verdict. Mixing suites
+in one mutant's refs is fine: each runner gets its own files and the counts are summed.
+
+**Test ids**, all repo-relative — take them from a `--learn` pass, never hand-construct one:
+
+| runner | id | example |
+|---|---|---|
+| node | `<file>::<describe> > … > <test>` | `tests/anchor.test.mjs::readSessionAnchor returns null when no hash is set` |
+| Vitest | `<file>::<describe> > … > <test>` | `web/src/conversation/cards.test.tsx::cards > plan card > renders markdown` |
+| Playwright | `<file>::<project> > <describe> > … > <test>` | `web/e2e/session.spec.ts::desktop > a prompt streams a reply with tool calls, prose and a turn footer` |
+
+**Mutant commands never typecheck; the baseline does.** `baselineCommand` (`suite.ts --all`) runs
+`npm run typecheck`, then the whole node suite, then the whole Vitest suite, and a typecheck failure
+reads as a build break. A mutant's narrow command skips `pretest` (`--ignore-scripts`), so a mutant
+that only breaks a type gets a behavioural verdict from the tests it names — an `x && false`-style
+mutant never reads `ERROR (scope-empty)` through a pretest red.
+
+**Playwright rows rebuild the bundle.** The suite's globalSetup runs the server's hash-gated
+`ensureWebBuild()`: a mutant under `web/` or `shared/` changes the source hash, so the scored run
+rebuilds `web/dist`, and the restore makes the next run rebuild again. A mutant that breaks the build
+fails globalSetup and reads `IMPRECISE (compile-error)`. Specs and fixtures are not build inputs, so
+the canary injected into a spec costs no rebuild. Playwright rows need the browser revision
+`@playwright/test` pins (`web/e2e/README.md`). `--all` runs no Playwright: a spec scores a mutant
+only when a ref names it.
+
+**The Playwright canary is a test of `web/e2e/harness/fixtures.ts`'s `test`** (`canaryFor` in
+`scoring.ts`), appended to the spec as `<project> > code_mutant_canary_fires`. Playwright checks a
+file's root hooks against each test's own fixtures and gives each test type its own worker, so a
+root `test.beforeAll(async ({ cc }) => …)` loads, and in a spec built on those fixtures the canary
+runs last in the spec's worker — the root `beforeAll` runs once. Two consequences:
+
+- A root hook that takes a fixture `fixtures.ts` does not define (a spec-local `test.extend`) fails
+  the file's load once the canary is in it: the spec reads `canary-not-established`, never a verdict.
+- A spec that takes `test` from `@playwright/test` (`sw-upgrade.spec.ts`) runs its canary
+  in a worker of its own, which re-runs the spec's root hooks and boots a `cc` (Playwright's auto
+  artifacts fixture reaches it through `baseURL`).
+
+**Playwright rows: one project per run.** Every Playwright row of an invocation runs under
+`CC_MUTATION_PW_PROJECT` (default `desktop`; an unknown name is refused). Without the pin a spec
+shared by several projects would fail the canary, and a real kill, once per project. So:
+
+- A spec the project does not run (`*.android.spec.ts` under `desktop` or `phone`; `live.spec.ts`
+  under `phone` or `android`) is refused; `suite.ts` names the projects that run it.
+- A test that skips itself outside its project reads *skipped* under the default, so a mutant
+  touching only phone- or android-only behaviour reads `SURVIVED`. The honest reading is **"scored
+  under desktop only"**, not "uncovered": re-run the whole invocation with
+  `CC_MUTATION_PW_PROJECT=phone` (or `android`) to score it.
+- The project is a measuring condition code-mutant's journal cannot see (`suite.ts` prints it in the
+  stored output's `playwright project=<P>` header). **Never `--resume` across a change of
+  `CC_MUTATION_PW_PROJECT`**; start a fresh run.
+
+## Four project-specific rules
 
 1. **A test id is its full `describe > name` path, not its leaf name.** Top-level tests are
    `tests/<file>.test.mjs::<test name>`; a test inside a `describe(...)` is
@@ -87,6 +151,10 @@ state.
    all-skipped file reports a *green* narrow baseline and the mutant reads `SURVIVED`, not
    `ERROR (scope-empty)`. RATIONALE.md §5 lists today's gates and how to re-derive them.
 
+4. **A build step the node suite needs belongs in `test` (or `tests/run.mjs`), never in `pretest`.**
+   Every mutant command skips `pretest`, so a step there would leave mutants judged against stale
+   output.
+
 ## Declared non-behavioural mutants — waive, do not file
 
 A mutant listed here **legitimately SURVIVES**. Each is a construct whose removal changes no
@@ -100,7 +168,6 @@ condition stops holding, the row's mutant becomes killable and the row goes.
 
 | construct | mutation | why it is equivalent, and under what condition |
 |---|---|---|
-| `agBody` in `public/blocks.js` | its direct-children scan replaced by `groupNode.querySelector('.ag-body')` | **EQUIVALENT WHILE EVERY ACTION GROUP CARRIES ITS OWN `.ag-body` AS A DIRECT CHILD** — `createActionGroup` is the only producer of a group and always builds one. A direct child precedes every descendant in tree order, so `querySelector` returns this group's own body even when the group holds a sub-agent conversation with a group (and a body) of its own: no DOM a test can build tells the two forms apart. **If a group is ever built without a body of its own** — a second wrapper shape, or a body a merge removes — the forms diverge and this row goes. Do not write a test for it; there is none to write. |
 
 And the standing one, which is not a construct but a test: **`A16`'s sha256 latch
 (`tests/fuse-lifecycle.test.mjs`) is a deliberate-edit disclosure, not coverage.** A C mutant whose
@@ -122,8 +189,9 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
 
 ## What to expect
 
-- `baseline` is **two full-suite passes** (baseline + canary). On a 16-core host a full suite pass is
-  ~1 min, so budget ~2 min; a low-core host (Termux) is a multiple of that. It is not hung —
+- `baseline` is **two full passes** (baseline + canary) of `suite.ts --all`: typecheck, node suite,
+  Vitest suite. On a 16-core host one pass is ~1.5 min (RATIONALE §1), so budget ~3 min; a low-core
+  host (Termux) is a multiple of that. It is not hung —
   `timeoutMs` in `config.json` is sized for the slow case.
 - A file-narrowed mutant is seconds, not minutes. **Always give every mutant an `expectFail`**: that
   is what buys the narrowing. Before the first `--learn`, the claimed killer's **file** alone

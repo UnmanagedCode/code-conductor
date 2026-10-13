@@ -1,12 +1,11 @@
 // Tests for parseUserQuestionAnswers — the replay-time reverse of
-// formatUserQuestionAnswers. Pure logic, no DOM: the module is DOM-free and
-// blocks.js's same-reference re-export is pinned in user-question-format.
+// formatUserQuestionAnswers. Pure logic, no DOM: the module is DOM-free.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatUserQuestionAnswers, parseUserQuestionAnswers, isUserQuestionAnswerText,
   parseCanonicalUserQuestionAnswers,
-} from '../public/userQuestionAnswers.js';
+} from '../shared/userQuestionAnswers.ts';
 
 // ── Round-trip: for every canonical answer, parse inverts format exactly ─────
 

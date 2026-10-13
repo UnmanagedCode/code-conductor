@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, waitFor, instForSession, driveTurn } from './helpers.mjs';
-import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
+import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import {
   setupIdleWake, callTool, unwrap, spawnReady, armWake,
   spawnReadyWithScenario, countUserEchoes, findStubFor,

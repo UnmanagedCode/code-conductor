@@ -207,7 +207,8 @@ export async function mcpTool(ctx, name, args) {
 }
 
 // Page GET /api/instances/:id/lineage-events backward until `hasMore` is false,
-// enforcing the client's progress rule (public/lazyHistory.js): a page is
+// enforcing the client's progress rule (fetchEarlier,
+// web/src/conversation/lazyHistory.ts): a page is
 // accepted iff its segment is unchanged and its cursor strictly lower, or its
 // segment is one this walk has not visited. Returns `events` oldest-first, the
 // `cursors` each request used and the raw `pages` newest-first.
@@ -254,8 +255,8 @@ export function splitAtSeams(events) {
 
 export const isGap = (e) => e.kind === 'history_gap';
 
-// The client's gap adjacency rule (public/conversation.js _renderHistoryGap,
-// public/lazyHistory.js spliceBatchAbove): two adjacent gap markers render as one.
+// The client's gap adjacency rule (renderHistoryGap and prependPage,
+// web/src/conversation/model.ts): two adjacent gap markers render as one.
 export function collapseGaps(evs) {
   return evs.filter((e, i) => !(isGap(e) && i > 0 && isGap(evs[i - 1])));
 }

@@ -1,7 +1,7 @@
 {
-  "baselineCommand": "npm test",
-  "testCommand": "npm test -- {tests}",
-  "runner": "node-test",
+  "baselineCommand": "node harness/mutation/suite.ts --all",
+  "testCommand": "node harness/mutation/suite.ts {tests}",
+  "runner": "custom",
   "isolation": "in-place",
   "timeoutMs": 300000,
   "hang": { "factor": 10, "floorMs": 50000 },

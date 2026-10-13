@@ -5,11 +5,11 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUB = path.resolve(__dirname, '..', 'public');
+const PUB = path.resolve(__dirname, '..', 'shared');
 
-// tasks.js uses `document` only inside TaskPanel — TaskTracker itself
+// tasks.ts uses `document` only inside TaskPanel — TaskTracker itself
 // is DOM-free and import-safe in plain Node.
-const { TaskTracker } = await import(pathToFileURL(path.join(PUB, 'tasks.js')).href);
+const { TaskTracker } = await import(pathToFileURL(path.join(PUB, 'tasks.ts')).href);
 
 // Helper: simulate the orchestrator's two-step "create" — tool_use
 // followed by the tool_result that carries the freshly-allocated id.
@@ -253,7 +253,7 @@ test('TaskPanel renders rows, swaps active marker, hides when all completed (hap
   globalThis.Node = window.Node;
 
   // Re-import with DOM globals defined this time so TaskPanel works.
-  const url = pathToFileURL(path.join(PUB, 'tasks.js')).href + '?dom=1';
+  const url = pathToFileURL(path.join(PUB, 'tasks.ts')).href + '?dom=1';
   const { TaskTracker: Tracker2, TaskPanel } = await import(url);
 
   document.body.innerHTML = '<div id="host" hidden></div>';

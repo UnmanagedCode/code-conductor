@@ -50,7 +50,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { claudeConfigDir } from '../projects.ts';
+import { claudeConfigDir } from '../claudeConfigDir.ts';
 import type { System } from './system.ts';
 
 export interface UnenforceableRule { rule: string; source: string }

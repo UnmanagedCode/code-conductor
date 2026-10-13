@@ -15,6 +15,7 @@ import { loadPersistedTranscript } from '../transcript.ts';
 import { stampArchiveEvents } from '../eventArchive.ts';
 import type { InstanceLike } from '../instanceTypes.ts';
 import { isOuterUserEcho, type UiEvent } from '../parser.ts';
+import { normalizeQuestions, type Question } from '../../shared/userQuestionAnswers.ts';
 
 // Per-message text cap for get_recent_messages raw blocks — mirror
 // project_read/project_diff's bounded-output pattern so no tool can emit an
@@ -85,7 +86,7 @@ export interface ReconMessage {
   hasToolUse: boolean;
   plan?: string;
   planPath?: string;
-  questions?: unknown;
+  questions?: Question[];
   textSeq?: number;
   planSeq?: number;
   questionsSeq?: number;
@@ -346,7 +347,7 @@ export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: TurnIndex):
 interface HoistTarget {
   plan: string | null;
   planPath: string | null;
-  questions: unknown;
+  questions: Question[] | null;
 }
 
 // One pass's arrival-order counter plus the position stamped on each segment.
@@ -365,6 +366,10 @@ interface SegmentSeqs {
 // because the delta path supplies `ev.name`/`ev.toolUseId` and the reconciled
 // path supplies `block.name`/`block.id`; both are guarded by the same
 // `typeof … === 'string'` / literal comparisons.
+//
+// The questions are the model's raw tool input; they are normalised here, once,
+// so every MCP reader (rendering and answer_question alike) walks the same
+// position-preserving shape.
 //
 // Returns true when the block WAS hoisted — the caller must then NOT also push
 // it into blocks[] ("not duplicated in blocks[]", the contract in mcp/tools.ts).
@@ -394,7 +399,7 @@ function hoistPlanAndQuestions(
     if (hoisted && seqs.planSeq === null) seqs.planSeq = seqs.next++;
   } else if (name === 'AskUserQuestion') {
     const q = input?.questions;
-    if (Array.isArray(q) && q.length > 0) { out.questions = q; hoisted = true; }
+    if (Array.isArray(q) && q.length > 0) { out.questions = normalizeQuestions(q); hoisted = true; }
     if (hoisted && seqs.questionsSeq === null) seqs.questionsSeq = seqs.next++;
   }
   return hoisted;

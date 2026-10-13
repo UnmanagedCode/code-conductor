@@ -5,7 +5,8 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigDir, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { claudeConfigDir } from './claudeConfigDir.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -106,7 +107,7 @@ import { completeLinesOf, forkSessionAtUserMessage, truncateSessionAtUserMessage
 import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
 import { CallUsageTracker } from './callUsage.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
-import { buildApprovePrompt } from '../public/planApproval.js';
+import { buildApprovePrompt } from '../shared/planApproval.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope, measureSegmentEchoOffset, type SeqEvent } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
@@ -400,8 +401,8 @@ function isLiveOrComingUp(inst: Instance): boolean {
 }
 
 // Annotation on the `soft_interrupted` event the turn-start guard emits when a
-// turn begins during an overage lockout. Rendered by public/blocks.js as
-// `⏸ Turn interrupted: <text>` — the observed defect was that such a turn was cut
+// turn begins during an overage lockout. Rendered by
+// web/src/conversation/format.ts as `Turn interrupted: <text>` — the observed defect was that such a turn was cut
 // SILENTLY, so naming the lockout as the cause is the point. Not sent to the CLI:
 // nothing may be written to a session during the window.
 const OVERAGE_TURN_BLOCKED_TEXT =
@@ -453,7 +454,8 @@ function isOverageEvent(data: unknown): boolean {
 // Normalise the rate-limit window reset time to epoch SECONDS, or null.
 // The live `rate_limit_event` field is the camelCase epoch-seconds `resetsAt`
 // (confirmed against a real CLI capture). The snake_case ISO `resets_at` (as in
-// the account-usage payload / header.js's `new Date(bucket.resets_at)`) and a
+// the account-usage payload / web/src/app/accountUsage.ts's
+// `new Date(b.resets_at)`) and a
 // raw epoch number are accepted only as defensive fallbacks. The overage
 // auto-resume timer (overageResume.ts arm()) and the global clear timer both
 // expect epoch seconds, so this is the single place the shape is reconciled.
@@ -544,7 +546,7 @@ export class EventLog {
   // Retention is storage-only — it never gates what _emitUi emits to the live
   // WS feed. A `v` this method declines to retain simply never receives a
   // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
-  // events unconditionally — see public/conversation.js). The per-token
+  // events unconditionally — see web/src/conversation/model.ts). The per-token
   // live-stream floods (one system/thinking_tokens per thinking_delta token,
   // emitted by the Claude CLI as a live progress estimate — docs/protocol.md owns
   // the observed-emitter list; it is NOT specific to any one backend, and prose
@@ -711,7 +713,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // hydrated from the transcript at launch and reduced from live events after.
   // Never set on a conducted worker; never persisted.
   _awaitingUser: AskState;
-  // Live-only attention counters (summary(); read by public/attention.js). Never
+  // Live-only attention counters (summary(); read by shared/attention.ts). Never
   // hydrated and never reset, so a resume or a pre-launch listing cannot fake a
   // transition.
   liveTurnEnds: number;
@@ -1551,7 +1553,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // because wsHub is synchronous (it subscribes the socket BEFORE calling this
   // and awaits reconstructActiveTasks before sending), but because growth is
   // append-only and the client clears before replaying a snapshot
-  // (public/wsRouter.js), so live frames emitted inside that window are
+  // (web/src/app/controller.ts), so live frames emitted inside that window are
   // discarded in favour of the grown slot. Only unsafe to re-read a slot
   // expecting byte-stable text or to page/merge by array position rather than
   // `_seq`.
@@ -1785,7 +1787,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // every frame — so a null block must leave the latch alone or the very
     // first live frame would wipe the reading loadHistory seeded from the
     // jsonl, and a reload would drop to `ctx —` while the already-subscribed
-    // client still shows the number. Mirrors public/usage.js's `&& ev.usage`.
+    // client still shows the number. Mirrors shared/usage.ts's `&& ev.usage`.
     // `context_usage` is the parser's fallback reading for a backend whose
     // message_start is all-zero (src/parser.ts); it is armed only when THAT
     // message produced no message_start reading, so the two can never fight
@@ -6631,8 +6633,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // instance so its resume arms. `armResume` defaults to `resume` and splits off
   // only for a conductor's own worker, which is stopped un-armed.
   //
-  // The event carries `armResume`, NOT the routing mode: `public/blocks.js` renders
-  // `resume:true` as "auto-resuming at ⟨time⟩", which for an un-armed worker names
+  // The event carries `armResume`, NOT the routing mode:
+  // web/src/conversation/format.ts renders `resume:true` as "Auto-resuming at ⟨time⟩", which for an un-armed worker names
   // a resume that will never happen — and contradicts its own null `autoResumeAt`
   // badge.
   _directOverageStop(inst: Instance, { resume, resetsAt, armResume = resume }: { resume: boolean; resetsAt: number | null; armResume?: boolean }): void {

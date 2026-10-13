@@ -1,0 +1,195 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+@custom-variant dark (&:is(.dark *));
+
+/* Light palette. Neutrals are a faintly warm zinc so the coral accent sits
+   naturally; status hues are shared by both themes and only shift lightness. */
+:root {
+  --radius: 0.75rem;
+  /* The height of each view's top bar. App.tsx's Toaster sits below it, never over its controls. */
+  --header-height: 3.5rem;
+
+  --background: oklch(0.99 0.002 60);
+  --foreground: oklch(0.2 0.01 50);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.66 0.17 38);
+  --primary-foreground: oklch(0.99 0.01 60);
+  --secondary: oklch(0.96 0.005 60);
+  --secondary-foreground: oklch(0.25 0.01 50);
+  --muted: oklch(0.965 0.004 60);
+  --muted-foreground: oklch(0.52 0.012 55);
+  --accent: oklch(0.955 0.02 45);
+  --accent-foreground: oklch(0.35 0.08 38);
+  --destructive: oklch(0.58 0.22 25);
+  --border: oklch(0.915 0.006 60);
+  --input: oklch(0.9 0.006 60);
+  --ring: oklch(0.66 0.17 38 / 0.5);
+
+  --sidebar: oklch(0.975 0.004 60);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-accent: oklch(0.94 0.008 60);
+
+  --success: oklch(0.62 0.15 155);
+  --warning: oklch(0.74 0.15 75);
+  --info: oklch(0.6 0.14 245);
+  --plan: oklch(0.58 0.17 290);
+
+  --mascot-body: oklch(0.7 0.16 35);
+  --mascot-shade: oklch(0.6 0.16 32);
+  --mascot-belly: oklch(0.86 0.08 50);
+  --mascot-coat: oklch(0.25 0.02 260);
+  --mascot-ink: oklch(0.2 0.02 40);
+  --mascot-baton: oklch(0.22 0.02 40);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.17 0.006 50);
+  --foreground: oklch(0.95 0.005 60);
+  --card: oklch(0.205 0.007 50);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.22 0.008 50);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.72 0.16 40);
+  --primary-foreground: oklch(0.18 0.02 40);
+  --secondary: oklch(0.25 0.008 50);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.24 0.007 50);
+  --muted-foreground: oklch(0.68 0.012 55);
+  --accent: oklch(0.28 0.03 40);
+  --accent-foreground: oklch(0.9 0.05 45);
+  --destructive: oklch(0.66 0.2 25);
+  --border: oklch(0.29 0.008 50);
+  --input: oklch(0.32 0.008 50);
+  --ring: oklch(0.72 0.16 40 / 0.5);
+
+  --sidebar: oklch(0.15 0.006 50);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-border: oklch(0.26 0.008 50);
+  --sidebar-accent: oklch(0.23 0.008 50);
+
+  --success: oklch(0.72 0.15 155);
+  --warning: oklch(0.8 0.14 80);
+  --info: oklch(0.72 0.12 245);
+  --plan: oklch(0.72 0.14 290);
+
+  --mascot-belly: oklch(0.82 0.08 50);
+  --mascot-coat: oklch(0.2 0.02 260);
+  --mascot-baton: oklch(0.95 0.01 80);
+}
+
+@theme inline {
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-plan: var(--plan);
+
+  --animate-sway: sway 4s ease-in-out infinite;
+  --animate-baton: baton 0.9s ease-in-out infinite;
+
+  @keyframes sway {
+    0%, 100% { transform: rotate(-2deg); }
+    50% { transform: rotate(2deg); }
+  }
+  @keyframes baton {
+    0%, 100% { transform: rotate(-14deg); }
+    50% { transform: rotate(16deg); }
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'ss01', 'cv11';
+  }
+}
+
+/* Rendered markdown (components/Markdown.tsx → shared/markdown.ts). */
+@layer components {
+  .md {
+    @apply text-[15px] leading-relaxed break-words;
+  }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md p { @apply my-2; }
+  .md h1 { @apply mt-5 mb-2 text-xl font-semibold tracking-tight; }
+  .md h2 { @apply mt-5 mb-2 text-lg font-semibold tracking-tight; }
+  .md h3, .md h4, .md h5, .md h6 { @apply mt-4 mb-1.5 text-base font-semibold; }
+  .md ul { @apply my-2 list-disc pl-5; }
+  .md ol { @apply my-2 list-decimal pl-5; }
+  .md li { @apply my-1; }
+  .md li::marker { @apply text-muted-foreground; }
+  .md a { @apply text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary; }
+  .md blockquote { @apply my-3 border-l-2 border-primary/40 pl-3 text-muted-foreground italic; }
+  .md hr { @apply my-4 border-border; }
+  .md strong { @apply font-semibold; }
+  .md :not(pre) > code { @apply rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.85em]; }
+  .md img { @apply my-2 max-w-full rounded-lg border; }
+  .md table { @apply my-3 block w-max max-w-full overflow-x-auto rounded-lg text-sm ring-1 ring-border; border-collapse: collapse; }
+  .md th { @apply bg-muted px-3 py-1.5 text-left font-medium; }
+  .md td { @apply border-t px-3 py-1.5 align-top; }
+  .md .md-code-wrap { @apply relative my-3 overflow-hidden rounded-xl border bg-muted/50; }
+  .md .md-code-wrap pre { @apply overflow-x-auto p-3 font-mono text-[13px] leading-6; }
+  .md .md-code-copy {
+    @apply absolute top-2 right-2 rounded-md border bg-background/80 px-2 py-0.5 text-[11px] text-muted-foreground opacity-0 backdrop-blur transition-opacity hover:text-foreground;
+  }
+  .md .md-code-wrap:hover .md-code-copy, .md .md-code-copy:focus-visible { @apply opacity-100; }
+  .md .md-code-copy.copied { @apply text-success opacity-100; }
+  .md .md-code-copy.failed { @apply text-destructive opacity-100; }
+  @media (hover: none) { .md .md-code-copy { @apply opacity-100; } }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+
+/* "Show mid-turn statistics" off: per-call usage lines stay rendered but hidden. */
+[data-call-usage='hidden'] [data-call-usage-line] { display: none; }
+
+/* Markdown headings stay body-size in a prompt and in every folded bubble body. */
+:is([data-user-text], [data-fold]) .md :is(h1, h2, h3, h4, h5, h6) { font-size: inherit; margin-top: 0.5rem; }

@@ -220,7 +220,7 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
 });
 
 test('snapshot carries lastContextUsage when the tail holds no message_start', async () => {
-  // The ctx chip is fed ONLY by message_start (public/usage.js) and the client
+  // The ctx chip is fed ONLY by message_start (shared/usage.ts) and the client
   // rebuilds its UsageTracker from the snapshot tail alone. A turn whose content
   // outruns the tail leaves every message_start below the window, so the reading
   // has to ride the frame as a field instead.
@@ -962,7 +962,9 @@ test('a redacted block with no counter frames carries no estimatedTokens', async
     // were renamed and never written. Its protection against that comes from
     // the `=== 450` assertion in the preceding test, the only place the
     // SERVER-side write of this field name is pinned (the client-side read is
-    // pinned separately in tests/thinking-tokens.test.mjs). Don't delete that
+    // pinned separately in web/src/conversation/blocks.test.tsx "redacted: plain
+    // label without tokens, ~N with live or stamped tokens, and later counts are
+    // ignored"). Don't delete that
     // one as redundant.
     assert.equal(red.estimatedTokens, undefined,
       'thinking_start cleared the stale counter — no carry-over from a prior block');

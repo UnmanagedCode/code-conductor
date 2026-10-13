@@ -21,7 +21,7 @@ import {
   addWorkspace as fsAddWorkspace,
   removeWorkspace as fsRemoveWorkspace,
   renameWorkspace as fsRenameWorkspace,
-  writeProjectMeta,
+  setProjectWorkspace as fsSetProjectWorkspace,
   tryResolveProject,
   placeOf,
   projectRootPlace,
@@ -42,11 +42,11 @@ import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
 import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
-import { buildApprovePrompt, buildRejectPrompt } from '../../public/planApproval.js';
-// DOM-free formatter shared with the UI question card (public/blocks.js
-// re-exports it) so an answer_question MCP answer is byte-identical to a UI
-// submit — one canonical function, no fork. See public/userQuestionAnswers.js.
-import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.js';
+import { buildApprovePrompt, buildRejectPrompt } from '../../shared/planApproval.ts';
+// DOM-free formatter shared with the UI question card
+// (web/src/conversation/cards.tsx) so an answer_question MCP answer is byte-identical to a UI
+// submit — one canonical function, no fork. See shared/userQuestionAnswers.ts.
+import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../shared/userQuestionAnswers.ts';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
 import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
@@ -76,7 +76,7 @@ import { isDeadStatus } from '../instances.ts';
 import { publicIdFor } from '../sessionLineage.ts';
 import { applySessionTitle } from '../sessionTitles.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
-import { buildForwardFrame } from '../../public/forwardFrame.js';
+import { buildForwardFrame } from '../../shared/forwardFrame.ts';
 import { contextReading } from '../sessionPrune.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
@@ -1167,7 +1167,8 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       // `callerId` is now the conductor's stable sessionId (from ?caller=) —
       // resolve it back to the conductor's live instanceId so the internal
       // Instance.callerInstanceId field stays an instanceId (consumers:
-      // public/subagents.js, conductedSubtreeOf — both match on instanceId).
+      // SubagentPanel in web/src/features/session/SessionPanels.tsx,
+      // conductedSubtreeOf — both match on instanceId).
       callerInstanceId: callerInst?.id ?? null,
     };
     inst = await instances.create(createArgs);
@@ -1678,9 +1679,9 @@ interface AnswerEntry {
 }
 
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
-// question card's submit (public/app.js onUserQuestionSubmit → formatUserQuestionAnswers):
+// question card's submit (web/src/conversation/cards.tsx → formatUserQuestionAnswers):
 // the consolidated answer goes out as a normal user turn, byte-identical to a UI
-// answer because both call the same public/userQuestionAnswers.js formatter.
+// answer because both call the same shared/userQuestionAnswers.ts formatter.
 // The worker is NOT necessarily idle here — the can_use_tool deny only ends the
 // turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
 // so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn,
@@ -1716,7 +1717,7 @@ export async function answerQuestion(
   for (let i = msgs.length - 1; i >= 0; i--) {
     const qs = msgs[i].questions;
     if (Array.isArray(qs) && qs.length > 0) {
-      questions = qs as Question[];
+      questions = qs;
       break;
     }
   }
@@ -2134,23 +2135,13 @@ export async function renameWorkspace({ oldName, newName }: { oldName: string; n
   return fsRenameWorkspace(oldName, newName);
 }
 
-// Assign or clear a project's workspace. `workspace: null` or "" clears
-// the field. Non-null values are auto-registered so freshly-named
-// workspaces appear in list_workspaces immediately, matching the REST
-// PUT handler's behaviour. Refuses .conduct — the hidden project can't
-// belong to a workspace.
+// Assign or clear a project's workspace: the twin of the REST PUT, both on
+// setProjectWorkspace (projects.ts). `workspace: null` or "" clears it, a new
+// name is auto-registered, and `.conduct` is refused.
 export async function setProjectWorkspace({ project, workspace }: { project: string; workspace?: string | null }) {
   if (typeof project !== 'string' || !project) throw new Error('project required');
-  if (project === CONDUCT_PROJECT_NAME) {
-    throw new Error('the .conduct project cannot be assigned to a workspace');
-  }
-  await getProject(project);
-  const target = (workspace === '' || workspace === undefined) ? null : workspace;
-  const meta = await writeProjectMeta(project, { workspace: target });
-  if (meta.workspace) {
-    try { await fsAddWorkspace(meta.workspace); } catch { /* validateWorkspace already ran */ }
-  }
-  return { project, workspace: meta.workspace ?? null };
+  const result = await fsSetProjectWorkspace(project, workspace);
+  return { project, workspace: result.workspace };
 }
 
 // Change which TARGET of its system a project is on, or clear it back to the
@@ -2319,7 +2310,7 @@ function renderMessageBody(m: ReconMessage, cappedText: string, questionsText?: 
     const header = m.planPath ? `--- plan · saved to ${m.planPath} ---` : '--- plan ---';
     segments.push({ pos: m.planSeq ?? Infinity, text: m.plan ? `${header}\n${m.plan}` : header });
   }
-  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: questionsText ?? renderQuestions(m.questions as Question[]) });
+  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: questionsText ?? renderQuestions(m.questions) });
   segments.sort((a, b) => a.pos - b.pos);
   return segments.map(s => s.text).join('\n');
 }
@@ -2341,7 +2332,7 @@ function forwardTruncationMarker(planPath: string | undefined): string {
 }
 
 // Compose a send_prompt({forward}) prompt. The frame layout (header, footer,
-// boundary lines, blank-line joins) is owned by public/forwardFrame.js, which
+// boundary lines, blank-line joins) is owned by shared/forwardFrame.ts, which
 // the conversation view parses back to render the forward bubble; this
 // function only renders the per-message bodies. They reuse renderMessageBody
 // — the SAME renderer get_recent_messages uses — so a forwarded plan/questions
@@ -2562,7 +2553,7 @@ function renderRecentMessages(
     const capped = capText(m.text ?? '', textCap);
     const plan = stringCap !== undefined && m.plan ? capText(m.plan, stringCap) : null;
     const questions = stringCap !== undefined && m.questions
-      ? capText(renderQuestions(m.questions as Question[]), stringCap) : null;
+      ? capText(renderQuestions(m.questions), stringCap) : null;
     const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text, questions?.text);
     const body = total > 1
       ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
@@ -2578,7 +2569,7 @@ function renderRecentMessages(
     if (m.plan || m.planPath) entry.hasPlan = true;
     if (plan?.truncated) entry.planTruncated = true;
     if (m.planPath) entry.planPath = m.planPath;
-    if (m.questions) entry.questionCount = (m.questions as Question[]).length;
+    if (m.questions) entry.questionCount = m.questions.length;
     if (questions?.truncated) entry.questionsTruncated = true;
     if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls, textCap));
     return entry;
@@ -2953,8 +2944,8 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult): TextP
 // cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
 // shell (bash or zsh) that produced it — see bundleShellKind(). Read-only
 // inspection only (see the tool description in mcp/tools.ts). `description`
-// is a display-layer field, rendered by the frontend (public/blocks.js) and
-// never read here.
+// is a display-layer field, rendered by the frontend
+// (web/src/conversation/format.ts) and never read here.
 export async function bashProject({ project, worktree, command, timeout }: {
   project: string; worktree?: string; command: string; timeout?: number;
 }) {
@@ -3002,7 +2993,8 @@ export async function enumerateRemotes({ system }: { system?: string }) {
 // through, so its named refusals are identical; what differs is that the subject
 // is the system itself rather than a project on it. Read-only inspection only
 // (see the tool description in mcp/tools.ts). `description` is a display-layer
-// field, rendered by the frontend (public/blocks.js) and never read here.
+// field, rendered by the frontend (web/src/conversation/format.ts) and never
+// read here.
 export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
   system: string; remoteId?: string | null; command: string; cwd?: string | null; timeout?: number;
 }) {

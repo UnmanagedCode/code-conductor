@@ -1,9 +1,9 @@
-// public/unreadMarks.js: the one unread fact the sidebar reads — the server's
+// shared/unreadMarks.ts: the one unread fact the sidebar reads — the server's
 // turn marks, from a live instance or a disk session row.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { unreadCount, unreadBySession } from '../public/unreadMarks.js';
+import { unreadCount, unreadBySession } from '../shared/unreadMarks.ts';
 
 // Invariant: the count is turnEndSeq − viewedSeq, missing counters read 0, and
 // a marker past the turn count never reads negative.

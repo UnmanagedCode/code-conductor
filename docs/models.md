@@ -336,7 +336,7 @@ purpose: each closes a distinct route, and none subsumes another.
   `POST /api/settings/models/custom` stores `true` unless the body carries an
   explicit `false`. Set `false` for a model that hard-errors on — or silently
   swallows — a user message written into a running turn. Settings → Models shows it
-  as the **Accepts mid-turn steering** checkbox (`#sm-custom-steer`, checked by
+  as the **Accepts mid-turn steering** checkbox (`#cm-steer`, checked by
   default); the list badges only the opt-out (`· no mid-turn steering`).
 
 ### The curated Ollama cloud catalog
@@ -544,7 +544,7 @@ the window the session already held (first bullet below).
 - **`addCustomModel` checks `contextWindow` only for a finite value > 0**, never
   against the model's real window.
 - **The fill readout does not clamp.** `currentFillPct` / `formatPct`
-  (`public/usage.js`) render an understated window as >100%. Triage a >100% chip by
+  (`shared/usage.ts`) render an understated window as >100%. Triage a >100% chip by
   reading the session's model and its window row first.
 
 A binding is exactly `{backend, model}`. The session record's `backend` (in
@@ -595,7 +595,7 @@ toward preserving the caller's id rather than mangling it.
 
 ## Settings → Backends
 
-Panel (`#settings-backends`): one card per registry row showing label, id, template
+Panel (`BackendsSection`, `web/src/features/settings/BackendsSection.tsx`; route `#settings/backends`): one card per registry row showing label, id, template
 (blank shows `claude`), its env pairs, and the custom models bound to it. Managed
 rows carry a **built in** badge, show their template and env read-only, and have no
 Remove. One shared add/edit form (id + label + template + an env textarea, one
@@ -623,73 +623,55 @@ through the normal dead-binding path.
 One row per tier, rendered **Frontier → Powerful → Balanced → Fast**, each with a
 **backend select** driven by the registry (a user-added row appears here with no code
 change), a **model select scoped to the chosen backend**, and a **default-effort
-select**, plus a per-tier **enable checkbox** and **default radio** (default falls
+select**, plus a per-tier **enable switch** and **default radio** (default falls
 back to the first enabled tier in order balanced → fast → powerful → frontier). The
-two binding selects come from one shared `buildBackendPicker` and the effort select
-from `buildEffortPicker` — both reused by the Roles rows.
+two binding selects come from one shared `BackendPicker` and the effort select
+from `EffortPicker` (both `web/src/features/settings/models/ModelsSection.tsx`) — both
+reused by the Roles rows.
 
 - **`claude`** → the Claude version list, one option per version. Each model has a
   single native context window, so there is no window sub-choice.
 - **any other backend** → a curated optgroup (built-in `ollama` row only) + a
-  **"My Models"** optgroup filtered to that backend; `(add a model below)` when it has
-  none.
+  **"My Models"** optgroup filtered to that backend; `(add a model under Custom models)`
+  when it has none.
 
 **Custom models** fieldset: label + backend select + model id + **required** context
 tokens; each row has **Edit** (loads the shared form with backend and model id locked) and **Remove**. **Roles** fieldset: one select per role listing every tier plus `Custom`
 (which reveals the shared backend/model pickers), a **default-effort select** whose
 first option reads `Inherit (<level>)` — the payload's `inheritsTo`, so a row is
 never opaque about what it will run at — a name-only add form for custom roles, an
-`×` remove on user rows, and a `via <plugin>` badge on plugin rows. A plugin role's
+`×` remove on user rows, and a badge naming the plugin on plugin rows. A plugin role's
 effort is user-settable like its binding, persisted under `models.roleEffort` by the
 namespaced id.
 
-Every mutation is a single POST that returns the full refreshed state, re-rendered
+Every mutation is a single request (POST, PATCH or DELETE) that returns the full refreshed state, re-rendered
 immediately — no restart. Endpoints: [protocol.md](protocol.md#rest-endpoints).
 
-**Grouping.** The tier list sits in a `fieldset.sm-group.sm-tiers` (legend `Capability
-tiers`), the same box **Roles** and **Custom models** use — at every width, not just narrow
-ones. Its 30px of horizontal padding + border is what sets the narrow breakpoint below.
+**Layout** (`TiersCard`, `RolesCard` and the `WIDE` table in
+`web/src/features/settings/models/ModelsSection.tsx`, which owns the breakpoints). Each list
+(`ul[data-testid="tier-list"]`, `ul[data-testid="role-list"]`) is a CSS container, so a row's
+form follows the width of its list, not the viewport or the sidebar.
 
-**Narrow widths.** Under the Models view's own `max-width: 850px` breakpoint each tier/role
-row restacks into a card: an identity line (enable checkbox + name, and for a tier the
-`default` radio) followed by one `caption + control` line per field. The captions come from
-a `label.sm-field` > `.sm-field-cap` wrapper around each control (`labelledField` in
-`public/settings.js`); above the breakpoint that wrapper is `display: contents` — the
-control itself stays the row's grid/flex item, so the wide six-column layout keeps its
-geometry — and the captions are the `.sm-family-header` row, which the narrow block hides.
-Selects in a card are capped at `max-width: 380px` so they don't stretch across an 850px card.
+- **Captions.** Every select sits under its own `<label for>` caption (`Captioned` → `Field`,
+  `web/src/features/settings/ui.tsx`), and carries a row-specific `aria-label` that contains
+  the caption's word (`Model for the Fast tier`).
+- **Tiers, wide.** Once the tier list's container passes its `WIDE.tier` breakpoint, each row
+  is one line on the grid `TiersCard` defines, under one shared column header, and the per-field captions and wrappers drop out (`display: contents`
+  plus a hidden caption).
+- **Tiers, narrow.** Below it each row stacks: an identity line (enable switch, name, and the
+  default radio with its own `Default` caption), then the backend select, then the model and
+  effort selects as two equal halves of one line.
+- **Roles.** Roles have no column header, so their captions show at every width. Past the
+  `WIDE.role` breakpoint a row is one line (name, binding, and for a **Custom** binding the
+  backend, model and effort); below it the name takes its own line and the selects wrap in two
+  columns. A user role's `×` remove sits on the name line when narrow and at the row's end
+  when wide.
+- **The model/effort pair.** Model and effort are wrapped together in one `[data-field-pair]`
+  element (`BackendPicker`), which goes `display: contents` on a one-line row. A tier-bound role
+  has no model select, so its effort stands alone and no pair is emitted.
 
-`model` and `effort` share one line, wrapped together in a `div.sm-field-pair` (`fieldPair`
-in `public/settings.js`, `display: contents` above the breakpoint like `.sm-field`) laid out
-as two `minmax(0, 1fr)` halves — 111px per select at 320px. Their captions stack **above**
-their controls rather than beside: side by side, a `4.5em` caption plus its gap leaves each
-select ~49px. A tier-bound role has no model field, so its effort takes the line alone and no
-pair is emitted. `.sm-field-pair .sm-field { grid-column: auto }` is load-bearing — the row's
-own `grid-column: 1 / -1` rules are descendant selectors and otherwise re-stack the pair.
-
-**Why 850 and not the app-wide 720.** The six-column tier grid never wraps and floors at a
-406px row box: `20+76+88+22+76+48` tracks + 5 gaps + padding + border, where the 22px is the
-model select's *intrinsic UA minimum* — it does not shrink to 0 despite `min-width: 0`, so
-past this the grid overflows rather than absorbing. Above 720px the sidebar is still present,
-so the content column is `W − 280 − 32`, minus a classic scrollbar's gutter where the host
-has one.
-
-That overflow is not what sets the breakpoint — it clears at a lower width. The binding
-constraint is the `1fr` model column staying readable (≥100px, `SELECT_MIN_W` in
-`harness/playwright/check-models-responsive.mjs`), which needs a 484px row box
-(`20+76+88+100+76+48` + 5 gaps + padding + border) → 546px content column → an **effective**
-width of 826px after the sidebar and column padding. Effective, because the gutter comes off
-too and its width belongs to the host, not to us: at `max-width: 850px` the grid's narrowest
-render is 851px, which holds ≥100px for any gutter up to 25px (17px → 108px, 20px → 105px).
-840 would have put a 17px-scrollbar host at 98px and failed the check with nothing changed.
-The app-wide `max-width: 720px` breakpoint is untouched.
-
-The `min-height: 44px` tap floor in that block is scoped to `#settings-models`, not to the
-rows, so under 850px it also enlarges the **Custom models** add form (label /
-model-id / context inputs, backend select, Add button: 30–32px → 44px), the **Roles** add
-form, the Cost dashboard button, and the two `.tt-toggle` checkbox labels. The enable
-checkbox and default radio keep their intrinsic ~13px box — it is their `.sm-field`
-wrapper that is 44px and takes the tap.
-
-Verified by `harness/playwright/check-models-responsive.mjs` (geometry, in a browser) +
-`tests/settings-models-field-labels.test.mjs` (the DOM contract).
+Verified by `web/e2e/settings-models-layout.spec.ts` (geometry in a browser, swept across
+viewports and sidebar widths: nothing overflows the page, the Settings column or the Models
+section; each Claude model's name fits its select; every select and default radio shows a
+caption its name contains; every control is uncovered and clear of its row's other
+controls) + `web/src/features/settings/models/fieldLabels.test.tsx` (the DOM contract).

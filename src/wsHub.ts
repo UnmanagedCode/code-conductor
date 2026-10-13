@@ -18,7 +18,7 @@
 //   { t: "status",         id, status, sessionId, mode, model, autoApprovePlan, playbookEnforcement,
 //                          interrupting, modelSwitch, modelSwitchFailure }
 //   { t: "closed",         id, code, signal }
-//   { t: "projects" }              // hint to re-fetch /api/projects
+//   { t: "projects" }              // hint to re-fetch /api/projects (also on every src/projectsChanged.ts signal)
 //   { t: "instances" }             // hint to re-fetch /api/instances
 //   { t: "ack",            reqId, ok, error? }
 //   { t: "error",          message }
@@ -26,6 +26,7 @@
 import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import { invalidateAll } from './projectsCache.ts';
+import { onProjectsChanged } from './projectsChanged.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
 import { isKnownTier } from './modelVersions.ts';
 import { getTierBackend, getTierEffort, isKnownBackend, isKnownBinding } from './appSettings.ts';
@@ -101,6 +102,14 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     // also covers worktree creation (which is tied to instance spawn).
     invalidateAll();
     broadcastAll(JSON.stringify({ t: 'instances' }));
+    broadcastAll(JSON.stringify({ t: 'projects' }));
+  });
+
+  // A committed change to the project list, a workspace or a worktree record,
+  // from any surface (src/projectsChanged.ts). The cached git facts may predate
+  // it — a new worktree is one of them.
+  onProjectsChanged(() => {
+    invalidateAll();
     broadcastAll(JSON.stringify({ t: 'projects' }));
   });
 
@@ -234,10 +243,10 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
               : [];
             // One frame backs THREE human surfaces — the composer, the plan
             // Approve/Reject card and the AskUserQuestion card — and mid-turn is
-            // the normal case for all three (public/app.js). On a model that
+            // the normal case for all three. On a model that
             // silently drops a mid-turn injection the text is parked behind a
             // block-edge stop instead. `reply(true)` stays in this tick either way:
-            // public/ws.js rejects a pending ack after 10s and sendCardAnswer's
+            // shared/ws.ts rejects a pending ack after 10s and sendCardAnswer's
             // onFail re-opens the card, so waiting on the unbounded stop would make
             // every deferred card answer falsely report failure.
             await inst.promptOrQueueSteer(String(msg.text ?? ''), atts);

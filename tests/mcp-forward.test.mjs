@@ -20,7 +20,7 @@ import {
   seedSessionJsonl, driveTurn,
 } from './helpers.mjs';
 import { localPlace } from '../src/projects.ts';
-import { parseForwardFrame, splitForwardedMessages } from '../public/forwardFrame.js';
+import { parseForwardFrame, splitForwardedMessages } from '../shared/forwardFrame.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -206,7 +206,7 @@ test('forward: multi-message payload uses bare boundaries, not get_recent_messag
   assert.ok(composed.includes('--- plan ---\nStep 1\nStep 2'), 'the inline plan body rides along in full');
   // Inter-message seam: a blank line between message 1's body and message 2's
   // boundary, not a bare newline — the second mutation site (buildForwardFrame's
-  // payload join in public/forwardFrame.js), distinct from the header/payload/footer assembly
+  // payload join in shared/forwardFrame.ts), distinct from the header/payload/footer assembly
   // join pinned in the test above.
   assert.ok(composed.includes('Step 2\n\n--- message 2/2 ---'),
     'the inter-message seam is a blank line, not a bare newline');
