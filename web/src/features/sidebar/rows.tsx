@@ -1,6 +1,6 @@
 import * as React from 'react';
 import {
-  ArrowUpIcon, FolderGit2Icon, FolderIcon, GitBranchIcon, GitCommitHorizontalIcon, LockIcon, PlusIcon, ServerIcon,
+  ArrowUpIcon, FolderGit2Icon, FolderIcon, GitBranchIcon, LockIcon, PlusIcon, ServerIcon,
   ServerOffIcon, Trash2Icon, XIcon, FileDiffIcon, ArchiveIcon, SquareIcon,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -325,9 +325,8 @@ export function WorktreeHead({ project, wt, readOnly = false, owner = null, owne
     >
       {chevron}
       <IconAction label="Commit history" onClick={() => { closeSidebarOnMobile(); openCommits(project, wt.worktreeName); }}>
-        <GitCommitHorizontalIcon className="size-3.5" />
+        <GitBranchIcon className="size-3.5" />
       </IconAction>
-      <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate font-mono text-xs" title={`${wt.branch ?? ''}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}`}>
         {wt.worktreeName}
       </span>
