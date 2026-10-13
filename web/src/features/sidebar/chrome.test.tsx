@@ -15,8 +15,7 @@ vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
 vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => null }));
 
 const { AppSidebar } = await import('./AppSidebar');
-const { SIDEBAR_WIDTH_STORAGE_KEY } = await import('./useSidebarWidth');
-const { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } = await import('./derive');
+const { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_WIDTH_STORAGE_KEY } = await import('./derive');
 const { closeDialog, dialogStore } = await import('@/features/dialogs/api');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);

@@ -1,7 +1,5 @@
 import * as React from 'react';
-import { clampSidebarWidth } from './derive';
-
-export const SIDEBAR_WIDTH_STORAGE_KEY = 'code-conductor:sidebar-width';
+import { clampSidebarWidth, SIDEBAR_WIDTH_STORAGE_KEY } from './derive';
 
 export function loadSidebarWidth(): number | null {
   try {

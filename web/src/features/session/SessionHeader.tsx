@@ -30,12 +30,9 @@ import { openPruneDialog, openRenameDialog, openStatsDialog, openSummaryDialog }
 import { confirmDialog, toast } from '@/ui/feedback';
 import { Dot } from '@/features/sidebar/rows';
 import { cn } from '@/lib/utils';
-import { useMediaQuery } from '@/lib/useMediaQuery';
+import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
-// A second spelling of Tailwind's `md` breakpoint, where App.tsx turns the
-// drawer into a sidebar column; it must change with any `--breakpoint-md` override.
-const WIDE_QUERY = '(min-width: 48rem)';
 export const RESTART_BUSY_TITLE = 'Switching restarts the session. Wait for the running turn to finish.';
 
 export const isEnforcing = (level?: string) => level !== 'warn';
