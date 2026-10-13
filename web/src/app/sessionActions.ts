@@ -1,6 +1,6 @@
 // User-triggered session / project / worktree mutations, shared by the
 // sidebar, the session header, the conversation and the commit-history view.
-import { apiFetch } from '@shared/http';
+import { ApiError, apiFetch } from '@shared/http';
 import { closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
 import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
 import { appStore, activeInstance } from '@/state/app';
@@ -58,22 +58,23 @@ export async function resumeSession({
   const token = userGesture ? gesture ?? beginGesture() : undefined;
   const wanted = () => (token === undefined ? activeId() === selected : !gestureOvertaken(token));
   try {
-    const r = await fetch('/api/instances', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: projectName, resume: sessionId, worktree: worktreeName || undefined }),
-    });
-    if (!r.ok) {
-      if (silent) {
+    let inst: Instance;
+    try {
+      inst = await apiFetch<Instance>('/api/instances', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project: projectName, resume: sessionId, worktree: worktreeName || undefined }),
+      });
+    } catch (e) {
+      if (silent && e instanceof ApiError) {
         // A concurrent resume (e.g. the server's restart restore) may already own it.
         await refreshInstances();
         const live = instances().find((i) => i.sessionId === sessionId);
         if (live && wanted()) selectInstance(live.id, { userGesture, gesture: token });
         return;
       }
-      throw new Error((await r.json()).error);
+      throw e;
     }
-    const inst = await r.json();
     await refreshProjects();
     await refreshInstances();
     if (wanted()) selectInstance(inst.id, { userGesture, gesture: token });
@@ -184,7 +185,9 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
   if (synthetic) {
     try {
       const inst = instances().find((i) => i.sessionId === sessionId);
-      if (inst) await fetch(`/api/instances/${encodeURIComponent(inst.id)}`, { method: 'DELETE' });
+      // A 404 is an instance already gone: the archive the user asked for.
+      if (inst) await apiFetch(`/api/instances/${encodeURIComponent(inst.id)}`, { method: 'DELETE' })
+        .catch((e) => { if (!(e instanceof ApiError && e.status === 404)) throw e; });
       if (inst && activeId() === inst.id) clearActive();
       emit('sessionsStale', { project: projectName, worktree: worktreeName ?? null });
       await refreshProjects();
@@ -198,12 +201,11 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
     ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}/archive`
     : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}/archive`;
   try {
-    let r = await fetch(base, { method: 'POST' });
-    if (r.status === 409) r = await fetch(`${base}?force=1`, { method: 'POST' });
-    if (!r.ok) {
-      let msg: string;
-      try { msg = (await r.json()).error; } catch { msg = `HTTP ${r.status}`; }
-      throw new Error(msg);
+    try {
+      await apiFetch(base, { method: 'POST' });
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 409)) throw e;
+      await apiFetch(`${base}?force=1`, { method: 'POST' });
     }
     const inst = instances().find((i) => i.sessionId === sessionId);
     if (inst && activeId() === inst.id) clearActive();
@@ -225,13 +227,13 @@ export async function removeWorktree(project: string, worktreeName: string) {
   if (!ok) return;
   const url = `/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(worktreeName)}`;
   try {
-    let r = await fetch(url, { method: 'DELETE' });
-    if (r.status === 409) {
-      const { error } = await r.json();
-      if (!(await confirmDialog({ title: 'Force remove?', description: error, confirmLabel: 'Force remove', destructive: true }))) return;
-      r = await fetch(`${url}?force=1`, { method: 'DELETE' });
+    try {
+      await apiFetch(url, { method: 'DELETE' });
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 409)) throw e;
+      if (!(await confirmDialog({ title: 'Force remove?', description: e.message, confirmLabel: 'Force remove', destructive: true }))) return;
+      await apiFetch(`${url}?force=1`, { method: 'DELETE' });
     }
-    if (!r.ok) throw new Error((await r.json()).error);
     await refreshProjects();
     await refreshInstances();
   } catch (e: any) {
@@ -240,18 +242,13 @@ export async function removeWorktree(project: string, worktreeName: string) {
 }
 
 export async function applySessionTitle(sessionId: string, title: string): Promise<string | null> {
-  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
+  const result = await apiFetch<{ title?: string | null } | null>(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: title.trim().slice(0, 100) }),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.error ?? `HTTP ${r.status}`);
-  }
-  const result = await r.json();
-  const list = instances().map((i) => (i.sessionId === sessionId ? { ...i, title: result.title ?? null } : i));
+  const list = instances().map((i) => (i.sessionId === sessionId ? { ...i, title: result?.title ?? null } : i));
   appStore.set({ instances: list });
   await refreshProjects();
-  return result.title ?? null;
+  return result?.title ?? null;
 }
 
 export type WorktreeTarget = { project: string; worktree: string };

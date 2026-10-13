@@ -14,6 +14,7 @@ vi.mock('@shared/capabilities', () => ({
 }));
 
 import { capabilities, loadCapabilities } from '@shared/capabilities';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { PlacementFields, usePlacement } from './placement';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import { chooseOption, selectOptions } from '@/test/radixSelect';
@@ -64,6 +65,26 @@ describe('placement', () => {
     await system();
     await flush();
     expect(await systemNote()).toMatch(/^Could not read the systems registry \(HTTP 500\)/);
+    expect(selectOptions(await system())).toEqual(['This machine']);
+  });
+
+  // A registry refused with a JSON error names the server's own reason, not its status.
+  it("an unreadable registry with a JSON error names the server's reason", async () => {
+    routeFetch({ 'GET /api/settings/systems': () => ({ status: 500, json: { error: 'systems.json is not valid JSON' } }) });
+    render(<Harness />);
+    await system();
+    await flush();
+    expect(await systemNote()).toMatch(/^Could not read the systems registry \(systems\.json is not valid JSON\)/);
+    expect(selectOptions(await system())).toEqual(['This machine']);
+  });
+
+  // A registry read with no server names the one unreachable message.
+  it('a registry read with no server names the unreachable message and offers only this machine', async () => {
+    routeFetch({ 'GET /api/settings/systems': () => new TypeError('Failed to fetch') });
+    render(<Harness />);
+    await system();
+    await flush();
+    expect(await systemNote()).toBe(`Could not read the systems registry (${SERVER_UNREACHABLE_MESSAGE}). Only this machine is offered.`);
     expect(selectOptions(await system())).toEqual(['This machine']);
   });
 
@@ -133,6 +154,20 @@ describe('placement', () => {
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await waitFor(() => expect(targetNote()).toContain('(HTTP 503)'));
+    expect(screen.queryByRole('combobox', { name: 'Target' })).toBeNull();
+  });
+
+  // A listing refused with a JSON error quotes the server's reason, not its status.
+  it("a listing refused with a JSON error quotes the server's reason", async () => {
+    routeFetch({
+      'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }),
+      'GET /api/systems/prod-box/remotes': () => ({ status: 500, json: { error: 'provider crashed' } }),
+    });
+    render(<Harness />);
+    await flush();
+    await chooseSystem('Prod box (prod-box)');
+    await findTargetText();
+    await waitFor(() => expect(targetNote()).toBe("Could not list the targets of system 'prod-box' (provider crashed). Type one."));
     expect(screen.queryByRole('combobox', { name: 'Target' })).toBeNull();
   });
 

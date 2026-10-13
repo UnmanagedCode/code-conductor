@@ -5,7 +5,8 @@ import { Badge } from '@/components/ui/badge';
 import { NativeSelect } from '@/components/ui/native-select';
 import { cn } from '@/lib/utils';
 import { SectionIntro, SettingsCard, Status, LogBox } from './ui';
-import { json, post, errText, streamAction, capLog, HttpError } from './api';
+import { ApiError } from '@shared/http';
+import { json, post, errText, streamAction, capLog } from './api';
 import { notifyPluginsChanged, type PluginsChange } from './pluginsSignal';
 import {
   backendLocalOnly, contributions, hookWarning, isUsable, metaBits, updateChange, updateWarning,
@@ -119,7 +120,7 @@ async function install(entry: LibraryEntry) {
     const w = hookWarning(entry.name, 'Installed', 'post-install', result?.postClone);
     pluginsStore.set(w ? { libNote: { error: true, text: w.text }, libTail: w.tail ?? '' } : { libNote: null });
   } catch (e) {
-    const tail = (e as HttpError).tail;
+    const tail = e instanceof ApiError ? e.tail : undefined;
     pluginsStore.set({ libNote: { error: true, text: `Installing ${entry.name} failed: ${errText(e)}` }, ...(tail ? { libTail: tail } : {}) });
   } finally {
     pluginsStore.set({ busyEntry: null, busy: false });
@@ -130,7 +131,7 @@ async function runUpdate(entry: LibraryEntry): Promise<{ ok: true; result: Updat
   try {
     return { ok: true, result: await streamAction(`/api/plugins/library/${entry.id}/update`, appendLive(entry.id)) };
   } catch (e) {
-    return { ok: false, error: errText(e), tail: (e as HttpError).tail };
+    return { ok: false, error: errText(e), tail: e instanceof ApiError ? e.tail : undefined };
   }
 }
 

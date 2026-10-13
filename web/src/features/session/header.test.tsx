@@ -528,6 +528,37 @@ describe('session menu', () => {
     }
   });
 
+  // Debug capture reports the debug dir on success; the route's own {ok:false, reason} 500 shows that reason; a non-JSON 502 shows its status, never a parse error.
+  it('Start debug capture: success names the dir, the route\'s refusal shows its reason, and an HTML 502 shows HTTP 502', async () => {
+    const answers = [
+      new Response(JSON.stringify({ ok: true, debugDir: '/tmp/dbg-7' })),
+      new Response(JSON.stringify({ ok: false, reason: 'failed to open debug streams' }), { status: 500 }),
+      new Response('<html>bad gateway</html>', { status: 502 }),
+    ];
+    const calls: [string, string | undefined][] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { calls.push([url, init?.method]); return answers.shift()!; }));
+    const ok = vi.spyOn(toast, 'success').mockImplementation(() => '' as any);
+    const err = vi.spyOn(toast, 'error').mockImplementation(() => '' as any);
+    try {
+      wrap(<SessionHeader inst={base()} onMenu={() => {}} />);
+      for (let i = 0; i < 3; i++) {
+        const menu = await openMenu();
+        await act(async () => { fireEvent.click(menuItem(menu, /debug capture/i)); });
+        await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      }
+      expect(calls).toEqual(Array(3).fill(['/api/instances/inst-1/debug', 'POST']));
+      expect(ok.mock.calls).toEqual([['Debug capture started', 'Writing to /tmp/dbg-7']]);
+      expect(err.mock.calls).toEqual([
+        ['Could not enable debug capture', 'failed to open debug streams'],
+        ['Could not enable debug capture', 'HTTP 502'],
+      ]);
+    } finally {
+      ok.mockRestore();
+      err.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('no menu for a dead session without a worktree; Resume replaces it', () => {
     wrap(<SessionHeader inst={base({ status: 'exited', displayStatus: 'exited' })} onMenu={() => {}} />);
     expect(screen.queryByRole('button', { name: 'Session actions' })).toBeNull();

@@ -7,6 +7,7 @@ import { useStore } from '@/state/createStore';
 import { themeStore } from '@/app/theme';
 import { mergeWorktree, setWorktreeLock, syncWorktree, type WorktreeTarget } from '@/app/sessionActions';
 import { cn } from '@/lib/utils';
+import { apiFetch } from '@shared/http';
 import { openReview, viewStore } from './api';
 import { ViewMessage, ViewShell } from './ViewShell';
 import { BAND_H, DOT_CY, DOT_R, LANE_W, computeGraph, laneColor, laneEmanates, laneX, type GraphRow } from './graph';
@@ -149,12 +150,7 @@ export function CommitsView() {
     const seq = ++loadSeq.current;
     setState((s) => (s.phase === 'loaded' ? s : { phase: 'loading' }));
     try {
-      const res = await fetch(`${apiBase}/commits`, { cache: 'no-store' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      const data: CommitsPayload = await res.json();
+      const data = await apiFetch<CommitsPayload>(`${apiBase}/commits`, { cache: 'no-store' });
       if (seq !== loadSeq.current) return;
       if (worktree) setLocked(data.locked === true);
       setState({ phase: 'loaded', data });

@@ -24,6 +24,7 @@
 // always reads the hash the frame is at and an outside change back to an
 // earlier subpath still reads as a change; an outside subpath change is
 // forwarded as `navigate`.
+import { ApiError, apiFetch, apiResponse, readApiBody } from '@shared/http';
 import { createSignal, createStore } from '@/state/createStore';
 import { replaceHash } from '@/state/route';
 
@@ -114,14 +115,8 @@ class PluginFrames {
   }
 
   private async api(method: string, path: string) {
-    const r = await fetch(path, { method, cache: 'no-store' });
-    const data = await r.json().catch(() => null);
-    if (!r.ok) {
-      const e: any = new Error(data?.error || `HTTP ${r.status}`);
-      e.tail = data?.tail;
-      e.status = r.status;
-      throw e;
-    }
+    const r = await apiResponse(path, { method, cache: 'no-store' });
+    const data = await readApiBody<any>(r);
     // A success whose body doesn't parse is a failed read, not an empty row.
     if (data === null) throw new Error(`unreadable response (HTTP ${r.status})`);
     return data;
@@ -133,7 +128,7 @@ class PluginFrames {
 
   /** Only a 404 (unknown id) evicts on a failed read: a blip must not end a call. */
   private async stillResident(id: string) {
-    try { return keepsResident(await this.statusOf(id)); } catch (e: any) { return e.status !== 404; }
+    try { return keepsResident(await this.statusOf(id)); } catch (e) { return !(e instanceof ApiError && e.status === 404); }
   }
 
   private evict(record: Record_) {
@@ -204,7 +199,8 @@ class PluginFrames {
       else this.mountShared(target);
     } catch (e: any) {
       if (token !== this.token) return;
-      this.setOverlay({ message: `${target.id}: ${e.message}${e.tail ? `\n\n${e.tail}` : ''}`, retry: target });
+      const tail = e instanceof ApiError && e.tail;
+      this.setOverlay({ message: `${target.id}: ${e.message}${tail ? `\n\n${tail}` : ''}`, retry: target });
     }
   }
 
@@ -271,9 +267,7 @@ export const catalogStore = createStore<{ apps: PluginRow[] }>({ apps: [] });
 
 export async function refreshCatalog() {
   try {
-    const r = await fetch('/api/plugins', { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const rows: PluginRow[] = (await r.json()).rows ?? [];
+    const rows = (await apiFetch<{ rows?: PluginRow[] } | null>('/api/plugins', { cache: 'no-store' }))?.rows ?? [];
     catalogStore.set({ apps: rows.filter((p) => p.enabled && p.hasFrontend) });
   } catch {
     catalogStore.set({ apps: [] });

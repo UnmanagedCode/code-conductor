@@ -15,11 +15,7 @@ export async function startConducting() {
   conductStore.set({ starting: true });
   const gesture = beginGesture();
   try {
-    const r = await fetch('/api/projects/.conduct/ensure', { method: 'POST' });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.error || `ensure failed (${r.status})`);
-    }
+    await apiFetch('/api/projects/.conduct/ensure', { method: 'POST' });
     const inst = await apiFetch<Instance>('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

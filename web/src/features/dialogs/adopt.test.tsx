@@ -23,6 +23,7 @@ import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openAdoptProjectDialog } from './api';
 import { refreshProjects } from '@/app/controller';
 import { loadCapabilities } from '@shared/capabilities';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { held, routeFetch, type Route, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listed, listedAnswer, pathNote, system, typePath } from '@/test/placementDriver';
 
@@ -158,7 +159,7 @@ describe('Add project dialog', () => {
     expect(screen.getByRole('button', { name: 'Replace' })).toBeTruthy();
   });
 
-  // An HTTP error's {error} and a thrown fetch's message each land on the form; neither refreshes the projects.
+  // An HTTP error's {error} and a network failure's one message each land on the form; neither refreshes the projects.
   it('an error status and a network failure each show their message on the form, and nothing is refreshed', async () => {
     let n = 0;
     stub({ 'POST /api/projects/external': () => (++n === 1 ? { status: 500, json: { error: 'boom' } } : new Error('offline')) });
@@ -169,7 +170,7 @@ describe('Add project dialog', () => {
     await waitFor(() => expect(alertText()).toBe('boom'));
     expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
     add();
-    await waitFor(() => expect(alertText()).toBe('offline'));
+    await waitFor(() => expect(alertText()).toBe(SERVER_UNREACHABLE_MESSAGE));
     expect(screen.getByRole('button', { name: 'Add project' })).toBeTruthy();
     expect(refreshProjects).not.toHaveBeenCalled();
   });

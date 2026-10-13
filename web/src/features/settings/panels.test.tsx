@@ -26,6 +26,7 @@ import { on } from '@/app/events';
 import { ConfirmHost, toast } from '@/ui/feedback';
 import { buildWakeStub } from '@shared/wakeCallback';
 import { readJsonl } from '@/conversation/testkit';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 
 const DRAFTS = [modelsDraftStore.get(), backendsDraftStore.get(), systemsDraftStore.get()] as const;
 
@@ -591,6 +592,17 @@ describe('Systems', () => {
     expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('x');
   });
 
+  // The Settings helper names a network failure with the one unreachable message, not the browser's wording.
+  it('a save with no server shows the unreachable message and keeps the typed values', async () => {
+    mockFetch({ 'GET /api/settings/systems': () => list, 'POST /api/settings/systems': () => { throw new TypeError('Failed to fetch'); } });
+    wrap(<SystemsSection />);
+    await screen.findByText('Box');
+    fireEvent.change(screen.getByLabelText('Id'), { target: { value: 'offline-box' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add system' }));
+    await screen.findByText(`Save failed: ${SERVER_UNREACHABLE_MESSAGE}`);
+    expect((screen.getByLabelText('Id') as HTMLInputElement).value).toBe('offline-box');
+  });
+
   const LOCAL = { id: 'local', label: 'This machine', managed: true, projects: [] };
   const PROD = { id: 'prod-box', label: 'Prod box', launch: ['ssh', 'prod', 'cc-provider'], projects: [{ name: 'shipping', remoteId: 'ctr-7' }] };
   const NAMED = { id: 'namedonly', label: 'Named only', launch: null, projects: [] };
@@ -766,6 +778,30 @@ describe('Archived', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
     await new Promise((r) => setTimeout(r, 30));
     expect(resumeSession).not.toHaveBeenCalled();
+  });
+
+  // A refused Restore toasts the server's own reason, and a Restore with no server the one unreachable message; neither resumes.
+  it('a Restore the server refuses shows its reason, and one with no server shows the unreachable message; neither resumes', async () => {
+    vi.mocked(resumeSession).mockClear();
+    const err = vi.spyOn(toast, 'error').mockImplementation(() => '' as any);
+    let n = 0;
+    mockFetch({
+      'GET /api/archived': () => groups,
+      'POST /api/projects/p/sessions/s1/restore': () => {
+        if (++n === 1) return { status: 500, json: { error: 'transcript locked by s7' } };
+        throw new TypeError('Failed to fetch');
+      },
+    });
+    wrap(<ArchivedSection />);
+    await screen.findByText(/archived sessions/);
+    fireEvent.click(screen.getByRole('button', { name: /^p/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
+    await waitFor(() => expect(err).toHaveBeenCalledWith('Restore failed', 'transcript locked by s7'));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    await waitFor(() => expect(err).toHaveBeenCalledWith('Restore failed', SERVER_UNREACHABLE_MESSAGE));
+    expect(err).toHaveBeenCalledTimes(2);
+    expect(resumeSession).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 
   it('an accepted Restore and an accepted Delete each mark every place\'s session list stale, exactly once', async () => {

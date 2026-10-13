@@ -49,12 +49,10 @@ function SummaryBody({ sessionId }: { sessionId: string }) {
     let live = true;
     (async () => {
       try {
-        const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summary`);
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+        const body = await apiFetch<any>(`/api/sessions/${encodeURIComponent(sessionId)}/summary`);
         if (!live) return;
-        setData(body.data ?? {});
-        setTier((cur) => pickTier(body.data ?? {}, null, cur));
+        setData(body?.data ?? {});
+        setTier((cur) => pickTier(body?.data ?? {}, null, cur));
       } catch (e: any) {
         if (live) setError(`Failed to load: ${e.message}`);
       } finally {
@@ -69,14 +67,12 @@ function SummaryBody({ sessionId }: { sessionId: string }) {
     setError('');
     setCost(null);
     try {
-      const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
+      const body = await apiFetch<any>(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ length: tier }),
       });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
-      setCost(typeof body.costUsd === 'number' ? body.costUsd : null);
-      setData(body.data ?? {});
-      setTier((cur) => pickTier(body.data ?? {}, cur, cur));
+      setCost(typeof body?.costUsd === 'number' ? body.costUsd : null);
+      setData(body?.data ?? {});
+      setTier((cur) => pickTier(body?.data ?? {}, cur, cur));
       setApplied('idle');
     } catch (e: any) {
       setError(`Generation failed: ${e.message}`);
@@ -180,10 +176,8 @@ function StatsBody({ sessionId }: { sessionId: string }) {
     let live = true;
     (async () => {
       try {
-        const r = await fetch(`/api/costs/session/${encodeURIComponent(sessionId)}`);
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
-        if (live) setStats(body);
+        const body = await apiFetch<any>(`/api/costs/session/${encodeURIComponent(sessionId)}`);
+        if (live) setStats(body ?? {});
       } catch (e: any) {
         if (live) setError(`Failed to load: ${e.message}`);
       }

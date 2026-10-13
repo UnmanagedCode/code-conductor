@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { capabilities, loadCapabilities } from '@shared/capabilities';
+import { apiFetch } from '@shared/http';
 
 export const REMOTE_OTHER = '__other__';
 const REMOTE_NONE = '__none__';
@@ -47,9 +48,7 @@ export function usePlacement() {
     let rows: SystemRow[] = [{ id: 'local', label: 'This machine', managed: true }];
     let note = '';
     try {
-      const r = await fetch('/api/settings/systems');
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      rows = (await r.json()).systems ?? rows;
+      rows = (await apiFetch<{ systems?: SystemRow[] } | null>('/api/settings/systems'))?.systems ?? rows;
     } catch (e: any) {
       note = `Could not read the systems registry (${e.message}). Only this machine is offered.`;
     }
@@ -65,19 +64,18 @@ export function usePlacement() {
     setRemoteNote(`Listing the targets system '${sys}' is configured for…`);
     let answer: any;
     try {
-      const res = await fetch(`/api/systems/${encodeURIComponent(sys)}/remotes`);
-      answer = res.ok ? await res.json() : { state: 'failed', reason: `HTTP ${res.status}` };
+      answer = await apiFetch(`/api/systems/${encodeURIComponent(sys)}/remotes`);
     } catch (e: any) {
       answer = { state: 'failed', reason: e.message };
     }
     if (mine !== remoteSeq.current || systemRef.current !== sys) return;
-    if (answer.state === 'listed') {
+    if (answer?.state === 'listed') {
       const ids: string[] = answer.remoteIds ?? [];
       setRemoteIds(ids);
       setRemoteMode('select');
       setRemoteSelectValue(remoteTextRef.current.trim() ? REMOTE_OTHER : '');
       setRemoteNote(ids.length ? '' : `System '${sys}' lists no configured targets right now. Choose Other… to type one.`);
-    } else if (answer.state === 'failed') {
+    } else if (answer?.state === 'failed') {
       setRemoteNote(`Could not list the targets of system '${sys}' (${answer.reason}). Type one.`);
     } else {
       setRemoteNote('');

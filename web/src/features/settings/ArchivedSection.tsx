@@ -9,6 +9,7 @@ import { formatAgo } from '@/lib/time';
 import { readablePrompt } from '@shared/promptPreview';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { SectionIntro, Status } from './ui';
+import { apiFetch } from '@shared/http';
 import { json, errText } from './api';
 
 export type ArchivedSession = { sessionId: string; title?: string | null; firstPrompt?: string | null; lastActivity?: number; size?: number; worktreeName?: string | null };
@@ -33,8 +34,8 @@ export function orderGroups(groups: ArchivedGroup[]) {
 /** The sidebar's cached per-scope session lists and the project/instance lists are stale after a restore or delete. */
 function archivedChanged() {
   emit('sessionsStale', null);
-  void refreshProjects();
-  void refreshInstances();
+  refreshProjects().catch((e) => console.warn('refreshProjects after an archive change failed:', e));
+  refreshInstances().catch((e) => console.warn('refreshInstances after an archive change failed:', e));
 }
 
 export function ArchivedSection() {
@@ -54,8 +55,7 @@ export function ArchivedSection() {
 
   async function restore(project: string, s: ArchivedSession) {
     try {
-      const r = await fetch(archivedSessionUrl(project, s.worktreeName, s.sessionId, '/restore'), { method: 'POST' });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      await apiFetch(archivedSessionUrl(project, s.worktreeName, s.sessionId, '/restore'), { method: 'POST' });
       archivedChanged();
       await load();
       // Jump straight to it: resuming selects it, which leaves Settings.
@@ -74,8 +74,7 @@ export function ArchivedSection() {
     });
     if (!ok) return;
     try {
-      const r = await fetch(archivedSessionUrl(project, s.worktreeName, s.sessionId, ''), { method: 'DELETE' });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      await apiFetch(archivedSessionUrl(project, s.worktreeName, s.sessionId, ''), { method: 'DELETE' });
       archivedChanged();
       await load();
     } catch (e) {

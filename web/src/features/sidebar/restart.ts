@@ -7,7 +7,8 @@
 import { createStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import { toast } from '@/ui/feedback';
-import { HttpError, streamAction } from '@/features/settings/api';
+import { ApiError, apiResponse } from '@shared/http';
+import { streamAction } from '@/features/settings/api';
 
 export const restartStore = createStore({ inProgress: false });
 
@@ -25,7 +26,7 @@ const PHASE_STATUS: Record<string, string> = {
 
 async function getBootId(fetchImpl: typeof fetch): Promise<string | null> {
   try {
-    const r = await fetchImpl('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+    const r = await apiResponse('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) }, fetchImpl);
     if (!r.ok) return null;
     return (await r.json())?.bootId ?? null;
   } catch {
@@ -39,7 +40,7 @@ export async function waitForReplacement(
 ): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await fetchImpl('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+      const r = await apiResponse('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) }, fetchImpl);
       if (r.ok) {
         const bootId = (await r.json().catch(() => null))?.bootId ?? null;
         if (priorBootId == null || (bootId && bootId !== priorBootId)) return true;
@@ -64,9 +65,10 @@ export async function performRestart(
       if (status) setStatus(status);
     }, 'POST', { body: { resume }, fetchImpl });
   } catch (e) {
-    // Only an answer from the server is a refusal; a dropped connection is the
-    // old process going down, so the wait below still applies.
-    if (e instanceof HttpError) {
+    // Only an answer from the server (an ApiError) is a refusal; a dropped
+    // connection (a NetworkError, or a stream cut mid-read) is the old process
+    // going down, so the wait below still applies.
+    if (e instanceof ApiError) {
       setStatus(`Restart refused: ${e.message} — cc is still running`);
       toast.error('Restart refused — cc is still running', e.message);
       restartStore.set({ inProgress: false });

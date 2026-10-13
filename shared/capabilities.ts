@@ -6,15 +6,15 @@
 // The platform's flags by name (Platform.capabilities, src/platform/).
 export type Capabilities = Record<string, boolean>;
 
+import { apiFetch } from './http.ts';
+
 let loaded: Capabilities | null = null;
 let pending: Promise<Capabilities | null> | null = null;
 
 export function loadCapabilities(): Promise<Capabilities | null> {
   pending ??= (async () => {
     try {
-      const r = await fetch('/api/health', { cache: 'no-store' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      loaded = (await r.json()).capabilities;
+      loaded = (await apiFetch<{ capabilities?: Capabilities } | null>('/api/health', { cache: 'no-store' }))?.capabilities ?? null;
       if (!loaded) throw new Error('no capabilities in the response');
     } catch (e) {
       console.warn('capabilities: could not read /api/health, will retry on next use:', e);

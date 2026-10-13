@@ -20,6 +20,7 @@ import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openProjectRemoteDialog } from './api';
 import { refreshProjects } from '@/app/controller';
 import { routeFetch } from '@/test/routeFetch';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import type { Project } from '@/state/types';
 
 const project = { name: 'shipping', path: '/app', system: 'prod-box', remoteId: 'ctr-7', worktrees: [] } as unknown as Project;
@@ -59,6 +60,32 @@ describe('change-target saving', () => {
     expect(document.querySelector('[data-blockers]')).toBeNull();
     expect(dialogStore.get().projectRemote).not.toBeNull();
     expect(refreshProjects).not.toHaveBeenCalled();
+  });
+
+  it('a save with no server shows the unreachable message, lists no blockers, keeps the dialog and refreshes nothing', async () => {
+    // A network failure has no body, so no blockers; the message is the one unreachable message.
+    routeFetch({ 'PUT /api/projects/shipping/remote': () => new TypeError('Failed to fetch') });
+    render(<DialogsHost />);
+    act(() => openProjectRemoteDialog(project));
+    fireEvent.change(await screen.findByLabelText('Target'), { target: { value: 'ctr-offline' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(SERVER_UNREACHABLE_MESSAGE);
+    expect(document.querySelector('[data-blockers]')).toBeNull();
+    expect(dialogStore.get().projectRemote).not.toBeNull();
+    expect(refreshProjects).not.toHaveBeenCalled();
+  });
+
+  it('an accepted save whose project refresh is refused shows the refusal and keeps the dialog', async () => {
+    // The refresh after an accepted PUT is caught like the PUT's own failure: its reason lands on the form.
+    vi.mocked(refreshProjects).mockRejectedValueOnce(new Error('store locked'));
+    routeFetch({ 'PUT /api/projects/shipping/remote': () => ({ json: { ok: true } }) });
+    render(<DialogsHost />);
+    act(() => openProjectRemoteDialog(project));
+    fireEvent.change(await screen.findByLabelText('Target'), { target: { value: 'ctr-9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('store locked');
+    expect(refreshProjects).toHaveBeenCalledTimes(1);
+    expect(dialogStore.get().projectRemote).not.toBeNull();
   });
 
   it('Cancel sends nothing and closes', async () => {

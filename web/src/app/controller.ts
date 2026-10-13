@@ -3,6 +3,7 @@
 // projects) and the first-connect anchor restore. UI features subscribe to the
 // stores and to app events; nothing here touches the DOM beyond the URL hash.
 import { bus, connect, send } from '@shared/ws';
+import { ApiError, apiFetch } from '@shared/http';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
 import { appStore, activeInstance, type AppState } from '@/state/app';
 import { syncRoute, routeStore } from '@/state/route';
@@ -56,10 +57,10 @@ function inStartOrder() {
 const projectReads = inStartOrder();
 export async function refreshProjects() {
   await projectReads(() => Promise.all([
-    fetch('/api/projects').then((r) => r.json()),
-    fetch('/api/workspaces').then((r) => r.json()).catch(() => []),
-    fetch('/api/projects/.conduct/sessions').then((r) => (r.ok ? r.json() : [])).catch(() => []),
-    fetch('/api/conductors/projects').then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+    apiFetch('/api/projects'),
+    apiFetch('/api/workspaces').catch(() => []),
+    apiFetch('/api/projects/.conduct/sessions').catch(() => []),
+    apiFetch('/api/conductors/projects').catch(() => ({})),
   ]), ([projects, workspaces, conductSessions, conductorSpawns]) => {
     appStore.set({
       projects: Array.isArray(projects) ? projects : [],
@@ -75,7 +76,7 @@ const instanceReads = inStartOrder();
 let instancesLanded = false;
 export async function refreshInstances() {
   await instanceReads(
-    () => fetch('/api/instances').then((r) => r.json()),
+    () => apiFetch<Instance[]>('/api/instances'),
     (data: Instance[]) => {
       instancesLanded = true;
       appStore.set({ instances: Array.isArray(data) ? data : [] });
@@ -142,8 +143,9 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
   const overtaken = () => (gesture === undefined ? appStore.get().activeId !== selected : gestureOvertaken(gesture));
   const clear = () => { if (clearAnchorOnMiss) { writeSessionAnchor(null); syncRoute(); } };
   try {
-    const r = await fetch(`/api/sessions/${encodeURIComponent(anchor)}/locate`);
-    const hit: { project: string; worktreeName: string | null; archived: boolean } | null = r.ok ? await r.json() : null;
+    // A refusal (no such session) is a miss; a network failure is the catch's.
+    const hit = await apiFetch<{ project: string; worktreeName: string | null; archived: boolean } | null>(`/api/sessions/${encodeURIComponent(anchor)}/locate`)
+      .catch((e) => { if (e instanceof ApiError) return null; throw e; });
     if (overtaken()) return true;
     if (!hit) { clear(); return false; }
     // An archived session is never resurrected silently from a link.
@@ -295,8 +297,9 @@ export function startController() {
     });
   });
 
-  listen('instances', () => { void refreshInstances(); });
-  listen('projects', () => { void refreshProjects(); });
+  // A refused read keeps the last list; the next hint retries.
+  listen('instances', () => { refreshInstances().catch((e) => console.warn('refreshInstances on a hint failed:', e)); });
+  listen('projects', () => { refreshProjects().catch((e) => console.warn('refreshProjects on a hint failed:', e)); });
 
   listen('close', () => {
     appStore.set({ connection: 'reconnecting', everDropped: true });
@@ -331,8 +334,9 @@ export function startController() {
     // A selection made before now subscribed on no socket, or on one that closed.
     subscribedSinceOpen = null;
     appStore.set({ connection: 'open' });
-    await refreshProjects();
-    await refreshInstances();
+    // A refused read keeps the last list; the open still restores and re-subscribes.
+    await refreshProjects().catch((e) => console.warn('refreshProjects on open failed:', e));
+    await refreshInstances().catch((e) => console.warn('refreshInstances on open failed:', e));
     if (firstConnect) {
       firstConnect = false;
       if (!appStore.get().activeId && routeStore.get().route.view === 'session') {

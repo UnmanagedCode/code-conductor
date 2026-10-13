@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ChevronRightIcon, CoinsIcon, RotateCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { apiFetch } from '@shared/http';
 import { formatDuration, fmtCost } from '@shared/usage';
 import { cn } from '@/lib/utils';
 import { ViewMessage, ViewShell } from './ViewShell';
@@ -254,9 +255,7 @@ export function CostsView() {
   const load = React.useCallback(async () => {
     setState({ phase: 'loading' });
     try {
-      const r = await fetch('/api/costs/summary', { cache: 'no-store' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setState({ phase: 'loaded', data: await r.json() });
+      setState({ phase: 'loaded', data: await apiFetch<CostsSummary>('/api/costs/summary', { cache: 'no-store' }) });
     } catch (e: any) {
       setState({ phase: 'error', error: e.message });
     }

@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { PathInput, PATH_PICKER_DEBOUNCE_MS, type Placement } from './PathInput';
 
 type Answer = { ok: boolean; entries?: string[]; links?: string[]; truncated?: boolean; max?: number; reason?: string; code?: string } | Error | { status: number };
@@ -470,12 +471,23 @@ describe('PathInput', () => {
   });
 
   // A network failure names its message in the note and is not cached.
-  it('a network error puts up a note and is not cached', async () => {
-    answers['/n'] = new Error('offline');
+  // An abort passes through the fetch helper as itself, so fetchDir drops it: no failure note replaces the in-flight one.
+  it('a rejected AbortError leaves the in-flight note and puts up no failure note', async () => {
+    answers['/x'] = new DOMException('The operation was aborted.', 'AbortError');
+    render(<Harness />);
+    type('/x/');
+    await settle();
+    expect(requests).toHaveLength(1);
+    expect(note()).toBe('Listing /x…');
+    expect(note()).not.toMatch(/Could not list/);
+  });
+
+  it('a network error puts up a note naming the unreachable server and is not cached', async () => {
+    answers['/n'] = new TypeError('Failed to fetch');
     render(<Harness />);
     type('/n/');
     await settle();
-    expect(note()).toMatch(/offline/);
+    expect(note()).toBe(`Could not list /n (${SERVER_UNREACHABLE_MESSAGE}).`);
     type('/n/a');
     await settle();
     expect(requests).toHaveLength(2);

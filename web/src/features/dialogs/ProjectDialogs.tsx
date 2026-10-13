@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import type { Project } from '@/state/types';
-import { apiFetch } from '@shared/http';
+import { ApiError, apiFetch } from '@shared/http';
 import { refreshProjects } from '@/app/controller';
 import { performProjectDelete } from '@/app/sessionActions';
 import { confirmDialog } from '@/ui/feedback';
@@ -76,9 +76,8 @@ function NewProjectBody() {
 
   React.useEffect(() => {
     void p.loadSystems();
-    fetch('/api/settings/conventions/project')
-      .then((r) => (r.ok ? r.json() : { conventions: [] }))
-      .then((d) => setConventions(d.conventions ?? []))
+    apiFetch<{ conventions?: Convention[] } | null>('/api/settings/conventions/project')
+      .then((d) => setConventions(d?.conventions ?? []))
       .catch(() => { /* no catalog: offer nothing */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -230,9 +229,8 @@ function AdoptBody() {
 
   React.useEffect(() => {
     void p.loadSystems();
-    fetch('/api/projects/suggestions')
-      .then(async (r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((s: Scan) => { setScan(s); setLocalNote(scanNote(s)); })
+    apiFetch<Scan>('/api/projects/suggestions')
+      .then((s) => { setScan(s); setLocalNote(scanNote(s)); })
       .catch((e) => setLocalNote(`Could not scan for directories (${e.message}). Type a path below.`));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -256,17 +254,15 @@ function AdoptBody() {
       if (target.remoteId) body.remoteId = target.remoteId;
     }
     if (onStaleRecord) body.onStaleRecord = onStaleRecord;
-    let res: Response; let data: any;
+    let data: any;
     try {
-      res = await fetch('/api/projects/external', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      data = await res.json().catch(() => null);
+      data = await apiFetch('/api/projects/external', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     } catch (e: any) {
       setStale(null); setError(e.message); setBusy(false); return;
     }
     setBusy(false);
-    if (!res.ok) { setStale(null); setError(data?.error ?? `HTTP ${res.status}`); return; }
     if (data?.ok === true) {
-      await refreshProjects();
+      try { await refreshProjects(); } catch (e: any) { setError(e.message); return; }
       closeDialog('adoptProject');
       return;
     }
@@ -465,18 +461,14 @@ function RemoteBody({ project }: { project: Project }) {
     setBusy(true);
     setError('');
     setBlockers([]);
-    let res: Response; let body: any;
     try {
-      res = await fetch(`/api/projects/${encodeURIComponent(project.name)}/remote`, {
+      await apiFetch(`/api/projects/${encodeURIComponent(project.name)}/remote`, {
         method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ remoteId: remote.trim() || null }),
       });
-      body = await res.json().catch(() => null);
     } catch (e: any) {
-      setError(e.message); setBusy(false); return;
-    }
-    setBusy(false);
-    if (!res.ok) {
-      setError(body?.error || `HTTP ${res.status}`);
+      setBusy(false);
+      setError(e.message);
+      const body: any = e instanceof ApiError ? e.body : null;
       if (body?.code === 'PROJECT_PLACEMENT_IN_USE') {
         setBlockers([
           ...(Array.isArray(body.instances) ? body.instances : []).map((id: string) => `Session ${id}: stop it`),
@@ -485,7 +477,8 @@ function RemoteBody({ project }: { project: Project }) {
       }
       return;
     }
-    await refreshProjects();
+    setBusy(false);
+    try { await refreshProjects(); } catch (e: any) { setError(e.message); return; }
     closeDialog('projectRemote');
   }
 
@@ -531,11 +524,7 @@ export function ProjectRemoteDialog() {
 // ── Workspace (new / edit) ───────────────────────────────────────────────
 
 async function call(url: string, method: string, body?: unknown) {
-  const r = await fetch(url, { method, headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
-  if (!r.ok) {
-    const b = await r.json().catch(() => ({}));
-    throw new Error(b.error ?? `HTTP ${r.status}`);
-  }
+  await apiFetch(url, { method, headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
 }
 
 /** The requests saving a workspace makes: rename, then add/remove members (or create an empty one). */
