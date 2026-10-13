@@ -2,7 +2,7 @@
 // source in stream order and the plan that closes the bubble; never thinking, tools,
 // questions or sub-agent output), the raw view every text block of the bubble follows,
 // a read-aloud of its own on every finished text block, and the same controls mid-stream, on a retired segment, in a replay, on a
-// lazy page and across a page seam. A copy announces its outcome while the button keeps
+// lazy page and across a page seam. The controls sit on the turn-end row directly below the bubble, else on a row of the bubble's own. A copy announces its outcome while the button keeps
 // its name.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
@@ -13,7 +13,7 @@ import { conversation } from '@/app/controller';
 import type { UiEvent } from '@shared/uiEvent';
 import { ConversationModel, userActionsForStatus, type AssistantNode, type TextNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
-import { groupsOf, text, thinking, tool } from './testkit';
+import { groupsOf, text, thinking, tool, turnEnd } from './testkit';
 
 let copied: string[] = [];
 let rejectCopy = false;
@@ -47,9 +47,25 @@ const bubbles = (root: HTMLElement) =>
 /** A sub-agent's bubbles, inside an outer one. */
 const subBubbles = (root: HTMLElement) =>
   ([...root.querySelectorAll('[data-item="assistant"]')] as HTMLElement[]).filter((b) => !!b.parentElement!.closest('[data-item="assistant"]'));
-/** The bubble's own copy button; null while the bubble has no controls. */
-const copyButton = (b: HTMLElement) =>
+/** The turn-end row right under the bubble in the DOM; null when something else (or nothing) follows it. */
+const turnEndBelow = (b: HTMLElement) => {
+  const next = b.nextElementSibling;
+  return next?.matches('[data-item="turn-end"]') ? (next as HTMLElement) : null;
+};
+const ownCopy = (b: HTMLElement) =>
   ([...b.querySelectorAll('button[aria-label="Copy message"]')] as HTMLButtonElement[]).find((x) => x.closest('[data-item="assistant"]') === b) ?? null;
+/** The bubble's copy button, in its own row or on the turn-end row below it; null while the bubble has no controls. */
+const copyButton = (b: HTMLElement) =>
+  ownCopy(b) ?? (turnEndBelow(b)?.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement | null) ?? null;
+/** Where the bubble's controls are. */
+const placement = (b: HTMLElement): 'bubble' | 'turn-end' | 'none' =>
+  ownCopy(b) ? 'bubble' : turnEndBelow(b)?.querySelector('button[aria-label="Copy message"]') ? 'turn-end' : 'none';
+/** The bubble holds no row of controls: no copy or raw button, and every body child is one of its own blocks. */
+function noOwnRow(b: HTMLElement, node: AssistantNode) {
+  const ownRaw = ([...b.querySelectorAll('button')] as HTMLButtonElement[]).filter((x) => /^Show (raw text|rendered markdown)$/.test(x.getAttribute('aria-label') ?? '') && x.closest('[data-item="assistant"]') === b);
+  expect(ownCopy(b) ?? ownRaw[0] ?? null, 'the bubble holds no copy or raw button').toBeNull();
+  expect(b.querySelector('[data-assistant-body]')!.children.length, 'every body child is one of the bubble\'s blocks').toBe(node.children.length);
+}
 /** The bubble's controls: the row holding its copy button. */
 const controls = (b: HTMLElement) => {
   const copy = copyButton(b);
@@ -549,5 +565,190 @@ describe('replay and lazy pages', () => {
     expect(bubbles(root), 'one merged bubble').toHaveLength(1);
     expect(names(bubbles(root)[0])).toEqual(OFFERS_RAW);
     expect(await copyOf(bubbles(root)[0])).toBe('A\n\nB');
+  });
+});
+
+describe('on the turn-end row', () => {
+  const kinds = (m: ConversationModel) => m.items.map((i) => i.type);
+
+  it("a turn-end row directly under a text bubble carries its raw toggle and copy, and the bubble keeps no row of its own", async () => {
+    const { m, root } = await show([...text('m1', 0, 'one **a**'), ...text('m1', 1, 'two'), turnEnd()]);
+    expect(kinds(m), 'fixture check').toEqual(['assistant', 'turn_end']);
+    const b = bubbles(root)[0];
+    const row = turnEndBelow(b)!;
+    expect(row, 'the row is the next sibling').not.toBeNull();
+    expect(row.textContent, 'fixture check: the row still shows the turn end').toContain('Done');
+    expect(placement(b)).toBe('turn-end');
+    expect(names(b)).toEqual(OFFERS_RAW);
+    noOwnRow(b, m.items[0] as AssistantNode);
+    expect(await copyOf(b)).toBe(ConversationModel.assistantCopyText(m.items[0] as AssistantNode));
+    expect(copied.at(-1)).toBe('one **a**\n\ntwo');
+    await view(b, 'raw');
+    expect(b.textContent, 'raw from the row flips the bubble').toContain('one **a**');
+    expect(names(b), 'and the row offers the way back').toEqual(OFFERS_RENDERED);
+    await view(b, 'rendered');
+    expect(names(b)).toEqual(OFFERS_RAW);
+  });
+
+  it("mid-stream the bubble holds its controls, and the turn's end moves them onto the row with the view the reader set", async () => {
+    const { m, root } = await show([{ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'part **x**' }]);
+    const b = bubbles(root)[0];
+    expect(placement(b)).toBe('bubble');
+    await view(b, 'raw');
+    await live(m, [{ kind: 'text_end', msgId: 'm1', blockIdx: 0 }, turnEnd()]);
+    expect(kinds(m), 'fixture check').toEqual(['assistant', 'turn_end']);
+    expect(placement(b)).toBe('turn-end');
+    expect(names(b), 'the view the reader set is kept').toEqual(OFFERS_RENDERED);
+    expect(b.textContent).toContain('part **x**');
+    expect(await copyOf(b)).toBe('part **x**');
+  });
+
+  it('read-aloud stays with each text block when the controls move; the turn-end row holds none', async () => {
+    act(() => { voiceStore.set({ ttsAvailable: true }); });
+    const { m, root } = await show([...text('m1', 0, 'ALPHA'), ...text('m1', 1, 'BRAVO'), turnEnd()]);
+    expect(kinds(m), 'fixture check').toEqual(['assistant', 'turn_end']);
+    const b = bubbles(root)[0];
+    expect(placement(b)).toBe('turn-end');
+    expect(blockSpeech(b)).toEqual(['ALPHA', 'BRAVO']);
+    expect(turnEndBelow(b)!.querySelector('button[aria-label="Read aloud"]')).toBeNull();
+  });
+
+  it('in a turn split by a question card and its answer, only the bubble directly above the row moves', async () => {
+    const q = [{ question: 'Q?', header: 'h', options: [{ label: 'x', description: 'y' }, { label: 'z', description: 'w' }] }];
+    const { m, root } = await show([
+      ...text('m1', 0, 'A'),
+      { kind: 'user_question', toolUseId: 'q1', questions: q },
+      { kind: 'user_echo', text: 'x', userIndex: 0, questionAnswer: { toolUseId: 'q1', questions: q } },
+      ...text('m2', 0, 'B'),
+      turnEnd(),
+    ]);
+    expect(kinds(m), 'fixture check').toEqual(['assistant', 'question', 'user', 'assistant', 'turn_end']);
+    const [a, b] = bubbles(root);
+    expect(placement(a)).toBe('bubble');
+    expect(placement(b)).toBe('turn-end');
+    expect(await copyOf(a)).toBe('A');
+    expect(await copyOf(b)).toBe('B');
+    await view(b, 'raw');
+    expect(names(b)).toEqual(OFFERS_RENDERED);
+    expect(names(a), 'A keeps its view').toEqual(OFFERS_RAW);
+  });
+
+  it('a turn whose last bubble is tool-only has a turn-end row with no controls, and the text bubble split off above keeps its own', async () => {
+    const q = [{ question: 'Q?', header: 'h', options: [{ label: 'x', description: 'y' }, { label: 'z', description: 'w' }] }];
+    const { m, root } = await show([
+      ...text('m1', 0, 'A'),
+      { kind: 'user_question', toolUseId: 'q1', questions: q },
+      { kind: 'user_echo', text: 'x', userIndex: 0, questionAnswer: { toolUseId: 'q1', questions: q } },
+      ...tool('m2', 0, 'tu1', 'Bash', { input: { command: 'ls' }, result: 'out' }),
+      turnEnd(),
+    ]);
+    expect(kinds(m), 'fixture check').toEqual(['assistant', 'question', 'user', 'assistant', 'turn_end']);
+    const [a, b] = bubbles(root);
+    expect(placement(a)).toBe('bubble');
+    expect(placement(b)).toBe('none');
+    expect(root.querySelector('[data-item="turn-end"] button[aria-label="Copy message"]')).toBeNull();
+  });
+
+  it('an interrupt note between the bubble and its turn end leaves the controls on the bubble', async () => {
+    const { m, root } = await show([...text('m1', 0, 'A'), { kind: 'system', subtype: 'soft_interrupted', data: { text: 'user interrupt' } }, turnEnd({ subtype: 'error_during_execution' })]);
+    expect(kinds(m), 'fixture check').toEqual(['assistant', 'system', 'turn_end']);
+    expect(root.querySelector('[data-subtype="soft_interrupted"]'), 'fixture check: the note renders').not.toBeNull();
+    const b = bubbles(root)[0];
+    expect(placement(b)).toBe('bubble');
+    expect(root.querySelector('[data-item="turn-end"] button[aria-label="Copy message"]')).toBeNull();
+  });
+
+  it('a repeated usage line the list drops sits behind a rendered one, so a bubble above them keeps its own row exactly as the DOM shows', async () => {
+    const usage = (): UiEvent => ({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.9 } } });
+    const { m, root } = await show([...text('m1', 0, 'A'), usage(), usage(), turnEnd()]);
+    expect(kinds(m), 'fixture check: both usage lines are items').toEqual(['assistant', 'system', 'system', 'turn_end']);
+    expect(root.querySelectorAll('[data-subtype="rate_limit_event"]'), 'fixture check: one of them is dropped at render').toHaveLength(1);
+    const b = bubbles(root)[0];
+    expect(b.nextElementSibling, 'the rendered usage line, not the turn end, follows the bubble').not.toBe(turnEndBelow(b));
+    expect(placement(b)).toBe('bubble');
+  });
+
+  it('a turn the process exits before ending leaves the controls on the bubble', async () => {
+    const { m, root } = await show([...text('m1', 0, 'A'), { kind: 'system', subtype: 'exit', data: { code: 1, signal: null } }]);
+    expect(kinds(m), 'fixture check: no turn end').not.toContain('turn_end');
+    const b = bubbles(root)[0];
+    expect(placement(b)).toBe('bubble');
+    expect(await copyOf(b)).toBe('A');
+  });
+
+  it('on a retired segment the row keeps copy and raw enabled and working', async () => {
+    const m = new ConversationModel({ segmentId: 'A' });
+    m.setCurrentSegment('A');
+    const { root } = await show([{ kind: 'user_echo', text: 'hi', userIndex: 0 }, ...text('m1', 0, 'reply **r**'), turnEnd()], m);
+    act(() => { m.setCurrentSegment('B'); });
+    await flush();
+    const b = bubbles(root)[0];
+    expect(placement(b), 'fixture check').toBe('turn-end');
+    expect(controls(b).map((x) => [x.getAttribute('aria-label'), x.disabled])).toEqual([['Show raw text', false], ['Copy message', false]]);
+    expect(await copyOf(b)).toBe('reply **r**');
+    await view(b, 'raw');
+    expect(b.textContent).toContain('reply **r**');
+  });
+
+  it('a snapshot replay and a lazy page put the controls on the same turn-end row as the live stream', async () => {
+    const events = (): UiEvent[] => [...text('m1', 0, 'first **a**'), ...tool('m1', 1, 'tu1', 'Bash', { input: { command: 'ls' }, result: 'out' }), ...text('m1', 2, 'second'), turnEnd()];
+    const streamed = new ConversationModel();
+    for (const ev of events()) streamed.apply(ev);
+    const replayed = new ConversationModel();
+    replayed.applyEvents(events());
+    const paged = new ConversationModel().renderPage(events(), null, null);
+    for (const [path, m] of [['live', streamed], ['replay', replayed], ['lazy page', paged]] as const) {
+      const r = renderModel(m);
+      await flush();
+      const b = bubbles(r.root)[0];
+      expect(placement(b), `${path}: placement`).toBe('turn-end');
+      expect(await copyOf(b), `${path}: copy`).toBe('first **a**\n\nsecond');
+      await view(b, 'raw');
+      expect(b.textContent, `${path}: raw`).toContain('first **a**');
+      r.unmount();
+    }
+  });
+
+  it('a turn-end row at the head of the live tail carries the controls of the page bubble spliced right above it', async () => {
+    const { m, root } = await show([turnEnd(), { kind: 'user_echo', text: 'next', userIndex: 1 }, ...text('mB', 0, 'A2')]);
+    expect(m.leadingAssistantWrap, 'fixture check: the live tail has no leading wrap').toBeNull();
+    act(() => { m.prependPage(m.renderPage([{ kind: 'user_echo', text: 'prompt', userIndex: 0 }, ...text('mA', 0, 'A')], null, null), m.leadingAssistantWrap); });
+    await flush();
+    expect(kinds(m), 'fixture check').toEqual(['user', 'assistant', 'turn_end', 'user', 'assistant']);
+    const [a, a2] = bubbles(root);
+    expect(placement(a)).toBe('turn-end');
+    expect(await copyOf(a)).toBe('A');
+    expect(placement(a2)).toBe('bubble');
+  });
+
+  it('a tool-only lower half under a turn-end row gains controls on that row when a page above merges text into it', async () => {
+    const { m, root } = await show([...tool('mL', 0, 'tuL', 'Bash', { input: { command: 'pwd' }, result: 'out' }), turnEnd()]);
+    expect(placement(bubbles(root)[0]), 'precondition').toBe('none');
+    act(() => {
+      m.prependPage(m.renderPage([{ kind: 'user_echo', text: 'prompt', userIndex: 0 }, ...text('mU', 0, 'A'), ...tool('mU', 1, 'tuU', 'Bash', { input: { command: 'ls' }, result: 'out' }), ...text('mU', 2, 'B')], null, null), m.leadingAssistantWrap);
+    });
+    await flush();
+    expect(bubbles(root), 'one merged bubble').toHaveLength(1);
+    expect(placement(bubbles(root)[0])).toBe('turn-end');
+    expect(await copyOf(bubbles(root)[0])).toBe('A\n\nB');
+  });
+
+  it("a sub-agent bubble keeps its own controls inside an outer turn whose controls moved to the turn-end row", async () => {
+    const { root } = await show([
+      { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
+      { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
+      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
+      ...text('m1', 1, 'OUTER'),
+      turnEnd(),
+    ]);
+    const outer = bubbles(root)[0];
+    expect(placement(outer)).toBe('turn-end');
+    fireEvent.click(outer.querySelector('[data-group-trigger]') as HTMLElement);
+    await flush();
+    const [sub] = subBubbles(root);
+    expect(sub, 'fixture check: the sub bubble is on screen').toBeTruthy();
+    expect(placement(sub)).toBe('bubble');
+    expect(await copyOf(sub)).toBe('S');
+    expect(names(sub)).toEqual(OFFERS_RAW);
   });
 });
