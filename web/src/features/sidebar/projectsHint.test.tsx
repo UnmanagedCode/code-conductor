@@ -2,9 +2,8 @@
 // list and the sidebar shows exactly what the read returned — a created project
 // gains a row, a deleted one loses it, a workspace move or rename regroups, a
 // workspace with no members shows while it is registered —
-// while any other message re-reads nothing, and a read that answers after a
-// newer one has landed never overwrites it (one answering while the newer is
-// still in flight is applied).
+// while any other message re-reads nothing, and a burst of hints reads once in
+// flight plus once trailing, ending on the trailing read's list.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, waitFor } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -141,32 +140,32 @@ describe('the projects hint in the Projects lens', () => {
     expect(projectReads).toBe(1);
   });
 
-  it('a read that answers after a newer one has landed does not overwrite it', async () => {
-    // Invariant: two hints in a burst end on the newer read's list whatever order the reads answer in.
+  it('two hints in a burst read once in flight and once trailing, never two at once', async () => {
+    // Invariant: the second hint's read starts only when the first has landed, so the reads cannot answer out of order.
     const reads: { resolve: (rows: Row[]) => void }[] = [];
     held = reads;
     await hint('projects');
     await hint('projects');
-    await waitFor(() => expect(reads).toHaveLength(2));
-    const [older, newer] = reads;
-    newer.resolve([{ name: 'alpha', workspace: null }, { name: 'beta', workspace: null }]);
-    await waitFor(() => expect(rows()).toEqual(['alpha', 'beta']));
-    older.resolve([{ name: 'alpha', workspace: null }]);
     await settle();
-    expect(rows()).toEqual(['alpha', 'beta']);
+    expect(reads).toHaveLength(1);
+    reads[0].resolve([{ name: 'alpha', workspace: null }]);
+    await waitFor(() => expect(reads).toHaveLength(2));
+    reads[1].resolve([{ name: 'alpha', workspace: null }]);
+    await settle();
+    expect(reads).toHaveLength(2);
   });
 
-  it('a read that answers while a newer one is still in flight is applied, and the newer one lands over it', async () => {
-    // Invariant: a read is dropped only once a newer read has landed, never merely because a newer one started.
+  it('the in-flight read\'s list is applied when it lands, and the trailing read\'s list lands over it', async () => {
+    // Invariant: the burst ends on the trailing (newest) read's list, with the older list shown meanwhile.
     const reads: { resolve: (rows: Row[]) => void }[] = [];
     held = reads;
     await hint('projects');
     await hint('projects');
-    await waitFor(() => expect(reads).toHaveLength(2));
-    const [older, newer] = reads;
-    older.resolve([{ name: 'alpha', workspace: null }, { name: 'beta', workspace: null }]);
+    await waitFor(() => expect(reads).toHaveLength(1));
+    reads[0].resolve([{ name: 'alpha', workspace: null }, { name: 'beta', workspace: null }]);
     await waitFor(() => expect(rows()).toEqual(['alpha', 'beta']));
-    newer.resolve([{ name: 'alpha', workspace: null }, { name: 'gamma', workspace: null }]);
+    await waitFor(() => expect(reads).toHaveLength(2));
+    reads[1].resolve([{ name: 'alpha', workspace: null }, { name: 'gamma', workspace: null }]);
     await waitFor(() => expect(rows()).toEqual(['alpha', 'gamma']));
   });
 });

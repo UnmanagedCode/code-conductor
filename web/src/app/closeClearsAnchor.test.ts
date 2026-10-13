@@ -122,16 +122,16 @@ describe('closing the session the anchor names', () => {
   it('a session picked before the first connect\'s restore starts and then stopped is not resumed when the first list lands, and nothing is selected', async () => {
     history.replaceState(null, '', '/#session=s-a');
     const b = await boot();
-    await b.open();
     await b.hint();
-    await b.land(2, [A, B]);
+    await b.open();
+    await b.land(1, [A, B]);
     b.c.selectInstance('iB', { userGesture: true });
     const stopped = b.stopIdle(B);
     await b.flush();
-    expect(b.reads, 'fixture check: the first connect\'s read is still held behind the stop\'s').toHaveLength(3);
+    expect(b.reads, 'fixture check: the first connect\'s read is in flight, the stop\'s refresh waits behind it').toHaveLength(2);
+    await b.land(2, [A]);
     await b.land(3, [A]);
     await stopped;
-    await b.land(1, [A]);
     expect(b.locates()).toBe(0);
     expect(b.posts()).toBe(0);
     expect(b.active()).toBeNull();

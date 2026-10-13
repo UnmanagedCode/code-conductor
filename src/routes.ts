@@ -355,6 +355,10 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     claudeAuthStatus?: (() => Promise<ClaudeAuthStatus>) | null;
   } = {}): express.Router {
   const r = express.Router();
+  // Every /api body is live state: no cache entry for concurrent identical GETs
+  // to queue on. First, so even a body-parse refusal carries it; a route that
+  // sets its own Cache-Control later overrides this.
+  r.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   r.use(express.json({ limit: '1mb' }));
   // Features the host platform turns off are refused here, before their handlers.
   r.use(['/settings/systems', '/systems', '/projects/:name/remote'], requireCapability(capabilities, 'remoteSystems'));

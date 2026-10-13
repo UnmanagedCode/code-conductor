@@ -4,7 +4,7 @@
 import { ApiError, apiFetch, apiResponse, readApiBody } from '@shared/http';
 
 export async function json<T = any>(url: string, init?: Omit<RequestInit, 'body'> & { body?: any }): Promise<T> {
-  const opts: RequestInit = { cache: 'no-store', ...(init as RequestInit) };
+  const opts: RequestInit = { ...(init as RequestInit) };
   if (init?.body !== undefined && typeof init.body !== 'string') {
     opts.body = JSON.stringify(init.body);
     opts.headers = { 'content-type': 'application/json', ...(init.headers || {}) };
@@ -33,7 +33,6 @@ export async function streamAction(
 ): Promise<any> {
   const r = await apiResponse(path, {
     method,
-    cache: 'no-store',
     ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
   }, fetchImpl);
   const ct = r.headers.get('content-type') || '';

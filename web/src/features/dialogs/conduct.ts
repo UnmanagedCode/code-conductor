@@ -1,9 +1,11 @@
 // Conduct: spawn a conductor straight away (no dialog) — a temp session in the
 // hidden `.conduct` project, code mode, on the Conductor role. The server
-// resolves the role's current model and default effort.
+// ensures the project and resolves the role's current model and default effort.
+// The created instance is selected as soon as the create answers; the project
+// lists refresh behind it.
 import { apiFetch } from '@shared/http';
 import { createStore } from '@/state/createStore';
-import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
+import { adoptInstance, refreshProjects, selectInstance } from '@/app/controller';
 import { beginGesture, gestureOvertaken } from '@/app/gestures';
 import { toast } from '@/ui/feedback';
 import type { Instance } from '@/state/types';
@@ -15,15 +17,14 @@ export async function startConducting() {
   conductStore.set({ starting: true });
   const gesture = beginGesture();
   try {
-    await apiFetch('/api/projects/.conduct/ensure', { method: 'POST' });
     const inst = await apiFetch<Instance>('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' }),
     });
-    await refreshProjects();
-    await refreshInstances();
+    adoptInstance(inst);
     if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });
+    refreshProjects().catch((e) => console.warn('refreshProjects after Conduct failed:', e));
   } catch (e: any) {
     toast.error('The conductor failed to start', e.message);
   } finally {

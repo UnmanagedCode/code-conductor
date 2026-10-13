@@ -79,27 +79,27 @@ beforeEach(() => { history.replaceState(null, '', '/'); });
 afterEach(() => { stop?.(); stop = null; vi.restoreAllMocks(); consumeStashedAnchor(); });
 
 describe('subscribing the active session when the socket opens', () => {
-  it('a session picked before the first list read lands is subscribed once', async () => {
+  it('a session picked before the first connect\'s own list read lands is subscribed once', async () => {
     const b = await boot();
-    await b.open();
     await b.hint();
-    await b.land(2, [A, B]);
+    await b.open();
+    await b.land(1, [A, B]);
     b.c.selectInstance('iB', { userGesture: true });
     expect(b.subscribes(), 'fixture check: the pick subscribed itself').toEqual([['iB', 1]]);
-    await b.land(1, [A, B]);
+    await b.land(2, [A, B]);
     expect(b.subscribes()).toEqual([['iB', 1]]);
   });
 
-  it('a session picked before the first list read lands reads its earlier history once', async () => {
+  it('a session picked before the first connect\'s own list read lands reads its earlier history once', async () => {
     const b = await boot();
     b.ws.link.answer = (id) => ({ id, events: [], tailStartSeq: 0 });
-    await b.open();
     await b.hint();
-    await b.land(2, [A, B]);
+    await b.open();
+    await b.land(1, [A, B]);
     b.c.selectInstance('iB', { userGesture: true });
     await b.flush();
     expect(b.historyReads(), 'fixture check: the pick\'s snapshot started at the ring head, so its history was probed').toBe(1);
-    await b.land(1, [A, B]);
+    await b.land(2, [A, B]);
     expect(b.historyReads()).toBe(1);
   });
 
@@ -157,11 +157,23 @@ describe('subscribing the active session when the socket opens', () => {
     await b.open();
     const respawned = b.s.respawnActive();
     await b.flush();
+    expect(b.reads, 'fixture check: the respawn\'s read waits behind the first connect\'s').toHaveLength(2);
+    await b.land(2, [A, B]);
+    expect(b.subscribes(), 'the open added one subscribe').toEqual([['iB', 1]]);
     await b.land(3, [A, B]);
     await respawned;
-    expect(b.subscribes(), 'fixture check: the respawn subscribed on the open socket').toEqual([['iB', 1]]);
+    expect(b.subscribes(), 'the respawn added none: the session is already subscribed on this socket').toEqual([['iB', 1]]);
+  });
+
+  it('selecting the already-active session again re-subscribes it, so its cleared transcript is re-sent', async () => {
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    await b.open();
     await b.land(2, [A, B]);
-    expect(b.subscribes()).toEqual([['iB', 1]]);
+    b.c.selectInstance('iB', { userGesture: true });
+    b.c.selectInstance('iB', { userGesture: true });
+    expect(b.subscribes()).toEqual([['iB', 1], ['iB', 1]]);
   });
 
   it('a stale open whose list read lands after a newer open sends nothing on the new socket', async () => {
@@ -178,7 +190,7 @@ describe('subscribing the active session when the socket opens', () => {
     expect(b.subscribes()).toEqual([['iB', 2]]);
   });
 
-  it('the newer open subscribes the active session once when its list read lands before the stale open\'s', async () => {
+  it('the newer open subscribes the active session once, when the stale open\'s read has landed, and a later list read adds no second subscribe', async () => {
     const b = await boot();
     void b.c.refreshInstances();
     await b.land(1, [A, B]);
@@ -186,13 +198,16 @@ describe('subscribing the active session when the socket opens', () => {
     await b.open();
     await b.close();
     await b.open();
+    await b.land(2, [A, B]);
+    expect(b.subscribes(), 'the stale open\'s read landed: nothing is sent').toEqual([]);
     await b.land(3, [A, B]);
     expect(b.subscribes()).toEqual([['iB', 2]]);
-    await b.land(2, [A, B]);
+    await b.hint();
+    await b.land(4, [A, B]);
     expect(b.subscribes()).toEqual([['iB', 2]]);
   });
 
-  it('a stale open whose projects read lands after a newer open has subscribed sends nothing on the new socket', async () => {
+  it('a stale open whose projects read lands before the newer open\'s sends nothing on the new socket, and the newer open then subscribes once', async () => {
     const b = await boot({ holdProjects: true });
     void b.c.refreshInstances();
     await b.land(1, [A, B]);
@@ -200,11 +215,54 @@ describe('subscribing the active session when the socket opens', () => {
     await b.open();
     await b.close();
     await b.open();
+    await b.landProjects(1);
     await b.landProjects(2);
     await b.land(2, [A, B]);
-    expect(b.subscribes(), 'fixture check: the newer open subscribed the active session').toEqual([['iB', 2]]);
-    await b.landProjects(1);
+    expect(b.subscribes(), 'fixture check: the stale open\'s lists landed, and it sends nothing').toEqual([]);
     await b.land(3, [A, B]);
-    expect(b.subscribes()).toEqual([['iB', 2]]);
+    expect(b.subscribes(), 'the newer open subscribed the active session once').toEqual([['iB', 2]]);
+  });
+
+  it('an open whose projects read never answers still subscribes the active session once the read times out', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const b = await boot({ holdProjects: true });
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    vi.useFakeTimers();
+    try {
+      ws_open(b);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(b.subscribes(), 'fixture check: the open waits on its projects read').toEqual([]);
+      await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+      expect(b.reads, 'the open moved on to its instances read').toHaveLength(2);
+      b.reads[1].release({ json: [A, B] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(b.subscribes()).toEqual([['iB', 1]]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('an open whose instances read never answers still subscribes the active session once the read times out', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const b = await boot();
+    void b.c.refreshInstances();
+    await b.land(1, [A, B]);
+    b.c.selectInstance('iB', { userGesture: true });
+    vi.useFakeTimers();
+    try {
+      ws_open(b);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(b.reads, 'fixture check: the open\'s instances read is in flight').toHaveLength(2);
+      expect(b.subscribes()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+      expect(b.subscribes()).toEqual([['iB', 1]]);
+    } finally { vi.useRealTimers(); }
   });
 });
+
+/** Dispatches the socket's `open` without the real-timer flush `b.open()` ends with. */
+function ws_open(b: { ws: { bus: EventTarget } }) {
+  b.ws.bus.dispatchEvent(new CustomEvent('open'));
+}

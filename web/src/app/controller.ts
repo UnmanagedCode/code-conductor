@@ -35,54 +35,129 @@ export const stickyPrompt = createStickyPrompt({
 
 // ── REST refreshers ──────────────────────────────────────────────────────
 
+/** How long one attempt of a list read may run: well past a cold `/api/projects` under load. */
+export const READ_TIMEOUT_MS = 15_000;
+
+class ReadTimeout extends Error {
+  constructor() { super(`list read timed out after ${READ_TIMEOUT_MS} ms`); }
+}
+
 /**
- * Reads applied in start order. Hints come in bursts (two projects created
- * together; a status flip's `instances` and `projects`) and their reads can
- * answer out of order: one that answers after a later read has landed carries
- * an older list, so it is dropped. One that answers first is applied, so when a
- * refresh resolves the store holds a list at least as new as that refresh.
+ * Reads of one list, never overlapping: at most one in flight plus one trailing
+ * read, however many `refresh()` calls arrive. Hints come in bursts (two
+ * projects created together; a status flip's `instances` and `projects`), so a
+ * call made while a read is in flight JOINS the one trailing read, which starts
+ * once that read settles (landed or failed). A joining call's promise therefore
+ * settles only after a read that started after the call, so when it resolves
+ * the store holds a list at least as new as that call, and reads cannot land out
+ * of order. A call that starts a read settles when that read does.
+ * `supersede()` drops the result of the read in flight (a trailing read started
+ * later is unaffected), for a change that read cannot reflect; the call that
+ * started it still settles when it does, with its result unapplied.
+ *
+ * One read is one attempt, plus one retry if that attempt runs past
+ * `READ_TIMEOUT_MS`: the hung request is aborted and the retry starts after it,
+ * inside the same read, so callers keep waiting on it and it never runs beside
+ * another. A second timeout fails the read like any failed read, and a failure
+ * that is not a timeout is not retried. A read therefore settles within twice
+ * the timeout, so a refresh that starts after a hung read is never held by it,
+ * while a call that joins one waits for the read in flight and then for its own
+ * trailing read, each up to twice the timeout.
  */
-function inStartOrder() {
-  let started = 0;
-  let landed = 0;
-  return async <T>(read: () => Promise<T>, apply: (data: T) => void): Promise<void> => {
-    const mine = ++started;
-    const data = await read();
-    if (mine < landed) return;
-    landed = mine;
-    apply(data);
+function coalescedReads<T>(read: (signal: AbortSignal) => Promise<T>, apply: (data: T) => void) {
+  type Waiter = { resolve: () => void; reject: (e: unknown) => void };
+  let generation = 0;
+  let running = false;
+  let trailing: { promise: Promise<void> } & Waiter | null = null;
+
+  const attempt = async (): Promise<T> => {
+    const ctl = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { ctl.abort(); reject(new ReadTimeout()); }, READ_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([read(ctl.signal), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const start = (): Promise<void> => {
+    const mine = generation;
+    running = true;
+    const p = (async () => {
+      let data: T;
+      try {
+        data = await attempt();
+      } catch (e) {
+        if (!(e instanceof ReadTimeout)) throw e;
+        data = await attempt();
+      }
+      if (mine === generation) apply(data);
+    })();
+    const settled = () => {
+      const next = trailing;
+      trailing = null;
+      if (!next) { running = false; return; }
+      start().then(next.resolve, next.reject);
+    };
+    p.then(settled, settled);
+    return p;
+  };
+
+  return {
+    refresh(): Promise<void> {
+      if (!running) return start();
+      if (!trailing) {
+        let waiter!: Waiter;
+        const promise = new Promise<void>((resolve, reject) => { waiter = { resolve, reject }; });
+        trailing = { promise, ...waiter };
+      }
+      return trailing.promise;
+    },
+    supersede() { generation++; },
   };
 }
 
-const projectReads = inStartOrder();
-export async function refreshProjects() {
-  await projectReads(() => Promise.all([
-    apiFetch('/api/projects'),
-    apiFetch('/api/workspaces').catch(() => []),
-    apiFetch('/api/projects/.conduct/sessions').catch(() => []),
-    apiFetch('/api/conductors/projects').catch(() => ({})),
+const projectReads = coalescedReads((signal) => Promise.all([
+    apiFetch('/api/projects', { signal }),
+    apiFetch('/api/workspaces', { signal }).catch(() => []),
+    apiFetch('/api/projects/.conduct/sessions', { signal }).catch(() => []),
+    apiFetch('/api/conductors/projects', { signal }).catch(() => ({})),
   ]), ([projects, workspaces, conductSessions, conductorSpawns]) => {
-    appStore.set({
-      projects: Array.isArray(projects) ? projects : [],
-      workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
-      conductSessions: Array.isArray(conductSessions) ? conductSessions : [],
-      conductorSpawns: conductorSpawns && typeof conductorSpawns === 'object' ? (conductorSpawns as AppState['conductorSpawns']) : {},
-    });
+  appStore.set({
+    projects: Array.isArray(projects) ? projects : [],
+    workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
+    conductSessions: Array.isArray(conductSessions) ? conductSessions : [],
+    conductorSpawns: conductorSpawns && typeof conductorSpawns === 'object' ? (conductorSpawns as AppState['conductorSpawns']) : {},
   });
-}
+});
+export const refreshProjects = projectReads.refresh;
 
-const instanceReads = inStartOrder();
+const instanceReads = coalescedReads(
+  (signal) => apiFetch<Instance[]>('/api/instances', { signal }),
+  (data: Instance[]) => {
+    instancesLanded = true;
+    appStore.set({ instances: Array.isArray(data) ? data : [] });
+    emit('instances');
+  },
+);
 /** Whether this controller has applied an instance list: until then an anchor naming no listed session is the restore's to judge. */
 let instancesLanded = false;
-export async function refreshInstances() {
-  await instanceReads(
-    () => apiFetch<Instance[]>('/api/instances'),
-    (data: Instance[]) => {
-      instancesLanded = true;
-      appStore.set({ instances: Array.isArray(data) ? data : [] });
-      emit('instances');
-    },
-  );
+export const refreshInstances = instanceReads.refresh;
+
+/**
+ * Apply an instance the server just created, before any list read: a read
+ * already in flight predates it and is dropped, and a trailing read replaces it.
+ */
+export function adoptInstance(inst: Instance) {
+  instanceReads.supersede();
+  const { instances } = appStore.get();
+  const i = instances.findIndex((x) => x.id === inst.id);
+  appStore.set({ instances: i < 0 ? [...instances, inst] : instances.map((x, j) => (j === i ? inst : x)) });
+  emit('instances');
+  refreshInstances().catch((e) => console.warn('refreshInstances after a create failed:', e));
 }
 
 function patchInstance(id: string, patch: Partial<Instance>) {
@@ -106,6 +181,11 @@ let subscribedSinceOpen: string | null = null;
 export function subscribe(id: string | null) {
   subscribedSinceOpen = id;
   if (id) send('subscribe', { id });
+}
+
+/** Subscribe `id` unless it is already the session subscribed on this socket: a second subscribe costs a second server snapshot and a second history read. */
+export function ensureSubscribed(id: string) {
+  if (id !== subscribedSinceOpen) subscribe(id);
 }
 
 export function selectInstance(id: string | null, opts: SelectOptions = {}) {
@@ -347,7 +427,7 @@ export function startController() {
     // A newer open owns the socket now, and re-subscribes the active session itself.
     if (gen !== opens) return;
     const { activeId, instances } = appStore.get();
-    if (activeId && activeId !== subscribedSinceOpen && instances.some((i) => i.id === activeId)) send('subscribe', { id: activeId });
+    if (activeId && activeId !== subscribedSinceOpen && instances.some((i) => i.id === activeId)) subscribe(activeId);
   });
 
   connect();

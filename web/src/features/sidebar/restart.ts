@@ -26,7 +26,7 @@ const PHASE_STATUS: Record<string, string> = {
 
 async function getBootId(fetchImpl: typeof fetch): Promise<string | null> {
   try {
-    const r = await apiResponse('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) }, fetchImpl);
+    const r = await apiResponse('/api/health', { signal: AbortSignal.timeout(2000) }, fetchImpl);
     if (!r.ok) return null;
     return (await r.json())?.bootId ?? null;
   } catch {
@@ -40,7 +40,7 @@ export async function waitForReplacement(
 ): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await apiResponse('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) }, fetchImpl);
+      const r = await apiResponse('/api/health', { signal: AbortSignal.timeout(2000) }, fetchImpl);
       if (r.ok) {
         const bootId = (await r.json().catch(() => null))?.bootId ?? null;
         if (priorBootId == null || (bootId && bootId !== priorBootId)) return true;

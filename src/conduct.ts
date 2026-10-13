@@ -42,7 +42,22 @@ export function isConductorInstance(inst: { project: string } | null | undefined
 //
 // Returns {path, created} so callers (and tests) can tell what happened;
 // `created` means the DIR was created, independent of the CLAUDE.md step.
-export async function ensureConductProject(): Promise<{ path: string; created: boolean }> {
+//
+// Concurrent callers share one run (the check-then-register below is not
+// atomic, and two first-ever creates race on a cold store); a registration lost
+// to another process is tolerated once the record resolves.
+let ensuring: Promise<{ path: string; created: boolean }> | null = null;
+export function ensureConductProject(): Promise<{ path: string; created: boolean }> {
+  if (!ensuring) {
+    const run = ensureConductProjectOnce();
+    const clear = () => { if (ensuring === run) ensuring = null; };
+    run.then(clear, clear);
+    ensuring = run;
+  }
+  return ensuring;
+}
+
+async function ensureConductProjectOnce(): Promise<{ path: string; created: boolean }> {
   const dir = conductProjectPath();
   let created = false;
   // The projects root itself may not exist yet — nothing else creates it on a
@@ -59,7 +74,12 @@ export async function ensureConductProject(): Promise<{ path: string; created: b
   // any other: its record is what makes it resolve, list under
   // `includeConduct`, and take worktree-free session lookups.
   if (await readProjectRecord(CONDUCT_PROJECT_NAME) === null) {
-    await registerProject(CONDUCT_PROJECT_NAME, { kind: 'local', path: dir });
+    try {
+      await registerProject(CONDUCT_PROJECT_NAME, { kind: 'local', path: dir });
+    } catch (e) {
+      // Another process registered it between the check and the write.
+      if (errCode(e) !== 'PROJECT_EXISTS' || await readProjectRecord(CONDUCT_PROJECT_NAME) === null) throw e;
+    }
   }
   // Resolved, not assumed: `.conduct` is PINNED to the local system, so this is
   // the one call that both proves and uses the pin.

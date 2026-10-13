@@ -47,8 +47,8 @@ test('apiFetch: 2xx with a JSON body returns the parsed body', async () => {
   const calls = stubFetch({ ok: true, status: 200, json: { id: 'inst-1', ok: true } });
   const body = await apiFetch('/api/instances', { method: 'POST' });
   assert.deepEqual(body, { id: 'inst-1', ok: true });
-  assert.deepEqual(calls, [{ url: '/api/instances', opts: { method: 'POST' } }],
-    'url and opts pass through untouched');
+  assert.deepEqual(calls, [{ url: '/api/instances', opts: { cache: 'no-store', method: 'POST' } }],
+    'url and the caller\'s opts pass through, under the no-store default');
 });
 
 test('apiFetch: 2xx with a non-JSON body returns null rather than throwing', async () => {
@@ -179,4 +179,23 @@ test('readApiBody: a 2xx body is returned and a non-2xx throws ApiError', async 
     assert.equal(e.message, 'bad tier');
     return true;
   });
+});
+
+// Every REST call is live state: no HTTP-cache entry for a concurrent burst of
+// identical GETs to queue on. The default lives in apiResponse, the one chokepoint.
+test('apiResponse: every request defaults to cache no-store', async () => {
+  const seen = [];
+  const spy = async (url, opts) => { seen.push({ url, opts }); return { ok: true, status: 200 }; };
+  await apiResponse('/api/projects', undefined, spy);
+  await apiResponse('/api/instances', { method: 'POST', headers: { a: 'b' } }, spy);
+  assert.deepEqual(seen, [
+    { url: '/api/projects', opts: { cache: 'no-store' } },
+    { url: '/api/instances', opts: { cache: 'no-store', method: 'POST', headers: { a: 'b' } } },
+  ]);
+});
+
+test('apiResponse: an explicit cache option wins over the default', async () => {
+  const seen = [];
+  await apiResponse('/x', { cache: 'default' }, async (url, opts) => { seen.push(opts); return { ok: true }; });
+  assert.deepEqual(seen, [{ cache: 'default' }]);
 });

@@ -183,3 +183,81 @@ test('POST /api/instances with project=.conduct spawns successfully', async () =
   assert.equal(list.status, 200);
   assert.ok(list.body.some(i => i.id === id && i.project === '.conduct'));
 });
+
+// The server ensures the .conduct project on any conductor create, so a client
+// never has to call /ensure first and a boot that skipped the ensure still spawns.
+test('creating a .conduct instance with no .conduct record ensures the project and spawns', async () => {
+  const { readProjectRecord } = await import('../src/projects.ts');
+  assert.equal(await readProjectRecord('.conduct'), null, 'fixture: no .conduct record yet');
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions',
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.notEqual(await readProjectRecord('.conduct'), null, 'the record exists');
+  const claudeMd = await fs.readFile(path.join(projectsRoot, '.conduct', 'CLAUDE.md'), 'utf8');
+  assert.ok(claudeMd.split('\n').some(l => l.trim() === '@CONVENTIONS.md'));
+});
+
+// The first-ever .conduct create registers the project, and the check-then-
+// register sequence is not atomic: two creates racing on a cold store (two tabs,
+// or the UI's Conduct racing an MCP spawn_instance) must both succeed.
+test('two concurrent first .conduct creates both return 201', async () => {
+  const { readProjectRecord } = await import('../src/projects.ts');
+  assert.equal(await readProjectRecord('.conduct'), null, 'fixture: no .conduct record yet');
+  const body = { project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' };
+  const [a, b] = await Promise.all([
+    api(baseUrl, 'POST', '/api/instances', body),
+    api(baseUrl, 'POST', '/api/instances', body),
+  ]);
+  assert.deepEqual([a.status, b.status], [201, 201], JSON.stringify([a.body, b.body]));
+  assert.notEqual(a.body.id, b.body.id, 'two distinct conductors');
+});
+
+// The race window is a few awaits wide, so the second ensure's start is swept
+// across it over many fresh roots (0 ms is the lockstep case). With the guard the
+// outcome is the same on every start; without it a start inside the window fails.
+const STAGGERS_MS = Array.from({ length: 300 }, (_, i) => [0, 1, 1, 2, 1, 3][i % 6]);
+async function raceEnsures(first, second) {
+  const failures = [];
+  for (const gap of STAGGERS_MS) {
+    const fresh = await freshProjectsRoot();
+    try {
+      const a = first();
+      await new Promise(r => setTimeout(r, gap));
+      const b = second();
+      for (const r of await Promise.allSettled([a, b])) {
+        if (r.status === 'rejected') failures.push(`gap ${gap} ms: ${r.reason.message}`);
+      }
+    } finally { await rmrf(fresh.home); }
+  }
+  return failures;
+}
+
+test('concurrent ensureConductProject calls in one process all resolve', async () => {
+  const { ensureConductProject } = await import('../src/conduct.ts');
+  assert.deepEqual(await raceEnsures(ensureConductProject, ensureConductProject), []);
+});
+
+// A second server process shares no module state with this one, so only the
+// PROJECT_EXISTS tolerance covers it: a second copy of the module stands in for it.
+test('an ensure racing another process\'s ensure tolerates the PROJECT_EXISTS it loses', async () => {
+  const { ensureConductProject } = await import('../src/conduct.ts');
+  const other = await import('../src/conduct.ts?second-process');
+  assert.notEqual(other.ensureConductProject, ensureConductProject, 'fixture: independent module state');
+  assert.deepEqual(await raceEnsures(ensureConductProject, other.ensureConductProject), []);
+});
+
+// A rejected ensure must not stay memoized: the failure is for the callers that
+// shared that run, and the next call runs the steps again. A regular file where
+// the .conduct directory belongs makes the run reject (the CLAUDE.md step cannot
+// write under a file); removing it lets the next call succeed.
+test('an ensure that rejects does not poison the next call', async () => {
+  const { ensureConductProject } = await import('../src/conduct.ts');
+  const dir = path.join(projectsRoot, '.conduct');
+  await fs.writeFile(dir, 'not a directory');
+  await assert.rejects(ensureConductProject(), 'fixture: the blocked run rejects');
+  await fs.rm(dir);
+  const r = await ensureConductProject();
+  assert.equal(r.path, dir);
+  assert.ok((await fs.stat(dir)).isDirectory());
+});

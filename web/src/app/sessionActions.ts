@@ -7,7 +7,7 @@ import { appStore, activeInstance } from '@/state/app';
 import { syncRoute } from '@/state/route';
 import type { Instance, Project } from '@/state/types';
 import { confirmDialog, toast } from '@/ui/feedback';
-import { refreshInstances, refreshProjects, selectInstance, subscribe } from './controller';
+import { ensureSubscribed, refreshInstances, refreshProjects, selectInstance } from './controller';
 import { emit } from './events';
 import { beginGesture, gestureOvertaken } from './gestures';
 
@@ -368,7 +368,7 @@ export async function respawnActive() {
     await apiFetch(`/api/instances/${id}/respawn`, { method: 'POST' });
     await refreshInstances();
     const active = activeId();
-    if (active) subscribe(active);
+    if (active) ensureSubscribed(active);
   } catch (e: any) {
     toast.error('Resume failed', e.message);
   }

@@ -11,6 +11,7 @@ vi.mock('@/app/controller', () => ({
   send: vi.fn(),
   refreshProjects: vi.fn(),
   refreshInstances: vi.fn(),
+  adoptInstance: vi.fn(),
 }));
 const loadSessions = vi.fn(async () => [] as any[]);
 const closeSession = vi.fn();
@@ -269,7 +270,7 @@ describe('AppSidebar', () => {
     expect(removeWorktree).toHaveBeenCalledWith('api', 'wt1');
   });
 
-  it('the Conduct button ensures .conduct, POSTs exactly {project, role, temp, mode} and selects the new conductor with a gesture', async () => {
+  it('the Conduct button POSTs exactly {project, role, temp, mode} and selects the new conductor with a gesture', async () => {
     const calls: { url: string; method: string; body: unknown }[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
       calls.push({ url, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined });
@@ -282,7 +283,6 @@ describe('AppSidebar', () => {
       await waitFor(() => expect(selectInstance).toHaveBeenCalledWith('c-new', { userGesture: true, gesture: expect.any(Number) }));
       expect(selectInstance).toHaveBeenCalledTimes(1);
       expect(calls.filter((c) => c.method === 'POST')).toEqual([
-        { url: '/api/projects/.conduct/ensure', method: 'POST', body: undefined },
         { url: '/api/instances', method: 'POST', body: { project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' } },
       ]);
     } finally {
