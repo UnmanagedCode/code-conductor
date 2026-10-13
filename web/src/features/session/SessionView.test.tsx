@@ -19,6 +19,7 @@ import { accountUsageStore, refreshAccountUsage } from '@/app/accountUsage';
 import { rateLimits } from '@/app/trackers';
 import type { Instance, InstanceWorktree } from '@/state/types';
 import { SessionView } from './SessionView';
+import { CONDUCTOR_LABEL } from '@shared/conductors';
 
 const WORKTREE: InstanceWorktree = { worktreeName: 'wt-a', branch: 'code-conductor/wt-a', baseBranch: 'main', baseSha: 'abcdef012345', postWorktreeCreate: null };
 const inst = (id: string, extra: Partial<Instance> = {}): Instance => ({
@@ -113,7 +114,7 @@ describe('SessionView', () => {
     renderView();
     await openMenu();
     act(() => appStore.set({ activeId: 'B' }));
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('.conduct');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(CONDUCTOR_LABEL);
     expect(menus()).toEqual([]);
     const menu = await openMenu();
     expect(within(menu).getByRole('menuitemcheckbox', { name: /Enforce playbooks/ })).toBeTruthy();

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useStore } from '@/state/createStore';
 import type { Instance } from '@/state/types';
+import { projectLabel } from '@shared/conductors';
 import { formatAutoResumeTime } from '@shared/usage';
 import { send, stickyPrompt } from '@/app/controller';
 import { on } from '@/app/events';
@@ -316,7 +317,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     : status === 'turn' ? 'Agent is working · type to steer the running turn'
     : status === 'spawning' ? 'Starting the session…'
     : status === 'crashed' || status === 'exited' ? 'The session is not running · resume it to continue'
-    : `Message ${inst.title || inst.project}…`;
+    : `Message ${inst.title || projectLabel(inst.project)}…`;
 
   const resumeClock = overagePaused ? formatAutoResumeTime(resumeAt)?.replace('resumes at ', '') : null;
 

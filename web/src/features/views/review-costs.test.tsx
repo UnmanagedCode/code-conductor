@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { FileCard, fileDiffUrl, reviewStats } from './ReviewView';
+import { CONDUCTOR_LABEL } from '@shared/conductors';
 import { CostsBody, modelCells, niceTicks, type CostsSummary, type ModelRow } from './CostsView';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -85,6 +86,19 @@ describe('costs', () => {
     expect(screen.getAllByText('$1.2346').length).toBeGreaterThan(0);
     fireEvent.click(document.querySelector('[data-cost-project="p"]')!);
     expect(screen.getAllByText('1.2k').length).toBeGreaterThan(0);
+  });
+
+  it('labels the conductor project row Conductor while its data attribute keeps the raw name', () => {
+    // Invariant: the visible row text is CONDUCTOR_LABEL; data-cost-project stays `.conduct` (an identifier, not a label).
+    const data: CostsSummary = {
+      total_usd: 1, row_count: 1,
+      by_project: [{ project: '.conduct', cost_usd: 1, turns: 1, sessions: 1, cache_misses: 0, duration_api_ms: 10, duration_ms: 20, by_model: [model({})] }],
+      by_model: [model({})], daily_trend: [],
+    };
+    render(<TooltipProvider><CostsBody data={data} /></TooltipProvider>);
+    const row = document.querySelector('[data-cost-project=".conduct"]') as HTMLElement;
+    expect(row.textContent).toContain(CONDUCTOR_LABEL);
+    expect(row.textContent).not.toContain('.conduct');
   });
 
   it('says so when nothing has been recorded', () => {

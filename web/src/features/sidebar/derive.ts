@@ -1,12 +1,10 @@
 // Pure derivations behind the sidebar tree: merging disk session lists with
 // live instances, workspace grouping, the Projects-lens filter, and the
 // reveal-on-select target. No React, no DOM.
-import { conductorChips, hasSessionId, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
+import { CONDUCT_PROJECT, conductorChips, hasSessionId, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
 import type { ConductorsSplit, SpawnedProject } from '@shared/conductors';
 import { promptPreview } from '@shared/promptPreview';
 import type { Instance, Project } from '@/state/types';
-
-export const CONDUCT_PROJECT = '.conduct';
 
 /** A row of a Sessions subnode: a disk row with any live instance overlaid. */
 export type SessionItem = {

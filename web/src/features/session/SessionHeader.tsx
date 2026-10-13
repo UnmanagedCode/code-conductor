@@ -18,6 +18,7 @@ import {
   getBackendModels, getEffortLevels, CLAUDE_BACKEND,
 } from '@shared/models';
 import { ApiError, apiFetch } from '@shared/http';
+import { CONDUCT_PROJECT, projectLabel } from '@shared/conductors';
 import { autoResumeBadge, formatAutoResumeTime } from '@shared/usage';
 import { send, stickyPrompt } from '@/app/controller';
 import { trackSwipes } from '@/conversation/stickyPrompt';
@@ -31,7 +32,6 @@ import { Dot } from '@/features/sidebar/rows';
 import { cn } from '@/lib/utils';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 
-const CONDUCT_PROJECT = '.conduct';
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
 // A second spelling of Tailwind's `md` breakpoint, where App.tsx turns the
 // drawer into a sidebar column; it must change with any `--breakpoint-md` override.
@@ -153,6 +153,7 @@ export function ModeToggle({ inst }: { inst: Instance }) {
 export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => void }) {
   useSignal(modelsSignal);
   useSignal(mutesSignal);
+  const projectName = projectLabel(inst.project);
   const worktree = inst.worktree?.worktreeName ? inst.worktree : null;
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
   // Sync sits in the bar from md up and in ⋮ below it; the one query places it
@@ -211,7 +212,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
           awaitingUser={inst.awaitingUser} awaitingUserSource={inst.awaitingUserSource} className="ring-offset-background" />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <h1 className="min-w-0 overflow-clip text-sm font-semibold text-ellipsis whitespace-nowrap" title={`session ${inst.sessionId ?? '?'}`}>{inst.title || inst.project}</h1>
+            <h1 className="min-w-0 overflow-clip text-sm font-semibold text-ellipsis whitespace-nowrap" title={`session ${inst.sessionId ?? '?'}`}>{inst.title || projectName}</h1>
             {inst.modelSwitch ? (
               <Badge variant="info" className="shrink-0"><RefreshCwIcon className="animate-spin" />Switching to {inst.modelSwitch.to}{crossed(inst.modelSwitch) ? ` on ${inst.modelSwitch.toBackend}` : ''}</Badge>
             ) : inst.status === 'turn' && inst.interrupting ? (
@@ -236,7 +237,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
           </div>
           {(inst.title || worktree) && (
             <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              {inst.title && <span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{inst.project}</span>}
+              {inst.title && <span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{projectName}</span>}
               {worktree && <span className="flex min-w-0 items-center gap-1 font-mono"><GitBranchIcon className="size-3 shrink-0" /><span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{worktree.worktreeName}</span><span className="hidden shrink-0 sm:inline">← {worktree.baseBranch}</span></span>}
             </div>
           )}

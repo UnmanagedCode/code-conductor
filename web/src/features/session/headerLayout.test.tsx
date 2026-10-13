@@ -19,6 +19,7 @@ vi.mock('@/app/sessionActions', async (orig) => ({
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { formatAutoResumeTime } from '@shared/usage';
+import { CONDUCTOR_LABEL } from '@shared/conductors';
 import { respawnActive, syncWorktree } from '@/app/sessionActions';
 import { stickyPrompt } from '@/app/controller';
 import { SWIPE_MIN_PX } from '@/conversation/stickyPrompt';
@@ -289,6 +290,21 @@ describe('title block', () => {
       seen++;
     }
     expect(seen).toBe(cases.length);
+  });
+
+  it('a conductor reads Conductor, never .conduct, in line 1 or the subline; a regular project keeps its own name', () => {
+    // Invariant: a `.conduct` instance shows CONDUCTOR_LABEL as its project name (line 1 when untitled, the subline when titled) and `.conduct` appears nowhere in the header; a regular project still shows its own name.
+    const untitled = render(tree(stopped('crashed', { project: '.conduct', title: null, worktree: null })));
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(CONDUCTOR_LABEL);
+    expect(header().textContent).not.toContain('.conduct');
+    untitled.unmount();
+    const titled = render(tree(stopped('crashed', { project: '.conduct', worktree: null })));
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(TITLE);
+    expect(subline()!.textContent).toContain(CONDUCTOR_LABEL);
+    expect(header().textContent).not.toContain('.conduct');
+    titled.unmount();
+    render(tree(stopped('crashed', { title: null, worktree: null })));
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('demo');
   });
 
   it('Stopping… and the overage auto-resume badge show on line 1, not on the subline', () => {
