@@ -835,6 +835,7 @@ describe('status dot', () => {
     ['crashed keeps its name', { status: 'crashed', displayStatus: 'crashed' }, 'crashed'],
     ['exited keeps its name', { status: 'exited', displayStatus: 'exited' }, 'exited'],
     ['a question needs you', { awaitingUser: 'question', awaitingUserSource: 'tool' }, 'waiting on you (question) · idle'],
+    ['a text ask names its source', { awaitingUser: 'question', awaitingUserSource: 'text' }, 'waiting on you (asked in text) · idle'],
     ['a question composes with on-a-worker', { awaitingUser: 'question', awaitingUserSource: 'tool', awaitingWake: true }, 'waiting on you (question) · on a worker'],
   ];
   it.each(rows)('%s', (_name, overrides, expected) => {
