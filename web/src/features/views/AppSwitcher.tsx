@@ -15,7 +15,7 @@ import { writeSessionAnchor } from '@shared/anchor';
 import { closeSidebarOnMobile } from '@/app/ui';
 import { pluginsChangedSignal } from '@/features/settings/pluginsSignal';
 import { openPlugin } from './api';
-import { catalogStore, pluginFrames, refreshCatalog, residentSignal, RESIDENT_SUFFIX } from './plugins';
+import { appLabel, catalogStore, pluginFrames, refreshCatalog, residentSignal, RESIDENT_SUFFIX } from './plugins';
 
 /** The Conductor entry's value in the switcher's radio group; no plugin id is empty. */
 const CONDUCTOR = '';
@@ -54,7 +54,7 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
         data-app-switcher
       >
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold tracking-tight">{current ? current.navLabel || current.name : title}</span>
+          <span className="block truncate text-sm font-semibold tracking-tight">{current ? appLabel(current) : title}</span>
           {subtitle && <span className="block truncate text-[11px] text-muted-foreground">{subtitle}</span>}
         </span>
         <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -71,7 +71,7 @@ export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: Rea
           {apps.map((p) => (
             <DropdownMenuRadioItem key={p.id} value={p.id} onSelect={() => { if (currentId !== p.id) openPlugin(p.id); }} data-app-id={p.id}>
               <PlugIcon />
-              <span className="flex-1 truncate">{(p.navLabel || p.name) + (live.has(p.id) ? RESIDENT_SUFFIX : '')}</span>
+              <span className="flex-1 truncate">{appLabel(p) + (live.has(p.id) ? RESIDENT_SUFFIX : '')}</span>
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
