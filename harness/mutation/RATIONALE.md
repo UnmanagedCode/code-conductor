@@ -399,7 +399,7 @@ Measured: each `idle-wake-*` file run alone through the narrow command under the
 recipe, 16 cores, load average 25–41:
 
 ```bash
-ORCH_SUBSCRIBE_TIMEOUT_MS=999 npm test -- tests/idle-wake-<file>.test.mjs
+ORCH_SUBSCRIBE_TIMEOUT_MS=999 node tests/run.mjs tests/idle-wake-<file>.test.mjs
 ```
 
 `ORCH_SUBSCRIBE_TIMEOUT_MS=999` collapses `DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS`

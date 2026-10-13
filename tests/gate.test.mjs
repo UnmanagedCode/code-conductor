@@ -77,6 +77,42 @@ test('npm test gate', async (t) => {
     }
   });
 
+  // The gate's signal state is module-level, so each case imports its own instance
+  // (a distinct URL is a distinct ESM module) and a recorded signal cannot leak
+  // into the cases above. onSignal is called right after runSuites spawns the first
+  // suite, which is then certainly alive: it is a `node -e ''` that exits 0 on its
+  // own unless something signals it.
+  const interrupt = async (signal) => {
+    const gate = await import(`./gate.mjs?${signal}`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gate-'));
+    try {
+      const marker = path.join(dir, 'ran');
+      const suites = [fake('node', ''), fake('web', `require('fs').writeFileSync(${JSON.stringify(marker)}, '')`)];
+      const running = gate.runSuites(suites);
+      gate.onSignal(signal);
+      const results = await running;
+      return { results, laterSuiteRan: fs.existsSync(marker), ...gate.gateExit(suites, results) };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  await t.test('SIGTERM to the gate kills the running suite and starts no later one', async () => {
+    const { results, laterSuiteRan, code, summary } = await interrupt('SIGTERM');
+    assert.deepEqual(results, [{ name: 'node', code: null, signal: 'SIGTERM' }]);
+    assert.ok(!laterSuiteRan, 'no suite may start after the gate is signalled');
+    assert.equal(code, 143);
+    assert.match(summary, /web NOT RUN/);
+  });
+
+  await t.test('SIGINT to the gate leaves the running suite alone and starts no later one', async () => {
+    const { results, laterSuiteRan, code, summary } = await interrupt('SIGINT');
+    assert.deepEqual(results, [{ name: 'node', code: 0, signal: null }]);
+    assert.ok(!laterSuiteRan, 'no suite may start after the gate is signalled');
+    assert.equal(code, 130);
+    assert.match(summary, /web NOT RUN/);
+  });
+
   await t.test('tests/run.mjs caps the heap of its test children', () => {
     assert.match(process.env.NODE_OPTIONS ?? '', /--max-old-space-size=512/);
     assert.ok(v8.getHeapStatistics().heap_size_limit < 1024 ** 3, 'heap limit must be under 1 GiB');

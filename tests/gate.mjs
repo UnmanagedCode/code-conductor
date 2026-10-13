@@ -73,15 +73,17 @@ export function gateExit(suites, results, signal = state.signal) {
   return { code, summary: `npm test: ${parts.join(' · ')}${interrupted}` };
 }
 
+// A signal to the gate: record it, so runSuites starts no further suite, and
+// forward SIGTERM to the running suite. SIGINT is not forwarded: the terminal
+// already delivered it to the whole process group, and tests/run.mjs exits on its
+// FIRST SIGINT after an orphan sweep that a second one would cut short.
+export function onSignal(signal) {
+  state.signal ??= signal;
+  if (signal === 'SIGTERM') state.child?.kill('SIGTERM');
+}
+
 async function main() {
-  // SIGINT is not forwarded: the terminal already delivered it to the whole process
-  // group, and tests/run.mjs exits on its FIRST SIGINT after an orphan sweep that a
-  // second one would cut short.
-  process.on('SIGINT', () => { state.signal ??= 'SIGINT'; });
-  process.on('SIGTERM', () => {
-    state.signal ??= 'SIGTERM';
-    state.child?.kill('SIGTERM');
-  });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => onSignal(signal));
   const suites = planSuites(process.argv.slice(2));
   const { code, summary } = gateExit(suites, await runSuites(suites));
   (code === 0 ? console.log : console.error)(`\n${summary}`);
