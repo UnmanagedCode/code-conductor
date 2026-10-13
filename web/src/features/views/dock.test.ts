@@ -50,11 +50,11 @@ describe('readDockState', () => {
     ['a non-object', '"beta"'],
     ['a numeric id', JSON.stringify({ id: 7, subpath: '/', mode: 'split' })],
     ['a subpath without its slash', JSON.stringify({ id: 'beta', subpath: 'x', mode: 'split' })],
-    ['a rail-era open dock', JSON.stringify({ id: 'beta', subpath: '/x', open: true })],
-    ['a rail-era collapsed dock', JSON.stringify({ id: 'beta', subpath: '/', open: false })],
-    ['a rail-era empty dock', JSON.stringify({ id: null, subpath: '/', open: false })],
+    ['an {id, subpath, open} shape, open', JSON.stringify({ id: 'beta', subpath: '/x', open: true })],
+    ['an {id, subpath, open} shape, closed', JSON.stringify({ id: 'beta', subpath: '/', open: false })],
+    ['an {id, subpath, open} shape with nothing selected', JSON.stringify({ id: null, subpath: '/', open: false })],
     ['a selection with the full view remembered', JSON.stringify({ id: 'beta', subpath: '/', mode: 'full' })],
-    ['an unknown mode', JSON.stringify({ id: null, subpath: '/', mode: 'rail' })],
+    ['an unknown mode', JSON.stringify({ id: null, subpath: '/', mode: 'docked' })],
   ])('reads %s as nothing selected', (_what, raw) => {
     // Invariant (F11): only the current shape {id, subpath, mode} with a selection only in split is read; anything else selects nothing.
     if (raw !== null) localStorage.setItem(DOCK_STORAGE_KEY, raw);
@@ -85,7 +85,7 @@ describe('mounted', () => {
     await endHost();
   });
 
-  it('a stored rail-era dock mounts as nothing selected: no column, Conductor checked, and a pick opens the default full view', async () => {
+  it('a stored dock of an unknown shape mounts as nothing selected: no column, Conductor checked, and a pick opens the default full view', async () => {
     // Invariant (F11): a value the current format does not describe never opens a plugin, and the full view stays the default.
     localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ id: 'beta', subpath: '/x', open: true }));
     dockStore.set(readDockState());

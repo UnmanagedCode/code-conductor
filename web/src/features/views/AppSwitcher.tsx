@@ -9,24 +9,22 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { OctopusMark } from '@/components/mascot/Octopus';
 import { useSignal, useStore } from '@/state/createStore';
-import { appStore, activeInstance } from '@/state/app';
-import { syncRoute, useRoute } from '@/state/route';
-import { writeSessionAnchor } from '@shared/anchor';
+import { useRoute } from '@/state/route';
 import { closeSidebarOnMobile } from '@/app/ui';
 import { pluginsChangedSignal } from '@/features/settings/pluginsSignal';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { appLabel, catalogStore, pluginFrames, refreshCatalog, residentSignal, RESIDENT_SUFFIX } from './plugins';
 import { shownApp } from './dockLayout';
 import { closeDock, dockStore, selectApp } from './dock';
+import { showActiveSession } from './ViewShell';
 
 /** The Conductor entry's value in the switcher's radio group; no plugin id is empty. */
 const CONDUCTOR = '';
 
-/** Back to Conductor: no plugin in split, and the active session's anchor, never history.back() (no usable entry on a deep link). */
+/** Back to Conductor: no plugin in split, and the active session. */
 export function exitToConductor() {
   closeDock();
-  writeSessionAnchor(activeInstance(appStore.get())?.sessionId ?? null);
-  syncRoute();
+  showActiveSession();
   closeSidebarOnMobile();
 }
 

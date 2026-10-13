@@ -92,7 +92,7 @@ describe('the plugin dock', () => {
     expect(viewOpen()).toBe(false);
   });
 
-  it('the column\'s only control is the mode toggle: Expand to full view in split, Dock to side in full, and there is no rail', async () => {
+  it('the column\'s only control is the mode toggle: Expand to full view in split, Dock to side in full, and nothing else', async () => {
     // Invariant (F1): the switcher picks the plugin; the column carries nothing but the full ⇄ split toggle.
     await mountApp();
     await dockSplit('alpha');

@@ -4,13 +4,20 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Kbd } from '@/components/ui/kbd';
 import { appStore, activeInstance } from '@/state/app';
-import { closeView } from '@/state/route';
+import { closeView, syncRoute } from '@/state/route';
+import { writeSessionAnchor } from '@shared/anchor';
 import { uiStore } from '@/app/ui';
 import { cn } from '@/lib/utils';
 
 /** Leave the full-page view: back where the user came from, else to the active session. */
 export function leaveView() {
   closeView(activeInstance(appStore.get())?.sessionId ?? null);
+}
+
+/** Show the active session by writing its anchor, never history.back(): no entry beneath is known to be the session's (a deep link, a stacked view). */
+export function showActiveSession() {
+  writeSessionAnchor(activeInstance(appStore.get())?.sessionId ?? null);
+  syncRoute();
 }
 
 /** Escape runs `onClose` (default: leave the view), unless a dialog or menu is open (it closes those first). */

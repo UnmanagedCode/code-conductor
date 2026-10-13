@@ -5,7 +5,7 @@
 // and the history each step costs.
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent } from '@testing-library/react';
+import { act, fireEvent, waitFor } from '@testing-library/react';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
 vi.mock('@/app/sessionActions', () => ({
@@ -19,6 +19,7 @@ vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 import { selectInstance, type SelectOptions } from '@/app/controller';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
+import { openCosts, openSettings } from './api';
 import { dockStore, readDockState } from './dock';
 import { DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
 import {
@@ -159,6 +160,60 @@ describe('the switcher selects the plugin on screen', () => {
     await pickApp('alpha');
     expect(location.hash, 'full remembered').toBe('#plugin/alpha/');
     expect(sessionShown()).toBe(false);
+  });
+});
+
+describe('a pick over a covering view', () => {
+  const GAMMA = { id: 'gamma', name: 'Gamma', enabled: true, hasFrontend: true, frontendKeepAlive: false, state: 'ready' };
+  /** Opens a full-page view and waits until it shows (Settings loads lazily). */
+  async function cover(open: () => void, selector: string) {
+    await act(async () => { open(); });
+    await waitFor(() => expect(document.querySelector(selector), `fixture check: ${selector} shows`).not.toBeNull(), { timeout: 10_000 });
+  }
+
+  it('with split remembered, a pick over Settings closes it and shows the pick in split beside the session', async () => {
+    // Invariant (F4): a pick from a view covering the session lands on the session with the picked plugin in split.
+    await mountApp();
+    await dockSplit('alpha');
+    await cover(() => openSettings(), '[data-settings-view]');
+    await pickApp('beta');
+    expect(location.hash).toBe(ANCHOR);
+    expect(document.querySelector('[data-settings-view]'), 'Settings closed').toBeNull();
+    expectSplit('the pick');
+    const beta = residentFrame('beta');
+    expect(beta !== null && !beta.hidden, 'Beta\'s frame shown').toBe(true);
+    expect(await checkedNow()).toEqual(['beta']);
+  });
+
+  it('with split remembered, a pick over Settings opened from Costs lands on the session, not on Costs', async () => {
+    // Invariant (F4): the pick's landing does not depend on what history holds beneath the covering view.
+    const inner = fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>;
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => (url === '/api/costs/summary' ? Promise.resolve(new Response(JSON.stringify({ row_count: 0 }))) : inner(url, init))));
+    await mountApp();
+    await dockSplit('alpha');
+    await cover(() => openCosts(), 'main[data-view="costs"]');
+    await cover(() => openSettings(), '[data-settings-view]');
+    await pickApp('beta');
+    expect(location.hash).toBe(ANCHOR);
+    expectSplit('the pick');
+    expect(document.querySelector('main[data-view="costs"]'), 'Costs not shown').toBeNull();
+    expect(await checkedNow()).toEqual(['beta']);
+  });
+
+  it('with split remembered, a pick over Settings opened on a linked full view docks the pick beside the session, not that full view', async () => {
+    // Invariant (F4): a covering view's pick is never lost to a plugin full view beneath it, which would end the split it wrote.
+    net.catalog = [...DOCK_CATALOG, GAMMA];
+    net.status.gamma = plainRow();
+    await mountApp();
+    await dockSplit('alpha');
+    await go('#plugin/beta/');
+    expect(viewOpen() && !sessionShown(), 'fixture check: Beta in full').toBe(true);
+    await cover(() => openSettings(), '[data-settings-view]');
+    await pickApp('gamma');
+    expect(location.hash).toBe(ANCHOR);
+    expectSplit('the pick');
+    expect(dockStore.get().id).toBe('gamma');
+    expect(await checkedNow()).toEqual(['gamma']);
   });
 });
 

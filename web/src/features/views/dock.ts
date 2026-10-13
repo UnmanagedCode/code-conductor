@@ -6,7 +6,7 @@ import { createStore } from '@/state/createStore';
 import { routeStore } from '@/state/route';
 import { on } from '@/app/events';
 import { openPlugin } from './api';
-import { leaveView } from './ViewShell';
+import { leaveView, showActiveSession } from './ViewShell';
 import type { RouteMirror } from './plugins';
 
 /** The mode a pick from Conductor opens; written only by the column's toggle. */
@@ -64,15 +64,16 @@ export const dockMirror: RouteMirror = (id, path) => {
   if (id === cur.id && path !== cur.subpath) dockStore.set({ subpath: path });
 };
 
-/** The switcher's pick: the full view below md, from a plugin view, or with full remembered; else split beside the session. */
+/** The switcher's pick: the full view below md, from a plugin view, or with full remembered; else split beside the session, closing a view that covers it. */
 export function selectApp(id: string, desktop: boolean) {
   const { view } = routeStore.get().route;
   if (!desktop || view === 'plugin' || dockStore.get().mode === 'full') {
     openPlugin(id);
     return;
   }
+  // The route moves first, so nothing beneath the covering view (a plugin's full view, which ends split) can clear the pick.
+  if (view !== 'session') showActiveSession();
   dockStore.set({ id, subpath: '/' });
-  if (view !== 'session') leaveView();
 }
 
 /** Nothing in split; the remembered mode stays. */
