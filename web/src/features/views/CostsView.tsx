@@ -256,7 +256,7 @@ export function CostsView() {
   const load = React.useCallback(async () => {
     setState({ phase: 'loading' });
     try {
-      setState({ phase: 'loaded', data: await apiFetch<CostsSummary>('/api/costs/summary', { cache: 'no-store' }) });
+      setState({ phase: 'loaded', data: await apiFetch<CostsSummary>('/api/costs/summary') });
     } catch (e: any) {
       setState({ phase: 'error', error: e.message });
     }

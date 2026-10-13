@@ -72,7 +72,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
 
   React.useEffect(() => {
     let live = true;
-    apiFetch<{ debugByDefault?: boolean } | null>('/api/settings/spawn', { cache: 'no-store' })
+    apiFetch<{ debugByDefault?: boolean } | null>('/api/settings/spawn')
       // A tick made before the default arrives is the user's answer; the late default must not overwrite it.
       .then((d) => { if (live && !debugTouched.current) setDebug(!!d?.debugByDefault); })
       .catch(() => { /* leave unchecked */ });

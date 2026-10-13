@@ -18,7 +18,7 @@ export const voiceStore = createStore({
 
 export async function probeMic() {
   try {
-    const d = await apiFetch<{ available?: boolean } | null>('/api/transcribe/status', { cache: 'no-store' });
+    const d = await apiFetch<{ available?: boolean } | null>('/api/transcribe/status');
     voiceStore.set({ micAvailable: !!d?.available });
   } catch { /* leave the mic off */ }
 }
@@ -26,11 +26,11 @@ export async function probeMic() {
 /** Piper availability, then the auto-speak preference and rate (Settings → Voice → Speech). */
 export async function probeTts() {
   try {
-    const d = await apiFetch<{ available?: boolean } | null>('/api/tts/status', { cache: 'no-store' });
+    const d = await apiFetch<{ available?: boolean } | null>('/api/tts/status');
     voiceStore.set({ ttsAvailable: !!d?.available });
   } catch { /* leave TTS off */ }
   try {
-    const d = await apiFetch<{ enabled?: boolean; rate?: unknown } | null>('/api/settings/tts', { cache: 'no-store' });
+    const d = await apiFetch<{ enabled?: boolean; rate?: unknown } | null>('/api/settings/tts');
     const rate = Number(d?.rate);
     voiceStore.set({ ttsEnabled: !!d?.enabled, ...(Number.isFinite(rate) && rate > 0 ? { ttsRate: rate } : {}) });
   } catch { /* preferences default off */ }

@@ -4,7 +4,9 @@
 // message, fall back to the status" shape.
 //
 // Every client REST call goes through this file; there is no raw fetch
-// outside it. The throw contract:
+// outside it, so apiResponse's `cache: 'no-store'` default (a caller's own
+// `cache` wins) keeps every /api read out of the browser's HTTP cache. The
+// throw contract:
 //   - the server answers non-2xx → ApiError (status, parsed body, tail);
 //   - fetch() itself rejects (server down, restarting, unreachable) →
 //     NetworkError, whose message is SERVER_UNREACHABLE_MESSAGE whatever the
@@ -47,7 +49,7 @@ export class NetworkError extends Error {
 /** fetch with network failures normalized; the raw Response, no status check. For status-agnostic or streamed readers. */
 export async function apiResponse(url: string, opts?: RequestInit, fetchImpl: typeof fetch = fetch): Promise<Response> {
   try {
-    return await fetchImpl(url, opts);
+    return await fetchImpl(url, { cache: 'no-store', ...opts });
   } catch (e) {
     if (fieldOf(e, 'name') === 'AbortError') throw e;
     throw new NetworkError(e);

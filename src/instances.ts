@@ -80,7 +80,7 @@ import {
 import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
 import { applySessionTitle, forkTitle } from './sessionTitles.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
-import { isConductorInstance, materializeCurrentConduct } from './conduct.ts';
+import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance, materializeCurrentConduct } from './conduct.ts';
 import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // The DEFAULT is imported rather than restated: a second copy of the level this
 // field is born at would drift from the allow-list that validates it. Safe as a
@@ -5544,6 +5544,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         ? `project required: session ${publicId ?? resume} has no recorded location under a registered project or worktree — list_sessions lists every resumable session under its project and worktree; pass those as project (and worktree)`
         : 'project required');
     }
+    // The hidden conductor project is created on demand, so a create never depends on a prior /ensure.
+    if (project === CONDUCT_PROJECT_NAME) await ensureConductProject();
     const proj = await getProject(project);
     // A worker on a NON-LOCAL system still runs the CLI here — the CLI is
     // always local — but never in the project's own directory, which is a path

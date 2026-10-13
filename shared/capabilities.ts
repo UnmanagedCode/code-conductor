@@ -14,7 +14,7 @@ let pending: Promise<Capabilities | null> | null = null;
 export function loadCapabilities(): Promise<Capabilities | null> {
   pending ??= (async () => {
     try {
-      loaded = (await apiFetch<{ capabilities?: Capabilities } | null>('/api/health', { cache: 'no-store' }))?.capabilities ?? null;
+      loaded = (await apiFetch<{ capabilities?: Capabilities } | null>('/api/health'))?.capabilities ?? null;
       if (!loaded) throw new Error('no capabilities in the response');
     } catch (e) {
       console.warn('capabilities: could not read /api/health, will retry on next use:', e);

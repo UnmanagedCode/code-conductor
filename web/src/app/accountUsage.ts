@@ -14,7 +14,7 @@ let generation = 0;
 export async function refreshAccountUsage() {
   const g = generation;
   try {
-    const j = await apiFetch<any>('/api/usage', { cache: 'no-store' });
+    const j = await apiFetch<any>('/api/usage');
     if (g !== generation || j?.usage == null) return; // keep the last good reading
     accountUsageStore.set({ usage: j.usage, stale: !!j.stale });
     const key = RL_BUCKET_KEYS.find((k: string) => j.usage[k]);

@@ -172,7 +172,7 @@ export function applyModelsPayload(data: ModelsCatalog): void {
 
 export async function loadModelVersions(): Promise<Record<string, Binding>> {
   try {
-    applyModelsPayload(await apiFetch<ModelsCatalog>('/api/settings/models', { cache: 'no-store' }));
+    applyModelsPayload(await apiFetch<ModelsCatalog>('/api/settings/models'));
   } catch { /* keep defaults */ }
   return activeTierBackend;
 }

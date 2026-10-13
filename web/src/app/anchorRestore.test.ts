@@ -1,9 +1,10 @@
 // The first connect's restore of the session the URL names, under every order
 // the instance list, the server's `instances` hints and the anchor lookup can
-// answer in: the named session opens whenever it is live or resumable, a stale
-// list never overwrites a newer one, an unknown session lands on the home
-// screen with nothing re-read, a session the user picks or Back returns to
-// meanwhile stands, and a notification clicked meanwhile opens its own session.
+// answer in: the named session opens whenever it is live or resumable, a hint's
+// read starts only after the read in flight has landed, an unknown session
+// lands on the home screen with nothing re-read, a session the user picks or
+// Back returns to meanwhile stands, and a notification clicked meanwhile opens
+// its own session.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeStashedAnchor, stashCurrentAnchorForRelaunch } from '@shared/anchor';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
@@ -71,64 +72,57 @@ beforeEach(() => { history.replaceState(null, '', '/'); });
 afterEach(() => { stop?.(); stop = null; vi.restoreAllMocks(); consumeStashedAnchor(); });
 
 describe('restoring the URL-named session on first connect', () => {
-  it('the first list read landing before a hint\'s newer read still opens the named session, and the newer list then applies', async () => {
+  it('a hint\'s read waits behind the first list read, which opens the named session; the trailing list then applies', async () => {
     history.replaceState(null, '', '/#session=s-a');
     const b = await boot();
     await b.open();
     await b.hint();
-    expect(b.reads, 'fixture check: the hint started a second read while the first was in flight').toHaveLength(2);
+    expect(b.reads, 'fixture check: the hint started no read while the first was in flight').toHaveLength(1);
     await b.land(1, [A]);
     expect(b.active()).toBe('iA');
     expect(location.hash).toBe('#session=s-a');
     expect(b.subscribes()).toEqual(['iA']);
     expect(b.locates()).toBe(0);
+    expect(b.reads, 'the hint\'s trailing read started once the first landed').toHaveLength(2);
     await b.land(2, [A, B]);
     expect(b.ids()).toEqual(['iA', 'iB']);
     expect(b.active()).toBe('iA');
   });
 
-  it('a hint\'s newer read landing before the first list read opens the named session, and the older read never overwrites it', async () => {
-    history.replaceState(null, '', '/#session=s-a');
-    const b = await boot();
-    await b.open();
-    await b.hint();
-    await b.land(2, [A, B]);
-    await b.land(1, [A]);
-    expect(b.active()).toBe('iA');
-    expect(location.hash).toBe('#session=s-a');
-    expect(b.ids()).toEqual(['iA', 'iB']);
-  });
-
-  it('a hint arriving before the first connect reads the list: the newer list opens the session and the older one landing last never overwrites it', async () => {
+  it('a hint arriving before the first connect: the connect waits for a read that started after it, so the older list never decides the restore', async () => {
     history.replaceState(null, '', '/#session=s-a');
     const b = await boot();
     await b.hint();
     await b.open();
-    expect(b.reads, 'fixture check: the hint\'s read, then the first connect\'s').toHaveLength(2);
-    await b.land(2, [A, B]);
+    expect(b.reads, 'fixture check: the hint\'s read is in flight and the connect\'s waits behind it').toHaveLength(1);
     await b.land(1, []);
+    expect(b.active(), 'the older, empty list does not judge the anchor').toBeNull();
+    expect(b.locates()).toBe(0);
+    expect(location.hash).toBe('#session=s-a');
+    expect(b.reads).toHaveLength(2);
+    await b.land(2, [A, B]);
     expect(b.active()).toBe('iA');
     expect(b.ids()).toEqual(['iA', 'iB']);
   });
 
-  it('with three list reads in flight, the oldest landing first never drops the first connect\'s newer read, which opens the named session, and the newest still applies after it', async () => {
+  it('a hint, the first connect and a second hint share one trailing read: the oldest list landing first does not resolve the connect, and the trailing list opens the named session', async () => {
     history.replaceState(null, '', '/#session=s-a');
     const b = await boot();
     await b.hint();
     await b.open();
     await b.hint();
-    expect(b.reads, 'fixture check: a hint\'s read, the first connect\'s, then a second hint\'s, all in flight').toHaveLength(3);
+    expect(b.reads, 'fixture check: one read in flight, the connect and the second hint wait on one trailing read').toHaveLength(1);
     await b.land(1, [B]);
     expect(b.ids(), 'fixture check: the oldest read, landing first, applied').toEqual(['iB']);
-    // Invariant: a read is dropped only when a newer read has landed, not merely started, so the first connect's await resolves on its own list.
+    expect(b.active(), 'the connect has not restored from the older list').toBeNull();
+    expect(b.locates()).toBe(0);
+    expect(b.reads).toHaveLength(2);
     await b.land(2, [A]);
     expect(b.ids()).toEqual(['iA']);
     expect(b.active()).toBe('iA');
     expect(location.hash).toBe('#session=s-a');
     expect(b.locates()).toBe(0);
-    await b.land(3, [A, B]);
-    expect(b.ids()).toEqual(['iA', 'iB']);
-    expect(b.active()).toBe('iA');
+    expect(b.reads, 'nothing else was read').toHaveLength(2);
   });
 
   it('an unknown session id lands on the home screen with the anchor cleared, looked up once and nothing re-read', async () => {
@@ -145,16 +139,16 @@ describe('restoring the URL-named session on first connect', () => {
     expect(b.reads).toHaveLength(2);
   });
 
-  it('a session the user picks before the first list read lands stands, and the transcript already arriving for it is kept; the named one is never selected', async () => {
+  it('a session the user picks before the first connect\'s own list read lands stands, and the transcript already arriving for it is kept; the named one is never selected', async () => {
     history.replaceState(null, '', '/#session=s-a');
     const b = await boot();
-    await b.open();
     await b.hint();
-    await b.land(2, [A, B]);
+    await b.open();
+    await b.land(1, [A, B]);
     b.c.selectInstance('iB', { userGesture: true });
     await b.frame('snapshot', { id: 'iB', events: [{ kind: 'user_echo', text: 'hi', userIndex: 0, _seq: 1 }, { kind: 'text_delta', msgId: 'm', blockIdx: 0, text: 'yo', _seq: 2 }] });
     expect(b.items(), 'fixture check: the pick\'s transcript arrived').toEqual(['user', 'assistant']);
-    await b.land(1, [A, B]);
+    await b.land(2, [A, B]);
     expect(b.active()).toBe('iB');
     expect(location.hash).toBe('#session=s-b');
     expect(b.items()).toEqual(['user', 'assistant']);

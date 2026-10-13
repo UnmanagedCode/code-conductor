@@ -79,7 +79,7 @@ export function FileCard({ file, summaryUrl }: { file: DiffFileSummary; summaryU
   const load = React.useCallback(async () => {
     setState({ phase: 'loading' });
     try {
-      const json = await apiFetch<any>(fileDiffUrl(summaryUrl, file.path), { cache: 'no-store' });
+      const json = await apiFetch<any>(fileDiffUrl(summaryUrl, file.path));
       if (alive.current) setState({ phase: 'loaded', detail: json.file });
     } catch (e: any) {
       if (alive.current) setState({ phase: 'error', error: e.message });
@@ -132,7 +132,7 @@ export function ReviewView() {
     if (!url) return;
     let live = true;
     setState({ phase: 'loading' });
-    apiFetch<any>(url, { cache: 'no-store' })
+    apiFetch<any>(url)
       .then((data) => live && setState({ phase: 'loaded', data }))
       .catch((e) => live && setState({ phase: 'error', error: e.message }));
     return () => { live = false; };

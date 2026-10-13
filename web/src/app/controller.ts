@@ -36,53 +36,91 @@ export const stickyPrompt = createStickyPrompt({
 // ── REST refreshers ──────────────────────────────────────────────────────
 
 /**
- * Reads applied in start order. Hints come in bursts (two projects created
- * together; a status flip's `instances` and `projects`) and their reads can
- * answer out of order: one that answers after a later read has landed carries
- * an older list, so it is dropped. One that answers first is applied, so when a
- * refresh resolves the store holds a list at least as new as that refresh.
+ * Reads of one list, never overlapping: at most one in flight plus one trailing
+ * read, however many `refresh()` calls arrive. Hints come in bursts (two
+ * projects created together; a status flip's `instances` and `projects`), so a
+ * call made while a read is in flight shares the one trailing read, which starts
+ * once that read settles (landed or failed). A call's promise therefore settles
+ * only after a read that started after the call, so when a refresh resolves the
+ * store holds a list at least as new as that refresh, and reads cannot land out
+ * of order. `supersede()` drops the result of the read in flight (a trailing read
+ * started later is unaffected): for a change the in-flight read cannot reflect.
  */
-function inStartOrder() {
-  let started = 0;
-  let landed = 0;
-  return async <T>(read: () => Promise<T>, apply: (data: T) => void): Promise<void> => {
-    const mine = ++started;
-    const data = await read();
-    if (mine < landed) return;
-    landed = mine;
-    apply(data);
+function coalescedReads<T>(read: () => Promise<T>, apply: (data: T) => void) {
+  type Waiter = { resolve: () => void; reject: (e: unknown) => void };
+  let generation = 0;
+  let running = false;
+  let trailing: { promise: Promise<void> } & Waiter | null = null;
+
+  const start = (): Promise<void> => {
+    const mine = generation;
+    running = true;
+    const p = (async () => {
+      const data = await read();
+      if (mine === generation) apply(data);
+    })();
+    const settled = () => {
+      const next = trailing;
+      trailing = null;
+      if (!next) { running = false; return; }
+      start().then(next.resolve, next.reject);
+    };
+    p.then(settled, settled);
+    return p;
+  };
+
+  return {
+    refresh(): Promise<void> {
+      if (!running) return start();
+      if (!trailing) {
+        let waiter!: Waiter;
+        const promise = new Promise<void>((resolve, reject) => { waiter = { resolve, reject }; });
+        trailing = { promise, ...waiter };
+      }
+      return trailing.promise;
+    },
+    supersede() { generation++; },
   };
 }
 
-const projectReads = inStartOrder();
-export async function refreshProjects() {
-  await projectReads(() => Promise.all([
+const projectReads = coalescedReads(() => Promise.all([
     apiFetch('/api/projects'),
     apiFetch('/api/workspaces').catch(() => []),
     apiFetch('/api/projects/.conduct/sessions').catch(() => []),
     apiFetch('/api/conductors/projects').catch(() => ({})),
   ]), ([projects, workspaces, conductSessions, conductorSpawns]) => {
-    appStore.set({
-      projects: Array.isArray(projects) ? projects : [],
-      workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
-      conductSessions: Array.isArray(conductSessions) ? conductSessions : [],
-      conductorSpawns: conductorSpawns && typeof conductorSpawns === 'object' ? (conductorSpawns as AppState['conductorSpawns']) : {},
-    });
+  appStore.set({
+    projects: Array.isArray(projects) ? projects : [],
+    workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
+    conductSessions: Array.isArray(conductSessions) ? conductSessions : [],
+    conductorSpawns: conductorSpawns && typeof conductorSpawns === 'object' ? (conductorSpawns as AppState['conductorSpawns']) : {},
   });
-}
+});
+export const refreshProjects = projectReads.refresh;
 
-const instanceReads = inStartOrder();
+const instanceReads = coalescedReads(
+  () => apiFetch<Instance[]>('/api/instances'),
+  (data: Instance[]) => {
+    instancesLanded = true;
+    appStore.set({ instances: Array.isArray(data) ? data : [] });
+    emit('instances');
+  },
+);
 /** Whether this controller has applied an instance list: until then an anchor naming no listed session is the restore's to judge. */
 let instancesLanded = false;
-export async function refreshInstances() {
-  await instanceReads(
-    () => apiFetch<Instance[]>('/api/instances'),
-    (data: Instance[]) => {
-      instancesLanded = true;
-      appStore.set({ instances: Array.isArray(data) ? data : [] });
-      emit('instances');
-    },
-  );
+export const refreshInstances = instanceReads.refresh;
+
+/**
+ * Apply an instance the server just created, before any list read: a read
+ * already in flight predates it and is dropped, and a trailing read replaces it.
+ */
+export function adoptInstance(inst: Instance) {
+  instanceReads.supersede();
+  const { instances } = appStore.get();
+  const i = instances.findIndex((x) => x.id === inst.id);
+  appStore.set({ instances: i < 0 ? [...instances, inst] : instances.map((x, j) => (j === i ? inst : x)) });
+  emit('instances');
+  refreshInstances().catch((e) => console.warn('refreshInstances after a create failed:', e));
 }
 
 function patchInstance(id: string, patch: Partial<Instance>) {

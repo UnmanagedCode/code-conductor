@@ -57,7 +57,6 @@ async function boot(list: Inst[]) {
     'GET /api/instances': () => { const h = held<RouteAnswer>(); reads.push(h); return h.answer; },
     'POST /api/instances': (body) => hold(posts, body.resume ?? body.role),
     'GET /api/sessions/': (_body, url) => hold(lookups, decodeURIComponent(url.split('/')[3])),
-    'POST /api/projects/.conduct/ensure': () => ({ json: { ok: true } }),
     'GET /api/projects': () => ({ json: [] }),
     'GET /api/workspaces': () => ({ json: [] }),
   });

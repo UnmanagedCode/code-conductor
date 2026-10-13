@@ -115,7 +115,7 @@ class PluginFrames {
   }
 
   private async api(method: string, path: string) {
-    const r = await apiResponse(path, { method, cache: 'no-store' });
+    const r = await apiResponse(path, { method });
     const data = await readApiBody<any>(r);
     // A success whose body doesn't parse is a failed read, not an empty row.
     if (data === null) throw new Error(`unreadable response (HTTP ${r.status})`);
@@ -267,7 +267,7 @@ export const catalogStore = createStore<{ apps: PluginRow[] }>({ apps: [] });
 
 export async function refreshCatalog() {
   try {
-    const rows = (await apiFetch<{ rows?: PluginRow[] } | null>('/api/plugins', { cache: 'no-store' }))?.rows ?? [];
+    const rows = (await apiFetch<{ rows?: PluginRow[] } | null>('/api/plugins'))?.rows ?? [];
     catalogStore.set({ apps: rows.filter((p) => p.enabled && p.hasFrontend) });
   } catch {
     catalogStore.set({ apps: [] });

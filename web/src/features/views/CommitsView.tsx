@@ -150,7 +150,7 @@ export function CommitsView() {
     const seq = ++loadSeq.current;
     setState((s) => (s.phase === 'loaded' ? s : { phase: 'loading' }));
     try {
-      const data = await apiFetch<CommitsPayload>(`${apiBase}/commits`, { cache: 'no-store' });
+      const data = await apiFetch<CommitsPayload>(`${apiBase}/commits`);
       if (seq !== loadSeq.current) return;
       if (worktree) setLocked(data.locked === true);
       setState({ phase: 'loaded', data });

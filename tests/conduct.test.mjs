@@ -183,3 +183,17 @@ test('POST /api/instances with project=.conduct spawns successfully', async () =
   assert.equal(list.status, 200);
   assert.ok(list.body.some(i => i.id === id && i.project === '.conduct'));
 });
+
+// The server ensures the .conduct project on any conductor create, so a client
+// never has to call /ensure first and a boot that skipped the ensure still spawns.
+test('creating a .conduct instance with no .conduct record ensures the project and spawns', async () => {
+  const { readProjectRecord } = await import('../src/projects.ts');
+  assert.equal(await readProjectRecord('.conduct'), null, 'fixture: no .conduct record yet');
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions',
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.notEqual(await readProjectRecord('.conduct'), null, 'the record exists');
+  const claudeMd = await fs.readFile(path.join(projectsRoot, '.conduct', 'CLAUDE.md'), 'utf8');
+  assert.ok(claudeMd.split('\n').some(l => l.trim() === '@CONVENTIONS.md'));
+});

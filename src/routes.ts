@@ -356,6 +356,9 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   } = {}): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
+  // Every /api body is live state: no cache entry for concurrent identical GETs
+  // to queue on. A route that sets its own Cache-Control later overrides this.
+  r.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   // Features the host platform turns off are refused here, before their handlers.
   r.use(['/settings/systems', '/systems', '/projects/:name/remote'], requireCapability(capabilities, 'remoteSystems'));
   r.use(['/transcribe', '/tts', '/settings/transcribe', '/settings/tts'], requireCapability(capabilities, 'voice'));

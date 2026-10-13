@@ -12,7 +12,7 @@
 //   2. Short TTL (`PRODUCTION_TTL_MS`) — sequential refreshes within the TTL are served
 //      from the cache. Staleness is bounded and acceptable for passive sidebar
 //      updates; targeted invalidate() calls cover every user-triggered mutation
-//      (merge/sync/worktree delete/instance spawn-exit) so those always see fresh
+//      (merge/sync/worktree delete) so those always see fresh
 //      state immediately.
 //
 // A generation counter prevents an in-flight result that completes after an
@@ -96,7 +96,7 @@ export function projectCacheKey(systemId: string, projectName: string): string {
  * to getOrCompute() starts a fresh computation.
  *
  * Takes the PROJECT NAME, not a key: the callers are mutations (a merge, a
- * worktree delete, an instance exit) that know which project changed and not
+ * worktree delete) that know which project changed and not
  * which system it is on — and a placement change is itself a reason to
  * invalidate, so a caller that had to name the system would name the wrong one
  * exactly when it mattered most. Every key for the name goes.
@@ -110,8 +110,10 @@ export function invalidate(projectName: string): void {
 }
 
 /**
- * Invalidate all cached entries. Called on list_changed (instance spawn/exit)
- * since we don't know which project was affected.
+ * Invalidate all cached entries. Called on a projectsChanged signal (a project,
+ * workspace or worktree record write landed) since we don't know which project
+ * was affected. An instance spawn or exit does not call it: the cached facts hold
+ * nothing derived from the instance list.
  */
 export function invalidateAll(): void {
   for (const [key, entry] of _entries) {
