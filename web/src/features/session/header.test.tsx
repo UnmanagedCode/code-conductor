@@ -22,6 +22,7 @@ import { SWIPE_MIN_PX } from '@/conversation/stickyPrompt';
 import type { Instance } from '@/state/types';
 import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGroups, runningBackendOf } from './SessionHeader';
 import { UsageChip } from './UsageChip';
+import { Dot } from '@/features/sidebar/rows';
 
 const base = (extra: Partial<Instance> = {}): Instance => ({
   id: 'inst-1', project: 'demo', status: 'idle', displayStatus: 'idle', sessionId: 'sess-1', mode: 'bypassPermissions',
@@ -818,5 +819,34 @@ describe('reveal swipe', () => {
       reveal.mockRestore();
       conceal.mockRestore();
     }
+  });
+});
+
+describe('status dot', () => {
+  const headerDots = (container: HTMLElement) => container.querySelectorAll('[data-session-header] span[aria-label]');
+  const rows: [string, Partial<Instance>, string][] = [
+    ['idle + held wake is on a worker', { awaitingWake: true }, 'idle — waiting on a worker'],
+    ['idle + background job', { waitingOnJob: true }, 'idle — waiting on a background job'],
+    ['a worker wins over a job', { awaitingWake: true, waitingOnJob: true }, 'idle — waiting on a worker'],
+    ['running outranks a held wake', { displayStatus: 'running', awaitingWake: true }, 'running'],
+    ['plain idle invents no wait', {}, 'idle'],
+    ['a turn reads running', { status: 'turn', displayStatus: 'turn' }, 'running'],
+    ['spawning keeps its name', { status: 'spawning', displayStatus: 'spawning' }, 'spawning'],
+    ['crashed keeps its name', { status: 'crashed', displayStatus: 'crashed' }, 'crashed'],
+    ['exited keeps its name', { status: 'exited', displayStatus: 'exited' }, 'exited'],
+    ['a question needs you', { awaitingUser: 'question', awaitingUserSource: 'tool' }, 'waiting on you (question) · idle'],
+    ['a text ask names its source', { awaitingUser: 'question', awaitingUserSource: 'text' }, 'waiting on you (asked in text) · idle'],
+    ['a question composes with on-a-worker', { awaitingUser: 'question', awaitingUserSource: 'tool', awaitingWake: true }, 'waiting on you (question) · on a worker'],
+  ];
+  it.each(rows)('%s', (_name, overrides, expected) => {
+    const inst = base(overrides);
+    const { container } = wrap(<SessionHeader inst={inst} onMenu={() => {}} />);
+    const dots = headerDots(container);
+    expect(dots).toHaveLength(1);
+    const name = dots[0].getAttribute('aria-label');
+    expect(name).toBe(expected);
+    cleanup();
+    const sidebar = wrap(<Dot status={inst.displayStatus ?? inst.status} awaitingWake={inst.awaitingWake} waitingOnJob={inst.waitingOnJob} awaitingUser={inst.awaitingUser} awaitingUserSource={inst.awaitingUserSource} />);
+    expect(name).toBe(sidebar.container.querySelector('span[aria-label]')!.getAttribute('aria-label'));
   });
 });
