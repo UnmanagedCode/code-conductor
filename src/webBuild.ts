@@ -90,11 +90,14 @@ function builtHash(distDir: string): string | null {
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 // Removes `<dist>.tmp-<pid>` / `<dist>.old-<pid>` siblings a killed process left
-// behind. Only a pid that is no longer running: another live server's tmp may
-// be a build in flight. Best effort, one entry at a time.
+// behind, and the same under the staged `<dist>.next`, in one read of the
+// parent (os.tmpdir() in tests, which can be huge). Only a pid that is no
+// longer running: another live server's tmp may be a build in flight. Best
+// effort, one entry at a time.
 function sweepLeftovers(distDir: string, log: Pick<Console, 'error'>): void {
   const parent = path.dirname(distDir);
-  const re = new RegExp(`^${path.basename(distDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(?:tmp|old)-(\\d+)$`);
+  const base = path.basename(distDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^${base}(?:\\.next)?\\.(?:tmp|old)-(\\d+)$`);
   let names: string[];
   try { names = fs.readdirSync(parent); } catch { return; }
   for (const name of names) {
@@ -205,7 +208,6 @@ export async function ensureWebBuild(
   // unawaited, so a rejection would be unhandled and take the server down.
   try {
     sweepLeftovers(distDir, log);
-    sweepLeftovers(staged, log);
     const hash = webSourceHash();
     if (builtHash(distDir) === hash) { Object.assign(state, { phase: 'ready', error: null }); return { ...state }; }
     if (builtHash(staged) === hash) {

@@ -35,7 +35,8 @@ describe('ensureWebBuild', () => {
     expect(fs.readFileSync(path.join(distDir, '.source-hash'), 'utf8').trim()).toBe(webSourceHash());
   });
 
-  it('does not rebuild when the sources are unchanged', async () => {
+  // Hashes all of web/ + shared/ and reads os.tmpdir() (distDir's parent, which can hold 10^5 entries): ~0.5 s idle, far more under load.
+  it('does not rebuild when the sources are unchanged', { timeout: 30_000 }, async () => {
     const index = path.join(distDir, 'index.html');
     const mtime = fs.statSync(index).mtimeMs;
     log.log.mockClear();
@@ -44,11 +45,14 @@ describe('ensureWebBuild', () => {
     expect(fs.statSync(index).mtimeMs).toBe(mtime);
   });
 
-  it('sweeps <dist>.tmp-<pid> / .old-<pid> leftovers of dead processes, never a live one\'s', async () => {
+  it('sweeps <dist>[.next].tmp-<pid> / .old-<pid> leftovers of dead processes, never a live one\'s', async () => {
     const dead = spawnSync(process.execPath, ['-e', '']).pid!;
     const sibling = (suffix: string) => { const d = `${distDir}${suffix}`; fs.mkdirSync(d); fs.writeFileSync(path.join(d, 'x'), 'x'); return d; };
-    const swept = [sibling(`.tmp-${dead}`), sibling(`.old-${dead}`)];
-    const kept = [sibling(`.tmp-${process.ppid}`), sibling(`.old-${process.ppid}`), sibling(`.tmp-${process.pid}`), sibling('.tmp-notapid')];
+    const swept = [sibling(`.tmp-${dead}`), sibling(`.old-${dead}`), sibling(`.next.tmp-${dead}`), sibling(`.next.old-${dead}`)];
+    const kept = [
+      sibling(`.tmp-${process.ppid}`), sibling(`.old-${process.ppid}`), sibling(`.tmp-${process.pid}`), sibling('.tmp-notapid'),
+      sibling(`.next.tmp-${process.ppid}`), sibling(`.other.tmp-${dead}`),
+    ];
     try {
       expect(await ensureWebBuild({ log, distDir })).toEqual({ phase: 'ready', error: null });
       expect(swept.filter((d) => fs.existsSync(d))).toEqual([]);
