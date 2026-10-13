@@ -32,7 +32,6 @@ async function measure(page: Page) {
     const lb = liveBubble.getBoundingClientRect();
     return {
       listWidth: lr.width,
-      listContentWidth: lr.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
       listLeft: lr.left,
       listContentLeft: lr.left + parseFloat(cs.paddingLeft),
       pinContentLeft: pr.left + parseFloat(pcs.paddingLeft),
