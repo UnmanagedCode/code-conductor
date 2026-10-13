@@ -1,10 +1,12 @@
 import * as React from 'react';
 import { MenuIcon, SparklesIcon, FolderPlusIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { OctopusMaestro } from '@/components/mascot/Octopus';
 import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { uiStore } from '@/app/ui';
+import { SESSION_COLUMN_MAX_W, sessionWidthStore } from '@/app/sessionWidth';
 import { on } from '@/app/events';
 import { ConversationView } from '@/conversation/ConversationView';
 import { Composer, type ComposerHandle } from '@/features/composer/Composer';
@@ -37,6 +39,7 @@ function EmptyState() {
 
 export function SessionView() {
   const inst = useStore(appStore, activeInstance);
+  const preset = useStore(sessionWidthStore, (s) => s.preset);
   const composerRef = React.useRef<ComposerHandle>(null);
 
   // Focus the prompt after the user picks a session — not on page-load restores,
@@ -72,7 +75,7 @@ export function SessionView() {
           </div>
         }
       />
-      <div className="mx-auto w-full max-w-3xl space-y-2 px-3 pb-[max(env(safe-area-inset-bottom,0px),0.75rem)] md:px-6">
+      <div data-session-width={preset} className={cn('mx-auto w-full space-y-2 px-3 pb-[max(env(safe-area-inset-bottom,0px),0.75rem)] md:px-6', SESSION_COLUMN_MAX_W[preset])}>
         <TaskPanel inst={inst} />
         <SubagentPanel inst={inst} />
         <TurnIndicator inst={inst} />
