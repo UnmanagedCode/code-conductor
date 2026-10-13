@@ -20,14 +20,12 @@ export type ResizableWidthOptions = {
   label: string;
   /** aria-valuemin reads 0: collapse is a reachable value. */
   collapsible?: boolean;
-  /** aria-valuenow reads 0, and a drag or key starts from 0. A function is given the preferred width, for a caller whose collapse depends on it. */
-  collapsed?: boolean | ((preferred: number) => boolean);
+  /** aria-valuenow reads 0, a drag starts from 0, and the grow key calls onToggle instead of resizing. A function is given the widths, for a caller whose collapse depends on them. */
+  collapsed?: boolean | ((w: { preferred: number; width: number }) => boolean);
   /** Pointer release at the unclamped width; false = the caller handled it (a snap), commit nothing. Default: commit. */
   onRelease?: (raw: number) => boolean;
-  /** Double-click and Enter. Default: remove the key (back to defaultWidth). */
+  /** Double-click, Enter, and the grow key while collapsed. Default: remove the key (back to defaultWidth). */
   onToggle?: () => void;
-  /** After every commit (release or arrow key). */
-  onCommit?: (width: number) => void;
 };
 
 function readWidth(key: string, min: number): number | null {
@@ -56,7 +54,7 @@ export function useResizableWidth(o: ResizableWidthOptions) {
   const clamp = (n: number) => Math.min(ceiling, Math.max(o.min, n));
   const preferred = stored ?? Math.max(o.min, o.defaultWidth);
   const width = clamp(preferred);
-  const collapsed = typeof o.collapsed === 'function' ? o.collapsed(preferred) : !!o.collapsed;
+  const collapsed = typeof o.collapsed === 'function' ? o.collapsed({ preferred, width }) : !!o.collapsed;
   const start = collapsed ? 0 : width;
   const sign = o.edge === 'right' ? 1 : -1;
 
@@ -64,7 +62,6 @@ export function useResizableWidth(o: ResizableWidthOptions) {
     const px = Math.round(w);
     setStored(px);
     try { localStorage.setItem(o.storageKey, String(px)); } catch { /* private mode */ }
-    o.onCommit?.(px);
   };
   const reset = () => {
     setStored(null);
@@ -107,7 +104,8 @@ export function useResizableWidth(o: ResizableWidthOptions) {
     if (e.key === 'Enter') { e.preventDefault(); toggle(); return; }
     if (e.key !== grow && e.key !== shrink) return;
     e.preventDefault();
-    if (e.key === shrink && collapsed) return;
+    // Collapsed, the keys only open it (as Enter does), so opening never overwrites the stored width.
+    if (collapsed) { if (e.key === grow) toggle(); return; }
     commit(clamp(start + (e.key === grow ? RESIZE_KEY_STEP : -RESIZE_KEY_STEP)));
   };
 

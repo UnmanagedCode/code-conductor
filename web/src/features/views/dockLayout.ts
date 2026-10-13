@@ -14,15 +14,25 @@ export const DOCK_TRANSCRIPT_MIN_WIDTH = 400;
 
 export type DockMode = 'hidden' | 'rail' | 'split' | 'full';
 
-/** The widest panel that leaves the rail and the transcript their room; unbounded before the first measurement. */
-export function maxPanel(available: number | null): number {
-  return available === null ? Infinity : available - DOCK_RAIL_WIDTH - DOCK_TRANSCRIPT_MIN_WIDTH;
+/** The widest panel that leaves the rail and the transcript their room in a main row `available` px wide. */
+export function maxPanel(available: number): number {
+  return available - DOCK_RAIL_WIDTH - DOCK_TRANSCRIPT_MIN_WIDTH;
 }
 
-/** What a drag's release at the unclamped width `raw` does. */
-export function releaseDecision(raw: number, available: number | null): 'rail' | 'full' | 'width' {
+/** Whether a panel `width` px wide fits beside the rail and the transcript floor; before the first measurement (null) everything fits. */
+export function fits(width: number, available: number | null): boolean {
+  return available === null || width <= maxPanel(available);
+}
+
+/** Whether any split fits: false once not even DOCK_PANEL_MIN_WIDTH does, and then every open from the rail is the full view. */
+export function canSplit(available: number | null): boolean {
+  return fits(DOCK_PANEL_MIN_WIDTH, available);
+}
+
+/** What a drag's release at the unclamped width `raw` does: the rail below the minimum, else the full view when no split fits or `raw` passes the transcript limit. */
+export function releaseDecision(raw: number, available: number): 'rail' | 'full' | 'width' {
   if (raw < DOCK_PANEL_MIN_WIDTH) return 'rail';
-  if (raw > maxPanel(available)) return 'full';
+  if (!canSplit(available) || raw > maxPanel(available)) return 'full';
   return 'width';
 }
 
@@ -44,8 +54,7 @@ export function dockLayout(i: {
 }): { mode: DockMode; shownId: string | null; railShown: boolean } {
   if (i.view === 'plugin') return { mode: 'full', shownId: i.routePluginId, railShown: i.desktop && i.catalogIds.length > 0 };
   if (!i.desktop || i.view !== 'session' || !i.catalogIds.length) return { mode: 'hidden', shownId: null, railShown: false };
-  const fits = i.available === null || i.width + DOCK_RAIL_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH <= i.available;
   const id = i.dragging ? dockTarget(i.dock.id, i.catalogIds) : i.dock.open && i.dock.id !== null && i.catalogIds.includes(i.dock.id) ? i.dock.id : null;
-  if (id !== null && fits) return { mode: 'split', shownId: id, railShown: true };
+  if (id !== null && canSplit(i.available) && fits(i.width, i.available)) return { mode: 'split', shownId: id, railShown: true };
   return { mode: 'rail', shownId: null, railShown: true };
 }

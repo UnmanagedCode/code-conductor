@@ -1,8 +1,11 @@
 // The plugin column's mode rules, one per test, and the release snaps at their boundaries.
 import { describe, expect, it } from 'vitest';
 import {
-  DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH, dockLayout, maxPanel, releaseDecision,
+  canSplit, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH, dockLayout, maxPanel, releaseDecision,
 } from './dockLayout';
+
+/** A main row whose maxPanel is `panel`. */
+const rowFor = (panel: number) => panel + DOCK_RAIL_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH;
 
 const W = 520;
 const CATALOG = ['alpha', 'beta'];
@@ -80,9 +83,46 @@ describe('releaseDecision', () => {
     expect(releaseDecision(raw, available)).toBe(decision);
   });
 
-  it('maxPanel leaves the rail and the transcript floor, and is unbounded before a measurement', () => {
+  it('maxPanel leaves the rail and the transcript floor', () => {
     // Invariant: the panel's ceiling is the room the transcript does not need.
     expect(maxPanel(available)).toBe(available - DOCK_RAIL_WIDTH - DOCK_TRANSCRIPT_MIN_WIDTH);
-    expect(maxPanel(null)).toBe(Infinity);
+  });
+
+  it.each([
+    [DOCK_PANEL_MIN_WIDTH - 1, 'rail'],
+    [DOCK_PANEL_MIN_WIDTH, 'full'],
+    [10_000, 'full'],
+  ] as const)('with maxPanel one px under the minimum a release at %i is %s', (raw, decision) => {
+    // Invariant: when no split width fits, a release below the minimum snaps to the rail and any other to the full view, never to a width.
+    expect(releaseDecision(raw, rowFor(DOCK_PANEL_MIN_WIDTH - 1))).toBe(decision);
+  });
+
+  it('with maxPanel at the minimum a release at the minimum is a width', () => {
+    // Invariant: the smallest split is possible exactly when maxPanel reaches DOCK_PANEL_MIN_WIDTH.
+    expect(releaseDecision(DOCK_PANEL_MIN_WIDTH, rowFor(DOCK_PANEL_MIN_WIDTH))).toBe('width');
+  });
+});
+
+describe('canSplit', () => {
+  it.each([
+    ['maxPanel one px under the minimum', rowFor(DOCK_PANEL_MIN_WIDTH - 1), false],
+    ['maxPanel at the minimum', rowFor(DOCK_PANEL_MIN_WIDTH), true],
+    ['no measurement yet', null, true],
+  ] as const)('with %s is %s', (_what, available, can) => {
+    // Invariant: a split is possible exactly when DOCK_PANEL_MIN_WIDTH fits; before the first measurement it counts as possible.
+    expect(canSplit(available)).toBe(can);
+  });
+
+  it.each([
+    [DOCK_PANEL_MIN_WIDTH - 1, 'rail'],
+    [DOCK_PANEL_MIN_WIDTH, 'split'],
+  ] as const)('an open dock at the minimum width with maxPanel %i is %s', (panel, mode) => {
+    // Invariant: dockLayout shows split only when some split width fits.
+    expect(dockLayout(input({ dock: { id: 'alpha', open: true }, width: DOCK_PANEL_MIN_WIDTH, available: rowFor(panel) })).mode).toBe(mode);
+  });
+
+  it('a drag never splits when no split width fits', () => {
+    // Invariant: with no room for split a drag in progress shows the rail; its release decides between the rail and the full view.
+    expect(dockLayout(input({ dragging: true, width: DOCK_PANEL_MIN_WIDTH, available: rowFor(DOCK_PANEL_MIN_WIDTH - 1) })).mode).toBe('rail');
   });
 });

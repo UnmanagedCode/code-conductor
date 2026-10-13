@@ -7,7 +7,7 @@
 // shared by the spec file; this module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
-import { spawnSession } from './harness/api.ts';
+import { api, spawnSession } from './harness/api.ts';
 import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH } from '../src/features/views/dockLayout.ts';
@@ -225,14 +225,7 @@ export async function autoCollapseFlow({ page, cc }: Args): Promise<void> {
   // Invariant (8): a window that cannot keep the transcript beside the dock shows the rail without writing anything, and widening it restores split at the same width on the same app.
   desktopOnly();
   await onSession(page, cc, 'collapse');
-  await handle(page).focus();
-  await page.keyboard.press('ArrowLeft');
-  await expect(handle(page), 'a key opens the rail at the minimum').toHaveAttribute('aria-valuenow', String(DOCK_PANEL_MIN_WIDTH));
-  const presses = (W - DOCK_PANEL_MIN_WIDTH) / RESIZE_KEY_STEP;
-  expect(Number.isInteger(presses), 'fixture check: W is a whole number of steps above the minimum').toBe(true);
-  for (let i = 0; i < presses; i++) await page.keyboard.press('ArrowLeft');
-  await expect(handle(page)).toHaveAttribute('aria-valuenow', String(W));
-  await expectSplit(page, 'docked by keys');
+  await dockAtW(page, PLAIN);
   const docked = await rail(page).locator('[aria-current="true"]').getAttribute('data-rail-app');
   const stored = () => page.evaluate(() => JSON.stringify(Object.entries(localStorage).sort()));
   const before = await stored();
@@ -304,3 +297,25 @@ export async function phoneFlow({ page, cc }: Args): Promise<void> {
   await expect(section(page)).toBeHidden();
   await expect(page.locator('[data-plugin-rail]')).toHaveCount(0);
 }
+
+export async function toastClearsRailFlow({ page, cc }: Args): Promise<void> {
+  // Invariant (6): with the rail shown, a toast ends left of the rail, clear of it and of the dock handle's hit area.
+  desktopOnly();
+  const { id, sessionId } = await spawnSession(cc, `dock-toast-${test.info().project.name}`, { worktree: true, temp: false });
+  await expect.poll(async () => {
+    const row = ((await api(cc, 'GET', '/api/instances')).body as { id: string; status: string; sessionId: string | null }[]).find((r) => r.id === id);
+    return row?.status === 'idle' && !!row.sessionId;
+  }, { message: 'fixture check: the worktree session is idle', timeout: 20_000 }).toBe(true);
+  await page.goto(`/#session=${sessionId}`);
+  await expect(railApp(page, PLAIN)).toBeVisible();
+  // The worktree matches its parent, so Sync answers ok and toasts that it is up to date.
+  await page.locator('[data-session-header]').getByRole('button', { name: 'Sync', exact: true }).click();
+  const toast = page.locator('[data-sonner-toast]');
+  await expect(toast, 'fixture check: Sync raised a toast').toHaveCount(1);
+  await expect(toast).toBeVisible();
+  const t = await boxOf(toast, 'the toast');
+  const h = await boxOf(handle(page), 'the dock handle');
+  expect(right(t), 'the toast ends left of the rail').toBeLessThanOrEqual((await boxOf(rail(page), 'the rail')).x);
+  expect(right(t), 'and of the handle\'s hit area').toBeLessThanOrEqual(h.x);
+}
+

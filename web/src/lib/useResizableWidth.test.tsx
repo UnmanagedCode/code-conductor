@@ -58,21 +58,23 @@ describe('useResizableWidth', () => {
     expect(now()).toBe(600);
   });
 
-  it('collapsed reads 0 between 0 and max, drags from 0, and a grow key commits min while a shrink key does nothing', () => {
-    // Invariant: a collapsible handle at its collapsed end reports and starts from 0; the keys can only open it, to min.
+  it('collapsed reads 0 between 0 and max and drags from 0; its grow key opens it through onToggle, writing nothing, and its shrink key does nothing', () => {
+    // Invariant: a collapsible handle at its collapsed end reports and starts from 0; the keys can only open it, the way Enter does, and never overwrite the stored width.
     const onRelease = vi.fn(() => false);
-    const onCommit = vi.fn();
-    render(<Harness collapsible collapsed onRelease={onRelease} onCommit={onCommit} />);
+    const onToggle = vi.fn();
+    localStorage.setItem(KEY, '400');
+    render(<Harness collapsible collapsed onRelease={onRelease} onToggle={onToggle} />);
     expect(now()).toBe(0);
     expect(handle().getAttribute('aria-valuemin')).toBe('0');
     drag(250);
     expect(onRelease).toHaveBeenLastCalledWith(250);
     const setItem = vi.spyOn(localStorage, 'setItem');
     fireEvent.keyDown(handle(), { key: 'ArrowLeft' });
-    expect(setItem, 'shrinking a collapsed handle').not.toHaveBeenCalled();
+    expect(onToggle, 'shrinking a collapsed handle').not.toHaveBeenCalled();
     fireEvent.keyDown(handle(), { key: 'ArrowRight' });
-    expect(setItem).toHaveBeenLastCalledWith(KEY, '200');
-    expect(onCommit).toHaveBeenLastCalledWith(200);
+    expect(onToggle, 'growing opens it').toHaveBeenCalledTimes(1);
+    expect(setItem, 'no width written').not.toHaveBeenCalled();
+    expect(localStorage.getItem(KEY)).toBe('400');
   });
 
   it('preferred is the stored width uncapped by max, and width is it capped', () => {

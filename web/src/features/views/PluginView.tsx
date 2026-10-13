@@ -14,9 +14,11 @@ import { useResizableWidth } from '@/lib/useResizableWidth';
 import { useEscapeToClose } from './ViewShell';
 import { appLabel, catalogStore, overlayStore, pluginFrames, refreshCatalog } from './plugins';
 import {
-  DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, dockLayout, dockTarget, maxPanel, releaseDecision,
+  canSplit, DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, dockLayout, dockTarget, fits, maxPanel, releaseDecision,
 } from './dockLayout';
-import { collapseDock, DOCK_WIDTH_STORAGE_KEY, dockMirror, dockStore, expandDocked, fullMirror, openDock } from './dock';
+import {
+  collapseDock, DOCK_WIDTH_STORAGE_KEY, dockMirror, dockStore, expandApp, expandDocked, fullMirror, openDock, railStore,
+} from './dock';
 import { PluginRail } from './PluginRail';
 import { cn } from '@/lib/utils';
 
@@ -48,22 +50,32 @@ export function PluginView() {
   const available = useAvailableWidth(columnRef);
   const pluginsRev = useSignal(pluginsChangedSignal);
 
+  // Before the first measurement the window bounds the handle (the layout still treats null as fitting).
+  const room = available ?? window.innerWidth;
+  // Opened from a rail the stored width no longer fits: split shows at the widest width that does, and the stored width stays the preference.
+  const [squeezed, setSqueezed] = React.useState(false);
   const layoutAt = (width: number, dragging: boolean) => dockLayout({
     desktop, view: route.view, routePluginId: route.pluginId, catalogIds, dock, width, available, dragging,
   });
   const target = dockTarget(dock.id, catalogIds);
+  /** A rail open: split, squeezed when the stored width does not fit; the full view when no split fits. Writes no width. */
+  const openFromRail = (id: string) => {
+    if (!canSplit(available)) { expandApp(id); return; }
+    openDock(id);
+    setSqueezed(!fits(preferred, available));
+  };
   const { preferred, width, live, handleProps } = useResizableWidth({
     storageKey: DOCK_WIDTH_STORAGE_KEY,
     min: DOCK_PANEL_MIN_WIDTH,
-    max: maxPanel(available),
+    max: maxPanel(room),
     defaultWidth: DOCK_PANEL_DEFAULT_WIDTH,
     edge: 'left',
     label: 'Resize plugin dock',
     collapsible: true,
-    collapsed: (p) => layoutAt(p, false).mode === 'rail',
+    collapsed: (w) => layoutAt(squeezed ? w.width : w.preferred, false).mode === 'rail',
     onRelease: (raw) => {
       if (!target) return false;
-      switch (releaseDecision(raw, available)) {
+      switch (releaseDecision(raw, room)) {
         case 'rail':
           collapseDock();
           return false;
@@ -77,17 +89,26 @@ export function PluginView() {
       }
     },
     onToggle: () => {
-      if (dock.open) collapseDock();
-      else if (target) openDock(target);
+      if (mode === 'split') collapseDock();
+      else if (target) openFromRail(target);
     },
-    onCommit: () => { if (target) openDock(target); },
   });
-  // A drag's own width always fits (it is clamped to the room left); otherwise the preferred width decides.
-  const { mode, shownId, railShown } = layoutAt(live ?? preferred, live !== null);
+  // A drag's own width always fits (it is clamped to the room left); otherwise the preferred width decides, or the shown one while squeezed.
+  const { mode, shownId, railShown } = layoutAt(live ?? (squeezed ? width : preferred), live !== null);
+  // The squeeze ends with the dock closing or the stored width fitting again (a later narrowing then collapses to the rail).
+  const unsqueeze = squeezed && (!dock.open || fits(preferred, available));
+  React.useEffect(() => { if (unsqueeze) setSqueezed(false); }, [unsqueeze]);
+  // Nothing shown: the rail marks the docked app, which a rail open reopens.
+  const markedId = shownId ?? (dock.id !== null && catalogIds.includes(dock.id) ? dock.id : null);
   const shown = mode === 'split' || mode === 'full';
   const panelWidth = live ?? width;
   const title = shownId ? appLabel(apps.find((a) => a.id === shownId) ?? { name: shownId }) : '';
   useEscapeToClose(mode === 'full');
+
+  React.useLayoutEffect(() => {
+    railStore.set({ shown: railShown });
+    return () => railStore.set({ shown: false });
+  }, [railShown]);
 
   React.useLayoutEffect(() => {
     pluginFrames.attach(hostRef.current);
@@ -152,7 +173,7 @@ export function PluginView() {
           )}
         </div>
       </section>
-      {railShown && <PluginRail mode={mode} shownId={shownId} />}
+      {railShown && <PluginRail mode={mode} markedId={markedId} onOpen={openFromRail} />}
     </div>
   );
 }

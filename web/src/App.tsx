@@ -10,6 +10,8 @@ import { ConfirmHost, ToastHost } from '@/ui/feedback';
 import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
+import { railStore } from '@/features/views/dock';
+import { DOCK_RAIL_WIDTH } from '@/features/views/dockLayout';
 import { DialogsHost } from '@/features/dialogs/DialogsHost';
 import { focusContent } from '@/lib/modalFocus';
 
@@ -21,6 +23,8 @@ const CostsView = lazy(() => import('@/features/views/CostsView').then((m) => ({
 
 // Toasts sit below the views' top bar at every width, so none covers its controls.
 const TOAST_OFFSET = { top: 'calc(env(safe-area-inset-top, 0px) + var(--header-height) + 0.5rem)' };
+// Beside the plugin dock's rail, toasts keep sonner's own 24px gap from the rail instead of from the window's edge.
+const TOAST_OFFSET_RAIL = { ...TOAST_OFFSET, right: `${DOCK_RAIL_WIDTH + 24}px` };
 
 function ViewFallback() {
   return (
@@ -45,6 +49,7 @@ function MainView() {
 export function App() {
   const sidebarOpen = useStore(uiStore, (s) => s.sidebarOpen);
   const theme = useStore(themeStore, (s) => s.resolved);
+  const railShown = useStore(railStore, (s) => s.shown);
   return (
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
@@ -67,7 +72,7 @@ export function App() {
       </div>
       <DialogsHost />
       <ConfirmHost />
-      <ToastHost theme={theme} position="top-right" offset={TOAST_OFFSET} mobileOffset={TOAST_OFFSET} richColors closeButton />
+      <ToastHost theme={theme} position="top-right" offset={railShown ? TOAST_OFFSET_RAIL : TOAST_OFFSET} mobileOffset={TOAST_OFFSET} richColors closeButton />
     </TooltipProvider>
   );
 }

@@ -21,6 +21,8 @@ import {
   column, dockHandle, dragBy, emitWidth, endHost, go, host, keepRow, mountApp, net, plainRow, pluginView, postRoute, rail, railButton,
   residentFrame, resetHost, settle, sharedFrame, shownFrames, standInWindow, stubResizeObserver, viewOpen,
 } from './test/pluginHost';
+import { DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
+import { DOCK_STORAGE_KEY, DOCK_WIDTH_STORAGE_KEY } from './dock';
 
 const ANCHOR = '#session=sess-1';
 /** Two apps, one plain and one keep-alive, in catalog order. */
@@ -415,5 +417,118 @@ describe('the plugin dock', () => {
     await settle();
     expectSplit('desktop again');
     expect(current()).toBe('Alpha');
+  });
+});
+
+/** A main row `px` wider than what the rail and the transcript floor take. */
+const roomFor = (px: number) => px + DOCK_RAIL_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH;
+const widthWrites = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter((c) => c[0] === DOCK_WIDTH_STORAGE_KEY);
+const storedDock = () => JSON.parse(localStorage.getItem(DOCK_STORAGE_KEY) ?? 'null');
+
+/** The rail actions that open the dock: an app's icon, and the handle's Enter, double-click and grow key. */
+const OPENERS = {
+  'the app icon': () => press('Alpha'),
+  'Enter on the handle': () => key('Enter'),
+  'a double-click on the handle': async () => { await act(async () => { fireEvent.doubleClick(handle()); }); await settle(); },
+  'the grow key': () => key('ArrowLeft'),
+} as const;
+const openerNames = Object.keys(OPENERS) as (keyof typeof OPENERS)[];
+
+describe('opening the dock from the rail', () => {
+  it('the grow key on a collapsed dock reopens split at the stored width and writes no width', async () => {
+    // Invariant: opening from the rail never overwrites the stored width; only a resize within split or a drag release persists one.
+    await mountApp();
+    await drag(-W);
+    expectSplit('fixture check: docked at W');
+    await press('Alpha');
+    expectRail('fixture check: collapsed');
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    await key('ArrowLeft');
+    expectSplit('the grow key');
+    expect(now()).toBe(W);
+    expect(localStorage.getItem(DOCK_WIDTH_STORAGE_KEY)).toBe(String(W));
+    expect(widthWrites(setItem), 'no width written').toEqual([]);
+  });
+
+  it.each(openerNames)('when no split width fits, %s opens the full view with one history entry', async (opener) => {
+    // Invariant: a window too narrow for any split turns every rail open into the full view instead of a silent no-op.
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(roomFor(DOCK_PANEL_MIN_WIDTH - 1));
+    expectRail('fixture check: on the rail');
+    const entries = history.length;
+    await OPENERS[opener]();
+    expect(location.hash).toBe('#plugin/alpha/');
+    expect(history.length, 'one entry pushed').toBe(entries + 1);
+    expect(viewOpen()).toBe(true);
+    expect(sessionShown(), 'the full view').toBe(false);
+  });
+
+  it.each([
+    ['below the minimum stays on the rail', DOCK_PANEL_MIN_WIDTH - 1, null],
+    ['at the minimum opens the full view', DOCK_PANEL_MIN_WIDTH, '#plugin/alpha/'],
+  ] as const)('when no split width fits, a drag from the rail released %s', async (_what, dx, hash) => {
+    // Invariant: with no room for split a release snaps to the rail below DOCK_PANEL_MIN_WIDTH and to the full view otherwise.
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(roomFor(DOCK_PANEL_MIN_WIDTH - 1));
+    await drag(-dx);
+    if (hash === null) {
+      expectRail('released below the minimum');
+      expect(location.hash).toBe(ANCHOR);
+    } else {
+      expect(location.hash).toBe(hash);
+      expect(sessionShown()).toBe(false);
+    }
+  });
+
+  it.each(openerNames)('on a dock auto-collapsed by a narrow window, %s opens split at the widest width that fits and keeps the stored width', async (opener) => {
+    // Invariant: a rail open always shows something and never rewrites the stored width or flips the persisted dock; widening returns to the stored width.
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(1100);
+    await drag(-W);
+    expectSplit('fixture check: docked at W');
+    const narrow = 900;
+    expect(roomFor(W), 'fixture check: W does not fit the narrow window').toBeGreaterThan(narrow);
+    emitWidth(narrow);
+    await settle();
+    expectRail('fixture check: auto-collapsed');
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    await OPENERS[opener]();
+    expectSplit(opener);
+    expect(current()).toBe('Alpha');
+    expect(now(), 'the widest split that fits').toBe(narrow - DOCK_RAIL_WIDTH - DOCK_TRANSCRIPT_MIN_WIDTH);
+    expect(localStorage.getItem(DOCK_WIDTH_STORAGE_KEY), 'the stored width kept').toBe(String(W));
+    expect(widthWrites(setItem), 'no width written').toEqual([]);
+    expect(storedDock()).toMatchObject({ id: 'alpha', open: true });
+    emitWidth(1100);
+    await settle();
+    expectSplit('wide again');
+    expect(now()).toBe(W);
+  });
+
+  it('before the first measurement the handle has a finite maximum and a drag can commit no unbounded width', async () => {
+    // Invariant: aria-valuemax is always a finite number and a committed width is always finite and bounded, even before the main row is measured.
+    await mountApp();
+    await press('Alpha');
+    expectSplit('fixture check: docked');
+    const max = Number(handle().getAttribute('aria-valuemax'));
+    expect(Number.isFinite(max), `aria-valuemax ${handle().getAttribute('aria-valuemax')}`).toBe(true);
+    await drag(-5000);
+    const stored = localStorage.getItem(DOCK_WIDTH_STORAGE_KEY);
+    expect(stored === null || Number(stored) <= max, `stored width ${stored} within ${max}`).toBe(true);
+  });
+
+  it('a collapsed dock marks its docked app current on the rail, and the full view marks the shown app alone', async () => {
+    // Invariant: the rail always tells which app it shows or would reopen: aria-current on the shown app, else on the docked one.
+    await mountApp();
+    await press('Alpha');
+    await press('Alpha');
+    expectRail('fixture check: collapsed');
+    expect(current(), 'the docked app').toBe('Alpha');
+    await go('#plugin/beta/');
+    expect(rail()!.querySelectorAll('[aria-current="true"]').length).toBe(1);
+    expect(current(), 'the shown app').toBe('Beta');
   });
 });

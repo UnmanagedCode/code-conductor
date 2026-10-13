@@ -36,6 +36,9 @@ dockStore.subscribe(() => {
   try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ id, subpath, open })); } catch { /* storage unavailable */ }
 });
 
+/** Whether the plugin column shows its rail (desktop, beside the session or in the full view); the app clears its toasts from it. */
+export const railStore = createStore<{ shown: boolean }>({ shown: false });
+
 /** Split: the docked frame's own navigation is remembered as the dock's subpath. */
 export const dockMirror: RouteMirror = (id, path) => {
   const cur = dockStore.get();
@@ -64,20 +67,27 @@ export function dockFromFull(id: string, subpath: string) {
   leaveView();
 }
 
-/** The docked plugin in the full view, at the subpath it is on. */
-export function expandDocked() {
-  const { id, subpath } = dockStore.get();
-  if (id) openPlugin(id, subpath.slice(1));
+/** Plugin `id` in the full view: the docked one at the subpath it is on, another at its root. */
+export function expandApp(id: string) {
+  const { id: docked, subpath } = dockStore.get();
+  openPlugin(id, id === docked ? subpath.slice(1) : '');
 }
 
-/** A rail icon: on the rail open it; in split collapse the docked one or swap; in full dock it beside the session. */
-export function pickRailApp(id: string, mode: DockMode, route: Route) {
+/** The docked plugin in the full view, at the subpath it is on. */
+export function expandDocked() {
+  const { id } = dockStore.get();
+  if (id) expandApp(id);
+}
+
+/** A rail icon: on the rail `openFromRail` opens it; in split it collapses the docked one or swaps; in full it docks it beside the session. */
+export function pickRailApp(id: string, mode: DockMode, route: Route, openFromRail: (id: string) => void) {
   const cur = dockStore.get();
   if (mode === 'full') {
     dockFromFull(id, id === route.pluginId ? `/${route.pluginPath}` : id === cur.id ? cur.subpath : '/');
-  } else if (mode === 'split' && id === cur.id) {
-    collapseDock();
+  } else if (mode === 'split') {
+    if (id === cur.id) collapseDock();
+    else openDock(id);
   } else {
-    openDock(id);
+    openFromRail(id);
   }
 }
