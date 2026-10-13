@@ -17,6 +17,7 @@ import { splitForwardedMessages } from '@shared/forwardFrame';
 import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
 import { ActionGroup, CallUsageLine, type RenderCtx } from './tools';
 import { fieldText, PlanCard, QuestionCard } from './cards';
+import { BubbleBody } from './BubbleBody';
 import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { ImageZoom } from './ImageZoom';
 
@@ -110,7 +111,9 @@ function FoldedBody({ text, render, view, onViewChange }: { text: string; render
         <ViewToggle view={view} onChange={onViewChange} />
         <CopyButton getText={() => text} label="Copy text" />
       </div>
-      {view === 'raw' ? <pre className="text-sm whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</pre> : render ? render() : <Markdown text={text} className={MD_TEXT} />}
+      <BubbleBody>
+        {view === 'raw' ? <pre className="text-sm whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</pre> : render ? render() : <Markdown text={text} className={MD_TEXT} />}
+      </BubbleBody>
     </div>
   );
 }

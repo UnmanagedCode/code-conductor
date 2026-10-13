@@ -16,6 +16,7 @@ import { formatUserQuestionAnswers, type UserQuestionAnswer } from '@shared/user
 import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { appStore } from '@/state/app';
 import { ConversationModel, type QuestionNode } from './model';
+import { BUBBLE_BODY_MAX_HEIGHT } from './BubbleBody';
 import { flush, noActions, renderModel } from './renderModel';
 import {
   CARD, CARD_RESULT, FRUIT, SIZE, TOPPINGS, TURN_END, banana, expectLocked, expectOpen, input, opt, sendBtn, show, stamped, statusOf,
@@ -389,6 +390,45 @@ describe('plan card', () => {
     expect(within(card).getByRole('button', { name: /Approve/ })).toBeTruthy();
     expect(within(card).getByRole('button', { name: /Reject/ })).toBeTruthy();
     expect(card.querySelector('[data-status]')!.textContent).toBe('Awaiting your decision');
+  });
+
+  const regionsOf = (card: HTMLElement) => card.querySelectorAll<HTMLElement>('[data-bubble-body]');
+
+  // Invariant: a long plan's body (path line + markdown) is the one bounded, scrollable region; header, status, feedback box and decision buttons are outside it.
+  it("a long plan's body sits in one bounded scroll region; the header, the status, the feedback box and Approve / Reject sit outside it", async () => {
+    const plan = `# Plan\n\n${Array.from({ length: 300 }, (_, i) => `- step ${i}`).join('\n')}`;
+    const { root } = await show([{ ...PLAN, plan }]);
+    const card = root.querySelector('[data-item="plan"]') as HTMLElement;
+    const regions = regionsOf(card);
+    expect(regions).toHaveLength(1);
+    const region = regions[0];
+    expect(region.querySelector('.md h1')!.textContent).toBe('Plan');
+    expect(region.textContent).toContain('Saved to /tmp/plan.md');
+    expect(region.style.maxHeight).toBe(BUBBLE_BODY_MAX_HEIGHT);
+    expect(region.style.overflowY).toBe('auto');
+    expect(region.contains(card.querySelector('[data-status]'))).toBe(false);
+    expect(region.contains(card.querySelector('textarea'))).toBe(false);
+    expect(region.contains(within(card).getByRole('button', { name: /Approve/ }))).toBe(false);
+    expect(region.contains(within(card).getByRole('button', { name: /Reject/ }))).toBe(false);
+  });
+
+  // Invariant: the region does not depend on plan length, so a short plan gets the same bounded region.
+  it('a short plan gets the same region: no length-dependent branch', async () => {
+    const { root } = await show([PLAN]);
+    const regions = regionsOf(root.querySelector('[data-item="plan"]') as HTMLElement);
+    expect(regions).toHaveLength(1);
+    expect(regions[0].style.maxHeight).toBe(BUBBLE_BODY_MAX_HEIGHT);
+    expect(regions[0].style.overflowY).toBe('auto');
+  });
+
+  // Invariant: the display-only (auto-approved) card bounds its body too.
+  it('an auto-approved plan keeps its body in the region', async () => {
+    const { root } = await show([{ ...PLAN, autoApproved: true }]);
+    const card = root.querySelector('[data-item="plan"]') as HTMLElement;
+    const regions = regionsOf(card);
+    expect(regions).toHaveLength(1);
+    expect(regions[0].querySelector('.md h1')!.textContent).toBe('Plan');
+    expect(regions[0].style.maxHeight).toBe(BUBBLE_BODY_MAX_HEIGHT);
   });
 
   it('an auto-approved plan renders display-only', async () => {
