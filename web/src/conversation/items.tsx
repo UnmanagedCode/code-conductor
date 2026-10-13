@@ -74,6 +74,8 @@ function ViewToggle({ view, onChange }: { view: 'rendered' | 'raw'; onChange: (v
 
 // Single newlines inside a paragraph are line breaks people typed: keep them.
 const MD_TEXT = 'whitespace-pre-wrap';
+/** Widest a user bubble grows; wider on a phone, where the transcript has no avatar gutter to spare. */
+export const USER_BUBBLE_MAX_W = 'max-w-[92%] md:max-w-[85%]';
 
 function UserText({ text, view }: { text: string; view: 'rendered' | 'raw' }) {
   return view === 'raw'
@@ -237,9 +239,9 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
   const injected = node.variant === 'wake' || node.variant === 'renew' || !!node.skill;
   return (
     <div className="group/user flex flex-col items-end gap-1.5" data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
-      {(node.skill || node.wake || node.renew || node.forward) && <div className="w-full max-w-[85%] space-y-2">{folded}</div>}
+      {(node.skill || node.wake || node.renew || node.forward) && <div className={`w-full ${USER_BUBBLE_MAX_W} space-y-2`}>{folded}</div>}
       {node.answer ? (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-info/25 bg-info/8 px-4 py-3">
+        <div className={`${USER_BUBBLE_MAX_W} rounded-2xl rounded-br-md border border-info/25 bg-info/8 px-4 py-3`}>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-info" data-answer-head>
             <CircleCheckIcon className="size-3.5" /> {node.answer.questions.length > 1 ? `Answered · ${node.answer.questions.length} questions` : 'Answered'}
           </div>
@@ -247,7 +249,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
         </div>
       ) : node.displayText ? (
         <div data-user-text className={cn(
-          'max-w-[85%] rounded-2xl rounded-br-md px-4 py-2.5 ring-1',
+          USER_BUBBLE_MAX_W, 'rounded-2xl rounded-br-md px-4 py-2.5 ring-1',
           injected ? 'bg-muted ring-border' : 'bg-primary/10 ring-primary/15 dark:bg-primary/15',
         )}>
           <UserText text={node.displayText} view={view} />
@@ -307,13 +309,13 @@ const ASSISTANT_CONTROLS_REVEAL = 'opacity-0 transition-opacity group-hover/asst
 function AssistantBubble({ node, ctx }: { node: AssistantNode; ctx: RenderCtx }) {
   const hasText = node.children.some((c) => c.type === 'text') || !!node.planText;
   return (
-    <div className="group/asst flex gap-3" data-item="assistant">
+    <div className="group/asst flex flex-col gap-2 md:flex-row md:gap-3" data-item="assistant">
       {!ctx.model.isSub && (
-        <div data-assistant-avatar className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/15">
+        <div data-assistant-avatar className="md:mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/15">
           <OctopusHead className="size-6" />
         </div>
       )}
-      <div data-assistant-body className="min-w-0 flex-1 space-y-3">
+      <div data-assistant-body className="min-w-0 md:flex-1 space-y-3">
         {node.children.map((c) => {
           // Each finished block carries its own read-aloud, right after the text it reads.
           if (c.type === 'text') {
@@ -386,7 +388,7 @@ function SystemLineView({ node, model }: { node: SystemNode; model: Conversation
 function TurnEndView({ node }: { node: TurnEndNode }) {
   const p = turnEndParts(node.ev);
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-11 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 md:pl-11 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
       <span className={cn('flex items-center gap-1', p.ok ? 'text-success' : 'text-destructive')}>
         {p.ok ? <CircleCheckIcon className="size-3.5" /> : <CircleAlertIcon className="size-3.5" />}
         {p.ok ? 'Done' : 'Turn failed'}{p.stopReason && p.stopReason !== 'end_turn' && ` · ${p.stopReason}`}
@@ -421,7 +423,7 @@ function QueuedView({ node }: { node: QueuedNode }) {
   // Delivered, the ghost stays where it was queued, dimmed, above the turn that delivered it.
   return (
     <div className={cn('flex justify-end', node.delivered && 'opacity-40')} data-item="queued" data-delivered={node.delivered || undefined}>
-      <div className="max-w-[85%] rounded-2xl rounded-br-md border border-dashed px-4 py-2.5 text-muted-foreground">
+      <div className={`${USER_BUBBLE_MAX_W} rounded-2xl rounded-br-md border border-dashed px-4 py-2.5 text-muted-foreground`}>
         <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase">
           <ClockIcon className="size-3" /> Queued{clock && ` · ${clock}`}
           {d.attachmentCount > 0 && <span className="flex items-center gap-0.5"><PaperclipIcon className="size-3" />{d.attachmentCount}</span>}
