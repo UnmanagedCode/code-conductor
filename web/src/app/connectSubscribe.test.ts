@@ -235,6 +235,7 @@ describe('subscribing the active session when the socket opens', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(b.subscribes(), 'fixture check: the open waits on its projects read').toEqual([]);
       await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
       expect(b.reads, 'the open moved on to its instances read').toHaveLength(2);
       b.reads[1].release({ json: [A, B] });
       await vi.advanceTimersByTimeAsync(0);
@@ -254,6 +255,7 @@ describe('subscribing the active session when the socket opens', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(b.reads, 'fixture check: the open\'s instances read is in flight').toHaveLength(2);
       expect(b.subscribes()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
       await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
       expect(b.subscribes()).toEqual([['iB', 1]]);
     } finally { vi.useRealTimers(); }

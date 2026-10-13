@@ -120,46 +120,82 @@ describe('coalesced list reads', () => {
 });
 
 describe('a read that never settles', () => {
-  it('times out: its callers reject like a failed read, its fetch is aborted, and the trailing read runs', async () => {
+  it('is aborted at its timeout and retried once, and the retry\'s answer is applied for the same callers', async () => {
     const b = await boot();
     vi.useFakeTimers();
     const first = b.settled(b.c.refreshInstances());
-    const second = b.settled(b.c.refreshInstances());
     await vi.advanceTimersByTimeAsync(0);
-    expect(b.instanceReads, 'fixture check: the first read is in flight, the second call waits').toHaveLength(1);
+    expect(b.instanceReads, 'fixture check: one read in flight').toHaveLength(1);
     await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
-    expect(first.error, 'the hung read\'s caller is rejected, as for a failed read').toBeInstanceOf(Error);
     expect(b.signalOf('/api/instances')?.aborted, 'the hung request is cancelled').toBe(true);
-    expect(b.instanceReads, 'the trailing read starts after the timeout').toHaveLength(2);
+    expect(b.instanceReads, 'the retry is requested').toHaveLength(2);
+    expect(first.done, 'the caller keeps waiting on the retry').toBe(false);
     b.instanceReads[1].release({ json: [{ id: 'i1', sessionId: 's1' }] });
     await vi.advanceTimersByTimeAsync(0);
-    expect(second.done).toBe(true);
-    expect(second.error).toBeNull();
+    expect(first.done).toBe(true);
+    expect(first.error).toBeNull();
     expect(b.appStore.get().instances.map((i) => i.id)).toEqual(['i1']);
   });
 
-  it('applies nothing if it answers after its timeout', async () => {
+  it('two consecutive timeouts reject the callers like a failed read, and the next call starts a fresh read', async () => {
     const b = await boot();
     vi.useFakeTimers();
     const first = b.settled(b.c.refreshInstances());
     await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
-    expect(first.error).toBeInstanceOf(Error);
-    b.instanceReads[0].release({ json: [{ id: 'late', sessionId: 'sl' }] });
+    await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+    expect(first.error, 'the second timeout is final').toBeInstanceOf(Error);
+    expect(b.instanceReads, 'no third attempt').toHaveLength(2);
+    b.bus.dispatchEvent(new CustomEvent('instances'));
     await vi.advanceTimersByTimeAsync(0);
-    expect(b.appStore.get().instances).toEqual([]);
+    expect(b.instanceReads, 'no hung read is left to queue behind').toHaveLength(3);
+    b.instanceReads[2].release({ json: [{ id: 'i2', sessionId: 's2' }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.appStore.get().instances.map((i) => i.id)).toEqual(['i2']);
   });
 
-  it('leaves the next hint a fresh read of its own', async () => {
+  it('the retry is never a second concurrent read: a call arriving during it waits, then gets one trailing read', async () => {
     const b = await boot();
     vi.useFakeTimers();
     b.c.refreshInstances().catch(() => {});
     await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
-    b.bus.dispatchEvent(new CustomEvent('instances'));
+    expect(b.instanceReads, 'fixture check: the retry is in flight').toHaveLength(2);
+    const joined = b.settled(b.c.refreshInstances());
     await vi.advanceTimersByTimeAsync(0);
-    expect(b.instanceReads, 'no hung read is left to queue behind').toHaveLength(2);
-    b.instanceReads[1].release({ json: [{ id: 'i2', sessionId: 's2' }] });
+    expect(b.instanceReads, 'the joining call starts no read beside the retry').toHaveLength(2);
+    b.instanceReads[1].release({ json: [{ id: 'i1', sessionId: 's1' }] });
     await vi.advanceTimersByTimeAsync(0);
-    expect(b.appStore.get().instances.map((i) => i.id)).toEqual(['i2']);
+    expect(b.instanceReads, 'its trailing read starts once the retry has landed').toHaveLength(3);
+    expect(joined.done).toBe(false);
+    b.instanceReads[2].release({ json: [{ id: 'i1', sessionId: 's1' }, { id: 'i3', sessionId: 's3' }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(joined.done).toBe(true);
+    expect(b.appStore.get().instances.map((i) => i.id)).toEqual(['i1', 'i3']);
+  });
+
+  it('a failure that is not a timeout is not retried', async () => {
+    const b = await boot();
+    vi.useFakeTimers();
+    const first = b.settled(b.c.refreshInstances());
+    await vi.advanceTimersByTimeAsync(0);
+    b.instanceReads[0].release(new Error('boom'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.error).toBeInstanceOf(Error);
+    await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS * 2);
+    expect(b.instanceReads).toHaveLength(1);
+  });
+
+  it('applies nothing if the timed-out attempt answers late', async () => {
+    const b = await boot();
+    vi.useFakeTimers();
+    const first = b.settled(b.c.refreshInstances());
+    await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
+    b.instanceReads[0].release({ json: [{ id: 'late', sessionId: 'sl' }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.appStore.get().instances, 'the aborted attempt\'s answer is dropped').toEqual([]);
+    expect(first.done, 'the caller still waits on the retry').toBe(false);
+    b.instanceReads[1].release({ json: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.done).toBe(true);
   });
 
   it('leaves no timer running once a read has landed', async () => {

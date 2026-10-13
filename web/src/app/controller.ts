@@ -35,24 +35,34 @@ export const stickyPrompt = createStickyPrompt({
 
 // ── REST refreshers ──────────────────────────────────────────────────────
 
-/** How long one list read may run before it is abandoned: well past a cold `/api/projects` under load. */
+/** How long one attempt of a list read may run: well past a cold `/api/projects` under load. */
 export const READ_TIMEOUT_MS = 15_000;
+
+class ReadTimeout extends Error {
+  constructor() { super(`list read timed out after ${READ_TIMEOUT_MS} ms`); }
+}
 
 /**
  * Reads of one list, never overlapping: at most one in flight plus one trailing
  * read, however many `refresh()` calls arrive. Hints come in bursts (two
  * projects created together; a status flip's `instances` and `projects`), so a
  * call made while a read is in flight JOINS the one trailing read, which starts
- * once that read settles (landed, failed or timed out). A joining call's promise
- * therefore settles only after a read that started after the call, so when it
- * resolves the store holds a list at least as new as that call, and reads cannot
- * land out of order. A call that starts a read settles when that read does.
+ * once that read settles (landed or failed). A joining call's promise therefore
+ * settles only after a read that started after the call, so when it resolves
+ * the store holds a list at least as new as that call, and reads cannot land out
+ * of order. A call that starts a read settles when that read does.
  * `supersede()` drops the result of the read in flight (a trailing read started
  * later is unaffected), for a change that read cannot reflect; the call that
  * started it still settles when it does, with its result unapplied.
  *
- * A read still running after `READ_TIMEOUT_MS` is aborted and fails like any
- * other failed read, so one hung request never holds every later refresh.
+ * One read is one attempt, plus one retry if that attempt runs past
+ * `READ_TIMEOUT_MS`: the hung request is aborted and the retry starts after it,
+ * inside the same read, so callers keep waiting on it and it never runs beside
+ * another. A second timeout fails the read like any failed read, and a failure
+ * that is not a timeout is not retried. A read therefore settles within twice
+ * the timeout, so a refresh that starts after a hung read is never held by it,
+ * while a call that joins one waits for the read in flight and then for its own
+ * trailing read, each up to twice the timeout.
  */
 function coalescedReads<T>(read: (signal: AbortSignal) => Promise<T>, apply: (data: T) => void) {
   type Waiter = { resolve: () => void; reject: (e: unknown) => void };
@@ -60,23 +70,29 @@ function coalescedReads<T>(read: (signal: AbortSignal) => Promise<T>, apply: (da
   let running = false;
   let trailing: { promise: Promise<void> } & Waiter | null = null;
 
+  const attempt = async (): Promise<T> => {
+    const ctl = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { ctl.abort(); reject(new ReadTimeout()); }, READ_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([read(ctl.signal), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const start = (): Promise<void> => {
     const mine = generation;
     running = true;
     const p = (async () => {
-      const ctl = new AbortController();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timedOut = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          ctl.abort();
-          reject(new Error(`list read timed out after ${READ_TIMEOUT_MS} ms`));
-        }, READ_TIMEOUT_MS);
-      });
       let data: T;
       try {
-        data = await Promise.race([read(ctl.signal), timedOut]);
-      } finally {
-        clearTimeout(timer);
+        data = await attempt();
+      } catch (e) {
+        if (!(e instanceof ReadTimeout)) throw e;
+        data = await attempt();
       }
       if (mine === generation) apply(data);
     })();

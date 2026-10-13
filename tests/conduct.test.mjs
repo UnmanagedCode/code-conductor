@@ -246,3 +246,18 @@ test('an ensure racing another process\'s ensure tolerates the PROJECT_EXISTS it
   assert.notEqual(other.ensureConductProject, ensureConductProject, 'fixture: independent module state');
   assert.deepEqual(await raceEnsures(ensureConductProject, other.ensureConductProject), []);
 });
+
+// A rejected ensure must not stay memoized: the failure is for the callers that
+// shared that run, and the next call runs the steps again. A regular file where
+// the .conduct directory belongs makes the run reject (the CLAUDE.md step cannot
+// write under a file); removing it lets the next call succeed.
+test('an ensure that rejects does not poison the next call', async () => {
+  const { ensureConductProject } = await import('../src/conduct.ts');
+  const dir = path.join(projectsRoot, '.conduct');
+  await fs.writeFile(dir, 'not a directory');
+  await assert.rejects(ensureConductProject(), 'fixture: the blocked run rejects');
+  await fs.rm(dir);
+  const r = await ensureConductProject();
+  assert.equal(r.path, dir);
+  assert.ok((await fs.stat(dir)).isDirectory());
+});
