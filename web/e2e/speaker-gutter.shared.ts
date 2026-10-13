@@ -139,12 +139,11 @@ function expectAfterLastWord(m: Measure, what: string) {
   expectNear(m.host!.box.height, m.host!.lines.length * m.lineHeight, EDGE, `${what}: the control adds no line (${m.host!.lines.length} text lines)`);
 }
 
-/** The control is in the avatar column, clear of the body, level with the block's first line, and adds no row. */
+/** The control is centred on the avatar's centre line, clear of the body, level with the block's first line, and adds no row. */
 function expectInGutter(m: Measure, what: string) {
   expect(m.gutter, `${what}: marked for the gutter`).toBe(true);
   expect(m.avatar, 'fixture check: the bubble has an avatar').not.toBeNull();
-  expect(midX(m.button), `${what}: centred in the avatar column`).toBeGreaterThanOrEqual(m.avatar!.left);
-  expect(midX(m.button), `${what}: centred in the avatar column`).toBeLessThanOrEqual(m.avatar!.right);
+  expectNear(midX(m.button), midX(m.avatar!), 1, `${what}: centred on the avatar's centre`);
   expect(m.button.right, `${what}: clear of the body`).toBeLessThanOrEqual(m.body.left);
   expectNear(midY(m.button), midY(m.firstLine), MID, `${what}: level with the first line`);
   expectNear(m.block.height, m.inset.height, EDGE, `${what}: the block is as tall as its prose`);
@@ -156,7 +155,7 @@ async function screenshot(page: Page, name: string) {
 }
 
 export async function gutterFlow({ page, cc }: Args): Promise<void> {
-  // Invariant: at md and up, every block but the bubble's first holds its read-aloud in the avatar column, level with its first line and adding no row, whatever the block ends in (prose, a wrapped paragraph, a list, a code block); the first block holds it after its last word, clear of the avatar; Tab from the call before a block reaches that block's control, with a visible focus.
+  // Invariant: at md and up, every block but the bubble's first holds its read-aloud centred on the avatar, level with its first line and adding no row, whatever the block ends in (prose, a wrapped paragraph, a list, a code block); the first block holds it after its last word, clear of the avatar; Tab from the call before a block reaches that block's control, with a visible focus.
   test.skip(!isDesktop(), 'the gutter exists only at md and up');
   fakeOnly(cc);
   await run(page, cc, 'gutter', LAYOUT);

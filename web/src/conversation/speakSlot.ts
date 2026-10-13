@@ -1,13 +1,14 @@
 // Where a text block's read-aloud control goes: a slot at the inline end of the
 // rendered markdown's last block, or nowhere when that block has no inline end
-// (a code block, table, rule or the renderer's error fallback).
+// (a code block, table, rule or the renderer's error fallback) or is a heading,
+// whose accessible name the control would join.
 import { renderMarkdownInto } from '@shared/markdown';
 
-/** The element whose inline content ends `root`'s last block; null when that block has no inline end. Lists don't nest in the renderer. */
+/** The element whose inline content ends `root`'s last block; null when that block has none or is a heading. Lists don't nest in the renderer. */
 export function inlineEndHost(root: HTMLElement): HTMLElement | null {
   const last = root.lastElementChild as HTMLElement | null;
   if (!last) return null;
-  if (last.matches('p, h1, h2, h3, h4, h5, h6, blockquote')) return last;
+  if (last.matches('p, blockquote')) return last;
   if (last.matches('ul, ol')) return last.lastElementChild as HTMLElement | null;
   return null;
 }

@@ -1,6 +1,6 @@
 // Where a finished text block's read-aloud sits: inside the block's last line of prose
-// (a slot at the inline end of its last paragraph, list item, heading or quote) or on a
-// row of its own when the block ends in a code block, table or rule; and which blocks
+// (a slot at the inline end of its last paragraph, list item or quote) or on a row of its
+// own when the block ends in a heading, code block, table or rule; and which blocks
 // move it into the avatar gutter at `md` and up (every one but the bubble's first). The
 // geometry itself is checked in the browser (web/e2e/speaker-gutter.shared.ts).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -64,11 +64,10 @@ function expectInlineIn(button: HTMLElement, host: Element | null, msg: string) 
 const PROSE_THEN_LATER = (first: string) => [...text('m1', 0, first), ...tool('m1', 1, 't1', 'Bash'), ...text('m1', 2, 'Later line.')];
 
 describe('read-aloud placement', () => {
-  // Pins: a block ending in prose puts its control in a slot at the inline end of its last p / li / heading / quote, adding no text.
+  // Pins: a block ending in prose puts its control in a slot at the inline end of its last p / li / quote, adding no text.
   it.each([
     { kind: 'paragraph', src: 'First para.\n\nSecond **para** end.', host: ':scope > p:last-child', own: 'Second para end.' },
     { kind: 'list', src: 'Intro:\n\n- one\n- two **end**', host: ':scope > ul:last-child > li:last-child', own: 'two end' },
-    { kind: 'heading', src: 'Body.\n\n## Closing words', host: ':scope > h2:last-child', own: 'Closing words' },
     { kind: 'quote', src: 'Body.\n\n> quoted end', host: ':scope > blockquote:last-child', own: 'quoted end' },
   ])('a block ending in a $kind holds its control after the last word', async ({ src, host, own }) => {
     const { root } = await show(text('m1', 0, src));
@@ -81,15 +80,19 @@ describe('read-aloud placement', () => {
     expect(block.getAttribute('data-speak-end')).toBe('inline');
   });
 
-  // Pins: a block ending in a code block, table or rule keeps the control on a row of its own after the prose, with no slot in the markdown.
+  // Pins: a block ending in a heading, code block, table or rule keeps the control on a row of its own after the prose, with no slot in the markdown; a heading's name never takes in the control.
   it.each([
-    { kind: 'code block', src: 'Run:\n\n```\nnpm test\n```' },
-    { kind: 'table', src: 'Intro:\n\n| a | b |\n|---|---|\n| 1 | 2 |' },
-    { kind: 'rule', src: 'text\n\n---' },
-  ])('a block ending in a $kind keeps its control on a row of its own', async ({ src }) => {
+    { kind: 'heading', src: 'Body.\n\n## Closing words', last: 'h2' },
+    { kind: 'code block', src: 'Run:\n\n```\nnpm test\n```', last: '.md-code-wrap' },
+    { kind: 'table', src: 'Intro:\n\n| a | b |\n|---|---|\n| 1 | 2 |', last: 'table' },
+    { kind: 'rule', src: 'text\n\n---', last: 'hr' },
+  ])('a block ending in a $kind keeps its control on a row of its own', async ({ src, last }) => {
     const { root } = await show(text('m1', 0, src));
     const [block] = blocks(root);
     const button = speaker(block);
+    const lastEl = md(block).lastElementChild;
+    expect(!!lastEl?.matches(last), `fixture check: the markdown ends in ${last}, not ${describeEl(lastEl)}`).toBe(true);
+    expect(lastEl!.contains(button), 'the control is not inside the last block').toBe(false);
     expect(md(block).querySelector('[data-speak-slot]'), 'the markdown holds no slot').toBeNull();
     const row = button.parentElement!;
     expect(row.matches('div[data-speak-slot]'), `the control's parent is the row, not ${describeEl(row)}`).toBe(true);

@@ -312,7 +312,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
 
 /**
  * One text block of an assistant bubble. A finished block's read-aloud sits after its last word, in a slot the
- * markdown render appends to its last paragraph, list item, heading or quote, or on a row of its own when the block
+ * markdown render appends to its last paragraph, list item or quote, or on a row of its own when the block
  * ends in anything else. Every block but the bubble's first (whose gutter holds the avatar) moves it into the gutter at `md` and up.
  */
 function TextBlock({ node, view, first, isSub }: { node: TextNode; view: TextView; first: boolean; isSub: boolean }) {
