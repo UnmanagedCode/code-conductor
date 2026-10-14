@@ -321,6 +321,15 @@ describe('Projects tree', () => {
     }
   });
 
+  it('a group with sessions on disk and none live names itself Sessions (N) with no live part', async () => {
+    // Invariant: the toggle's accessible name states the live count only when it is above zero.
+    loadSessions.mockResolvedValue([disk('a', 'one'), disk('b', 'two')]);
+    seed({ projects: [proj('p', { sessions: { count: 2, archivedCount: 0, handCount: 2, lastActivity: 0 } })] });
+    renderSidebar();
+    await settle();
+    expect(el('[data-project-sessions="p"] > button').getAttribute('aria-label')).toBe('Sessions (2)');
+  });
+
   it('a temp-only group reads Temp sessions open and Sessions collapsed', async () => {
     // Invariant: the open header names its only group; the collapsed header, with nothing loaded to name, reads Sessions.
     seed({ projects: [proj('p')], instances: [inst({ sessionId: 't1', project: 'p', temp: true })] });
