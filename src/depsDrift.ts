@@ -151,7 +151,7 @@ export function dependencyDrift(repoRoot: string): Drift | null {
       const key = `node_modules/${name}`;
       const m = present(name) ? readManifest(path.join(repoRoot, key)) : null;
       if (!m) {
-        if (name in optional) continue;
+        if (Object.hasOwn(optional, name)) continue;
         return { reason: `${key} missing` };
       }
       const version = typeof m.version === 'string' ? m.version : '(no version)';

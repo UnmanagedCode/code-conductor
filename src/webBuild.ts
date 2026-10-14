@@ -36,11 +36,6 @@ export const WEB_ROOT = path.join(repoRoot, 'web');
 export const WEB_DIST = path.join(WEB_ROOT, 'dist');
 const STAMP = '.source-hash';
 
-// Inputs: the web app itself, the shared modules it imports from shared/, and
-// npm's hidden lockfile, which records the installed tree (a dependency change
-// changes the bundle). A cache key only; absent, it is left out.
-const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'shared')];
-const INPUT_FILES = [path.join(repoRoot, 'node_modules', '.package-lock.json')];
 // Build output, dependencies, Playwright output and the e2e specs + fixtures
 // are not inputs. Neither is any `dist.*` sibling: the staged `dist.next`, and
 // the `.tmp-<pid>` / `.old-<pid>` dirs a killed build leaves behind.
@@ -63,7 +58,16 @@ function listFiles(dir: string, out: string[]): void {
 
 /** The build's inputs; injectable so a test can hash a fixture tree. Paths in the hash are relative to `root`. */
 export type WebInputs = { root: string; dirs: string[]; files: string[] };
-const DEFAULT_INPUTS: WebInputs = { root: repoRoot, dirs: INPUT_DIRS, files: INPUT_FILES };
+// The inputs of a checkout at `root`: the web app itself, the shared modules it
+// imports from shared/, and npm's hidden lockfile, which records the installed
+// tree (a dependency change changes the bundle). A cache key only; absent, it
+// is left out.
+export const webInputs = (root: string): WebInputs => ({
+  root,
+  dirs: [path.join(root, 'web'), path.join(root, 'shared')],
+  files: [path.join(root, 'node_modules', '.package-lock.json')],
+});
+const DEFAULT_INPUTS = webInputs(repoRoot);
 
 export function webSourceHash({ root, dirs, files: inputFiles }: WebInputs = DEFAULT_INPUTS): string {
   const files: string[] = [];

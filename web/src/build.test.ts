@@ -12,7 +12,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import {
-  ensureWebBuild, runViteBuild, stageWebBuild, webHandler, webSourceHash, WEB_ROOT, type WebBuilder, type WebState,
+  ensureWebBuild, runViteBuild, stageWebBuild, webHandler, webInputs, webSourceHash, WEB_ROOT, type WebBuilder, type WebState,
 } from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
@@ -168,6 +168,37 @@ describe('webSourceHash over a fixture root', () => {
     expect(withDir('distx')).not.toBe(before);
     fs.writeFileSync(lock, '{"x":1}');
     expect(webSourceHash(inputs)).not.toBe(before);
+  });
+});
+
+describe('the default inputs (webInputs) over a fixture checkout', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webinputs-'));
+  const hidden = path.join(root, 'node_modules', '.package-lock.json');
+  for (const [rel, body] of [['web/main.ts', 'export {};'], ['shared/a.ts', 'export {};'], ['node_modules/.package-lock.json', '{}']]) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), body);
+  }
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it('the running checkout hashes with the inputs webInputs names for its root', () => {
+    expect(webSourceHash()).toBe(webSourceHash(webInputs(path.dirname(WEB_ROOT))));
+  });
+
+  it("a change to the installed tree's hidden lockfile changes the hash; a root package-lock.json is not an input", () => {
+    const before = webSourceHash(webInputs(root));
+    fs.writeFileSync(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+    expect(webSourceHash(webInputs(root))).toBe(before);
+    fs.writeFileSync(hidden, '{"packages":{"node_modules/vite":{"version":"8.3.4"}}}');
+    expect(webSourceHash(webInputs(root))).not.toBe(before);
+  });
+
+  it('web/ and shared/ are inputs', () => {
+    const before = webSourceHash(webInputs(root));
+    fs.writeFileSync(path.join(root, 'shared', 'a.ts'), 'export const x = 1;');
+    const afterShared = webSourceHash(webInputs(root));
+    expect(afterShared).not.toBe(before);
+    fs.writeFileSync(path.join(root, 'web', 'main.ts'), 'export const y = 1;');
+    expect(webSourceHash(webInputs(root))).not.toBe(afterShared);
   });
 });
 

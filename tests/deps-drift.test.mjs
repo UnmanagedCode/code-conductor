@@ -109,6 +109,18 @@ test('dependencyDrift', async (t) => {
     assert.equal(dependencyDrift(dir), null);
   });
 
+  await t.test('a missing root named like an Object.prototype member is missing, not an absent optional', async (t) => {
+    for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__']) {
+      await t.test(name, (t) => {
+        const dir = tmp(t);
+        // Raw JSON: an object literal's `__proto__` key would set the prototype instead.
+        fs.writeFileSync(path.join(dir, 'package.json'), `{"name":"x","dependencies":{"${name}":"^1.0.0"}}`);
+        fs.mkdirSync(path.join(dir, 'node_modules'));
+        assert.deepEqual(dependencyDrift(dir), { reason: `node_modules/${name} missing` });
+      });
+    }
+  });
+
   await t.test('an optional root present outside its range is still drift', (t) => {
     const dir = tree(t, { optionalDependencies: { o: '^1.0.0' } }, { 'node_modules/o': '0.9.0' });
     assert.deepEqual(dependencyDrift(dir), { reason: 'node_modules/o 0.9.0 does not satisfy ^1.0.0' });
