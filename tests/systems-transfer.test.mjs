@@ -237,6 +237,33 @@ for (const { name, make } of SYSTEMS) {
       assert.equal(sha(await fs.readFile(f)), sha(NASTY), 'the file survives a move onto itself');
     });
 
+    test('a source whose stat or read fails with a code is READ_FAILED with that errno, and nothing is written', async () => {
+      const src = path.join(root, 'f');
+      await fs.writeFile(src, 'x');
+      const dst = path.join(root, 'out');
+      const eacces = () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); };
+      for (const [member, what] of [['stat', 'the stat'], ['readFileBytes', 'the read']]) {
+        const r = await run(src, dst, { move: true }, wrap(sys, { [member]: async () => eacces() }), sys);
+        assert.equal(r.ok, false, what);
+        assert.equal(r.code, 'READ_FAILED', `${what}: ${JSON.stringify(r)}`);
+        assert.equal(r.errno, 'EACCES', what);
+        assert.equal(r.written, undefined, what);
+        assert.equal(await exists(dst), false, `${what}: nothing is written`);
+        assert.equal(await fs.readFile(src, 'utf8'), 'x', `${what}: the source is kept`);
+      }
+    });
+
+    test('overwrite never replaces a special file: a fifo destination is DEST_NOT_A_FILE and survives', async () => {
+      const src = path.join(root, 'f');
+      await fs.writeFile(src, 'x');
+      const fifo = path.join(root, 'pipe');
+      execFileSync('mkfifo', [fifo]);
+      const r = await run(src, fifo, { overwrite: true });
+      assert.equal(r.ok, false);
+      assert.equal(r.code, 'DEST_NOT_A_FILE', JSON.stringify(r));
+      assert.ok((await fs.lstat(fifo)).isFIFO(), 'the fifo is still a fifo');
+    });
+
     test('a move removes the source only after the write', async () => {
       const src = path.join(root, 'f');
       await fs.writeFile(src, NASTY);
@@ -276,6 +303,45 @@ for (const { name, make } of SYSTEMS) {
       assert.equal(r.code, 'DEST_UNVERIFIED', JSON.stringify(r));
       assert.equal(r.written, true);
       assert.equal(await fs.readFile(src, 'utf8'), 'keep me');
+    });
+
+    test('a move whose destination holds a different size keeps the source: DEST_UNVERIFIED', async () => {
+      const src = path.join(root, 'f');
+      await fs.writeFile(src, 'keep me');
+      const dst = path.join(root, 'out');
+      // The destination exists as a regular file — only its size is wrong.
+      const shortWriter = wrap(sys, {
+        writeFileBytes: (p, data, opts) => sys.writeFileBytes(p, data.subarray(0, data.length - 1), opts),
+      });
+      const r = await run(src, dst, { move: true }, sys, shortWriter);
+      assert.equal(r.ok, false);
+      assert.equal(r.code, 'DEST_UNVERIFIED', JSON.stringify(r));
+      assert.equal(r.written, true);
+      assert.ok((await fs.lstat(dst)).isFile(), 'premise: the destination is a regular file');
+      assert.equal(await fs.readFile(src, 'utf8'), 'keep me');
+    });
+
+    test('a source rewritten in place at the same length during a move is kept: SOURCE_CHANGED by mtime', async () => {
+      const src = path.join(root, 'f');
+      await fs.writeFile(src, 'original');
+      // Explicit, distinct mtimes: the change does not depend on clock resolution.
+      const before = new Date('2001-01-01T00:00:00Z');
+      const after = new Date('2002-02-02T00:00:00Z');
+      await fs.utimes(src, before, before);
+      const dst = path.join(root, 'out');
+      const racer = wrap(sys, {
+        writeFileBytes: async (...a) => {
+          await fs.writeFile(src, 'REWRITES');
+          await fs.utimes(src, after, after);
+          return sys.writeFileBytes(...a);
+        },
+      });
+      const r = await run(src, dst, { move: true }, sys, racer);
+      assert.equal(r.ok, false);
+      assert.equal(r.code, 'SOURCE_CHANGED', JSON.stringify(r));
+      assert.equal(r.written, true);
+      assert.equal(await fs.readFile(src, 'utf8'), 'REWRITES', 'the rewritten source survives');
+      assert.equal(await fs.readFile(dst, 'utf8'), 'original');
     });
 
     test('a source changed during a move is kept: SOURCE_CHANGED, written:true', async () => {

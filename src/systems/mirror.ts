@@ -10,9 +10,11 @@
 // own reason rather than one cc invented.
 //
 // ONE CONTAINMENT PREDICATE serves the map, the exclude list and the validation
-// (`withinPosix`), and it lives here rather than in the tier table because all
-// three readers are about the mirror. Containment is decided with
-// path.relative, never a string prefix: a prefix test claims a merely
+// (`withinPosix`), and it lives here rather than in the tier table because
+// those readers are about the mirror; it is plain POSIX containment, so a
+// reader that is not — system_transfer's store guard (src/mcp/handlers.ts) —
+// imports the same predicate rather than a second one. Containment is decided
+// with path.relative, never a string prefix: a prefix test claims a merely
 // prefix-SHARING sibling (`/app-backup` under `/app`) is inside.
 
 import path from 'node:path';

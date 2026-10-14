@@ -495,7 +495,10 @@ export class ReferenceProvider {
         await fs.mkdir(path.dirname(w.path), { recursive: true });
         const tmp = `${w.path}.${process.pid}.${atomicSeq++}.tmp`;
         try {
-          await fs.writeFile(tmp, data);
+          // Created at the target's permission bits, so the payload is never
+          // readable more widely than the target allows while it lands; the
+          // chmod restores the exact mode the umask may have narrowed.
+          await fs.writeFile(tmp, data, { mode: w.mode === undefined ? 0o666 : w.mode & 0o777 });
           if (w.mode !== undefined) await fs.chmod(tmp, w.mode & 0o7777);
           await fs.rename(tmp, w.path);
         } catch (e) {

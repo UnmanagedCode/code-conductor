@@ -65,7 +65,10 @@ export async function writeFileAtomic(filePath: string, data: string | Buffer, m
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
   try {
-    await fs.writeFile(tmp, data);
+    // CREATED at the target's permission bits, so the bytes are never readable
+    // more widely than the target allows while they land; the umask can only
+    // narrow that, and the chmod below restores the exact mode.
+    await fs.writeFile(tmp, data, { mode: mode === undefined ? 0o666 : mode & 0o777 });
     // On the TEMP file, before the rename: the target must never be observable
     // with the wrong mode, and after the rename there is no handle to fix.
     if (mode !== undefined) await fs.chmod(tmp, mode & 0o7777);

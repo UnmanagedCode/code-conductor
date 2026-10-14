@@ -203,6 +203,23 @@ describe('system_transfer', () => {
     }
   });
 
+  // `to` names an UNREGISTERED system: had resolution run first, the answer
+  // would be SYSTEM_NOT_REGISTERED on `to`; so would `from`'s own unregistered id.
+  test('a malformed `from` is ENDPOINT_INVALID on side from, before any system is resolved', async () => {
+    const to = { system: 'nosuch', path: '/abs/out' };
+    for (const [from, what] of [
+      [{ system: 'nosuch', path: 'rel/src' }, 'a relative path'],
+      [{ system: 'nosuch', path: '/abs/dir/' }, 'a trailing slash'],
+      [{ system: 'nosuch', path: '/abs/a\0b' }, 'a NUL'],
+      [{ system: 'nosuch', remote: 'x', path: '/abs/src' }, 'an unknown key'],
+    ]) {
+      const r = await systemTransfer({ from, to });
+      assert.equal(r.ok, false, what);
+      assert.equal(r.code, 'ENDPOINT_INVALID', `${what}: ${JSON.stringify(r)}`);
+      assert.equal(r.side, 'from', what);
+    }
+  });
+
   test("a destination inside cc's store is PATH_IN_CC_STORE and nothing is written", async () => {
     const src = await seed('src');
     const dst = path.join(orchStoreRoot(), 'planted.json');
@@ -228,6 +245,17 @@ describe('system_transfer', () => {
     assert.equal(copied.ok, undefined, JSON.stringify(copied));
     assert.equal(sha(await fs.readFile(out)), sha(BYTES));
     assert.equal(await exists(inStore), true);
+  });
+
+  test("a move into cc's store is PATH_IN_CC_STORE on side to, nothing is written and the source is kept", async () => {
+    const src = await seed('src');
+    const dst = path.join(orchStoreRoot(), 'moved-in');
+    const r = await systemTransfer({ from: { system: 'local', path: src }, to: { system: 'local', path: dst }, move: true });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'PATH_IN_CC_STORE', JSON.stringify(r));
+    assert.equal(r.side, 'to');
+    assert.equal(await exists(dst), false);
+    assert.equal(sha(await fs.readFile(src)), sha(BYTES));
   });
 
   test('tools/call returns the result as compact JSON and a refusal without isError', async () => {
