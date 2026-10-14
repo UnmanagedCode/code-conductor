@@ -155,6 +155,27 @@ describe('presence', () => {
   });
 });
 
+describe('Back onto its URL', () => {
+  it('(h) Back from another session onto the anchor of the pristine conductor in the slot selects it again, keeping the anchor, with no locate', async () => {
+    listed = [Q];
+    const b = await boot();
+    await b.open();
+    b.c.adoptInstance(P as any);
+    b.c.selectInstance('iP', { userGesture: true });
+    expect(location.hash, 'fixture check: viewing P wrote its anchor').toBe('#session=s-p');
+    b.c.selectInstance('iQ', { userGesture: true, push: true });
+    expect(location.hash, 'fixture check: Q was pushed as its own entry').toBe('#session=s-q');
+    expect(b.active()).toBe('iQ');
+    expect(b.appStore.get().pristine?.id, 'control: P is still held in the slot, unlisted').toBe('iP');
+    expect(b.listedIds()).not.toContain('iP');
+    history.back();
+    await b.flush();
+    expect(b.active()).toBe('iP');
+    expect(location.hash).toBe('#session=s-p');
+    expect(b.calls.some((x) => x.url.endsWith('/locate')), 'no locate is requested').toBe(false);
+  });
+});
+
 describe('opening its URL', () => {
   it('(e) the anchor of an unlisted pristine conductor resolves through the pristine lookup, never a resume', async () => {
     history.replaceState(null, '', '/#session=s-p');

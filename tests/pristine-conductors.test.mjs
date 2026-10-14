@@ -230,6 +230,41 @@ describe('pristine conductors', () => {
     assert.equal((await listedRow(R.id))?.title, 'Mine', 'and survives the first prompt');
   });
 
+  describe('N15: only a pristine conductor\'s prompt ends pristine', () => {
+    /** Prompts `x` over a socket and waits for that turn to end; returns the manager's list_changed and the instance's pristine_ended counts over it. */
+    async function promptCounting(x) {
+      const A = await socket();
+      let listChanged = 0;
+      let ended = 0;
+      const onList = () => { listChanged++; };
+      const onEnded = () => { ended++; };
+      instances.on('list_changed', onList);
+      x.inst.on('pristine_ended', onEnded);
+      try {
+        const turnEnds = () => x.inst.ringSnapshot().filter(e => e.kind === 'turn_end').length;
+        const before = turnEnds();
+        assert.equal((await frame(A, { t: 'prompt', id: x.id, text: 'go' })).ok, true);
+        await waitFor(() => turnEnds() > before && x.inst.status === 'idle');
+        await settleSessionWrites();
+      } finally {
+        instances.off('list_changed', onList);
+        x.inst.off('pristine_ended', onEnded);
+      }
+      return { listChanged, ended };
+    }
+
+    test('a plain conductor\'s prompt emits no pristine_ended and no list_changed', async () => {
+      const Q = await conductor({ pristine: false });
+      assert.deepEqual(await promptCounting(Q), { listChanged: 0, ended: 0 });
+    });
+
+    test('twin: a pristine conductor\'s first prompt emits exactly one of each', async () => {
+      const P = await conductor();
+      assert.deepEqual(await promptCounting(P), { listChanged: 1, ended: 1 });
+      assert.equal(P.inst.pristine, false);
+    });
+  });
+
   describe('N8: the grace window after a socket close', () => {
     test('outside it: a close with no return reaps the conductor', async () => {
       const P = await conductor();
