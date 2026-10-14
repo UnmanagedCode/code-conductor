@@ -9,7 +9,7 @@
 //   - resume: drain every live turn to idle and write the resume manifest
 //     (src/resumeRestart.ts) instead of stopping the instances outright.
 // Before either, the relaunch is prepared in THIS process (src/relaunchPrep.ts):
-// node_modules is installed when it differs from package-lock.json and the web
+// node_modules is installed when it does not satisfy package.json and the web
 // build is staged. A failed step refuses the relaunch, so cc keeps serving.
 //
 // The replacement polls EADDRINUSE while binding (listenWithRetry in
@@ -165,7 +165,7 @@ export async function runRestart({
     await prep.stageWeb((t) => onChunk('build', t));
   };
   const install = async () => {
-    onChunk('deps', `node_modules is out of sync with package-lock.json (${drift!.reason}) — running npm install\n`);
+    onChunk('deps', `node_modules does not satisfy package.json (${drift!.reason}) — running npm install\n`);
     await prep.installDeps((t) => onChunk('npm', t));
   };
   if (!drift) await stage();

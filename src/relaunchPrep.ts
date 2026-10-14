@@ -2,9 +2,9 @@
 // torn down — one implementation for the restart route (src/restart.ts
 // runRestart) and self-update (src/selfUpdate.ts):
 //
-//   - ensureDependencies: `npm install` only when node_modules differs from
-//     package-lock.json (src/depsDrift.ts), never into a linked node_modules,
-//     and verified by a re-check afterwards;
+//   - ensureDependencies: `npm install` only when node_modules does not satisfy
+//     package.json (src/depsDrift.ts), never into a linked node_modules, and
+//     verified by a re-check afterwards;
 //   - the web build staged beside the served one (src/webBuild.ts stageWebBuild);
 //   - withMaintenanceLock: one restart-or-update at a time.
 //
@@ -25,7 +25,7 @@ const NPM_TIMEOUT_MS = 300_000;
 export type InstallResult = { ran: false } | { ran: true; ok: true; code: number; tail: string };
 
 /**
- * Brings node_modules in line with package-lock.json. In sync → `{ ran: false }`
+ * Brings node_modules in line with package.json. In sync → `{ ran: false }`
  * without running anything. A linked node_modules (a worktree's, an isolated
  * preview's) is refused 409 `DEPS_LINKED` rather than installed into: it is
  * another checkout's tree. Otherwise `npmCmd` runs in a detached process group
@@ -44,7 +44,7 @@ export async function ensureDependencies({
   try { linked = fs.lstatSync(modules).isSymbolicLink(); } catch { /* absent: install creates it */ }
   if (linked) {
     throw httpError(409,
-      `node_modules is out of sync with package-lock.json (${drift.reason}) and is a link to ${fs.readlinkSync(modules)}, `
+      `node_modules does not satisfy package.json (${drift.reason}) and is a link to ${fs.readlinkSync(modules)}, `
       + 'which cc does not install into — run npm install there.',
       { code: 'DEPS_LINKED', ran: false });
   }

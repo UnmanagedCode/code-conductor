@@ -1,7 +1,7 @@
 // docker/deps-complete.mjs is the container entrypoint's "is node_modules
 // installed?" probe: a thin wrapper over src/depsDrift.ts that exits 0 only when
-// node_modules matches package-lock.json, so a node_modules installed before a
-// dependency was added or bumped gets repaired. The entrypoint's deps block is
+// node_modules satisfies package.json, so a node_modules installed before a
+// dependency was added, bumped or removed gets repaired. The entrypoint's deps block is
 // run here too, with a stub npm on PATH.
 
 import { test } from 'node:test';
@@ -17,13 +17,13 @@ const PROBE = path.resolve(__dirname, '..', 'docker', 'deps-complete.mjs');
 const ENTRYPOINT = path.resolve(__dirname, '..', 'docker', 'entrypoint.sh');
 const DRIFT = path.resolve(__dirname, '..', 'src', 'depsDrift.ts');
 
-// A checkout locking runtime a@1.0.0 and b@2.0.0 plus the dev-only d@1.0.0, with
-// `installed` (name → version) on disk. The probe and the module it imports are
-// copied in at their repo-relative paths, as the entrypoint runs them.
-const LOCK = { 'node_modules/a': { version: '1.0.0' }, 'node_modules/b': { version: '2.0.0' }, 'node_modules/d': { version: '1.0.0', dev: true } };
+// A checkout declaring runtime a@^1.0.0 and b@^2.0.0 plus the dev-only d@^1.0.0,
+// with `installed` (name → version) on disk. The probe and the module it imports
+// are copied in at their repo-relative paths, as the entrypoint runs them.
+const PACKAGE = { name: 'x', dependencies: { a: '^1.0.0', b: '^2.0.0' }, devDependencies: { d: '^1.0.0' } };
 function checkout(installed) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-deps-complete-'));
-  fs.writeFileSync(path.join(dir, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': {}, ...LOCK } }));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(PACKAGE));
   for (const [d, version] of Object.entries(installed)) {
     fs.mkdirSync(path.join(dir, 'node_modules', d), { recursive: true });
     fs.writeFileSync(path.join(dir, 'node_modules', d, 'package.json'), JSON.stringify({ name: d, version }));
@@ -44,14 +44,19 @@ test('the probe exits 1 naming the offender on a drifted node_modules, 0 on an i
   await t.test('a runtime dependency missing', () => {
     const r = run({ a: '1.0.0' });
     assert.equal(r.status, 1, r.stderr);
-    assert.match(r.stderr, /node_modules\/b missing/);
+    assert.match(r.stderr, /^node_modules does not satisfy package\.json: node_modules\/b missing$/m);
   });
-  await t.test('a runtime dependency at another version than the lock', () => {
+  await t.test('a runtime dependency outside its range', () => {
     const r = run({ a: '1.0.0', b: '1.9.0' });
     assert.equal(r.status, 1, r.stderr);
-    assert.match(r.stderr, /node_modules\/b 1\.9\.0 ≠ lock 2\.0\.0/);
+    assert.match(r.stderr, /node_modules\/b 1\.9\.0 does not satisfy \^2\.0\.0/);
   });
-  await t.test('every runtime dependency at its locked version, no dev package (an --omit=dev install)', () => {
+  await t.test('a package no longer declared (a removed dependency)', () => {
+    const r = run({ a: '1.0.0', b: '2.0.0', gone: '1.0.0' });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /node_modules\/gone is extraneous/);
+  });
+  await t.test('every runtime dependency inside its range, no dev package (an --omit=dev install)', () => {
     const r = run({ a: '1.0.0', b: '2.0.0' });
     assert.equal(r.status, 0, r.stderr);
   });

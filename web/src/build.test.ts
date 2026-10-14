@@ -383,17 +383,17 @@ describe('staging a build before a relaunch, and adopting it at boot', () => {
     expect(served(dist)).toContain('current');
   });
 
-  it('a failed boot build names the dependency drift when node_modules is out of sync, and only then', async () => {
+  it('a failed boot build names the dependency drift when node_modules does not satisfy package.json, and only then', async () => {
     const log = quiet();
     const drifted = await ensureWebBuild({ log, distDir: path.join(parentDir(), 'dist'), build: failing(), drift: () => ({ reason: 'node_modules/vite missing' }) });
     expect(drifted.phase).toBe('failed');
     expect(drifted.error).toContain('vite build failed (exit 1)');
     expect(drifted.error).toContain('error: Unexpected token');
-    expect(drifted.error).toContain('node_modules is out of sync with package-lock.json: node_modules/vite missing; run npm install');
+    expect(drifted.error).toContain('node_modules does not satisfy package.json: node_modules/vite missing; run npm install');
     expect(String(log.error.mock.calls[0][0])).toContain('node_modules/vite missing');
 
     const inSync = await ensureWebBuild({ log: quiet(), distDir: path.join(parentDir(), 'dist'), build: failing(), drift: () => null });
-    expect(inSync.error).not.toContain('out of sync');
+    expect(inSync.error).not.toContain('does not satisfy');
   });
 });
 

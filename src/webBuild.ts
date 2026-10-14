@@ -229,7 +229,7 @@ export async function ensureWebBuild(
     let error = failureText(e);
     let d: { reason: string } | null = null;
     try { d = drift(); } catch { /* the hint is best effort */ }
-    if (d) error += `\n— node_modules is out of sync with package-lock.json: ${d.reason}; run npm install`;
+    if (d) error += `\n— node_modules does not satisfy package.json: ${d.reason}; run npm install`;
     Object.assign(state, { phase: 'failed', error });
     const stale = fs.existsSync(path.join(distDir, 'index.html'));
     log.error([

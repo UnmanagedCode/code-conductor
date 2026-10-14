@@ -10,14 +10,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { ensureDependencies, withMaintenanceLock } from '../src/relaunchPrep.ts';
 
-// A checkout locking a@1.0.0, with `installed` (version of a, or null) in
+// A checkout declaring a@^1.0.0 in package.json, with `installed` (version of a, or null) in
 // `<dir>/node_modules` — or, with `link`, in a sibling dir node_modules links to.
 function checkout(t, { installed = null, link = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-relaunch-prep-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const repo = path.join(dir, 'repo');
   fs.mkdirSync(repo);
-  fs.writeFileSync(path.join(repo, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/a': { version: '1.0.0' } } }));
+  fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'x', dependencies: { a: '^1.0.0' } }));
   const modules = link ? path.join(dir, 'shared-node_modules') : path.join(repo, 'node_modules');
   fs.mkdirSync(modules);
   if (link) fs.symlinkSync(modules, path.join(repo, 'node_modules'), 'dir');
@@ -64,7 +64,7 @@ test('ensureDependencies', async (t) => {
     await assert.rejects(
       ensureDependencies({ repoRoot: c.repo, npmCmd: installCmd(c.sentinel, '0.5.0') }),
       (e) => {
-        assert.equal(e.message, 'npm install finished but node_modules still differs: node_modules/a 0.5.0 ≠ lock 1.0.0');
+        assert.equal(e.message, 'npm install finished but node_modules still differs: node_modules/a 0.5.0 does not satisfy ^1.0.0');
         assert.equal(e.ran, true);
         assert.match(e.tail, /installing a/);
         return true;
@@ -92,7 +92,7 @@ test('ensureDependencies', async (t) => {
         assert.equal(e.statusCode, 409);
         assert.equal(e.code, 'DEPS_LINKED');
         assert.equal(e.ran, false);
-        assert.ok(e.message.includes('node_modules/a missing'), e.message);
+        assert.ok(e.message.startsWith('node_modules does not satisfy package.json (node_modules/a missing) and is a link to '), e.message);
         assert.ok(e.message.includes(c.modules), e.message);
         return true;
       });
