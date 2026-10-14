@@ -2,7 +2,7 @@
 // source in stream order and the plan that closes the bubble; never thinking, tools,
 // questions or sub-agent output), the raw view every text block of the bubble follows,
 // a read-aloud of its own on every finished text block, and the same controls mid-stream, on a retired segment, in a replay, on a
-// lazy page and across a page seam. The controls sit on the turn-end row directly below the bubble, else on a row of the bubble's own. A copy announces its outcome while the button keeps
+// lazy page and across a page seam. The controls sit on the turn-end row directly below the bubble (a usage or cache notice at a turn's end renders below that row), else on a row of the bubble's own. A copy announces its outcome while the button keeps
 // its name.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
@@ -675,14 +675,57 @@ describe('on the turn-end row', () => {
     expect(root.querySelector('[data-item="turn-end"] button[aria-label="Copy message"]')).toBeNull();
   });
 
-  it('a repeated usage line the list drops sits behind a rendered one, so a bubble above them keeps its own row exactly as the DOM shows', async () => {
-    const usage = (): UiEvent => ({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.9 } } });
-    const { m, root } = await show([...text('m1', 0, 'A'), usage(), usage(), turnEnd()]);
-    expect(kinds(m), 'fixture check: both usage lines are items').toEqual(['assistant', 'system', 'system', 'turn_end']);
-    expect(root.querySelectorAll('[data-subtype="rate_limit_event"]'), 'fixture check: one of them is dropped at render').toHaveLength(1);
+  const usage = (): UiEvent => ({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.84 } } });
+  const tailNotices: [string, () => UiEvent][] = [
+    ['rate_limit_event', usage],
+    ['cache_miss', () => ({ kind: 'system', subtype: 'cache_miss', data: { cacheCreation: 10, cacheRead: 2 } })],
+  ];
+  const toolLoop = (note: UiEvent): UiEvent[] => [...tool('m1', 0, 'tu1', 'Bash', { input: { command: 'ls' }, result: 'out' }), note, ...text('m2', 0, 'A'), turnEnd()];
+
+  it.each(tailNotices)("a %s notice landing at the turn's end renders below the turn-end row, which still carries the bubble's raw toggle and copy", async (subtype, note) => {
+    const { m, root } = await show(toolLoop(note()));
+    expect(kinds(m)).toEqual(['assistant', 'turn_end', 'system']);
     const b = bubbles(root)[0];
-    expect(b.nextElementSibling, 'the rendered usage line, not the turn end, follows the bubble').not.toBe(turnEndBelow(b));
-    expect(placement(b)).toBe('bubble');
+    expect(turnEndBelow(b), 'the turn-end row is the next sibling of the bubble').not.toBeNull();
+    expect(turnEndBelow(b)!.textContent).toContain('Done');
+    expect(turnEndBelow(b)!.nextElementSibling!.matches(`[data-subtype="${subtype}"]`), 'the notice follows the turn-end row').toBe(true);
+    expect(placement(b)).toBe('turn-end');
+    expect(names(b)).toEqual(OFFERS_RAW);
+    expect(await copyOf(b)).toBe('A');
+  });
+
+  it('repeated usage lines sit under the turn-end row, and the dropped repeat never breaks the bubble-to-row adjacency', async () => {
+    const { m, root } = await show([...text('m1', 0, 'A'), usage(), usage(), turnEnd()]);
+    expect(kinds(m)).toEqual(['assistant', 'turn_end', 'system', 'system']);
+    expect(root.querySelectorAll('[data-subtype="rate_limit_event"]'), 'one of the two is dropped at render').toHaveLength(1);
+    const b = bubbles(root)[0];
+    expect(placement(b)).toBe('turn-end');
+    expect(turnEndBelow(b)!.nextElementSibling!.matches('[data-subtype="rate_limit_event"]')).toBe(true);
+  });
+
+  it("live, snapshot replay and a lazy page all render the turn's end notice below the turn-end row", async () => {
+    const events = () => toolLoop(usage());
+    const streamed = new ConversationModel();
+    for (const ev of events()) streamed.apply(ev);
+    const replayed = new ConversationModel();
+    replayed.applyEvents(events());
+    const paged = new ConversationModel().renderPage(events(), null, null);
+    for (const [path, m] of [['live', streamed], ['replay', replayed], ['lazy page', paged]] as const) {
+      const r = renderModel(m);
+      await flush();
+      expect(kinds(m), `${path}: kinds`).toEqual(['assistant', 'turn_end', 'system']);
+      expect(placement(bubbles(r.root)[0]), `${path}: placement`).toBe('turn-end');
+      r.unmount();
+    }
+  });
+
+  it.each([
+    ['auto_stop_overage', { resume: false }],
+    ['permission_denied', { message: 'denied' }],
+  ])('a %s note between the bubble and its turn end stays above the row, and the controls stay on the bubble', async (subtype, data) => {
+    const { m, root } = await show([...text('m1', 0, 'A'), { kind: 'system', subtype, data } as UiEvent, turnEnd()]);
+    expect(kinds(m)).toEqual(['assistant', 'system', 'turn_end']);
+    expect(placement(bubbles(root)[0])).toBe('bubble');
   });
 
   it('a turn the process exits before ending leaves the controls on the bubble', async () => {
@@ -732,6 +775,17 @@ describe('on the turn-end row', () => {
     act(() => { m.prependPage(m.renderPage([{ kind: 'user_echo', text: 'prompt', userIndex: 0 }, ...text('mA', 0, 'A')], null, null), m.leadingAssistantWrap); });
     await flush();
     expect(kinds(m), 'fixture check').toEqual(['user', 'assistant', 'turn_end', 'user', 'assistant']);
+    const [a, a2] = bubbles(root);
+    expect(placement(a)).toBe('turn-end');
+    expect(await copyOf(a)).toBe('A');
+    expect(placement(a2)).toBe('bubble');
+  });
+
+  it('a usage notice ending a lazy page goes below the turn-end row heading the live tail, and that row carries the page bubble\'s controls', async () => {
+    const { m, root } = await show([turnEnd(), { kind: 'user_echo', text: 'next', userIndex: 1 }, ...text('mB', 0, 'A2')]);
+    act(() => { m.prependPage(m.renderPage([{ kind: 'user_echo', text: 'prompt', userIndex: 0 }, ...text('mA', 0, 'A'), usage()], null, null), m.leadingAssistantWrap); });
+    await flush();
+    expect(kinds(m)).toEqual(['user', 'assistant', 'turn_end', 'system', 'user', 'assistant']);
     const [a, a2] = bubbles(root);
     expect(placement(a)).toBe('turn-end');
     expect(await copyOf(a)).toBe('A');

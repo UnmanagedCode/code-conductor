@@ -146,6 +146,15 @@ export type ReaderNode = ThinkingNode | ResultNode | ToolNode | UserNode | Syste
 
 // System annotations that END the machinery run (interrupt, process death).
 const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
+// Account and cache notices: one landing after a turn's last item renders below that turn's turn-end row.
+const TURN_TAIL_NOTICES = new Set(['rate_limit_event', 'cache_miss']);
+const isTurnTailNotice = (it: RootItem | undefined) => it?.type === 'system' && TURN_TAIL_NOTICES.has(it.ev.subtype);
+/** Where a turn-end row goes in `items`: above the run of turn-tail notices `items` ends with. */
+function turnEndSlot(items: RootItem[]): number {
+  let at = items.length;
+  while (at > 0 && isTurnTailNotice(items[at - 1])) at--;
+  return at;
+}
 // Content that ends the window in which a compaction's own command output is absorbed.
 const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_use_start', 'tool_result', 'turn_end']);
 const TRANSCRIBED_PREFIX = '<transcribed>\n';
@@ -333,9 +342,9 @@ export class ConversationModel {
     return { id: newId(), rev: 0, parent, ...fields } as T;
   }
 
-  private pushRoot(item: RootItem) {
+  private pushRoot(item: RootItem, at = this.items.length) {
     item.parent = this;
-    this.items.push(item);
+    this.items.splice(at, 0, item);
     this.rev++;
     this.touch(null);
     if (this.host) this.touch(this.host);
@@ -597,7 +606,7 @@ export class ConversationModel {
       case 'turn_end':
         this.failPendingCompaction(null);
         this.closeAllActionGroups();
-        return this.pushRoot(this.make<TurnEndNode>({ type: 'turn_end', ev }, this));
+        return this.pushRoot(this.make<TurnEndNode>({ type: 'turn_end', ev }, this), turnEndSlot(this.items));
       case 'assistant_message':
         // Outer turns are driven by stream deltas; sub-agent turns arrive only as envelopes.
         if (this.isSub) this.reconcileAssistantMessage(ev);
@@ -1124,6 +1133,15 @@ export class ConversationModel {
       pageItems = pageItems.filter((i) => i !== trailing);
       merged = true;
       this.touch(oldestLeadingWrap);
+    }
+    // A turn-end row heading the chunk below goes above the turn-tail notices the page ends with.
+    const head = this.items[0];
+    if (head?.type === 'turn_end') {
+      const at = turnEndSlot(pageItems);
+      if (at < pageItems.length) {
+        pageItems = [...pageItems.slice(0, at), head, ...pageItems.slice(at)];
+        this.items = this.items.slice(1);
+      }
     }
     this.items = [...pageItems, ...this.items];
     for (const [pid, block] of page.toolBlocks) {
