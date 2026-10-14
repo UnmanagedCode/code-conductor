@@ -118,6 +118,16 @@ describe('system_transfer', () => {
     assert.equal(sha(await fs.readFile(dst)), sha(BYTES));
   });
 
+  test("remoteId:'' on local means the default target, not SYSTEM_NO_REMOTES", async () => {
+    const src = await seed('src');
+    const dst = path.join(root, 'out');
+    const r = await systemTransfer({ from: { system: 'local', remoteId: '', path: src }, to: { system: 'local', remoteId: '', path: dst } });
+    assert.equal(r.ok, undefined, JSON.stringify(r));
+    assert.equal(r.from.remoteId, null);
+    assert.equal(r.to.remoteId, null);
+    assert.equal(sha(await fs.readFile(dst)), sha(BYTES));
+  });
+
   test('an unregistered system is a returned SYSTEM_NOT_REGISTERED naming the side', async () => {
     const src = await seed('src');
     const r = await systemTransfer({ from: { system: 'local', path: src }, to: { system: 'nosuch', path: '/tmp/x' } });

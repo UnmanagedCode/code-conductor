@@ -1,8 +1,9 @@
 // A FILE A WRITE CREATES IS NEVER MORE READABLE THAN THE MODE ASKED FOR.
 //
-// An `atomic` write's temp file and an `exclusive` write's target both hold the
-// whole payload before their mode is set, so if either is created at the
-// default `0o666 & ~umask` and only chmod'ed afterwards, a private file sits
+// Every write that creates a file — an `atomic` write's temp file, an
+// `exclusive` write's target, a plain write's new target — holds the whole
+// payload before its mode is set, so if it is created at the default
+// `0o666 & ~umask` and only chmod'ed afterwards, a private file sits
 // world-readable for the length of the write. Both of cc's implementations of
 // the write are checked: LocalSystem and the reference provider, the latter
 // driven IN-PROCESS through its frame handler so the same observation reaches
@@ -57,11 +58,12 @@ const WRITERS = [
   ['reference provider', referenceProviderWrite],
 ];
 
-// Which file each kind of write creates and chmods: the temp file beside the
-// target, or the target itself.
+// Which file each kind of write creates and chmods — the temp file beside the
+// target, or the target itself — and the options that select it.
 const KINDS = [
-  ['atomic', 'temp file', (seenPath, target) => seenPath.startsWith(`${target}.`) && seenPath.endsWith('.tmp')],
-  ['exclusive', 'target', (seenPath, target) => seenPath === target],
+  ['atomic', 'temp file', { atomic: true }, (seenPath, target) => seenPath.startsWith(`${target}.`) && seenPath.endsWith('.tmp')],
+  ['exclusive', 'target', { exclusive: true }, (seenPath, target) => seenPath === target],
+  ['plain', 'target', {}, (seenPath, target) => seenPath === target],
 ];
 
 describe('a write creates its file at the requested mode', () => {
@@ -72,12 +74,12 @@ describe('a write creates its file at the requested mode', () => {
   });
   afterEach(() => { spy?.restore(); spy = undefined; process.umask(savedUmask); });
 
-  for (const [name, write] of WRITERS) for (const [kind, what, isCreated] of KINDS) {
+  for (const [name, write] of WRITERS) for (const [kind, what, kindOpts, isCreated] of KINDS) {
     test(`[${name}] ${kind}: the created ${what} never has permission bits wider than \`mode\``, async () => {
       for (const mode of [0o600, 0o640, 0o700]) {
         const target = path.join(root, `${kind}-${mode.toString(8)}`);
         spy = spyCreatedModes();
-        await write(target, PAYLOAD, { [kind]: true, mode });
+        await write(target, PAYLOAD, { ...kindOpts, mode });
         spy.restore();
         assert.equal(spy.seen.length, 1, `premise: one file was observed before its chmod (0${mode.toString(8)})`);
         const [seen] = spy.seen;

@@ -359,6 +359,29 @@ for (const { name, make } of SYSTEMS) {
       assert.equal(await fs.readFile(dst, 'utf8'), 'original');
     });
 
+    test('a source that grows during a move with its mtime restored is kept: SOURCE_CHANGED by size', async () => {
+      const src = path.join(root, 'f');
+      await fs.writeFile(src, 'original');
+      // Explicit mtime, restored after the append: only the size moves.
+      const stamp = new Date('2001-01-01T00:00:00Z');
+      await fs.utimes(src, stamp, stamp);
+      const dst = path.join(root, 'out');
+      const racer = wrap(sys, {
+        writeFileBytes: async (...a) => {
+          await fs.appendFile(src, ' + appended');
+          await fs.utimes(src, stamp, stamp);
+          return sys.writeFileBytes(...a);
+        },
+      });
+      const r = await run(src, dst, { move: true }, sys, racer);
+      assert.equal(r.ok, false);
+      assert.equal(r.code, 'SOURCE_CHANGED', JSON.stringify(r));
+      assert.equal(r.written, true);
+      assert.equal((await fs.stat(src)).mtimeMs, stamp.getTime(), 'premise: the mtime is the original');
+      assert.equal(await fs.readFile(src, 'utf8'), 'original + appended', 'the appended bytes survive');
+      assert.equal(await fs.readFile(dst, 'utf8'), 'original');
+    });
+
     test('a short read writes nothing: SOURCE_CHANGED', async () => {
       const src = path.join(root, 'f');
       await fs.writeFile(src, 'twelve bytes');
@@ -426,6 +449,48 @@ describe('transferFile across two handles', () => {
     assert.equal(back.ok, true, JSON.stringify(back));
     assert.equal(sha(await fs.readFile(path.join(root, 'back'))), sha(NASTY));
     assert.equal(await exists(path.join(root, 'there')), false, 'the move removed the provider-side source');
+  });
+
+  // Two TARGETS of one system: the same id, different remoteIds, distinct
+  // storage at the same absolute path — two containers behind one provider.
+  // Each handle maps its paths under its own prefix and unmaps realpath's
+  // answer, so the two answer identically about `/p/f` while the bytes live
+  // apart; only the remoteId tells the endpoints apart.
+  function targetOf(remoteId, prefix) {
+    const map = (p) => prefix + p;
+    return {
+      id: 'boxes', remoteId,
+      stat: (p) => local.stat(map(p)),
+      lstat: (p) => local.lstat(map(p)),
+      realpath: async (p) => (await local.realpath(map(p))).slice(prefix.length) || '/',
+      readFileBytes: (p, o) => local.readFileBytes(map(p), o),
+      writeFileBytes: (p, d, o) => local.writeFileBytes(map(p), d, o),
+      unlink: (p) => local.unlink(map(p)),
+    };
+  }
+
+  test('the same path on two targets of one system is two endpoints, not SAME_FILE', async () => {
+    const prefixA = path.join(root, 'a');
+    const prefixB = path.join(root, 'b');
+    const a = targetOf('a', prefixA);
+    const b = targetOf('b', prefixB);
+    await fs.mkdir(path.join(prefixA, 'p'), { recursive: true });
+    await fs.mkdir(path.join(prefixB, 'p'), { recursive: true });
+    await fs.writeFile(path.join(prefixA, 'p', 'f'), NASTY);
+    await fs.writeFile(path.join(prefixB, 'p', 'f'), 'b holds something else');
+    assert.equal(await a.realpath('/p'), await b.realpath('/p'), 'premise: the realpath answers coincide');
+
+    // The destination exists, so the SAME_FILE check runs; overwrite carries past DEST_EXISTS.
+    const copied = await transferFile({ sys: a, path: '/p/f' }, { sys: b, path: '/p/f' }, { move: false, overwrite: true });
+    assert.equal(copied.ok, true, JSON.stringify(copied));
+    assert.equal(sha(await fs.readFile(path.join(prefixB, 'p', 'f'))), sha(NASTY));
+
+    await fs.writeFile(path.join(prefixB, 'p', 'f'), 'b again');
+    const moved = await transferFile({ sys: a, path: '/p/f' }, { sys: b, path: '/p/f' }, { move: true, overwrite: true });
+    assert.equal(moved.ok, true, JSON.stringify(moved));
+    assert.equal(moved.moved, true);
+    assert.equal(sha(await fs.readFile(path.join(prefixB, 'p', 'f'))), sha(NASTY));
+    assert.equal(await exists(path.join(prefixA, 'p', 'f')), false, 'the source on target a is gone');
   });
 
   // Local only: the boundary is inclusive, and 32 MiB of base64 per gate row
