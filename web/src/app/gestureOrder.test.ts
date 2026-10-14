@@ -56,7 +56,8 @@ async function boot(list: Inst[]) {
     'POST /api/instances/': () => hold(posts, 'fork'),
     'GET /api/instances': () => { const h = held<RouteAnswer>(); reads.push(h); return h.answer; },
     'POST /api/instances': (body) => hold(posts, body.resume ?? body.role),
-    'GET /api/sessions/': (_body, url) => hold(lookups, decodeURIComponent(url.split('/')[3])),
+    // No session here is a pristine conductor: its lookup (tried before locate) misses.
+    'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? MISS : hold(lookups, decodeURIComponent(url.split('/')[3]))),
     'GET /api/projects': () => ({ json: [] }),
     'GET /api/workspaces': () => ({ json: [] }),
   });

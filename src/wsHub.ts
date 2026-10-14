@@ -369,6 +369,25 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             reply(true);
             return;
           }
+          // Presence of a pristine conductor (src/pristine.ts); a no-op on any other.
+          case 'pristine_view': {
+            if (!inst || !id) { reply(false, 'unknown instance'); return; }
+            instances.pristine.view(id, ws);
+            reply(true);
+            return;
+          }
+          case 'pristine_draft': {
+            if (!inst || !id) { reply(false, 'unknown instance'); return; }
+            instances.pristine.draft(id, typeof msg.text === 'string' ? msg.text : '');
+            reply(true);
+            return;
+          }
+          case 'pristine_leave': {
+            if (!inst || !id) { reply(false, 'unknown instance'); return; }
+            instances.pristine.leave(id, ws, typeof msg.text === 'string' ? msg.text : undefined);
+            reply(true);
+            return;
+          }
           case 'playbook_enforcement': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             // Ingress validation — the setter takes an already-narrowed mode.
@@ -390,6 +409,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
 
     ws.on('close', () => {
       for (const subs of subscribers.values()) subs.delete(ws);
+      instances.pristine.drop(ws);
     });
 
     safeSend(ws, JSON.stringify({ t: 'hello' }));

@@ -20,7 +20,7 @@ import { waitFor } from './helpers.mjs';
 async function bootHub() {
   const server = http.createServer();
   const wss = new WebSocketServer({ server });
-  const instances = Object.assign(new EventEmitter(), { get() { return undefined; } });
+  const instances = Object.assign(new EventEmitter(), { get() { return undefined; }, pristine: { drop() {} } });
   attachWsHub({ wss, instances });
   await new Promise((resolve, reject) => {
     server.once('error', reject);

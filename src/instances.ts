@@ -126,6 +126,7 @@ import type { WriteStream } from 'node:fs';
 import { httpError } from './httpError.ts';
 import { capabilityRefusal } from './capabilities.ts';
 import { isKnownEffort } from './effortLevels.ts';
+import { PRISTINE_REAP_GRACE_MS, PristineTracker, draftTitleOf, isHiddenPristine, type PristineTimers } from './pristine.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.ts; re-export it here so existing importers (and tests) that
@@ -221,6 +222,7 @@ interface InstanceConstructorInput {
   mcpServerUrl?: string | null;
   worktree?: WorktreeMeta | null;
   temp?: boolean;
+  pristine?: boolean;
   conducted?: boolean;
   callerInstanceId?: string | null;
   parentSessionId?: string | null;
@@ -700,6 +702,11 @@ export class Instance extends EventEmitter implements InstanceLike {
   _mirrorScope: MirrorScope | null;
   worktree: (WorktreeMeta & { postWorktreeCreate?: unknown }) | null;
   temp: boolean;
+  // A conductor from New conductor that has had no prompt yet (src/pristine.ts).
+  // In memory only: a restart never carries one.
+  pristine: boolean;
+  // The draft a pristine conductor was abandoned with, as its listed title.
+  draftTitle: string | null;
   conducted: boolean;
   callerInstanceId: string | null;
   // Public sessionId of the conductor that spawned this worker, resolved once at
@@ -898,7 +905,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
     super();
     this.id = id;
     this._platform = platform;
@@ -955,6 +962,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // and the orchestrator skips its last-prompt / permission-mode
     // metadata appends during the run.
     this.temp = !!temp;
+    this.pristine = !!pristine;
+    this.draftTitle = null;
     // When true, this session was spawned via the MCP `spawn_instance`
     // tool (orchestrator-driven) — a *conducted* worker, as opposed to a
     // session from the browser UI / HTTP spawn path. Orthogonal to
@@ -1371,6 +1380,7 @@ export class Instance extends EventEmitter implements InstanceLike {
           }
         : null,
       temp: this.temp,
+      pristine: this.pristine,
       conducted: this.conducted,
       callerInstanceId: this.callerInstanceId,
       // The root conductor's public id — for a live conducted worker only; a
@@ -1381,7 +1391,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
-      title: this.title,
+      // A pristine conductor listed under its draft shows the draft; a manual title wins.
+      title: this.title ?? this.draftTitle,
       turnEndSeq: this.turnEndSeq,
       viewedSeq: this.viewedSeq,
       liveTurnEnds: this.liveTurnEnds,
@@ -3263,7 +3274,33 @@ export class Instance extends EventEmitter implements InstanceLike {
     // which is fine for the data but still wrong — it would not be resumable.
     // Announced as `exit_archive` (never rejects) so the manager can await it in
     // shutdown() even after this instance has left byId.
-    if (this.temp && !this._suppressTempDelete) this.emit('exit_archive', this._archiveTempSession().catch(() => {}));
+    if (this.temp && !this._suppressTempDelete) this.emit('exit_archive', this._retireTempSession());
+  }
+
+  // A pristine conductor leaves nothing behind; any other temp session is archived.
+  _retireTempSession(): Promise<void> {
+    return (this.pristine ? this._removePristineSession() : this._archiveTempSession()).catch(() => {});
+  }
+
+  // The first prompt, from any sender, makes a pristine conductor an ordinary
+  // one. Synchronous, and called before any await of the send, so a presence
+  // frame handled after the prompt frame can no longer reap it.
+  _endPristine(): void {
+    if (!this.pristine) return;
+    this.pristine = false;
+    this.draftTitle = null;
+    this.emit('pristine_ended');
+  }
+
+  // A pristine conductor was never prompted, so it has no transcript, costs or
+  // ledger rows; its store record (manual title included) is all there is.
+  // dropSegment of its one segment deletes the record.
+  async _removePristineSession(): Promise<void> {
+    if (!this.backingSessionId) return;
+    await fsp.rm(sessionFilePath(this.transcriptPlace, this.backingSessionId), { force: true });
+    await fsp.rm(subAgentDirPath(this.transcriptPlace, this.backingSessionId), { recursive: true, force: true });
+    await this._lineageWrite;
+    try { await dropSegment(this.backingSessionId); } catch { /* best-effort */ }
   }
 
   // Archive a killed temp session: retain the .jsonl (stays resumable) but
@@ -3332,6 +3369,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       );
     }
     if (!this.proc) throw new Error('not running');
+    this._endPristine();
     // An explicit new turn closes the drain window immediately so an intentional
     // follow-up prompt is never intercepted by the post-hard-abort drain logic.
     this._closeDrainWindow();
@@ -3916,7 +3954,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     const suppressed = this._suppressTempDelete;
     this._suppressTempDelete = false;
     this._relaunching = false;
-    if (suppressed && !this.proc && this.temp) this.emit('exit_archive', this._archiveTempSession().catch(() => {}));
+    if (suppressed && !this.proc && this.temp) this.emit('exit_archive', this._retireTempSession());
     this.emit('status', this.summary());
   }
 
@@ -4266,6 +4304,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // its completion lands in: the idle wake ARMS inside prompt() → _setStatus, so a
   // caller that resumed a tick later could not observe the turn it just started.
   promptOrQueueSteer(text: string, attachments: unknown[] = []): Promise<void> {
+    this._endPristine();
     if (this.needsPostStopSteer) {
       void this.queueSteerAfterStop(text, { attachments }).catch(() => {});
       return Promise.resolve();
@@ -4959,6 +4998,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // RELAUNCH_GRACE_MS, copied onto every Instance this manager constructs, so a
   // test can shrink every relaunch's confirmation at once.
   relaunchGraceMs: number;
+  // Presence and the abandon decision for pristine conductors (src/pristine.ts),
+  // with its timer seams; both seams are read when a window is armed, so a test
+  // can swap them on a live manager.
+  pristine: PristineTracker;
+  pristineTimers: PristineTimers;
+  pristineGraceMs: number;
   _resuming: Map<string, Promise<Instance>>;
   // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
   // whatever string the caller passed, and normalizing it to the public id means an
@@ -5002,6 +5047,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Where SIGTERM is soft a CLI's children exit on EOF once cc is gone, so
     // survivors are left alone; where it is not, they are tree-killed at the deadline.
     this.relaunchGraceMs = RELAUNCH_GRACE_MS;
+    this.pristineTimers = { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) };
+    this.pristineGraceMs = PRISTINE_REAP_GRACE_MS;
+    this.pristine = new PristineTracker({
+      get: (id) => this.byId.get(id),
+      reap: (id) => this.reapPristine(id),
+      list: (id, text) => this.listPristine(id, text),
+      timers: () => this.pristineTimers,
+      graceMs: () => this.pristineGraceMs,
+    });
     this._syncStop = platform.softSigterm
       ? { graceMs: 2000, killSurvivors: false }
       : { graceMs: CLEAN_STOP_GRACE_MS, killSurvivors: true };
@@ -5191,6 +5245,39 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       awaitingWake: this.isIdleCaller(i.id),
       waitingOnJob: waiters.has(i.id),
     }));
+  }
+
+  // list() minus the hidden pristine conductors: what every list PAYLOAD serves
+  // (GET /api/instances, list_sessions, describe_session). Lifecycle code keeps
+  // list() or byId, so teardown and the restart drain still see them.
+  listVisible(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }> {
+    return this.list().filter((row) => {
+      const inst = this.byId.get(row.id);
+      return !inst || !isHiddenPristine(inst);
+    });
+  }
+
+  // An abandoned pristine conductor with a blank draft. Re-checked here,
+  // synchronously before the kill, so a first prompt that landed meanwhile wins.
+  reapPristine(id: string): void {
+    if (!this.byId.get(id)?.pristine) return;
+    this.remove(id).catch((e: unknown) => console.warn(`instances: reaping pristine conductor ${id} failed:`, e));
+  }
+
+  // An abandoned pristine conductor with a draft: listed under it, retitled by a later one.
+  listPristine(id: string, text: string): void {
+    const inst = this.byId.get(id);
+    if (!inst?.pristine) return;
+    inst.draftTitle = draftTitleOf(text);
+    this.emit('list_changed');
+  }
+
+  // The live pristine conductor `sessionId` names, hidden or listed, or null.
+  pristineFor(sessionId: string): Instance | null {
+    for (const inst of this.byId.values()) {
+      if (inst.pristine && inst.sessionId === sessionId && !isDeadStatus(inst.status)) return inst;
+    }
+    return null;
   }
 
   // How many of a project's workers are NOT dead. The number list_projects
@@ -5533,7 +5620,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
+  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, pristine, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -5986,6 +6073,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       mcpServerUrl: this.mcpServerUrl(),
       worktree: worktreeMeta,
       temp: !!temp,
+      pristine: !!pristine,
       conducted: conductedFlag,
       callerInstanceId: callerInstanceId ?? null,
       parentSessionId: (callerInstanceId ? this.byId.get(callerInstanceId)?.sessionId : null) ?? null,
@@ -6250,6 +6338,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         this._cancelAutoResume(inst.id);
         this.byId.delete(id);
         this._purgeIdleFor(id);
+        this.pristine.forget(id);
         this.emit('list_changed');
       }
     });
@@ -6271,6 +6360,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     });
     inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));
     inst.on('turn_marks', () => this.emit('turn_marks', { id }));
+    // The first prompt: presence no longer matters, and a hidden conductor is listed now.
+    inst.on('pristine_ended', () => {
+      this.pristine.forget(id);
+      this.emit('list_changed');
+    });
 
     // ---- the resume reclaim ----
     // LAST THING BEFORE REGISTRATION, and that placement is the point. Everything
@@ -6337,6 +6431,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // The session is running again, so an earlier exit no longer describes it.
     // Guarded on `proc`: a relaunch that already died again recorded its own cause.
     if (publicId && inst.proc) this._exitCauses.delete(publicId);
+    if (inst.pristine) this.pristine.track(id);
     this.emit('list_changed');
     return inst;
   }
@@ -6876,6 +6971,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);
     this._sessionRenew.purge(id);
+    this.pristine.forget(id);
     this.emit('list_changed');
   }
 
@@ -6912,6 +7008,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._overageResume.clearAll();
     const all = [...this.byId.values()];
     this.byId.clear();
+    for (const i of all) this.pristine.forget(i.id);
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
     // kill() resolves on the terminal latch, which runs _handleExit
     // synchronously, so every exit archive is already registered here — the

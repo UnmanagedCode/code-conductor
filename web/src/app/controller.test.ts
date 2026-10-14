@@ -23,6 +23,8 @@ async function boot({ instances = [] as any[], locate = null as null | ((sid: st
   const actions: any = await import('./sessionActions');
   const fetch = vi.fn(async (url: string) => {
     if (url === '/api/instances') return { ok: true, json: async () => instances };
+    // No session here is a pristine conductor: its lookup (tried before locate) misses.
+    if (url.startsWith('/api/sessions/') && url.endsWith('/pristine')) return { ok: false, status: 404, json: async () => ({}) };
     if (url.startsWith('/api/sessions/') && url.endsWith('/locate')) {
       const sid = decodeURIComponent(url.split('/')[3]);
       const r = locate?.(sid);

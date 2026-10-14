@@ -13,7 +13,7 @@ import http from 'node:http';
 import { buildRoutes } from '../src/routes.ts';
 
 function fakeInstances(rows) {
-  return { list() { return rows; } };
+  return { list() { return rows; }, listVisible() { return rows; } };
 }
 
 function fakeFailingGate() {

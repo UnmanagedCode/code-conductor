@@ -43,7 +43,8 @@ async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAn
     'GET /api/instances/': () => ({ json: {} }),
     'GET /api/instances': () => { const h = held<RouteAnswer>(); reads.push(h); return h.answer; },
     'POST /api/instances': (body) => ({ json: resumed(body.resume) }),
-    'GET /api/sessions/': (_body, url) => locate(decodeURIComponent(url.split('/')[3])),
+    // No session here is a pristine conductor: its lookup (tried before locate) misses.
+    'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? { status: 404, json: {} } : locate(decodeURIComponent(url.split('/')[3]))),
     'GET /api/projects': () => ({ json: [] }),
     'GET /api/workspaces': () => ({ json: [] }),
   });

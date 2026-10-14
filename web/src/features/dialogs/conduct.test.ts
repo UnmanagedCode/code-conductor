@@ -21,12 +21,12 @@ afterEach(() => {
 });
 
 describe('Conduct', () => {
-  it('Conduct POSTs only the conductor body (a temp conductor in code mode, no effort or tier), adopts it and selects it', async () => {
+  it('Conduct POSTs only the conductor body (a pristine temp conductor in code mode, no effort or tier), adopts it and selects it', async () => {
     const calls = routeFetch({ 'POST /api/instances': () => ({ json: { id: 'i9', sessionId: 's9' } }) });
     await startConducting();
     const writes = calls.filter((c) => c.method !== 'GET');
     expect(writes.map((c) => `${c.method} ${c.url}`)).toEqual(['POST /api/instances']);
-    expect(writes[0].body).toEqual({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' });
+    expect(writes[0].body).toEqual({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true });
     expect(adoptInstance).toHaveBeenCalledWith({ id: 'i9', sessionId: 's9' });
     expect(selectInstance).toHaveBeenCalledWith('i9', { userGesture: true, gesture: expect.any(Number) });
   });

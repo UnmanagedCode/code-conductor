@@ -2774,6 +2774,7 @@ describe('reclaiming a prepared-but-unspawned session', () => {
       byId: new Map(insts.map(i => [i.id, i])),
       _cancelAutoResume() {}, _purgeIdleFor() {}, emit() {},
       _sessionRenew: { purge() {} },
+      pristine: { forget() {} },
     });
     return mgr;
   };
