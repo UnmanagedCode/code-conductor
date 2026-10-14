@@ -22,9 +22,9 @@ async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
 
 // Build a bare "origin" + a seed repo pushed to it + a fresh clone that acts
 // as the running conductor checkout. Returns { clone, seed, remote, cleanup }.
-// `version` seeds package.json (readVersion source). extraFiles seeds more
-// tracked files at v1.
-async function setupRepo({ version = '0.1.0', lock = null } = {}) {
+// `version` and `deps` (name → range) seed package.json (readVersion source,
+// and what dependencyDrift reads). `lock` seeds a tracked package-lock.json.
+async function setupRepo({ version = '0.1.0', deps = null, lock = null } = {}) {
   const remote = await fs.mkdtemp(path.join(os.tmpdir(), 'su-remote-'));
   const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'su-seed-'));
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'su-clone-'));
@@ -32,7 +32,7 @@ async function setupRepo({ version = '0.1.0', lock = null } = {}) {
   await git(seed, '-c', 'init.defaultBranch=main', 'init', '-q');
   await git(seed, 'config', 'user.email', 'test@test');
   await git(seed, 'config', 'user.name', 'test');
-  await fs.writeFile(path.join(seed, 'package.json'), JSON.stringify({ name: 'code-conductor', version }));
+  await fs.writeFile(path.join(seed, 'package.json'), packageJson(version, deps));
   await fs.writeFile(path.join(seed, 'server.txt'), 'v1');
   if (lock) await fs.writeFile(path.join(seed, 'package-lock.json'), lockFile(lock));
   await git(seed, 'add', '-A');
@@ -46,10 +46,12 @@ async function setupRepo({ version = '0.1.0', lock = null } = {}) {
   await git(clone, 'config', 'user.name', 'test');
   return {
     clone, seed, remote,
-    // Push a new upstream commit. touch = files to (over)write then commit.
+    // Push a new upstream commit: each file (over)written, or removed when its
+    // content is null.
     async pushUpstream(msg, files) {
       for (const [rel, content] of Object.entries(files)) {
-        await fs.writeFile(path.join(seed, rel), content);
+        if (content === null) await fs.rm(path.join(seed, rel));
+        else await fs.writeFile(path.join(seed, rel), content);
       }
       await git(seed, 'add', '-A');
       await git(seed, 'commit', '-q', '-m', msg);
@@ -63,6 +65,10 @@ async function setupRepo({ version = '0.1.0', lock = null } = {}) {
   };
 }
 
+// cc's package.json at `version`, declaring `deps` (name → range) when given.
+function packageJson(version, deps = null) {
+  return JSON.stringify({ name: 'code-conductor', version, ...(deps ? { dependencies: deps } : {}) });
+}
 // A package-lock.json locking each name at its version.
 function lockFile(versions) {
   const packages = { '': { name: 'code-conductor' } };
@@ -76,9 +82,9 @@ async function install(clone, versions) {
     await fs.writeFile(path.join(clone, 'node_modules', name, 'package.json'), JSON.stringify({ name, version }));
   }
 }
-// An injected install command that writes `a` at `version` and leaves a marker.
-const installA = (clone, version) =>
-  `echo installing && mkdir -p node_modules/a && printf '{"version":"${version}"}' > node_modules/a/package.json && touch "${path.join(clone, 'npm-marker')}"`;
+// An injected install command that writes `name` at `version` and leaves a marker.
+const installA = (clone, version, name = 'a') =>
+  `echo installing && mkdir -p node_modules/${name} && printf '{"version":"${version}"}' > node_modules/${name}/package.json && touch "${path.join(clone, 'npm-marker')}"`;
 
 test('getSelfUpdateStatus: up-to-date clone -> updateAvailable false, behind 0, version from package.json', async () => {
   const r = await setupRepo({ version: '1.2.3' });
@@ -138,12 +144,12 @@ test('getSelfUpdateStatus: diverged (local + remote ahead) -> diverged true, upd
   } finally { await r.cleanup(); }
 });
 
-test('applySelfUpdate: fast-forwards, streams pull chunks, restartRequired; node_modules in sync -> npm skipped although the pull moved the lock', async () => {
-  const r = await setupRepo({ lock: { a: '1.0.0' } });
+test('applySelfUpdate: fast-forwards, streams pull chunks, restartRequired; a package.json edit node_modules still satisfies -> npm skipped', async () => {
+  const r = await setupRepo({ deps: { a: '^1.0.0' } });
   try {
     await install(r.clone, { a: '1.0.0' });
-    // The lock changes bytes but not what it pins: no drift, so no install.
-    await r.pushUpstream('v2', { 'server.txt': 'v2', 'package-lock.json': lockFile({ a: '1.0.0' }) + '\n' });
+    // The range changes but the installed version still satisfies it: no drift, so no install.
+    await r.pushUpstream('v2', { 'server.txt': 'v2', 'package.json': packageJson('0.1.0', { a: '~1.0.0' }) });
     let npmRan = false;
     const events = [];
     const result = await applySelfUpdate({
@@ -164,11 +170,11 @@ test('applySelfUpdate: fast-forwards, streams pull chunks, restartRequired; node
   } finally { await r.cleanup(); }
 });
 
-test('applySelfUpdate: the pull bumps a locked version -> runs npm install (injected), streams it, depsChanged true, npm.ok', async () => {
-  const r = await setupRepo({ lock: { a: '1.0.0' } });
+test('applySelfUpdate: the pull bumps a range past the installed version -> runs npm install (injected), streams it, depsChanged true, npm.ok', async () => {
+  const r = await setupRepo({ deps: { a: '^1.0.0' } });
   try {
     await install(r.clone, { a: '1.0.0' });
-    await r.pushUpstream('v2 deps', { 'package-lock.json': lockFile({ a: '2.0.0' }) });
+    await r.pushUpstream('v2 deps', { 'package.json': packageJson('0.1.0', { a: '^2.0.0' }) });
     const phases = [];
     const result = await applySelfUpdate({ repoRoot: r.clone, npmCmd: installA(r.clone, '2.0.0'), onChunk: (phase) => phases.push(phase) });
     assert.equal(result.depsChanged, true);
@@ -180,8 +186,34 @@ test('applySelfUpdate: the pull bumps a locked version -> runs npm install (inje
   } finally { await r.cleanup(); }
 });
 
+test('applySelfUpdate: the pull adds a dependency -> runs npm install', async () => {
+  const r = await setupRepo({ deps: { a: '^1.0.0' } });
+  try {
+    await install(r.clone, { a: '1.0.0' });
+    await r.pushUpstream('v2 deps', { 'package.json': packageJson('0.1.0', { a: '^1.0.0', b: '^3.0.0' }) });
+    const result = await applySelfUpdate({ repoRoot: r.clone, npmCmd: installA(r.clone, '3.0.0', 'b') });
+    assert.equal(result.depsChanged, true);
+    assert.equal(result.npm.ok, true);
+    assert.ok((await fs.stat(path.join(r.clone, 'npm-marker'))).isFile(), 'injected npm command ran');
+  } finally { await r.cleanup(); }
+});
+
+test('applySelfUpdate: the pull removes a dependency -> runs npm install, which prunes it', async () => {
+  const r = await setupRepo({ deps: { a: '^1.0.0', b: '^3.0.0' } });
+  try {
+    await install(r.clone, { a: '1.0.0', b: '3.0.0' });
+    await r.pushUpstream('v2 deps', { 'package.json': packageJson('0.1.0', { a: '^1.0.0' }) });
+    const result = await applySelfUpdate({
+      repoRoot: r.clone, npmCmd: `echo pruning && rm -rf node_modules/b && touch "${path.join(r.clone, 'npm-marker')}"`,
+    });
+    assert.equal(result.depsChanged, true);
+    assert.equal(result.npm.ok, true);
+    assert.ok((await fs.stat(path.join(r.clone, 'npm-marker'))).isFile(), 'injected npm command ran');
+  } finally { await r.cleanup(); }
+});
+
 test('applySelfUpdate: drift that predates the pull -> npm install runs after a code-only pull', async () => {
-  const r = await setupRepo({ lock: { a: '1.0.0' } });
+  const r = await setupRepo({ deps: { a: '^1.0.0' } });
   try {
     await r.pushUpstream('v2', { 'server.txt': 'v2' });
     const result = await applySelfUpdate({ repoRoot: r.clone, npmCmd: installA(r.clone, '1.0.0') });
@@ -192,13 +224,10 @@ test('applySelfUpdate: drift that predates the pull -> npm install runs after a 
 });
 
 test('applySelfUpdate: npm install failure surfaces npm.ok false with code and tail (pull already applied)', async () => {
-  const r = await setupRepo({ lock: { a: '1.0.0' } });
+  const r = await setupRepo({ deps: { a: '^1.0.0' } });
   try {
     await install(r.clone, { a: '1.0.0' });
-    await r.pushUpstream('v2 deps', {
-      'package.json': JSON.stringify({ name: 'code-conductor', version: '0.2.0' }),
-      'package-lock.json': lockFile({ a: '2.0.0' }),
-    });
+    await r.pushUpstream('v2 deps', { 'package.json': packageJson('0.2.0', { a: '^2.0.0' }) });
     const result = await applySelfUpdate({
       repoRoot: r.clone,
       npmCmd: 'echo "npm ERR! boom" >&2; exit 1',
@@ -215,32 +244,46 @@ test('applySelfUpdate: npm install failure surfaces npm.ok false with code and t
 });
 
 test('applySelfUpdate: an install that leaves node_modules out of sync is a failed npm step naming the drift', async () => {
-  const r = await setupRepo({ lock: { a: '1.0.0' } });
+  const r = await setupRepo({ deps: { a: '^1.0.0' } });
   try {
-    await r.pushUpstream('v2 deps', { 'package-lock.json': lockFile({ a: '2.0.0' }) });
+    await r.pushUpstream('v2 deps', { 'package.json': packageJson('0.1.0', { a: '^2.0.0' }) });
     const result = await applySelfUpdate({ repoRoot: r.clone, npmCmd: installA(r.clone, '1.5.0') });
     assert.equal(result.npm.ok, false);
-    assert.match(result.npm.tail, /still differs: node_modules\/a 1\.5\.0 ≠ lock 2\.0\.0/);
+    assert.match(result.npm.tail, /still differs: node_modules\/a 1\.5\.0 does not satisfy \^2\.0\.0/);
     assert.equal(result.restartRequired, false);
   } finally { await r.cleanup(); }
 });
 
 test('applySelfUpdate: a linked node_modules out of sync is a failed npm step that never ran, naming DEPS_LINKED\'s reason', async () => {
-  const r = await setupRepo({ lock: { a: '1.0.0' } });
+  const r = await setupRepo({ deps: { a: '^1.0.0' } });
   const shared = await fs.mkdtemp(path.join(os.tmpdir(), 'su-shared-modules-'));
   try {
     await fs.symlink(shared, path.join(r.clone, 'node_modules'), 'dir');
-    await r.pushUpstream('v2 deps', { 'package-lock.json': lockFile({ a: '2.0.0' }) });
+    await r.pushUpstream('v2 deps', { 'package.json': packageJson('0.1.0', { a: '^2.0.0' }) });
     const result = await applySelfUpdate({ repoRoot: r.clone, npmCmd: installA(r.clone, '2.0.0') });
     assert.equal(result.depsChanged, true);
     assert.equal(result.npm.ran, false);
     assert.equal(result.npm.ok, false);
     assert.match(result.npm.tail, /is a link to .*run npm install there/);
-    assert.match(result.npm.error, /^node_modules is out of sync with package-lock\.json \(node_modules\/a missing\) and is a link to /);
+    assert.match(result.npm.error, /^node_modules does not satisfy package\.json \(node_modules\/a missing\) and is a link to /);
     assert.equal(result.restartRequired, false);
     await assert.rejects(fs.stat(path.join(r.clone, 'npm-marker')), { code: 'ENOENT' }, 'npm command not run');
     assert.deepEqual(await fs.readdir(shared), [], 'the linked tree is untouched');
   } finally { await r.cleanup(); await fs.rm(shared, { recursive: true, force: true }); }
+});
+
+test('applySelfUpdate: a pull that untracks package-lock.json with package.json unchanged -> the lock leaves the disk, npm skipped', async () => {
+  const r = await setupRepo({ deps: { a: '^1.0.0' }, lock: { a: '1.0.0' } });
+  try {
+    await install(r.clone, { a: '1.0.0' });
+    await r.pushUpstream('untrack the lock', { 'package-lock.json': null });
+    const result = await applySelfUpdate({ repoRoot: r.clone, npmCmd: `touch "${path.join(r.clone, 'npm-marker')}"` });
+    await assert.rejects(fs.stat(path.join(r.clone, 'package-lock.json')), { code: 'ENOENT' }, 'the pull removed the lock');
+    assert.equal(result.depsChanged, false);
+    assert.equal(result.npm, null);
+    assert.equal(result.restartRequired, true);
+    await assert.rejects(fs.stat(path.join(r.clone, 'npm-marker')), { code: 'ENOENT' }, 'npm command not run');
+  } finally { await r.cleanup(); }
 });
 
 test('applySelfUpdate: refused 409 MAINTENANCE_IN_PROGRESS while a restart holds the lock, before anything streams or pulls', async () => {

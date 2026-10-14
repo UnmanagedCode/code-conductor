@@ -157,7 +157,7 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     await git(repoDir, 'push', '-q', originDir, 'HEAD:refs/heads/smoke');
     await git(originDir, 'symbolic-ref', 'HEAD', 'refs/heads/smoke');
     await git(work, 'clone', '-q', originDir, appDir);
-    await npm(appDir, 'ci', '--prefer-offline', '--no-audit', '--no-fund');
+    await npm(appDir, 'install', '--ignore-scripts', '--prefer-offline', '--no-audit', '--no-fund');
     port = await new Promise((resolve, reject) => {
       const s = net.createServer().once('error', reject).listen(0, '127.0.0.1', () => {
         const p = s.address().port; s.close(() => resolve(p));
@@ -402,8 +402,8 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     await launch();
     const seed = path.join(work, 'seed');
     await git(work, 'clone', '-q', originDir, seed);
-    // The update installs only when node_modules differs from package-lock.json:
-    // drop a client-only package (bundled into web/dist, never loaded by the
+    // The update installs only when node_modules does not satisfy package.json:
+    // drop a client-only package (dependencyDrift reports it missing) (bundled into web/dist, never loaded by the
     // server) so the update has drift to repair. The package.json edit is the
     // commit that makes an update available.
     fs.rmSync(path.join(appDir, 'node_modules', 'sonner'), { recursive: true, force: true });

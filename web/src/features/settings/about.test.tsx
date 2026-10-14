@@ -121,7 +121,7 @@ describe('About', () => {
   // A refusal that never ran npm (a linked node_modules) names its own reason, not an npm failure; its tail stays in the log and Retry is offered.
   it('a DEPS_LINKED refusal after the pull shows its own message, never "npm install failed"', async () => {
     // Invariant: when npm.ran is false the line carries the refusal's message (npm.error) and the log its tail, and nothing restarts.
-    const refusal = 'node_modules is out of sync with package-lock.json (node_modules/vite missing) and is a link to /shared/node_modules, which cc does not install into — run npm install there.';
+    const refusal = 'node_modules does not satisfy package.json (node_modules/vite missing) and is a link to /shared/node_modules, which cc does not install into — run npm install there.';
     const stream = ndjsonStream();
     mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
     render(<AboutSection />);

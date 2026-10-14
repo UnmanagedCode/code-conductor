@@ -12,7 +12,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import {
-  ensureWebBuild, runViteBuild, stageWebBuild, webHandler, webSourceHash, WEB_ROOT, type WebBuilder, type WebState,
+  ensureWebBuild, runViteBuild, stageWebBuild, webHandler, webInputs, webSourceHash, WEB_ROOT, type WebBuilder, type WebState,
 } from '../../src/webBuild.ts';
 
 const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
@@ -141,10 +141,12 @@ describe('serving the built UI', () => {
 describe('webSourceHash over a fixture root', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webhash-'));
   const web = path.join(root, 'web');
-  const inputs = { root, dirs: [web], files: [path.join(root, 'package-lock.json')] };
+  const lock = path.join(root, 'node_modules', '.package-lock.json');
+  const inputs = { root, dirs: [web], files: [lock] };
   fs.mkdirSync(web);
   fs.writeFileSync(path.join(web, 'main.ts'), 'export {};');
-  fs.writeFileSync(path.join(root, 'package-lock.json'), '{}');
+  fs.mkdirSync(path.dirname(lock));
+  fs.writeFileSync(lock, '{}');
   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
   const withDir = (name: string) => {
     const dir = path.join(web, name);
@@ -164,8 +166,39 @@ describe('webSourceHash over a fixture root', () => {
     const before = webSourceHash(inputs);
     expect(withDir('probe')).not.toBe(before);
     expect(withDir('distx')).not.toBe(before);
-    fs.writeFileSync(path.join(root, 'package-lock.json'), '{"x":1}');
+    fs.writeFileSync(lock, '{"x":1}');
     expect(webSourceHash(inputs)).not.toBe(before);
+  });
+});
+
+describe('the default inputs (webInputs) over a fixture checkout', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webinputs-'));
+  const hidden = path.join(root, 'node_modules', '.package-lock.json');
+  for (const [rel, body] of [['web/main.ts', 'export {};'], ['shared/a.ts', 'export {};'], ['node_modules/.package-lock.json', '{}']]) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), body);
+  }
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it('the running checkout hashes with the inputs webInputs names for its root', () => {
+    expect(webSourceHash()).toBe(webSourceHash(webInputs(path.dirname(WEB_ROOT))));
+  });
+
+  it("a change to the installed tree's hidden lockfile changes the hash; a root package-lock.json is not an input", () => {
+    const before = webSourceHash(webInputs(root));
+    fs.writeFileSync(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+    expect(webSourceHash(webInputs(root))).toBe(before);
+    fs.writeFileSync(hidden, '{"packages":{"node_modules/vite":{"version":"8.3.4"}}}');
+    expect(webSourceHash(webInputs(root))).not.toBe(before);
+  });
+
+  it('web/ and shared/ are inputs', () => {
+    const before = webSourceHash(webInputs(root));
+    fs.writeFileSync(path.join(root, 'shared', 'a.ts'), 'export const x = 1;');
+    const afterShared = webSourceHash(webInputs(root));
+    expect(afterShared).not.toBe(before);
+    fs.writeFileSync(path.join(root, 'web', 'main.ts'), 'export const y = 1;');
+    expect(webSourceHash(webInputs(root))).not.toBe(afterShared);
   });
 });
 
@@ -383,17 +416,17 @@ describe('staging a build before a relaunch, and adopting it at boot', () => {
     expect(served(dist)).toContain('current');
   });
 
-  it('a failed boot build names the dependency drift when node_modules is out of sync, and only then', async () => {
+  it('a failed boot build names the dependency drift when node_modules does not satisfy package.json, and only then', async () => {
     const log = quiet();
     const drifted = await ensureWebBuild({ log, distDir: path.join(parentDir(), 'dist'), build: failing(), drift: () => ({ reason: 'node_modules/vite missing' }) });
     expect(drifted.phase).toBe('failed');
     expect(drifted.error).toContain('vite build failed (exit 1)');
     expect(drifted.error).toContain('error: Unexpected token');
-    expect(drifted.error).toContain('node_modules is out of sync with package-lock.json: node_modules/vite missing; run npm install');
+    expect(drifted.error).toContain('node_modules does not satisfy package.json: node_modules/vite missing; run npm install');
     expect(String(log.error.mock.calls[0][0])).toContain('node_modules/vite missing');
 
     const inSync = await ensureWebBuild({ log: quiet(), distDir: path.join(parentDir(), 'dist'), build: failing(), drift: () => null });
-    expect(inSync.error).not.toContain('out of sync');
+    expect(inSync.error).not.toContain('does not satisfy');
   });
 });
 

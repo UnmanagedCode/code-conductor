@@ -27,29 +27,76 @@ const existsIn = (...files) => {
   return (p) => set.has(p.toLowerCase());
 };
 
-test('C2: root files at the ref: string version, engines.node as >=N[.N[.N]], lockfile and LICENSE', () => {
+test('C2: root files at the ref: string version, engines.node as >=N[.N[.N]], LICENSE', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8'));
   assert.equal(typeof pkg.version, 'string');
   assert.match(pkg.engines?.node ?? '', /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/);
-  for (const f of ['package-lock.json', 'LICENSE']) assert.ok(fs.existsSync(path.join(repo, f)), f);
+  assert.ok(fs.existsSync(path.join(repo, 'LICENSE')), 'LICENSE');
 });
 
-// npm skips a locked package whose `os` field rules out win32 (e.g. macOS-only
+// npm skips a package whose `os` field rules out win32 (e.g. macOS-only
 // `fsevents`, an optional dependency of vite), so its install script never runs
-// under the installer's `npm ci`.
+// under the installer's `npm install`.
 const installsOnWindows = (p) => {
   if (!Array.isArray(p.os)) return true;
   if (p.os.includes('!win32')) return false;
   const allowed = p.os.filter((o) => !o.startsWith('!'));
   return allowed.length === 0 || allowed.includes('win32');
 };
+// The installer's refusal: every lock entry that installs on Windows and has an install script.
+const scriptedOnWindows = (lock) => Object.entries(lock.packages ?? {})
+  .filter(([k, p]) => k !== '' && p.hasInstallScript && installsOnWindows(p))
+  .map(([k]) => k);
+// npm's own CLI, run by this node: beside it on Windows, under lib/ elsewhere.
+const NPM_CLI = [
+  path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+].find((p) => fs.existsSync(p));
+const npm = (cwd, ...args) => {
+  assert.ok(NPM_CLI, `npm-cli.js not found next to ${process.execPath}`);
+  return execFileSync(process.execPath, [NPM_CLI, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+};
 
-test('C3: npm ci needs only node + npm: no locked package that installs on Windows has an install script', () => {
-  const lock = JSON.parse(fs.readFileSync(path.join(repo, 'package-lock.json'), 'utf8'));
-  const scripted = Object.entries(lock.packages)
-    .filter(([, p]) => p.hasInstallScript && installsOnWindows(p))
-    .map(([k]) => k);
-  assert.deepEqual(scripted, []);
+test('C3: the installed tree has no package that installs on Windows with an install script', () => {
+  const hidden = path.join(repo, 'node_modules', '.package-lock.json');
+  assert.ok(fs.existsSync(hidden), `${hidden} is missing — run npm install`);
+  assert.deepEqual(scriptedOnWindows(JSON.parse(fs.readFileSync(hidden, 'utf8'))), []);
+});
+
+test("C3: cc's root package.json defines no install lifecycle script", () => {
+  const { scripts = {} } = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8'));
+  const lifecycle = ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare'];
+  assert.deepEqual(lifecycle.filter((n) => n in scripts), []);
+});
+
+test('C3 control: npm --ignore-scripts records a scripted package as hasInstallScript, and the check flags it', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-contract-npm-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const pkg = path.join(dir, 'pkg');
+  const consumer = path.join(dir, 'consumer');
+  const cache = path.join(dir, 'cache');
+  fs.mkdirSync(pkg);
+  fs.mkdirSync(consumer);
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'scripted', version: '1.0.0', scripts: { postinstall: 'node -e "process.exit(1)"' } }));
+  fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify({ name: 'consumer', version: '1.0.0' }));
+  npm(pkg, 'pack', '--silent', '--pack-destination', dir, '--cache', cache);
+  npm(consumer, 'install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund', '--cache', cache, path.join(dir, 'scripted-1.0.0.tgz'));
+  const hidden = JSON.parse(fs.readFileSync(path.join(consumer, 'node_modules', '.package-lock.json'), 'utf8'));
+  assert.equal(hidden.packages['node_modules/scripted']?.hasInstallScript, true);
+  assert.deepEqual(scriptedOnWindows(hidden), ['node_modules/scripted']);
+});
+
+// A Linux tree never installs a win32-only package, so only a fresh resolution
+// of every platform's entries sees one. Needs the registry: opt-in.
+const realNpm = process.env.RUN_REAL_NPM === '1' ? test : test.skip.bind(test);
+realNpm('C3: a fresh resolution of package.json has no package that installs on Windows with an install script (RUN_REAL_NPM=1)', { timeout: 300_000 }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-contract-resolve-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.copyFileSync(path.join(repo, 'package.json'), path.join(dir, 'package.json'));
+  npm(dir, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund');
+  const lock = JSON.parse(fs.readFileSync(path.join(dir, 'package-lock.json'), 'utf8'));
+  assert.ok(Object.keys(lock.packages ?? {}).length > 1, 'fixture check: the resolution has packages');
+  assert.deepEqual(scriptedOnWindows(lock), []);
 });
 
 test('C3: a package whose os field rules out win32 is skipped; any other is not', () => {

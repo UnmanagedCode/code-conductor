@@ -16,7 +16,7 @@ import { pullPastGeneratedConventions } from './conventionsCheckout.ts';
 // Conductor self-update — the app's own version of the Plugin Library update
 // path (src/plugins/library.ts). The conductor is distributed as a git clone
 // (README quick start), so "update" == `git pull --ff-only` in the repo root,
-// then `npm install` if node_modules differs from the pulled package-lock.json
+// then `npm install` if node_modules does not satisfy the pulled package.json
 // (ensureDependencies, src/relaunchPrep.ts), then a restart so the running node
 // process loads the new files. This module owns the git/npm half; the restart
 // — which also stages the web build — is the caller's step (the client hands off to the
@@ -87,7 +87,7 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { re
 type NpmStep = { ran: boolean; ok: boolean; code: number; tail: string; error?: string };
 
 // Apply an update: `git pull --ff-only` in the repo root, then `npm install`
-// iff node_modules then differs from package-lock.json — drift that predates the
+// iff node_modules then does not satisfy package.json — drift that predates the
 // pull included. Holds the maintenance lock throughout, so it never overlaps a
 // restart; contention is refused 409 before onValidated. `--ff-only` never mutates on
 // failure (diverged/dirty/no-remote all refuse cleanly) — surface the tail;
