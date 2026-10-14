@@ -1,6 +1,6 @@
 // The Projects lens's workspace tier in a real browser: what happy-dom cannot
 // measure (a sticky band's position in the sidebar's scrolling body, its width,
-// the rail indent under it, a selected row revealed clear of it). The bodies are
+// where its project rows start, a selected row revealed clear of it). The bodies are
 // shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
@@ -92,8 +92,8 @@ export async function stickyBandFlow({ page }: Ctx): Promise<void> {
   await shoot(page, `sidebar-tiers-sticky-${p}`);
 }
 
-// Invariant: a band spans the sidebar body's width, and every project row under a band, workspace or Other projects, starts one rail indent right of the band's caret.
-/** A workspace band spans the body; its project rows, and the unassigned ones, are indented on the rail. */
+// Invariant: a band spans the sidebar body's width, and every project row under a band, workspace or Other projects, starts at [data-project-list]'s own left edge: no indent under the band.
+/** A workspace band spans the body; its project rows, and the unassigned ones, start at the project list's left edge. */
 export async function bandGeometryFlow({ page }: Ctx): Promise<void> {
   await page.goto('/');
   const { root, body } = await openTiers(page);
@@ -103,11 +103,11 @@ export async function bandGeometryFlow({ page }: Ctx): Promise<void> {
   const b = await box(band(root, tall(p)), 'Tall band');
   expect(b.width, 'the band spans the body').toBeGreaterThanOrEqual(clientWidth - 1);
   expect(b.x, 'the band starts at the body left edge').toBeLessThanOrEqual(bodyBox.x + 1);
-  const caret = await box(band(root, tall(p)).locator('button[aria-expanded] svg').first(), 'Tall caret');
+  const list = await box(root.locator('[data-project-list]'), 'project list');
   const first = await box(root.locator(`[data-project-row="${member(p, 1)}"]`), 'first member row');
-  expect(first.x, 'a member row is indented past the band caret').toBeGreaterThanOrEqual(caret.x + 12);
+  expect(Math.abs(first.x - list.x), 'a member row starts at the list left edge').toBeLessThanOrEqual(0.5);
   const unassigned = await box(root.locator(`[data-project-row="su-${p}-a"]`), 'unassigned row');
-  expect(Math.abs(unassigned.x - first.x), 'an unassigned row shares the member rows indent').toBeLessThanOrEqual(1);
+  expect(Math.abs(unassigned.x - list.x), 'an unassigned row starts at the list left edge').toBeLessThanOrEqual(0.5);
 }
 
 // Invariant: a selected row revealed upward with block 'nearest', as scrollActiveIntoView does, lands below the sticky band. Green before the band existed (nothing covered it); it guards the band's scroll margin on selected rows.
@@ -164,7 +164,7 @@ export async function seedFlat({ cc }: Pick<Ctx, 'cc'>, info: { project: { name:
   await createProject(cc, `sf-${info.project.name}-b`);
 }
 
-// Invariant: with no workspace there is no band, and an unassigned project row starts at the project list's own left edge: no rail indent and no left rule.
+// Invariant: with no workspace there is no band (nothing draws `Other projects` either), and an unassigned project row starts at the project list's own left edge.
 /** With no workspaces the unassigned rows stay flat. */
 export async function flatListFlow({ page }: Ctx): Promise<void> {
   await page.goto('/');

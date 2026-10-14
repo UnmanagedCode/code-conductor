@@ -37,8 +37,8 @@ type Ctx = { m: SidebarModel; ui: ReturnType<typeof useSidebarUi> };
 
 /** The workspace tier: a full-width, opaque, sticky band (it bleeds over the list wrapper's px-2 in AppSidebar). */
 const BAND = 'sticky top-0 z-10 -mx-2 flex h-8 items-center gap-1.5 border-y border-sidebar-border bg-sidebar-accent pr-3 pl-2';
-/** Rows under a band: the subnode rail, with a selected row revealed clear of the band (reveal.ts scrolls `block: 'nearest'`). */
-const BANDED_LIST = 'ml-3 space-y-0.5 border-l border-sidebar-border pl-1.5 [&_[data-active]]:scroll-mt-9';
+/** Rows under a band, at the list's own left edge, with a selected row revealed clear of the band (reveal.ts scrolls `block: 'nearest'`). */
+const BANDED_LIST = 'space-y-0.5 [&_[data-active]]:scroll-mt-9';
 
 type SessionsSummary = { total: number; live: number; last?: number };
 /** `<Noun> (N) · K live · last <ago>`: the Sessions list's summary. */
