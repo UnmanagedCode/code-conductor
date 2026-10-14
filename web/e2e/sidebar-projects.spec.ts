@@ -1,5 +1,5 @@
 // The Projects lens's real-browser layout: what happy-dom cannot
-// measure (the Other projects rule and label x, row geometry in and out of a
+// measure (the Other projects band, row geometry in and out of a
 // workspace, a caret beside an overflowing workspace name).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,13 +47,16 @@ test.beforeAll(async ({ cc }, info) => {
   expect(adopt.body?.ok, JSON.stringify(adopt.body)).toBe(true);
 });
 
-test('the Other projects rule is a visible line drawn once after the workspaces, with the last workspace open or closed', async ({ page }) => {
-  // Invariant: the unassigned run opens with one visible rule right after the last workspace, whatever that workspace's state.
+test('the Other projects band is drawn once after the workspaces, with the last workspace open or closed', async ({ page }) => {
+  // Invariant: the unassigned run opens with one visible band right after the last workspace, whatever that workspace's state.
   const sb = await projectsLens(page);
-  const rule = sb.locator('[data-section-rule]');
+  const header = sb.locator('[data-unassigned-header]');
   const check = async () => {
-    await expect(rule).toHaveCount(1);
-    expect((await rule.boundingBox())!.width).toBeGreaterThan(0);
+    await expect(header).toHaveCount(1);
+    await expect(header).toHaveAttribute('data-workspace-band', '');
+    const b = (await header.boundingBox())!;
+    expect(b.width).toBeGreaterThan(0);
+    expect(b.height).toBeGreaterThan(0);
     expect(await sb.locator('section[data-workspace=""]').evaluate((e) => e.previousElementSibling?.getAttribute('data-workspace'))).toBe(zed(P()));
   };
   await check();

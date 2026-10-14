@@ -201,6 +201,18 @@ describe('selecting an owner', () => {
     expect(barOf(filterRoot())).toEqual(NO_BAR);
   });
 
+  it('a conductor filter that leaves one group names it in the summary and keeps the count whole', async () => {
+    // Invariant: which groups a place shows is judged on the filtered rows, so a filter leaving only conducted rows drops the label and names the group in the summary, while the total stays the place's whole count.
+    seedFleet(fleet());
+    renderSidebar();
+    await settle();
+    const summary = () => el('[data-sessions-summary="mixed:mix"]').textContent;
+    expect(summary()).toBe('Sessions (3) · 3 live');
+    await pick(ALPHA);
+    expect(listItems('mixed:mix')).toEqual(['wa-mix']);
+    expect(summary()).toBe('Conducted sessions (3) · 3 live');
+  });
+
   it('a chosen filter survives the sidebar unmounting and mounting again, as the phone drawer does', async () => {
     // Invariant: the filter is module state, not component state.
     seedFleet(fleet());
@@ -216,12 +228,12 @@ describe('selecting an owner', () => {
 });
 
 describe('Hand-spawned only', () => {
-  it('Hand-spawned only drops conducted rows and the Conducted separator, and hides a project whose sessions are all conducted', async () => {
-    // Invariant: Hand-spawned only keeps exactly the non-conducted rows, the separator leaves with the conducted rows, and an all-conducted project leaves the tree.
+  it('Hand-spawned only drops conducted rows and the Conducted label, and hides a project whose sessions are all conducted', async () => {
+    // Invariant: Hand-spawned only keeps exactly the non-conducted rows, the label leaves with the conducted rows, and an all-conducted project leaves the tree.
     seedFleet(fleet());
     renderSidebar();
     await settle();
-    expect(listItems('mixed:mix')).toEqual(['h-mix', 'sep:Conducted', 'wa-mix', 'wb-mix']);
+    expect(listItems('mixed:mix')).toEqual(['h-mix', 'sep:Conducted · 2', 'wa-mix', 'wb-mix']);
     expect(projectNames()).toEqual(['solo', 'mixed', 'main', 'hand', 'idle']);
     await pick('Hand-spawned only');
     expect(listItems('mixed:mix')).toEqual(['h-mix']);

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ChevronRightIcon, LoaderCircleIcon, PencilIcon } from 'lucide-react';
+import { ChevronRightIcon, FoldersIcon, LayersIcon, LoaderCircleIcon, PencilIcon } from 'lucide-react';
 import { useSignal } from '@/state/createStore';
 import { worktreeOwnership } from '@shared/conductors';
 import { formatAgo } from '@/lib/time';
@@ -35,14 +35,19 @@ export const ChevronSpacer = () => <span className="size-6 shrink-0" />;
 
 type Ctx = { m: SidebarModel; ui: ReturnType<typeof useSidebarUi> };
 
-type SessionsSummary = { total: number; live: number; last?: number };
-/** `Sessions (N) · K live · last <ago>`: the Sessions list's summary. */
-const summaryText = ({ total, live, last }: SessionsSummary) =>
-  `Sessions (${total})${live > 0 ? ` · ${live} live` : ''}${last ? ` · last ${formatAgo(last)}` : ''}`;
+/** The workspace tier: a full-width, opaque, sticky band (it bleeds over the list wrapper's px-2 in AppSidebar). */
+const BAND = 'sticky top-0 z-10 -mx-2 flex h-8 items-center gap-1.5 border-y border-sidebar-border bg-sidebar-accent pr-3 pl-2';
+/** Rows under a band: the subnode rail, with a selected row revealed clear of the band (reveal.ts scrolls `block: 'nearest'`). */
+const BANDED_LIST = 'ml-3 space-y-0.5 border-l border-sidebar-border pl-1.5 [&_[data-active]]:scroll-mt-9';
 
-function SummaryLine({ summary, placeKey }: { summary: SessionsSummary; placeKey: string }) {
+type SessionsSummary = { total: number; live: number; last?: number };
+/** `<Noun> (N) · K live · last <ago>`: the Sessions list's summary. */
+const summaryText = ({ total, live, last }: SessionsSummary, noun = 'Sessions') =>
+  `${noun} (${total})${live > 0 ? ` · ${live} live` : ''}${last ? ` · last ${formatAgo(last)}` : ''}`;
+
+function SummaryLine({ summary, placeKey, noun }: { summary: SessionsSummary; placeKey: string; noun: string }) {
   useAgoTick();
-  return <div className="px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-summary={placeKey}>{summaryText(summary)}</div>;
+  return <div className="px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-summary={placeKey}>{summaryText(summary, noun)}</div>;
 }
 
 /** A place's session rows: the cached disk list overlaid with live instances, narrowed by the filter. */
@@ -57,6 +62,9 @@ export function SessionsList({ ctx, project, worktreeName, liveInstances, showOw
   const rows = mergeLive(sessionsCache.get(key) ?? [], liveInstances)
     .filter((s) => (owner ? s.ownerSessionId === owner : ctx.ui.filter === 'hand' ? !s.conducted : true));
   const { normal, temp, conducted } = sessionSections(rows);
+  // One visible group goes unlabelled and the summary names it; two or more label Temp and Conducted.
+  const shown = [normal, temp, conducted].filter((g) => g.length > 0).length;
+  const noun = shown !== 1 || normal.length > 0 ? 'Sessions' : temp.length > 0 ? 'Temp sessions' : 'Conducted sessions';
   const row = (s: SessionItem) => (
     <SessionRow
       key={s.sessionId}
@@ -69,12 +77,15 @@ export function SessionsList({ ctx, project, worktreeName, liveInstances, showOw
       ownerTitle={ctx.m.ownerTitle}
     />
   );
-  const sep = (label: string) => (
-    <li className="px-2 pt-2 pb-0.5 text-[10px] font-semibold tracking-wider text-muted-foreground/70 uppercase">{label}</li>
+  const label = (kind: 'temp' | 'conducted', name: string, n: number) => (
+    <li className="flex items-center gap-2 px-2 pt-1.5 pb-0.5 text-[11px] font-normal text-muted-foreground/70" data-session-group={kind}>
+      <span className="shrink-0">{name} · {n}</span>
+      <span className="h-px flex-1 bg-sidebar-border" />
+    </li>
   );
   return (
     <div className="ml-3 border-l border-sidebar-border pl-1.5">
-      <SummaryLine summary={summary} placeKey={key} />
+      <SummaryLine summary={summary} placeKey={key} noun={noun} />
       <ul className="space-y-px" data-sessions={key}>
         {rows.length === 0 && (
           <li className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground italic">
@@ -84,8 +95,8 @@ export function SessionsList({ ctx, project, worktreeName, liveInstances, showOw
           </li>
         )}
         {normal.map(row)}
-        {temp.length > 0 && <>{sep('Temp')}{temp.map(row)}</>}
-        {conducted.length > 0 && <>{sep('Conducted')}{conducted.map(row)}</>}
+        {temp.length > 0 && <>{shown > 1 && label('temp', 'Temp', temp.length)}{temp.map(row)}</>}
+        {conducted.length > 0 && <>{shown > 1 && label('conducted', 'Conducted', conducted.length)}{conducted.map(row)}</>}
       </ul>
     </div>
   );
@@ -209,16 +220,17 @@ export function ProjectsList({ m }: { m: SidebarModel }) {
         const open = ui.expandedWorkspaces.includes(g.workspace);
         return (
           <section key={g.workspace} data-workspace={g.workspace}>
-            <div className="group/row flex h-7 items-center gap-1 rounded-md pr-1 hover:bg-sidebar-accent">
+            <div className={cn(BAND, 'group/row')} data-workspace-band={g.workspace}>
               <button
                 type="button"
                 aria-expanded={open}
                 onClick={() => setWorkspaceOpen(g.workspace, !open)}
-                className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground/80 hover:text-foreground"
               >
-                <ChevronRightIcon className={cn('ml-1.5 size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
-                <span className="truncate text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">{g.workspace}</span>
-                <span className="text-[11px] text-muted-foreground/70 tabular-nums">({g.count})</span>
+                <ChevronRightIcon className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
+                <LayersIcon className="size-3.5 shrink-0 text-muted-foreground" data-workspace-icon />
+                <span className="truncate text-xs font-semibold tracking-wider uppercase">{g.workspace}</span>
+                <span className="text-[11px] text-muted-foreground tabular-nums">({g.count})</span>
               </button>
               <IconAction label={`Edit workspace ${g.workspace}`} onClick={() => openWorkspaceDialog(g.workspace)} className="opacity-0 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
                 <PencilIcon className="size-3" />
@@ -227,7 +239,7 @@ export function ProjectsList({ m }: { m: SidebarModel }) {
             {open && (
               g.members.length === 0
                 ? <div className="ml-6 py-1 text-xs text-muted-foreground italic">No projects in this workspace · use the pencil to add some</div>
-                : <ul className="space-y-0.5">{g.members.map((p) => <ProjectItem key={p.name} ctx={ctx} project={p} />)}</ul>
+                : <ul className={BANDED_LIST}>{g.members.map((p) => <ProjectItem key={p.name} ctx={ctx} project={p} />)}</ul>
             )}
           </section>
         );
@@ -235,11 +247,13 @@ export function ProjectsList({ m }: { m: SidebarModel }) {
       {unassigned.length > 0 && (
         <section data-workspace="">
           {groups.length > 0 && (
-            <div className="flex h-7 items-center gap-2 pr-2 pl-6 text-[11px] font-semibold tracking-wider text-muted-foreground/80 uppercase" data-unassigned-header>
-              <span>Other projects</span> <span className="h-px flex-1 border-t border-dashed border-sidebar-border" data-section-rule />
+            <div className={BAND} data-workspace-band="" data-unassigned-header>
+              <span className="size-3.5 shrink-0" />{/* the caret's column */}
+              <FoldersIcon className="size-3.5 shrink-0 text-muted-foreground" data-workspace-icon />
+              <span className="truncate text-xs font-semibold tracking-wider text-foreground/80 uppercase">Other projects</span>
             </div>
           )}
-          <ul className="space-y-0.5">{unassigned.map((p) => <ProjectItem key={p.name} ctx={ctx} project={p} />)}</ul>
+          <ul className={groups.length > 0 ? BANDED_LIST : 'space-y-0.5'}>{unassigned.map((p) => <ProjectItem key={p.name} ctx={ctx} project={p} />)}</ul>
         </section>
       )}
       {groups.length === 0 && unassigned.length === 0 && (

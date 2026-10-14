@@ -302,8 +302,8 @@ describe('Projects tree', () => {
     expect(wsHeader('Hidden').getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('temp and conducted sessions sit under their own separators after the normal rows; a conducted temp session groups as conducted and keeps its Make persistent button', async () => {
-    // Invariant: the order is normal, then Temp, then Conducted; conducted wins the grouping while a temp row, conducted or not, keeps its Make persistent button and a non-temp row never has one.
+  it('temp and conducted sessions sit under their own counted labels after the unlabelled normal rows; a conducted temp session groups as conducted and keeps its Make persistent button', async () => {
+    // Invariant: with two or more groups the order is normal (unlabelled), then a `Temp · n` label and its rows, then a `Conducted · n` label and its rows, n counting that group's rows, and the summary keeps the noun Sessions; conducted wins the grouping while a temp row, conducted or not, keeps its Make persistent button and a non-temp row never has one.
     seed({
       projects: [proj('demo')],
       instances: [
@@ -315,10 +315,63 @@ describe('Projects tree', () => {
     });
     renderSidebar();
     await settle();
-    expect(items('demo')).toEqual(['sid-normal', 'Temp', 'sid-temp', 'Conducted', 'sid-cond', 'sid-ct']);
+    expect(items('demo')).toEqual(['sid-normal', 'Temp · 1', 'sid-temp', 'Conducted · 2', 'sid-cond', 'sid-ct']);
+    expect([...list('demo').querySelectorAll('[data-session-group]')].map((li) => li.getAttribute('data-session-group'))).toEqual(['temp', 'conducted']);
+    expect(summaryOf('demo').textContent).toBe('Sessions (4) · 4 live');
     const promote = (sid: string) => within(rowOf(sid)).queryByRole('button', { name: 'Make persistent' });
     for (const sid of ['sid-temp', 'sid-ct']) expect(promote(sid)).not.toBeNull();
     for (const sid of ['sid-cond', 'sid-normal']) expect(promote(sid)).toBeNull();
+  });
+
+  it('a place whose visible sessions are all temp has no group label and its summary reads Temp sessions', async () => {
+    // Invariant: one visible group, temp, draws no label in the main checkout or a worktree, and its summary names it Temp sessions.
+    sidebarStore.set({ expandedWorktrees: ['demo'] });
+    seed({
+      projects: [proj('demo', { worktrees: [wt('wt')] })],
+      instances: [
+        inst({ sessionId: 'sid-temp', project: 'demo', temp: true }),
+        inst({ sessionId: 'wt-temp', project: 'demo', temp: true, worktree: { worktreeName: 'wt' } }),
+      ],
+    });
+    renderSidebar();
+    await settle();
+    expect(items('demo')).toEqual(['sid-temp']);
+    expect(items('demo:wt')).toEqual(['wt-temp']);
+    expect(list('demo').querySelector('[data-session-group]')).toBeNull();
+    expect(list('demo:wt').querySelector('[data-session-group]')).toBeNull();
+    expect(summaryOf('demo').textContent).toBe('Temp sessions (1) · 1 live');
+    expect(summaryOf('demo:wt').textContent).toBe('Temp sessions (1) · 1 live');
+  });
+
+  it('a place whose visible sessions are all conducted has no group label and its summary reads Conducted sessions', async () => {
+    // Invariant: one visible group, conducted, draws no label and its summary names it Conducted sessions.
+    seed({
+      projects: [proj('demo')],
+      instances: [
+        inst({ sessionId: 'sid-c1', project: 'demo', conducted: true, lastResponseAt: 2000 }),
+        inst({ sessionId: 'sid-c2', project: 'demo', conducted: true, lastResponseAt: 1000 }),
+      ],
+    });
+    renderSidebar();
+    await settle();
+    expect(items('demo')).toEqual(['sid-c1', 'sid-c2']);
+    expect(list('demo').querySelector('[data-session-group]')).toBeNull();
+    expect(summaryOf('demo').textContent).toBe('Conducted sessions (2) · 2 live');
+  });
+
+  it('temp and conducted without normal rows both keep their counted labels and the summary reads Sessions', async () => {
+    // Invariant: two visible groups label each one, even with no normal rows, and the summary keeps the noun Sessions.
+    seed({
+      projects: [proj('demo')],
+      instances: [
+        inst({ sessionId: 'sid-temp', project: 'demo', temp: true, lastResponseAt: 2000 }),
+        inst({ sessionId: 'sid-cond', project: 'demo', conducted: true, lastResponseAt: 1000 }),
+      ],
+    });
+    renderSidebar();
+    await settle();
+    expect(items('demo')).toEqual(['Temp · 1', 'sid-temp', 'Conducted · 1', 'sid-cond']);
+    expect(summaryOf('demo').textContent).toBe('Sessions (2) · 2 live');
   });
 
   it('no separator renders when every session is a normal one', async () => {
@@ -583,19 +636,42 @@ describe('Other projects section', () => {
     expect(el('section[data-workspace="TTD"]').contains(el('[data-project-row="binary-ninja"]'))).toBe(false);
   });
 
-  it('the Other projects header and its rule are drawn once, before the first unassigned project, with the last workspace open or closed', () => {
-    // Invariant: the section boundary is drawn once, at the start of the unassigned run, whatever the workspace's state.
+  it('a workspace header is a band holding its toggle, icon, count and pencil', () => {
+    // Invariant: a workspace section opens with its band, which holds the toggle (icon and count inside it) and the pencil; the toggle shows and hides the members and the pencil opens that workspace's editor.
+    mixed();
+    const band = el('section[data-workspace="TTD"]').firstElementChild as HTMLElement;
+    expect(band.getAttribute('data-workspace-band')).toBe('TTD');
+    const toggle = band.querySelector(':scope > button[aria-expanded]') as HTMLElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.querySelector('[data-workspace-icon]')).not.toBeNull();
+    expect(toggle.textContent).toContain('(2)');
+    expect(within(band).getByRole('button', { name: 'Edit workspace TTD' })).toBeTruthy();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelector('[data-project-row="recon"]')).not.toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelector('[data-project-row="recon"]')).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelector('[data-project-row="recon"]')).not.toBeNull();
+    fireEvent.click(within(band).getByRole('button', { name: 'Edit workspace TTD' }));
+    expect(dialogStore.get().workspace).toEqual({ name: 'TTD' });
+  });
+
+  it('the Other projects band is drawn once, before the first unassigned project, with the last workspace open or closed', () => {
+    // Invariant: the section boundary is one band, drawn once at the start of the unassigned run whatever the workspace's state, with an icon and no toggle, pencil or dashed rule.
     mixed();
     const boundary = () => {
       const headers = document.querySelectorAll('[data-unassigned-header]');
       expect(headers.length).toBe(1);
       const header = headers[0] as HTMLElement;
       expect(el('section[data-workspace=""]').firstElementChild === header).toBe(true);
-      expect(header.querySelectorAll('[data-section-rule]').length).toBe(1);
+      expect(header.getAttribute('data-workspace-band')).toBe('');
+      expect(header.querySelector('[data-workspace-icon]')).not.toBeNull();
+      expect(header.querySelector('button[aria-expanded]')).toBeNull();
+      expect(within(header).queryByRole('button', { name: /^Edit workspace/ })).toBeNull();
       expect(header.textContent).toContain('Other projects');
-      for (const row of document.querySelectorAll('[data-project-row]')) {
-        expect(row.closest('li')?.querySelector('[data-section-rule]') ?? null).toBeNull();
-      }
+      expect(document.querySelector('[data-section-rule]')).toBeNull();
     };
     boundary();
     fireEvent.click(wsHeader('TTD'));
@@ -604,10 +680,11 @@ describe('Other projects section', () => {
   });
 
   it('with only unassigned projects there is no Other projects header', () => {
-    // Invariant: no boundary is drawn when nothing precedes it.
+    // Invariant: no boundary and no band is drawn when nothing precedes it.
     seed({ projects: [proj('binary-ninja'), proj('zeta')] });
     renderSidebar();
     expect(document.querySelector('[data-unassigned-header]')).toBeNull();
+    expect(document.querySelector('[data-workspace-band]')).toBeNull();
     expect(document.querySelector('[data-section-rule]')).toBeNull();
     expect(document.querySelector('[data-project-row="binary-ninja"]')).not.toBeNull();
     expect(document.querySelector('[data-project-row="zeta"]')).not.toBeNull();
