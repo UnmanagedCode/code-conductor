@@ -485,6 +485,9 @@ test('tools/list emits readOnly / destructive / idempotent annotations', async (
   assert.equal(byName.merge_worktree.destructiveHint, true);
   // A prune kills and respawns the worker's subprocess.
   assert.equal(byName.prune_session.destructiveHint, true);
+  // It can overwrite a destination and delete its source.
+  assert.equal(byName.system_transfer.destructiveHint, true);
+  assert.equal(byName.system_transfer.readOnlyHint, undefined);
   assert.equal(byName.set_project_workspace.idempotentHint, true);
   assert.equal(byName.set_idle_timeout.idempotentHint, true);
   // A mutating, non-idempotent tool carries no hints.

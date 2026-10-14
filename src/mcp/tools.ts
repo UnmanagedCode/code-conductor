@@ -1195,6 +1195,36 @@ export function buildTools(): Tool[] {
       // bash isn't sandboxed, so a client shouldn't auto-approve it.
     },
     {
+      name: 'system_transfer',
+      requires: 'remoteSystems',
+      description:
+        'Copy ONE regular file from one System to another, verbatim (binary-safe), with its rwx permission ' +
+        'bits (setuid/setgid/sticky dropped). `from`/`to` are {system, remoteId?, path}: `system` is a registry ' +
+        'id and `local` (cc\'s own machine) is accepted on either side; `remoteId` as in system_bash (omit for ' +
+        'the provider\'s default target; refused on `local`); `path` is absolute on that system, used verbatim. ' +
+        'A source symlink is followed for its bytes; a directory or special-file source is refused, as is one ' +
+        'above the per-file cap (`MAX_FILE_BYTES`). The destination\'s parent directories are created and the ' +
+        'write is atomic (temp file + rename) — a destination symlink is REPLACED, never written through. An ' +
+        'existing destination is refused DEST_EXISTS unless overwrite:true (a directory is never replaced). ' +
+        'move:true deletes the source (a symlink source: the link only) only after the destination is written ' +
+        'and re-checked; any failure keeps the source. Writing — or moving out of — cc\'s own store on `local` ' +
+        'is refused PATH_IN_CC_STORE. OUTPUT: compact JSON {from, to, bytes, mode, moved}. An expected failure ' +
+        'is a normal result {ok:false, code, reason, side?, errno?, written?} — written:true means the ' +
+        'destination now holds the file and the source was kept.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from:      { type: 'object', description: 'Source {system, remoteId?, path} — see the tool description.' },
+          to:        { type: 'object', description: 'Destination {system, remoteId?, path}.' },
+          overwrite: { type: 'boolean', default: false, description: 'Replace an existing destination file or symlink (never a directory).' },
+          move:      { type: 'boolean', default: false, description: 'Delete the source after the destination is written and re-checked.' },
+        },
+        required: ['from', 'to'],
+      },
+      handler: h.systemTransfer,
+      annotations: { destructiveHint: true },
+    },
+    {
       name: 'project_read',
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +

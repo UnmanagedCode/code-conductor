@@ -91,6 +91,7 @@ describe('every capability off', () => {
     const names = list.result.tools.map(t => t.name);
     assert.ok(names.includes('project_bash'), 'positive control: other tools remain');
     assert.ok(!names.includes('system_bash'));
+    assert.ok(!names.includes('system_transfer'));
     assert.ok(!names.includes('set_project_remote'));
     assert.ok(!names.includes('enumerate_remotes'));
 
