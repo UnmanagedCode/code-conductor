@@ -182,7 +182,7 @@ export async function blockReadAloudFlow({ page, cc }: Args): Promise<void> {
 
 // ── queued messages across a usage-window reset ──────────────────────────
 
-const queued = (text: string) => ({ kind: 'overage_message_queued', data: { text, attachmentCount: 0, ts: Date.now(), queuedCount: 1 } });
+export const queued = (text: string) => ({ kind: 'overage_message_queued', data: { text, attachmentCount: 0, ts: Date.now(), queuedCount: 1 } });
 
 export async function queuedGhostsFlow({ page, cc }: Args): Promise<void> {
   // Invariant: messages queued while the usage window is spent show as ghosts; the window reset keeps each on screen, marked delivered, above the reset line and the delivered turn; a message queued after it is a ghost that is not delivered.

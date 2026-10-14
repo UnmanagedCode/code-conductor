@@ -6,7 +6,7 @@ vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { stickyPrompt } from '@/app/controller';
 import { ConversationView } from './ConversationView';
-import { USER_BUBBLE, USER_INSET, USER_TONE_PROMPT } from './items';
+import { USER_BUBBLE, USER_TONE_PROMPT } from './items';
 import { alignClasses, capClasses, marginX, padX, selfAlignClasses, tokens } from './userBubbleTestkit';
 import { pinStore, STATUS_NONE, SWIPE_MIN_PX, type PinState } from './stickyPrompt';
 
@@ -97,14 +97,14 @@ describe('pinned prompt', () => {
     expect(pin.querySelector('[data-pin-body]') === body).toBe(true);
   });
 
-  // Invariant: the pinned bubble has the live user item's inset (no cap, not pushed right) and the live prompt bubble's shape and tone.
-  it("the pinned bubble carries the live bubble's inset and shape", () => {
+  // Invariant: the pin bubble's wrapper has no horizontal margin (it spans the row as the live prompt does, uncapped, not pushed right) and keeps the live prompt bubble's shape and tone.
+  it("the pinned bubble spans the row and carries the live bubble's shape", () => {
     const { pin } = mount();
     show(PINNED);
     const body = pin.querySelector('[data-pin-body]')!;
     const wrapper = body.parentElement!;
-    expect(marginX(wrapper).length, 'the pin has a horizontal inset').toBeGreaterThan(0);
-    expect(marginX(wrapper)).toEqual(tokens(USER_INSET));
+    expect(wrapper.hasAttribute('data-pin-body'), 'fixture check: the wrapper is not the body').toBe(false);
+    expect(marginX(wrapper)).toEqual([]);
     expect(alignClasses(wrapper)).toEqual([]);
     expect(selfAlignClasses(body)).toEqual([]);
     expect(tokens(USER_BUBBLE).length, 'the shared shape has classes').toBeGreaterThan(0);
