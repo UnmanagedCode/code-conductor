@@ -134,7 +134,8 @@ export class LocalSystem implements System {
     }
     if (opts.atomic) return writeFileAtomic(filePath, data, opts.mode);
     if (opts.exclusive) {
-      await fs.writeFile(filePath, data, { flag: 'wx' });
+      // Created at the target's permission bits, for writeFileAtomic's reason.
+      await fs.writeFile(filePath, data, { flag: 'wx', mode: opts.mode === undefined ? 0o666 : opts.mode & 0o777 });
       if (opts.mode !== undefined) await fs.chmod(filePath, opts.mode & 0o7777);
       return;
     }

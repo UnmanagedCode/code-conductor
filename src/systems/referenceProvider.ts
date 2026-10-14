@@ -506,7 +506,9 @@ export class ReferenceProvider {
           throw e;
         }
       } else {
-        await fs.writeFile(w.path, data, w.exclusive ? { flag: 'wx' } : {});
+        // An exclusive write creates the target: at its permission bits, for
+        // the temp file's reason above.
+        await fs.writeFile(w.path, data, w.exclusive ? { flag: 'wx', mode: w.mode === undefined ? 0o666 : w.mode & 0o777 } : {});
         if (w.mode !== undefined) await fs.chmod(w.path, w.mode & 0o7777);
       }
       this.#write({ type: 'writeFileResult', id, ok: true });
