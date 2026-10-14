@@ -65,6 +65,7 @@ const box = async (loc: Locator, name: string) => {
   const b = await loc.boundingBox();
   expect(b, `${name} has a box`).not.toBeNull();
   expect(b!.height, `${name} has a height`).toBeGreaterThan(0);
+  expect(b!.width, `${name} has a width`).toBeGreaterThan(0);
   return b!;
 };
 /** Two frames, so a scroll has been laid out. */

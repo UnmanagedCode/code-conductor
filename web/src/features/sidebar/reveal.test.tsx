@@ -251,8 +251,8 @@ describe('Conductors lens', () => {
 describe('Projects lens', () => {
   beforeEach(() => { uiStore.set({ lens: 'projects' }); });
 
-  it('every collapsed group on the path opens (workspace, Worktrees group, Sessions subnode) and its list loads, and only that path', async () => {
-    // Invariant: a selection opens exactly its workspace, its project's Worktrees group and its place's subnode, and the place's disk list loads; siblings at each level stay closed.
+  it('every collapsed group on the path opens (workspace, Worktrees group, Sessions group) and its list loads, and only that path', async () => {
+    // Invariant: a selection opens exactly its workspace, its project's Worktrees group and its place's Sessions group, and the place's disk list loads; siblings at each level stay closed.
     sidebarStore.set({ expandedWorkspaces: [], expandedWorktrees: [], collapsedSessions: ['solo:solo-a', 'solo:solo-b', 'mixed:mix'] });
     seedFleet(pathWorld());
     renderSidebar();
@@ -279,8 +279,8 @@ describe('Projects lens', () => {
     expect(loadSessions.mock.calls).toEqual([['solo', 'solo-a']]);
   });
 
-  it('a collapsed main-checkout Sessions subnode re-opens on the same project row and its list loads, and another collapsed subnode stays', async () => {
-    // Invariant: the reveal re-opens the subnode in place (same row and chevron nodes), loads only its list, and leaves another collapsed subnode collapsed.
+  it('a collapsed main-checkout Sessions group re-opens on the same project row and its list loads, and another collapsed group stays', async () => {
+    // Invariant: the reveal re-opens the group in place (same row and toggle nodes), loads only its list, and leaves another collapsed group collapsed.
     sidebarStore.set({ expandedWorkspaces: ['Acme', 'Ops'], collapsedSessions: ['main', 'hand'] });
     seedFleet(pathWorld());
     renderSidebar();

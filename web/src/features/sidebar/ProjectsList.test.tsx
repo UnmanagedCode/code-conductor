@@ -289,7 +289,9 @@ describe('Projects tree', () => {
     for (const r of rows) {
       expect(r.querySelector('button[aria-expanded]'), r.getAttribute('data-project-row')!).toBeNull();
       const first = r.firstElementChild as HTMLElement;
-      expect(first.getAttribute('aria-label') === 'Commit history' || first.tagName === 'SPAN').toBe(true);
+      // A git row leads with the Commit history button, a plain one with the span holding its folder svg: an empty spacer span is neither.
+      if (r.getAttribute('data-project-row') === 'with') expect(first.getAttribute('aria-label')).toBe('Commit history');
+      else expect(first.tagName === 'SPAN' && first.querySelector('svg') !== null).toBe(true);
     }
   });
 
