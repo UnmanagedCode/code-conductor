@@ -50,13 +50,34 @@ function SummaryLine({ summary, placeKey, noun }: { summary: SessionsSummary; pl
   return <div className="px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-summary={placeKey}>{summaryText(summary, noun)}</div>;
 }
 
-/** A place's session rows: the cached disk list overlaid with live instances, narrowed by the filter. */
-export function SessionsList({ ctx, project, worktreeName, liveInstances, showOwner, summary }: {
-  ctx: Ctx; project: string; worktreeName: string | null; liveInstances: Instance[]; showOwner: boolean; summary: SessionsSummary;
+/** The rail a group hangs on: sessions and worktrees nest under a project's folder. */
+const RAIL = 'ml-3 border-l border-sidebar-border pl-1.5';
+
+/** A group's fold button; the children are its label. */
+function GroupToggle({ open, onToggle, label, children }: {
+  open: boolean; onToggle: () => void; label?: string; children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={label}
+      onClick={onToggle}
+      className="flex h-7 w-full items-center gap-1 rounded-md px-1 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+    >
+      <ChevronRightIcon className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')} />
+      {children}
+    </button>
+  );
+}
+
+/** A place's session rows: the cached disk list overlaid with live instances, narrowed by the filter. Loads only when `load`. */
+function useSessionRows({ ctx, project, worktreeName, liveInstances, load }: {
+  ctx: Ctx; project: string; worktreeName: string | null; liveInstances: Instance[]; load: boolean;
 }) {
   useSignal(sessionsSignal);
   const key = placeKeyOf(project, worktreeName);
-  React.useEffect(() => { void ensureSessions(project, worktreeName); }, [project, worktreeName, ctx.m.cacheVersion]);
+  React.useEffect(() => { if (load) void ensureSessions(project, worktreeName); }, [load, project, worktreeName, ctx.m.cacheVersion]);
   const status = sessionsStatus(key);
   const owner = filterOwner(ctx.ui.filter);
   const rows = mergeLive(sessionsCache.get(key) ?? [], liveInstances)
@@ -64,7 +85,15 @@ export function SessionsList({ ctx, project, worktreeName, liveInstances, showOw
   const { normal, temp, conducted } = sessionSections(rows);
   // One visible group goes unlabelled and the summary names it; two or more label Temp and Conducted.
   const shown = [normal, temp, conducted].filter((g) => g.length > 0).length;
-  const noun = shown !== 1 || normal.length > 0 ? 'Sessions' : temp.length > 0 ? 'Temp sessions' : 'Conducted sessions';
+  const noun = !load || shown !== 1 || normal.length > 0 ? 'Sessions' : temp.length > 0 ? 'Temp sessions' : 'Conducted sessions';
+  return { key, status, rows, normal, temp, conducted, shown, noun };
+}
+type SessionRowsData = ReturnType<typeof useSessionRows>;
+
+function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
+  ctx: Ctx; project: string; worktreeName: string | null; data: SessionRowsData; showOwner: boolean;
+}) {
+  const { key, status, rows, normal, temp, conducted, shown } = data;
   const row = (s: SessionItem) => (
     <SessionRow
       key={s.sessionId}
@@ -84,20 +113,52 @@ export function SessionsList({ ctx, project, worktreeName, liveInstances, showOw
     </li>
   );
   return (
-    <div className="ml-3 border-l border-sidebar-border pl-1.5">
-      <SummaryLine summary={summary} placeKey={key} noun={noun} />
-      <ul className="space-y-px" data-sessions={key}>
-        {rows.length === 0 && (
-          <li className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground italic">
-            {status === 'loading' ? <><LoaderCircleIcon className="size-3 animate-spin" /> Loading…</>
-              : status === 'error' ? `Couldn't load sessions: ${sessionsError(key)}`
-              : 'No sessions'}
-          </li>
-        )}
-        {normal.map(row)}
-        {temp.length > 0 && <>{shown > 1 && label('temp', 'Temp', temp.length)}{temp.map(row)}</>}
-        {conducted.length > 0 && <>{shown > 1 && label('conducted', 'Conducted', conducted.length)}{conducted.map(row)}</>}
-      </ul>
+    <ul className="space-y-px" data-sessions={key}>
+      {rows.length === 0 && (
+        <li className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground italic">
+          {status === 'loading' ? <><LoaderCircleIcon className="size-3 animate-spin" /> Loading…</>
+            : status === 'error' ? `Couldn't load sessions: ${sessionsError(key)}`
+            : 'No sessions'}
+        </li>
+      )}
+      {normal.map(row)}
+      {temp.length > 0 && <>{shown > 1 && label('temp', 'Temp', temp.length)}{temp.map(row)}</>}
+      {conducted.length > 0 && <>{shown > 1 && label('conducted', 'Conducted', conducted.length)}{conducted.map(row)}</>}
+    </ul>
+  );
+}
+
+/** A worktree's session rows under its summary line. */
+export function SessionsList({ ctx, project, worktreeName, liveInstances, showOwner, summary }: {
+  ctx: Ctx; project: string; worktreeName: string | null; liveInstances: Instance[]; showOwner: boolean; summary: SessionsSummary;
+}) {
+  const data = useSessionRows({ ctx, project, worktreeName, liveInstances, load: true });
+  return (
+    <div className={RAIL}>
+      <SummaryLine summary={summary} placeKey={data.key} noun={data.noun} />
+      <SessionRowsList ctx={ctx} project={project} worktreeName={worktreeName} data={data} showOwner={showOwner} />
+    </div>
+  );
+}
+
+function SessionsLabel({ summary, placeKey, noun }: { summary: SessionsSummary; placeKey: string; noun: string }) {
+  useAgoTick();
+  return <span className="min-w-0 truncate tabular-nums" data-sessions-summary={placeKey}>{summaryText(summary, noun)}</span>;
+}
+
+/** A project's main-checkout sessions: a collapsible group whose header is the summary line. Open by default. */
+function SessionsGroup({ ctx, project, liveInstances, summary }: {
+  ctx: Ctx; project: string; liveInstances: Instance[]; summary: SessionsSummary;
+}) {
+  const open = !ctx.ui.collapsedSessions.includes(project);
+  const data = useSessionRows({ ctx, project, worktreeName: null, liveInstances, load: open });
+  const name = `${data.noun} (${summary.total})${summary.live > 0 ? ` · ${summary.live} live` : ''}`;
+  return (
+    <div className={RAIL} data-project-sessions={project}>
+      <GroupToggle open={open} onToggle={() => setSessionsOpen(project, !open)} label={name}>
+        <SessionsLabel summary={summary} placeKey={data.key} noun={data.noun} />
+      </GroupToggle>
+      {open && <SessionRowsList ctx={ctx} project={project} worktreeName={null} data={data} showOwner />}
     </div>
   );
 }
@@ -150,16 +211,10 @@ function WorktreeGroup({ ctx, project, worktrees }: { ctx: Ctx; project: Project
       ? worktrees.filter((wt) => hasHandSession({ liveInstances: ctx.m.byWorktree.get(placeKeyOf(project.name, wt.worktreeName)) ?? [], summary: wt.sessions }))
       : worktrees;
   return (
-    <div className="ml-3 border-l border-sidebar-border pl-1.5" data-worktrees={project.name}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => { if (!owner) setWorktreesOpen(project.name, !open); }}
-        className="flex h-7 w-full items-center gap-1 rounded-md px-1 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
-      >
-        <ChevronRightIcon className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
+    <div className={RAIL} data-worktrees={project.name}>
+      <GroupToggle open={open} onToggle={() => { if (!owner) setWorktreesOpen(project.name, !open); }}>
         Worktrees ({worktrees.length})
-      </button>
+      </GroupToggle>
       {open && <ul className="space-y-px">{listed.map((wt) => <WorktreeItem key={wt.worktreeName} ctx={ctx} project={project} wt={wt} />)}</ul>}
     </div>
   );
@@ -180,7 +235,6 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
     showWorktrees = worktrees.some((wt) => hasHandSession({ liveInstances: ctx.m.byWorktree.get(placeKeyOf(p.name, wt.worktreeName)) ?? [], summary: wt.sessions }));
   }
   const summary = { total, live: direct.length, last: p.sessions?.lastActivity };
-  const open = !ctx.ui.collapsedSessions.includes(p.name);
   const allInstances = ctx.m.instances.filter((i) => i.project === p.name);
   return (
     <li data-project={p.name}>
@@ -188,12 +242,11 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
         project={p}
         liveCount={direct.length}
         instanceCount={allInstances.length}
-        chevron={showSessions ? <Chevron open={open} label="Sessions" onToggle={() => setSessionsOpen(p.name, !open)} /> : <ChevronSpacer />}
         meta={showSessions ? <SessionsMeta summary={summary} /> : null}
       />
-      {showSessions && open && <SessionsList ctx={ctx} project={p.name} worktreeName={null} liveInstances={direct} showOwner summary={summary} />}
+      {showSessions && <SessionsGroup ctx={ctx} project={p.name} liveInstances={direct} summary={summary} />}
       {!showSessions && worktrees.length === 0 && !owner && (
-        <div className="ml-9 py-0.5 text-xs text-muted-foreground/80 italic">No sessions yet · tap + to start</div>
+        <div className="ml-2 py-0.5 text-xs text-muted-foreground/80 italic">No sessions yet · tap + to start</div>
       )}
       {showWorktrees && <WorktreeGroup ctx={ctx} project={p} worktrees={worktrees} />}
     </li>

@@ -69,8 +69,10 @@ const treeRows = (conductor: string) => blockOf(conductor).querySelectorAll('[da
 /** The workspace's open/close toggle (`[aria-expanded]`: the header row also holds the Edit-workspace pencil button). */
 const workspaceToggle = (name: string) => el(`section[data-workspace="${name}"] > div > button[aria-expanded]`);
 const worktreesToggle = (project: string) => el(`[data-worktrees="${project}"] > button`);
-/** The Sessions chevron on a project row or worktree head, given that row's selector. */
+/** The Sessions chevron on a worktree head, given that row's selector. */
 const sessionsChevron = (row: string) => el(`${row} > button[aria-label="Sessions"]`);
+/** The toggle of a project's main-checkout Sessions group. */
+const projectSessionsToggle = (project: string) => el(`[data-project-sessions="${project}"] > button`);
 const body = () => el('[data-sidebar-body]');
 /** Scrolls the sidebar body as a user does: the offset, then the event. */
 const scrollBody = (top: number) => {
@@ -284,7 +286,7 @@ describe('Projects lens', () => {
     renderSidebar();
     await settle();
     const row = projectRowOf('main');
-    const chevron = sessionsChevron('[data-project-row="main"]');
+    const chevron = projectSessionsToggle('main');
     expect(chevron.getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[data-sessions="main"]')).toBeNull();
     expect(loadSessions.mock.calls.filter(([p]) => p === 'main')).toEqual([]);
@@ -292,12 +294,12 @@ describe('Projects lens', () => {
     select('i-wa-main1');
     await settle();
     expect(projectRowOf('main') === row).toBe(true);
-    expect(sessionsChevron('[data-project-row="main"]') === chevron).toBe(true);
+    expect(projectSessionsToggle('main') === chevron).toBe(true);
     expect(chevron.getAttribute('aria-expanded')).toBe('true');
     expect(loadSessions.mock.calls).toEqual([['main', null]]);
     expect(rowOf('wa-main1').getAttribute('data-active')).toBe('true');
     expect(rowOf('d-main')).not.toBeNull();
-    expect(sessionsChevron('[data-project-row="hand"]').getAttribute('aria-expanded')).toBe('false');
+    expect(projectSessionsToggle('hand').getAttribute('aria-expanded')).toBe('false');
     expect(sidebarStore.get().collapsedSessions).toEqual(['hand']);
   });
 
