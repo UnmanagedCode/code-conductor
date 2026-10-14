@@ -8,6 +8,7 @@ import { projectLabel } from '@shared/conductors';
 import { formatAutoResumeTime } from '@shared/usage';
 import { send, stickyPrompt } from '@/app/controller';
 import { on } from '@/app/events';
+import { notePristineSent, reportPristineDraft, setPristineDraftSource } from '@/app/pristine';
 import { voiceStore } from '@/features/voice/store';
 import { cn } from '@/lib/utils';
 import { NO_ATTACHMENTS, attachmentStore, type Pending } from './attachments';
@@ -101,6 +102,9 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     return () => { removeEventListener('pagehide', onHide); document.removeEventListener('visibilitychange', onVis); };
   }, [flush]);
 
+  // A pristine conductor's leave carries what the box holds at that moment (app/pristine.ts).
+  React.useEffect(() => setPristineDraftSource(() => ({ sessionId: sidRef.current, text: taRef.current?.value ?? '' })), []);
+
   // Leaving the session view unmounts the composer: write a pending save now, not from a timer the
   // page may not live to fire. With nothing pending nothing is written, so a restored draft stays as stored.
   React.useLayoutEffect(() => () => { if (saveTimer.current !== undefined) flush(); }, [flush]);
@@ -110,10 +114,11 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     if (!cur) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = undefined;
-    if (!nextText) { draftStore.clear(cur); return; }
+    if (!nextText) { draftStore.clear(cur); reportPristineDraft(inst, ''); return; }
     saveTimer.current = setTimeout(() => {
       saveTimer.current = undefined;
       draftStore.save(cur, { text: nextText, transcribed: nextTranscribed });
+      reportPristineDraft(inst, nextText);
     }, DRAFT_SAVE_DEBOUNCE_MS);
   }
 
@@ -181,6 +186,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     if (!t && !ready.length) return;
     const payload: Record<string, unknown> = { id: inst.id, text: prependTranscribedTag(t, transcribed) };
     if (ready.length) payload.attachments = ready.map((p) => ({ name: p.name, mediaType: p.mediaType, dataBase64: p.dataBase64 }));
+    notePristineSent(inst.id);
     send('prompt', payload);
     setText('');
     setTranscribed(false);

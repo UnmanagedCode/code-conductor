@@ -1,5 +1,6 @@
 // Conduct: spawn a conductor straight away (no dialog) — a temp session in the
-// hidden `.conduct` project, code mode, on the Conductor role. The server
+// hidden `.conduct` project, code mode, on the Conductor role, pristine (listed
+// nowhere until its first prompt; app/pristine.ts). The server
 // ensures the project and resolves the role's current model and default effort.
 // The created instance is selected as soon as the create answers; the project
 // lists refresh behind it.
@@ -20,7 +21,7 @@ export async function startConducting() {
     const inst = await apiFetch<Instance>('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' }),
+      body: JSON.stringify({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true }),
     });
     adoptInstance(inst);
     if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });

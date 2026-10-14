@@ -5,7 +5,7 @@
 import { bus, connect, send } from '@shared/ws';
 import { ApiError, apiFetch } from '@shared/http';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
-import { appStore, activeInstance, type AppState } from '@/state/app';
+import { appStore, activeInstance, findInstance, type AppState } from '@/state/app';
 import { syncRoute, routeStore } from '@/state/route';
 import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
@@ -17,6 +17,7 @@ import { emit } from './events';
 import { closeSidebarOnMobile } from './ui';
 import { resumeSession } from './sessionActions';
 import { beginGesture, gestureOvertaken, gestureSelected } from './gestures';
+import { startPristineWatch } from './pristine';
 
 export { send };
 
@@ -139,7 +140,10 @@ const instanceReads = coalescedReads(
   (signal) => apiFetch<Instance[]>('/api/instances', { signal }),
   (data: Instance[]) => {
     instancesLanded = true;
-    appStore.set({ instances: Array.isArray(data) ? data : [] });
+    const instances = Array.isArray(data) ? data : [];
+    // A list that carries the pristine conductor takes over from the slot.
+    const slot = appStore.get().pristine;
+    appStore.set({ instances, ...(slot && instances.some((i) => i.id === slot.id) ? { pristine: null } : {}) });
     emit('instances');
   },
 );
@@ -150,8 +154,14 @@ export const refreshInstances = instanceReads.refresh;
 /**
  * Apply an instance the server just created, before any list read: a read
  * already in flight predates it and is dropped, and a trailing read replaces it.
+ * A pristine one no list carries goes into the slot instead (app/pristine.ts).
  */
 export function adoptInstance(inst: Instance) {
+  if (inst.pristine) {
+    appStore.set({ pristine: inst });
+    emit('instances');
+    return;
+  }
   instanceReads.supersede();
   const { instances } = appStore.get();
   const i = instances.findIndex((x) => x.id === inst.id);
@@ -161,7 +171,11 @@ export function adoptInstance(inst: Instance) {
 }
 
 function patchInstance(id: string, patch: Partial<Instance>) {
-  const { instances } = appStore.get();
+  const { instances, pristine } = appStore.get();
+  if (pristine?.id === id) {
+    const next = { ...pristine, ...patch };
+    appStore.set({ pristine: next.status === 'exited' || next.status === 'crashed' ? null : next });
+  }
   const i = instances.findIndex((x) => x.id === id);
   if (i < 0) return;
   const next = instances.slice();
@@ -195,7 +209,7 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   appStore.set({ activeId: id });
   conversation.clear();
   lazyHistory.reset();
-  const inst = id ? appStore.get().instances.find((i) => i.id === id) ?? null : null;
+  const inst = id ? findInstance(appStore.get(), id) : null;
   emit('select', { id, sessionId: inst?.sessionId ?? null, userGesture: !!opts.userGesture });
   subscribe(id);
   // The hash carries the sessionId (stable across crash / resume), not the instance id.
@@ -223,6 +237,15 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
   const overtaken = () => (gesture === undefined ? appStore.get().activeId !== selected : gestureOvertaken(gesture));
   const clear = () => { if (clearAnchorOnMiss) { writeSessionAnchor(null); syncRoute(); } };
   try {
+    // A pristine conductor no list carries is looked up, never resumed.
+    const pristine = await apiFetch<Instance>(`/api/sessions/${encodeURIComponent(anchor)}/pristine`)
+      .catch((e) => { if (e instanceof ApiError) return null; throw e; });
+    if (overtaken()) return true;
+    if (pristine) {
+      adoptInstance(pristine);
+      selectInstance(pristine.id, { userGesture });
+      return true;
+    }
     // A refusal (no such session) is a miss; a network failure is the catch's.
     const hit = await apiFetch<{ project: string; worktreeName: string | null; archived: boolean } | null>(`/api/sessions/${encodeURIComponent(anchor)}/locate`)
       .catch((e) => { if (e instanceof ApiError) return null; throw e; });
@@ -394,7 +417,8 @@ export function startController() {
   addEventListener('popstate', () => {
     if (routeStore.get().route.view !== 'session') return;
     const anchor = readSessionAnchor();
-    const live = anchor ? appStore.get().instances.find((i) => i.sessionId === anchor) : null;
+    const { instances, pristine } = appStore.get();
+    const live = anchor ? instances.find((i) => i.sessionId === anchor) ?? (pristine?.sessionId === anchor ? pristine : null) : null;
     const target = live?.id ?? null;
     if (target !== appStore.get().activeId) selectInstance(target);
     else if (anchor && !target && instancesLanded) {
@@ -430,10 +454,22 @@ export function startController() {
     }
     // A newer open owns the socket now, and re-subscribes the active session itself.
     if (gen !== opens) return;
-    const { activeId, instances } = appStore.get();
-    if (activeId && activeId !== subscribedSinceOpen && instances.some((i) => i.id === activeId)) subscribe(activeId);
+    // The slot's conductor may have been reaped while this socket was down.
+    const slot = appStore.get().pristine;
+    if (slot?.sessionId) {
+      const gone = await apiFetch(`/api/sessions/${encodeURIComponent(slot.sessionId)}/pristine`)
+        .then(() => false, (e) => e instanceof ApiError);
+      if (gen !== opens) return;
+      const s = appStore.get();
+      if (gone && s.pristine?.id === slot.id) {
+        appStore.set({ pristine: null, ...(s.activeId === slot.id ? { activeId: null } : {}) });
+      }
+    }
+    const { activeId } = appStore.get();
+    if (activeId && activeId !== subscribedSinceOpen && findInstance(appStore.get(), activeId)) subscribe(activeId);
   });
 
+  startPristineWatch(signal);
   connect();
 }
 
