@@ -581,6 +581,8 @@ describe('on the turn-end row', () => {
     expect(icon.querySelector('svg'), 'the status icon is in its own cell').not.toBeNull();
     expect(icon.classList.contains('md:w-8'), 'the cell is the avatar column wide').toBe(true);
     expect(stats.contains(icon), 'the icon is outside the stats column').toBe(false);
+    expect(icon.parentElement!.classList.contains('md:gap-3'), 'the gutter-to-body gap matches the avatar row').toBe(true);
+    expect(icon.parentElement!.contains(stats), 'icon and stats share the wrapper').toBe(true);
     expect(stats.querySelector('svg'), 'the stats carry no icon').toBeNull();
     expect(stats.textContent).toContain('Done');
     expect(icon.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING, 'icon precedes the stats').toBeTruthy();
