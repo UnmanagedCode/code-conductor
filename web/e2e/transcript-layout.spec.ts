@@ -1,7 +1,8 @@
 // The phone transcript layout in a real browser: below `md` the avatar heads the turn and the
 // body spans the transcript width, its prose inset from the card border; at `md` and up the avatar sits beside the body, which
-// fills the rest of the row. On both the turn footer lines up with the body (a regression
-// guard: the footer's avatar-width indent must not return under the stacked layout).
+// fills the rest of the row. The turn footer's status icon is centred on the avatar at `md` and up and starts at the
+// body's edge below it; at `md` and up its label starts at the body's edge (a regression guard: the footer's
+// avatar-width indent must not return under the stacked layout).
 import { test, expect } from './harness/fixtures.ts';
 import { createProject } from './harness/api.ts';
 import { next } from './flows/ui.ts';
@@ -20,18 +21,21 @@ test('phone: the avatar heads the turn and the body spans the transcript width; 
   const b = await box(bubble);
   const avatar = await box(bubble.locator('[data-assistant-avatar]'));
   const body = await box(bubble.locator('[data-assistant-body]'));
-  const footer = await box(next.turnEnds(page).first().locator('span').first());
+  const icon = await box(next.turnEnds(page).first().locator('[data-turn-icon]'));
+  const label = await box(next.turnEnds(page).first().locator('[data-turn-stats] span').first());
 
   if (name === 'phone') {
     expect(avatar.y + avatar.height, 'avatar stacked above body').toBeLessThanOrEqual(body.y + 0.5);
     expect(body.x, 'no avatar gutter').toBeLessThanOrEqual(avatar.x + 0.5);
     expect(body.width).toBeGreaterThanOrEqual(b.width - 0.5);
+    expect(Math.abs(icon.x - body.x), 'footer icon lines up with body').toBeLessThan(1);
   } else {
     expect(avatar.x + avatar.width, 'avatar beside body').toBeLessThanOrEqual(body.x);
     expect(body.y, 'same row').toBeLessThan(avatar.y + avatar.height);
     expect(Math.abs(body.x + body.width - (b.x + b.width)), 'body fills the rest of the row').toBeLessThanOrEqual(0.5);
+    expect(Math.abs(icon.x + icon.width / 2 - (avatar.x + avatar.width / 2)), 'footer icon centred on the avatar').toBeLessThan(1);
+    expect(Math.abs(label.x - body.x), 'footer label lines up with body').toBeLessThan(1);
   }
-  expect(Math.abs(footer.x - body.x), 'footer lines up with body').toBeLessThan(1);
 
   if (name === 'phone') {
     // Prose is inset from the action card's border, which stays at the transcript edge.
