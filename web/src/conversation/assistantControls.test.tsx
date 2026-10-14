@@ -576,6 +576,14 @@ describe('on the turn-end row', () => {
     const row = turnEndBelow(bubbles(root)[0])!;
     expect(row.className, 'no indent to the body column').not.toMatch(/(^|\s)(md:)?p[lx]-\d/);
     expect(row.classList.contains('-mt-4'), 'cancels part of the list gap').toBe(true);
+    const icon = row.querySelector('[data-turn-icon]')!;
+    const stats = row.querySelector('[data-turn-stats]')!;
+    expect(icon.querySelector('svg'), 'the status icon is in its own cell').not.toBeNull();
+    expect(icon.classList.contains('md:w-8'), 'the cell is the avatar column wide').toBe(true);
+    expect(stats.contains(icon), 'the icon is outside the stats column').toBe(false);
+    expect(stats.querySelector('svg'), 'the stats carry no icon').toBeNull();
+    expect(stats.textContent).toContain('Done');
+    expect(icon.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING, 'icon precedes the stats').toBeTruthy();
   });
 
   it("a turn-end row directly under a text bubble carries its raw toggle and copy, and the bubble keeps no row of its own", async () => {

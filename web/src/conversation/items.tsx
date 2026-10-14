@@ -385,6 +385,9 @@ function AssistantControls({ node, model, className }: { node: AssistantNode; mo
   );
 }
 
+/** The avatar's column at `md` and up: AssistantBubble's `size-8` avatar; the turn-end icon cell takes the same width. */
+const AVATAR_COLUMN = 'md:w-8';
+
 function AssistantBubble({ node, ctx, controlsBelow }: { node: AssistantNode; ctx: RenderCtx; controlsBelow: boolean }) {
   return (
     <div className="group/asst flex flex-col gap-2 md:flex-row md:gap-3" data-item="assistant">
@@ -456,15 +459,19 @@ function TurnEndView({ node, carries, model }: { node: TurnEndNode; carries: Ass
   const p = turnEndParts(node.ev);
   return (
     <div className="group/asst -mt-4 flex items-center gap-x-3 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
-      <div data-turn-stats className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-        <span className={cn('flex items-center gap-1', p.ok ? 'text-success' : 'text-destructive')}>
+      <div className="flex min-w-0 flex-1 items-center gap-1 md:gap-3">
+        <span data-turn-icon className={cn('flex shrink-0 items-center justify-center', AVATAR_COLUMN, p.ok ? 'text-success' : 'text-destructive')}>
           {p.ok ? <CircleCheckIcon className="size-3.5" /> : <CircleAlertIcon className="size-3.5" />}
-          {p.ok ? 'Done' : 'Turn failed'}{p.stopReason && p.stopReason !== 'end_turn' && ` · ${p.stopReason}`}
         </span>
-        {p.duration && <span>{p.duration}</span>}
-        {p.cost && <span>{p.cost}</span>}
-        {p.context && <span>{p.context}</span>}
-        {p.tokens && <span>{p.tokens}</span>}
+        <div data-turn-stats className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+          <span className={p.ok ? 'text-success' : 'text-destructive'}>
+            {p.ok ? 'Done' : 'Turn failed'}{p.stopReason && p.stopReason !== 'end_turn' && ` · ${p.stopReason}`}
+          </span>
+          {p.duration && <span>{p.duration}</span>}
+          {p.cost && <span>{p.cost}</span>}
+          {p.context && <span>{p.context}</span>}
+          {p.tokens && <span>{p.tokens}</span>}
+        </div>
       </div>
       {carries && assistantHasText(carries) && <AssistantControls node={carries} model={model} className={`shrink-0 ${TURN_END_CONTROLS_REVEAL}`} />}
     </div>
