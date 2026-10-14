@@ -1,27 +1,29 @@
-// User bubbles start at the left edge of their conversation's collapsed action card and fill to the
-// column's right edge, whatever their length, at every session width, on a phone and in a sub-agent
-// panel; their attachments and controls start at their text. The bodies are shared by the per-project
+// User bubbles span the transcript column's content box as the question and plan cards do, whatever
+// their length or variant, at every session width and on a phone, and fill a sub-agent panel's content
+// box; their attachments and controls start at their text. The bodies are shared by the per-project
 // spec files.
-import type { Page } from '@playwright/test';
-import { test, expect } from './harness/fixtures.ts';
-import { spawnSession } from './harness/api.ts';
+import type { Locator, Page, WebSocketRoute } from '@playwright/test';
+import { test, expect, type Cc } from './harness/fixtures.ts';
+import { createProject, spawnSession } from './harness/api.ts';
 import { next } from './flows/ui.ts';
-import { bringTo, sendAll, tallPrompt } from './flows/stickyPin.ts';
+import { bringTo, reveal, sendAll, tallPrompt } from './flows/stickyPin.ts';
+import { askCard, answerCard, instanceIn } from './flows/questionCard.ts';
+import { buildWakeStub } from '../../shared/wakeCallback.ts';
+import { queued } from './conversation-bubbles.shared.ts';
 import { LABELS, widthButton } from './session-width.shared.ts';
 
-type Ctx = { page: Page; cc: Parameters<typeof spawnSession>[0] };
+type Ctx = { page: Page; cc: Cc };
 
 const SHORT = 'UBI';
 const LONG = tallPrompt('UBI-LONG');
 const list = (page: Page) => page.locator('[data-conversation] [data-session-width]').first();
 const filePicker = (page: Page) => page.locator('[data-composer] input[type="file"]');
 
-/** The transcript geometry the user items rest on: the first action card (the root's; a sub-agent's sits inside it), whether it is collapsed, and each user bubble. */
+/** The transcript geometry the user items rest on: the column's content box and each user bubble. */
 async function measure(page: Page) {
   return page.evaluate(() => {
     const rect = (el: Element | null | undefined) => (el as HTMLElement).getBoundingClientRect();
     const listEl = document.querySelector('[data-conversation] [data-session-width]') as HTMLElement;
-    const trigger = document.querySelector('[data-item=assistant] [data-group-trigger]') as HTMLElement | null;
     const lr = listEl.getBoundingClientRect();
     const leftOf = (el: Element | null) => (el ? el.getBoundingClientRect().left : null);
     const bubbles = [...document.querySelectorAll('[data-item=user]')].map((item) => {
@@ -42,8 +44,7 @@ async function measure(page: Page) {
       };
     });
     return {
-      cardLeft: trigger ? rect(trigger.parentElement).left : null,
-      cardCollapsed: trigger?.getAttribute('data-state') === 'closed',
+      columnLeft: lr.left + parseFloat(getComputedStyle(listEl).paddingLeft),
       columnRight: lr.right - parseFloat(getComputedStyle(listEl).paddingRight),
       bubbles,
     };
@@ -59,17 +60,9 @@ function pair(m: Geometry, where: string) {
   return { short: short!, long: long! };
 }
 
-/** The collapsed action card's left edge, after the fixture checks that one is on screen, collapsed. */
-function cardLeftOf(m: Geometry, where: string): number {
-  expect(m.cardLeft, `${where}: fixture check: an action card is on screen`).not.toBeNull();
-  expect(m.cardCollapsed, `${where}: fixture check: the action card is collapsed`).toBe(true);
-  return m.cardLeft!;
-}
-
 function expectAligned(m: Geometry, where: string): void {
-  const cardLeft = cardLeftOf(m, where);
   for (const b of m.bubbles) {
-    expect(Math.abs(b.left - cardLeft), `${where}: ${b.tag} starts at the action card's left edge`).toBeLessThanOrEqual(1);
+    expect(Math.abs(b.left - m.columnLeft), `${where}: ${b.tag} starts at the column's content left edge`).toBeLessThanOrEqual(1);
     expect(Math.abs(b.right - m.columnRight), `${where}: ${b.tag} ends at the column's right edge`).toBeLessThanOrEqual(1);
     expect(b.actionsLeft, `${where}: ${b.tag}'s action row is measured`).not.toBeNull();
     expect(Math.abs(b.actionsLeft! - b.textLeft), `${where}: ${b.tag}'s controls start at its text`).toBeLessThanOrEqual(1);
@@ -118,11 +111,11 @@ async function expectStrip(page: Page, where: string): Promise<void> {
 
 const shoot = async (page: Page, name: string) => test.info().attach(name, { body: await page.screenshot(), contentType: 'image/png' });
 
-// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble starts at the collapsed action card's left edge, ends at the column's right edge and is as wide as any other; its controls start at its text.
+// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble spans the column's content box (starts at its left edge, ends at its right edge) and is as wide as any other; its controls start at its text.
 /** Desktop: cycles every session width preset, then switches theme for the visual pass. */
 export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name !== 'desktop', 'the width presets are a desktop-layout feature');
-  await sendBoth(page, cc, 'e2e-user-bubble-inset');
+  await sendBoth(page, cc, 'e2e-user-bubble-width');
   await expectStrip(page, (await isDark(page)) ? 'dark' : 'light');
   for (const label of LABELS) {
     await expect(widthButton(page, label)).toBeVisible();
@@ -130,7 +123,7 @@ export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
     const m = await measure(page);
     if (label === 'Normal') {
       const { short } = pair(m, label);
-      expect(short.glyphWidth, "positive control: the one-word text is far narrower than the bubble's span").toBeLessThan((m.columnRight - cardLeftOf(m, label)) / 2);
+      expect(short.glyphWidth, "positive control: the one-word text is far narrower than the bubble's span").toBeLessThan((m.columnRight - m.columnLeft) / 2);
     }
     expectAligned(m, label);
     await shoot(page, `user-bubble-${label.toLowerCase()}`);
@@ -145,11 +138,11 @@ export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   await shoot(page, `user-bubble-${wasDark ? 'light' : 'dark'}`);
 }
 
-// Invariants: on a phone each prompt bubble has a visible 3px right strip and no left border, and each user bubble starts at the collapsed action card's left edge, ends at the column's right edge and is as wide as any other; its controls start at its text.
+// Invariants: on a phone each prompt bubble has a visible 3px right strip and no left border, and each user bubble spans the column's content box and is as wide as any other; its controls start at its text.
 /** Drawer viewports: the same geometry in the stacked layout. */
 export async function narrowFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name === 'desktop', 'the stacked layout is below md');
-  await sendBoth(page, cc, `e2e-user-bubble-inset-${test.info().project.name}`);
+  await sendBoth(page, cc, `e2e-user-bubble-width-${test.info().project.name}`);
   await expectStrip(page, test.info().project.name);
   expectAligned(await measure(page), test.info().project.name);
   await shoot(page, `user-bubble-${test.info().project.name}`);
@@ -170,6 +163,118 @@ export async function attachmentsFlow({ page, cc }: Ctx): Promise<void> {
   const chip = await item.locator('span', { hasText: 'ubi-notes.txt' }).first().boundingBox();
   const text = await item.locator('[data-user-text] .md').boundingBox();
   expect(Math.abs(chip!.x - text!.x), "the attachment chip starts at the bubble's text").toBeLessThanOrEqual(1);
+}
+
+type Rect = { left: number; right: number; width: number; height: number };
+
+/** Every user-side bubble's border box, the question and plan cards' boxes, and the column's content box, all read from the visible transcript `root`. */
+async function measureVariants(root: Locator) {
+  return root.evaluate((scroller) => {
+    const box = (el: Element) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width, height: r.height }; };
+    const listEl = scroller.querySelector('[data-session-width]') as HTMLElement;
+    const lr = listEl.getBoundingClientRect();
+    const cs = getComputedStyle(listEl);
+    const bubbles: { kind: string; text: string; rect: Rect }[] = [];
+    for (const item of scroller.querySelectorAll('[data-item=user]')) {
+      const head = item.querySelector('[data-answer-head]');
+      const folded = item.querySelector('[data-fold], [data-wake-plain]');
+      const target = head ? head.parentElement! : (folded ?? item.querySelector('[data-user-text]'));
+      if (!target) continue;
+      const kind = head ? 'answer' : item.getAttribute('data-variant') === 'wake' ? 'wake' : item.querySelector('[data-user-attachments]') ? 'attachment' : 'text';
+      bubbles.push({ kind, text: (item.textContent ?? '').replace(/\s+/g, ' ').trim(), rect: box(target) });
+    }
+    for (const ghost of scroller.querySelectorAll('[data-item=queued] > div')) bubbles.push({ kind: 'queued', text: ghost.textContent ?? '', rect: box(ghost) });
+    const pinBody = scroller.parentElement!.querySelector(':scope > [data-pinned-prompt] [data-pin-body]');
+    if (pinBody) bubbles.push({ kind: 'pin', text: pinBody.textContent ?? '', rect: box(pinBody) });
+    const boxes = (sel: string) => [...scroller.querySelectorAll(sel)].map(box);
+    return {
+      column: { left: lr.left + parseFloat(cs.paddingLeft), right: lr.right - parseFloat(cs.paddingRight) },
+      question: boxes('[data-item=question] > *'),
+      plan: boxes('[data-item=plan] > *'),
+      bubbles,
+    };
+  });
+}
+
+/** Asserts the fixture, then that every user-side bubble's edges are the question card's and the plan card's, which are the column's content edges. */
+function expectVariantsFullWidth(m: Awaited<ReturnType<typeof measureVariants>>, where: string): void {
+  const has = (kind: string, text?: string) => m.bubbles.some((b) => b.kind === kind && (!text || b.text.includes(text)));
+  for (const [kind, text] of [['answer'], ['wake'], ['attachment', 'UBW-ATTACH'], ['text', 'UBW-REJECT'], ['text', 'UBW-TALL'], ['queued', 'UBW-QUEUED'], ['pin']] as const) {
+    expect(has(kind, text), `${where}: fixture check: a ${kind} bubble${text ? ` with ${text}` : ''} is measured`).toBe(true);
+  }
+  expect(m.question.length && m.plan.length, `${where}: fixture check: the question and plan cards are measured`).toBeTruthy();
+  for (const r of [...m.question, ...m.plan, ...m.bubbles.map((b) => b.rect)]) {
+    expect(r.width > 0 && r.height > 0, `${where}: fixture check: a measured box is visible (${JSON.stringify(r)})`).toBe(true);
+  }
+  for (const [name, cards] of [['question', m.question], ['plan', m.plan]] as const) {
+    for (const c of cards) {
+      expect(Math.abs(c.left - m.column.left), `${where}: positive control: the ${name} card starts at the column's content left edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(c.right - m.column.right), `${where}: positive control: the ${name} card ends at the column's content right edge`).toBeLessThanOrEqual(1);
+    }
+  }
+  const [q] = m.question;
+  const [p] = m.plan;
+  for (const b of m.bubbles) {
+    for (const [name, card] of [['question', q], ['plan', p]] as const) {
+      expect(Math.abs(b.rect.left - card.left), `${where}: ${b.kind} bubble "${b.text.slice(0, 30)}" starts at the ${name} card's left edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(b.rect.right - card.right), `${where}: ${b.kind} bubble "${b.text.slice(0, 30)}" ends at the ${name} card's right edge`).toBeLessThanOrEqual(1);
+    }
+  }
+}
+
+// Invariant: every user-side bubble (typed prompt, attachment prompt, wake stub, question answer, plan reject echo, queued ghost, sticky pin) has the left and right edges of the AskUserQuestion and plan cards, which are the column's content edges; on desktop at every session width preset.
+/** Every project: one session carrying every user-side variant on screen, measured against the question and plan cards. */
+export async function variantsFlow({ page, cc }: Ctx): Promise<void> {
+  test.skip(cc.engine === 'live', "the flow drives the fake engine's QA-ASK and PLAN-ASK scenario");
+  const project = `e2e-user-bubble-variants-${test.info().project.name}`;
+  // The server's queued-message frame is sent into the page's own socket, as queuedGhostsFlow does.
+  const socket: { route: WebSocketRoute | null } = { route: null };
+  await page.routeWebSocket(/\/ws$/, (ws) => { ws.connectToServer(); socket.route = ws; });
+  await createProject(cc, project);
+  await next.open(page);
+  await next.startSessionIn(page, project);
+  const inst = await instanceIn(cc, project);
+  const root = page.locator('[data-conversation]:visible');
+  await expect(root, 'fixture check: one visible transcript').toHaveCount(1);
+
+  await answerCard(page, next, await askCard(page, next), 2);
+  await next.sendPrompt(page, 'PLAN-ASK raise the plan');
+  const plan = root.locator('[data-item=plan]');
+  await expect(plan, 'fixture check: the plan card is raised').toHaveCount(1);
+  await expect(next.turnEnds(page)).toHaveCount(3);
+  await plan.getByRole('textbox').fill('UBW-REJECT refine');
+  await plan.getByRole('button', { name: /Reject/ }).click();
+  await expect(next.turnEnds(page)).toHaveCount(4);
+  let turns = 4;
+  const send = async (text: string) => {
+    await next.sendPrompt(page, text);
+    await expect(next.turnEnds(page), `fixture check: the turn for ${text.slice(0, 12)} ended`).toHaveCount(++turns);
+  };
+  await send(tallPrompt('UBW-TALL'));
+  await send(buildWakeStub({ targetSessionId: 'ubw', payloadText: '{"sessionId":"ubw"}\nUBW-WAKE' }));
+  await filePicker(page).setInputFiles([{ name: 'ubw-notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') }]);
+  await expect(page.getByRole('button', { name: 'Remove ubw-notes.txt', exact: true })).toBeVisible();
+  await send('UBW-ATTACH');
+  if (!socket.route) throw new Error("fixture check: the page's socket was routed");
+  socket.route.send(JSON.stringify({ t: 'event', id: inst.id, ev: queued('UBW-QUEUED') }));
+  await expect(root.locator('[data-item=queued]'), 'fixture check: the queued ghost shows').toContainText('UBW-QUEUED');
+
+  const showPin = async () => {
+    await bringTo(next.transcript(page), next.userMessages(page).filter({ hasText: 'UBW-TALL' }), -150);
+    await reveal(page, next);
+    await expect(next.pin(page)).toHaveAttribute('role', 'button');
+  };
+  if (test.info().project.name !== 'desktop') {
+    await showPin();
+    expectVariantsFullWidth(await measureVariants(root), test.info().project.name);
+    return;
+  }
+  for (const label of LABELS) {
+    await expect(widthButton(page, label)).toBeVisible();
+    await showPin();
+    expectVariantsFullWidth(await measureVariants(root), label);
+    await widthButton(page, label).click();
+  }
 }
 
 // Invariant: a user item inside a sub-agent panel starts at the left edge of that panel's own collapsed action card and ends at the panel's content right edge.
@@ -203,7 +308,7 @@ export async function nestedFlow({ page, cc }: Ctx): Promise<void> {
       right: bubble.right,
     };
   });
-  expect(Math.abs(m.left - m.cardLeft), "the nested prompt starts at the sub-agent's action card's left edge").toBeLessThanOrEqual(1);
+  expect(Math.abs(m.left - m.cardLeft), "the nested prompt starts at the left edge of the sub-agent's action card").toBeLessThanOrEqual(1);
   expect(Math.abs(m.right - m.panelRight), "the nested prompt ends at the panel's content right edge").toBeLessThanOrEqual(1);
   await nested.scrollIntoViewIfNeeded();
   await shoot(page, `user-bubble-nested-${project}`);

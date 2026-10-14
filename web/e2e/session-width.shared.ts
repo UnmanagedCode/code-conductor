@@ -81,7 +81,7 @@ export async function presetsFlow({ page, cc }: Ctx): Promise<void> {
     expect(Math.abs(m.pinContentLeft - m.listContentLeft), `${label}: the pin column's content box is the list's`).toBeLessThanOrEqual(0.5);
     expect(Math.abs(m.pinContentRight - m.listContentRight), `${label}: the pin column's content box is the list's`).toBeLessThanOrEqual(0.5);
     expect(Math.abs(m.pinBubbleRight - m.liveBubbleRight), `${label}: the pinned bubble's right edge is the live prompt's`).toBeLessThanOrEqual(1);
-    // Both bubbles span the column from the user inset to its right edge, whatever the prompt's length.
+    // Both bubbles span the column from its content left edge to its right edge, whatever the prompt's length.
     expect(Math.abs(m.pinBubbleLeft - m.liveBubbleLeft), `${label}: no horizontal shift into the pinned state`).toBeLessThanOrEqual(1);
     expect(Math.abs(m.bodyRight - m.listContentRight), `${label}: assistant content tracks the column edge`).toBeLessThanOrEqual(1);
     if (label !== 'Full') expect(m.listWidth, `${label} is below the available width`).toBeLessThan(m.scrollerClient - 1);
