@@ -157,3 +157,24 @@ const shoot = async (page: Page, name: string) => {
   await page.screenshot({ path: file });
   await test.info().attach(name, { path: file, contentType: 'image/png' });
 };
+
+/** The flat spec's beforeAll, per Playwright project: two unassigned projects on a cc with no workspace at all. */
+export async function seedFlat({ cc }: Pick<Ctx, 'cc'>, info: { project: { name: string } }): Promise<void> {
+  await createProject(cc, `sf-${info.project.name}-a`);
+  await createProject(cc, `sf-${info.project.name}-b`);
+}
+
+// Invariant: with no workspace there is no band, and an unassigned project row starts at the project list's own left edge: no rail indent and no left rule.
+/** With no workspaces the unassigned rows stay flat. */
+export async function flatListFlow({ page }: Ctx): Promise<void> {
+  await page.goto('/');
+  await next.lens(page, 'projects');
+  const root = nextSidebar(page);
+  const p = P();
+  const row = root.locator(`[data-project-row="sf-${p}-a"]`);
+  await expect(row).toBeVisible();
+  await expect(root.locator('[data-workspace-band]'), 'fixture check: no workspace, so no band').toHaveCount(0);
+  const list = await box(root.locator('[data-project-list]'), 'project list');
+  const r = await box(row, 'unassigned row');
+  expect(Math.abs(r.x - list.x), 'the unassigned row starts at the list left edge').toBeLessThanOrEqual(0.5);
+}

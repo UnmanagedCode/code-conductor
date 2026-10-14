@@ -359,6 +359,17 @@ describe('Projects tree', () => {
     expect(summaryOf('demo').textContent).toBe('Conducted sessions (2) · 2 live');
   });
 
+  it("the project row's count badge tooltip reads Sessions (N) even where the open list names its only group Temp sessions", async () => {
+    // Invariant: the count badge's tooltip always uses the noun Sessions, whatever group the place's visible rows fall in.
+    seed({ projects: [proj('demo')], instances: [inst({ sessionId: 'sid-temp', project: 'demo', temp: true })] });
+    renderSidebar();
+    await settle();
+    expect(summaryOf('demo').textContent, 'fixture check: the list names its only group').toBe('Temp sessions (1) · 1 live');
+    const badge = el('[data-project-row="demo"] [data-sessions-count]');
+    await act(async () => { fireEvent.focus(badge); });
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Sessions (1) · 1 live');
+  });
+
   it('temp and conducted without normal rows both keep their counted labels and the summary reads Sessions', async () => {
     // Invariant: two visible groups label each one, even with no normal rows, and the summary keeps the noun Sessions.
     seed({
