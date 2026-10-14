@@ -24,6 +24,7 @@ import type { SessionRedirect } from './systems/toolRedirect.ts';
 import type { TurnMarks } from './sessionStore.ts';
 import type { BackgroundJob } from './backgroundJobs.ts';
 import type { Response } from 'express';
+import type { PristineTracker } from './pristine.ts';
 
 // One backing segment's claim on the ring's seq space: ring content with
 // `_seq >= startSeq` (and below the next seam's `startSeq`) belongs to backing
@@ -61,6 +62,8 @@ export interface InstanceSummary {
   mode: string;
   autoApprovePlan?: boolean;
   interrupting?: boolean;
+  // A New-conductor session with no prompt yet (src/pristine.ts).
+  pristine?: boolean;
   // Live ownership + the sticky ask (docs/architecture.md → "Ownership and
   // awaitingUser"). `ownerSessionId` is non-null only on a live conducted row.
   ownerSessionId?: string | null;
@@ -112,6 +115,8 @@ export interface CreateInstanceInput {
   baseWorktree?: string;
   name?: string;
   temp?: boolean;
+  // Only a fresh `.conduct` temp spawn from New conductor (src/pristine.ts).
+  pristine?: boolean;
   conducted?: boolean;
   debug?: boolean;
   autoApprovePlan?: boolean;
@@ -259,6 +264,9 @@ export interface InstanceLike {
   // session's first-prompt line, read + written on the restored instance.
   readonly conducted: boolean;
   readonly temp: boolean;
+  // A New-conductor session with no prompt yet, and the draft it was listed under.
+  readonly pristine: boolean;
+  readonly draftTitle: string | null;
   firstPrompt: string | null;
   // Accepts null (clears the title) — the routes title endpoint stores
   // `setSessionTitle(...)`'s result, which is null when the title is cleared.
@@ -366,6 +374,11 @@ export interface InstanceManagerLike {
   resolveSessionRef(input: string): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
   resolveResumeRef(input: string): Promise<{ handle: string; resume: string } | { ambiguous: string[]; tooShort: boolean } | null>;
   list(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }>;
+  // list() minus the hidden pristine conductors: what a list payload serves.
+  listVisible(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }>;
+  // Presence frames (src/wsHub.ts) and the pristine lookup (src/routes.ts).
+  pristine: PristineTracker;
+  pristineFor(sessionId: string): InstanceLike | null;
   liveForSession(sessionId: string): InstanceLike | null;
   // The last spontaneous exit of a session by its exact PUBLIC id, or null. In
   // memory only; cleared by a commanded exit and by a successful resume.

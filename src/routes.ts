@@ -1353,9 +1353,19 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
 
     r.get('/instances', async (req, res, next) => {
       try {
-        const rows = instances.list();
+        const rows = instances.listVisible();
         const bindings = await playbookBindings(rows.map(row => row.sessionId));
         res.json(rows.map((row, i) => ({ ...row, ...bindings[i] })));
+      } catch (e) { next(e); }
+    });
+
+    // A lookup, not a list: the tab a pristine conductor's URL is opened in (a
+    // reload, another tab) finds it here, since no list payload carries a hidden one.
+    r.get('/sessions/:sessionId/pristine', (req, res, next) => {
+      try {
+        const inst = instances.pristineFor(req.params.sessionId);
+        if (!inst) throw httpError(404, 'no live pristine conductor has that session id', { code: 'NOT_PRISTINE' });
+        res.json(inst.summary());
       } catch (e) { next(e); }
     });
 
@@ -1365,7 +1375,11 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         // {backend, model} (see resolveContextWindowTokens), never accepted
         // from the client.
         const body = jsonBody(req);
-        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan, playbookEnforcement } = body;
+        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan, playbookEnforcement, pristine } = body;
+        // Pristine (src/pristine.ts) is New conductor's state and nothing else's.
+        if (pristine === true && !(project === CONDUCT_PROJECT_NAME && temp === true && resume == null)) {
+          throw httpError(400, `pristine applies only to a fresh temp spawn in ${CONDUCT_PROJECT_NAME}`, { code: 'PRISTINE_NOT_FRESH_CONDUCTOR' });
+        }
         // Ingress validation for the enforcement level — instances.ts stores it
         // as an already-narrowed type, so the allow-list is checked here.
         if (playbookEnforcement !== undefined && !isPlaybookEnforcement(playbookEnforcement)) {
@@ -1472,6 +1486,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
           backend: spawnBackend,
           worktree: worktree as string | boolean | null | undefined,
           temp: temp as boolean | undefined,
+          pristine: pristine === true,
           debug: debug as boolean | undefined,
           autoApprovePlan: autoApprovePlan as boolean | undefined,
           playbookEnforcement,

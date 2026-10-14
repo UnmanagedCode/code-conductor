@@ -224,6 +224,8 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
     // (proc === null), which are not active sessions and must not be
     // resurrected. Idle sessions keep proc alive, so they're still included.
     if (!inst.proc || !inst.sessionId) continue;
+    // Never prompted, so there is no transcript to --resume (src/pristine.ts).
+    if (inst.pristine) continue;
     const s = inst.summary();
     const group = groupOf(inst);
     // summary() is the loosely-typed InstanceSummary (index signature), so each

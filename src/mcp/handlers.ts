@@ -564,7 +564,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   // live worker: it fails isDeadStatus, so it is excluded here AND left out of
   // the exclusion set below, which is what lets it reappear as an inactive row
   // off its own transcript. Live and inactive are disjoint by construction.
-  const live = (instances ? instances.list() : []).filter(r => !isDeadStatus(r.status))
+  const live = (instances ? instances.listVisible() : []).filter(r => !isDeadStatus(r.status))
     .filter(r => project === null || r.project === project)
     .map(r => conductorRowView(r, proj))
     .sort(compareInstanceRows);
@@ -851,7 +851,7 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
   // Step 2 — LIVE. Same isDeadStatus split list_sessions uses, so a dead
   // instance retained in byId falls through to its own on-disk row below
   // instead of rendering as a live worker.
-  const live = (instances ? instances.list() : [])
+  const live = (instances ? instances.listVisible() : [])
     .find(r => r.sessionId === sessionId && !isDeadStatus(r.status));
   if (live) return textResult(renderSession({ sessionId, live: conductorRowView(live, proj) }));
 
