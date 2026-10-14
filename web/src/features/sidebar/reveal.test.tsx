@@ -69,8 +69,10 @@ const treeRows = (conductor: string) => blockOf(conductor).querySelectorAll('[da
 /** The workspace's open/close toggle (`[aria-expanded]`: the header row also holds the Edit-workspace pencil button). */
 const workspaceToggle = (name: string) => el(`section[data-workspace="${name}"] > div > button[aria-expanded]`);
 const worktreesToggle = (project: string) => el(`[data-worktrees="${project}"] > button`);
-/** The Sessions chevron on a project row or worktree head, given that row's selector. */
+/** The Sessions chevron on a worktree head, given that row's selector. */
 const sessionsChevron = (row: string) => el(`${row} > button[aria-label="Sessions"]`);
+/** The toggle of a project's main-checkout Sessions group. */
+const projectSessionsToggle = (project: string) => el(`[data-project-sessions="${project}"] > button`);
 const body = () => el('[data-sidebar-body]');
 /** Scrolls the sidebar body as a user does: the offset, then the event. */
 const scrollBody = (top: number) => {
@@ -249,8 +251,8 @@ describe('Conductors lens', () => {
 describe('Projects lens', () => {
   beforeEach(() => { uiStore.set({ lens: 'projects' }); });
 
-  it('every collapsed group on the path opens (workspace, Worktrees group, Sessions subnode) and its list loads, and only that path', async () => {
-    // Invariant: a selection opens exactly its workspace, its project's Worktrees group and its place's subnode, and the place's disk list loads; siblings at each level stay closed.
+  it('every collapsed group on the path opens (workspace, Worktrees group, Sessions group) and its list loads, and only that path', async () => {
+    // Invariant: a selection opens exactly its workspace, its project's Worktrees group and its place's Sessions group, and the place's disk list loads; siblings at each level stay closed.
     sidebarStore.set({ expandedWorkspaces: [], expandedWorktrees: [], collapsedSessions: ['solo:solo-a', 'solo:solo-b', 'mixed:mix'] });
     seedFleet(pathWorld());
     renderSidebar();
@@ -277,14 +279,14 @@ describe('Projects lens', () => {
     expect(loadSessions.mock.calls).toEqual([['solo', 'solo-a']]);
   });
 
-  it('a collapsed main-checkout Sessions subnode re-opens on the same project row and its list loads, and another collapsed subnode stays', async () => {
-    // Invariant: the reveal re-opens the subnode in place (same row and chevron nodes), loads only its list, and leaves another collapsed subnode collapsed.
+  it('a collapsed main-checkout Sessions group re-opens on the same project row and its list loads, and another collapsed group stays', async () => {
+    // Invariant: the reveal re-opens the group in place (same row and toggle nodes), loads only its list, and leaves another collapsed group collapsed.
     sidebarStore.set({ expandedWorkspaces: ['Acme', 'Ops'], collapsedSessions: ['main', 'hand'] });
     seedFleet(pathWorld());
     renderSidebar();
     await settle();
     const row = projectRowOf('main');
-    const chevron = sessionsChevron('[data-project-row="main"]');
+    const chevron = projectSessionsToggle('main');
     expect(chevron.getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[data-sessions="main"]')).toBeNull();
     expect(loadSessions.mock.calls.filter(([p]) => p === 'main')).toEqual([]);
@@ -292,12 +294,12 @@ describe('Projects lens', () => {
     select('i-wa-main1');
     await settle();
     expect(projectRowOf('main') === row).toBe(true);
-    expect(sessionsChevron('[data-project-row="main"]') === chevron).toBe(true);
+    expect(projectSessionsToggle('main') === chevron).toBe(true);
     expect(chevron.getAttribute('aria-expanded')).toBe('true');
     expect(loadSessions.mock.calls).toEqual([['main', null]]);
     expect(rowOf('wa-main1').getAttribute('data-active')).toBe('true');
     expect(rowOf('d-main')).not.toBeNull();
-    expect(sessionsChevron('[data-project-row="hand"]').getAttribute('aria-expanded')).toBe('false');
+    expect(projectSessionsToggle('hand').getAttribute('aria-expanded')).toBe('false');
     expect(sidebarStore.get().collapsedSessions).toEqual(['hand']);
   });
 

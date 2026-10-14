@@ -258,15 +258,102 @@ describe('Projects tree', () => {
     seed({ projects: [proj('p', { sessions })] });
     renderSidebar();
     await screen.findByText('one row');
-    const chev = within(el('[data-project-row="p"]')).getByRole('button', { name: 'Sessions' });
+    const chev = el('[data-project-sessions="p"] > button');
     expect(chev.getAttribute('aria-expanded')).toBe('true');
     expect(list('p')).not.toBeNull();
     fireEvent.click(chev);
     expect(chev.getAttribute('aria-expanded')).toBe('false');
+    expect(el('[data-project-sessions="p"] > button') === chev).toBe(true);
     expect(document.querySelector('[data-sessions="p"]')).toBeNull();
     act(() => appStore.set({ projects: [proj('p', { sessions })] }));
-    expect(within(el('[data-project-row="p"]')).getByRole('button', { name: 'Sessions' }).getAttribute('aria-expanded')).toBe('false');
+    expect(el('[data-project-sessions="p"] > button').getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[data-sessions="p"]')).toBeNull();
+  });
+
+  it('no project row carries a caret, with sessions, without, or with worktrees only, in a workspace or not', () => {
+    // Invariant: a project row starts with its folder (the Commit history button or the plain folder span) and holds no expand toggle.
+    const sessions = { count: 1, archivedCount: 0, handCount: 1, lastActivity: 1 };
+    sidebarStore.set({ expandedWorkspaces: ['W'] });
+    seed({
+      workspaces: ['W'],
+      projects: [
+        proj('with', { workspace: 'W', sessions, isGitRepo: true }),
+        proj('none', { workspace: 'W' }),
+        proj('wtonly', { workspace: 'W', worktrees: [wt('x')] }),
+        proj('loose', { sessions }),
+      ],
+    });
+    renderSidebar();
+    const rows = [...document.querySelectorAll('[data-project-row]')];
+    expect(rows.length).toBe(4);
+    for (const r of rows) {
+      expect(r.querySelector('button[aria-expanded]'), r.getAttribute('data-project-row')!).toBeNull();
+      const first = r.firstElementChild as HTMLElement;
+      // A git row leads with the Commit history button, a plain one with the span holding its folder svg: an empty spacer span is neither.
+      if (r.getAttribute('data-project-row') === 'with') expect(first.getAttribute('aria-label')).toBe('Commit history');
+      else expect(first.tagName === 'SPAN' && first.querySelector('svg') !== null).toBe(true);
+    }
+  });
+
+  it("the main checkout's Sessions group header reads the summary and folds the list", async () => {
+    // Invariant: the group header carries the summary text, its accessible name leaves out the ago part, and a click folds the list in place and records the key.
+    const now = 1_000_000_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      loadSessions.mockResolvedValue([disk('a', 'one'), disk('b', 'two')]);
+      seed({
+        projects: [proj('p', { sessions: { count: 2, archivedCount: 0, handCount: 2, lastActivity: now - 120_000 } })],
+        instances: [inst({ sessionId: 'a', project: 'p' })],
+      });
+      renderSidebar();
+      await settle();
+      const toggle = el('[data-project-sessions="p"] > button');
+      expect(summaryOf('p').textContent).toBe('Sessions (2) · 1 live · last 2m ago');
+      expect(toggle.getAttribute('aria-label')).toBe('Sessions (2) · 1 live');
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(list('p')).toBeNull();
+      expect(el('[data-project-sessions="p"] > button') === toggle).toBe(true);
+      expect(sidebarStore.get().collapsedSessions).toContain('p');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a group with sessions on disk and none live names itself Sessions (N) with no live part', async () => {
+    // Invariant: the toggle's accessible name states the live count only when it is above zero.
+    loadSessions.mockResolvedValue([disk('a', 'one'), disk('b', 'two')]);
+    seed({ projects: [proj('p', { sessions: { count: 2, archivedCount: 0, handCount: 2, lastActivity: 0 } })] });
+    renderSidebar();
+    await settle();
+    expect(el('[data-project-sessions="p"] > button').getAttribute('aria-label')).toBe('Sessions (2)');
+  });
+
+  it('a temp-only group reads Temp sessions open and Sessions collapsed', async () => {
+    // Invariant: the open header names its only group; the collapsed header, with nothing loaded to name, reads Sessions.
+    seed({ projects: [proj('p')], instances: [inst({ sessionId: 't1', project: 'p', temp: true })] });
+    renderSidebar();
+    await settle();
+    expect(summaryOf('p').textContent).toBe('Temp sessions (1) · 1 live');
+    fireEvent.click(el('[data-project-sessions="p"] > button'));
+    expect(summaryOf('p').textContent).toBe('Sessions (1) · 1 live');
+  });
+
+  it('a collapsed Sessions group requests no list', async () => {
+    // Invariant: a project collapsed from the start never loads its main-checkout sessions.
+    sidebarStore.set({ collapsedSessions: ['p'] });
+    seed({ projects: [proj('p', { sessions: { count: 1, archivedCount: 0, handCount: 1, lastActivity: 1 } })] });
+    renderSidebar();
+    await settle();
+    expect(loadSessions.mock.calls.filter(([p]) => p === 'p')).toEqual([]);
+  });
+
+  it('a project with no sessions and no worktrees still shows the empty hint', () => {
+    // Invariant: the empty hint renders without the caret slot.
+    seed({ projects: [proj('p')] });
+    renderSidebar();
+    expect(el('[data-project="p"]').textContent).toContain('No sessions yet');
   });
 
   it('an empty registered workspace shows (0) and, opened, its empty hint', () => {
@@ -606,7 +693,7 @@ describe('Sessions summary line', () => {
       renderSidebar();
       await settle();
       expect(summaryOf('demo').textContent).toBe('Sessions (3) · 1 live · last 2m ago');
-      expect(summaryOf('demo').nextElementSibling === list('demo')).toBe(true);
+      expect(summaryOf('demo').parentElement!.nextElementSibling === list('demo')).toBe(true);
       expect(summaryOf('demo:wt').textContent).toBe('Sessions (2) · 1 live · last 30s ago');
       expect(summaryOf('demo:wt').nextElementSibling === list('demo:wt')).toBe(true);
     } finally {

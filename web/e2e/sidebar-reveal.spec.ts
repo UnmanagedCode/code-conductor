@@ -28,7 +28,7 @@ test('a reveal from the needs-you strip opens the sidebar onto the revealed row 
     await expect(row).toHaveCount(1);
     await expect(row, 'fixture: the row starts below the fold').not.toBeInViewport();
     // The user collapses P's Sessions subnode: the row leaves the tree, so only the reveal brings it back.
-    const chevron = sb.locator(`[data-project-row="${P}"] > button[aria-label="Sessions"]`);
+    const chevron = sb.locator(`[data-project-sessions="${P}"] > button`);
     await chevron.click();
     await expect(chevron).toHaveAttribute('aria-expanded', 'false');
     await expect(row).toHaveCount(0);

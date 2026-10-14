@@ -247,8 +247,8 @@ function worktreeTitle(ms: { ahead: number; behind: number }, base: string | und
 
 // ── Project row ──────────────────────────────────────────────────────────
 
-export function ProjectRow({ project: p, readOnly = false, liveCount = 0, instanceCount = 0, chevron, meta }: {
-  project: Project; readOnly?: boolean; liveCount?: number; instanceCount?: number; chevron?: React.ReactNode; meta?: React.ReactNode;
+export function ProjectRow({ project: p, readOnly = false, liveCount = 0, instanceCount = 0, meta }: {
+  project: Project; readOnly?: boolean; liveCount?: number; instanceCount?: number; meta?: React.ReactNode;
 }) {
   const remote = !!p.system && p.system !== 'local';
   const unreachable = (p.systemUnreachable as string | null) || null;
@@ -259,7 +259,6 @@ export function ProjectRow({ project: p, readOnly = false, liveCount = 0, instan
     ?? `This project's tree, git repo and commands live on ${where} at ${p.path}. A worker session runs the claude CLI here and redirects its shell and file tools there.${systemClickable ? ' Click to change which target it is on.' : ''}`;
   return (
     <div className="group/row flex min-h-8 items-center gap-1 rounded-md pr-1 hover:bg-sidebar-accent" data-project-row={p.name}>
-      {chevron}
       {p.isGitRepo === true ? (
         <IconAction label="Commit history" onClick={() => { closeSidebarOnMobile(); openCommits(p.name); }}>
           <FolderGit2Icon className="size-4" />

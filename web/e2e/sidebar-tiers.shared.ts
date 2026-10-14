@@ -65,6 +65,7 @@ const box = async (loc: Locator, name: string) => {
   const b = await loc.boundingBox();
   expect(b, `${name} has a box`).not.toBeNull();
   expect(b!.height, `${name} has a height`).toBeGreaterThan(0);
+  expect(b!.width, `${name} has a width`).toBeGreaterThan(0);
   return b!;
 };
 /** Two frames, so a scroll has been laid out. */
@@ -92,7 +93,7 @@ export async function stickyBandFlow({ page }: Ctx): Promise<void> {
   await shoot(page, `sidebar-tiers-sticky-${p}`);
 }
 
-// Invariant: a band spans the sidebar body's width, and every project row under a band, workspace or Other projects, starts at [data-project-list]'s own left edge: no indent under the band.
+// Invariant: a band spans the sidebar body's width, every project row under a band, workspace or Other projects, starts at [data-project-list]'s own left edge, and carries no caret: its folder sits about under the band's caret, left of the layers icon, aligned across rows with and without sessions, and the sessions group nests deeper.
 /** A workspace band spans the body; its project rows, and the unassigned ones, start at the project list's left edge. */
 export async function bandGeometryFlow({ page }: Ctx): Promise<void> {
   await page.goto('/');
@@ -108,6 +109,19 @@ export async function bandGeometryFlow({ page }: Ctx): Promise<void> {
   expect(Math.abs(first.x - list.x), 'a member row starts at the list left edge').toBeLessThanOrEqual(0.5);
   const unassigned = await box(root.locator(`[data-project-row="su-${p}-a"]`), 'unassigned row');
   expect(Math.abs(unassigned.x - list.x), 'an unassigned row starts at the list left edge').toBeLessThanOrEqual(0.5);
+  const caret = await box(band(root, tall(p)).locator('button[aria-expanded] svg').first(), 'band caret');
+  const layers = await box(band(root, tall(p)).locator('[data-workspace-icon]'), 'layers icon');
+  const folder = (n: number) => root.locator(`[data-project-row="${member(p, n)}"] svg`).first();
+  const bare = await box(folder(1), 'folder of a project without sessions');
+  const withSessions = await box(folder(SESSION_AT), 'folder of the project with a session');
+  expect(Math.abs(bare.x - withSessions.x), 'folders align with and without sessions').toBeLessThanOrEqual(0.5);
+  expect(bare.x - caret.x, 'the folder sits about under the band caret').toBeGreaterThanOrEqual(0);
+  expect(bare.x - caret.x, 'the folder sits about under the band caret').toBeLessThanOrEqual(6);
+  expect(bare.x, 'the folder is left of the layers icon').toBeLessThan(layers.x);
+  await expect(root.locator(`[data-project-row="${member(p, SESSION_AT)}"] > button[aria-expanded]`), 'no caret on the row').toHaveCount(0);
+  const toggle = root.locator(`[data-project-sessions="${member(p, SESSION_AT)}"] > button`);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect((await box(toggle.locator('svg').first(), 'sessions group caret')).x, 'the sessions group nests under the folder').toBeGreaterThan(withSessions.x);
 }
 
 // Invariant: a selected row revealed upward with block 'nearest', as scrollActiveIntoView does, lands below the sticky band. Green before the band existed (nothing covered it); it guards the band's scroll margin on selected rows.
@@ -177,4 +191,7 @@ export async function flatListFlow({ page }: Ctx): Promise<void> {
   const list = await box(root.locator('[data-project-list]'), 'project list');
   const r = await box(row, 'unassigned row');
   expect(Math.abs(r.x - list.x), 'the unassigned row starts at the list left edge').toBeLessThanOrEqual(0.5);
+  const folder = await box(row.locator('svg').first(), 'folder icon');
+  expect(folder.x - list.x, 'the folder starts at the list left edge, no caret slot').toBeGreaterThanOrEqual(0);
+  expect(folder.x - list.x, 'the folder starts at the list left edge, no caret slot').toBeLessThanOrEqual(6);
 }
