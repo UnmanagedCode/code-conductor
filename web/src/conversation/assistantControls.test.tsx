@@ -571,6 +571,13 @@ describe('replay and lazy pages', () => {
 describe('on the turn-end row', () => {
   const kinds = (m: ConversationModel) => m.items.map((i) => i.type);
 
+  it("the row sits flush with the avatar gutter (no body-column indent) and pulls up under the bubble", async () => {
+    const { root } = await show([...text('m1', 0, 'one'), turnEnd()]);
+    const row = turnEndBelow(bubbles(root)[0])!;
+    expect(row.className, 'no indent to the body column').not.toMatch(/(^|\s)(md:)?p[lx]-\d/);
+    expect(row.classList.contains('-mt-4'), 'cancels part of the list gap').toBe(true);
+  });
+
   it("a turn-end row directly under a text bubble carries its raw toggle and copy, and the bubble keeps no row of its own", async () => {
     const { m, root } = await show([...text('m1', 0, 'one **a**'), ...text('m1', 1, 'two'), turnEnd()]);
     expect(kinds(m), 'fixture check').toEqual(['assistant', 'turn_end']);

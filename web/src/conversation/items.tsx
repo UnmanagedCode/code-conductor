@@ -455,7 +455,7 @@ function SystemLineView({ node, model }: { node: SystemNode; model: Conversation
 function TurnEndView({ node, carries, model }: { node: TurnEndNode; carries: AssistantNode | null; model: ConversationModel }) {
   const p = turnEndParts(node.ev);
   return (
-    <div className="group/asst flex items-center gap-x-3 md:pl-11 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
+    <div className="group/asst -mt-4 flex items-center gap-x-3 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
       <div data-turn-stats className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
         <span className={cn('flex items-center gap-1', p.ok ? 'text-success' : 'text-destructive')}>
           {p.ok ? <CircleCheckIcon className="size-3.5" /> : <CircleAlertIcon className="size-3.5" />}
