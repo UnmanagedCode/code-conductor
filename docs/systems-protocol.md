@@ -710,7 +710,10 @@ cc  →  {"type":"end","id":"w4"}
 - `mode` sets the permission bits (masked to `0o7777`). It is what makes an
   `atomic` write mode-PRESERVING: the rename installs the temp file, so without
   it an edited script comes back 0644 and silently stops being executable. cc's
-  write-back path sends the mode it read at the matching `readFile`.
+  write-back path sends the mode it read at the matching `readFile`. Every write
+  that creates a file — an `atomic` write's temp file, or the target of any
+  other write — creates it with `mode`, so the bytes are never readable more
+  widely than the target allows while they land.
 
 **Both frames are WHOLE-FILE on cc's side, and both carry BYTES.** `data` frames
 have always been base64 of raw bytes; the distinction is entirely in cc's own

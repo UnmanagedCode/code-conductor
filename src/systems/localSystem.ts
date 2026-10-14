@@ -61,11 +61,19 @@ async function renameWithRetry(from: string, to: string): Promise<void> {
   }
 }
 
+// The bits EVERY write creates its file with — the atomic temp file, an
+// exclusive target, a plain write's new target — so the bytes are never
+// readable more widely than the target allows while they land. The umask can
+// only narrow it; each write's chmod then restores the exact mode.
+function createMode(mode: number | undefined): number {
+  return mode === undefined ? 0o666 : mode & 0o777;
+}
+
 export async function writeFileAtomic(filePath: string, data: string | Buffer, mode?: number): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
   try {
-    await fs.writeFile(tmp, data);
+    await fs.writeFile(tmp, data, { mode: createMode(mode) });
     // On the TEMP file, before the rename: the target must never be observable
     // with the wrong mode, and after the rename there is no handle to fix.
     if (mode !== undefined) await fs.chmod(tmp, mode & 0o7777);
@@ -131,11 +139,13 @@ export class LocalSystem implements System {
     }
     if (opts.atomic) return writeFileAtomic(filePath, data, opts.mode);
     if (opts.exclusive) {
-      await fs.writeFile(filePath, data, { flag: 'wx' });
+      await fs.writeFile(filePath, data, { flag: 'wx', mode: createMode(opts.mode) });
       if (opts.mode !== undefined) await fs.chmod(filePath, opts.mode & 0o7777);
       return;
     }
-    await fs.writeFile(filePath, data);
+    // `mode` applies only if this creates the file; an existing one keeps its
+    // own until the chmod.
+    await fs.writeFile(filePath, data, { mode: createMode(opts.mode) });
     if (opts.mode !== undefined) await fs.chmod(filePath, opts.mode & 0o7777);
   }
 

@@ -42,6 +42,11 @@ export function describeToolInput(name: string, input: any, ctx: DescribeCtx = {
     const scope = input.remoteId ? `${input.system}/${input.remoteId}` : input.system;
     return trunc(`[${scope}] ${bashSubject(input)}`);
   }
+  if (name === 'mcp__code-conductor__system_transfer') {
+    const scope = (e: any) => (e?.remoteId ? `${e.system}/${e.remoteId}` : e?.system ?? '?');
+    const out = `[${scope(input.from)} → ${scope(input.to)}] ${input.from?.path ?? '?'} → ${input.to?.path ?? '?'}`;
+    return trunc(input.move ? `${out} · move` : out);
+  }
   if (name === 'mcp__code-conductor__project_read') {
     const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
     let out = trunc(`[${scope}] ${input.relativePath}`);

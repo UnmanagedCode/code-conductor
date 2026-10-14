@@ -25,6 +25,16 @@ describe('describeToolInput', () => {
     expect(describeToolInput(s, { system: 'refbox', command: 'uname -a' })).toBe('[refbox] uname -a');
   });
 
+  it('system_transfer names both endpoints, their remotes, and a move', () => {
+    const t = 'mcp__code-conductor__system_transfer';
+    expect(describeToolInput(t, { from: { system: 'local', path: '/a/f' }, to: { system: 'refbox', remoteId: 'c1', path: '/b/f' } }))
+      .toBe('[local → refbox/c1] /a/f → /b/f');
+    expect(describeToolInput(t, { from: { system: 'refbox', path: '/b/f' }, to: { system: 'local', path: '/a/g' }, move: true }))
+      .toBe('[refbox → local] /b/f → /a/g · move');
+    expect(describeToolInput(t, { from: { system: 'local', path: '/a' }, to: null })).toBe('[local → ?] /a → ?');
+    expect(describeToolInput(t, { from: { system: 'local', path: `/${'x'.repeat(300)}` }, to: { system: 'local', path: '/y' } }).endsWith('…')).toBe(true);
+  });
+
   it('file tools show the path; Read shows pagination', () => {
     for (const n of ['Edit', 'Write', 'Read']) expect(describeToolInput(n, { file_path: '/x/y.js' })).toBe('/x/y.js');
     const r = describeToolInput('Read', { file_path: '/a', offset: 100, limit: 50 });

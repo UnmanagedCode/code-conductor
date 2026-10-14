@@ -25,6 +25,7 @@ import {
   tryResolveProject,
   placeOf,
   projectRootPlace,
+  orchStoreRoot,
   type TranscriptPlacement,
 } from '../projects.ts';
 import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
@@ -41,6 +42,8 @@ import {
 import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
 import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
+import { withinPosix } from '../systems/mirror.ts';
+import { transferFile } from '../systems/transfer.ts';
 import type { ExecResult, ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../../shared/planApproval.ts';
 // DOM-free formatter shared with the UI question card
@@ -2993,6 +2996,15 @@ export async function enumerateRemotes({ system }: { system?: string }) {
   ));
 }
 
+// The (system, remoteId) addressing system_bash and system_transfer share. Same
+// normalisation as set_project_remote: '' and an omitted value both mean the
+// provider's own default target. systemById owns every named refusal.
+async function addressedSystem(system: string, remoteId: string | null | undefined, subject: string)
+  : Promise<{ sys: System; target: string | null }> {
+  const target = remoteId === '' || remoteId === undefined ? null : remoteId;
+  return { sys: await systemById(system, target, subject), target };
+}
+
 // Run a shell command on a registered system addressed DIRECTLY — no project in
 // play. `systemById` is the same resolution a project on that system goes
 // through, so its named refusals are identical; what differs is that the subject
@@ -3021,9 +3033,6 @@ export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
       + 'use your own Bash tool for it',
       { code: 'SYSTEM_IS_LOCAL' });
   }
-  // Same normalisation as set_project_remote: '' and an omitted value both mean
-  // the provider's own default target.
-  const target = remoteId === '' || remoteId === undefined ? null : remoteId;
   const runCwd = cwd ?? '/';
   // NOT requireAbsolute: that helper's contract is that a relative path is cc's
   // OWN bug (src/systems/system.ts), and this one is a caller's bad argument. It
@@ -3035,7 +3044,7 @@ export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
       `system_bash: cwd must be an absolute path on the system, got ${JSON.stringify(runCwd)}`,
       { code: 'CWD_NOT_ABSOLUTE' });
   }
-  const sys = await systemById(system, target, `system_bash on system '${system}'`);
+  const { sys, target } = await addressedSystem(system, remoteId, `system_bash on system '${system}'`);
   // A plain login shell, never claudeShellSpec: the shell-env bundle is a file
   // on cc's own machine, and this tool never runs there. Same `stdin:'ignore'`
   // and HEAD cap as project_bash, for the same two reasons documented there.
@@ -3046,6 +3055,94 @@ export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
     headCapBytes: BASH_OUTPUT_CAP,
   });
   return bashPayload({ system, remoteId: target, cwd: runCwd }, r);
+}
+
+// ---- system_transfer ----
+
+type TransferSide = 'from' | 'to';
+type EndpointArg = { system: string; remoteId: string | null; path: string };
+
+const ENDPOINT_KEYS = new Set(['system', 'remoteId', 'path']);
+
+// The endpoint's shape, or the reason it is not one. The schema is shallow
+// (validateArgs checks no nested properties), so the shape is checked here.
+// The path is used VERBATIM — no lexical normalisation, because the far side's
+// kernel resolves `..` after a symlink differently from path.normalize and the
+// OS's answer is the true one.
+function endpointDefect(v: unknown): string | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return 'must be an object {system, remoteId?, path}';
+  const o = v as Record<string, unknown>;
+  const unknown = Object.keys(o).filter(k => !ENDPOINT_KEYS.has(k));
+  if (unknown.length) return `unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')} — allowed: system, remoteId, path`;
+  if (typeof o.system !== 'string' || !o.system.trim()) return '`system` must be a non-empty registry id';
+  if (o.remoteId !== undefined && o.remoteId !== null && typeof o.remoteId !== 'string') return '`remoteId` must be a string or null';
+  if (typeof o.path !== 'string') return '`path` must be a string';
+  if (!path.posix.isAbsolute(o.path)) return `\`path\` must be absolute on that system, got ${JSON.stringify(o.path)}`;
+  if (o.path.endsWith('/')) return `\`path\` must name a file, not end in '/', got ${JSON.stringify(o.path)}`;
+  if (o.path.includes('\0')) return '`path` must not contain a NUL';
+  return null;
+}
+
+// Copy ONE regular file from one System to another — `local` accepted on either
+// side — or move it with `move:true`. The ordering and every engine refusal live
+// in transferFile (src/systems/transfer.ts); this adds validation, addressing
+// and the store guard, and returns every expected failure as a soft refusal
+// carrying the `side` it is about.
+export async function systemTransfer({ from, to, overwrite = false, move = false }: {
+  from: unknown; to: unknown; overwrite?: boolean; move?: boolean;
+}) {
+  const sides: [TransferSide, unknown][] = [['from', from], ['to', to]];
+  for (const [side, v] of sides) {
+    const defect = endpointDefect(v);
+    if (defect) return { ok: false, code: 'ENDPOINT_INVALID', side, reason: `system_transfer: \`${side}\` ${defect}` };
+  }
+  const ends = { from: from as EndpointArg, to: to as EndpointArg };
+  for (const [side, e] of Object.entries(ends) as [TransferSide, EndpointArg][]) {
+    // placementOf pins `local` to remoteId null, so ignoring one here would run
+    // against cc's host when the caller meant a remote.
+    if (e.system === LOCAL_SYSTEM_ID && e.remoteId !== undefined && e.remoteId !== null && e.remoteId !== '') {
+      return {
+        ok: false, code: 'SYSTEM_NO_REMOTES', side,
+        reason: `system_transfer: \`${side}\` names remote '${e.remoteId}' on system '${LOCAL_SYSTEM_ID}', `
+          + 'which is cc\'s own machine and serves no named targets',
+      };
+    }
+  }
+  // An ACCIDENT guard, not a sandbox: cc writes its store under its own locks
+  // and caches, so bytes written — or a file removed — behind its back are lost
+  // or corrupt state. Lexical, so an alias through a symlink gets past it.
+  // Copying out of the store is allowed.
+  const store = orchStoreRoot();
+  const guarded: [TransferSide, EndpointArg][] = move ? [['from', ends.from], ['to', ends.to]] : [['to', ends.to]];
+  for (const [side, e] of guarded) {
+    if (e.system === LOCAL_SYSTEM_ID && withinPosix(e.path, store) !== null) {
+      return {
+        ok: false, code: 'PATH_IN_CC_STORE', side,
+        reason: `system_transfer: \`${side}\` '${e.path}' is inside cc's own store (${store}); `
+          + (side === 'to' ? 'cc does not write into it' : 'a file may be copied out of it, not moved'),
+      };
+    }
+  }
+  const resolved: Partial<Record<TransferSide, { sys: System; target: string | null }>> = {};
+  for (const [side, e] of Object.entries(ends) as [TransferSide, EndpointArg][]) {
+    try {
+      resolved[side] = await addressedSystem(e.system, e.remoteId, `system_transfer ${side} on system '${e.system}'`);
+    } catch (err) {
+      if (!isSystemRefusal(err)) throw err;
+      return { ok: false, code: err.code, side, reason: err.message };
+    }
+  }
+  const src = resolved.from as { sys: System; target: string | null };
+  const dst = resolved.to as { sys: System; target: string | null };
+  const r = await transferFile({ sys: src.sys, path: ends.from.path }, { sys: dst.sys, path: ends.to.path }, { move, overwrite });
+  if (!r.ok) return r;
+  return {
+    from: { system: ends.from.system, remoteId: src.target, path: ends.from.path },
+    to: { system: ends.to.system, remoteId: dst.target, path: ends.to.path },
+    bytes: r.bytes,
+    mode: r.mode,
+    moved: r.moved,
+  };
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

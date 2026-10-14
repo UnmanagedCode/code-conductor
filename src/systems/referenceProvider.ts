@@ -487,6 +487,11 @@ export class ReferenceProvider {
     this.#writes.delete(id);
     if (w.failed) return;
     const data = Buffer.concat(w.chunks);
+    // Whichever file this write creates — the temp file, an exclusive target,
+    // a plain write's new target — is created at the target's permission bits,
+    // so the payload is never readable more widely than the target allows while
+    // it lands; the chmod restores the exact mode the umask may have narrowed.
+    const createMode = w.mode === undefined ? 0o666 : w.mode & 0o777;
     try {
       if (w.atomic) {
         // Temp-then-rename, so a reader never sees a torn write. The temp name
@@ -495,7 +500,7 @@ export class ReferenceProvider {
         await fs.mkdir(path.dirname(w.path), { recursive: true });
         const tmp = `${w.path}.${process.pid}.${atomicSeq++}.tmp`;
         try {
-          await fs.writeFile(tmp, data);
+          await fs.writeFile(tmp, data, { mode: createMode });
           if (w.mode !== undefined) await fs.chmod(tmp, w.mode & 0o7777);
           await fs.rename(tmp, w.path);
         } catch (e) {
@@ -503,7 +508,7 @@ export class ReferenceProvider {
           throw e;
         }
       } else {
-        await fs.writeFile(w.path, data, w.exclusive ? { flag: 'wx' } : {});
+        await fs.writeFile(w.path, data, { ...(w.exclusive ? { flag: 'wx' } : {}), mode: createMode });
         if (w.mode !== undefined) await fs.chmod(w.path, w.mode & 0o7777);
       }
       this.#write({ type: 'writeFileResult', id, ok: true });
