@@ -11,7 +11,7 @@ async function boot(instances: any[]) {
   stop?.();
   vi.resetModules();
   const fetch = vi.fn(async (url: string) => (
-    url.endsWith('/locate') ? { ok: false, status: 404, json: async () => ({}) }
+    url.endsWith('/locate') || url.endsWith('/pristine') ? { ok: false, status: 404, json: async () => ({}) }
       : { ok: true, json: async () => (url === '/api/instances' ? instances : []) }
   ));
   vi.stubGlobal('fetch', fetch);

@@ -157,7 +157,8 @@ interface DiffFileRow {
 // that writes it), `liveTurnEnds` + `lastTurnError` + `liveAsks` (the browser's
 // notification counters — UI-only), `modelSwitch` + `modelSwitchFailure` (a
 // restart switch is UI-started; send_prompt names one in flight as
-// SESSION_SWITCHING_MODEL).
+// SESSION_SWITCHING_MODEL), `pristine` (the browser's presence state for New
+// conductor — UI-only; no MCP payload carries a hidden one).
 export const CONDUCTOR_VIEW_KEYS = [
   'project',
   // Load-bearing for the conductor's self-identification check: it confirms its

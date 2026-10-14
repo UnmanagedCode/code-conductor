@@ -12,20 +12,15 @@ test('a fresh profile opens on the Conductors lens, and the chosen lens survives
   await expect.poll(() => ui.selectedLens(page)).toBe('projects');
 });
 
-test('Conduct POSTs exactly {project, role, temp, mode} and opens the new conductor', async ({ page, cc, ui }) => {
+test('Conduct POSTs exactly {project, role, temp, mode, pristine} and opens the new conductor', async ({ page, ui }) => {
   await ui.open(page);
   const spawn = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/instances');
   await ui.conduct(page);
   const req = await spawn;
-  expect(req.postDataJSON()).toEqual({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' });
-  const { id } = await (await req.response())!.json();
-  // The new conductor's session id, once cc reports it.
-  let sid: string | null = null;
-  await expect.poll(async () => {
-    sid = ((await api(cc, 'GET', '/api/instances')).body as { id: string; sessionId: string | null }[])
-      .find((i) => i.id === id)?.sessionId ?? null;
-    return sid;
-  }).not.toBeNull();
+  expect(req.postDataJSON()).toEqual({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true });
+  // A pristine conductor is in no list, so its session id is read off the create's answer.
+  const { sessionId: sid } = await (await req.response())!.json() as { sessionId: string };
+  expect(sid).toBeTruthy();
   const header = ui.sessionHeader(page);
   await expect(header).toBeVisible();
   await expect(header).not.toContainText('no instance selected');
