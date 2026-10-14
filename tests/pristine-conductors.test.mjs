@@ -251,12 +251,19 @@ describe('pristine conductors', () => {
       await frame(A, { t: 'pristine_view', id: P.id });
       await A.close();
       await closeSeen();
+      assert.equal(fake.live().length, 1, 'control: the close armed the grace window');
       const B = await socket();
       await frame(B, { t: 'pristine_view', id: P.id });
+      assert.equal(fake.live().length, 0, 'the view cancelled the window');
       fake.fire();
+      // A reap is remove() → kill(): bounded wait for any sign of one before judging that none came.
+      await waitFor(() => instances.get(P.id) === undefined || P.inst.proc === null
+        || ['exited', 'crashed'].includes(P.inst.status), { timeout: 1500 }).catch(() => {});
       await settleSessionWrites();
-      assert.ok(instances.get(P.id), 'P is alive');
-      assert.equal(await hasRecord(P.sid), true);
+      assert.ok(instances.get(P.id), 'P is still registered');
+      assert.ok(P.inst.proc, 'its CLI was not killed');
+      assert.equal(P.inst.status, 'idle');
+      assert.equal(await hasRecord(P.sid), true, 'its store record is kept');
     });
 
     test('never viewed: a conductor no tab ever shows is reaped when the window ends', async () => {
