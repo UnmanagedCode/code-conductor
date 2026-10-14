@@ -960,8 +960,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // session from the browser UI / HTTP spawn path. Orthogonal to
     // `temp`. Persisted durably as the session's `conducted` fact in the
     // session store at spawn (see spawn), so it survives exit / restart /
-    // --resume; the sidebar groups these under a `— conducted —`
-    // separator. A marker + display axis; its one behavioural divergence is
+    // --resume; the sidebar groups these in its Conducted group.
+    // A marker + display axis; its one behavioural divergence is
     // that a conducted worker never carries `awaitingUser`.
     this.conducted = !!conducted;
     // Instance ID of the conductor that spawned this worker via
