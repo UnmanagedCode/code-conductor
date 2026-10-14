@@ -141,10 +141,12 @@ describe('serving the built UI', () => {
 describe('webSourceHash over a fixture root', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webhash-'));
   const web = path.join(root, 'web');
-  const inputs = { root, dirs: [web], files: [path.join(root, 'package-lock.json')] };
+  const lock = path.join(root, 'node_modules', '.package-lock.json');
+  const inputs = { root, dirs: [web], files: [lock] };
   fs.mkdirSync(web);
   fs.writeFileSync(path.join(web, 'main.ts'), 'export {};');
-  fs.writeFileSync(path.join(root, 'package-lock.json'), '{}');
+  fs.mkdirSync(path.dirname(lock));
+  fs.writeFileSync(lock, '{}');
   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
   const withDir = (name: string) => {
     const dir = path.join(web, name);
@@ -164,7 +166,7 @@ describe('webSourceHash over a fixture root', () => {
     const before = webSourceHash(inputs);
     expect(withDir('probe')).not.toBe(before);
     expect(withDir('distx')).not.toBe(before);
-    fs.writeFileSync(path.join(root, 'package-lock.json'), '{"x":1}');
+    fs.writeFileSync(lock, '{"x":1}');
     expect(webSourceHash(inputs)).not.toBe(before);
   });
 });

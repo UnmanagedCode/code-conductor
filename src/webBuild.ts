@@ -37,9 +37,10 @@ export const WEB_DIST = path.join(WEB_ROOT, 'dist');
 const STAMP = '.source-hash';
 
 // Inputs: the web app itself, the shared modules it imports from shared/, and
-// the lockfile (a dependency bump changes the bundle).
+// npm's hidden lockfile, which records the installed tree (a dependency change
+// changes the bundle). A cache key only; absent, it is left out.
 const INPUT_DIRS = [WEB_ROOT, path.join(repoRoot, 'shared')];
-const INPUT_FILES = [path.join(repoRoot, 'package-lock.json')];
+const INPUT_FILES = [path.join(repoRoot, 'node_modules', '.package-lock.json')];
 // Build output, dependencies, Playwright output and the e2e specs + fixtures
 // are not inputs. Neither is any `dist.*` sibling: the staged `dist.next`, and
 // the `.tmp-<pid>` / `.old-<pid>` dirs a killed build leaves behind.
