@@ -2,8 +2,8 @@
 // and the question card's tab, picks and note. A full-page view (Settings, review, …)
 // unmounts the transcript and mounts it again on the same model, and every card comes back
 // as the reader left it; a sent plan keeps the feedback it sent, and one whose send failed
-// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session)
-// starts every card empty. Typing in the middle of a card's text keeps the caret.
+// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session
+// and back) keeps every card's input; another session's cards start empty. Typing in the middle of a card's text keeps the caret.
 // A card that paged in from an older page re-opens after a failed send the same way.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
@@ -219,20 +219,20 @@ describe('a full-page view round trip', () => {
 });
 
 describe('a transcript replaced in place', () => {
-  it('a reconnect\'s snapshot starts every card empty', async () => {
+  it('a reconnect\'s snapshot keeps every card as the reader left it', async () => {
     const el = await setAndRemount();
     await snapshot('i1', TRANSCRIPT);
-    expect(cards(el)).toEqual(START);
+    expect(cards(el)).toEqual(SET);
   });
 
-  it('another session selected starts every card empty, and so does coming back', async () => {
+  it('another session\'s cards start empty, and coming back finds every card as the reader left it', async () => {
     const el = await setAndRemount();
     act(() => { selectInstance('i2'); });
     await snapshot('i2', TRANSCRIPT);
     expect(cards(el), 'the other session').toEqual(START);
     act(() => { selectInstance('i1'); });
     await snapshot('i1', TRANSCRIPT);
-    expect(cards(el), 'back on the first').toEqual(START);
+    expect(cards(el), 'back on the first').toEqual(SET);
   });
 });
 
