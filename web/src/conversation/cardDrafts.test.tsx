@@ -22,7 +22,7 @@ vi.mock('@shared/ws', () => ({
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { bus } from '@shared/ws';
-import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
+import { cardInputs, conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
@@ -157,6 +157,7 @@ afterEach(() => {
   act(() => {
     appStore.set({ instances: [], activeId: null });
     conversation.clear();
+    cardInputs.reset();
     lazyHistory.reset();
   });
 });
