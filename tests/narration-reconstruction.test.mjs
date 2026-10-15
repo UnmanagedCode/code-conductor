@@ -97,3 +97,38 @@ test('bonding: a narration-only last message counts as prose and bonds back to i
   assert.deepEqual(messages.map(m => m.msgId), ['mPlan', 'mNote'], 'fixture check: two messages, the last narration-only');
   assert.deepEqual(bondTrailingTurn(messages, ringTurnIndex(r)).map(m => m.msgId), ['mPlan', 'mNote']);
 });
+
+// One envelope carrying several blocks (the legacy CLI shape): each block's
+// message index is the envelope's blockIdx plus its position in the envelope.
+const multiEnvelope = (content, extra = {}) => ({ kind: 'assistant_message', msgId: 'm', blockIdx: 0, message: { id: 'm', content }, parentToolUseId: null, _seq: 0, ...extra });
+
+test('a multi-block envelope: blocks are adjacent by their position inside it', async (t) => {
+  await t.test('[redacted, thought] in one envelope is narration', () => {
+    assert.equal(messageOf(ring([multiEnvelope([REDACTED, THOUGHT])]), 'm').narration, 'a later thought');
+  });
+  await t.test('control: [thought, thought] in one envelope is not', () => {
+    const m = messageOf(ring([multiEnvelope([{ ...THOUGHT, thinking: 'pondering' }, THOUGHT, { type: 'text', text: 'done' }])]), 'm');
+    assert.equal(m.text, 'done', 'fixture check: the message reconstructs');
+    assert.equal(m.narration, undefined);
+  });
+});
+
+test('an envelope with no numeric blockIdx gets no reconciled verdict; only the flagged deltas can supply narration', async (t) => {
+  const NOTE = { type: 'thinking', thinking: 'a note', signature: 'sig' };
+  const content = [NOTE, { type: 'tool_use', id: 't', name: 'Bash', input: {} }, REDACTED];
+  for (const [label, extra] of [['blockIdx missing', { blockIdx: undefined }], ['blockIdx NaN', { blockIdx: NaN }]]) {
+    await t.test(`${label}: no narration from the envelope`, () => {
+      const m = messageOf(ring([multiEnvelope(content, extra)]), 'm');
+      assert.equal(m.hasToolUse, true, 'fixture check: the envelope is read');
+      assert.equal(m.narration, undefined);
+    });
+  }
+  await t.test('blockIdx missing: the flagged deltas still supply it, pinned first', () => {
+    const m = messageOf(ring([
+      { kind: 'thinking_delta', msgId: 'm', blockIdx: 1, text: 'the flagged note', narration: true, parentToolUseId: null },
+      multiEnvelope([REDACTED, { ...THOUGHT, thinking: 'the flagged note' }], { blockIdx: undefined }),
+    ]), 'm');
+    assert.equal(m.narration, 'the flagged note');
+    assert.equal(m.narrationSeq, -1);
+  });
+});

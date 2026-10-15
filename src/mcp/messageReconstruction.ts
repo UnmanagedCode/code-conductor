@@ -417,8 +417,10 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
   let hasToolUse = false;
   // Content blocks merged across all assistant_message envelopes for this
   // msgId, in arrival order, each with its message-level index (the envelope's
-  // blockIdx plus its position in that envelope).
-  let assistantContent: Array<{ idx: number; block: ReconBlock }> | null = null;
+  // blockIdx plus its position in that envelope) — null when the envelope
+  // carries no finite blockIdx, which leaves its blocks without a reconciled
+  // narration verdict.
+  let assistantContent: Array<{ idx: number | null; block: ReconBlock }> | null = null;
   // SHARED across both passes below — the delta pass writes these first and the
   // reconciled pass, if it runs, writes into the same object.
   const hoist: HoistTarget = { plan: null, planPath: null, questions: null };
@@ -453,7 +455,8 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
     } else if (ev.kind === 'assistant_message') {
       const content = ev.message?.content;
       if (Array.isArray(content) && content.length) {
-        (assistantContent ??= []).push(...(content as ReconBlock[]).map((block, i) => ({ idx: ev.blockIdx + i, block })));
+        const base = Number.isFinite(ev.blockIdx) ? ev.blockIdx : null;
+        (assistantContent ??= []).push(...(content as ReconBlock[]).map((block, i) => ({ idx: base === null ? null : base + i, block })));
       }
     }
   }
@@ -474,10 +477,11 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
     // Adjacency is by block index, never by position in the merged list: an
     // envelope the ring dropped leaves a gap, and a block across that gap is
     // not the one immediately before.
-    const byIdx = new Map(assistantContent.map(({ idx, block }) => [idx, block]));
+    const byIdx = new Map<number, ReconBlock>();
+    for (const { idx, block } of assistantContent) if (idx !== null) byIdx.set(idx, block);
     for (const { idx, block } of assistantContent) {
       const probe = reconProbe(block);
-      const prevBlock = byIdx.get(idx - 1);
+      const prevBlock = idx === null ? undefined : byIdx.get(idx - 1);
       if (isNarration(prevBlock && reconProbe(prevBlock), probe)) {
         narrationParts.push(probe.text);
         if (r.narrationSeq === null) r.narrationSeq = r.next++;
