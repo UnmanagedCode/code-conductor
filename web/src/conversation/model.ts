@@ -93,8 +93,8 @@ export type UserNode = Base & {
   reader: { view: TextView; foldOpen: boolean; foldView: TextView };
 };
 /**
- * `reader.open`: a task notification's fold. `inCard`: a task notification whose Agent card holds the
- * agent's own transcript, so its report already shows there.
+ * `reader.open`: a task notification's fold. `inCard`: the notification's Agent card already shows its
+ * report: its transcript's last text, trimmed, is the notification's `summary`.
  */
 export type SystemNode = Base & { type: 'system'; ev: UiEventOf<'system'>; inCard: boolean; reader: { open: boolean } };
 export type TurnEndNode = Base & { type: 'turn_end'; ev: UiEventOf<'turn_end'> };
@@ -272,11 +272,13 @@ export class ConversationModel {
   private reconcileCounts = new Map<string | null, number>();
   private subConvs = new Map<string, ConversationModel>();
   /**
-   * Root model only: the toolUseIds of backgrounded tasks still running. An outer run-ender does not end
-   * such an agent's run, so its sub-agent's groups stay open until its task_notification or the process dies.
+   * Root model only: the backgrounded runs still going, run key → the toolUseId hosting the run. An outer
+   * run-ender does not end such an agent's run, so its sub-agent's groups stay open until its
+   * task_notification or the process dies. A run key is the run's `task_id`, else its toolUseId: a
+   * resumed Agent starts a new run on the same tool use.
    */
-  private backgroundTasks = new Set<string>();
-  /** Root model only: tasks whose notification has arrived; a task_started read after it does not reopen them. */
+  private backgroundTasks = new Map<string, string>();
+  /** Root model only: the run keys whose notification has arrived; a task_started read after it does not reopen them. */
   private endedTasks = new Set<string>();
   private activeWrap: AssistantNode | null = null;
   private activeThinkingKey: string | null = null;
@@ -724,13 +726,22 @@ export class ConversationModel {
   /** A backgrounded task's start and end: its end (any status) folds its sub-agent's open groups. */
   private trackBackgroundTask(ev: UiEventOf<'system'>) {
     const { backgroundTasks: tasks, endedTasks: ended } = this.root;
+    const runKey = (toolUseId: string) => (typeof ev.data?.task_id === 'string' ? ev.data.task_id : toolUseId);
     if (ev.subtype === 'task_started' && ev.data?.is_backgrounded === true && typeof ev.data.tool_use_id === 'string') {
-      if (!ended.has(ev.data.tool_use_id)) tasks.add(ev.data.tool_use_id);
+      const key = runKey(ev.data.tool_use_id);
+      if (!ended.has(key)) tasks.set(key, ev.data.tool_use_id);
     } else if (ev.subtype === 'task_notification' && ev.toolUseId) {
-      tasks.delete(ev.toolUseId);
-      ended.add(ev.toolUseId);
+      const key = runKey(ev.toolUseId);
+      tasks.delete(key);
+      ended.add(key);
       this.root.findSub(ev.toolUseId)?.closeAllActionGroups();
     }
+  }
+
+  /** Whether a backgrounded run on this tool use is still going. */
+  private hostsBackgroundRun(toolUseId: string): boolean {
+    for (const host of this.root.backgroundTasks.values()) if (host === toolUseId) return true;
+    return false;
   }
 
   private findSub(toolUseId: string): ConversationModel | null {
@@ -790,7 +801,7 @@ export class ConversationModel {
 
   private closeAllActionGroups() {
     for (const w of new Set(this.messageWraps.values())) this.closeGroup(w);
-    for (const [id, sub] of this.subConvs) if (!this.root.backgroundTasks.has(id)) sub.closeAllActionGroups();
+    for (const [id, sub] of this.subConvs) if (!this.hostsBackgroundRun(id)) sub.closeAllActionGroups();
   }
 
   private closeAssistantSegment() {

@@ -237,7 +237,7 @@ describe('a backgrounded agent\'s run spans outer run-enders', () => {
     const m = new ConversationModel();
     const evs: UiEvent[] = [
       ...AGENTS.flatMap((a, i) => tool('m1', i, a, 'Agent', { result: null, input: { run_in_background: backgrounded } })),
-      ...(started ? AGENTS.map((a, i) => taskStarted(a, i, backgrounded)) : []),
+      ...(started ? AGENTS.map((a) => taskStarted(a, backgrounded)) : []),
       ...AGENTS.map((a) => toolResult({ toolUseId: a, content: 'Async agent launched successfully.' })),
       ...AGENTS.map(childThinking),
       ...AGENTS.map(childBash),
@@ -245,12 +245,13 @@ describe('a backgrounded agent\'s run spans outer run-enders', () => {
     for (const ev of evs) apply(m, ev);
     return m;
   }
-  const taskStarted = (a: string, i: number, backgrounded: boolean): UiEvent =>
-    ({ kind: 'system', subtype: 'task_started', data: { task_id: `task${i}`, tool_use_id: a, is_backgrounded: backgrounded } });
-  /** A notified notification, shaped as the parser builds an Agent's. */
-  const ended = (a: string, status: string, summary: string): UiEvent => ({
+  /** A run's start; `taskId` null leaves `task_id` out. */
+  const taskStarted = (a: string, backgrounded: boolean, taskId: string | null = `task-${a}`): UiEvent =>
+    ({ kind: 'system', subtype: 'task_started', data: { ...(taskId ? { task_id: taskId } : {}), tool_use_id: a, is_backgrounded: backgrounded } });
+  /** A notified notification, shaped as the parser builds an Agent's; `taskId` null leaves `task_id` out. */
+  const ended = (a: string, status: string, summary: string, taskId: string | null = `task-${a}`): UiEvent => ({
     kind: 'system', subtype: 'task_notification', toolUseId: a,
-    data: { task_id: `task-${a}`, status, output_file: '', name: `probe ${a}`, exitCode: null, summary, notified: true },
+    data: { ...(taskId ? { task_id: taskId } : {}), status, output_file: '', name: `probe ${a}`, exitCode: null, summary, notified: true },
   });
   const FAILED = 'Agent "probe agentA" failed: the API returned an overloaded error';
   function onwards(m: ConversationModel) {
@@ -311,10 +312,59 @@ describe('a backgrounded agent\'s run spans outer run-enders', () => {
   it('a notification that arrives before its task_started ends the task for good (T16)', () => {
     const m = launched(true, { started: false });
     apply(m, ended('agentA', 'completed', 'done'));
-    apply(m, taskStarted('agentA', 0, true));
+    apply(m, taskStarted('agentA', true));
     apply(m, childThinking('agentA'));
     apply(m, turnEnd());
     expect(subGroups(m, 'agentA').map((g) => g.open)).toEqual([false, false]);
+  });
+
+  it('a card holding interim prose, a tool, then its padded report: the row is headline-only (T17)', async () => {
+    const m = launched(true);
+    apply(m, toolResult({ toolUseId: 'agentA-bash', content: 'ok', parentToolUseId: 'agentA' }));
+    apply(m, child('agentA', { type: 'text', text: 'Interim: listing the top level first.' }));
+    apply(m, child('agentA', { type: 'tool_use', id: 'agentA-bash2', name: 'Bash', input: { command: 'ls src' } }));
+    apply(m, toolResult({ toolUseId: 'agentA-bash2', content: 'ok', parentToolUseId: 'agentA' }));
+    apply(m, child('agentA', { type: 'text', text: 'Final report: README.md, src/\n' }));
+    apply(m, ended('agentA', 'completed', 'Final report: README.md, src/'));
+    const r = renderModel(m);
+    await flush();
+    const row = r.root.querySelector('[data-subtype="task_notification"]')!;
+    expect(row.querySelector('[data-headline]')!.textContent).toBe('probe agentA · completed');
+    expect(row.querySelector('[data-fold-body]')).toBeNull();
+  });
+
+  it('a resumed agent\'s second run (same tool use, new task id) spans an outer turn end until its own notification (T18)', () => {
+    const m = launched(true);
+    apply(m, ended('agentA', 'completed', 'first run done'));
+    apply(m, taskStarted('agentA', true, 'task-agentA-resumed'));
+    apply(m, childThinking('agentA'));
+    apply(m, turnEnd());
+    expect(subGroups(m, 'agentA').map((g) => g.open)).toEqual([false, true]);
+    apply(m, ended('agentA', 'completed', 'second run done', 'task-agentA-resumed'));
+    expect(subGroups(m, 'agentA').map((g) => g.open)).toEqual([false, false]);
+  });
+
+  it('with no task id, a notification read before its task_started still ends the run for good, keyed by tool use (T19)', () => {
+    const m = launched(true, { started: false });
+    apply(m, ended('agentA', 'completed', 'done', null));
+    apply(m, taskStarted('agentA', true, null));
+    apply(m, childThinking('agentA'));
+    apply(m, turnEnd());
+    expect(subGroups(m, 'agentA').map((g) => g.open)).toEqual([false, false]);
+  });
+
+  it('a transcript replaced in place forgets which runs ended: the same run started again is tracked as backgrounded (T20)', () => {
+    const m = launched(true);
+    apply(m, ended('agentA', 'completed', 'done'));
+    m.clear();
+    for (const ev of [
+      ...tool('m1', 0, 'agentA', 'Agent', { result: null, input: { run_in_background: true } }),
+      taskStarted('agentA', true),
+      toolResult({ toolUseId: 'agentA', content: 'Async agent launched successfully.' }),
+      childThinking('agentA'),
+      turnEnd(),
+    ]) apply(m, ev);
+    expect(subGroups(m, 'agentA').map((g) => g.open)).toEqual([true]);
   });
 
   it('a foreground agent\'s run folds at the outer turn\'s end, its notification arriving after (T9)', () => {
