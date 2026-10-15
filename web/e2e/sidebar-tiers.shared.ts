@@ -118,7 +118,7 @@ export async function bandGeometryFlow({ page }: Ctx): Promise<void> {
   expect(bare.x - caret.x, 'the folder sits about under the band caret').toBeGreaterThanOrEqual(0);
   expect(bare.x - caret.x, 'the folder sits about under the band caret').toBeLessThanOrEqual(6);
   expect(bare.x, 'the folder is left of the layers icon').toBeLessThan(layers.x);
-  await expect(root.locator(`[data-project-row="${member(p, SESSION_AT)}"] > button[aria-expanded]`), 'no caret on the row').toHaveCount(0);
+  await expect(root.locator(`[data-project-row="${member(p, SESSION_AT)}"] > button[aria-expanded]:not([aria-haspopup])`), 'no caret on the row').toHaveCount(0);
   const toggle = root.locator(`[data-project-sessions="${member(p, SESSION_AT)}"] > button`);
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   expect((await box(toggle.locator('svg').first(), 'sessions group caret')).x, 'the sessions group nests under the folder').toBeGreaterThan(withSessions.x);

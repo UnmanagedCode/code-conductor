@@ -113,6 +113,8 @@ export interface Ui {
   saveTarget(dialog: Locator): Promise<void>;
   /** Opens the New session dialog from the project's row and returns it; spawns nothing. */
   openSpawnDialog(page: Page, project: string): Promise<Locator>;
+  /** Opens Edit conventions… from the project's row ⋮ and returns the dialog. */
+  openEditConventions(page: Page, project: string): Promise<Locator>;
   /** Expands the spawn dialog's Advanced options; idempotent. */
   spawnAdvanced(dialog: Locator): Promise<void>;
   /** One read of the tier cards offered and the selected one. */
@@ -442,6 +444,15 @@ const sidebar = (page: Page) => drawerViewport()
   : page.locator('[data-sidebar]:visible');
 const LENS_LABEL: Record<Lens, string> = { conductors: 'Conductors', projects: 'Projects' };
 
+/** Picks `item` from the ⋮ menu of `project`'s Projects-lens row. */
+async function openProjectMenuItem(page: Page, project: string, item: string) {
+  await next.lens(page, 'projects');
+  const row = await next.projectRow(page, project);
+  await row.hover();
+  await row.getByRole('button', { name: 'Project menu' }).click();
+  await page.getByRole('menuitem', { name: item }).click();
+}
+
 export const next: Ui = {
   async open(page) {
     await page.goto('/');
@@ -490,10 +501,7 @@ export const next: Ui = {
     return sidebar(page).locator(`[data-project-row="${name}"]`);
   },
   async startSessionIn(page, project, opts = {}) {
-    await next.lens(page, 'projects');
-    const row = await next.projectRow(page, project);
-    await row.hover();
-    await row.getByRole('button', { name: 'New session' }).click();
+    await openProjectMenuItem(page, project, 'New session');
     const dialog = page.getByRole('dialog', { name: 'New session' });
     await expect(dialog).toBeVisible();
     if (opts.temp === false) {
@@ -625,10 +633,7 @@ export const next: Ui = {
 
   // Dialogs part 2 (card 2026-0631)
   async openDeleteProject(page, name) {
-    await next.lens(page, 'projects');
-    const row = await next.projectRow(page, name);
-    await row.hover();
-    await row.getByRole('button', { name: 'Delete project' }).click();
+    await openProjectMenuItem(page, name, 'Delete…');
     const dialog = page.locator('[role="dialog"][data-dialog="delete-project"]');
     await expect(dialog).toBeVisible();
     return dialog;
@@ -657,11 +662,14 @@ export const next: Ui = {
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   },
   async openSpawnDialog(page, project) {
-    await next.lens(page, 'projects');
-    const row = await next.projectRow(page, project);
-    await row.hover();
-    await row.getByRole('button', { name: 'New session' }).click();
+    await openProjectMenuItem(page, project, 'New session');
     const dialog = page.locator('[role="dialog"][data-dialog="spawn"]');
+    await expect(dialog).toBeVisible();
+    return dialog;
+  },
+  async openEditConventions(page, project) {
+    await openProjectMenuItem(page, project, 'Edit conventions…');
+    const dialog = page.locator('[role="dialog"][data-dialog="edit-conventions"]');
     await expect(dialog).toBeVisible();
     return dialog;
   },
