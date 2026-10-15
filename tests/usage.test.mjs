@@ -449,6 +449,30 @@ test('formatResetWhen: near reset matches formatResetTime; far reset (>24h) adds
   assert.ok(far.startsWith(`resets ${weekday} `), `expected weekday prefix, got "${far}"`);
 });
 
+// Pins: a 7-day reset names its date, so two resets a week apart never read the same (time-only does).
+test('formatResetDateTime: names the date, so resets a week apart differ; formatResetTime does not', async () => {
+  const { formatResetDateTime, formatResetTime } = await import(USAGE_URL);
+  assert.equal(typeof formatResetDateTime, 'function');
+  const prevTz = process.env.TZ;
+  process.env.TZ = 'UTC';
+  try {
+    assert.equal(formatResetDateTime(null), null);
+    assert.equal(formatResetDateTime(NaN), null);
+    assert.equal(formatResetDateTime(0), null);
+    const a = Date.UTC(2026, 5, 14, 12) / 1000;
+    const b = a + 7 * 86400;
+    assert.equal(formatResetTime(a), formatResetTime(b));
+    const da = formatResetDateTime(a);
+    assert.notEqual(da, formatResetDateTime(b));
+    assert.ok(da.startsWith('resets '), da);
+    const d = new Date(a * 1000);
+    assert.ok(da.includes(d.toLocaleDateString([], { month: 'short' })), da);
+    assert.ok(da.includes(d.toLocaleDateString([], { day: 'numeric' })), da);
+  } finally {
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
+  }
+});
+
 // --- DOM-level test: chip threshold transitions ---
 
 async function setupDOM() {

@@ -24,6 +24,7 @@ import type { UiEvent } from '@shared/uiEvent';
 import { turnEnd } from '@/conversation/testkit';
 import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGroups, runningBackendOf } from './SessionHeader';
 import { UsageChip } from './UsageChip';
+import * as usageFmt from '@shared/usage';
 import { Dot } from '@/features/sidebar/rows';
 
 const base = (extra: Partial<Instance> = {}): Instance => ({
@@ -870,6 +871,35 @@ describe('context + rate-limit chip', () => {
       const pop = screen.getByRole('dialog');
       expect(pop.textContent).toContain('5-hour');
       expect(pop.textContent).not.toContain('Fable');
+    } finally { accountUsageStore.set({ usage: null, stale: false }); }
+  });
+
+  // Pins: 7-day windows (every non-5h key, Fable included) show their reset date; the 5-hour window stays time-only.
+  it("the popover's 7-day resets name the date; the 5-hour reset is time only", async () => {
+    expect(typeof usageFmt.formatResetDateTime).toBe('function');
+    const { formatResetTime, formatResetDateTime } = usageFmt;
+    const secs = (iso: string) => Date.parse(iso) / 1000;
+    getUsageTracker('c14').reset();
+    accountUsageStore.set({
+      usage: {
+        five_hour: { utilization: 45, resets_at: '2026-06-11T12:00:00Z' },
+        seven_day: { utilization: 38, resets_at: '2026-06-14T12:00:00Z' },
+        seven_day_sonnet: { utilization: 20, resets_at: '2026-06-14T12:00:00Z' },
+        limits: [{ scope: { model: { display_name: 'Fable' } }, percent: 12, resets_at: '2026-06-15T12:00:00Z' }],
+      },
+      stale: false,
+    });
+    try {
+      wrap(<UsageChip inst={base({ id: 'c14' })} />);
+      await act(async () => { fireEvent.click(chip()); });
+      const pop = screen.getByRole('dialog');
+      const row = (label: string) => within(pop).getByText(label, { exact: true }).parentElement!.parentElement!;
+      expect(row('7-day').textContent).toContain(formatResetDateTime(secs('2026-06-14T12:00:00Z')));
+      expect(row('7-day Sonnet').textContent).toContain(formatResetDateTime(secs('2026-06-14T12:00:00Z')));
+      expect(row('7-day Fable').textContent).toContain(formatResetDateTime(secs('2026-06-15T12:00:00Z')));
+      const five = row('5-hour').textContent!;
+      expect(five).toContain(formatResetTime(secs('2026-06-11T12:00:00Z')));
+      expect(five).not.toContain(new Date('2026-06-11T12:00:00Z').toLocaleDateString([], { month: 'short' }));
     } finally { accountUsageStore.set({ usage: null, stale: false }); }
   });
 

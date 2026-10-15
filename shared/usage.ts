@@ -345,6 +345,15 @@ export function formatResetWhen(unixSecs: number | null | undefined): string | n
   return `resets ${weekday} ${time}`;
 }
 
+// Like formatResetTime, but always names the date, e.g. "resets Sun, Jun 14, 12:00 PM" —
+// for a 7-day window, whose reset can be up to a week out.
+export function formatResetDateTime(unixSecs: number | null | undefined): string | null {
+  if (!unixSecs || !Number.isFinite(unixSecs)) return null;
+  return 'resets ' + new Date(unixSecs * 1000).toLocaleString([], {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
 // Pure helper: derive the rate-limit half of the combined chip from the two
 // available sources (no DOM, easily testable).
 //   info        – globalRLTracker.info (from rate_limit_event; may be null)
