@@ -259,9 +259,11 @@ export async function fitFlow({ page, cc }: Ctx): Promise<void> {
   await test.step('the sidebar does not overflow sideways', async () => {
     const fit = await sb.evaluate((root) => {
       const body = root.querySelector('[data-sidebar-body]') as HTMLElement;
-      return { body: body.scrollWidth, bodyBox: body.clientWidth, doc: document.documentElement.scrollWidth, viewport: window.innerWidth };
+      const strip = root.querySelector('[data-strip]') as HTMLElement;
+      return { body: body.scrollWidth, bodyBox: body.clientWidth, strip: strip.scrollWidth, stripBox: strip.clientWidth, doc: document.documentElement.scrollWidth, viewport: window.innerWidth };
     });
     expect(fit.body, JSON.stringify(fit)).toBeLessThanOrEqual(fit.bodyBox);
+    expect(fit.strip, JSON.stringify(fit)).toBeLessThanOrEqual(fit.stripBox);
     expect(fit.doc, JSON.stringify(fit)).toBeLessThanOrEqual(fit.viewport);
   });
 

@@ -35,7 +35,7 @@ async function planRegion(page: Page, cc: Cc, what: string, prompt: string): Pro
  * Scrolls the content under the centre of `over` down by `dy` px (up when negative): a real
  * touch scroll on a touch project, a wheel on desktop. Synthetic TouchEvents from page JS never scroll.
  */
-async function scrollOver(page: Page, over: Locator, dy: number): Promise<void> {
+export async function scrollOver(page: Page, over: Locator, dy: number): Promise<void> {
   const box = await over.boundingBox();
   if (!box) throw new Error('scrollOver: the target has no box');
   const x = box.x + box.width / 2;
