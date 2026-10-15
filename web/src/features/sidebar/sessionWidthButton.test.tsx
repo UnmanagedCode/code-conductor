@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, within } from '@testing-library/react';
+import { MoveHorizontalIcon, UnfoldHorizontalIcon } from 'lucide-react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
@@ -14,11 +15,11 @@ vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
 vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => null }));
 
 const { AppSidebar } = await import('./AppSidebar');
-const { sessionWidthStore } = await import('@/app/sessionWidth');
+const { setSessionFull, setSessionWidth } = await import('@/app/sessionWidth');
 
 beforeEach(() => {
   localStorage.clear();
-  sessionWidthStore.set({ width: 768, full: false });
+  act(() => { setSessionWidth(768); setSessionFull(false); });
   uiStore.set({ lens: 'conductors' });
   appStore.set({
     connection: 'open', everDropped: false, activeId: null, sidebarStatus: null,
@@ -27,125 +28,64 @@ beforeEach(() => {
 });
 
 const footer = () => document.querySelector('[data-sidebar-footer]') as HTMLElement;
+const toggle = (name: RegExp | string = /^Session width:/) => within(footer()).queryByRole('button', { name });
 
 describe('the session width control', () => {
-  it('the trigger name follows the store, so the mode is readable without opening the popover', () => {
-    // Invariant: the mode is readable without opening the popover.
+  it('the name shows the mode, with px under Resizable', () => {
+    // Invariant: the label names Resizable with its px, or Full.
     render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    const names: [Partial<{ width: number; full: boolean }>, string][] = [
-      [{}, 'Normal'], [{ width: 1024 }, 'Wide'], [{ width: 896 }, '896 px'], [{ full: true }, 'Full'],
-    ];
-    for (const [patch, name] of names) {
-      act(() => sessionWidthStore.set(patch));
-      expect(within(footer()).queryByRole('button', { name: `Session width: ${name}` }), name).not.toBeNull();
-    }
+    expect(toggle('Session width: Resizable, 768 px')).not.toBeNull();
+    act(() => setSessionWidth(896));
+    expect(toggle('Session width: Resizable, 896 px')).not.toBeNull();
+    act(() => setSessionFull(true));
+    expect(toggle('Session width: Full')).not.toBeNull();
   });
 
-  const openPopover = () => {
-    fireEvent.click(within(footer()).getByRole('button', { name: /^Session width:/ }));
-    return screen.getByRole('slider');
-  };
-  const closePopover = () => { fireEvent.keyDown(screen.getByRole('slider'), { key: 'Escape' }); };
-
-  it('the slider is keyboard-operable and keyboard steps never snap', () => {
-    // Invariant: keyboard operates the slider, and a step off a snap point does not snap back.
+  it('a click toggles Full and Resizable, keeps the width, and opens nothing', () => {
+    // Invariant: the control is a toggle, not a popover, and Full never drops the width.
     render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    const slider = openPopover();
-    slider.focus();
-    fireEvent.keyDown(slider, { key: 'ArrowRight' });
-    expect(sessionWidthStore.get().width).toBe(784);
-    fireEvent.keyDown(slider, { key: 'End' });
-    expect(sessionWidthStore.get().width).toBe(1600);
-    fireEvent.keyDown(slider, { key: 'Home' });
-    expect(sessionWidthStore.get().width).toBe(480);
-    closePopover();
+    act(() => setSessionWidth(896));
+    expect(toggle('Session width: Resizable, 896 px')).not.toBeNull();
+    fireEvent.click(toggle()!);
+    expect(toggle('Session width: Full')).not.toBeNull();
+    fireEvent.click(toggle()!);
+    expect(toggle('Session width: Resizable, 896 px')).not.toBeNull();
+    expect(document.querySelector('[role=dialog]')).toBeNull();
+    expect(document.querySelector('[role=slider]')).toBeNull();
   });
 
-  it('a pointer drag snaps near Normal/Wide and updates the column while dragging, not on release', () => {
-    // Invariant: drags snap within the radius and update live, before the pointer is released.
+  it('the icon shows the mode', () => {
+    // Invariant: Full and Resizable are told apart by icon identity.
+    const standalone = (icon: React.ReactElement) => {
+      const { container, unmount } = render(icon);
+      const html = container.querySelector('svg')!.innerHTML;
+      unmount();
+      return html;
+    };
+    const full = standalone(<MoveHorizontalIcon />);
+    const resizable = standalone(<UnfoldHorizontalIcon />);
     render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    const slider = openPopover();
-    const root = document.querySelector('[data-slot=slider]') as HTMLElement;
-    // 1 client px = 1 width px: the track spans MAX - MIN px from x = 0.
-    root.getBoundingClientRect = () => ({ left: 0, right: 1120, width: 1120, top: 0, bottom: 20, height: 20, x: 0, y: 0, toJSON: () => ({}) });
-    fireEvent.pointerDown(root, { pointerId: 1, clientX: 1040 - 480, button: 0 });
-    expect(sessionWidthStore.get().width).toBe(1024);
-    fireEvent.pointerMove(root, { pointerId: 1, clientX: 900 - 480 });
-    expect(sessionWidthStore.get().width).toBe(896);
-    fireEvent.pointerUp(root, { pointerId: 1 });
-    expect(sessionWidthStore.get().width).toBe(896);
-    expect(slider.getAttribute('aria-valuenow')).toBe('896');
-    closePopover();
+    expect(toggle('Session width: Resizable, 768 px')).not.toBeNull();
+    expect(toggle('Session width: Resizable, 768 px')!.querySelector('svg')!.innerHTML).toBe(resizable);
+    act(() => setSessionFull(true));
+    expect(toggle('Session width: Full')!.querySelector('svg')!.innerHTML).toBe(full);
   });
 
-  it('after a pointer drag, a keyboard step still does not snap', () => {
-    // Invariant: a drag does not leave the slider in snapping mode; the next keyboard step from Normal sticks at 784.
+  it('stays a keyboard-operable button', () => {
+    // Invariant: the toggle is in the tab order, so the keyboard reaches the setting the handles cannot.
     render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    const slider = openPopover();
-    const root = document.querySelector('[data-slot=slider]') as HTMLElement;
-    root.getBoundingClientRect = () => ({ left: 0, right: 1120, width: 1120, top: 0, bottom: 20, height: 20, x: 0, y: 0, toJSON: () => ({}) });
-    fireEvent.pointerDown(root, { pointerId: 1, clientX: 900 - 480, button: 0 });
-    fireEvent.pointerUp(root, { pointerId: 1 });
-    act(() => sessionWidthStore.set({ width: 768 }));
-    slider.focus();
-    fireEvent.keyDown(slider, { key: 'ArrowRight' });
-    expect(sessionWidthStore.get().width).toBe(784);
-    closePopover();
-  });
-
-  it('Escape closes the popover', () => {
-    // Invariant: the popover is dismissed by Escape.
-    render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    openPopover();
-    expect(document.querySelector('[data-session-width-popover]')).not.toBeNull();
-    closePopover();
-    expect(document.querySelector('[data-session-width-popover]')).toBeNull();
-  });
-
-  it('Full greys the slider and keeps the custom width', () => {
-    // Invariant: Full disables the slider without touching width; turning it off restores a live slider at that width.
-    render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    act(() => sessionWidthStore.set({ width: 896 }));
-    openPopover();
-    const sw = screen.getByRole('switch', { name: 'Full width' });
-    fireEvent.click(sw);
-    expect(sw.getAttribute('data-state')).toBe('checked');
-    expect(document.querySelector('[data-slot=slider]')!.hasAttribute('data-disabled')).toBe(true);
-    expect(sessionWidthStore.get()).toEqual({ width: 896, full: true });
-    fireEvent.click(sw);
-    expect(document.querySelector('[data-slot=slider]')!.hasAttribute('data-disabled')).toBe(false);
-    expect(screen.getByRole('slider').getAttribute('aria-valuenow')).toBe('896');
-    closePopover();
-  });
-
-  it('the ticks jump to their snap, and a double-click on the slider resets to the default', () => {
-    // Invariant: the ticks jump to their snap and the reset affordances return to the default.
-    render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    openPopover();
-    fireEvent.click(screen.getByRole('button', { name: 'Wide' }));
-    expect(sessionWidthStore.get().width).toBe(1024);
-    fireEvent.click(screen.getByRole('button', { name: 'Normal' }));
-    expect(sessionWidthStore.get().width).toBe(768);
-    act(() => sessionWidthStore.set({ width: 896 }));
-    fireEvent.doubleClick(document.querySelector('[data-slot=slider]')!);
-    expect(sessionWidthStore.get().width).toBe(768);
-    closePopover();
-  });
-
-  it('with Full on, the ticks are disabled', () => {
-    // Invariant: a tick cannot move the greyed slider.
-    render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-    act(() => sessionWidthStore.set({ full: true }));
-    openPopover();
-    fireEvent.click(screen.getByRole('button', { name: 'Wide' }));
-    expect(sessionWidthStore.get().width).toBe(768);
-    closePopover();
+    const b = toggle('Session width: Resizable, 768 px')!;
+    expect(b).not.toBeNull();
+    expect(b.tagName).toBe('BUTTON');
+    expect(b.getAttribute('tabindex')).not.toBe('-1');
+    b.focus();
+    expect(document.activeElement).toBe(b);
   });
 
   it('the drawer sidebar has no width control', () => {
     // Invariant: the phone drawer offers the theme toggle but no width control.
     render(<TooltipProvider><AppSidebar mobile /></TooltipProvider>);
-    expect(screen.getByRole('button', { name: /^(Dark|Light) theme$/ })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /^Session width/ })).toBeNull();
+    expect(within(document.body).getByRole('button', { name: /^(Dark|Light) theme$/ })).toBeTruthy();
+    expect(within(document.body).queryByRole('button', { name: /^Session width/ })).toBeNull();
   });
 });

@@ -30,6 +30,23 @@ beforeEach(() => { localStorage.clear(); });
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('useResizableWidth', () => {
+  it('lost pointer capture mid-drag reverts like a cancel', () => {
+    // Invariant: lostpointercapture with no pointerup commits nothing, drops the live width and clears the body flag.
+    localStorage.setItem(KEY, '400');
+    render(<Harness />);
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    act(() => {
+      fireEvent.pointerDown(handle(), { clientX: 500, pointerId: 1 });
+      fireEvent.pointerMove(handle(), { clientX: 540, pointerId: 1 });
+    });
+    expect(now()).toBe(440);
+    expect('resizing' in document.body.dataset).toBe(true);
+    act(() => { fireEvent.lostPointerCapture(handle(), { pointerId: 1 }); });
+    expect(now()).toBe(400);
+    expect('resizing' in document.body.dataset).toBe(false);
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
   it('edge left inverts the drag and the keys: +dx narrows, ArrowLeft widens', () => {
     // Invariant: a handle on the box's left edge grows the box as it moves left, by pointer and by key alike.
     localStorage.setItem(KEY, '400');

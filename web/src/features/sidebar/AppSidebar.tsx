@@ -21,7 +21,7 @@ import { openCosts, openSettings } from '@/features/views/api';
 import { AppSwitcher } from '@/features/views/AppSwitcher';
 import { NotifyToggle } from '@/features/notifications/NotifyToggle';
 import { cn } from '@/lib/utils';
-import { useResizableWidth } from '@/lib/useResizableWidth';
+import { RESIZE_HANDLE_CLASS, useResizableWidth } from '@/lib/useResizableWidth';
 import { filterOwner, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH_STORAGE_KEY } from './derive';
 import { lensScrollOf, setFilter, setLensScroll, useSidebarUi } from './state';
 import { useSidebarModel } from './useSidebarModel';
@@ -166,7 +166,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
       {!mobile && (
         <div
           {...handleProps}
-          className="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize touch-none outline-none transition-colors hover:bg-primary/20 focus-visible:bg-primary/30 data-[active=true]:bg-primary/30"
+          className={cn('absolute inset-y-0 -right-1 z-10', RESIZE_HANDLE_CLASS)}
           data-resize-handle
         />
       )}

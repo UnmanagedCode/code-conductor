@@ -11,6 +11,7 @@ import { ConversationView } from '@/conversation/ConversationView';
 import { Composer, type ComposerHandle } from '@/features/composer/Composer';
 import { openNewProjectDialog } from '@/features/dialogs/api';
 import { startConducting } from '@/features/dialogs/conduct';
+import { SessionWidthHandles } from './SessionWidthHandles';
 import { SessionHeader } from './SessionHeader';
 import { SubagentPanel, TaskPanel, TurnIndicator } from './SessionPanels';
 import { UsageChip } from './UsageChip';
@@ -66,19 +67,22 @@ export function SessionView() {
     <main className="flex min-w-0 flex-1 flex-col">
       {/* Keyed: another session gets a fresh header, so an open ⋮ closes and swipe tracking re-attaches. */}
       <SessionHeader key={inst.id} inst={inst} onMenu={openSidebar} />
-      <ConversationView
-        empty={
-          <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">
-            <OctopusMaestro mood="curious" className="size-24" />
-            <p>No messages yet. Send a prompt to start.</p>
-          </div>
-        }
-      />
-      <div {...column} className="mx-auto w-full space-y-2 px-3 pb-[max(env(safe-area-inset-bottom,0px),0.75rem)] md:px-6">
-        <TaskPanel inst={inst} />
-        <SubagentPanel inst={inst} />
-        <TurnIndicator inst={inst} />
-        <Composer ref={composerRef} inst={inst} usageSlot={<UsageChip inst={inst} />} />
+      <div data-session-body className="relative flex min-h-0 flex-1 flex-col">
+        <ConversationView
+          empty={
+            <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">
+              <OctopusMaestro mood="curious" className="size-24" />
+              <p>No messages yet. Send a prompt to start.</p>
+            </div>
+          }
+        />
+        <div {...column} className="mx-auto w-full space-y-2 px-3 pb-[max(env(safe-area-inset-bottom,0px),0.75rem)] md:px-6">
+          <TaskPanel inst={inst} />
+          <SubagentPanel inst={inst} />
+          <TurnIndicator inst={inst} />
+          <Composer ref={composerRef} inst={inst} usageSlot={<UsageChip inst={inst} />} />
+        </div>
+        <SessionWidthHandles />
       </div>
     </main>
   );

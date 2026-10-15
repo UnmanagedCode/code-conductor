@@ -12,7 +12,7 @@ import { useRoute } from '@/state/route';
 import { closeSidebarOnMobile, uiStore } from '@/app/ui';
 import { pluginsChangedSignal, pluginsChangeStore } from '@/features/settings/pluginsSignal';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
-import { useResizableWidth } from '@/lib/useResizableWidth';
+import { RESIZE_HANDLE_CLASS, useResizableWidth } from '@/lib/useResizableWidth';
 import { leaveView, useEscapeToClose } from './ViewShell';
 import { appLabel, catalogStore, hashMirror, overlayStore, pluginFrames, refreshCatalog } from './plugins';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, dockLayout, maxPanel } from './dockLayout';
@@ -111,7 +111,7 @@ export function PluginView() {
       {mode === 'split' && (
         <div
           {...handleProps}
-          className="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize touch-none outline-none transition-colors hover:bg-primary/20 focus-visible:bg-primary/30 data-[active=true]:bg-primary/30"
+          className={cn('absolute inset-y-0 -left-1 z-10', RESIZE_HANDLE_CLASS)}
           data-resize-handle="plugin-dock"
         />
       )}
