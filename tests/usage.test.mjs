@@ -467,8 +467,8 @@ test('formatResetDateTime: names the date, so resets a week apart differ; format
     assert.notEqual(da, formatResetDateTime(b));
     assert.ok(da.startsWith('resets '), da);
     const d = new Date(a * 1000);
-    assert.ok(da.includes(d.toLocaleDateString([], { month: 'short' })), da);
-    assert.ok(da.includes(d.toLocaleDateString([], { day: 'numeric' })), da);
+    // the day-of-month and month as they read inside a date (genitive-month locales differ from the standalone month)
+    assert.ok(da.includes(d.toLocaleDateString([], { day: 'numeric', month: 'short' })), da);
     // pins: the weekday is named
     assert.ok(da.includes(d.toLocaleDateString([], { weekday: 'short' })), da);
     // pins: the clock time is named, identical to the time-only formatter's

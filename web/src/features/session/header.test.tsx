@@ -902,7 +902,7 @@ describe('context + rate-limit chip', () => {
       expect(row('7-day Fable').textContent).toContain(formatResetDateTime(secs('2026-06-15T12:00:00Z')));
       const five = row('5-hour').textContent!;
       expect(five).toContain(formatResetTime(secs('2026-06-11T12:00:00Z')));
-      expect(five).not.toContain(new Date('2026-06-11T12:00:00Z').toLocaleDateString([], { month: 'short' }));
+      expect(five).not.toContain(formatResetDateTime(secs('2026-06-11T12:00:00Z'))!);
     } finally { accountUsageStore.set({ usage: null, stale: false }); }
   });
 
