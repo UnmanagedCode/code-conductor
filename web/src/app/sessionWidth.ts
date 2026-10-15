@@ -1,35 +1,62 @@
-// Session column width preset. One browser-local choice widens the whole session
+// Session column width. One browser-local setting widens the whole session
 // column (transcript, sticky pin, panels, composer) together.
-import { createStore } from '@/state/createStore';
-
-export const SESSION_WIDTHS = ['normal', 'wide', 'full'] as const;
-export type SessionWidth = (typeof SESSION_WIDTHS)[number];
-
-export const SESSION_WIDTH_LABEL: Record<SessionWidth, string> = { normal: 'Normal', wide: 'Wide', full: 'Full' };
-
-// Literal class strings so Tailwind's scanner emits them.
-export const SESSION_COLUMN_MAX_W: Record<SessionWidth, string> = {
-  normal: 'max-w-3xl',
-  wide: 'max-w-5xl',
-  full: 'max-w-none',
-};
+import { useMemo } from 'react';
+import { createStore, useStore } from '@/state/createStore';
+import {
+  SESSION_WIDTH_DEFAULT, clampSessionWidth, legacySessionWidth, parseSessionWidth, sessionWidthKey,
+  type SessionWidthState,
+} from './sessionWidthScale';
 
 const KEY = 'code-conductor:session-width';
 
-function read(): SessionWidth {
+// Browser-storage migration: `migrations/` covers the server store only and
+// cannot reach localStorage, so the owning store upgrades its own key at load.
+function migrateStoredSessionWidth() {
   try {
-    const v = localStorage.getItem(KEY);
-    return (SESSION_WIDTHS as readonly string[]).includes(v ?? '') ? (v as SessionWidth) : 'normal';
+    const mapped = legacySessionWidth(localStorage.getItem(KEY));
+    if (mapped) localStorage.setItem(KEY, JSON.stringify(mapped));
+  } catch { /* storage unavailable */ }
+}
+
+function read(): SessionWidthState {
+  try {
+    return parseSessionWidth(localStorage.getItem(KEY));
   } catch {
-    return 'normal';
+    return parseSessionWidth(null);
   }
 }
 
-export const sessionWidthStore = createStore({ preset: read() });
+migrateStoredSessionWidth();
+export const sessionWidthStore = createStore<SessionWidthState>(read());
 
-export function cycleSessionWidth() {
-  const cur = sessionWidthStore.get().preset;
-  const next = SESSION_WIDTHS[(SESSION_WIDTHS.indexOf(cur) + 1) % SESSION_WIDTHS.length];
-  try { localStorage.setItem(KEY, next); } catch { /* storage unavailable */ }
-  sessionWidthStore.set({ preset: next });
+function update(patch: Partial<SessionWidthState>) {
+  const next = { ...sessionWidthStore.get(), ...patch };
+  try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+  sessionWidthStore.set(next);
+}
+
+export function setSessionWidth(px: number) {
+  update({ width: clampSessionWidth(px) });
+}
+
+/** Full never touches the width, so the custom value survives toggling it. */
+export function setSessionFull(full: boolean) {
+  update({ full });
+}
+
+export function resetSessionWidth() {
+  setSessionWidth(SESSION_WIDTH_DEFAULT);
+}
+
+/** The props every session-column box carries: the e2e hook and the width cap. */
+export function useSessionColumn() {
+  const width = useStore(sessionWidthStore, (s) => s.width);
+  const full = useStore(sessionWidthStore, (s) => s.full);
+  return useMemo(
+    () => ({
+      'data-session-width': sessionWidthKey({ width, full }),
+      style: { maxWidth: full ? 'none' : `${width}px` },
+    }),
+    [width, full],
+  );
 }

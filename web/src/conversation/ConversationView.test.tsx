@@ -7,7 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { stickyPrompt } from '@/app/controller';
 import { ConversationView } from './ConversationView';
 import { USER_BUBBLE, USER_TONE_PROMPT } from './items';
-import { alignClasses, capClasses, marginX, padX, selfAlignClasses, tokens } from './userBubbleTestkit';
+import { alignClasses, marginX, padX, selfAlignClasses, tokens } from './userBubbleTestkit';
 import { pinStore, STATUS_NONE, SWIPE_MIN_PX, type PinState } from './stickyPrompt';
 
 const PINNED: PinState = { kind: 'pinned', html: '<p>first</p>', shift: 0, overflowing: false, pushedOff: false };
@@ -39,8 +39,8 @@ describe('pinned prompt', () => {
     const list = scroll.firstElementChild as Element;
     const column = pin.querySelector(':scope > [data-session-width]') as Element;
     expect(padX(list).length).toBeGreaterThan(0);
-    expect(capClasses(list).length).toBeGreaterThan(0);
-    expect(capClasses(column)).toEqual(capClasses(list));
+    expect((list as HTMLElement).style.maxWidth).not.toBe('');
+    expect((column as HTMLElement).style.maxWidth).toBe((list as HTMLElement).style.maxWidth);
     expect(padX(column)).toEqual(padX(list));
   });
 

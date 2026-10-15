@@ -8,7 +8,7 @@ import { pinStore, trackSwipes } from './stickyPrompt';
 import { forkActiveSession, rewindActiveSession } from '@/app/sessionActions';
 import { peekTaskTracker } from '@/app/trackers';
 import { uiStore } from '@/app/ui';
-import { SESSION_COLUMN_MAX_W, sessionWidthStore } from '@/app/sessionWidth';
+import { useSessionColumn } from '@/app/sessionWidth';
 import { ItemsList, USER_BUBBLE, USER_TONE_PROMPT, type BubbleActions } from './items';
 import { userActionsForStatus, type ConversationModel } from './model';
 import type { RenderCtx } from './tools';
@@ -41,7 +41,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const pinRef = React.useRef<HTMLDivElement>(null);
-  const preset = useStore(sessionWidthStore, (s) => s.preset);
+  const column = useSessionColumn();
   const pin = useStore(pinStore, (s) => s.pin);
   const gutter = useStore(pinStore, (s) => s.gutter);
   const sticky = React.useRef(true);
@@ -122,7 +122,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
     return () => { detach(); untrack(); };
   }, []);
 
-  React.useEffect(() => { stickyPrompt.refresh(); }, [rev, activeId, preset]);
+  React.useEffect(() => { stickyPrompt.refresh(); }, [rev, activeId, column['data-session-width']]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -146,7 +146,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
         data-call-usage={showCallUsage ? 'shown' : 'hidden'}
         data-conversation
       >
-        <div ref={listRef} data-session-width={preset} className={`mx-auto w-full ${SESSION_COLUMN_MAX_W[preset]} space-y-6 pt-6 pb-10 ${TRANSCRIPT_PAD_X}`}>
+        <div ref={listRef} {...column} className={`mx-auto w-full space-y-6 pt-6 pb-10 ${TRANSCRIPT_PAD_X}`}>
           {lazy.visible && (
             <button
               type="button"
@@ -172,7 +172,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
         style={{ right: gutter, ...(pin.kind === 'pinned' && pin.shift ? { transform: `translateY(${pin.shift}px)` } : {}) }}
         data-pinned-prompt
       >
-        <div data-session-width={preset} className={cn('mx-auto pt-2', SESSION_COLUMN_MAX_W[preset], TRANSCRIPT_PAD_X)}>
+        <div {...column} className={cn('mx-auto pt-2', TRANSCRIPT_PAD_X)}>
           {pin.kind === 'status' ? (
             <div className="rounded-xl border bg-card/95 px-4 py-2 text-center text-xs text-muted-foreground shadow-md backdrop-blur">{pin.text}</div>
           ) : pin.kind === 'pinned' ? (
