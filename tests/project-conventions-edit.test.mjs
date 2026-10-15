@@ -106,6 +106,17 @@ describe('PUT /api/projects/:name/conventions', () => {
     assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before);
   });
 
+  // PINS: the guard compares content and order, not just length.
+  test('refuses an expected of the right length but different slugs or order with 409 and writes nothing', async () => {
+    await projectWith('p', ['design-guidelines', 'testing-guidelines']);
+    const before = await fs.readFile(conventionsPath('p'), 'utf8');
+    for (const expected of [['design-guidelines', 'documentation-guidelines'], ['testing-guidelines', 'design-guidelines']]) {
+      const r = await put('p', { slugs: ['documentation-guidelines'], expected });
+      assert.equal(r.status, 409, `${JSON.stringify(expected)} → ${JSON.stringify(r.body)}`);
+      assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before, `${JSON.stringify(expected)}: file unchanged`);
+    }
+  });
+
   // PINS: the freeze rule holds for the edit — degraded + an unresolvable kept
   // slug is 503 CONVENTIONS_CATALOG_DEGRADED with the file byte-identical;
   // dropping that slug lets the same edit through.
@@ -191,6 +202,22 @@ describe('GET /api/projects conventions field', () => {
     assert.deepEqual((await row('p')).conventions, {
       selected: ['doomed', 'testing-guidelines', 'design-guidelines'], unresolved: ['doomed'],
     });
+  });
+
+  // PINS: a read that fails other than ENOENT is reported as {error} on that
+  // row, and the listing still answers for every project.
+  test('an unreadable CONVENTIONS.md → {error}, and the rest of the list still answers', async () => {
+    await projectWith('healthy', ['design-guidelines']);
+    await createProject('broken');
+    await fs.rm(conventionsPath('broken'), { force: true });
+    await fs.mkdir(conventionsPath('broken'));
+    const r = await api(baseUrl, 'GET', '/api/projects');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const broken = r.body.find(p => p.name === 'broken');
+    assert.deepEqual(Object.keys(broken.conventions), ['error']);
+    assert.equal(typeof broken.conventions.error, 'string');
+    assert.ok(broken.conventions.error.length > 0);
+    assert.deepEqual(r.body.find(p => p.name === 'healthy').conventions, { selected: ['design-guidelines'], unresolved: [] });
   });
 
   // PINS: an unresolvable project carries no `conventions` key at all.

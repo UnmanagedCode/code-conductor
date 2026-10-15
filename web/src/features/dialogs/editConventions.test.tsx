@@ -178,6 +178,21 @@ describe('Edit conventions dialog', () => {
     });
   }
 
+  it('a selection recording a slug twice opens unchanged, and a save sends it once', async () => {
+    // Invariant: a repeated marker slug counts once — Save starts disabled and the PUT's slugs never repeat one; expected stays the recorded marker so the server's guard matches it.
+    const RECORDED = ['design-guidelines', 'design-guidelines'];
+    const calls = stub({ [`PUT ${URL}`]: () => SAVED });
+    render(<DialogsHost />);
+    act(() => openEditConventionsDialog({ ...PROJECT, conventions: { selected: RECORDED, unresolved: [] } } as unknown as Project));
+    await waitFor(() => expect(box('design-guidelines')).toBeTruthy());
+    expect(checked('design-guidelines')).toBe(true);
+    expect(saveButton().disabled).toBe(true);
+    toggle('testing-guidelines');
+    save();
+    await waitFor(() => expect(puts(calls)).toHaveLength(1));
+    expect(puts(calls)[0].body).toEqual({ slugs: ['design-guidelines', 'testing-guidelines'], expected: RECORDED });
+  });
+
   it('reopening resets the picks, the alert and the scaffold note, and the next save carries only the new toggle', async () => {
     // Invariant: a reopen starts from the recorded selection with no leftover state; its save body is built from that reset.
     const answers: Route[] = [() => ({ status: 503, json: { error: 'catalog degraded' } }), () => SAVED];

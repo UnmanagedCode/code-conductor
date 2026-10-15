@@ -14,10 +14,13 @@ import { useOpenKey } from './useOpenKey';
 const UNAVAILABLE_NOTE = 'Not available on this install. Kept selected; its text returns when it is available again.';
 
 function EditConventionsBody({ project }: { project: Project }) {
-  const initial = React.useMemo(
+  // `recorded` is the marker verbatim, sent back as `expected`; `initial` counts a
+  // slug the marker repeats once, keeping the first occurrence and the order.
+  const recorded = React.useMemo(
     () => (project.conventions && 'selected' in project.conventions ? project.conventions.selected : []),
     [project],
   );
+  const initial = React.useMemo(() => [...new Set(recorded)], [recorded]);
   const [catalog, setCatalog] = React.useState<Convention[] | null>(null);
   const [picked, setPicked] = React.useState<Set<string>>(() => new Set(initial));
   const [busy, setBusy] = React.useState(false);
@@ -45,7 +48,7 @@ function EditConventionsBody({ project }: { project: Project }) {
     const slugs = [...initial.filter((s) => picked.has(s)), ...added.map((c) => c.slug)];
     try {
       await apiFetch(`/api/projects/${encodeURIComponent(project.name)}/conventions`, {
-        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slugs, expected: initial }),
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slugs, expected: recorded }),
       });
     } catch (e: any) {
       setBusy(false);

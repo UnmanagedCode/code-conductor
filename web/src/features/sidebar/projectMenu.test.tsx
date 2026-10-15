@@ -10,7 +10,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { closeDialog, dialogStore } from '@/features/dialogs/api';
 import type { Project } from '@/state/types';
 import { closeProjectMenu, openProjectMenu, pickProjectMenuItem, projectMenuItems, projectMenuTrigger } from '@/test/projectMenu';
-import { ProjectRow } from './rows';
+import { ProjectRow, REVEAL } from './rows';
 
 const project = (over: Partial<Project> = {}) => ({
   name: 'api', path: '/p/api', workspace: null, system: 'local', remoteId: null, systemUnreachable: null,
@@ -26,6 +26,15 @@ const dot = (row: HTMLElement) => row.querySelector('[data-conventions-attention
 const notice = (row: HTMLElement) => {
   const id = projectMenuTrigger(row).getAttribute('aria-describedby');
   return id ? document.getElementById(id)?.textContent ?? null : null;
+};
+/** Whether the trigger carries the hover-reveal classes, i.e. is hidden until the row is hovered or focused. */
+const revealed = (row: HTMLElement) => {
+  const classes = projectMenuTrigger(row).classList;
+  return REVEAL.split(' ').every((c) => classes.contains(c));
+};
+const hasAnyReveal = (row: HTMLElement) => {
+  const classes = projectMenuTrigger(row).classList;
+  return REVEAL.split(' ').some((c) => classes.contains(c));
 };
 const item = (menu: HTMLElement, label: string) => projectMenuItems(menu).find((i) => i.textContent === label)!;
 
@@ -100,6 +109,14 @@ describe('the conventions dot on the ⋮', () => {
     const menu = await openProjectMenu(row);
     expect(item(menu, 'Edit conventions…').hasAttribute('data-attention')).toBe(true);
     await closeProjectMenu();
+  });
+
+  it('with a notice the ⋮ is always visible; without one it is hover-revealed', () => {
+    // Invariant: a project needing attention shows its ⋮ (and dot) without a hover; a healthy one keeps the reveal.
+    const flagged = renderRow(project({ name: 'flagged', conventions: { selected: [], unresolved: [] } }));
+    const healthy = renderRow(project({ name: 'healthy' }));
+    expect(hasAnyReveal(flagged)).toBe(false);
+    expect(revealed(healthy)).toBe(true);
   });
 
   it('does not show for a healthy selection', async () => {
