@@ -19,7 +19,7 @@ import { readFirstPrompt } from '../src/projects.ts';
 import { buildWakeStub, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import { readablePrompt } from '../shared/promptPreview.ts';
 import { backgroundJobsNote } from '../src/backgroundJobs.ts';
-import { buildForwardFrame } from '../shared/forwardFrame.ts';
+import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../shared/forwardFrame.ts';
 import { buildRenewSeed } from '../shared/renewSeed.ts';
 
 const SID = '3f2a8c11-77b2-4c1e-9a2f-5d6e7f801234';
@@ -73,8 +73,12 @@ const SURFACES = {
 };
 
 // `live` is the LIVE block's title line, `inactive` the session line's text.
-async function expectOnEverySurface(t, records, { live, inactive }) {
-  const fp = await storedFirstPrompt(t.name.replace(/\W+/g, '-'), records);
+async function expectOnEverySurface(t, records, want) {
+  await expectFpOnEverySurface(t, await storedFirstPrompt(t.name.replace(/\W+/g, '-'), records), want);
+}
+
+// As expectOnEverySurface, for a stored first prompt `fp` given as is.
+async function expectFpOnEverySurface(t, fp, { live, inactive }) {
   for (const [surface, render] of Object.entries(SURFACES)) {
     await t.test(surface, () => {
       const want = surface.endsWith('live') || surface.endsWith('LIVE row')
@@ -96,8 +100,8 @@ test('a wake-callback first prompt renders as Wake: <summary>, never the [[cc: m
 // buildWakeStub produces, WAKE_BODY_SEP starts at or past the end of the head
 // readFirstPrompt keeps, so no part of it — not even its leading `\n` — is in
 // the head, and the head reads, in full and untruncated, as the summary alone.
-// The cut is measured off readFirstPrompt's own output (its 200-char slice in
-// src/projects.ts exports no constant). A note only prefixes the summary and a
+// The cut is measured off readFirstPrompt's own output, the head
+// firstPromptHead cuts at FIRST_PROMPT_CAP (shared/promptPreview.ts). A note only prefixes the summary and a
 // jobs note only suffixes it, so the bare stub is the binding case.
 test('the stored head of every wake stub stops before its body separator', async t => {
   const NOW = 1786001000000;
@@ -128,14 +132,78 @@ test('the stored head of every wake stub stops before its body separator', async
   }
 });
 
-test('a forwarded-frame first prompt renders as Forwarded worker output', async t => {
+test('a forwarded-frame first prompt renders as its instruction\'s first line', async t => {
   await expectOnEverySurface(t, [userTurn(buildForwardFrame({
     messages: ['The migration is written and its test is green.'],
-    instruction: 'Review the migration.',
+    instruction: '\nReview the migration.\nThen run the suite.',
   }))], {
+    live: 'title —   first Review the migration.',
+    inactive: 'Review the migration.',
+  });
+});
+
+// readablePrompt's own output, uncollapsed (Settings → Archived renders it as
+// is): the MCP surfaces and promptPreview collapse whitespace themselves.
+test('a forward\'s instruction line is shown trimmed of trailing spaces and tabs', async () => {
+  const fp = await storedFirstPrompt('forward-padded-instruction', [userTurn(buildForwardFrame({
+    messages: ['The migration is written.'],
+    instruction: 'Review the migration. \t \nThen run the suite.',
+  }))]);
+  assert.equal(readablePrompt(fp), 'Review the migration.');
+});
+
+test('a forward stored as a string-content user record renders as its instruction\'s first line', async t => {
+  await expectOnEverySurface(t, [{ type: 'user', message: { role: 'user', content: buildForwardFrame({
+    messages: ['The migration is written.'],
+    instruction: 'Review the migration.',
+  }) } }], {
+    live: 'title —   first Review the migration.',
+    inactive: 'Review the migration.',
+  });
+});
+
+test('an empty-instruction forward renders as Forwarded worker output', async t => {
+  await expectOnEverySurface(t, [userTurn(buildForwardFrame({ messages: ['The migration is written.'], instruction: '' }))], {
     live: 'title —   first Forwarded worker output',
     inactive: 'Forwarded worker output',
   });
+});
+
+test('a forward with no END paragraph renders as Forwarded worker output', async t => {
+  await expectOnEverySurface(t, [userTurn(`${FORWARD_FRAME_HEADER}\n\npayload`)], {
+    live: 'title —   first Forwarded worker output',
+    inactive: 'Forwarded worker output',
+  });
+});
+
+// A value stored before a forward was kept as its tail: the raw frame's head,
+// cut inside the header.
+test('a pre-tail stored head (the raw frame cut to 200) renders as Forwarded worker output', async t => {
+  const raw = buildForwardFrame({ messages: ['The migration is written.'], instruction: 'Review the migration.' });
+  await expectFpOnEverySurface(t, raw.slice(0, 200), {
+    live: 'title —   first Forwarded worker output',
+    inactive: 'Forwarded worker output',
+  });
+});
+
+// The first user record runs past readFirstPrompt's first read, in multibyte
+// text. A second, small user turn follows it.
+test('a forward whose first record exceeds 64 KB is recovered', async () => {
+  const frame = buildForwardFrame({ messages: ['é'.repeat(80_000)], instruction: 'Review the migration.' });
+  const fp = await storedFirstPrompt('forward-over-first-read', [
+    { type: 'queue-operation', operation: 'enqueue', sessionId: SID },
+    userTurn(frame),
+    userTurn('a later turn'),
+  ]);
+  assert.equal(readablePrompt(fp), 'Review the migration.');
+});
+
+test('a first record past the 1 MiB cap reads as no first prompt', async () => {
+  const fp = await storedFirstPrompt('first-record-over-cap', [
+    userTurn('x'.repeat(1_200_000)),
+    userTurn('a later turn'),
+  ]);
+  assert.equal(fp, null);
 });
 
 test('a renew_session seed first prompt renders as Context renewed', async t => {

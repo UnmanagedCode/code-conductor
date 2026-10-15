@@ -31,7 +31,7 @@ const CASES: Case[] = [
   },
   {
     what: 'forward', prompt: buildForwardFrame({ messages: ['FWD-LABEL body'], instruction: 'FWD-LABEL instruction' }),
-    stored: /^--- FORWARDED WORKER OUTPUT/, label: 'Forwarded worker output', name: /Forwarded worker output/,
+    stored: /^--- END FORWARDED WORKER OUTPUT ---\n\nFWD-LABEL instruction$/, label: 'FWD-LABEL instruction', name: /FWD-LABEL instruction/,
   },
   {
     what: 'renew', prompt: buildRenewSeed({ summary: 'RENEW-LABEL summary' }),
@@ -40,7 +40,8 @@ const CASES: Case[] = [
 ];
 
 // Invariant: a session row and a needs-you entry never show a machine-written first prompt's raw syntax, in their text or
-// accessible name: a wake stub reads by its summary, a forward frame and a renew seed by name; a person's prompt is unchanged.
+// accessible name: a wake stub reads by its summary, a forward frame by its instruction's first line, a renew seed by name; a
+// person's prompt is unchanged.
 export async function machineLabelFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(cc.engine === 'live', 'the prompts are sent to fake-engine sessions');
   test.setTimeout(120_000);
@@ -54,7 +55,7 @@ export async function machineLabelFlow({ page, cc }: Ctx): Promise<void> {
     sids.set(c.what, s.sessionId);
   }
 
-  await test.step('the server stores each first prompt raw', async () => {
+  await test.step('the server stores each first prompt\'s head', async () => {
     for (const c of CASES) {
       const sid = sids.get(c.what)!;
       await expect.poll(async () => ((await insts(cc)) as Inst[]).find((i) => i.sessionId === sid)?.firstPrompt ?? '', { message: `${c.what} firstPrompt` })

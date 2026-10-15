@@ -9,6 +9,7 @@ import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { SubagentPanel } from './SessionPanels';
 import { buildForwardFrame } from '@shared/forwardFrame';
+import { firstPromptHead } from '@shared/promptPreview';
 
 const CONDUCTOR = 'cond-41';
 const conductor = { id: CONDUCTOR, project: 'demo', status: 'idle', displayStatus: 'idle' } as Instance;
@@ -89,10 +90,18 @@ describe('workers panel', () => {
     expect(hint(/job w-runjob/)).toBeNull();
   });
 
-  it('a relay worker whose first prompt is a forward frame reads Forwarded worker output, not the frame header', () => {
-    // Invariant: an untitled worker's label renders the forward frame (as the server stores it, cut by Instance.prompt) by name, in its text and accessible name.
-    const frame = buildForwardFrame({ messages: ['FWD-PANEL body'], instruction: 'FWD-PANEL instruction' }).slice(0, 200);
+  it('a relay worker whose first prompt is a forward frame reads its instruction\'s first line, not the frame', () => {
+    // Invariant: an untitled worker's label renders the forward frame (as the server stores it, by firstPromptHead) by its instruction, in its text and accessible name.
+    const frame = firstPromptHead(buildForwardFrame({ messages: ['FWD-PANEL body'], instruction: 'FWD-PANEL instruction' }));
     mount([worker('w-relay', { title: null, firstPrompt: frame })]);
+    expect(row('FWD-PANEL instruction')).toBeTruthy();
+    expect(screen.queryAllByRole('button', { name: /FORWARDED WORKER OUTPUT|\[\[cc:/ })).toHaveLength(0);
+  });
+
+  it('a relay worker whose forward was stored before its tail was kept reads Forwarded worker output', () => {
+    // Invariant: a head cut inside the forward header renders by name, not as the header.
+    const frame = buildForwardFrame({ messages: ['FWD-PANEL body'], instruction: 'FWD-PANEL instruction' }).slice(0, 200);
+    mount([worker('w-relay-old', { title: null, firstPrompt: frame })]);
     expect(row('Forwarded worker output')).toBeTruthy();
     expect(screen.queryAllByRole('button', { name: /FORWARDED WORKER OUTPUT|\[\[cc:/ })).toHaveLength(0);
   });
