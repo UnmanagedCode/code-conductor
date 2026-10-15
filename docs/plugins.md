@@ -2,7 +2,7 @@
 
 ## Plugin system
 
-Building a plugin's UI (stack, theme, components, build on install, security): [docs/plugin-ui.md](plugin-ui.md).
+Building a plugin's UI (the host contract, security advisories, an optional reference setup): [docs/plugin-ui.md](plugin-ui.md).
 
 ### Manifest — `conductor.plugin.json` at the plugin project root
 
@@ -157,7 +157,7 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 - **Content:** the `@font-face` rules of cc's installed `@fontsource-variable/geist` and `@fontsource-variable/geist-mono` packages, a `/* cc:tokens */` marker line, then the palette tokens — the `:root` and `.dark` custom properties (plus `.dark`'s `color-scheme: dark`) that cc's own UI uses. **Unlayered**, so it wins over a plugin's `@layer base` fallback whatever the source order.
 - **Source:** `web/src/themeTokens.css`, which cc's `web/src/index.css` imports. `src/pluginTheme.ts` (`composePluginTheme`) composes the sheet from that file and the packages' `index.css` on every request: `200 text/css; charset=utf-8`, `Cache-Control: no-cache`. It answers whether or not the web UI is built. Any failure to compose it — an unreadable source, or a font package whose `index.css` has no `url(./files/…)` to rewrite, rather than a sheet without fonts — is logged (`console.error`) and answered **503** `text/plain` `host theme unavailable`, with no detail on the page.
 - **Fonts:** the packages' `url(./files/<file>)` references are rewritten to `GET /pluginTheme/fonts/<pkg>/<file>`, where `<pkg>` is a key of `FONT_PACKAGES` (`src/pluginTheme.ts`) and `<file>` matches `^[a-z0-9-]+\.woff2$`; served from that package's `files/` directory as `font/woff2`. Anything else is a 404.
-- **Guard:** `tests/plugin-theme.test.mjs` fails when a token served differs from cc's effective value (an override in `index.css`'s own `:root`/`.dark`, a dropped `@import`), when a token `index.css`'s `@theme inline` maps is not served, when a served font URL does not resolve, and when `docs/plugin-ui.md`'s `@theme inline` block differs from `index.css`'s.
+- **Guard:** `tests/plugin-theme.test.mjs` fails when a token served differs from cc's effective value (an override in `index.css`'s own `:root`/`.dark`, a dropped `@import`), when a token `index.css`'s `@theme inline` maps is not served, when a served font URL does not resolve, and when the `@theme inline` block in `docs/plugin-ui.md`'s reference setup differs from `index.css`'s.
 
 ### Authoring playbooks from a plugin
 
@@ -285,10 +285,10 @@ Two edges, both deliberate:
 1. `conductor.plugin.json` at the repo root (schema above); keep `id` stable.
 2. Respect `$PORT` when set; default your own port so the app stays standalone-runnable.
 3. Base-path compliance: reachable under `X-Forwarded-Prefix` — relative asset URLs (or honor the prefix), root-relative redirects only (they get rewritten).
-4. `<script src="/pluginBridge.js"></script>` (blocking, first in `<head>`) and `<link rel="stylesheet" href="/pluginTheme.css">` in the frontend + SPA routing via pushState/replaceState (the bridge reports routes for you).
+4. `<script src="/pluginBridge.js"></script>` (blocking, first in `<head>`) and `<link rel="stylesheet" href="/pluginTheme.css">` in the frontend, and routing that survives the bridge's history contract: `pushState` is demoted to `replaceState`, and a hash change adds a joint history entry (the bridge reports routes for you; [docs/plugin-ui.md](plugin-ui.md) → Routing).
 5. A `healthPath` endpoint (any HTTP response counts as alive).
 6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas. Return `{result}` for structured data; return `{text, meta?}` when the tool's output is prose/diff/file content that should reach the caller un-escaped (omit `meta` and send one string to get exactly one block; `text` wins if both are sent; `meta` alone, without `text`, is dropped).
 7. Expect to be killed at any time (Doze) and restarted lazily — persist state, start fast.
 8. A `frontend.keepAlive` page stays up while its backend crashes and is lazily restarted under it — reconnect rather than assume the backend it loaded against. (An explicit Restart, Update or version switch from Settings → Plugins evicts the page; the next entry loads it afresh.)
 9. If a convention's fragment depends on something its `scaffold` facet sets up, **word the fragment to degrade gracefully** when the scaffold step wasn't run — the picked convention may land in a project where the setup directive was never carried out (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one").
-10. A UI is built per [docs/plugin-ui.md](plugin-ui.md): relative URLs, cc's theme followed live, built by `npm install`'s `prepare`, the Library entry's `postClone`/`postPull` set to `npm install`.
+10. A UI follows the host contract in [docs/plugin-ui.md](plugin-ui.md): relative URLs, cc's theme followed live, servable after the Library entry's `postClone`/`postPull` hook has run. Stack, build tool and tests are the plugin's own.

@@ -2,16 +2,151 @@
 
 # Building a plugin UI
 
-The recipe for a plugin frontend that looks and behaves like cc's own UI: React + Vite + Tailwind v4 + shadcn/Radix components + lucide icons + the Geist fonts, built on install, following cc's light/dark theme live. It is written for someone working in the plugin's own repo.
+A plugin owns its architecture, stack and testing. This doc has three layers:
 
-- **cc ships no UI package and no shared kit.** It serves two things to every plugin page: the bridge (`/pluginBridge.js`) and the theme (`/pluginTheme.css`, the palette tokens plus the Geist fonts). A plugin copies the components it uses into its own repo, and owns them from then on.
-- **Standalone, the same build still runs.** Outside cc, both host URLs 404, which is harmless. The page then follows the OS theme from a bundled snapshot of the tokens.
+| Layer | Status | What it holds |
+|---|---|---|
+| [Host contract](#part-1--host-contract-required) | **Required** | What a plugin UI has to do to work inside cc, stated as outcomes, independent of language and stack |
+| [Security](#part-2--security-strongly-recommended) | **Strongly recommended** | The threat model and the practices that follow from it |
+| [Reference setup](#part-3--optional-the-setup-ccs-own-web-uses) | **Optional** | The React + Vite + Tailwind v4 setup cc's own `web/` uses |
+
+- **cc ships no UI package and no shared kit.** It serves two things to every plugin page: the bridge (`/pluginBridge.js`) and the theme (`/pluginTheme.css`, the palette tokens plus the Geist fonts).
+- A plugin may be a Python server, a static site or anything else that serves HTTP.
+
+# Part 1 — Host contract (required)
+
+## Host URLs
+
+Load both in the page's `<head>`:
+
+| URL | Load as | Provides |
+|---|---|---|
+| `/pluginBridge.js` | Blocking classic script (no `defer`/`async`), first in `<head>` | Theme sync onto `<html>` before first paint; the history contract below; route reporting to cc |
+| `/pluginTheme.css` | Stylesheet `<link>` | cc's palette tokens (`:root` and `.dark` custom properties) and the Geist `@font-face` rules |
+
+- These are the only root-relative URLs a plugin page uses (plus the font files the sheet names).
+- Standalone (not in a frame, or not under `/plugins/<id>/`) the bridge does nothing, and both URLs answer 404 from the plugin's own server.
+- Wire detail: [docs/plugins.md](plugins.md) → Bridge protocol, Theme stylesheet.
+
+## Follow the host theme
+
+- **Follow cc's light/dark live, and read the shared tokens from the sheet.** Embedded, the bridge copies cc's resolved theme onto the page's `<html>`:
+  - the `dark` class (present exactly when the theme is dark);
+  - `data-cc-theme="light"` or `"dark"` (present only while cc owns the theme).
+- It applies this when it runs, before first paint, and again on every change in cc (the sidebar toggle, or an OS flip while cc's theme is "system"), including while the page is hidden.
+- **The token names are the custom properties in `web/src/themeTokens.css`**, which the served sheet carries.
+- **The served sheet is unlayered.** It wins over anything the page declares inside `@layer`, whatever the source order.
+- **No theme toggle of the plugin's own.** A plugin-side toggle stops the page following the host.
+
+## Relative URLs
+
+- **Every URL the page requests is relative:** assets, `fetch`, `EventSource`, `WebSocket`.
+- **A root-relative `/api/x` reaches cc's API, not the plugin's.** The page's origin is cc's.
+- Examples: `fetch('api/board')`, not `fetch('/api/board')`. A socket: `const u = new URL('ws', location.href); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; new WebSocket(u);`
+- Redirects the plugin's backend sends may be root-relative (cc rewrites them): [docs/plugins.md](plugins.md) → Plugin-compliance checklist.
+
+## Routing that survives the history contract
+
+- **The bridge turns `history.pushState` into `replaceState`** and reports the route to cc, which mirrors it into its own URL. A plugin visit then adds exactly one joint-history entry, so hardware Back exits to cc.
+- **A hash change adds a joint history entry** the bridge cannot turn into a replace, so Back would step through the plugin's states instead of leaving it. Do not navigate by assigning `location.hash`.
+- **Keep the document at the plugin root.** The page is served at `/plugins/<id>/` inside cc and at `/` standalone; on a deep path, relative URLs resolve against the wrong directory.
+- **Read the route on load and on `popstate`.** cc's `navigate` message arrives as a `popstate`.
+- Example scheme: route state in the query string. Write it with `history.pushState(null, '', '?view=card&id=42')`, read it from `location.search`.
+- Multi-page plugins bypass the bridge and pollute history.
+
+## Servable after the install hook
+
+What cc runs on Library **Install** and **Update**:
+
+| Step | What runs |
+|---|---|
+| **Install** (Settings → Plugins → Library) | `git clone`, then the catalog entry's `postClone`, before the plugin's first start |
+| **Update** | `git pull --ff-only`, then the entry's `postPull`, then the plugin's auto-restart |
+
+- **The hook is the catalog entry's command**, run through `bash -lc`, with cc's own environment, with cwd = the checkout. cc runs nothing else: no `npm install`, no `pip install`, no build.
+- **Whatever builds the UI (and installs the backend's dependencies) happens in that hook**, so the checkout is servable by the time the plugin first starts. Built output is not tracked in git.
+- **A drop-in catalog JSON sets the hooks itself** (schema: [docs/plugins.md](plugins.md) → Plugin Library). A built-in entry is the authority for its own command: `DEFAULT_ENTRIES` in `src/plugins/library.ts`.
+- **The hook runs code with cc's privileges:** as cc's user with cc's environment. That is the trust the hook itself carries ([docs/plugins.md](plugins.md) → **`postClone`/`postPull` execution**), and it extends to whatever the command runs (lifecycle scripts, dependency install scripts). Add no dependency you would not run as cc.
+- A failed hook is a warning, not an error: the clone or pull stays. Update is the retry. A failed `postPull` skips the restart.
+- The hook is bounded by `POST_HOOK_TIMEOUT_MS` (`src/plugins/library.ts`).
+- The hook must not leave the checkout dirty: Update's `git pull --ff-only` refuses to run over uncommitted changes. Untrack or ignore anything the hook writes.
+- `npm install` plus a `prepare` script is one way to meet this: see [Build on install](#build-on-install) in the reference.
+
+## Standalone legibility
+
+- **The UI is readable when the host URLs 404** (the plugin run outside cc, e.g. `PORT=<port>` on loopback).
+- The plugin's server answers `/pluginBridge.js` and `/pluginTheme.css` with a real 404, not with an HTML fallback page.
+- Standalone, the page has no host theme to follow. Ship a fallback that keeps it legible (the OS theme, a default palette).
+
+## Contract checks
+
+- [ ] The page loads `/pluginBridge.js` (blocking, first in `<head>`) and `/pluginTheme.css`.
+- [ ] Every asset, API and WebSocket URL is relative; no root-relative URL other than the two host URLs.
+- [ ] The page follows the sidebar theme toggle live in cc, and the OS theme while cc's theme is "system". It has no toggle of its own.
+- [ ] Navigation adds no history entry beyond cc's one: Back from the plugin returns to cc.
+- [ ] A fresh `git clone` plus the Library entry's hook, with no other step, leaves a servable checkout; `git status` is clean afterwards.
+- [ ] In cc, Settings → Plugins → Library → **Install** reports the `postClone` hook ok; **Update** rebuilds and restarts the backend.
+- [ ] Outside cc the UI is legible; the only console errors name the two host URLs (their 404, and the browser refusing the 404's body as a script or stylesheet).
+- [ ] The plugin's own tests pass.
+
+# Part 2 — Security (strongly recommended)
+
+These are not enforced by cc. Each is strongly recommended, and the consequence of skipping it is stated.
+
+- **Threat model.** A plugin page is same-origin with cc and runs unsandboxed. cc's API has no authentication on `127.0.0.1`, so a script injected into a plugin page can drive cc: spawn sessions, run commands.
+- **Render model- or user-written content as text, never as markup.** Consequence: one unescaped model reply is an injected script with cc's full API.
+  - Avoid `innerHTML` / `outerHTML` / `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, and framework raw-HTML escape hatches.
+  - Markdown, if you need it: a renderer that builds elements and drops raw HTML, with its links filtered as below.
+- **Allowlist link schemes.** Consequence: a `javascript:` or `data:` href built from content runs script on click.
+  - Link only `http:`, `https:` and `mailto:`; render anything else as plain text.
+  - An external link gets `target="_blank" rel="noopener noreferrer"`. Never put unchecked text into `src`, `href` or `style`.
+- **Send your own CSP.** Consequence: without one, an injected inline script or event handler runs. cc's proxy passes the plugin's CSP through unchanged. Example:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'self'
+```
+
+  - `style-src 'unsafe-inline'` is in the example because the reference setup's Radix and sonner inject `<style>` elements; drop it if yours do not.
+  - No inline scripts are allowed under this policy, so a page script lives in a file.
+  - **What a CSP does not do:**
+    - It protects the plugin's own document only. cc's own responses carry no CSP and no framing protection (no `X-Frame-Options`, no `frame-ancestors`).
+    - `script-src 'self'` allows every script on cc's origin, which is the plugin page's origin too: every path under `/plugins/<id>/` of every plugin, and cc's own. So it stops an injected inline script or event handler, but it is no containment boundary: an injected `<script src="/…">` naming any script on that origin still runs. Rendering content as text, never markup, is the actual defence.
+- **Bind loopback: `127.0.0.1`, never `0.0.0.0` or `::`.** Consequence: the plugin's API has no authentication, so any interface beyond loopback lets anyone on the network drive it. cc's proxy reaches the backend over loopback.
+- **Do not script `window.parent`.** Consequence: it is cc's own page, and the bridge is the supported channel to it.
+- **Prefix storage keys** `<plugin-id>:`, and never read or write cc's `code-conductor:*` keys. Consequence: plugins and cc share one origin's storage, so unprefixed keys collide with and corrupt each other's state.
+
+Example link guard (the reference setup's `frontend/src/lib/safeHref.ts`):
+
+```ts
+const ALLOWED = new Set(['http:', 'https:', 'mailto:']);
+
+/** `u` as an href when it parses to an http(s) or mailto URL; null otherwise (render it as text). */
+export function safeHref(u: string): string | null {
+  try {
+    const url = new URL(u, location.href);
+    return ALLOWED.has(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+```
+
+```tsx
+const href = safeHref(text);
+return href ? <a href={href} target="_blank" rel="noopener noreferrer">{text}</a> : <span>{text}</span>;
+```
+
+# Part 3 — Optional: the setup cc's own `web/` uses
+
+Follow it to match cc exactly, or don't. Nothing in this part is a requirement; the [host contract](#part-1--host-contract-required) is what a plugin UI has to meet. The stack: React + Vite + Tailwind v4 + shadcn/Radix components + lucide icons + the Geist fonts, built on install, following cc's light/dark theme live. It is written for someone working in the plugin's own repo.
+
+**Reference checks** (for those who follow it) are at the end of this part.
 
 ## Sources: a cc checkout first, GitHub as the alternative
 
-Every file this recipe takes from cc is named by its path in a code-conductor checkout, written `<cc-checkout>/<path>`. Use a local checkout when you have one: GitHub `main` can lag it. When there is none, the same path is at `https://raw.githubusercontent.com/UnmanagedCode/code-conductor/main/<path>`. Each command below shows both.
+Every file this setup takes from cc is named by its path in a code-conductor checkout, written `<cc-checkout>/<path>`. Use a local checkout when you have one: GitHub `main` can lag it. When there is none, the same path is at `https://raw.githubusercontent.com/UnmanagedCode/code-conductor/main/<path>`. Each command below shows both.
 
-## 1. Layout
+## Layout
 
 ```
 conductor.plugin.json
@@ -19,25 +154,23 @@ package.json            one package for the backend and the UI
 server.js               the backend; serves frontend/dist
 .gitignore
 frontend/
-  index.html  vite.config.ts  vitest.config.ts  tsconfig.json
+  index.html  vite.config.ts  tsconfig.json
   public/theme-init.js
   src/
     main.tsx  App.tsx  index.css  cc-theme-fallback.css
     lib/  utils.ts  theme.ts  api.ts  safeHref.ts
     components/ui/      copied from cc, one file per component used
-    test/setup.ts
 ```
 
 - `frontend/` is the directory the existing plugins already use for their UI.
-- `frontend/dist/` is built on install (§3), and never committed.
+- `frontend/dist/` is built on install ([Build on install](#build-on-install)), and never committed.
 
-## 2. Dependencies
+## Dependencies
 
 - **`dependencies`: the backend's runtime only** (e.g. `express`).
 - **`devDependencies`: everything the UI needs.** It is bundled at build time, so nothing of it is needed at runtime. The list:
   - build: `vite @vitejs/plugin-react @tailwindcss/vite tailwindcss tw-animate-css typescript`
   - UI: `react react-dom @types/react @types/react-dom radix-ui class-variance-authority clsx tailwind-merge lucide-react sonner`
-  - tests: `vitest happy-dom @testing-library/react @testing-library/user-event`
 - **Use the ranges cc's own `package.json` declares.** Those builds run on every platform cc runs on, Termux included. This command reads them and installs them as devDependencies, creating `package.json` when the repo has none yet. **Run it in bash** (in another shell, start `bash` first): it splits the specs into a bash array.
 
 ```bash
@@ -49,25 +182,22 @@ SPECS=$(node -e '
   const all = { ...p.dependencies, ...p.devDependencies };
   console.log(process.argv.slice(2).map((n) => { if (!all[n]) throw new Error(n + " is not in cc package.json"); return n + "@" + all[n]; }).join(" "));
 ' "$CC_PKG" vite @vitejs/plugin-react @tailwindcss/vite tailwindcss tw-animate-css typescript \
-  react react-dom @types/react @types/react-dom radix-ui class-variance-authority clsx tailwind-merge lucide-react sonner \
-  vitest happy-dom @testing-library/react @testing-library/user-event) \
+  react react-dom @types/react @types/react-dom radix-ui class-variance-authority clsx tailwind-merge lucide-react sonner) \
   && read -ra SPEC_LIST <<< "$SPECS" && npm install -D "${SPEC_LIST[@]}"
 ```
 
 - Do **not** add `@fontsource-variable/*`. Embedded, cc serves the fonts; standalone, the font stack falls back to the system font.
 
-## 3. Build on install
+## Build on install
 
-**Add these keys to the `package.json` §2 wrote, and keep its `devDependencies` exactly as §2 installed them.** Do not replace the file: without those devDependencies, `prepare` fails with `Cannot find package 'vite'`. `npm pkg set` merges the keys in place:
+**Add these keys to the `package.json` the Dependencies step wrote, and keep its `devDependencies` exactly as installed.** Do not replace the file: without those devDependencies, `prepare` fails with `Cannot find package 'vite'`. `npm pkg set` merges the keys in place:
 
 ```sh
 npm pkg set name=my-plugin type=module \
   scripts.start="node server.js" \
   scripts.prepare="vite build --config frontend/vite.config.ts" \
   scripts.dev="vite --config frontend/vite.config.ts" \
-  scripts.typecheck="tsc -p frontend" \
-  scripts.test:web="vitest run --config frontend/vitest.config.ts" \
-  scripts.test="npm run typecheck && npm run test:web"
+  scripts.typecheck="tsc -p frontend"
 npm pkg set private=true --json
 ```
 
@@ -82,15 +212,12 @@ The keys it sets, beside the `devDependencies` (and a backend's `dependencies`) 
     "start": "node server.js",
     "prepare": "vite build --config frontend/vite.config.ts",
     "dev": "vite --config frontend/vite.config.ts",
-    "typecheck": "tsc -p frontend",
-    "test:web": "vitest run --config frontend/vitest.config.ts",
-    "test": "npm run typecheck && npm run test:web"
+    "typecheck": "tsc -p frontend"
   }
 }
 ```
 
 - `prepare` is what builds the UI: `npm install` with no arguments installs the devDependencies and then runs it.
-- A backend test command goes in front of `test:web` in `test` (e.g. `node --test && npm run test:web`).
 
 `.gitignore`:
 
@@ -102,22 +229,13 @@ package-lock.json
 
 - `package-lock.json` stays untracked because `npm install` may rewrite it, and that leaves the checkout dirty. Update's `git pull --ff-only` refuses to run over the dirt.
 
-**How cc installs the plugin:**
-
-| Step | What runs |
-|---|---|
-| **Install** (Settings → Plugins → Library) | `git clone`, then the catalog entry's `postClone`, before the plugin's first start |
-| **Update** | `git pull --ff-only`, then the entry's `postPull`, then the plugin's auto-restart |
-
-- Both hooks run through `bash -lc`, with cc's own environment, with cwd = the checkout.
-- cc's built-in Library entries for the UI plugins this recipe is for — code-hub, code-kanban, code-karpathy-wiki, code-share, code-system, code-live and code-playbook — run `npm install` in both hooks, so Install builds `frontend/dist` and Update rebuilds it. Other built-in entries run other commands (code-playwright runs `bash install.sh`) or none; `DEFAULT_ENTRIES` in `<cc-checkout>/src/plugins/library.ts` is the authority.
-- **`npm install` runs code with cc's privileges:** on Install and Update it runs the repo's own lifecycle scripts (`prepare` included) and its dependencies' install scripts, as cc's user with cc's environment. That is the same trust the hook itself carries ([docs/plugins.md](plugins.md) → **`postClone`/`postPull` execution**), so add no dependency you would not run as cc.
-- **A drop-in catalog JSON must set the hooks itself:** `"postClone": "npm install", "postPull": "npm install"` (schema: [docs/plugins.md](plugins.md) → Plugin Library).
-- A failed hook is a warning, not an error: the clone or pull stays. Update is the retry. A failed `postPull` skips the restart.
-- The hook is bounded by `POST_HOOK_TIMEOUT_MS` (`<cc-checkout>/src/plugins/library.ts`).
+**Library entries and the hook:**
+- cc's built-in Library entries for the UI plugins this setup is for — code-hub, code-kanban, code-karpathy-wiki, code-share, code-system, code-live and code-playbook — run `npm install` in both hooks, so Install builds `frontend/dist` and Update rebuilds it. Other built-in entries run other commands (code-playwright runs `bash install.sh`) or none; `DEFAULT_ENTRIES` in `<cc-checkout>/src/plugins/library.ts` is the authority.
+- A drop-in catalog JSON sets `"postClone": "npm install", "postPull": "npm install"`.
+- `npm install` runs the repo's own lifecycle scripts (`prepare` included) and its dependencies' install scripts, as cc's user: the hook trust in the contract applies.
 - An environment with `NODE_ENV=production` (or `npm_config_omit=dev`) makes `npm install` skip the devDependencies, and the build then fails.
 
-## 4. `frontend/vite.config.ts`
+## `frontend/vite.config.ts`
 
 ```ts
 import path from 'node:path';
@@ -140,7 +258,7 @@ export default defineConfig({
 });
 ```
 
-- **`base: './'` is required.** The page is served at `/plugins/<id>/` inside cc and at `/` standalone. Relative asset URLs work under both.
+- **`base: './'` is required here** to meet the relative-URL contract: the page is served at `/plugins/<id>/` inside cc and at `/` standalone, and relative asset URLs work under both.
 - Replace the port with your backend's default port.
 
 `frontend/tsconfig.json`:
@@ -163,20 +281,7 @@ export default defineConfig({
 }
 ```
 
-## 5. URLs: relative, never `/`-led
-
-- **Every URL the page requests is relative:** assets, `fetch`, `EventSource`, `WebSocket`.
-  - `fetch('api/board')`, not `fetch('/api/board')`.
-  - A socket: `const u = new URL('ws', location.href); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; new WebSocket(u);`
-- **A root-relative `/api/x` reaches cc's API, not the plugin's.** The page's origin is cc's.
-- **The only root-relative URLs are the host-served `/pluginBridge.js` and `/pluginTheme.css`** (and the font files the sheet names).
-- **Routing:** keep the document at the plugin root, and put route state in the query string.
-  - Write it with `history.pushState(null, '', '?view=card&id=42')`. The bridge turns that into a `replaceState` and reports the route to cc, which mirrors it into its own URL.
-  - Read it from `location.search`, on load and on `popstate`. cc's `navigate` arrives as a `popstate`.
-  - **No path routes.** On a deep path, the relative URLs and `base: './'` resolve against the wrong directory.
-  - **Never assign `location.hash`.** It adds a joint history entry that the bridge cannot turn into a replace.
-
-## 6. `frontend/index.html`
+## `frontend/index.html`
 
 ```html
 <!doctype html>
@@ -198,14 +303,9 @@ export default defineConfig({
 
 - **Keep that order.** The bridge is a blocking script with no `defer`, first in `<head>`, so cc's theme is on `<html>` before anything paints. `theme-init.js` runs after it and reads what the bridge set.
 - **`vite-ignore`** silences Vite 8's build warnings about these three tags (a classic script it cannot bundle, a stylesheet that does not exist at build time). The build copies the tags into `frontend/dist/index.html` unchanged either way, and strips the attribute. Keep it: the build log then shows only real problems.
-- Standalone, `/pluginBridge.js` and `/pluginTheme.css` 404, which is harmless. The backend must answer them with a 404, not with `index.html`, so it has no SPA fallback (§11).
+- Standalone, the two host URLs 404. The backend answers them with a 404, not `index.html`, so it has no SPA fallback ([Serving](#serving-frontenddist-from-the-backend)).
 
-## 7. Theme
-
-**What the bridge does to the page:**
-- Standalone (not in a frame, or not under `/plugins/<id>/`) it does nothing.
-- Embedded, it copies cc's resolved theme onto the page's `<html>`: the `dark` class, and `data-cc-theme="light"` or `"dark"`. It does this when it runs, before first paint, and again on every change in cc (the sidebar toggle, or an OS flip while cc's theme is "system"), including while the page is hidden.
-- It also turns `pushState` into `replaceState` and reports routes (§5).
+## Theme
 
 **`frontend/src/index.css`:**
 
@@ -321,14 +421,12 @@ export function useTheme(): Theme {
 export const isEmbedded = (): boolean => document.documentElement.hasAttribute('data-cc-theme');
 ```
 
-**Rules:**
-- **No theme toggle of the plugin's own.** cc's choice applies.
-- **Colours only through the tokens:** the Tailwind utilities (`bg-card`, `text-muted-foreground`, `border-border`, `text-destructive`, …) or `var(--token)`. Never a literal colour.
+**Recommended styling practice (cc's own; a design choice, not a contract rule):**
+- **Colours only through the tokens:** the Tailwind utilities (`bg-card`, `text-muted-foreground`, `border-border`, `text-destructive`, …) or `var(--token)`. Avoid a literal colour: it does not follow the host theme.
 - **Plain CSS:** `background: var(--background); color: var(--foreground); font-family: 'Geist Variable', system-ui, sans-serif;`
 - **Canvas or chart code** reads the colour when it draws, and draws again when `useTheme()` changes: `getComputedStyle(document.documentElement).getPropertyValue('--primary')`.
-- The token names are the custom properties in `<cc-checkout>/web/src/themeTokens.css`.
 
-## 8. Components
+## Components
 
 - **Copy a component when you first use it, never ahead of time.** Copy it from `web/src/components/ui/<name>.tsx` into `frontend/src/components/ui/`:
 
@@ -369,7 +467,7 @@ function Root() {
 createRoot(document.getElementById('root')!).render(<StrictMode><Root /></StrictMode>);
 ```
 
-## 9. What a button variant means
+## What a button variant means
 
 The variants are `button.tsx`'s. This is how cc uses them:
 
@@ -384,47 +482,7 @@ The variants are `button.tsx`'s. This is how cc uses them:
 
 - **Every non-submit `Button` inside a `<form>` gets `type="button"`.** A button's default type submits the form.
 
-## 10. Security
-
-- **A plugin page is same-origin with cc and runs unsandboxed.** cc's API has no authentication on `127.0.0.1`, so a script injected into a plugin page can drive cc: spawn sessions, run commands.
-- **Render model- or user-written content as React text children only.** Never `dangerouslySetInnerHTML`, `innerHTML` / `outerHTML` / `insertAdjacentHTML`, `document.write`, `eval` or `new Function`.
-- **Markdown**, if you need it: only a renderer that builds React elements and drops raw HTML (`react-markdown` without `rehype-raw`), with its links through `safeHref`.
-- **Links:** an `href` built from content goes through `safeHref`, and anything it refuses renders as plain text. An external link gets `target="_blank" rel="noopener noreferrer"`. Never put unchecked text into `src`, `href` or `style`.
-
-`frontend/src/lib/safeHref.ts`:
-
-```ts
-const ALLOWED = new Set(['http:', 'https:', 'mailto:']);
-
-/** `u` as an href when it parses to an http(s) or mailto URL; null otherwise (render it as text). */
-export function safeHref(u: string): string | null {
-  try {
-    const url = new URL(u, location.href);
-    return ALLOWED.has(url.protocol) ? url.href : null;
-  } catch {
-    return null;
-  }
-}
-```
-
-```tsx
-const href = safeHref(text);
-return href ? <a href={href} target="_blank" rel="noopener noreferrer">{text}</a> : <span>{text}</span>;
-```
-
-- **`localStorage`:** prefix your own keys `<plugin-id>:`. Never read or write cc's `code-conductor:*` keys.
-- **Never script `window.parent`.** The bridge is the only channel to cc.
-- **The backend sends its own CSP** on its responses. cc's proxy passes it through unchanged:
-
-```
-default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'self'
-```
-
-- `style-src 'unsafe-inline'` is there because Radix and sonner inject `<style>` elements.
-- No inline scripts are allowed, which is why `theme-init.js` is a file.
-- **What this CSP does not do:**
-  - It protects the plugin's own document only. cc's own responses carry no CSP and no framing protection (no `X-Frame-Options`, no `frame-ancestors`).
-  - `script-src 'self'` allows every script on cc's origin, which is the plugin page's origin too: every path under `/plugins/<id>/` of every plugin, and cc's own. So it stops an injected inline script or event handler, but it is no containment boundary: an injected `<script src="/…">` naming any script on that origin still runs. The rules above about never rendering content as markup are the actual defence.
+## API helper
 
 `frontend/src/lib/api.ts`:
 
@@ -438,7 +496,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 ```
 
-## 11. Serving `frontend/dist` from the backend
+## Serving `frontend/dist` from the backend
 
 `server.js` (Express):
 
@@ -468,99 +526,19 @@ if (fs.existsSync(path.join(dist, 'index.html'))) {
 app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 ```
 
-- **Bind loopback only: `127.0.0.1`, never `0.0.0.0` or `::`.** The plugin's API has no authentication, so any interface beyond loopback lets anyone on the network drive it. cc's proxy reaches the backend over loopback.
+- **Loopback only** (see Security): `127.0.0.1`, as above.
 - **Order:** the API routes, then the CSP, then `express.static`.
-- **No SPA fallback:** an unknown path is a 404, so the host URLs 404 standalone (§6), and routes live in the query string (§5).
+- **No SPA fallback:** an unknown path is a 404, so the host URLs 404 standalone, and routes live in the query string.
 - `$PORT`, `healthPath` and the rest of the backend contract: [docs/plugins.md](plugins.md) → Plugin-compliance checklist (`<cc-checkout>/docs/plugins.md`, or `https://github.com/UnmanagedCode/code-conductor/blob/main/docs/plugins.md`).
 
-## 12. Testing
+## Reference checks
 
-`frontend/vitest.config.ts`:
+For a plugin that follows this setup, beside the contract checks:
 
-```ts
-import { defineConfig, mergeConfig } from 'vitest/config';
-import viteConfig from './vite.config.ts';
-
-export default mergeConfig(viteConfig, defineConfig({
-  test: {
-    environment: 'happy-dom',
-    include: ['src/**/*.test.{ts,tsx}'],
-    setupFiles: ['./src/test/setup.ts'],
-  },
-}));
-```
-
-`frontend/src/test/setup.ts`:
-
-```ts
-import { afterEach } from 'vitest';
-import { cleanup } from '@testing-library/react';
-
-afterEach(cleanup);
-```
-
-- **Mock the network at `fetch`** (`vi.stubGlobal('fetch', …)`). Never start a server in a unit test.
-- **Every plugin has these four tests:**
-
-```tsx
-// src/lib/security.test.tsx
-import { render, renderHook, act } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
-import { safeHref } from './safeHref';
-import { useTheme } from './theme';
-import { api } from './api';
-
-afterEach(() => { vi.unstubAllGlobals(); document.documentElement.classList.remove('dark'); });
-
-it('renders model text as text, never as markup', () => {
-  const evil = '<img src=x onerror="alert(1)">';
-  // Render the component that shows model or user text, with `evil` as that text.
-  const { container } = render(<p>{evil}</p>);
-  expect(container.querySelector('img')).toBeNull();
-  expect(container.textContent).toContain(evil);
-});
-
-it('safeHref refuses javascript: and data: URLs', () => {
-  expect(safeHref('javascript:alert(1)')).toBeNull();
-  expect(safeHref('data:text/html,<script>alert(1)</script>')).toBeNull();
-  expect(safeHref('https://example.com/a')).toBe('https://example.com/a');
-});
-
-it('useTheme follows a .dark flip on <html>', async () => {
-  const { result } = renderHook(() => useTheme());
-  expect(result.current).toBe('light');
-  await act(async () => { document.documentElement.classList.add('dark'); });
-  expect(result.current).toBe('dark');
-  await act(async () => { document.documentElement.classList.remove('dark'); });
-  expect(result.current).toBe('light');
-});
-
-it('API requests use relative URLs', async () => {
-  const fetchMock = vi.fn(async () => new Response('{"ok":true}'));
-  vi.stubGlobal('fetch', fetchMock);
-  await api('api/board');
-  expect(fetchMock).toHaveBeenCalledWith('api/board', undefined);
-  await expect(api('/api/board')).rejects.toThrow(/root-relative/);
-});
-```
-
-- Replace the first test's `<p>{evil}</p>` with the plugin's own component that renders model or user text.
-- **What happy-dom does not do:** no layout (every size reads 0), iframes are never loaded, and a theme flip under "system" needs `matchMedia` stubbed (`vi.stubGlobal('matchMedia', …)`) and its `change` listeners called by the test.
-
-## 13. Checklists
-
-**Standalone run:**
 - [ ] `npm install` → `frontend/dist/index.html` exists.
 - [ ] `PORT=<port> npm start` → `http://127.0.0.1:<port>/` loads.
 - [ ] The backend listens on `127.0.0.1` only: `http://<this machine's LAN address>:<port>/` does not answer.
 - [ ] Legible with the OS in light and in dark (DevTools → Rendering → Emulate CSS `prefers-color-scheme`), and it follows a flip live.
-- [ ] The only console errors name the two host URLs, `/pluginBridge.js` and `/pluginTheme.css`: their 404, and the browser refusing the 404's HTML body as a script or stylesheet.
 - [ ] `npm run dev` serves the UI with the API proxied to the backend.
-
-**Fresh clone and install:**
-- [ ] `git clone` → `npm install`, with no other step → `frontend/dist` is built.
-- [ ] `git status` is clean afterwards.
-- [ ] `npm test` is green.
-- [ ] In cc, Settings → Plugins → Library → **Install** reports `postClone` ok.
-- [ ] The plugin opens in cc, follows the sidebar theme toggle live, and follows the OS theme while cc's theme is "system".
-- [ ] **Update** rebuilds `frontend/dist` and restarts the backend.
+- [ ] `git clone` → `npm install`, with no other step → `frontend/dist` is built, and `git status` is clean afterwards.
+- [ ] The Library entry's hooks are `npm install` for `postClone` and `postPull`.
