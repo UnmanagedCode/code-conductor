@@ -13,8 +13,9 @@
 //     line endings (a CRLF checkout of an LF blob is still cc's write);
 //   - CONVENTIONS.md is cc's iff its line 1 (without its `\r`) equals the marker
 //     cc derives from HEAD's copy. The body is app-owned; line 1 is the project's selection,
-//     which nothing in cc rewrites after creation — so a different line 1 is
-//     a hand edit.
+//     which only the user changes — by hand, or through the sidebar's Edit
+//     conventions…, which leaves it uncommitted — so a different line 1 is
+//     the user's change, never discarded.
 // Only ` M` / `??` at the checkout root are candidates. Staged, deleted,
 // renamed, unmerged and every other path are "other dirt".
 

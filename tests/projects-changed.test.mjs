@@ -267,6 +267,30 @@ describe('the projects hint on the local system', () => {
     assert.deepEqual(row.worktrees.map((w) => w.worktreeName), [wt.worktreeName]);
   });
 
+  test('a conventions edit sends exactly one frame, and a refused one none', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'conv' });
+    let status = 0;
+    assert.equal(await framesFor(client, async () => {
+      status = (await api(baseUrl, 'PUT', '/api/projects/conv/conventions', { slugs: ['design-guidelines'], expected: [] })).status;
+    }), 1, 'edit');
+    assert.equal(status, 200);
+    assert.equal(await framesFor(client, async () => {
+      status = (await api(baseUrl, 'PUT', '/api/projects/conv/conventions', { slugs: [], expected: [] })).status;
+    }), 0, 'stale edit');
+    assert.equal(status, 409);
+  });
+
+  test('a project custom-convention add regenerates every project and sends exactly one frame', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sweep-a' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sweep-b' });
+    let status = 0;
+    assert.equal(await framesFor(client, async () => {
+      status = (await api(baseUrl, 'POST', '/api/settings/conventions/project',
+        { slug: 'house-style', name: 'House style', description: 'x', body: '## House style\n- rule' })).status;
+    }), 1);
+    assert.equal(status, 201);
+  });
+
   test('a worktree created through MCP is in the next projects read though the git-facts cache is warm', async () => {
     resetProjectsCache(60_000);
     try {

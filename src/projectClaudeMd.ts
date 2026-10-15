@@ -8,6 +8,10 @@
 //       <!-- cc:conventions design-guidelines,testing-guidelines -->
 //     listing the selected slugs.
 //
+// The selection is chosen at creation, or afterwards by setProjectConventions
+// (the sidebar's Edit conventions…), which rewrites the file through the same
+// writer as regeneration and leaves it uncommitted.
+//
 // The project selection travels WITH the project so any cc instance (a fresh
 // install, a moved/renamed project, an import into a different store) can
 // regenerate from the file alone; the workspace selection deliberately does NOT
@@ -34,6 +38,10 @@ import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
 import { eolOf, firstLine, withEol } from './lineEndings.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
+import type { System } from './systems/system.ts';
+import type { CatalogList } from './fragmentCatalog.ts';
+import { httpError } from './httpError.ts';
+import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 
@@ -187,6 +195,24 @@ export async function composeProjectConventionsDoc(
   return (await composeProjectConventionsDocWithMeta(slugs, opts)).text;
 }
 
+// The project selection recorded in a CONVENTIONS.md at `projPath` on
+// `system`: its line-1 marker's slugs, else none (no file, a non-marker first
+// line or a zero-slug marker). Any read failure but ENOENT is rethrown. The one
+// reader the sweep, the listing and the edit share.
+export async function readProjectSelection(system: System, projPath: string): Promise<string[]> {
+  return selectionOf(await readExisting(system, conventionsTargetPath(projPath)));
+}
+
+async function readExisting(system: System, target: string): Promise<string | null> {
+  try { return await system.readFile(target); }
+  catch (e) { if (errCode(e) !== 'ENOENT') throw e; return null; }
+}
+
+type WriteResult =
+  | { skipped: 'no-project' }
+  | { skipped: 'catalog-degraded'; missing: string[] }
+  | { path: string; regenerated: true; missing: string[] };
+
 // Regenerate one project's CONVENTIONS.md: the workspace block always, plus
 // whatever the file's own marker selects for the project scope.
 //   - project not found        → { skipped: 'no-project' }
@@ -201,11 +227,41 @@ export async function composeProjectConventionsDoc(
 // Also ensures the project's CLAUDE.md carries the `@CONVENTIONS.md` import on
 // every non-declining run: a CONVENTIONS.md nothing imports delivers nothing,
 // and a project can appear at any time (a repo dropped into the projects root).
-export async function ensureProjectConventionsMd(projectName: string, { log }: { log?: RegenerateLog } = {}): Promise<
-  | { skipped: 'no-project' }
-  | { skipped: 'catalog-degraded'; missing: string[] }
-  | { path: string; regenerated: true; missing: string[] }
-> {
+export async function ensureProjectConventionsMd(projectName: string, { log }: { log?: RegenerateLog } = {}): Promise<WriteResult> {
+  return writeProjectConventions(projectName, current => current, { log });
+}
+
+// THE writer of a project's CONVENTIONS.md, shared by the sweep (which keeps
+// the file's own selection) and the edit (which replaces it). `choose` maps the
+// file's current selection to the one to write, given the catalog this write
+// resolves against; it may throw to refuse, before anything is written.
+//
+// Writes to one project run one at a time (withProjectLock): a sweep that read
+// the old marker must not land after an edit and write it back.
+function writeProjectConventions(
+  projectName: string,
+  choose: (current: string[], catalog: CatalogList) => string[],
+  { log }: { log?: RegenerateLog } = {},
+): Promise<WriteResult> {
+  return withProjectLock(projectName, () => writeUnlocked(projectName, choose, { log }));
+}
+
+// The tail of each project's queue of CONVENTIONS.md writes, in this process.
+const writeQueues = new Map<string, Promise<unknown>>();
+
+function withProjectLock<T>(projectName: string, fn: () => Promise<T>): Promise<T> {
+  const run = (writeQueues.get(projectName) ?? Promise.resolve()).then(fn);
+  const tail = run.catch(() => {});
+  writeQueues.set(projectName, tail);
+  void tail.then(() => { if (writeQueues.get(projectName) === tail) writeQueues.delete(projectName); });
+  return run;
+}
+
+async function writeUnlocked(
+  projectName: string,
+  choose: (current: string[], catalog: CatalogList) => string[],
+  { log }: { log?: RegenerateLog },
+): Promise<WriteResult> {
   const projects = await listProjects();
   if (!projects.some(p => p.name === projectName)) return { skipped: 'no-project' };
   // This is one of the only two places cc writes INSIDE a project tree, so it
@@ -224,13 +280,10 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   const { path: projPath, system } = resolved;
   const target = conventionsTargetPath(projPath);
 
-  let existing: string | null = null;
-  try { existing = await system.readFile(target); }
-  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
-
-  const slugs = selectionOf(existing);
-
+  const existing = await readExisting(system, target);
   const catalog = await getCatalog();
+  const slugs = choose(selectionOf(existing), catalog);
+
   // Resolve against the local catalog. Unresolvable slugs (a custom convention
   // absent on this instance, a disabled/absent plugin, a retired seed) stay in
   // the marker — so the text returns verbatim if they do — but drop out of the
@@ -262,6 +315,8 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
     system: system.id === LOCAL_SYSTEM_ID ? null : { id: system.id, path: projPath },
   });
   await system.writeFile(target, withEol(content, eolOf(existing)));
+  // The listing reports each project's selection (GET /api/projects).
+  markProjectsChanged();
   if (log?.log) {
     log.log(missing.length
       ? `CONVENTIONS.md regenerated without unresolvable ${missing.join(', ')}: ${target}`
@@ -270,19 +325,56 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   return { path: target, regenerated: true, missing };
 }
 
+// Replace a project's selection (the sidebar's Edit conventions…). `slugs` is
+// written verbatim, in request order. `expected` is the selection the caller
+// last saw: a file whose marker has changed since is refused 409, so a stale
+// dialog cannot drop a slug written meanwhile. A slug the catalog lacks can
+// only be KEPT from the current marker, never introduced (400), and keeping one
+// while the catalog is degraded is refused 503, as the sweep declines it.
+export async function setProjectConventions(
+  projectName: string,
+  slugs: string[],
+  expected: string[],
+  { log }: { log?: RegenerateLog } = {},
+): Promise<{ ok: true; path: string; selected: string[]; unresolved: string[] }> {
+  const r = await writeProjectConventions(projectName, (current, catalog) => {
+    if (!sameList(current, expected)) {
+      throw httpError(409, `the conventions of '${projectName}' changed since they were read: `
+        + `now ${current.length ? current.join(', ') : 'none'}`);
+    }
+    const known = new Set([...catalog.map(e => e.slug), ...current]);
+    const unknown = slugs.find(s => !known.has(s));
+    if (unknown !== undefined) throw httpError(400, `unknown convention slug '${unknown}'`);
+    return slugs;
+  }, { log });
+  if ('regenerated' in r) return { ok: true, path: r.path, selected: slugs, unresolved: r.missing };
+  if (r.skipped === 'no-project') throw httpError(404, `project '${projectName}' not found`);
+  throw httpError(503,
+    `the convention catalog is incomplete, so ${r.missing.join(', ')} cannot be told apart from a removed `
+    + `convention; CONVENTIONS.md was left as it is. Uncheck ${r.missing.length > 1 ? 'them' : 'it'} or try again later.`,
+    { code: 'CONVENTIONS_CATALOG_DEGRADED' });
+}
+
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((s, i) => s === b[i]);
+}
+
 // Boot / post-mutation fan-out over every project. Per-project try/catch so one
 // bad project can't abort the sweep. `.conduct` is excluded by listProjects().
+// One `projects` hint for the whole sweep (src/projectsChanged.ts).
 export async function regenerateAllProjectConventions({ log }: { log?: RegenerateLog } = {}): Promise<Array<{ name: string; [key: string]: unknown }>> {
-  const projects = await listProjects();
-  const results: Array<{ name: string; [key: string]: unknown }> = [];
-  for (const p of projects) {
-    try { results.push({ name: p.name, ...(await ensureProjectConventionsMd(p.name, { log })) }); }
-    catch (e) {
-      if (log?.warn) log.warn(`CONVENTIONS.md regenerate failed for '${p.name}': ${errMsg(e)}`);
-      results.push({ name: p.name, error: errMsg(e) });
+  return projectsOperation(async () => {
+    const projects = await listProjects();
+    const results: Array<{ name: string; [key: string]: unknown }> = [];
+    for (const p of projects) {
+      try { results.push({ name: p.name, ...(await ensureProjectConventionsMd(p.name, { log })) }); }
+      catch (e) {
+        if (log?.warn) log.warn(`CONVENTIONS.md regenerate failed for '${p.name}': ${errMsg(e)}`);
+        results.push({ name: p.name, error: errMsg(e) });
+      }
     }
-  }
-  return results;
+    return results;
+  });
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
