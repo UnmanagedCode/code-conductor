@@ -21,7 +21,7 @@ Load both in the page's `<head>`:
 
 | URL | Load as | Provides |
 |---|---|---|
-| `/pluginBridge.js` | Blocking classic script (no `defer`/`async`), first in `<head>` | Theme sync onto `<html>` before first paint; the history contract below; route reporting to cc |
+| `/pluginBridge.js` | Blocking classic script (no `defer`/`async`), first in `<head>` | Theme sync onto `<html>` before first paint; the history contract below; route reporting to cc; optional session awareness (`window.ccBridge`) |
 | `/pluginTheme.css` | Stylesheet `<link>` | cc's palette tokens (`:root` and `.dark` custom properties) and the Geist `@font-face` rules |
 
 - These are the only root-relative URLs a plugin page uses (plus the font files the sheet names).
@@ -53,6 +53,29 @@ Load both in the page's `<head>`:
 - **Read the route on load and on `popstate`.** cc's `navigate` message arrives as a `popstate`.
 - Example scheme: route state in the query string. Write it with `history.pushState(null, '', '?view=card&id=42')`, read it from `location.search`.
 - Multi-page plugins bypass the bridge and pollute history.
+
+## Session awareness (optional)
+
+An **optional host capability, not a contract requirement**: a plugin that ignores it is fully compliant, and it is not part of the contract checks.
+
+- **Detect it.** `window.ccBridge` is absent standalone and on a cc without these messages. Test for it; never assume it.
+- **API** (wire detail and result codes: [docs/plugins.md](plugins.md) → Bridge protocol):
+  - `ccBridge.session`: `undefined` until cc's first `session` message, then `{sessionId, project, worktree}` or `null`. `worktree` is `null` for the main checkout.
+  - `ccBridge.onSession(fn)` → unsubscribe. `fn` runs on every change, and at once if a session message has already arrived.
+  - `ccBridge.openSession(sessionId)` → `Promise<{ok, code?}>`: makes a live session the selection. A session that is not live is refused (`SESSION_NOT_LIVE`); cc never resumes one for a plugin.
+  - `ccBridge.sendPrompt(sessionId, text)` → `Promise<{ok, code?}>`: behaves exactly like typing into that session's composer (a steer when it is busy, the overage queue, the conductor wake for a conducted worker), without switching to it and without touching the human's draft.
+  - A promise always resolves; read `ok` and `code`.
+- **Active session** is cc's one selection (`activeInstance`), whatever the layout:
+
+| Layout | Active session |
+|---|---|
+| Docked split (desktop) | the session beside the dock |
+| Plugin full-screen (`#plugin/<id>/…`) | the session cc returns to when the plugin view closes |
+| Phone (below `md`; no split) | same as full-screen |
+| Any other full-page view (settings, costs, …) | same: the retained selection |
+
+  - `null` when nothing is selected, or the selected session has no id yet (still spawning).
+  - Every plugin frame gets each change, hidden keep-alive frames included.
 
 ## Servable after the install hook
 
@@ -93,7 +116,7 @@ What cc runs on Library **Install** and **Update**:
 
 These are not enforced by cc. Each is strongly recommended, and the consequence of skipping it is stated.
 
-- **Threat model.** A plugin page is same-origin with cc and runs unsandboxed. cc's API has no authentication on `127.0.0.1`, so a script injected into a plugin page can drive cc: spawn sessions, run commands.
+- **Threat model.** A plugin page is same-origin with cc and runs unsandboxed. cc's API has no authentication on `127.0.0.1`, so a script injected into a plugin page can drive cc: spawn sessions, run commands. It can also prompt any session through `ccBridge.sendPrompt`; that is the same reach as the API, not a widening.
 - **Render model- or user-written content as text, never as markup.** Consequence: one unescaped model reply is an injected script with cc's full API.
   - Avoid `innerHTML` / `outerHTML` / `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, and framework raw-HTML escape hatches.
   - Markdown, if you need it: a renderer that builds elements and drops raw HTML, with its links filtered as below.
