@@ -307,7 +307,7 @@ describe('page merging', () => {
     expect(tokens(sep)).toEqual(['turn A', 'A', 'turn B', 'A']);
   });
 
-  it('prose at either edge of the seam keeps the two runs apart; a turn_end between the halves keeps their groups apart', () => {
+  it('prose at either edge of the seam keeps the two runs apart; a turn_end between the halves keeps their bubbles apart', () => {
     const live = new ConversationModel();
     for (const ev of [...text('m2', 0, 'lower prose'), ...tool('m2', 1, 't2', 'Bash')]) live.apply(ev);
     live.prependPage(live.renderPage(tool('m1', 0, 't1', 'Read'), null, null), live.leadingAssistantWrap);
@@ -323,8 +323,8 @@ describe('page merging', () => {
     const below = new ConversationModel();
     below.apply(turnEnd());
     for (const ev of tool('mB', 0, 'tB', 'Read', { result: null })) below.apply(ev);
-    expect(below.leadingAssistantWrap).toBeTruthy();
     below.prependPage(below.renderPage([{ kind: 'user_echo', text: 'older' }, ...tool('mA', 0, 'tA', 'Bash')], null, null), below.leadingAssistantWrap);
+    expect(below.items.filter((i) => i.type === 'assistant')).toHaveLength(2);
     expect(groupCount(below)).toBe(2);
   });
 

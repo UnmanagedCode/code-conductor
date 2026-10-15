@@ -147,9 +147,11 @@ export type ReaderNode = ThinkingNode | ResultNode | ToolNode | UserNode | Syste
 
 // System annotations that END the machinery run (interrupt, process death).
 const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
-// Account and cache notices: one landing after a turn's last item renders below that turn's turn-end row.
+// Account and cache notices, and a background task's notification: one landing after a turn's last
+// item renders below that turn's turn-end row.
 const TURN_TAIL_NOTICES = new Set(['rate_limit_event', 'cache_miss']);
-const isTurnTailNotice = (it: RootItem | undefined) => it?.type === 'system' && TURN_TAIL_NOTICES.has(it.ev.subtype);
+const isTurnTailNotice = (it: RootItem | undefined) => it?.type === 'system'
+  && (TURN_TAIL_NOTICES.has(it.ev.subtype) || (it.ev.subtype === 'task_notification' && it.ev.data?.notified === true));
 /** Where a turn-end row goes in `items`: above the run of turn-tail notices `items` ends with. */
 function turnEndSlot(items: RootItem[]): number {
   let at = items.length;
@@ -630,7 +632,8 @@ export class ConversationModel {
       case 'system': return this.renderSystemEvent(ev);
       case 'turn_end':
         this.failPendingCompaction(null);
-        this.closeAllActionGroups();
+        // A turn the CLI starts unprompted (a background task's notification) has no user_echo to end this one.
+        this.closeAssistantSegment();
         return this.pushRoot(this.make<TurnEndNode>({ type: 'turn_end', ev }, this), turnEndSlot(this.items));
       case 'assistant_message':
         // Outer turns are driven by stream deltas; sub-agent turns arrive only as envelopes.
