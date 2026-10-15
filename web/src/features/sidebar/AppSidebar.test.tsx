@@ -4,6 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { formatAutoResumeTime } from '@shared/usage';
+import { closeProjectMenu, openProjectMenu, pickProjectMenuItem, projectMenuItems } from '@/test/projectMenu';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -43,6 +44,13 @@ function seed(over: Partial<ReturnType<typeof appStore.get>> = {}) {
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
 const farRow = () => document.querySelector('[data-project-row="far"]') as HTMLElement;
+/** The row's ⋮ items as [text, aria-disabled], read with the menu open, then closed again. */
+async function menuState(row: HTMLElement) {
+  const items = projectMenuItems(await openProjectMenu(row)).map((i) => [i.textContent, i.getAttribute('aria-disabled')]);
+  await closeProjectMenu();
+  return items;
+}
+const ALL_ENABLED = [['New session', null], ['Edit conventions…', null], ['Delete…', null]];
 const LOCAL = { name: 'far', path: '/p/far', workspace: null, system: 'local', remoteId: null, systemUnreachable: null, isGitRepo: true, worktrees: [] };
 
 beforeEach(() => {
@@ -133,7 +141,7 @@ describe('AppSidebar', () => {
     expect(closeSession).toHaveBeenCalledWith(expect.objectContaining({ projectName: '.conduct', sessionId: 'dead-c' }));
   });
 
-  it('lists workspaces and projects, loads a place\'s sessions lazily, and the + opens the spawn dialog', async () => {
+  it('lists workspaces and projects, loads a place\'s sessions lazily, and ⋮ → New session opens the spawn dialog', async () => {
     uiStore.set({ lens: 'projects' });
     loadSessions.mockResolvedValue([{ sessionId: 'disk1', firstPrompt: 'From disk', lastActivity: Date.now() }]);
     seed({
@@ -150,7 +158,7 @@ describe('AppSidebar', () => {
     await act(async () => { await Promise.resolve(); });
     expect(loadSessions).toHaveBeenCalledWith('api', null);
     expect(await screen.findByText('From disk')).toBeTruthy();
-    fireEvent.click(screen.getAllByRole('button', { name: 'New session' })[0]);
+    await pickProjectMenuItem(document.querySelector('[data-project-row="api"]') as HTMLElement, 'New session');
     expect(dialogStore.get().spawn).toEqual({ project: 'api', opts: {} });
   });
 
@@ -170,7 +178,7 @@ describe('AppSidebar', () => {
     expect(within(list).queryByText('By a conductor')).toBeNull();
   });
 
-  it('an unreachable system shows its reason and hides the + that would fail, keeping delete', () => {
+  it('an unreachable system shows its reason and disables the ⋮ items that would fail, keeping Delete…', async () => {
     uiStore.set({ lens: 'projects' });
     seed({
       projects: [{ name: 'far', path: '/x', workspace: null, system: 'box', remoteId: null, systemUnreachable: 'box is down', worktrees: [] }] as any,
@@ -178,8 +186,7 @@ describe('AppSidebar', () => {
     renderSidebar();
     const row = document.querySelector('[data-project-row="far"]') as HTMLElement;
     expect(within(row).getByText('box')).toBeTruthy();
-    expect(within(row).queryByRole('button', { name: 'New session' })).toBeNull();
-    expect(within(row).getByRole('button', { name: 'Delete project' })).toBeTruthy();
+    expect(await menuState(row)).toEqual([['New session', 'true'], ['Edit conventions…', 'true'], ['Delete…', null]]);
     // The reason is the title of the pill that names the system.
     const pill = within(row).getByTitle('box is down');
     expect(pill.textContent).toContain('box');
@@ -195,18 +202,17 @@ describe('AppSidebar', () => {
     expect(dialogStore.get().projectRemote?.project.name).toBe('far');
   });
 
-  it('a local project shows no system pill and keeps commit history, + and delete', () => {
+  it('a local project shows no system pill and keeps commit history and every ⋮ item', async () => {
     uiStore.set({ lens: 'projects' });
     seed({ projects: [LOCAL] as any });
     renderSidebar();
     const row = farRow();
     expect(row.querySelector('[data-system-pill]')).toBeNull();
     expect(within(row).getByRole('button', { name: 'Commit history' })).toBeTruthy();
-    expect(within(row).getByRole('button', { name: 'New session' })).toBeTruthy();
-    expect(within(row).getByRole('button', { name: 'Delete project' })).toBeTruthy();
+    expect(await menuState(row)).toEqual(ALL_ENABLED);
   });
 
-  it('a reachable remote project keeps commit history, + and delete, and its pill tooltip names the system and its path', async () => {
+  it('a reachable remote project keeps commit history and every ⋮ item, and its pill tooltip names the system and its path', async () => {
     uiStore.set({ lens: 'projects' });
     seed({ projects: [{ name: 'far', path: '/app', workspace: null, system: 'box', remoteId: null, isGitRepo: true, worktrees: [] }] as any });
     renderSidebar();
@@ -215,8 +221,7 @@ describe('AppSidebar', () => {
     expect(pill.tagName).toBe('BUTTON');
     expect(pill.textContent).toBe('box');
     expect(within(row).getByRole('button', { name: 'Commit history' })).toBeTruthy();
-    expect(within(row).getByRole('button', { name: 'New session' })).toBeTruthy();
-    expect(within(row).getByRole('button', { name: 'Delete project' })).toBeTruthy();
+    expect(await menuState(row)).toEqual(ALL_ENABLED);
     await act(async () => { fireEvent.focus(pill); });
     const tip = (await screen.findByRole('tooltip')).textContent;
     expect(tip).toContain("system 'box' at /app");
@@ -234,7 +239,7 @@ describe('AppSidebar', () => {
     expect(dialogStore.get().projectRemote).toBeNull();
   });
 
-  it('a system coming back clears the pill and restores the + on the same row element', () => {
+  it('a system coming back clears the pill and re-enables the ⋮ items on the same row element', async () => {
     uiStore.set({ lens: 'projects' });
     seed({ projects: [{ name: 'far', path: '/p/far', workspace: null, system: 'box', remoteId: null, systemUnreachable: 'down', worktrees: [] }] as any });
     renderSidebar();
@@ -242,10 +247,10 @@ describe('AppSidebar', () => {
     act(() => appStore.set({ projects: [LOCAL] as any }));
     expect(document.querySelector('[data-project-row="far"]') === before).toBe(true);
     expect(before.querySelector('[data-system-pill]')).toBeNull();
-    expect(within(before).getByRole('button', { name: 'New session' })).toBeTruthy();
+    expect(await menuState(before)).toEqual(ALL_ENABLED);
   });
 
-  it('a git ownership refusal shows its own pill carrying the refusal, keeps the +, and conjures no system pill', () => {
+  it('a git ownership refusal shows its own pill carrying the refusal, keeps the ⋮ items enabled, and conjures no system pill', async () => {
     uiStore.set({ lens: 'projects' });
     const refusal = "git on system 'local' refused the repository at '/p/far': detected dubious ownership";
     const same = { name: 'far', path: '/p/far', workspace: null, system: 'local', remoteId: null, systemUnreachable: null, gitRefusal: refusal, worktrees: [] };
@@ -253,7 +258,7 @@ describe('AppSidebar', () => {
     renderSidebar();
     const row = farRow();
     expect(within(row).getByText('dubious ownership').getAttribute('title')).toBe(refusal);
-    expect(within(row).getByRole('button', { name: 'New session' })).toBeTruthy();
+    expect(await menuState(row)).toEqual(ALL_ENABLED);
     expect(within(row).queryByRole('button', { name: 'Commit history' })).toBeNull();
     expect(row.querySelector('[data-system-pill]')).toBeNull();
     act(() => appStore.set({ projects: [{ ...same, gitRefusal: null }] as any }));

@@ -287,7 +287,8 @@ describe('Projects tree', () => {
     const rows = [...document.querySelectorAll('[data-project-row]')];
     expect(rows.length).toBe(4);
     for (const r of rows) {
-      expect(r.querySelector('button[aria-expanded]'), r.getAttribute('data-project-row')!).toBeNull();
+      // The ⋮ menu trigger carries aria-expanded too, but it is a menu, not an expand caret.
+      expect(r.querySelector('button[aria-expanded]:not([aria-haspopup])'), r.getAttribute('data-project-row')!).toBeNull();
       const first = r.firstElementChild as HTMLElement;
       // A git row leads with the Commit history button, a plain one with the span holding its folder svg: an empty spacer span is neither.
       if (r.getAttribute('data-project-row') === 'with') expect(first.getAttribute('aria-label')).toBe('Commit history');

@@ -3,6 +3,7 @@ import { act, render, screen, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
+import { closeProjectMenu, openProjectMenu, projectMenuItems } from '@/test/projectMenu';
 import {
   A, ALPHA, BRAVO, C, COLOUR, FLEET_UI, NO_BAR, barOf, conductor, disk, fleet, headOf, labelOf, openOf, proj, projectRowOf, rowOf,
   seed, seedFleet, worker, wt,
@@ -211,8 +212,11 @@ describe('Projects-lens ownership colour', () => {
     seedFleet(fleet());
     renderSidebar();
     await settle();
-    expect(within(projectRowOf('solo')).getByRole('button', { name: 'New session' })).toBeTruthy();
-    expect(within(projectRowOf('solo')).getByRole('button', { name: 'Delete project' })).toBeTruthy();
+    const menu = await openProjectMenu(projectRowOf('solo'));
+    expect(projectMenuItems(menu).map((i) => [i.textContent, i.getAttribute('aria-disabled')])).toEqual([
+      ['New session', null], ['Edit conventions…', null], ['Delete…', null],
+    ]);
+    await closeProjectMenu();
     expect(within(headOf('solo-a')).getByRole('button', { name: 'New session in this worktree' })).toBeTruthy();
     expect(within(headOf('solo-a')).getByRole('button', { name: 'Remove worktree' })).toBeTruthy();
   });

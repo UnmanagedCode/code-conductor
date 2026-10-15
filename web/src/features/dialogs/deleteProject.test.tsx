@@ -32,6 +32,7 @@ import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { performProjectDelete } from '@/app/sessionActions';
 import type { Instance, Project } from '@/state/types';
+import { pickProjectMenuItem } from '@/test/projectMenu';
 
 const local = (over: Partial<Project> = {}) =>
   ({ name: 'demo', path: '/w/demo', system: 'local', remoteId: null, worktrees: [], ...over }) as unknown as Project;
@@ -141,8 +142,8 @@ describe('delete-project confirmation', () => {
     expect(says(/\b0 worktrees\b/)).toBe(false);
   });
 
-  it('the sidebar\'s Delete project hands the dialog this project\'s live instance count', async () => {
-    // The row's Delete project counts the live instances of that project only.
+  it('the sidebar\'s ⋮ → Delete… hands the dialog this project\'s live instance count', async () => {
+    // The row's Delete… counts the live instances of that project only.
     // Invariant: the kill effect counts this project's 2 live instances, not all 3 in the list.
     seed({
       projects: [{ name: 'far', path: '/p/far', workspace: null, system: 'local', remoteId: null, systemUnreachable: null, isGitRepo: true, worktrees: [] }] as any,
@@ -151,7 +152,7 @@ describe('delete-project confirmation', () => {
     uiStore.set({ lens: 'projects' });
     render(<TooltipProvider><AppSidebar /><DialogsHost /></TooltipProvider>);
     const farRow = document.querySelector('[data-project-row="far"]') as HTMLElement;
-    fireEvent.click(within(farRow).getByRole('button', { name: 'Delete project' }));
+    await pickProjectMenuItem(farRow, 'Delete…');
     await screen.findByRole('dialog');
     expect(effects().some((t) => /\b2 running sessions\b/.test(t ?? ''))).toBe(true);
     expect(effects().some((t) => /\b3 running/.test(t ?? ''))).toBe(false);

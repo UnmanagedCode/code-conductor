@@ -102,6 +102,8 @@ export type Project = {
   worktrees: Worktree[];
   sessions?: { count: number; archivedCount: number; handCount: number; lastActivity: number };
   mergeStatus?: { ahead: number | null; behind: number | null; upstream: string | null };
+  /** The selection its CONVENTIONS.md records; `{error}` when unreadable, absent when the project can't be resolved. */
+  conventions?: { selected: string[]; unresolved: string[] } | { error: string };
   branch?: string | null;
   dirty?: number;
   [k: string]: unknown;

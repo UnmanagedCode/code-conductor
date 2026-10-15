@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { messageFor, REFUSAL_OVERRIDES } from './adoptMessages';
 import { computeSavings, defaultCut, type PruneAnalysis } from './pruneMath';
 import { savingsNote, savingsRows, pickTier } from './SessionDialogs';
-import { scanNote, groupConventions, deleteEffects, saveWorkspace } from './ProjectDialogs';
+import { scanNote, deleteEffects, saveWorkspace } from './ProjectDialogs';
+import { groupConventions } from './ConventionChecklist';
 import { splitPath } from './PathInput';
 
 const analysis = (over: Partial<PruneAnalysis> = {}): PruneAnalysis => ({
