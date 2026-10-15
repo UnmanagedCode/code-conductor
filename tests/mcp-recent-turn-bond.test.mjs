@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ringTurnIndex, bondTrailingTurn } from '../src/mcp/messageReconstruction.ts';
+import { ringTurnIndex, diskTurnIndex, bondTrailingTurn } from '../src/mcp/messageReconstruction.ts';
 
 // Helper: build a text-bearing message stub.
 const prose = (msgId, text) => ({ msgId, text });
@@ -96,4 +96,21 @@ test('bonds a plan message that carries only a path', () => {
   const filtered = [{ msgId: 'pp1', text: '', planPath: '/p.md' }, prose('pp2', 'standing by')];
   const out = bondTrailingTurn(filtered, ringTurnIndex(ring));
   assert.deepEqual(out.map(m => m.msgId), ['pp1', 'pp2']);
+});
+
+// A replayed unprompted turn (the CLI's delivery of a background task's
+// notification) starts at a `turn_boundary`, with no echo and no turn_end
+// before it. The plan below belongs to the turn before it.
+test('a turn_boundary partitions turns exactly as a turn_end does, for the ring and the disk index', () => {
+  const filtered = [planMsg('p1', 'P'), prose('p2', 'a'), prose('q1', 'b')];
+  const turn1 = [{ kind: 'tool_use', msgId: 'p1', _seq: 1 }, { kind: 'text_delta', msgId: 'p2', _seq: 2 }];
+  const turn2 = [{ kind: 'text_delta', msgId: 'q1', _seq: 4 }];
+  const byTurnEnd = bondTrailingTurn(filtered, ringTurnIndex([...turn1, { kind: 'turn_end', _seq: 3 }, ...turn2]));
+  assert.deepEqual(byTurnEnd.map(m => m.msgId), ['q1'], 'fixture check: a turn_end keeps the earlier plan out');
+  const boundary = { kind: 'turn_boundary', toolUseId: 'tuBg', status: 'completed', parentToolUseId: null, _seq: 3 };
+  const ring = bondTrailingTurn(filtered, ringTurnIndex([...turn1, boundary, ...turn2]));
+  assert.deepEqual(ring.map(m => m.msgId), byTurnEnd.map(m => m.msgId), 'ringTurnIndex');
+  const echo = { kind: 'user_echo', text: 'prompt', parentToolUseId: null, _seq: 0 };
+  const disk = bondTrailingTurn(filtered, diskTurnIndex([echo, ...turn1, boundary, ...turn2]));
+  assert.deepEqual(disk.map(m => m.msgId), byTurnEnd.map(m => m.msgId), 'diskTurnIndex');
 });
