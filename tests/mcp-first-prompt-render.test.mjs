@@ -142,6 +142,26 @@ test('a forwarded-frame first prompt renders as its instruction\'s first line', 
   });
 });
 
+// readablePrompt's own output, uncollapsed (Settings → Archived renders it as
+// is): the MCP surfaces and promptPreview collapse whitespace themselves.
+test('a forward\'s instruction line is shown trimmed of trailing spaces and tabs', async () => {
+  const fp = await storedFirstPrompt('forward-padded-instruction', [userTurn(buildForwardFrame({
+    messages: ['The migration is written.'],
+    instruction: 'Review the migration. \t \nThen run the suite.',
+  }))]);
+  assert.equal(readablePrompt(fp), 'Review the migration.');
+});
+
+test('a forward stored as a string-content user record renders as its instruction\'s first line', async t => {
+  await expectOnEverySurface(t, [{ type: 'user', message: { role: 'user', content: buildForwardFrame({
+    messages: ['The migration is written.'],
+    instruction: 'Review the migration.',
+  }) } }], {
+    live: 'title —   first Review the migration.',
+    inactive: 'Review the migration.',
+  });
+});
+
 test('an empty-instruction forward renders as Forwarded worker output', async t => {
   await expectOnEverySurface(t, [userTurn(buildForwardFrame({ messages: ['The migration is written.'], instruction: '' }))], {
     live: 'title —   first Forwarded worker output',
