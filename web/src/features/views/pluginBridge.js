@@ -71,18 +71,32 @@
 
   // Session awareness. `session` stays undefined until the host's first
   // message; a call's promise always resolves ({ok, code?}), never rejects.
-  var session, hasSession = false, subscribers = [], pending = {}, nextId = 0;
+  /** @type {{sessionId: string, project: string, worktree: string | null} | null | undefined} */
+  var session;
+  var hasSession = false;
+  /** @type {Array<(s: unknown) => void>} */
+  var subscribers = [];
+  /** @type {Record<string, (r: {ok: boolean, code?: string}) => void>} */
+  var pending = {};
+  var nextId = 0;
+  /**
+   * @param {string} type
+   * @param {Record<string, unknown>} fields
+   * @returns {Promise<{ok: boolean, code?: string}>}
+   */
   function call(type, fields) {
     var id = 'b' + (++nextId);
     return new Promise(function (resolve) {
       pending[id] = resolve;
+      /** @type {Record<string, unknown>} */
       var msg = { cc: 1, type: type, id: id };
       for (var k in fields) msg[k] = fields[k];
       window.parent.postMessage(msg, origin);
     });
   }
-  window.ccBridge = {
+  /** @type {any} */ (window).ccBridge = {
     get session() { return session; },
+    /** @param {(s: unknown) => void} fn */
     onSession: function (fn) {
       subscribers.push(fn);
       if (hasSession) fn(session);
@@ -91,7 +105,9 @@
         if (i >= 0) subscribers.splice(i, 1);
       };
     },
+    /** @param {string} sessionId */
     openSession: function (sessionId) { return call('openSession', { sessionId: sessionId }); },
+    /** @param {string} sessionId @param {string} text */
     sendPrompt: function (sessionId, text) { return call('sendPrompt', { sessionId: sessionId, text: text }); },
   };
 
