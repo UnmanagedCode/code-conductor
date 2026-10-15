@@ -451,6 +451,8 @@ Mounted after `/api`, `/mcp` and `/plugins` (`server.ts`), so they never shadow 
 |---|---|
 | `/` | The web UI (`web/dist/index.html`, `webHandler()` in `src/webBuild.ts`) and its assets, `sw.js`, `manifest.webmanifest` and icons, all root-absolute. With no build yet: **503** `text/html`, a self-refreshing "Building the interface…" page. After a failed build with no previous `web/dist` to serve: **503** `text/plain` naming the error; the API stays up |
 | `GET /pluginBridge.js` | `web/src/features/views/pluginBridge.js`, an explicit `server.ts` route, served whether or not the web build exists |
+| `GET /pluginTheme.css` | The host theme for plugin pages: the Geist `@font-face` rules, a `/* cc:tokens */` line, then `web/src/themeTokens.css`. **200** `text/css; charset=utf-8`, `Cache-Control: no-cache`, composed per request by `pluginThemeRouter()` (`src/pluginTheme.ts`), served whether or not the web build exists. A failure to compose it: **503** `text/plain` `host theme unavailable` (the detail is in the server log). Contract: [plugins.md](plugins.md) → Theme stylesheet |
+| `GET /pluginTheme/fonts/:pkg/:file` | A font file the sheet names: `:pkg` a key of `FONT_PACKAGES` (`src/pluginTheme.ts`), `:file` matching `^[a-z0-9-]+\.woff2$`; **200** `font/woff2`. Anything else **404** |
 | anything else | **404** (Express's default). Nothing in `shared/` is served |
 
 ## MCP tool protocol

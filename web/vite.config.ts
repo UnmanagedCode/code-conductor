@@ -34,6 +34,7 @@ export default defineConfig({
       '/api': devServer,
       '/plugins': { target: devServer, ws: true },
       '/pluginBridge.js': devServer,
+      '/pluginTheme': devServer,
       '/ws': { target: devServer.replace(/^http/, 'ws'), ws: true },
     },
   },

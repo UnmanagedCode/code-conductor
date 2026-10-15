@@ -3,7 +3,13 @@
 <head>
 <meta charset="utf-8">
 <title>Keep-alive probe</title>
-<script src="/pluginBridge.js" defer></script>
+<script src="/pluginBridge.js"></script>
+<script>
+// The theme the bridge applied by the time the head was parsed (readTheme, web/e2e/harness/pluginProbe.ts).
+window.__themeAtParse = document.documentElement.getAttribute('data-cc-theme');
+</script>
+<link rel="stylesheet" href="/pluginTheme.css">
+<style>body { background: var(--background); }</style>
 </head>
 <body>
 <h1>Keep-alive probe</h1>

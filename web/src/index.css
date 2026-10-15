@@ -2,44 +2,14 @@
 @import 'tw-animate-css';
 @import '@fontsource-variable/geist';
 @import '@fontsource-variable/geist-mono';
+@import './themeTokens.css';
 
 @custom-variant dark (&:is(.dark *));
 
-/* Light palette. Neutrals are a faintly warm zinc so the coral accent sits
-   naturally; status hues are shared by both themes and only shift lightness. */
+/* Host-only variables; the palette is in themeTokens.css. */
 :root {
-  --radius: 0.75rem;
   /* The height of each view's top bar. App.tsx's Toaster sits below it, never over its controls. */
   --header-height: 3.5rem;
-
-  --background: oklch(0.99 0.002 60);
-  --foreground: oklch(0.2 0.01 50);
-  --card: oklch(1 0 0);
-  --card-foreground: var(--foreground);
-  --popover: oklch(1 0 0);
-  --popover-foreground: var(--foreground);
-  --primary: oklch(0.66 0.17 38);
-  --primary-foreground: oklch(0.99 0.01 60);
-  --secondary: oklch(0.96 0.005 60);
-  --secondary-foreground: oklch(0.25 0.01 50);
-  --muted: oklch(0.965 0.004 60);
-  --muted-foreground: oklch(0.52 0.012 55);
-  --accent: oklch(0.955 0.02 45);
-  --accent-foreground: oklch(0.35 0.08 38);
-  --destructive: oklch(0.58 0.22 25);
-  --border: oklch(0.915 0.006 60);
-  --input: oklch(0.9 0.006 60);
-  --ring: oklch(0.66 0.17 38 / 0.5);
-
-  --sidebar: oklch(0.975 0.004 60);
-  --sidebar-foreground: var(--foreground);
-  --sidebar-border: var(--border);
-  --sidebar-accent: oklch(0.94 0.008 60);
-
-  --success: oklch(0.62 0.15 155);
-  --warning: oklch(0.74 0.15 75);
-  --info: oklch(0.6 0.14 245);
-  --plan: oklch(0.58 0.17 290);
 
   --mascot-body: oklch(0.7 0.16 35);
   --mascot-shade: oklch(0.6 0.16 32);
@@ -50,36 +20,6 @@
 }
 
 .dark {
-  color-scheme: dark;
-  --background: oklch(0.17 0.006 50);
-  --foreground: oklch(0.95 0.005 60);
-  --card: oklch(0.205 0.007 50);
-  --card-foreground: var(--foreground);
-  --popover: oklch(0.22 0.008 50);
-  --popover-foreground: var(--foreground);
-  --primary: oklch(0.72 0.16 40);
-  --primary-foreground: oklch(0.18 0.02 40);
-  --secondary: oklch(0.25 0.008 50);
-  --secondary-foreground: var(--foreground);
-  --muted: oklch(0.24 0.007 50);
-  --muted-foreground: oklch(0.68 0.012 55);
-  --accent: oklch(0.28 0.03 40);
-  --accent-foreground: oklch(0.9 0.05 45);
-  --destructive: oklch(0.66 0.2 25);
-  --border: oklch(0.29 0.008 50);
-  --input: oklch(0.32 0.008 50);
-  --ring: oklch(0.72 0.16 40 / 0.5);
-
-  --sidebar: oklch(0.15 0.006 50);
-  --sidebar-foreground: var(--foreground);
-  --sidebar-border: oklch(0.26 0.008 50);
-  --sidebar-accent: oklch(0.23 0.008 50);
-
-  --success: oklch(0.72 0.15 155);
-  --warning: oklch(0.8 0.14 80);
-  --info: oklch(0.72 0.12 245);
-  --plan: oklch(0.72 0.14 290);
-
   --mascot-belly: oklch(0.82 0.08 50);
   --mascot-coat: oklch(0.2 0.02 260);
   --mascot-baton: oklch(0.95 0.01 80);

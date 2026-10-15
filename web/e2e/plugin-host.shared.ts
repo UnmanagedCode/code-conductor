@@ -2,13 +2,13 @@
 // picking a plugin while a session is open lands on the first pick; the hash
 // opens, steers and swaps plugin pages without reloading them; a keep-alive
 // page keeps running while hidden and comes back as the same page load, while a
-// plain one reloads. A reload makes a new nonce, so every "same page" check
-// fails on one. The bodies are shared by the per-project spec files; this
+// plain one reloads; a plugin page follows the host's light/dark theme. A
+// reload makes a new nonce, so every "same page" check fails on one. The bodies are shared by the per-project spec files; this
 // module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
+import { installProbePlugin, probeFrame, readProbe, readTheme, type FrameTheme, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
@@ -166,4 +166,72 @@ export async function keepAliveFlow({ page }: Args): Promise<void> {
   await next.leaveSettings(page);
   const reloaded = await loaded(page, PLAIN.id, 'back from Settings');
   expect(reloaded.nonce, 'a new page load').not.toBe(plain.nonce);
+}
+
+// ── theme ────────────────────────────────────────────────────────────────
+
+const THEME_KEY = 'code-conductor:theme';
+const hostBg = (page: Page) => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+const hostDark = (page: Page) => page.evaluate(() => document.documentElement.classList.contains('dark'));
+/** Plugin `id`'s page theme once it answers. */
+const theme = async (page: Page, id: string): Promise<FrameTheme> => {
+  await expect.poll(() => readTheme(page, id).catch(() => null), { message: `${id}'s page answers` }).not.toBeNull();
+  return (await readTheme(page, id))!;
+};
+/** Polls until plugin `id`'s page shows `want`, via both `.dark` and `data-cc-theme`. */
+const follows = (page: Page, id: string, want: 'light' | 'dark', what: string) => expect.poll(async () => {
+  const t = await readTheme(page, id).catch(() => null);
+  return t && `${t.dark ? 'dark' : 'light'}/${t.attr}`;
+}, { message: `${what}: ${id}'s page is ${want}` }).toBe(`${want}/${want}`);
+/** The sidebar's theme toggle, by the theme it switches to. */
+async function toggleTheme(page: Page, to: 'Light theme' | 'Dark theme'): Promise<void> {
+  await next.openSidebar(page);
+  await page.getByRole('button', { name: to }).filter({ visible: true }).first().click();
+}
+
+export async function themeFlow({ page }: Args): Promise<void> {
+  // Invariant: a plugin page shows the host's resolved theme before its body is parsed, follows every host change live (an OS flip under "system", the sidebar toggle) including while hidden, and the host-served sheet gives it the host's own background and Geist face.
+  await page.emulateMedia({ colorScheme: 'light' });
+  await next.open(page);
+  await page.evaluate((k) => localStorage.removeItem(k), THEME_KEY);
+  await setHash(page, `#plugin/${PLAIN.id}/`);
+  await loaded(page, PLAIN.id, 'opened');
+  const light = await theme(page, PLAIN.id);
+  expect(await hostDark(page), 'precondition: the host is light').toBe(false);
+  expect(light.atParse, 'light when its head was parsed').toBe('light');
+  expect(light.dark).toBe(false);
+  expect(light.attr).toBe('light');
+  expect(light.bg, "the host's light background").toBe(await hostBg(page));
+
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await follows(page, PLAIN.id, 'dark', 'the OS went dark under "system"');
+  expect(await hostDark(page), 'precondition: the host is dark').toBe(true);
+  const dark = await theme(page, PLAIN.id);
+  expect(dark.bg, "the host's dark background").toBe(await hostBg(page));
+  expect(dark.bg, 'fixture check: the two backgrounds differ').not.toBe(light.bg);
+  expect(dark.geist, 'the host-served Geist face loads').toBe(true);
+
+  await toggleTheme(page, 'Light theme');
+  await follows(page, PLAIN.id, 'light', 'the sidebar toggle');
+  expect(await hostDark(page)).toBe(false);
+
+  // A stored dark choice under a light OS: only the host's choice can make the page dark at parse.
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.evaluate((k) => localStorage.setItem(k, 'dark'), THEME_KEY);
+  await page.goto('about:blank');
+  await page.goto(`/#plugin/${PLAIN.id}/`);
+  await loaded(page, PLAIN.id, 'booted on its hash');
+  const booted = await theme(page, PLAIN.id);
+  expect(booted.atParse, 'dark when its head was parsed').toBe('dark');
+  expect(booted.dark).toBe(true);
+
+  await next.openPlugin(page, KEEP.id);
+  await loaded(page, KEEP.id, 'the keep-alive plugin');
+  await follows(page, KEEP.id, 'dark', 'shown');
+  await next.openSettings(page);
+  await expect(pluginView(page), 'precondition: hidden behind Settings').toBeHidden();
+  expect(probeFrame(page, KEEP.id), 'precondition: its page is resident').toBeDefined();
+  await toggleTheme(page, 'Light theme');
+  await follows(page, KEEP.id, 'light', 'hidden behind Settings');
+  await expect(pluginView(page), 'still hidden').toBeHidden();
 }

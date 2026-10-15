@@ -65,8 +65,13 @@ test('list(): code-playwright is a built-in entry alongside code-share, with its
     const cs = rows.find(r => r.id === 'code-share');
     assert.equal(cs.postClone, 'npm install');
     assert.equal(cs.postPull, 'npm install');
-    const cw = rows.find(r => r.id === 'code-wiki');
-    assert.equal(cw.postClone, undefined, 'code-wiki has no post-hook by default');
+    for (const id of ['code-wiki', 'code-live']) {
+      const row = rows.find(r => r.id === id);
+      assert.equal(row.postClone, 'npm install', `${id} postClone`);
+      assert.equal(row.postPull, 'npm install', `${id} postPull`);
+    }
+    const cm = rows.find(r => r.id === 'code-mutant');
+    assert.equal(cm.postClone, undefined, 'code-mutant has no post-hook by default');
   } finally {
     await env.restore();
   }
@@ -346,7 +351,7 @@ test('install(): happy path clones (fake impl), rescans, and enables the discove
     const enabled = [];
     const stubHost = {
       rescan: async () => { rescanned++; },
-      list: async () => [{ id: 'code-wiki', project: 'code-karpathy-wiki', state: 'discovered' }],
+      list: async () => [{ id: 'code-mutant', project: 'code-mutant', state: 'discovered' }],
       enable: async (id) => { enabled.push(id); },
     };
     const cloneCalls = [];
@@ -359,17 +364,17 @@ test('install(): happy path clones (fake impl), rescans, and enables the discove
         return { code: 0, stdout: 'Cloning...', stderr: '' };
       },
     });
-    const result = await lib.install('code-wiki');
-    assert.equal(result.name, 'code-karpathy-wiki');
+    const result = await lib.install('code-mutant');
+    assert.equal(result.name, 'code-mutant');
     assert.equal(cloneCalls.length, 1);
-    assert.equal(cloneCalls[0].url, 'https://github.com/UnmanagedCode/code-karpathy-wiki');
-    assert.ok((await fs.stat(path.join(env.root, '.plugins', 'code-karpathy-wiki'))).isDirectory());
+    assert.equal(cloneCalls[0].url, 'https://github.com/UnmanagedCode/code-mutant');
+    assert.ok((await fs.stat(path.join(env.root, '.plugins', 'code-mutant'))).isDirectory());
     assert.equal(rescanned, 1);
-    assert.deepEqual(enabled, ['code-wiki'], 'the freshly discovered plugin is enabled by default');
-    assert.equal(result.postClone, null, 'code-wiki has no postClone configured');
+    assert.deepEqual(enabled, ['code-mutant'], 'the freshly discovered plugin is enabled by default');
+    assert.equal(result.postClone, null, 'code-mutant has no postClone configured');
 
     const { entries: rows } = await lib.list();
-    assert.equal(rows.find(r => r.id === 'code-wiki').installed, true);
+    assert.equal(rows.find(r => r.id === 'code-mutant').installed, true);
   } finally {
     await env.restore();
   }
@@ -385,19 +390,19 @@ test('install(): clones into .plugins/<name> and writes the record', async () =>
       _cloneImpl: async (url, destDir) => {
         await fs.mkdir(destDir, { recursive: true });
         await fs.writeFile(path.join(destDir, 'conductor.plugin.json'),
-          JSON.stringify({ id: 'code-wiki', name: 'Code Karpathy Wiki', version: '1', pluginApi: 1 }));
+          JSON.stringify({ id: 'code-mutant', name: 'Code Mutant', version: '1', pluginApi: 1 }));
         return { code: 0, stdout: '', stderr: '' };
       },
     });
-    const result = await lib.install('code-wiki');
-    const target = path.join(env.root, '.plugins', 'code-karpathy-wiki');
+    const result = await lib.install('code-mutant');
+    const target = path.join(env.root, '.plugins', 'code-mutant');
     assert.equal(result.path, target);
     assert.ok((await fs.stat(target)).isDirectory());
-    await assert.rejects(() => fs.stat(path.join(env.root, 'code-karpathy-wiki')),
+    await assert.rejects(() => fs.stat(path.join(env.root, 'code-mutant')),
       'nothing is created in the projects root');
 
     const { readProjectRecord } = await import('../src/projects.ts');
-    assert.deepEqual((await readProjectRecord('code-karpathy-wiki')).location,
+    assert.deepEqual((await readProjectRecord('code-mutant')).location,
       { kind: 'local', path: target });
   } finally {
     await env.restore();
@@ -416,13 +421,13 @@ test('install(): an installed plugin\'s list_projects row is shape-identical to 
         return { code: 0, stdout: '', stderr: '' };
       },
     });
-    await lib.install('code-wiki');
+    await lib.install('code-mutant');
     await registerLocalProject('ordinary', path.join(env.root, 'ordinary'));
 
     const { listProjects } = await import('../src/projects.ts');
     const rows = await listProjects();
     const mask = r => ({ ...r, name: '<name>', path: '<path>' });
-    assert.deepEqual(rows.map(r => r.name), ['code-karpathy-wiki', 'ordinary']);
+    assert.deepEqual(rows.map(r => r.name), ['code-mutant', 'ordinary']);
     assert.deepEqual(mask(rows[0]), mask(rows[1]));
   } finally {
     await env.restore();
@@ -459,7 +464,7 @@ test('install(): does not enable a plugin whose manifest is invalid/undiscoverab
     const enabled = [];
     const stubHost = {
       rescan: async () => {},
-      list: async () => [{ id: 'code-wiki', project: 'code-karpathy-wiki', state: 'invalid' }],
+      list: async () => [{ id: 'code-mutant', project: 'code-mutant', state: 'invalid' }],
       enable: async (id) => { enabled.push(id); },
     };
     const lib = createPluginLibrary({
@@ -469,7 +474,7 @@ test('install(): does not enable a plugin whose manifest is invalid/undiscoverab
         return { code: 0, stdout: '', stderr: '' };
       },
     });
-    await lib.install('code-wiki');
+    await lib.install('code-mutant');
     assert.deepEqual(enabled, [], 'a non-discovered (invalid/conflict) plugin is left disabled');
   } finally {
     await env.restore();
