@@ -2,8 +2,8 @@
 // one plain): the desktop column right of the session whose width is its mode
 // (hidden, a split beside the transcript, the whole row), the one mode toggle in
 // its header strip, the handle's drag clamps, reset and keys, Back and Escape
-// from the full view, a window too narrow for a split, a reload, the session
-// width presets beside it, a toast beside the strip, and the phone layout
+// from the full view, a window too narrow for a split, a reload, a session
+// width (slider setting) beside it, a toast beside the strip, and the phone layout
 // without it. A reload of a probe page makes a new nonce, so every "same page"
 // check fails on one. The bodies are shared by the spec files; this module
 // declares no tests.
@@ -12,6 +12,8 @@ import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, spawnSession } from './harness/api.ts';
 import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
+import { parkPointer, setWidth } from './session-width.shared.ts';
+import { SESSION_WIDTH_MAX, SESSION_WIDTH_SNAPS } from '../src/app/sessionWidthScale.ts';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from '../src/features/views/dockLayout.ts';
 import { RESIZE_KEY_STEP } from '../src/lib/useResizableWidth.ts';
 import { TOAST_EDGE_GAP } from '../src/ui/toastLayout.ts';
@@ -23,8 +25,6 @@ export const KEEP: ProbePlugin = { id: 'dock-keep', name: 'Dock keep', keepAlive
 export const PLAIN: ProbePlugin = { id: 'dock-plain', name: 'Dock plain', keepAlive: false };
 // DOCK_STORAGE_KEY (web/src/features/views/dock.ts).
 const DOCK_KEY = 'code-conductor:plugin-dock';
-// SESSION_COLUMN_MAX_W (web/src/app/sessionWidth.ts): max-w-3xl and max-w-5xl.
-const PRESET_MAX = [['Normal', 768], ['Wide', 1024]] as const;
 const W = 520;
 /** Window widths on the desktop project: the main row (window − the default sidebar) fits no split, a clamped W, and W. */
 const NO_SPLIT = 900;
@@ -96,7 +96,7 @@ async function pick(page: Page, p: ProbePlugin) {
 
 /** Escape with the pointer clear of every tooltip (a closing tooltip takes the Escape). */
 async function escape(page: Page) {
-  await page.mouse.move(10, 450);
+  await parkPointer(page);
   await expect(page.locator('[data-slot="tooltip-content"]')).toHaveCount(0);
   await page.keyboard.press('Escape');
 }
@@ -350,7 +350,7 @@ export async function persistFlow({ page, cc }: Args): Promise<void> {
 }
 
 export async function sessionWidthFlow({ page, cc }: Args): Promise<void> {
-  // Invariant: beside the dock the session width presets still apply — Normal is capped at its maximum in a transcript wider than it, Wide grows past it within its own — and the transcript never runs under the column.
+  // Invariant: beside the dock a session width still applies — Normal is capped at its width in a transcript wider than it, Wide grows past it within its own, a custom width above the transcript fills it — and the transcript never runs under the column.
   desktopOnly();
   await onSession(page, cc, 'width');
   const list = page.locator('[data-conversation] [data-session-width]').first();
@@ -358,21 +358,23 @@ export async function sessionWidthFlow({ page, cc }: Args): Promise<void> {
   await dockSplit(page, PLAIN);
   await dragHandle(page, DOCK_PANEL_DEFAULT_WIDTH - DOCK_PANEL_MIN_WIDTH);
   await expect(handle(page), 'fixture check: docked at the minimum').toHaveAttribute('aria-valuenow', String(DOCK_PANEL_MIN_WIDTH));
-  const [[, normalMax]] = PRESET_MAX;
-  expect((await boxOf(main(page), 'the transcript')).width, 'fixture check: the transcript is wider than Normal\'s maximum').toBeGreaterThan(normalMax + 1);
+  const [normal, wide] = SESSION_WIDTH_SNAPS;
+  const transcript = (await boxOf(main(page), 'the transcript')).width;
+  expect(transcript, 'fixture check: the transcript is wider than Normal').toBeGreaterThan(normal.px + 1);
+  expect(transcript, 'fixture check: the transcript is narrower than the maximum').toBeLessThan(SESSION_WIDTH_MAX);
   const widths: Record<string, number> = {};
-  for (const [name, max] of PRESET_MAX) {
-    const button = page.locator('[data-sidebar-footer]').getByRole('button', { name: `Session width: ${name}` });
-    if (!(await button.count())) await page.locator('[data-sidebar-footer]').getByRole('button', { name: /^Session width:/ }).click();
-    await expect(button).toBeVisible();
-    await expect(list).toHaveAttribute('data-session-width', name.toLowerCase());
+  for (const [name, width] of [[normal.label, normal.px], [wide.label, wide.px], ['Maximum', SESSION_WIDTH_MAX]] as const) {
+    await setWidth(page, { width, full: false });
+    await expect(list).toHaveAttribute('data-session-width', String(width));
     const l = await boxOf(list, `${name}: the list`);
     widths[name] = l.width;
-    expect(l.width, `${name}: no wider than its maximum`).toBeLessThanOrEqual(max + 0.5);
+    expect(l.width, `${name}: no wider than its setting`).toBeLessThanOrEqual(width + 0.5);
     expect(right(l), `${name}: left of the column`).toBeLessThanOrEqual((await boxOf(column(page), 'the column')).x + 0.5);
   }
-  expect(Math.abs(widths.Normal - normalMax), 'Normal is capped at its maximum').toBeLessThanOrEqual(0.5);
-  expect(widths.Wide, 'Wide grows past Normal\'s maximum').toBeGreaterThan(normalMax + 1);
+  expect(Math.abs(widths.Normal - normal.px), 'Normal is capped at its width').toBeLessThanOrEqual(0.5);
+  expect(widths.Wide, 'Wide grows past Normal').toBeGreaterThan(normal.px + 1);
+  const room = await page.locator('[data-conversation]').evaluate((el) => el.clientWidth);
+  expect(Math.abs(widths.Maximum - room), 'a width above the transcript fills it').toBeLessThanOrEqual(0.5);
 }
 
 export async function phoneFlow({ page, cc }: Args): Promise<void> {

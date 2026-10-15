@@ -16,6 +16,6 @@ test('a handle drag crossing the iframe resizes and stops at both limits, and a 
 test('the dock and sidebar handles resize from the keyboard', keyboardFlow);
 test('a window too narrow for any split shows the plugin full-screen without writing, and Escape or a session pick closes it keeping the remembered split; a narrower window clamps split; widening restores the stored width', narrowWindowFlow);
 test('a reload restores the split plugin at its width and the page\'s own route, checked in the switcher, off the URL', persistFlow);
-test('the session width presets hold beside the dock', sessionWidthFlow);
+test('a session width holds beside the dock', sessionWidthFlow);
 test('below md the plugin view is full-page whatever the remembered mode, with no toggle', phoneFlow);
 test('a toast sits below the strip and never covers its toggle', toastClearsToggleFlow);

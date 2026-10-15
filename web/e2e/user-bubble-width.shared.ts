@@ -10,7 +10,7 @@ import { bringTo, reveal, sendAll, tallPrompt } from './flows/stickyPin.ts';
 import { askCard, answerCard, instanceIn } from './flows/questionCard.ts';
 import { buildWakeStub } from '../../shared/wakeCallback.ts';
 import { queued } from './conversation-bubbles.shared.ts';
-import { LABELS, widthButton } from './session-width.shared.ts';
+import { WIDTH_STATES, setWidth, stateKey, stateLabel } from './session-width.shared.ts';
 
 type Ctx = { page: Page; cc: Cc };
 
@@ -111,23 +111,23 @@ async function expectStrip(page: Page, where: string): Promise<void> {
 
 const shoot = async (page: Page, name: string) => test.info().attach(name, { body: await page.screenshot(), contentType: 'image/png' });
 
-// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble spans the column's content box (starts at its left edge, ends at its right edge) and is as wide as any other; its controls end at its right edge.
-/** Desktop: cycles every session width preset, then switches theme for the visual pass. */
-export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
-  test.skip(test.info().project.name !== 'desktop', 'the width presets are a desktop-layout feature');
+// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every width state each user bubble spans the column's content box (starts at its left edge, ends at its right edge) and is as wide as any other; its controls end at its right edge.
+/** Desktop: walks every session width state, then switches theme for the visual pass. */
+export async function desktopWidthsFlow({ page, cc }: Ctx): Promise<void> {
+  test.skip(test.info().project.name !== 'desktop', 'the width control is a desktop-layout feature');
   await sendBoth(page, cc, 'e2e-user-bubble-width');
   await expectStrip(page, (await isDark(page)) ? 'dark' : 'light');
-  for (const label of LABELS) {
-    await expect(widthButton(page, label)).toBeVisible();
-    await expect(list(page)).toHaveAttribute('data-session-width', label.toLowerCase());
+  for (const state of WIDTH_STATES) {
+    const label = stateLabel(state);
+    await setWidth(page, state);
+    await expect(list(page)).toHaveAttribute('data-session-width', stateKey(state));
     const m = await measure(page);
     if (label === 'Normal') {
       const { short } = pair(m, label);
       expect(short.glyphWidth, "positive control: the one-word text is far narrower than the bubble's span").toBeLessThan((m.columnRight - m.columnLeft) / 2);
     }
     expectAligned(m, label);
-    await shoot(page, `user-bubble-${label.toLowerCase()}`);
-    await widthButton(page, label).click();
+    await shoot(page, `user-bubble-${label.toLowerCase().replace(/\W+/g, '-')}`);
   }
   const wasDark = await isDark(page);
   await page.getByRole('button', { name: /^(Dark|Light) theme$/ }).click();
@@ -222,7 +222,7 @@ function expectVariantsFullWidth(m: Awaited<ReturnType<typeof measureVariants>>,
   }
 }
 
-// Invariant: every user-side bubble (typed prompt, attachment prompt, wake stub, question answer, plan reject echo, queued ghost, sticky pin) has the left and right edges of the AskUserQuestion and plan cards, which are the column's content edges; on desktop at every session width preset.
+// Invariant: every user-side bubble (typed prompt, attachment prompt, wake stub, question answer, plan reject echo, queued ghost, sticky pin) has the left and right edges of the AskUserQuestion and plan cards, which are the column's content edges; on desktop at every session width state.
 /** Every project: one session carrying every user-side variant on screen, measured against the question and plan cards. */
 export async function variantsFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(cc.engine === 'live', "the flow drives the fake engine's QA-ASK and PLAN-ASK scenario");
@@ -269,11 +269,10 @@ export async function variantsFlow({ page, cc }: Ctx): Promise<void> {
     expectVariantsFullWidth(await measureVariants(root), test.info().project.name);
     return;
   }
-  for (const label of LABELS) {
-    await expect(widthButton(page, label)).toBeVisible();
+  for (const state of WIDTH_STATES) {
+    await setWidth(page, state);
     await showPin();
-    expectVariantsFullWidth(await measureVariants(root), label);
-    await widthButton(page, label).click();
+    expectVariantsFullWidth(await measureVariants(root), stateLabel(state));
   }
 }
 

@@ -1,5 +1,5 @@
 // The session column's three boxes (transcript list, sticky pin, bottom column)
-// share one width preset; ConversationView is real here.
+// share one width setting; ConversationView is real here.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 
@@ -13,7 +13,7 @@ vi.mock('@/features/composer/Composer', () => ({ Composer: () => <div /> }));
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { stickyPrompt } from '@/app/controller';
-import { cycleSessionWidth, sessionWidthStore } from '@/app/sessionWidth';
+import { sessionWidthStore, setSessionFull, setSessionWidth } from '@/app/sessionWidth';
 import type { Instance } from '@/state/types';
 import { SessionView } from './SessionView';
 
@@ -25,7 +25,7 @@ const inst: Instance = {
 beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
-  sessionWidthStore.set({ preset: 'normal' });
+  sessionWidthStore.set({ width: 768, full: false });
   appStore.set({
     connection: 'open', everDropped: false, activeId: 'A', sidebarStatus: null,
     projects: [], workspaces: [], conductSessions: [], conductorSpawns: {}, instances: [inst],
@@ -35,21 +35,29 @@ beforeEach(() => {
 const boxes = () => [...document.querySelectorAll<HTMLElement>('[data-session-width]')];
 
 describe('the session column', () => {
-  it('every column box follows the preset together', () => {
-    // Invariant: transcript, pin and composer column are exactly three boxes and all report the same preset after each cycle.
+  it('every column box follows the setting together', () => {
+    // Invariant: transcript, pin and composer column are exactly three boxes sharing one setting, and Full removes the cap.
     render(<TooltipProvider><SessionView /></TooltipProvider>);
-    expect(boxes().map((b) => b.dataset.sessionWidth)).toEqual(['normal', 'normal', 'normal']);
-    for (const want of ['wide', 'full', 'normal']) {
-      act(() => cycleSessionWidth());
-      expect(boxes().map((b) => b.dataset.sessionWidth), want).toEqual([want, want, want]);
+    expect(boxes().map((b) => b.dataset.sessionWidth)).toEqual(['768', '768', '768']);
+    const steps: [() => void, string, string][] = [
+      [() => setSessionWidth(896), '896', '896px'],
+      [() => setSessionFull(true), 'full', 'none'],
+      [() => setSessionFull(false), '896', '896px'],
+    ];
+    for (const [apply, key, maxWidth] of steps) {
+      act(apply);
+      expect(boxes().map((b) => b.dataset.sessionWidth), key).toEqual([key, key, key]);
+      expect(boxes().map((b) => b.style.maxWidth), key).toEqual([maxWidth, maxWidth, maxWidth]);
     }
   });
 
-  it('a preset change re-measures the sticky pin', () => {
-    // Invariant: changing the preset alone (no new items, no session switch) refreshes the pin.
+  it('a width change alone, and a Full toggle alone, each re-measure the sticky pin', () => {
+    // Invariant: changing the width or Full alone (no new items, no session switch) refreshes the pin.
     render(<TooltipProvider><SessionView /></TooltipProvider>);
     const refresh = vi.spyOn(stickyPrompt, 'refresh');
-    act(() => cycleSessionWidth());
-    expect(refresh).toHaveBeenCalled();
+    act(() => setSessionWidth(896));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    act(() => setSessionFull(true));
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 });
