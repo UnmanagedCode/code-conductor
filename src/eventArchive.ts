@@ -142,6 +142,9 @@ function correlationKey(ev: UiEvent): string | null {
   if (switchId != null) return `msw ${switchId}`;
   if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
   if (isNotifiedTask(ev) && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${(ev.data as { status?: unknown }).status}`;
+  // A turn_boundary whose delivery named no tool-use-id keys null, so at the ring head it abandons to the echo
+  // anchor. Skipping it instead would be wrong: replay emits it, so its twin sits in the archive, and a cut
+  // past it would serve that twin again across the seam.
   if (ev.kind === 'turn_boundary' && typeof ev.toolUseId === 'string') return `tb ${ev.toolUseId} ${ev.status}`;
   if ('blockIdx' in ev && typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number') return `${ev.kind} ${ev.msgId} ${ev.blockIdx}`;
   return null;

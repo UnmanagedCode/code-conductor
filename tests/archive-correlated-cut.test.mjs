@@ -751,3 +751,44 @@ test('T31: a turn_boundary ring head correlates to its archive twin', async () =
     await rmrf(r.home);
   }
 });
+
+// A background Agent notifies once each time it stops, so its tool use can
+// start more than one unprompted turn. Each boundary is its own archive entry,
+// so the key must carry the status, as `tn`'s does (T30).
+//
+// PINS: two turn_boundary heads sharing a toolUseId but not a status each
+// correlate to their own archived boundary — an exact cut, no gap, no duplication.
+test('T32: turn boundaries sharing a toolUseId correlate by status', async (t) => {
+  const withStatus = (line, status) => ({ ...line, content: line.content.replace('<status>completed</status>', `<status>${status}</status>`) });
+  const delivery = (status, uuid) =>
+    ({ type: 'user', uuid, turnOrigin: 'task_notification', message: { role: 'user', content: withStatus(enqueueLine('tuAg'), status).content } });
+  for (const [status, at, tail] of [['completed', 26, 'm1'], ['failed', 30, 'm2']]) {
+    await t.test(status, async () => {
+      const r = await freshProjectsRoot();
+      try {
+        const cwd = `/fake/t32-${status}`;
+        const [prompt, assistant] = textBlockLines();
+        await writeJsonl(cwd, SID, [
+          prompt,
+          assistant,
+          enqueueLine('tuAg'),
+          delivery('completed', 'u1'),
+          { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'between' }] } },
+          withStatus(enqueueLine('tuAg'), 'failed'),
+          delivery('failed', 'u2'),
+          { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'after' }] } },
+        ]);
+        const head = { kind: 'turn_boundary', toolUseId: 'tuAg', status, parentToolUseId: null, _seq: 59 };
+        const ring = [head, { kind: 'text_delta', msgId: tail, blockIdx: 0, text: 'x', _seq: 60 }];
+        const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 1 });
+        assert.equal(arch.events[26].status, 'completed', 'fixture check: the first boundary sits at 26');
+        assert.equal(arch.events[30].status, 'failed', 'fixture check: the second sits at 30');
+        assert.equal(arch.cut, at, `the ${status} head cuts at its own boundary`);
+        assert.equal(arch.gap, false);
+        assertNoDuplication(arch, ring, `T32[${status}]`);
+      } finally {
+        await rmrf(r.home);
+      }
+    });
+  }
+});
