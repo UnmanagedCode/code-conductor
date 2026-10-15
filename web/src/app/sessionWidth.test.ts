@@ -19,11 +19,11 @@ describe('the session width setting', () => {
   });
 
   it('old or unknown stored values fall back to the default and never crash startup', async () => {
-    // Invariant: the old key is never read, and any unparseable, wrong-shaped or unreadable value under the current key reads as Resizable at Normal.
+    // Invariant: only the current key is read, and any unparseable, wrong-shaped or unreadable value under the current key reads as Resizable at Normal.
     for (const old of ['wide', 'full', '{"width":1200,"full":true}']) {
       localStorage.clear();
-      localStorage.setItem('code-conductor:session-width', old);
-      expect((await fresh()).sessionWidthStore.get(), `old key ${old}`).toEqual({ width: 768, full: false });
+      localStorage.setItem('code-conductor:session-width', old); // a key the store never reads;
+      expect((await fresh()).sessionWidthStore.get(), `other key ${old}`).toEqual({ width: 768, full: false });
     }
     for (const garbage of ['', 'huge', '{"width":"wide","full":false}', '{"width":900}', '{"preset":"full"}']) {
       localStorage.clear();
@@ -39,7 +39,7 @@ describe('the session width setting', () => {
     }
   });
 
-  it('a width above the old slider ceiling persists as set', async () => {
+  it('a width wider than any fixed cap persists as set', async () => {
     // Invariant: there is no fixed maximum; a wide width survives a reload unchanged.
     let m = await fresh();
     m.setSessionWidth(2400);
