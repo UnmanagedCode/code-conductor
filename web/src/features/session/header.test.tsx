@@ -99,13 +99,14 @@ describe('change model', () => {
     ]);
     expect(ollama[1].map((e) => [e.label, e.state, e.selected, e.target])).toEqual([
       ['Local', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { tier: 'local' }],
+      ['Qwen 8B', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { model: 'qwen3:8b', backend: 'ollama' }],
       ['Llama 70B', { kind: 'restart', disabled: false, title: ON_OLLAMA }, false, { model: 'llama3:70b', backend: 'ollama' }],
     ]);
-    // Invariant: in the open picker only the entries that restart carry the restart mark: Local and Llama 70B, never the live Claude tiers.
+    // Invariant: in the open picker only the entries that restart carry the restart mark: Local, Qwen 8B and Llama 70B, never the live Claude tiers.
     const sub = await openModelPicker(base());
     expect(restartIcon(within(sub).getByRole('menuitem', { name: /Powerful/ }))).toBeNull();
     expect(restartIcon(within(sub).getByRole('menuitem', { name: /Local/ }))).not.toBeNull();
-    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(2);
+    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(3);
     expect(sub.textContent).toContain(RESTART_NOTE);
   });
 
@@ -121,17 +122,18 @@ describe('change model', () => {
     const [own, claude] = modelGroups(inst);
     expect(own[0]).toBe('ollama');
     expect(own[1].map((e) => [e.label, e.state.kind, e.state.title, e.selected, e.target])).toEqual([
-      ['Local', 'restart', ON_THIS_MODEL, true, { tier: 'local' }],
+      ['Local', 'restart', ON_THIS_MODEL, false, { tier: 'local' }],
+      ['Qwen 8B', 'restart', ON_THIS_MODEL, true, { model: 'qwen3:8b', backend: 'ollama' }],
       ['Llama 70B', 'restart', ON_THIS_MODEL, false, { model: 'llama3:70b', backend: 'ollama' }],
     ]);
     expect(claude[0]).toBe('claude');
     expect(claude[1].map((e) => [e.label, e.state.kind, e.state.disabled, e.state.title])).toEqual([
       ['Fast', 'restart', false, ON_CLAUDE], ['Powerful', 'restart', false, ON_CLAUDE],
     ]);
-    // Invariant: on a substitution session each of the four entries carries the restart mark, and nothing else in the picker does.
+    // Invariant: on a substitution session each of the five entries carries the restart mark, and nothing else in the picker does.
     const sub = await openModelPicker(inst);
-    for (const name of [/Local/, /Llama 70B/, /Fast/, /Powerful/]) expect(restartIcon(within(sub).getByRole('menuitem', { name }))).not.toBeNull();
-    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(4);
+    for (const name of [/Local/, /Qwen 8B/, /Llama 70B/, /Fast/, /Powerful/]) expect(restartIcon(within(sub).getByRole('menuitem', { name }))).not.toBeNull();
+    expect(sub.querySelectorAll('[data-restart-mark]')).toHaveLength(5);
     expect(sub.textContent).toContain(RESTART_NOTE);
   });
 
@@ -249,6 +251,9 @@ describe('change model', () => {
     expect(await note(base({ backend: 'ollama', model: 'qwen3:8b' }))).toBe(true);
     catalog({ tierBackend: ALL_ON('claude', 'claude-opus-5-5'), backendModels: { ollama: [] } });
     expect(await note(base())).toBe(true);
+    // A tier and a registered model on the running model: every entry still lands on it, so the note stays.
+    catalog({ tierBackend: ALL_ON('ollama', 'qwen3:8b'), backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }] } });
+    expect(await note(base({ backend: 'ollama', model: 'qwen3:8b' }))).toBe(true);
     // Controls: one registered model on another backend, or a tier on another model, is a switch.
     catalog({ tierBackend: ALL_ON('claude', 'claude-opus-5-5'), backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }] } });
     expect(await note(base())).toBe(false);
@@ -370,13 +375,46 @@ describe('change model', () => {
     expect(menuItem(sub, /Fast/)).toBe(before);
   });
 
-  it('a registered model that a tier on its backend already binds is offered once, as the tier', async () => {
-    catalog({ backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }, { model: 'gamma', label: 'Gamma' }] } });
+  it('a registered model a tier on its backend also binds is offered both as the tier and as the model; each sends its own frame', async () => {
     const ollama = new Map(modelGroups(base())).get('ollama')!;
-    expect(ollama.map((e) => e.label)).toEqual(['Local', 'Gamma']);
-    expect(ollama.filter((e) => e.model === 'qwen3:8b')).toHaveLength(1);
-    const sub = await openModelPicker(base());
-    expect(within(sub).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Fast', 'Powerful', 'Local', 'Gamma']);
+    expect(ollama.find((e) => e.label === 'Local')?.target).toEqual({ tier: 'local' });
+    expect(ollama.map((e) => [e.label, e.target])).toEqual([
+      ['Local', { tier: 'local' }],
+      ['Qwen 8B', { model: 'qwen3:8b', backend: 'ollama' }],
+      ['Llama 70B', { model: 'llama3:70b', backend: 'ollama' }],
+    ]);
+    expect(ollama.filter((e) => e.model === 'qwen3:8b')).toHaveLength(2);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let sub = await openModelPicker(base());
+      expect(within(sub).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Fast', 'Powerful', 'Local', 'Qwen 8B', 'Llama 70B']);
+      await act(async () => { fireEvent.click(menuItem(sub, /Qwen 8B/)); });
+      expect(sent).toEqual([['model', { id: 'inst-1', model: 'qwen3:8b', backend: 'ollama' }, { ack: true }]]);
+      cleanup();
+      sent.length = 0;
+      sub = await openModelPicker(base());
+      await act(async () => { fireEvent.click(menuItem(sub, /Local/)); });
+      expect(sent).toEqual([['model', { id: 'inst-1', tier: 'local' }, { ack: true }]]);
+      expect(errors.mock.calls.filter((c) => /same key/.test(String(c[0])))).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('when a tier and a listed registered model both resolve to the running model, only the registered entry carries the ✓', async () => {
+    const checked = (sub: HTMLElement) => within(sub).getAllByRole('menuitem').filter((i) => i.querySelector('svg:not([data-restart-mark])')).map((i) => i.textContent);
+    const inst = base({ backend: 'ollama', model: 'qwen3:8b' });
+    const group = () => new Map(modelGroups(inst)).get('ollama')!;
+    expect(group().find((e) => e.label === 'Llama 70B')?.selected).toBe(false);
+    expect(group().map((e) => [e.label, e.selected])).toEqual([['Local', false], ['Qwen 8B', true], ['Llama 70B', false]]);
+    expect(checked(await openModelPicker(inst))).toEqual(['Qwen 8B']);
+    cleanup();
+    catalog({ backendModels: { ollama: [{ model: 'llama3:70b', label: 'Llama 70B' }] } });
+    expect(group().map((e) => [e.label, e.selected])).toEqual([['Local', true], ['Llama 70B', false]]);
+    expect(checked(await openModelPicker(inst))).toEqual(['Local']);
+    cleanup();
+    catalog();
+    expect(checked(await openModelPicker(base()))).toEqual(['Powerful']);
   });
 
   it('a models payload applied while the picker is open replaces its registered models: an added one appears, a removed one goes', async () => {

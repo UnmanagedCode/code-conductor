@@ -74,12 +74,15 @@ export function modelEntryState(inst: Instance, binding: { backend?: string; mod
   return { kind: 'restart' as const, disabled: busy, title };
 }
 
-type Entry = { target: { tier?: string; model?: string; backend?: string }; label: string; state: ReturnType<typeof modelEntryState>; selected: boolean; model: string };
+type Entry = { target: { tier?: string; model?: string; backend?: string }; label: string; state: ReturnType<typeof modelEntryState>; running: boolean; selected: boolean; model: string };
 
 /**
  * The picker's entries: enabled tiers grouped by backend, the session's own
- * first, then every substitution backend's registered models that no tier on
- * that backend already binds. `target` is what a click sends: `{tier}` or `{model, backend}`.
+ * first, then every substitution backend's registered models, listed even when
+ * a tier there binds the same model (the two picks send different frames).
+ * `target` is what a click sends: `{tier}` or `{model, backend}`. `running` is
+ * "lands on the running model"; `selected` is "carries the ✓": the registered
+ * entry when one is listed, else the tier, since the session records no tier.
  */
 export function modelGroups(inst: Instance): [string, Entry[]][] {
   const runningBackend = runningBackendOf(inst);
@@ -93,18 +96,21 @@ export function modelGroups(inst: Instance): [string, Entry[]][] {
     const binding = getActiveTierBackend(tier);
     const id = backendIdOf(binding);
     if (!groups.has(id)) groups.set(id, []);
-    groups.get(id)!.push({ target: { tier }, label: getTierLabel(tier), state: modelEntryState(inst, binding), selected: isRunning(id, binding.model), model: binding.model });
+    const running = isRunning(id, binding.model);
+    groups.get(id)!.push({ target: { tier }, label: getTierLabel(tier), state: modelEntryState(inst, binding), running, selected: running, model: binding.model });
   }
   for (const { id } of getBackends()) {
     if (id === CLAUDE_BACKEND) continue;
     if (!groups.has(id)) groups.set(id, []);
     const group = groups.get(id)!;
-    const tierModels = new Set(group.map((e) => e.model));
+    const registered = new Set<string>();
     for (const { model, label } of getBackendModels(id)) {
-      if (tierModels.has(model)) continue;
       const binding = { backend: id, model };
-      group.push({ target: binding, label, state: modelEntryState(inst, binding), selected: isRunning(id, model), model });
+      const running = isRunning(id, model);
+      registered.add(model);
+      group.push({ target: binding, label, state: modelEntryState(inst, binding), running, selected: running, model });
     }
+    for (const e of group) if (e.target.tier !== undefined && registered.has(e.model)) e.selected = false;
   }
   return [...groups].filter(([, e]) => e.length);
 }
@@ -292,7 +298,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                         ))}
                       </React.Fragment>
                     ))}
-                    {!groups.some(([, es]) => es.some((e) => !e.selected)) && (
+                    {!groups.some(([, es]) => es.some((e) => !e.running)) && (
                       <div className="px-2 py-1.5 text-[11px] text-muted-foreground">No other model is available. Add one in Settings → Models.</div>
                     )}
                     {restartShown && <div className="px-2 py-1.5 text-[11px] text-muted-foreground">↻ restarts the session · the conversation is kept</div>}
