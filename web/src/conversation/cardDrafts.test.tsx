@@ -2,8 +2,8 @@
 // and the question card's tab, picks and note. A full-page view (Settings, review, …)
 // unmounts the transcript and mounts it again on the same model, and every card comes back
 // as the reader left it; a sent plan keeps the feedback it sent, and one whose send failed
-// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session)
-// starts every card empty. Typing in the middle of a card's text keeps the caret.
+// re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session
+// and back) keeps every card's input; another session's cards start empty. Typing in the middle of a card's text keeps the caret.
 // A card that paged in from an older page re-opens after a failed send the same way.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
@@ -22,7 +22,7 @@ vi.mock('@shared/ws', () => ({
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { bus } from '@shared/ws';
-import { conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
+import { cardInputs, conversation, lazyHistory, selectInstance, startController, stopController } from '@/app/controller';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
@@ -157,6 +157,7 @@ afterEach(() => {
   act(() => {
     appStore.set({ instances: [], activeId: null });
     conversation.clear();
+    cardInputs.reset();
     lazyHistory.reset();
   });
 });
@@ -219,20 +220,20 @@ describe('a full-page view round trip', () => {
 });
 
 describe('a transcript replaced in place', () => {
-  it('a reconnect\'s snapshot starts every card empty', async () => {
+  it('a reconnect\'s snapshot keeps every card as the reader left it', async () => {
     const el = await setAndRemount();
     await snapshot('i1', TRANSCRIPT);
-    expect(cards(el)).toEqual(START);
+    expect(cards(el)).toEqual(SET);
   });
 
-  it('another session selected starts every card empty, and so does coming back', async () => {
+  it('another session\'s cards start empty, and coming back finds every card as the reader left it', async () => {
     const el = await setAndRemount();
     act(() => { selectInstance('i2'); });
     await snapshot('i2', TRANSCRIPT);
     expect(cards(el), 'the other session').toEqual(START);
     act(() => { selectInstance('i1'); });
     await snapshot('i1', TRANSCRIPT);
-    expect(cards(el), 'back on the first').toEqual(START);
+    expect(cards(el), 'back on the first').toEqual(SET);
   });
 });
 
@@ -365,6 +366,25 @@ describe('a card from an older page', () => {
     const [again] = olderAndNewer(el);
     return { feedback: textbox(again).value, editable: !textbox(again).disabled };
   }
+
+  it('a question card and a plan card that exist only on an older page keep their input when the tail is replaced and the page loads again', async () => {
+    const { el } = mount();
+    await showPaged('i1');
+    const [olderPlan] = olderAndNewer(el);
+    const [card] = questions(el);
+    await type(textbox(olderPlan), 'older plan feedback');
+    await click(card.querySelector('[data-option="Banana"]')!);
+    await type(textbox(card), 'older note');
+    // A reconnect: the snapshot's tail no longer carries the older cards; they page in again.
+    await showPaged('i1');
+    const [again] = olderAndNewer(el);
+    const [cardAgain] = questions(el);
+    expect(textbox(again).value, 'the older plan\'s feedback').toBe('older plan feedback');
+    expect({
+      picked: [...cardAgain.querySelectorAll('[data-option][aria-pressed="true"]')].map((b) => b.getAttribute('data-option')),
+      note: textbox(cardAgain).value,
+    }, 'the older question\'s pick and note').toEqual({ picked: ['Banana'], note: 'older note' });
+  });
 
   it('another session selected and coming back pages the older card in again, awaiting a decision', async () => {
     expect(await lockThenReset(async () => {

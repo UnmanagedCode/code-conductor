@@ -16,6 +16,7 @@ import { promptOrigin } from '@shared/promptOrigin';
 import { normalizeQuestions, parseCanonicalUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import type { CompletedTask, SystemData, UiEvent, UiEventOf } from '@shared/uiEvent';
 import { splitResultContent } from './format';
+import type { CardInputs } from './cardInputs';
 
 // ── Node types ───────────────────────────────────────────────────────────
 
@@ -221,6 +222,8 @@ export type ModelOptions = {
   answeredQuestions?: Map<string | null, string> | null;
   questionNodes?: Map<string | null, QuestionNode> | null;
   planNodes?: Map<string | null, PlanNode> | null;
+  /** Where a card's unsent input outlives a transcript replaced in place; without it the input lives on the node alone. */
+  cardInputs?: CardInputs | null;
   /** Fired when an outer assistant text block finalizes (TTS auto-speak). */
   onAssistantText?: ((node: TextNode) => void) | null;
 };
@@ -240,6 +243,7 @@ export class ConversationModel {
   private currentSegmentGetter: (() => string | null) | null;
   onAssistantText: ((node: TextNode) => void) | null;
 
+  readonly cardInputs: CardInputs | null;
   questionNodes: Map<string | null, QuestionNode>;
   planNodes: Map<string | null, PlanNode>;
   answeredQuestions: Map<string | null, string>;
@@ -276,6 +280,7 @@ export class ConversationModel {
     this.answeredQuestions = opts.answeredQuestions ?? new Map();
     this.questionNodes = opts.questionNodes ?? new Map();
     this.planNodes = opts.planNodes ?? new Map();
+    this.cardInputs = opts.cardInputs ?? null;
     this.onAssistantText = opts.onAssistantText ?? null;
   }
 
@@ -441,6 +446,7 @@ export class ConversationModel {
     if (labels.length === 0) node.answers[idx] = draft.length > 0 ? { kind: 'custom', text: draft } : { kind: 'none' };
     else if (q.multiSelect) node.answers[idx] = draft.length > 0 ? { kind: 'multi', labels, note: draft } : { kind: 'multi', labels };
     else node.answers[idx] = draft.length > 0 ? { kind: 'option', label: labels[0], note: draft } : { kind: 'option', label: labels[0] };
+    this.cardInputs?.saveQuestion(node);
     this.touch(node);
   }
 
@@ -456,11 +462,13 @@ export class ConversationModel {
     } else {
       node.answers[idx] = text.length === 0 ? { kind: 'none' } : { kind: 'custom', text };
     }
+    this.cardInputs?.saveQuestion(node);
     this.touchNow(node);
   }
 
   questionTab(node: QuestionNode, idx: number) {
     node.tab = idx;
+    if (!node.answered) this.cardInputs?.saveQuestion(node);
     this.touch(node);
   }
 
@@ -498,12 +506,14 @@ export class ConversationModel {
 
   planFeedback(node: PlanNode, text: string) {
     node.feedback = text;
+    this.cardInputs?.savePlan(node.ev.toolUseId, text);
     this.touchNow(node);
   }
 
   planSubmitted(node: PlanNode, decision: 'approve' | 'reject') {
     node.submitted = decision;
     node.failedReason = null;
+    this.cardInputs?.dropPlan(node.ev.toolUseId);
     this.touch(node);
   }
 
@@ -512,6 +522,7 @@ export class ConversationModel {
     if (!node || !node.submitted || node.autoApproved) return;
     node.submitted = false;
     node.failedReason = reason;
+    this.cardInputs?.savePlan(toolUseId, node.feedback);
     this.touch(node);
   }
 
@@ -903,7 +914,7 @@ export class ConversationModel {
 
   private renderPlanRequest(ev: UiEventOf<'plan_request'>) {
     if (this.planNodes.has(ev.toolUseId)) return;
-    const node = this.make<PlanNode>({ type: 'plan', ev, autoApproved: !!ev.autoApproved, submitted: false, failedReason: null, feedback: '' }, this);
+    const node = this.make<PlanNode>({ type: 'plan', ev, autoApproved: !!ev.autoApproved, submitted: false, failedReason: null, feedback: this.cardInputs?.plan(ev.toolUseId) ?? '' }, this);
     this.planNodes.set(ev.toolUseId, node);
     this.pushRoot(node);
     const w = this.activeWrap;
@@ -924,6 +935,8 @@ export class ConversationModel {
       tab: 0,
       submitted: false, answered: false, failedReason: null,
     }, this);
+    const saved = this.cardInputs?.question(ev.toolUseId);
+    if (saved) Object.assign(node, saved);
     this.questionNodes.set(ev.toolUseId, node);
     const answered = this.answeredQuestions.get(ev.toolUseId);
     if (answered !== undefined) this.lockQuestion(node, answersToLock(questions, answered));
@@ -943,6 +956,7 @@ export class ConversationModel {
     node.submitted = true;
     node.answered = true;
     node.failedReason = null;
+    this.cardInputs?.dropQuestion(node.toolUseId);
     this.touch(node);
   }
 
@@ -1094,6 +1108,7 @@ export class ConversationModel {
       answeredQuestions: this.answeredQuestions,
       questionNodes: this.questionNodes,
       planNodes: this.planNodes,
+      cardInputs: this.cardInputs,
     });
     page.applyEvents(events);
     // Before finalizing and the splice's merge, so it lands where the page's own copy would.

@@ -10,6 +10,7 @@ import { syncRoute, routeStore } from '@/state/route';
 import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
 import { ConversationModel } from '@/conversation/model';
+import { CardInputs } from '@/conversation/cardInputs';
 import { createLazyHistory } from '@/conversation/lazyHistory';
 import { createStickyPrompt } from '@/conversation/stickyPrompt';
 import { getTaskTracker, getUsageTracker, rateLimits, trackerSignal } from './trackers';
@@ -21,7 +22,11 @@ import { startPristineWatch } from './pristine';
 
 export { send };
 
+/** Keyed by the public session id, which holds across resume and respawn, as composer drafts are. */
+export const cardInputs = new CardInputs(() => activeInstance(appStore.get())?.sessionId ?? null);
+
 export const conversation = new ConversationModel({
+  cardInputs,
   onAssistantText: (node) => emit('assistantText', { text: node.buffer, nodeId: node.id }),
 });
 
