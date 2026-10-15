@@ -92,8 +92,11 @@ export type UserNode = Base & {
   /** The prompt's view, and its fold (skill, wake, renew or forward) with the fold body's view. */
   reader: { view: TextView; foldOpen: boolean; foldView: TextView };
 };
-/** `reader.open`: a task notification's fold. */
-export type SystemNode = Base & { type: 'system'; ev: UiEventOf<'system'>; reader: { open: boolean } };
+/**
+ * `reader.open`: a task notification's fold. `inCard`: a task notification whose Agent card holds the
+ * agent's own transcript, so its report already shows there.
+ */
+export type SystemNode = Base & { type: 'system'; ev: UiEventOf<'system'>; inCard: boolean; reader: { open: boolean } };
 export type TurnEndNode = Base & { type: 'turn_end'; ev: UiEventOf<'turn_end'> };
 export type PlanNode = Base & {
   type: 'plan';
@@ -640,7 +643,7 @@ export class ConversationModel {
         if (this.isSub) this.reconcileAssistantMessage(ev);
         return;
       case 'raw':
-        return this.pushRoot(this.make<SystemNode>({ type: 'system', ev: { kind: 'system', subtype: 'raw', data: { line: ev.line } }, reader: { open: false } }, this));
+        return this.pushRoot(this.make<SystemNode>({ type: 'system', ev: { kind: 'system', subtype: 'raw', data: { line: ev.line } }, inCard: false, reader: { open: false } }, this));
       // Drawn by nothing in the transcript (the header trackers read some of them).
       case 'message_start':
       case 'context_usage':
@@ -682,7 +685,10 @@ export class ConversationModel {
       }
     }
     if (!shouldRenderSystem(ev)) return;
-    this.pushRoot(this.make<SystemNode>({ type: 'system', ev, reader: { open: false } }, this));
+    // An Agent's children (its final report included) precede its notification, live and on replay alike.
+    const card = ev.subtype === 'task_notification' && ev.toolUseId ? this.toolBlocks.get(ev.toolUseId) : null;
+    const inCard = card?.name === 'Agent' && card.sub != null;
+    this.pushRoot(this.make<SystemNode>({ type: 'system', ev, inCard, reader: { open: false } }, this));
   }
 
   // ── Assistant envelopes and action groups ─────────────────────────────

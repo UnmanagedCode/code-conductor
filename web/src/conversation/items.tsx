@@ -422,13 +422,24 @@ function SystemLineView({ node, model }: { node: SystemNode; model: Conversation
   if (ev.subtype === 'task_notification') {
     const d = ev.data ?? {};
     const failed = d.status === 'failed';
+    const tone = failed ? 'warn' : 'muted';
+    const box = cn('group/tn rounded-lg border px-3 py-2 text-sm', failed ? 'border-warning/40 bg-warning/8' : 'bg-card');
+    const icon = <ListChecksIcon className={cn('size-4', failed ? 'text-warning' : 'text-muted-foreground')} />;
+    if (node.inCard) {
+      return (
+        <div className={cn(box, 'flex items-center gap-2')} data-subtype="task_notification" data-tone={tone}>
+          {icon}
+          <span data-headline>{taskNotificationHeadline(d)}</span>
+        </div>
+      );
+    }
     return (
       <details
         open={node.reader.open}
         onToggle={(e) => { if (e.currentTarget.open !== node.reader.open) model.setReader(node, { open: e.currentTarget.open }); }}
-        className={cn('group/tn rounded-lg border px-3 py-2 text-sm', failed ? 'border-warning/40 bg-warning/8' : 'bg-card')} data-subtype="task_notification" data-tone={failed ? 'warn' : 'muted'}>
+        className={box} data-subtype="task_notification" data-tone={tone}>
         <summary className="flex cursor-pointer items-center gap-2 select-none">
-          <ListChecksIcon className={cn('size-4', failed ? 'text-warning' : 'text-muted-foreground')} />
+          {icon}
           <span data-headline>{taskNotificationHeadline(d)}</span>
         </summary>
         <div className="mt-2 space-y-1 text-muted-foreground" data-fold-body>
