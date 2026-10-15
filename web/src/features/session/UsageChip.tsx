@@ -2,7 +2,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useStore, useSignal } from '@/state/createStore';
 import type { Instance } from '@/state/types';
 import {
-  formatTokens, formatPct, formatDuration, formatResetTime, rlChipSegment, RL_BUCKET_KEYS, RL_WINDOW_LABEL, fmtCost,
+  formatTokens, formatPct, formatDuration, formatResetTime, formatResetDateTime, rlChipSegment, RL_BUCKET_KEYS, RL_WINDOW_LABEL, fmtCost,
 } from '@shared/usage';
 import { CLAUDE_BACKEND } from '@shared/models';
 import { getUsageTracker, rateLimits, trackerSignal } from '@/app/trackers';
@@ -58,10 +58,11 @@ export function UsageChip({ inst }: { inst: Instance }) {
     for (const key of RL_BUCKET_KEYS) {
       const b = account[key];
       if (!b) continue;
+      const fmt = key === 'five_hour' ? formatResetTime : formatResetDateTime;
       buckets.push({
         label: RL_WINDOW_LABEL[key] ?? key,
         util: typeof b.utilization === 'number' ? b.utilization / 100 : null,
-        reset: b.resets_at ? formatResetTime(new Date(b.resets_at).getTime() / 1000) : null,
+        reset: b.resets_at ? fmt(new Date(b.resets_at).getTime() / 1000) : null,
       });
     }
     const fable = account.limits?.find((l: any) => l.scope?.model?.display_name === 'Fable');
@@ -69,7 +70,7 @@ export function UsageChip({ inst }: { inst: Instance }) {
       buckets.push({
         label: '7-day Fable',
         util: typeof fable.percent === 'number' ? fable.percent / 100 : null,
-        reset: fable.resets_at ? formatResetTime(new Date(fable.resets_at).getTime() / 1000) : null,
+        reset: fable.resets_at ? formatResetDateTime(new Date(fable.resets_at).getTime() / 1000) : null,
       });
     }
   }

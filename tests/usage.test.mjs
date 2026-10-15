@@ -449,6 +449,35 @@ test('formatResetWhen: near reset matches formatResetTime; far reset (>24h) adds
   assert.ok(far.startsWith(`resets ${weekday} `), `expected weekday prefix, got "${far}"`);
 });
 
+// Pins: a 7-day reset names its date, so two resets a week apart never read the same (time-only does).
+test('formatResetDateTime: names the date, so resets a week apart differ; formatResetTime does not', async () => {
+  const { formatResetDateTime, formatResetTime } = await import(USAGE_URL);
+  assert.equal(typeof formatResetDateTime, 'function');
+  const prevTz = process.env.TZ;
+  process.env.TZ = 'UTC';
+  try {
+    assert.equal(formatResetDateTime(null), null);
+    assert.equal(formatResetDateTime(NaN), null);
+    assert.equal(formatResetDateTime(0), null);
+    assert.equal(formatResetDateTime(Infinity), null); // pins: a non-finite instant is refused, not rendered as "Invalid Date"
+    const a = Date.UTC(2026, 5, 14, 12) / 1000;
+    const b = a + 7 * 86400;
+    assert.equal(formatResetTime(a), formatResetTime(b));
+    const da = formatResetDateTime(a);
+    assert.notEqual(da, formatResetDateTime(b));
+    assert.ok(da.startsWith('resets '), da);
+    const d = new Date(a * 1000);
+    // the day-of-month and month as they read inside a date (genitive-month locales differ from the standalone month)
+    assert.ok(da.includes(d.toLocaleDateString([], { day: 'numeric', month: 'short' })), da);
+    // pins: the weekday is named
+    assert.ok(da.includes(d.toLocaleDateString([], { weekday: 'short' })), da);
+    // pins: the clock time is named, identical to the time-only formatter's
+    assert.ok(da.includes(formatResetTime(a).replace('resets ', '')), da);
+  } finally {
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
+  }
+});
+
 // --- DOM-level test: chip threshold transitions ---
 
 async function setupDOM() {
