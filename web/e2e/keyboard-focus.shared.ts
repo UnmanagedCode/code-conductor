@@ -151,8 +151,18 @@ function focusEdge(scope: Locator, edge: 'first' | 'last') {
   }, edge);
 }
 
-/** Escape, once no tooltip is left mounted: a tooltip Tab opened and is still closing takes the Escape first. */
+/** Escape as a person presses it to close the open modal. A tooltip open on the focused control is a layer above the
+ *  modal and its Escape dismisses only the tooltip, so that Escape comes first and must leave every open dialog open;
+ *  a tooltip still closing would take the Escape too, so the modal's Escape waits until none is mounted. */
 export async function escape(page: Page) {
+  const shown = page.locator('[data-slot="tooltip-trigger"]:focus:not([data-state="closed"])');
+  if (await shown.count()) {
+    const dialogs = page.locator('[role="dialog"][data-state="open"]');
+    const open = await dialogs.count();
+    await page.keyboard.press('Escape');
+    await expect(shown, "Escape dismisses the focused control's tooltip").toHaveCount(0);
+    await expect(dialogs, "the tooltip's Escape leaves the modal open").toHaveCount(open);
+  }
   await expect(page.locator('[data-slot="tooltip-content"]')).toHaveCount(0);
   await page.keyboard.press('Escape');
 }
