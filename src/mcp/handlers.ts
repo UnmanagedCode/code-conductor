@@ -2274,7 +2274,7 @@ export async function listConductorConventions() {
 // isTextBearing stays here — it's a handler-side filter, not part of the
 // reconstruction engine.
 function isTextBearing(m: ReconMessage): boolean {
-  return m.text.length > 0 || hasPlanOrQuestions(m);
+  return m.text.length > 0 || !!m.narration || hasPlanOrQuestions(m);
 }
 
 // Boundary line prefixed into each get_recent_messages body when more than one
@@ -2301,17 +2301,21 @@ function renderQuestions(questions: Question[]): string {
   return lines.join('\n');
 }
 
-// Assemble a message's body from its prose/plan/questions segments, ordered by
-// the arrival-order seq messageReconstruction.ts records (textSeq/planSeq/
-// questionsSeq) — NOT hardcoded prose-then-plan — so the body reflects the
-// order those blocks actually occurred in the turn. A segment missing its seq
-// (shouldn't happen) sorts last rather than throwing.
+// Assemble a message's body from its prose/narration/plan/questions segments,
+// ordered by the arrival-order seq messageReconstruction.ts records (textSeq/
+// narrationSeq/planSeq/questionsSeq) — NOT hardcoded prose-then-plan — so the
+// body reflects the order those blocks actually occurred in the turn. A segment
+// missing its seq (shouldn't happen) sorts last rather than throwing. Narration
+// rides under its own `--- narration ---` header so a reader never takes the
+// worker's progress note for its answer.
 //
-// `questionsText`, when given, replaces the rendered questions segment — the
-// result-budget fit passes a capped rendering (renderRecentMessages).
-function renderMessageBody(m: ReconMessage, cappedText: string, questionsText?: string): string {
+// `questionsText` / `narrationText`, when given, replace the rendered questions
+// segment / the narration — the result-budget fit and the forward pass capped
+// renderings (renderRecentMessages, renderForwardFrame).
+function renderMessageBody(m: ReconMessage, cappedText: string, questionsText?: string, narrationText?: string): string {
   const segments: Array<{ pos: number; text: string }> = [];
   if (cappedText) segments.push({ pos: m.textSeq ?? Infinity, text: cappedText });
+  if (m.narration) segments.push({ pos: m.narrationSeq ?? Infinity, text: `--- narration ---\n${narrationText ?? m.narration}` });
   if (m.plan || m.planPath) {
     // The header names the plan file when one backs this plan, so a fresh
     // worker can be handed the document itself rather than a paraphrase.
@@ -2353,7 +2357,7 @@ function renderForwardFrame(messages: ReconMessage[], guidingText: string): stri
     const prose = capped.truncated
       ? (capped.text ? `${capped.text}\n${forwardTruncationMarker(m.planPath)}` : forwardTruncationMarker(m.planPath))
       : capped.text;
-    return renderMessageBody(m, prose);
+    return renderMessageBody(m, prose, undefined, m.narration ? capText(m.narration, MSG_TEXT_CAP).text : undefined);
   });
   return buildForwardFrame({ messages: bodies, instruction: guidingText });
 }
@@ -2369,6 +2373,11 @@ function renderForwardFrame(messages: ReconMessage[], guidingText: string): stri
 // produces a false-empty result. Output is the multi-block payload: a metadata
 // block + one raw text body per message (block k+1 ↔ messages[k]).
 //
+// NARRATION (src/narration.ts) is in every body by default as a
+// `--- narration ---` segment, counted by meta's narrationChars: never a
+// blocks[] entry, never gated by includeThinking, and enough on its own to make
+// a message text-bearing.
+//
 // DEFAULT-CALL BONDING: when `count` was omitted (not merely passed as 1), a
 // turn can split its prose and its ExitPlanMode/AskUserQuestion tool call
 // across separate assistant messages (the CLI starts a fresh message after the
@@ -2383,8 +2392,8 @@ function renderForwardFrame(messages: ReconMessage[], guidingText: string): stri
 // RESULT BUDGET (this MCP path only — send_prompt's forward and the idle-wake
 // fold are not MCP results and keep the plain selection + caps): a rendering
 // over MCP_RESULT_CHAR_BUDGET is fitted in stages, stopping at the first that
-// fits — (1) as built; (2) re-rendered with every string (prose, plan, questions,
-// block inputs, thinking) capped shorter, halving down to TOOL_ARG_VALUE_CAP, each
+// fits — (1) as built; (2) re-rendered with every string (prose, narration, plan,
+// questions, block inputs, thinking) capped shorter, halving down to TOOL_ARG_VALUE_CAP, each
 // cut flagged by its existing field or planTruncated/questionsTruncated; (3) the oldest messages
 // dropped, a plan/questions message last, reported as omittedForBudget + hint;
 // and if the one message left still overflows, its trailing blocks dropped
@@ -2531,8 +2540,9 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 }
 
 // The rendering half of buildRecentMessages. `stringCap`, when set, caps every
-// string the result carries — prose, the plan text (planTruncated), the rendered
-// questions (questionsTruncated), tool inputs and thinking — below their usual
+// string the result carries — prose, narration (narrationTruncated), the plan
+// text (planTruncated), the rendered questions (questionsTruncated), tool inputs
+// and thinking — below their usual
 // MSG_TEXT_CAP; unset, the rendering is
 // exactly the uncapped-by-budget one. Only getRecentMessages' budget fit sets it.
 function renderRecentMessages(
@@ -2562,7 +2572,8 @@ function renderRecentMessages(
     const plan = stringCap !== undefined && m.plan ? capText(m.plan, stringCap) : null;
     const questions = stringCap !== undefined && m.questions
       ? capText(renderQuestions(m.questions), stringCap) : null;
-    const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text, questions?.text);
+    const narration = m.narration ? capText(m.narration, textCap) : null;
+    const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text, questions?.text, narration?.text);
     const body = total > 1
       ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
       : rendered;
@@ -2574,6 +2585,10 @@ function renderRecentMessages(
       textChars,
       textTruncated: capped.truncated,
     };
+    if (narration) {
+      entry.narrationChars = (m.narration ?? '').length;
+      entry.narrationTruncated = narration.truncated;
+    }
     if (m.plan || m.planPath) entry.hasPlan = true;
     if (plan?.truncated) entry.planTruncated = true;
     if (m.planPath) entry.planPath = m.planPath;

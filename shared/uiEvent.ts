@@ -134,7 +134,9 @@ interface CallUsageEvent extends UiEventBase {
 interface TextDeltaEvent extends UiEventBase, BlockAddress { kind: 'text_delta'; text: string }
 interface TextEndEvent extends UiEventBase, BlockAddress { kind: 'text_end' }
 interface ThinkingStartEvent extends UiEventBase, BlockAddress { kind: 'thinking_start' }
-interface ThinkingDeltaEvent extends UiEventBase, BlockAddress { kind: 'thinking_delta'; text: string }
+// `narration` is set on every delta of a narration block (src/narration.ts),
+// live and on replay; the block's thinking_start / thinking_end carry nothing.
+interface ThinkingDeltaEvent extends UiEventBase, BlockAddress { kind: 'thinking_delta'; text: string; narration?: true }
 interface ThinkingEndEvent extends UiEventBase, BlockAddress { kind: 'thinking_end' }
 interface ThinkingRedactedEvent extends UiEventBase, BlockAddress { kind: 'thinking_redacted'; estimatedTokens?: number }
 interface ToolUseStartEvent extends UiEventBase, BlockAddress {

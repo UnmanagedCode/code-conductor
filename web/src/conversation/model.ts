@@ -32,6 +32,8 @@ type ParentRef = NodeT | ConversationModel | null;
 export type TextView = 'rendered' | 'raw';
 
 export type TextNode = Base & { type: 'text'; buffer: string; finalized: boolean };
+/** A progress note Claude sends as thinking straight after a redacted block: shown in the flow, never copied or spoken. */
+export type NarrationNode = Base & { type: 'narration'; buffer: string; finalized: boolean };
 export type ThinkingNode = Base & { type: 'thinking'; buffer: string; finalized: boolean; redacted: boolean; tokens: number; reader: { open: boolean } };
 export type ResultNode = Base & {
   type: 'result';
@@ -62,7 +64,7 @@ export type ToolNode = Base & {
 export type CallUsageNode = Base & { type: 'call_usage'; ev: UiEventOf<'call_usage'> };
 export type GroupChild = ThinkingNode | ToolNode | ResultNode | CallUsageNode;
 export type GroupNode = Base & { type: 'group'; children: GroupChild[]; open: boolean; userToggled: boolean };
-export type AssistantChild = TextNode | GroupNode | CallUsageNode;
+export type AssistantChild = TextNode | NarrationNode | GroupNode | CallUsageNode;
 export type AssistantNode = Base & {
   type: 'assistant';
   children: AssistantChild[];
@@ -265,7 +267,7 @@ export class ConversationModel {
   questionNodes: Map<string | null, QuestionNode>;
   planNodes: Map<string | null, PlanNode>;
   answeredQuestions: Map<string | null, string>;
-  private blocksByKey = new Map<string, TextNode | ThinkingNode | ToolNode>();
+  private blocksByKey = new Map<string, TextNode | NarrationNode | ThinkingNode | ToolNode>();
   toolBlocks = new Map<string | null, ToolNode>();
   private seenSeq = new Set<number>();
   private messageWraps = new Map<string | null, AssistantNode>();
@@ -445,7 +447,7 @@ export class ConversationModel {
   /** For a static batch (a lazy page): settle every block still streaming. */
   finalizeDanglingBlocks() {
     for (const b of this.blocksByKey.values()) {
-      if (b.type === 'text' || b.type === 'thinking') this.finalizeNode(b);
+      if (b.type !== 'tool') this.finalizeNode(b);
     }
     for (const t of this.toolBlocks.values()) {
       if (t.status === 'streaming' || t.status === 'running') {
@@ -644,7 +646,7 @@ export class ConversationModel {
       case 'text_delta': return this.appendStreaming(ev, 'text', ev.text ?? '');
       case 'text_end': return this.finalizeBlock(ev);
       case 'thinking_start': return this.renderThinkingStart(ev);
-      case 'thinking_delta': return this.appendStreaming(ev, 'thinking', ev.text ?? '');
+      case 'thinking_delta': return ev.narration ? this.appendNarration(ev) : this.appendStreaming(ev, 'thinking', ev.text ?? '');
       case 'thinking_end': return this.finalizeBlock(ev);
       case 'thinking_redacted': return this.renderThinkingRedacted(ev);
       case 'tool_use_start': return this.renderToolStart(ev);
@@ -828,9 +830,41 @@ export class ConversationModel {
     this.touch(block);
   }
 
-  private finalizeNode(block: TextNode | ThinkingNode) {
+  /**
+   * A flagged delta of a narration block. Its thinking_start already put an empty thinking node in the open group:
+   * that node leaves the group (and an emptied group goes) and the note joins the flow like prose, closing the group.
+   */
+  private appendNarration(ev: UiEventOf<'thinking_delta'>) {
+    const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:thinking`;
+    let block = this.blocksByKey.get(key);
+    if (block?.type !== 'narration') {
+      if (block?.type === 'thinking') this.removeFromGroup(block);
+      block = this.make<NarrationNode>({ type: 'narration', buffer: '', finalized: false }, null);
+      this.blocksByKey.set(key, block);
+      this.appendToWrap(this.ensureMessageWrap(ev.msgId), block, false);
+      if (this.activeThinkingKey === key) this.activeThinkingKey = null;
+    }
+    block.buffer += ev.text;
+    this.touch(block);
+  }
+
+  /** Take a grouped node out of its group, and the group out of its bubble once it is empty. */
+  private removeFromGroup(node: GroupChild) {
+    const g = node.parent as GroupNode;
+    g.children = g.children.filter((c) => c !== node);
+    if (g.children.length) {
+      this.touch(g);
+      return;
+    }
+    const wrap = g.parent as AssistantNode;
+    wrap.children = wrap.children.filter((c) => c !== g);
+    if (wrap.openGroup === g) wrap.openGroup = null;
+    this.touch(wrap);
+  }
+
+  private finalizeNode(block: TextNode | NarrationNode | ThinkingNode) {
     if (block.finalized) return false;
-    if (block.type === 'text' && !block.buffer.trim()) return false;
+    if ((block.type === 'text' || block.type === 'narration') && !block.buffer.trim()) return false;
     if (block.type === 'thinking' && block.redacted) return false;
     block.finalized = true;
     this.touch(block);
@@ -840,7 +874,7 @@ export class ConversationModel {
   private finalizeBlock(ev: BlockRef) {
     const t = ev.kind === 'text_end' ? 'text' : 'thinking';
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${t}`;
-    const block = this.blocksByKey.get(key) as TextNode | ThinkingNode | undefined;
+    const block = this.blocksByKey.get(key) as TextNode | NarrationNode | ThinkingNode | undefined;
     if (block) this.finalizeNode(block);
     if (t === 'thinking') this.activeThinkingKey = null;
     if (t === 'text' && !this.isSub && block?.type === 'text' && block.buffer) this.onAssistantText?.(block);

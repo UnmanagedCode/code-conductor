@@ -1024,26 +1024,28 @@ export function buildTools(): Tool[] {
         'send_prompt({forward}) relays the whole message verbatim; `questionCount` (int) ' +
         'flags a turn that called AskUserQuestion, with the number of questions — these are presence markers only, ' +
         'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
-        'By default, messages are returned when they have text, a plan, or questions — ' +
+        'By default, messages are returned when they have text, narration, a plan, or questions — ' +
         'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
         'include every assistant message regardless AND to emit tool inputs verbatim (see `blocks[].input` ' +
         'below). Thinking blocks are excluded by default; ' +
-        'set `includeThinking` to true to include them in `blocks[]`. `count` applies to the filtered set. ' +
+        'set `includeThinking` to true to include them in `blocks[]`. NARRATION — a thinking block Claude sends straight after a ' +
+        'redacted one as a progress note — is never in `blocks[]` and needs no flag: it is always in the body (see OUTPUT). ' +
+        '`count` applies to the filtered set. ' +
         'DISK-BACKED & ring-first: served from the in-memory ring on the hot path; if the ring\'s retained ' +
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
         'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
         'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
         'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, hasPlan?, planTruncated?, planPath?, questionCount?, questionsTruncated?, blocks?, blocksOmitted?}], ' +
+        'textTruncated, narrationChars?, narrationTruncated?, hasPlan?, planTruncated?, planPath?, questionCount?, questionsTruncated?, blocks?, blocksOmitted?}], ' +
         'source:"ring"|"disk", ' +
         'omittedToolOnly:int, omittedForBudget?, retained:{firstSeq, lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
-        'messages[k]\'s body: its prose (if any) plus a "--- plan ---" (or "--- plan · saved to <path> ---") or "--- questions ---" fenced section when the ' +
+        'messages[k]\'s body: its prose (if any) plus a "--- narration ---" section (the worker\'s progress note, not its answer), a "--- plan ---" (or "--- plan · saved to <path> ---") or a "--- questions ---" fenced section when the ' +
         'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
         'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated), and so is the whole ' +
-        'result: over one MCP result\'s budget, text, plan (planTruncated), questions (questionsTruncated) and block ' +
+        'result: over one MCP result\'s budget, text, narration (narrationTruncated), plan (planTruncated), questions (questionsTruncated) and block ' +
         'inputs are cut shorter, then the ' +
         'oldest messages are dropped (omittedForBudget + hint) — a plan/questions message last; ' +
         '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
@@ -1062,7 +1064,7 @@ export function buildTools(): Tool[] {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           count: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: 'Number of recent messages to return (from the filtered set). clamped to the `count` schema\'s [minimum, maximum].' },
           includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks) AND emit tool inputs verbatim instead of as per-argument descriptors. Default false.' },
-          includeThinking: { type: 'boolean', default: false, description: 'When true, include thinking blocks in blocks[]. Default false.' },
+          includeThinking: { type: 'boolean', default: false, description: 'When true, include thinking blocks in blocks[]; narration stays in the body either way. Default false.' },
         },
         required: ['sessionId'],
       },

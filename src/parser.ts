@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { planPathFromInput } from './planFile.ts';
 import { AWAITING_INPUT_MESSAGE, EARLIER_AWAITING_INPUT_MESSAGES } from './settings.ts';
 import { TaskStarts, taskNotificationFromFrame, type TaskFrame } from './taskNotification.ts';
+import { isNarration } from './narration.ts';
 import type { UiEvent, UiEventOf, SystemData, UserEchoAttachment, AssistantWireMessage } from '../shared/uiEvent.ts';
 import type { Usage } from '../shared/usage.ts';
 
@@ -84,6 +85,8 @@ interface BlockState {
   accumText: string;
   accumJson: string;
   gotThinkingDelta: boolean;
+  // Decided at the block's first non-empty thinking_delta (src/narration.ts).
+  narration: boolean;
   toolUseId: string | null;
   name: string | null;
 }
@@ -302,6 +305,7 @@ export class Parser {
           accumText: '',
           accumJson: '',
           gotThinkingDelta: false,
+          narration: false,
           toolUseId: typeof cb.id === 'string' ? cb.id : null,
           name: typeof cb.name === 'string' ? cb.name : null,
         };
@@ -341,9 +345,16 @@ export class Parser {
             // thinking_redacted path — otherwise the block finalizes empty and
             // renders as "thinking (0 chars)" instead of "thinking (redacted)".
             if (!text) return [];
+            if (!block.gotThinkingDelta) {
+              // `blocks` is cleared per message, so idx - 1 is the block just
+              // before this one in the same message. A redacted block's
+              // accumText is '' because its empty deltas are dropped above.
+              const prev = this.blocks.get(idx - 1);
+              block.narration = isNarration(prev && { type: prev.type, text: prev.accumText }, { type: 'thinking', text });
+            }
             block.accumText += text;
             block.gotThinkingDelta = true;
-            return [{ kind: 'thinking_delta', msgId: this.currentMsgId, blockIdx: idx, text }];
+            return [{ kind: 'thinking_delta', msgId: this.currentMsgId, blockIdx: idx, text, ...(block.narration ? { narration: true as const } : {}) }];
           }
           case 'input_json_delta': {
             const part = typeof delta.partial_json === 'string' ? delta.partial_json : '';

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
-  CodeXmlIcon, FileTextIcon, GitForkIcon, ListChecksIcon, MailIcon, MicIcon, PaperclipIcon, RecycleIcon,
+  CodeXmlIcon, FileTextIcon, GitForkIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
   RotateCcwIcon, ShrinkIcon, TriangleAlertIcon, TypeIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ import { useStore } from '@/state/createStore';
 import { cn } from '@/lib/utils';
 import { parseRenewSeed, splitSummarySections } from '@shared/renewSeed';
 import { splitForwardedMessages } from '@shared/forwardFrame';
-import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
+import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type NarrationNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
 import { ActionGroup, CallUsageLine, type RenderCtx } from './tools';
 import { fieldText, PlanCard, QuestionCard } from './cards';
 import { BubbleBody } from './BubbleBody';
@@ -372,6 +372,21 @@ function TextBlock({ node, view, first, isSub }: { node: TextNode; view: TextVie
   );
 }
 
+/** A progress note: muted and italic under a small "note" label, so it never reads as the answer. No border: a bordered box in the bubble is an action card. */
+function NarrationBlock({ node, view }: { node: NarrationNode; view: TextView }) {
+  return (
+    <div data-narration className={cn(ASSISTANT_PROSE_INSET, 'text-muted-foreground')}>
+      <div className="flex items-center gap-1.5 text-xs">
+        <MessageCircleIcon className="size-3.5" />
+        note
+      </div>
+      {node.finalized && view !== 'raw'
+        ? <Markdown text={node.buffer} className={cn(MD_TEXT, 'italic')} />
+        : <div className="text-[15px] leading-relaxed whitespace-pre-wrap italic">{node.buffer}</div>}
+    </div>
+  );
+}
+
 /** Phone-only inset of an assistant turn's prose, so it does not sit flush with the action cards' border; cards and controls keep the transcript edge. */
 const ASSISTANT_PROSE_INSET = 'px-1.5 md:px-0';
 
@@ -404,6 +419,7 @@ function AssistantBubble({ node, ctx, controlsBelow }: { node: AssistantNode; ct
       <div data-assistant-body className="min-w-0 md:flex-1 space-y-3">
         {node.children.map((c, i) => {
           if (c.type === 'text') return <TextBlock key={c.id} node={c} view={node.view} first={i === 0} isSub={ctx.model.isSub} />;
+          if (c.type === 'narration') return <NarrationBlock key={c.id} node={c} view={node.view} />;
           if (c.type === 'group') return <ActionGroup key={c.id} node={c} rev={c.rev} ctx={ctx} />;
           return <CallUsageLine key={c.id} node={c} />;
         })}
