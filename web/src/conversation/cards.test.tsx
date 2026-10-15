@@ -441,6 +441,30 @@ describe('Enter in the card field', () => {
     expect(sent).toEqual(prompt([FRUIT], [{ kind: 'custom', text: 'a mango' }]));
   });
 
+  describe('keys other than Enter (invariant: only the Enter key acts)', () => {
+    const press = async (card: HTMLElement, key: string) => {
+      input(card).focus();
+      fireEvent.keyDown(input(card), { key });
+      await flush();
+    };
+    it.each(['a', 'Tab', ' '])('%j does not advance', async (key) => {
+      const { card } = await show([CARD([FRUIT, SIZE])]);
+      await pick(card(), 'Apple');
+      await press(card(), key);
+      expect(tabOf(card())).toBe('0');
+      await enter(card());
+      expect(tabOf(card())).toBe('1');
+    });
+    it.each(['a', 'Tab', ' '])('%j does not send', async (key) => {
+      const { card } = await show([CARD([FRUIT])]);
+      await pick(card(), 'Apple');
+      await press(card(), key);
+      expect(sent).toEqual([]);
+      await enter(card());
+      expect(sent.length).toBe(1);
+    });
+  });
+
   describe('keys that must not act (invariant: only a plain, non-composing, non-repeated Enter acts)', () => {
     const rows: [string, Record<string, unknown>, 'isComposing' | 'keyCode' | 'repeat' | null][] = [
       ['Shift', { shiftKey: true }, null],
