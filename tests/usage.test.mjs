@@ -459,6 +459,7 @@ test('formatResetDateTime: names the date, so resets a week apart differ; format
     assert.equal(formatResetDateTime(null), null);
     assert.equal(formatResetDateTime(NaN), null);
     assert.equal(formatResetDateTime(0), null);
+    assert.equal(formatResetDateTime(Infinity), null); // pins: a non-finite instant is refused, not rendered as "Invalid Date"
     const a = Date.UTC(2026, 5, 14, 12) / 1000;
     const b = a + 7 * 86400;
     assert.equal(formatResetTime(a), formatResetTime(b));
@@ -468,6 +469,10 @@ test('formatResetDateTime: names the date, so resets a week apart differ; format
     const d = new Date(a * 1000);
     assert.ok(da.includes(d.toLocaleDateString([], { month: 'short' })), da);
     assert.ok(da.includes(d.toLocaleDateString([], { day: 'numeric' })), da);
+    // pins: the weekday is named
+    assert.ok(da.includes(d.toLocaleDateString([], { weekday: 'short' })), da);
+    // pins: the clock time is named, identical to the time-only formatter's
+    assert.ok(da.includes(formatResetTime(a).replace('resets ', '')), da);
   } finally {
     if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }

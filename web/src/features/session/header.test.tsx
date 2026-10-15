@@ -885,6 +885,7 @@ describe('context + rate-limit chip', () => {
         five_hour: { utilization: 45, resets_at: '2026-06-11T12:00:00Z' },
         seven_day: { utilization: 38, resets_at: '2026-06-14T12:00:00Z' },
         seven_day_sonnet: { utilization: 20, resets_at: '2026-06-14T12:00:00Z' },
+        seven_day_opus: { utilization: 10, resets_at: '2026-06-16T12:00:00Z' },
         limits: [{ scope: { model: { display_name: 'Fable' } }, percent: 12, resets_at: '2026-06-15T12:00:00Z' }],
       },
       stale: false,
@@ -896,6 +897,8 @@ describe('context + rate-limit chip', () => {
       const row = (label: string) => within(pop).getByText(label, { exact: true }).parentElement!.parentElement!;
       expect(row('7-day').textContent).toContain(formatResetDateTime(secs('2026-06-14T12:00:00Z')));
       expect(row('7-day Sonnet').textContent).toContain(formatResetDateTime(secs('2026-06-14T12:00:00Z')));
+      // pins: the Opus window is dated on its own, not only seven_day / seven_day_sonnet
+      expect(row('7-day Opus').textContent).toContain(formatResetDateTime(secs('2026-06-16T12:00:00Z')));
       expect(row('7-day Fable').textContent).toContain(formatResetDateTime(secs('2026-06-15T12:00:00Z')));
       const five = row('5-hour').textContent!;
       expect(five).toContain(formatResetTime(secs('2026-06-11T12:00:00Z')));
