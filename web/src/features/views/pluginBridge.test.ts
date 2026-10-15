@@ -34,13 +34,14 @@ describe('pluginBridge.js', () => {
   });
 
   it('a navigate message replaces state and synthesises popstate; a foreign origin is ignored', () => {
-    const { listeners, hist } = runBridge();
+    const b = runBridge();
+    const { listeners, hist } = b;
     const before = hist.replaced.length;
     for (const f of listeners.message) f({ origin: 'http://evil', data: { cc: 1, type: 'navigate', path: '/x' } });
     expect(hist.replaced.length).toBe(before);
     let popped = 0;
     (listeners.popstate ??= []).push(() => popped++);
-    for (const f of listeners.message) f({ origin: 'http://h', data: { cc: 1, type: 'navigate', path: '/x' } });
+    for (const f of listeners.message) f({ origin: 'http://h', source: b.win.parent, data: { cc: 1, type: 'navigate', path: '/x' } });
     expect(hist.replaced.at(-1)).toBe('/plugins/hub/x');
     expect(popped).toBeGreaterThan(0);
   });
@@ -115,8 +116,8 @@ describe('pluginBridge.js', () => {
 });
 
 describe('window.ccBridge (session awareness)', () => {
-  const deliver = (b: ReturnType<typeof runBridge>, data: unknown, origin = 'http://h') => {
-    for (const f of b.listeners.message) f({ origin, data });
+  const deliver = (b: ReturnType<typeof runBridge>, data: unknown, origin = 'http://h', source: unknown = b.win.parent) => {
+    for (const f of b.listeners.message) f({ origin, source, data });
   };
   const SESSION = { sessionId: 's1', project: 'p', worktree: null };
   const calls = (b: ReturnType<typeof runBridge>, type: string) => b.posted.map(([m]) => m).filter((m) => m.type === type);
@@ -191,5 +192,34 @@ describe('window.ccBridge (session awareness)', () => {
     await a;
     expect(settled.a).toEqual({ ok: true });
   });
-});
 
+  it('ignores a same-origin session, result or navigate from a source that is not the parent', async () => {
+    // Invariant: the child attributes by sender — only window.parent can set the session, answer a call or steer the page.
+    const b = runBridge();
+    let settled = false;
+    void b.win.ccBridge.openSession('s1').then(() => { settled = true; });
+    const [o] = calls(b, 'openSession');
+    const before = b.hist.replaced.length;
+    const sibling = {};
+    deliver(b, { cc: 1, type: 'session', session: SESSION }, 'http://h', sibling);
+    deliver(b, { cc: 1, type: 'result', id: o.id, ok: true }, 'http://h', sibling);
+    deliver(b, { cc: 1, type: 'navigate', path: '/x' }, 'http://h', sibling);
+    deliver(b, { cc: 1, type: 'session', session: SESSION }, 'http://h', null);
+    await observerTurn();
+    expect(b.win.ccBridge.session).toBeUndefined();
+    expect(settled).toBe(false);
+    expect(b.hist.replaced.length).toBe(before);
+  });
+
+  it('a result whose id is an Object.prototype key neither throws nor resolves anything', async () => {
+    // Invariant: pending calls are looked up by own id only, never through the prototype chain.
+    const b = runBridge();
+    let settled = false;
+    void b.win.ccBridge.sendPrompt('s1', 'x').then(() => { settled = true; });
+    for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      expect(() => deliver(b, { cc: 1, type: 'result', id, ok: true }), id).not.toThrow();
+    }
+    await observerTurn();
+    expect(settled).toBe(false);
+  });
+});

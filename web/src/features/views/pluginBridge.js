@@ -76,8 +76,8 @@
   var hasSession = false;
   /** @type {Array<(s: unknown) => void>} */
   var subscribers = [];
-  /** @type {Record<string, (r: {ok: boolean, code?: string}) => void>} */
-  var pending = {};
+  /** @type {Map<string, (r: {ok: boolean, code?: string}) => void>} */
+  var pending = new Map();
   var nextId = 0;
   /**
    * @param {string} type
@@ -87,7 +87,7 @@
   function call(type, fields) {
     var id = 'b' + (++nextId);
     return new Promise(function (resolve) {
-      pending[id] = resolve;
+      pending.set(id, resolve);
       /** @type {Record<string, unknown>} */
       var msg = { cc: 1, type: type, id: id };
       for (var k in fields) msg[k] = fields[k];
@@ -112,7 +112,7 @@
   };
 
   window.addEventListener('message', function (ev) {
-    if (ev.origin !== origin) return;
+    if (ev.origin !== origin || ev.source !== window.parent) return;
     var d = ev.data;
     if (!d || d.cc !== 1) return;
     if (d.type === 'session') {
@@ -121,9 +121,10 @@
       subscribers.slice().forEach(function (fn) { fn(session); });
       return;
     }
-    if (d.type === 'result' && typeof d.id === 'string' && pending[d.id]) {
-      var resolve = pending[d.id];
-      delete pending[d.id];
+    if (d.type === 'result' && typeof d.id === 'string') {
+      var resolve = pending.get(d.id);
+      if (!resolve) return;
+      pending.delete(d.id);
       resolve(d.ok ? { ok: true } : { ok: false, code: d.code });
       return;
     }
