@@ -214,6 +214,32 @@ test('a /pluginTheme.css that cannot be composed answers 503 text/plain with a f
   }
 });
 
+test('a font package whose index.css names no url(./files/…) makes /pluginTheme.css answer the fixed 503, and logs the cause', async (t) => {
+  // Invariant: a fontsource layout change fails loudly — a package that yields no font file to serve is a 503 "host theme unavailable" with the cause in the log, never a sheet served without its fonts.
+  const pkg = await mkdtemp('cc-plugin-theme-fontpkg-');
+  await fs.mkdir(path.join(pkg, 'files'));
+  await fs.writeFile(path.join(pkg, 'index.css'),
+    "@font-face {\n  font-family: 'Geist Variable';\n  src: url(./fonts/geist-latin-wght-normal.woff2) format('woff2-variations');\n}\n");
+  const logged = [];
+  t.mock.method(console, 'error', (...args) => { logged.push(args); });
+  const app = express();
+  app.use(pluginThemeRouter({ fontDirs: { geist: pkg } }));
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const r = await fetch(`http://127.0.0.1:${server.address().port}/pluginTheme.css`);
+    const body = await r.text();
+    assert.equal(r.status, 503);
+    assert.match(r.headers.get('content-type') ?? '', /^text\/plain/);
+    assert.equal(body, 'host theme unavailable');
+    assert.equal(logged.length, 1, 'the failure is logged once');
+    assert.match(logged[0].map(String).join(' '), /has no url\(\.\/files\//, 'the log names the cause');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rmrf(pkg);
+  }
+});
+
 // ── what Install runs ──
 
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
