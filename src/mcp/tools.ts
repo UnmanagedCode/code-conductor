@@ -144,7 +144,7 @@ export function buildTools(): Tool[] {
         'worker, and not derived for an archived row here. A send over MCP (send_prompt, ' +
         'answer_question, approve_plan, reject_plan) counts as a real user message and clears it. ' +
         'The rendering omits pid / createdAt, names a firstPrompt the server or the CLI wrote (`Wake: …`, ' +
-        '`Forwarded worker output`, `Context renewed`) rather than printing it raw, and shows ' +
+        'a forward by its instruction\'s first line, `Context renewed`) rather than printing it raw, and shows ' +
         'temp / conducted / debug / overage / auto-resume / resumes-hot / owner / awaiting-user only ' +
         'when they deviate from ' +
         'their default — so anything on a `flags` line is news. ' +

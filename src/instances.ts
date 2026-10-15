@@ -108,6 +108,7 @@ import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune
 import { CallUsageTracker } from './callUsage.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../shared/planApproval.ts';
+import { firstPromptHead } from '../shared/promptPreview.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope, measureSegmentEchoOffset, type SeqEvent } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
@@ -1077,10 +1078,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.lastExit = null;
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._planFiles = new PlanFileTracker(); // binds a ~/.claude/plans/*.md Write to an ExitPlanMode
-    // Cached first user-prompt text (200-char cap matching readFirstPrompt
-    // in projects.ts). Surfaced via summary() so the sidebar can label a
-    // live temp session's row — temp rows don't read the jsonl, so without
-    // this they'd stay as "(new session)" forever.
+    // Cached first user-prompt head (firstPromptHead, the same rule as
+    // readFirstPrompt in projects.ts). Surfaced via summary() so the sidebar
+    // can label a live temp session's row — temp rows don't read the jsonl, so
+    // without this they'd stay as "(new session)" forever.
     this.firstPrompt = null;
     // Custom human-readable label set via the ⋮ menu's Rename session
     // action. When set, the sidebar + header render this in place of the
@@ -3482,7 +3483,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.parser.expirePendingSkillLoads();
     this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments });
     if (this.firstPrompt == null && safeText.length) {
-      this.firstPrompt = safeText.slice(0, 200);
+      this.firstPrompt = firstPromptHead(safeText);
     }
     // An explicit `midTurnNote` overrides the status test: a steer flushed after
     // a block-edge stop lands while this instance is IDLE, but the message is

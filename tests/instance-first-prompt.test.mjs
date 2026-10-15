@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { buildForwardFrame } from '../shared/forwardFrame.ts';
+import { firstPromptHead } from '../shared/promptPreview.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -72,4 +74,16 @@ test('firstPrompt is capped at 200 chars (matches readFirstPrompt)', async () =>
   await waitFor(() => inst.firstPrompt !== null);
   assert.equal(inst.firstPrompt.length, 200);
   assert.equal(inst.firstPrompt, 'x'.repeat(200));
+});
+
+test('a forward frame\'s first prompt is stored as its tail', async () => {
+  const { baseUrl, instances } = await setupWithProject('firstprompt4');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'firstprompt4' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  const frame = buildForwardFrame({ messages: ['x'.repeat(5000)], instruction: 'Review it' });
+  inst.prompt(frame);
+  await waitFor(() => inst.firstPrompt !== null);
+  assert.equal(inst.firstPrompt, firstPromptHead(frame));
+  assert.ok(inst.firstPrompt.endsWith('Review it'), inst.firstPrompt);
 });

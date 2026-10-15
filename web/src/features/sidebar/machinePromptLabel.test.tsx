@@ -8,6 +8,7 @@ import { buildWakeStub } from '@shared/wakeCallback';
 import { buildForwardFrame } from '@shared/forwardFrame';
 import { buildRenewSeed } from '@shared/renewSeed';
 import { readJsonl } from '@/conversation/testkit';
+import { firstPromptHead } from '@shared/promptPreview';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(),
@@ -33,9 +34,12 @@ const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvi
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 /** A first prompt as the server stores it: its head, cut by `Instance.prompt` and `readFirstPrompt`. */
-const stored = (text: string) => text.slice(0, 200);
+const stored = firstPromptHead;
 const WAKE = stored(buildWakeStub({ targetSessionId: 'labelwake', payloadText: '{"sessionId":"labelwake"}\nWAKE-LABEL prose' }));
-const FORWARD = stored(buildForwardFrame({ messages: ['FWD-LABEL body'], instruction: 'FWD-LABEL instruction' }));
+const FORWARD_RAW = buildForwardFrame({ messages: ['FWD-LABEL body'], instruction: 'FWD-LABEL instruction' });
+const FORWARD = stored(FORWARD_RAW);
+/** A forward stored before the tail was kept: the raw frame's head, cut inside its header. */
+const FORWARD_PRE_TAIL = FORWARD_RAW.slice(0, 200);
 const RENEW = stored(buildRenewSeed({ summary: 'RENEW-LABEL summary' }));
 /**
  * A post-`/clear` file's head record, as the server stores it: the first user record whose content starts with `head`.
@@ -122,13 +126,23 @@ describe('a machine-written first prompt in a sidebar label', () => {
     expect(rawNamed()).toHaveLength(0);
   });
 
-  it('a session row whose first prompt is a forward frame reads Forwarded worker output', async () => {
-    // Invariant: the forward frame is recognised on the server's stored cut, which ends inside its header.
+  it('a session row whose first prompt is a forward frame reads its instruction\'s first line', async () => {
+    // Invariant: the forward is read off the tail the server stores (END marker + instruction), by its instruction, with no frame syntax.
     seed({ projects: [proj('labels')], instances: [hand('h-fwd', 'labels', null, { firstPrompt: FORWARD })] });
     renderSidebar();
     await settle();
-    expect(labelOf('h-fwd').textContent).toBe('Forwarded worker output');
-    expect(named('Forwarded worker output').includes(openOf('h-fwd'))).toBe(true);
+    expect(labelOf('h-fwd').textContent).toBe('FWD-LABEL instruction');
+    expect(named('FWD-LABEL instruction').includes(openOf('h-fwd'))).toBe(true);
+    expect(rawNamed()).toHaveLength(0);
+  });
+
+  it('a session row whose first prompt is a forward stored before its tail was kept reads Forwarded worker output', async () => {
+    // Invariant: a head cut inside the forward header is still recognised, by name.
+    seed({ projects: [proj('labels')], instances: [hand('h-fwd-old', 'labels', null, { firstPrompt: FORWARD_PRE_TAIL })] });
+    renderSidebar();
+    await settle();
+    expect(labelOf('h-fwd-old').textContent).toBe('Forwarded worker output');
+    expect(named('Forwarded worker output').includes(openOf('h-fwd-old'))).toBe(true);
     expect(rawNamed()).toHaveLength(0);
   });
 
@@ -244,7 +258,7 @@ describe('promptPreview at load', () => {
   it('refuses to load when the forward header has no first line to recognise it by', async () => {
     // Invariant: as above, for the forward frame's header.
     vi.resetModules();
-    vi.doMock('@shared/forwardFrame', () => ({ FORWARD_FRAME_HEADER: 'a header on one line' }));
+    vi.doMock('@shared/forwardFrame', async () => ({ ...(await vi.importActual('@shared/forwardFrame')), FORWARD_FRAME_HEADER: 'a header on one line' }));
     await expect(import('@shared/promptPreview')).rejects.toThrow('FORWARD_FRAME_HEADER');
   });
 });

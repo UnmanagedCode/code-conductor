@@ -20,6 +20,7 @@ import { REMOTE_ID_MAX, remoteIdDefect } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 import { hostPlatform, samePath, type Platform } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
+import { firstPromptHead } from '../shared/promptPreview.ts';
 
 // Re-exported from its implementation on the local system: the store is always
 // local, so cc's own atomic writes and the local System's are one operation.
@@ -1831,14 +1832,38 @@ async function deliverAdoptedConventions(name: string, real: string): Promise<vo
   }
 }
 
+// readFirstPrompt reads FIRST_PROMPT_READ bytes, and grows the buffer (doubling)
+// up to FIRST_RECORD_CAP only while the line it is on has not ended. Measured
+// first-record line size over forward-first transcripts: max ≈ 192 KB.
+const FIRST_PROMPT_READ = 64 * 1024;
+const FIRST_RECORD_CAP = 1024 * 1024;
+
+// The stored head (firstPromptHead) of a transcript's first user prompt; null
+// when it has none, or when a record before it does not end within
+// FIRST_RECORD_CAP — a later record is never taken for the first.
 export async function readFirstPrompt(jsonlPath: string): Promise<string | null> {
   const fh = await fs.open(jsonlPath, 'r');
   try {
-    const buf = Buffer.alloc(64 * 1024);
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-    const text = buf.slice(0, bytesRead).toString('utf8');
-    const lines = text.split('\n');
-    for (const line of lines) {
+    let buf = Buffer.alloc(0);
+    let eof = false;
+    let pos = 0;
+    for (;;) {
+      let nl = buf.indexOf(0x0a, pos);
+      if (nl < 0 && !eof) {
+        if (buf.length >= FIRST_RECORD_CAP) return null;
+        const want = Math.min(Math.max(buf.length, FIRST_PROMPT_READ), FIRST_RECORD_CAP - buf.length);
+        const chunk = Buffer.alloc(want);
+        const { bytesRead } = await fh.read(chunk, 0, want, buf.length);
+        if (bytesRead < want) eof = true;
+        buf = Buffer.concat([buf, chunk.subarray(0, bytesRead)]);
+        continue;
+      }
+      if (nl < 0) {
+        if (pos >= buf.length) return null;
+        nl = buf.length;
+      }
+      const line = buf.toString('utf8', pos, nl);
+      pos = nl + 1;
       if (!line) continue;
       let obj: unknown;
       try { obj = JSON.parse(line); } catch { continue; }
@@ -1846,16 +1871,15 @@ export async function readFirstPrompt(jsonlPath: string): Promise<string | null>
       const rec = obj as { type?: unknown; message?: unknown; lastPrompt?: unknown };
       if (rec.type === 'user' && rec.message != null) {
         const c = (rec.message as { content?: unknown }).content;
-        if (typeof c === 'string') return c.slice(0, 200);
+        if (typeof c === 'string') return firstPromptHead(c);
         if (Array.isArray(c)) {
           for (const block of c) {
-            if (block?.type === 'text' && typeof block.text === 'string') return block.text.slice(0, 200);
+            if (block?.type === 'text' && typeof block.text === 'string') return firstPromptHead(block.text);
           }
         }
       }
-      if (rec.type === 'last-prompt' && typeof rec.lastPrompt === 'string') return rec.lastPrompt.slice(0, 200);
+      if (rec.type === 'last-prompt' && typeof rec.lastPrompt === 'string') return firstPromptHead(rec.lastPrompt);
     }
-    return null;
   } finally {
     await fh.close();
   }
