@@ -426,6 +426,15 @@ describe('change model', () => {
     expect(groups.get('my-proxy')!.map((e) => [e.label, e.selected])).toEqual([['Proxy Qwen', false]]);
     const sub = await openModelPicker(inst);
     expect(within(sub).getAllByRole('menuitem').filter((i) => i.querySelector('svg:not([data-restart-mark])')).map((i) => i.textContent)).toEqual(['Local']);
+    cleanup();
+    // Mirror: the registering backend (ollama) is processed before the tier's (my-proxy), so a set shared across backends would already be filled.
+    catalog({ backends: PROXY_BACKENDS, tierBackend: { ...PAYLOAD.tierBackend, local: { backend: 'my-proxy', model: 'mine:v2' } }, backendModels: { ollama: [{ model: 'mine:v2', label: 'Ollama Mine' }], 'my-proxy': [] } });
+    const mirror = base({ backend: 'my-proxy', model: 'mine:v2' });
+    const mirrorGroups = new Map(modelGroups(mirror));
+    expect(mirrorGroups.get('my-proxy')!.map((e) => [e.label, e.selected])).toEqual([['Local', true]]);
+    expect(mirrorGroups.get('ollama')!.map((e) => [e.label, e.selected])).toEqual([['Ollama Mine', false]]);
+    const mirrorSub = await openModelPicker(mirror);
+    expect(within(mirrorSub).getAllByRole('menuitem').filter((i) => i.querySelector('svg:not([data-restart-mark])')).map((i) => i.textContent)).toEqual(['Local']);
   });
 
   it('a models payload applied while the picker is open replaces its registered models: an added one appears, a removed one goes', async () => {
