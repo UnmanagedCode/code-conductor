@@ -37,30 +37,37 @@ async function fontFaces(segment: string, pkg: string): Promise<string> {
   return out;
 }
 
-/** The whole /pluginTheme.css body. */
-export async function composePluginTheme(): Promise<string> {
+/** The whole /pluginTheme.css body. `tokensFile` is a test seam; it defaults to web/src/themeTokens.css. */
+export async function composePluginTheme(tokensFile = THEME_TOKENS): Promise<string> {
   const faces = await Promise.all(Object.entries(FONT_PACKAGES).map(([seg, pkg]) => fontFaces(seg, pkg)));
   return [
     '/* code-conductor host theme for plugin pages — docs/plugin-ui.md. Unlayered, so it wins over a plugin\'s @layer base fallback. */',
     ...faces,
     TOKENS_MARKER,
-    await fs.readFile(THEME_TOKENS, 'utf8'),
+    await fs.readFile(tokensFile, 'utf8'),
   ].join('\n');
 }
 
-export function pluginThemeRouter(): express.Router {
+/** `tokensFile` is a test seam, passed to composePluginTheme. */
+export function pluginThemeRouter({ tokensFile }: { tokensFile?: string } = {}): express.Router {
   const router = express.Router();
-  router.get('/pluginTheme.css', async (_req, res, nextFn) => {
+  router.get('/pluginTheme.css', async (_req, res) => {
+    let css: string;
     try {
-      const css = await composePluginTheme();
-      res.set({ 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-cache' }).send(css);
-    } catch (e) { nextFn(e); }
+      css = await composePluginTheme(tokensFile);
+    } catch (e) {
+      // The detail (paths included) goes to the log, never to the page.
+      console.error('pluginTheme: /pluginTheme.css failed:', e);
+      res.status(503).type('text/plain').send('host theme unavailable');
+      return;
+    }
+    res.set({ 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-cache' }).send(css);
   });
   router.get('/pluginTheme/fonts/:pkg/:file', (req, res) => {
     const pkg = Object.hasOwn(FONT_PACKAGES, req.params.pkg) ? FONT_PACKAGES[req.params.pkg] : null;
     if (!pkg || !FONT_FILE.test(req.params.file)) { res.status(404).end(); return; }
     res.sendFile(req.params.file, { root: path.join(packageDir(pkg), 'files') }, (err) => {
-      if (err && !res.headersSent) res.status(404).end();
+      if (err) { if (!res.headersSent) res.status(404).end(); else res.destroy(); }
     });
   });
   return router;

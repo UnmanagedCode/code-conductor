@@ -38,9 +38,9 @@ frontend/
   - build: `vite @vitejs/plugin-react @tailwindcss/vite tailwindcss tw-animate-css typescript`
   - UI: `react react-dom @types/react @types/react-dom radix-ui class-variance-authority clsx tailwind-merge lucide-react sonner`
   - tests: `vitest happy-dom @testing-library/react @testing-library/user-event`
-- **Use the ranges cc's own `package.json` declares.** Those builds run on every platform cc runs on, Termux included. This prints them and installs them as devDependencies:
+- **Use the ranges cc's own `package.json` declares.** Those builds run on every platform cc runs on, Termux included. This command reads them and installs them as devDependencies, creating `package.json` when the repo has none yet. **Run it in bash** (in another shell, start `bash` first): it splits the specs into a bash array.
 
-```sh
+```bash
 CC_PKG=<cc-checkout>/package.json
 # without a checkout:
 #   curl -fsSLo cc-package.json https://raw.githubusercontent.com/UnmanagedCode/code-conductor/main/package.json && CC_PKG=cc-package.json
@@ -50,14 +50,28 @@ SPECS=$(node -e '
   console.log(process.argv.slice(2).map((n) => { if (!all[n]) throw new Error(n + " is not in cc package.json"); return n + "@" + all[n]; }).join(" "));
 ' "$CC_PKG" vite @vitejs/plugin-react @tailwindcss/vite tailwindcss tw-animate-css typescript \
   react react-dom @types/react @types/react-dom radix-ui class-variance-authority clsx tailwind-merge lucide-react sonner \
-  vitest happy-dom @testing-library/react @testing-library/user-event) && npm install -D $SPECS
+  vitest happy-dom @testing-library/react @testing-library/user-event) \
+  && read -ra SPEC_LIST <<< "$SPECS" && npm install -D "${SPEC_LIST[@]}"
 ```
 
 - Do **not** add `@fontsource-variable/*`. Embedded, cc serves the fonts; standalone, the font stack falls back to the system font.
 
 ## 3. Build on install
 
-`package.json`:
+**Add these keys to the `package.json` §2 wrote, and keep its `devDependencies` exactly as §2 installed them.** Do not replace the file: without those devDependencies, `prepare` fails with `Cannot find package 'vite'`. `npm pkg set` merges the keys in place:
+
+```sh
+npm pkg set name=my-plugin type=module \
+  scripts.start="node server.js" \
+  scripts.prepare="vite build --config frontend/vite.config.ts" \
+  scripts.dev="vite --config frontend/vite.config.ts" \
+  scripts.typecheck="tsc -p frontend" \
+  scripts.test:web="vitest run --config frontend/vitest.config.ts" \
+  scripts.test="npm run typecheck && npm run test:web"
+npm pkg set private=true --json
+```
+
+The keys it sets, beside the `devDependencies` (and a backend's `dependencies`) already in the file:
 
 ```json
 {
@@ -96,7 +110,8 @@ package-lock.json
 | **Update** | `git pull --ff-only`, then the entry's `postPull`, then the plugin's auto-restart |
 
 - Both hooks run through `bash -lc`, with cc's own environment, with cwd = the checkout.
-- cc's built-in Library entries for its UI plugins run `npm install` in both hooks, so Install builds `frontend/dist` and Update rebuilds it.
+- cc's built-in Library entries for the UI plugins this recipe is for — code-hub, code-kanban, code-karpathy-wiki, code-share, code-system, code-live and code-playbook — run `npm install` in both hooks, so Install builds `frontend/dist` and Update rebuilds it. Other built-in entries run other commands (code-playwright runs `bash install.sh`) or none; `DEFAULT_ENTRIES` in `<cc-checkout>/src/plugins/library.ts` is the authority.
+- **`npm install` runs code with cc's privileges:** on Install and Update it runs the repo's own lifecycle scripts (`prepare` included) and its dependencies' install scripts, as cc's user with cc's environment. That is the same trust the hook itself carries ([docs/plugins.md](plugins.md) → **`postClone`/`postPull` execution**), so add no dependency you would not run as cc.
 - **A drop-in catalog JSON must set the hooks itself:** `"postClone": "npm install", "postPull": "npm install"` (schema: [docs/plugins.md](plugins.md) → Plugin Library).
 - A failed hook is a warning, not an error: the clone or pull stays. Update is the retry. A failed `postPull` skips the restart.
 - The hook is bounded by `POST_HOOK_TIMEOUT_MS` (`<cc-checkout>/src/plugins/library.ts`).
@@ -182,7 +197,7 @@ export default defineConfig({
 ```
 
 - **Keep that order.** The bridge is a blocking script with no `defer`, first in `<head>`, so cc's theme is on `<html>` before anything paints. `theme-init.js` runs after it and reads what the bridge set.
-- **`vite-ignore`** tells Vite to leave the tag as written. Vite strips the attribute and copies the tag into `frontend/dist/index.html` unchanged. Without it, Vite tries to resolve the host URLs at build time.
+- **`vite-ignore`** silences Vite 8's build warnings about these three tags (a classic script it cannot bundle, a stylesheet that does not exist at build time). The build copies the tags into `frontend/dist/index.html` unchanged either way, and strips the attribute. Keep it: the build log then shows only real problems.
 - Standalone, `/pluginBridge.js` and `/pluginTheme.css` 404, which is harmless. The backend must answer them with a 404, not with `index.html`, so it has no SPA fallback (§11).
 
 ## 7. Theme
@@ -407,6 +422,9 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 
 - `style-src 'unsafe-inline'` is there because Radix and sonner inject `<style>` elements.
 - No inline scripts are allowed, which is why `theme-init.js` is a file.
+- **What this CSP does not do:**
+  - It protects the plugin's own document only. cc's own responses carry no CSP and no framing protection (no `X-Frame-Options`, no `frame-ancestors`).
+  - `script-src 'self'` allows every script on cc's origin, which is the plugin page's origin too: every path under `/plugins/<id>/` of every plugin, and cc's own. So it stops an injected inline script or event handler, but it is no containment boundary: an injected `<script src="/…">` naming any script on that origin still runs. The rules above about never rendering content as markup are the actual defence.
 
 `frontend/src/lib/api.ts`:
 
@@ -450,6 +468,7 @@ if (fs.existsSync(path.join(dist, 'index.html'))) {
 app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 ```
 
+- **Bind loopback only: `127.0.0.1`, never `0.0.0.0` or `::`.** The plugin's API has no authentication, so any interface beyond loopback lets anyone on the network drive it. cc's proxy reaches the backend over loopback.
 - **Order:** the API routes, then the CSP, then `express.static`.
 - **No SPA fallback:** an unknown path is a 404, so the host URLs 404 standalone (§6), and routes live in the query string (§5).
 - `$PORT`, `healthPath` and the rest of the backend contract: [docs/plugins.md](plugins.md) → Plugin-compliance checklist (`<cc-checkout>/docs/plugins.md`, or `https://github.com/UnmanagedCode/code-conductor/blob/main/docs/plugins.md`).
@@ -533,6 +552,7 @@ it('API requests use relative URLs', async () => {
 **Standalone run:**
 - [ ] `npm install` → `frontend/dist/index.html` exists.
 - [ ] `PORT=<port> npm start` → `http://127.0.0.1:<port>/` loads.
+- [ ] The backend listens on `127.0.0.1` only: `http://<this machine's LAN address>:<port>/` does not answer.
 - [ ] Legible with the OS in light and in dark (DevTools → Rendering → Emulate CSS `prefers-color-scheme`), and it follows a flip live.
 - [ ] The only console errors name the two host URLs, `/pluginBridge.js` and `/pluginTheme.css`: their 404, and the browser refusing the 404's HTML body as a script or stylesheet.
 - [ ] `npm run dev` serves the UI with the API proxied to the backend.

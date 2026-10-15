@@ -9,12 +9,15 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import express from 'express';
+import http from 'node:http';
 import { bootServer } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { rmrf } from './rmrf.mjs';
 import { makePluginRoot } from './plugin-helpers.mjs';
 import { createPluginLibrary } from '../src/plugins/library.ts';
 import { orchStoreRoot } from '../src/projects.ts';
+import { pluginThemeRouter } from '../src/pluginTheme.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.join(__dirname, '..');
@@ -104,6 +107,7 @@ test('the served plugin theme, booted with no build', async (t) => {
       // Invariant: the served sheet cannot differ from the host's effective tokens — an index.css override, a removed @import, a mapped token missing from the shared file, or a stale served copy all fail it.
       assert.equal(r.status, 200);
       assert.match(r.headers.get('content-type') ?? '', /^text\/css/);
+      assert.equal(r.headers.get('cache-control'), 'no-cache', 'revalidated on every load, as docs/plugins.md and docs/protocol.md promise');
       const host = palette(await inlineImports(INDEX_CSS));
       const served = palette(sheet);
       for (const scope of [':root', '.dark']) {
@@ -123,6 +127,21 @@ test('the served plugin theme, booted with no build', async (t) => {
       assert.ok(marker >= 0, 'the /* cc:tokens */ marker');
       assert.ok(marker < sheet.indexOf(':root'), 'the marker precedes the tokens');
       assert.ok(!sheet.slice(marker).includes('@font-face'), 'every font-face precedes the marker');
+    });
+
+    await t.test("every palette property index.css declares itself is served, unless it is host-only", async () => {
+      // Invariant: a token added to index.css's own :root/.dark instead of themeTokens.css fails here unless it matches the host-only allowlist (--header-height, --mascot-*).
+      const HOST_ONLY = /^--(header-height$|mascot-)/;
+      const own = palette(await fs.readFile(INDEX_CSS, 'utf8'));
+      const served = palette(sheet);
+      let hostOnly = 0;
+      for (const scope of [':root', '.dark']) {
+        for (const k of own[scope].keys()) {
+          if (HOST_ONLY.test(k)) { hostOnly++; continue; }
+          assert.ok(served[scope].has(k), `${scope} ${k}, declared in index.css, is served (or belongs in the host-only allowlist)`);
+        }
+      }
+      assert.ok(hostOnly > 0, "fixture check: index.css's own blocks are read");
     });
 
     await t.test("the served fonts resolve and match the host's font stack", async () => {
@@ -168,6 +187,31 @@ test('the served plugin theme, booted with no build', async (t) => {
       }
     });
   } finally { await close(); }
+});
+
+test('a /pluginTheme.css that cannot be composed answers 503 text/plain with a fixed body, and logs the cause', async (t) => {
+  // Invariant: a compose failure never reaches the client as a stack trace or a filesystem path — the page gets 503 "host theme unavailable", the log gets the error.
+  const dir = await mkdtemp('cc-plugin-theme-broken-');
+  const missing = path.join(dir, 'no-such-themeTokens.css');
+  const logged = [];
+  t.mock.method(console, 'error', (...args) => { logged.push(args); });
+  const app = express();
+  app.use(pluginThemeRouter({ tokensFile: missing }));
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const r = await fetch(`http://127.0.0.1:${server.address().port}/pluginTheme.css`);
+    const body = await r.text();
+    assert.equal(r.status, 503);
+    assert.match(r.headers.get('content-type') ?? '', /^text\/plain/);
+    assert.equal(body, 'host theme unavailable');
+    assert.ok(!body.includes(dir), 'the path is not on the page');
+    assert.equal(logged.length, 1, 'the failure is logged once');
+    assert.match(logged[0].map(String).join(' '), /no-such-themeTokens\.css/, 'the log names the cause');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rmrf(dir);
+  }
 });
 
 // ── what Install runs ──
