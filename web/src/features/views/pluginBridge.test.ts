@@ -15,6 +15,7 @@ describe('pluginBridge.js', () => {
       expect(b.posted).toEqual([]);
       expect(b.frameRoot.classList.contains('dark')).toBe(false);
       expect(b.frameRoot.hasAttribute('data-cc-theme')).toBe(false);
+      expect(b.win.ccBridge, 'no ccBridge outside an embed').toBeUndefined();
     }
   });
 
@@ -112,3 +113,83 @@ describe('pluginBridge.js', () => {
     });
   });
 });
+
+describe('window.ccBridge (session awareness)', () => {
+  const deliver = (b: ReturnType<typeof runBridge>, data: unknown, origin = 'http://h') => {
+    for (const f of b.listeners.message) f({ origin, data });
+  };
+  const SESSION = { sessionId: 's1', project: 'p', worktree: null };
+  const calls = (b: ReturnType<typeof runBridge>, type: string) => b.posted.map(([m]) => m).filter((m) => m.type === type);
+
+  it('exists when embedded, with no session known before the first message', () => {
+    // Invariant: a plugin can tell "host never said" (undefined) from "no active session" (null).
+    const b = runBridge();
+    expect(typeof b.win.ccBridge.openSession).toBe('function');
+    expect(typeof b.win.ccBridge.sendPrompt).toBe('function');
+    expect(b.win.ccBridge.session).toBeUndefined();
+    deliver(b, { cc: 1, type: 'session', session: SESSION });
+    expect(b.win.ccBridge.session).toEqual(SESSION);
+    deliver(b, { cc: 1, type: 'session', session: null });
+    expect(b.win.ccBridge.session).toBeNull();
+  });
+
+  it('onSession fires per message, at once when one is known, and stops on unsubscribe', () => {
+    // Invariant: a subscriber sees every host session message, a late one sees the current value, and an unsubscribed one sees nothing.
+    const b = runBridge();
+    const seen: unknown[] = [];
+    const off = b.win.ccBridge.onSession((s: unknown) => seen.push(s));
+    expect(seen).toEqual([]);
+    deliver(b, { cc: 1, type: 'session', session: SESSION });
+    deliver(b, { cc: 1, type: 'session', session: null });
+    expect(seen).toEqual([SESSION, null]);
+    const late: unknown[] = [];
+    b.win.ccBridge.onSession((s: unknown) => late.push(s));
+    expect(late, 'the current value, immediately').toEqual([null]);
+    off();
+    deliver(b, { cc: 1, type: 'session', session: SESSION });
+    expect(seen).toEqual([SESSION, null]);
+  });
+
+  it('ignores a session message from a foreign origin', () => {
+    // Invariant: only the host origin can set the session a plugin acts on.
+    const b = runBridge();
+    deliver(b, { cc: 1, type: 'session', session: SESSION }, 'http://evil');
+    expect(b.win.ccBridge.session).toBeUndefined();
+  });
+
+  it('openSession and sendPrompt post their envelopes to the host origin under distinct string ids', () => {
+    // Invariant: the wire shape of both calls, and that every call carries its own id.
+    const b = runBridge();
+    void b.win.ccBridge.openSession('s1');
+    void b.win.ccBridge.sendPrompt('s1', 'hi');
+    void b.win.ccBridge.sendPrompt('s1', 'again');
+    const [o] = calls(b, 'openSession');
+    const [p, q] = calls(b, 'sendPrompt');
+    expect(o).toEqual({ cc: 1, type: 'openSession', id: o.id, sessionId: 's1' });
+    expect(p).toEqual({ cc: 1, type: 'sendPrompt', id: p.id, sessionId: 's1', text: 'hi' });
+    expect(new Set([o.id, p.id, q.id]).size).toBe(3);
+    expect([o.id, p.id].every((i) => typeof i === 'string')).toBe(true);
+    expect(b.posted.filter(([m]) => m.type !== 'route' && m.type !== 'ready').every(([, origin]) => origin === 'http://h')).toBe(true);
+  });
+
+  it('a result resolves the call with its id only, in any order; unknown ids and foreign origins resolve nothing', async () => {
+    // Invariant: replies are matched by id, never by order, and only a host-origin reply counts.
+    const b = runBridge();
+    const settled: Record<string, unknown> = {};
+    const a = b.win.ccBridge.openSession('s1').then((r: unknown) => { settled.a = r; });
+    const c = b.win.ccBridge.sendPrompt('s2', 'x').then((r: unknown) => { settled.c = r; });
+    const [oa] = calls(b, 'openSession');
+    const [oc] = calls(b, 'sendPrompt');
+    deliver(b, { cc: 1, type: 'result', id: oa.id, ok: true }, 'http://evil');
+    deliver(b, { cc: 1, type: 'result', id: 'nope', ok: true });
+    await observerTurn();
+    expect(settled, 'nothing resolved yet').toEqual({});
+    deliver(b, { cc: 1, type: 'result', id: oc.id, ok: false, code: 'SESSION_NOT_LIVE' });
+    await c;
+    expect(settled).toEqual({ c: { ok: false, code: 'SESSION_NOT_LIVE' } });
+    deliver(b, { cc: 1, type: 'result', id: oa.id, ok: true });
+    await a;
+    expect(settled.a).toEqual({ ok: true });
+  });
+});
+
