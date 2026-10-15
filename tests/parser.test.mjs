@@ -173,6 +173,21 @@ test('parser: every delta of a thinking block straight after a redacted one carr
   assert.equal(block(1).at(-1).kind, 'thinking_end');
 });
 
+test('parser: each assistant envelope carries the message-level index of its first block', async () => {
+  const p = new Parser();
+  const env = (id, content, parent = null) => ({ type: 'assistant', parent_tool_use_id: parent, message: { id, content } });
+  const stamps = (frames) => frames.flatMap(f => p.handleObject(f)).filter(e => e.kind === 'assistant_message').map(e => [e.msgId, e.blockIdx]);
+  // One envelope per block (the real capture): 0, 1, 2.
+  assert.deepEqual(stamps(await narrationStdout()), [['msg_011Cg4aZkEcqTrXhBFw7EJnj', 0], ['msg_011Cg4aZkEcqTrXhBFw7EJnj', 1], ['msg_011Cg4aZkEcqTrXhBFw7EJnj', 2]]);
+  assert.deepEqual(stamps([
+    env('m2', [{ type: 'thinking', thinking: 'a' }, { type: 'text', text: 'b' }]), // one envelope for two blocks
+    env('m2', [{ type: 'text', text: 'c' }]),
+    env('s1', [{ type: 'text', text: 'sub' }], 'tuA'), // a sub-agent counts on its own
+    env('m2', [{ type: 'text', text: 'd' }]),
+    env('m3', [{ type: 'text', text: 'e' }]), // a new message starts again at 0
+  ]), [['m2', 0], ['m2', 2], ['s1', 0], ['m2', 3], ['m3', 0]]);
+});
+
 test('parser: a thinking block with text after a text or tool_use block is not narration', async (t) => {
   const se = (event) => ({ type: 'stream_event', event });
   const thinkingBlock = (index) => [

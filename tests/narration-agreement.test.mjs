@@ -16,7 +16,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Parser } from '../src/parser.ts';
-import { loadPersistedTranscript } from '../src/transcript.ts';
+import { loadPersistedTranscript, replayPersistedLine } from '../src/transcript.ts';
 import { reconstructMessages } from '../src/mcp/messageReconstruction.ts';
 import { stampArchiveEvents } from '../src/eventArchive.ts';
 import { EventLog } from '../src/instances.ts';
@@ -115,8 +115,9 @@ test('deepseek-plain: readable thinking stays plain thinking on every surface', 
 });
 
 // The CLI's undocumented `narration_block_indexes` envelope field is never
-// read by src/. Here it is an early warning only: if Claude's block ordering
-// drifts from the rule, the fixture's own field disagrees with the verdict.
+// read by src/. The fixtures are frozen, so this check can only fire when they
+// are re-captured: if Claude's block ordering has drifted from the rule by
+// then, the new capture's own field disagrees with the verdict.
 test('drift check: narration_block_indexes on each stdout envelope agrees with the rule', async (t) => {
   for (const name of Object.keys(EXPECTED)) {
     await t.test(name, async () => {
@@ -149,4 +150,27 @@ test('ring: a narration block coalesces into one retained slot that keeps the fl
   assert.equal(slots.length, 1, 'one coalesced slot');
   assert.equal(slots[0].narration, true);
   assert.equal(slots[0].text, NARRATION_TEXT);
+});
+
+// Live, a sub-agent turn arrives as finals-only envelopes tagged
+// parent_tool_use_id: the parser emits no thinking_delta for it at all, so
+// nothing classifies it. Replay of a sub-agent line must not classify either.
+test('sub-agent parity: a [redacted, thinking(text)] sub-agent line replays unflagged', async (t) => {
+  const line = { type: 'assistant', isSidechain: true, message: { id: 'msub', role: 'assistant', content: [
+    { type: 'thinking', thinking: '', signature: 'sig' },
+    { type: 'thinking', thinking: 'a sub-agent progress note', signature: 'sig' },
+  ] } };
+  const flagged = (evs) => evs.filter(e => e.kind === 'thinking_delta' && e.narration);
+  await t.test('control: the same line at top level is narration', () => {
+    assert.equal(flagged(replayPersistedLine(line, { allowSidechain: true })).length, 1);
+  });
+  await t.test('under a parentToolUseId', () => {
+    const evs = replayPersistedLine(line, { allowSidechain: true, parentToolUseId: 'toolu_agent' });
+    assert.equal(evs.filter(e => e.kind === 'thinking_delta').length, 1, 'fixture check: the thought replays');
+    assert.equal(flagged(evs).length, 0);
+  });
+  await t.test('live: the parser emits no thinking_delta for a sub-agent envelope', () => {
+    const evs = new Parser().handleObject({ type: 'assistant', parent_tool_use_id: 'toolu_agent', message: line.message });
+    assert.equal(evs.filter(e => e.kind === 'thinking_delta').length, 0);
+  });
 });

@@ -192,7 +192,11 @@ interface CompactionEvent extends UiEventBase {
   durationMs: number | null;
 }
 interface HookEvent extends UiEventBase { kind: 'hook'; event: unknown; data: unknown }
-interface AssistantMessageEvent extends UiEventBase { kind: 'assistant_message'; msgId: string | null; message: AssistantWireMessage }
+// `blockIdx` is the message-level index of `message.content[0]`: the CLI sends
+// one message as one envelope or as one envelope per block, and the parser
+// counts the blocks of every envelope it saw for the message, so the index holds
+// even when the ring has since dropped an earlier envelope.
+interface AssistantMessageEvent extends UiEventBase { kind: 'assistant_message'; msgId: string | null; blockIdx: number; message: AssistantWireMessage }
 interface TurnEndEvent extends UiEventBase {
   kind: 'turn_end';
   subtype: string;

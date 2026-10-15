@@ -14,6 +14,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, seedSessionJsonl, driveTurn } from './helpers.mjs';
 import { localPlace } from '../src/projects.ts';
+import { MSG_TEXT_CAP } from '../src/mcp/messageReconstruction.ts';
+import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, 'fixtures', 'narration');
@@ -179,4 +181,59 @@ test('send_prompt({forward}) carries the narration segment to the target', async
   const res = unwrap(await callTool('send_prompt', { sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'Carry on.' }));
   assert.equal(res.forwarded, 1);
   assert.ok(calls[0][0].includes(SEGMENT), `composed=${calls[0][0]}`);
+});
+
+// Rings built directly through the worker's own emit path (as tests/mcp-forward.test.mjs
+// does), for shapes a fixture cannot produce.
+async function idleWorker(project) {
+  await api(baseUrl, 'POST', '/api/projects', { name: project });
+  const sid = unwrap(await callTool('spawn_instance', { project, mode: 'bypassPermissions' })).sessionId;
+  await waitFor(() => instForSession(instances, sid)?.status === 'idle');
+  return sid;
+}
+const emitNarration = (sid, msgId, text) =>
+  instForSession(instances, sid)._emitUi({ kind: 'thinking_delta', msgId, blockIdx: 1, text, narration: true });
+
+test('a ring holding only a flagged narration delta for a message still selects that message', async () => {
+  const sid = await idleWorker('narr-slice');
+  emitNarration(sid, 'm-slice', NARRATION_TEXT);
+  const r = await recent(sid);
+  assert.deepEqual(r.meta.messages.map(m => m.msgId), ['m-slice']);
+  assert.equal(r.bodies[0], SEGMENT);
+});
+
+test('caps: a narration over MSG_TEXT_CAP is cut and flagged in get_recent_messages, and cut at the cap in a forward', async () => {
+  const sid = await idleWorker('narr-cap');
+  const long = 'Q'.repeat(MSG_TEXT_CAP + 1000);
+  emitNarration(sid, 'm-long', long);
+
+  const r = await recent(sid);
+  const [entry] = r.meta.messages;
+  assert.equal(entry.narrationChars, long.length);
+  assert.equal(entry.narrationTruncated, true);
+  assert.equal(r.bodies[0], `--- narration ---\n${'Q'.repeat(MSG_TEXT_CAP)}`);
+
+  const targetSid = await idleWorker('narr-cap-target');
+  const target = instForSession(instances, targetSid);
+  const calls = [];
+  const orig = target.prompt.bind(target);
+  target.prompt = async (...a) => { calls.push(a); return orig(...a); };
+  unwrap(await callTool('send_prompt', { sessionId: targetSid, forward: { sessionId: sid }, text: 'Carry on.' }));
+  assert.equal(calls[0][0].match(/--- narration ---\n(Q+)/)[1].length, MSG_TEXT_CAP);
+});
+
+test('caps: the result-budget fit shrinks narration', async () => {
+  const sid = await idleWorker('narr-budget');
+  const full = 'Q'.repeat(MSG_TEXT_CAP);
+  emitNarration(sid, 'm-a', full);
+  emitNarration(sid, 'm-b', full);
+  assert.ok(2 * full.length > MCP_RESULT_CHAR_BUDGET, 'fixture check: two whole narrations overflow one result');
+
+  const r = await recent(sid, { count: 2 });
+  assert.deepEqual(r.meta.messages.map(m => m.msgId), ['m-a', 'm-b'], 'nothing dropped: the shorter cap fits');
+  for (const [i, entry] of r.meta.messages.entries()) {
+    assert.equal(entry.narrationChars, MSG_TEXT_CAP);
+    assert.equal(entry.narrationTruncated, true, 'cut by the budget fit, not by the per-message cap');
+    assert.equal(r.bodies[i].match(/--- narration ---\n(Q+)/)[1].length, MSG_TEXT_CAP / 2);
+  }
 });

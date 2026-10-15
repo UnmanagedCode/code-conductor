@@ -242,9 +242,9 @@ test('snapshotTail preserves the safe suffix after a headless/surviving overlap'
     const inst = await bootIdle('tailoverlap');
     inst._emitUi({ kind: 'tool_use', msgId: 'mB', blockIdx: 0,
       toolUseId: 'B', name: 'Read', input: {}, parentToolUseId: 'A' });
-    inst._emitUi({ kind: 'assistant_message', msgId: 'mA', parentToolUseId: 'A',
+    inst._emitUi({ kind: 'assistant_message', msgId: 'mA', blockIdx: 0, parentToolUseId: 'A',
       message: { id: 'mA', content: [{ type: 'text', text: 'outer child' }] } });
-    inst._emitUi({ kind: 'assistant_message', msgId: 'mB', parentToolUseId: 'B',
+    inst._emitUi({ kind: 'assistant_message', msgId: 'mB', blockIdx: 0, parentToolUseId: 'B',
       message: { id: 'mB', content: [{ type: 'text', text: 'inner child' }] } });
     inst._emitUi({ kind: 'system', subtype: 'safe-tail' });
 
@@ -366,10 +366,10 @@ test('seam forced mid-Task: interleaved sub-agent parts never split across pages
   inst._emitUi({ kind: 'user_echo', text: 'next question' });
   // Outer text parts interleaved with nested finals-only parts.
   inst._emitUi({ kind: 'text_delta', msgId: 'mO', blockIdx: 0, text: 'outer part 1 ' });
-  inst._emitUi({ kind: 'assistant_message', msgId: 'cm1', parentToolUseId: 'T',
+  inst._emitUi({ kind: 'assistant_message', msgId: 'cm1', blockIdx: 0, parentToolUseId: 'T',
     message: { id: 'cm1', content: [{ type: 'text', text: 'nested text' }] } });
   inst._emitUi({ kind: 'text_delta', msgId: 'mO', blockIdx: 0, text: 'outer part 2' });
-  inst._emitUi({ kind: 'assistant_message', msgId: 'cm1', parentToolUseId: 'T',
+  inst._emitUi({ kind: 'assistant_message', msgId: 'cm1', blockIdx: 1, parentToolUseId: 'T',
     message: { id: 'cm1', content: [{ type: 'tool_use', id: 'ct1', name: 'Bash', input: { command: 'pwd' } }] } });
   inst._emitUi({ kind: 'text_end', msgId: 'mO', blockIdx: 0 });
   inst._emitUi({ kind: 'tool_result', toolUseId: 'ct1', content: '/root', isError: false, parentToolUseId: 'T' });

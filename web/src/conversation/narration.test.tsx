@@ -132,3 +132,33 @@ describe('narration rendering', () => {
     expect(root.querySelectorAll('[data-thinking="redacted"]').length).toBe(1);
   });
 });
+
+describe('narration conversion edges', () => {
+  it("removes the group its own thinking_start opened when nothing else is in it, and the next tool opens a fresh one", () => {
+    // Invariant: converting a narration block leaves no empty group behind.
+    const m = new ConversationModel();
+    m.apply({ kind: 'thinking_start', msgId: 'm1', blockIdx: 1, _seq: 1 });
+    const [w] = assistants(m);
+    expect(outline(w), 'fixture check: the start opened a group holding only this block').toEqual([['thinking']]);
+    m.apply({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 1, text: 'Checking the parser next.', narration: true, _seq: 2 });
+    expect(outline(w)).toEqual(['narration']);
+    expect(groupsOf(w)).toEqual([]);
+    m.apply({ kind: 'thinking_end', msgId: 'm1', blockIdx: 1, _seq: 3 });
+    m.apply({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 2, toolUseId: 't1', name: 'Bash', _seq: 4 });
+    expect(outline(w)).toEqual(['narration', ['tool']]);
+  });
+
+  it('a narration node on a lazily loaded page is finalized and renders markdown', async () => {
+    // Invariant: a static batch settles narration like prose, so a page cut mid-block never shows a raw buffer.
+    const m = new ConversationModel();
+    const page = m.renderPage([
+      { kind: 'thinking_start', msgId: 'm1', blockIdx: 1, _seq: 1 },
+      { kind: 'thinking_delta', msgId: 'm1', blockIdx: 1, text: 'Checking **the parser** next.', narration: true, _seq: 2 },
+    ], null, null);
+    const [note] = narrations(assistants(page)[0]);
+    expect(note.finalized).toBe(true);
+    const { root } = renderModel(page);
+    await flush();
+    expect(root.querySelector('[data-narration] strong')?.textContent).toBe('the parser');
+  });
+});

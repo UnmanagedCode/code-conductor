@@ -166,7 +166,7 @@ test('askFactsOfEvent: an auto-approved plan and a sub-agent event are no facts'
 
 // ── LiveAskFacts: one toolAsk per toolUseId across both arms ─────────────
 
-const envelope = (content, msgId = 'm1') => ({ kind: 'assistant_message', msgId, message: { id: msgId, content }, parentToolUseId: null });
+const envelope = (content, msgId = 'm1') => ({ kind: 'assistant_message', msgId, blockIdx: 0, message: { id: msgId, content }, parentToolUseId: null });
 const askBlock = { type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions: [{ question: 'q' }] } };
 const planBlock = { type: 'tool_use', id: 'tp1', name: 'ExitPlanMode', input: { plan: 'p' } };
 const toolAsks = (facts) => facts.filter(f => f.t === 'toolAsk');

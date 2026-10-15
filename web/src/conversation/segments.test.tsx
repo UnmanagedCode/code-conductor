@@ -357,8 +357,8 @@ describe('page merging', () => {
 
   it('live child events with an unknown parent are parked, then adopted in order when a page brings the head', () => {
     const live = new ConversationModel();
-    live.apply({ kind: 'assistant_message', msgId: 's1', parentToolUseId: 'A', message: { content: [{ type: 'text', text: 'sub part 1' }] } });
-    live.apply({ kind: 'assistant_message', msgId: 's1', parentToolUseId: 'A', message: { content: [{ type: 'tool_use', id: 'st', name: 'Read', input: {} }] } });
+    live.apply({ kind: 'assistant_message', msgId: 's1', blockIdx: 0, parentToolUseId: 'A', message: { content: [{ type: 'text', text: 'sub part 1' }] } });
+    live.apply({ kind: 'assistant_message', msgId: 's1', blockIdx: 1, parentToolUseId: 'A', message: { content: [{ type: 'tool_use', id: 'st', name: 'Read', input: {} }] } });
     expect(live.items).toHaveLength(0);
     live.prependPage(live.renderPage(tool('m1', 0, 'A', 'Agent', { result: null }), null, null), null);
     const sub = live.toolBlocks.get('A')!.sub!;

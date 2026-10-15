@@ -152,6 +152,11 @@ export class Parser {
   _compactSummaryArmed = false;
   // task_started facts by task_id, read when that task's notification arrives.
   _taskStarts = new TaskStarts();
+  // Per parent_tool_use_id ('' = top level): the message whose envelopes are
+  // arriving and how many content blocks they carried so far — the next
+  // envelope's `blockIdx`. One entry per agent, since an agent's messages arrive
+  // one after another.
+  _envelopeBlocks = new Map<string, { msgId: string | null; count: number }>();
 
   reset() {
     this.currentMsgId = null;
@@ -162,6 +167,7 @@ export class Parser {
     this._ctxFallbackArmed = false;
     this._compactSummaryArmed = false;
     this._taskStarts = new TaskStarts();
+    this._envelopeBlocks.clear();
   }
 
   // Signal a genuine turn boundary (a real prompt or interrupt emitted
@@ -565,9 +571,15 @@ export class Parser {
         });
       }
     }
+    const envelopeMsgId = (msg.id ?? this.currentMsgId) as string | null;
+    const agent = typeof obj.parent_tool_use_id === 'string' ? obj.parent_tool_use_id : '';
+    const seen = this._envelopeBlocks.get(agent);
+    const blockIdx = seen?.msgId === envelopeMsgId ? seen.count : 0;
+    this._envelopeBlocks.set(agent, { msgId: envelopeMsgId, count: blockIdx + (Array.isArray(msg.content) ? msg.content.length : 0) });
     events.push({
       kind: 'assistant_message',
-      msgId: (msg.id ?? this.currentMsgId) as string | null,
+      msgId: envelopeMsgId,
+      blockIdx,
       message: msg as AssistantWireMessage,
     });
     return events;

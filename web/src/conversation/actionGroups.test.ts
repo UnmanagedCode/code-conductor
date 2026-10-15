@@ -160,7 +160,7 @@ describe('action groups', () => {
     const m = new ConversationModel();
     feed(m, [
       ...tool('m1', 0, 'agent1', 'Agent', { result: null, input: { description: 'd' } }),
-      { kind: 'assistant_message', msgId: 's1', parentToolUseId: 'agent1', message: { content: [
+      { kind: 'assistant_message', msgId: 's1', blockIdx: 0, parentToolUseId: 'agent1', message: { content: [
         { type: 'thinking', thinking: 'nested pondering' },
         { type: 'tool_use', id: 'sub-t1', name: 'Read', input: {} },
       ] } },
@@ -177,7 +177,7 @@ describe('action groups', () => {
     const m = new ConversationModel();
     feed(m, [
       ...tool('m1', 0, 'agent1', 'Agent', { result: null }),
-      { kind: 'assistant_message', msgId: 's1', parentToolUseId: 'agent1', message: { content: [{ type: 'tool_use', id: 'sub-t1', name: 'Read', input: {} }] } },
+      { kind: 'assistant_message', msgId: 's1', blockIdx: 0, parentToolUseId: 'agent1', message: { content: [{ type: 'tool_use', id: 'sub-t1', name: 'Read', input: {} }] } },
       toolResult({ toolUseId: 'sub-t1', parentToolUseId: 'agent1', content: 'nope', isError: true }),
       toolResult({ toolUseId: 'agent1', content: 'done' }),
     ]);
@@ -191,8 +191,8 @@ describe('action groups', () => {
     const m = new ConversationModel();
     feed(m, [
       ...tool('m1', 0, 'a1', 'Agent', { result: null }),
-      { kind: 'assistant_message', msgId: 's1', parentToolUseId: 'a1', message: { content: [{ type: 'tool_use', id: 'a2', name: 'Agent', input: {} }] } },
-      { kind: 'assistant_message', msgId: 's2', parentToolUseId: 'a2', message: { content: [{ type: 'tool_use', id: 'deep', name: 'Read', input: {} }] } },
+      { kind: 'assistant_message', msgId: 's1', blockIdx: 0, parentToolUseId: 'a1', message: { content: [{ type: 'tool_use', id: 'a2', name: 'Agent', input: {} }] } },
+      { kind: 'assistant_message', msgId: 's2', blockIdx: 0, parentToolUseId: 'a2', message: { content: [{ type: 'tool_use', id: 'deep', name: 'Read', input: {} }] } },
     ]);
     const a1 = onlyGroup(m).children[0] as ToolNode;
     const a2 = groupsOf(assistants(a1.sub!)[0])[0].children[0] as ToolNode;

@@ -41,7 +41,7 @@ describe('assistant avatar', () => {
     const { m, root } = await show([
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
-      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S1' }] } },
+      { kind: 'assistant_message', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S1' }] } },
     ]);
     const card = groupsOf(m.items[0] as AssistantNode)[0].children[0] as ToolNode;
     expect(card.sub!.items, 'fixture check: the sub-agent has a bubble').toHaveLength(1);

@@ -81,7 +81,7 @@ describe('sub-agent nesting', () => {
   it('a depth-2 child routes into the nested sub-conversation, not parked', () => {
     const m = new ConversationModel();
     m.apply({ kind: 'tool_use', msgId: null, blockIdx: 0, toolUseId: 'A', name: 'Agent', input: {}, parentToolUseId: null });
-    m.apply({ kind: 'assistant_message', msgId: 'sub', parentToolUseId: 'A', message: { id: 'sub', content: [{ type: 'tool_use', id: 'B', name: 'Agent', input: {} }] } });
+    m.apply({ kind: 'assistant_message', msgId: 'sub', blockIdx: 0, parentToolUseId: 'A', message: { id: 'sub', content: [{ type: 'tool_use', id: 'B', name: 'Agent', input: {} }] } });
     m.apply({ kind: 'text_delta', msgId: 'deep', blockIdx: 0, text: 'deep', parentToolUseId: 'B' });
     m.apply({ kind: 'text_end', msgId: 'deep', blockIdx: 0, parentToolUseId: 'B' });
     expect(m.orphanChildEvents.size).toBe(0);
@@ -124,7 +124,7 @@ describe('sub-agent nesting', () => {
     expect(toolTrigger().getAttribute('data-state')).toBe('open');
 
     fireEvent.click(subTrigger());
-    m.apply({ kind: 'assistant_message', msgId: 'c2', parentToolUseId: 'A', message: { id: 'c2', content: [{ type: 'text', text: 'three' }] } });
+    m.apply({ kind: 'assistant_message', msgId: 'c2', blockIdx: 0, parentToolUseId: 'A', message: { id: 'c2', content: [{ type: 'text', text: 'three' }] } });
     m.apply(toolResult({ toolUseId: 'A', content: 'done' }));
     await flush();
     expect(subTrigger().getAttribute('data-state')).toBe('closed');

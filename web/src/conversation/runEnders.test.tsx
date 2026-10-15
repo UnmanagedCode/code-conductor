@@ -17,7 +17,7 @@ function runningSubAgent(): ConversationModel {
   const m = new ConversationModel();
   feed(m, [
     ...tool('m1', 0, 'A', 'Agent', { result: null, input: { description: 'survey' } }),
-    { kind: 'assistant_message', msgId: 's1', parentToolUseId: 'A', message: { content: [{ type: 'tool_use', id: 'sr1', name: 'Read', input: {} }] } },
+    { kind: 'assistant_message', msgId: 's1', blockIdx: 0, parentToolUseId: 'A', message: { content: [{ type: 'tool_use', id: 'sr1', name: 'Read', input: {} }] } },
   ]);
   return m;
 }
@@ -53,7 +53,7 @@ describe('run-enders', () => {
     expect(first.open, 'precondition: open while the sub-agent runs').toBe(true);
     m.apply({ kind: 'compaction', trigger: 'auto', preTokens: 1, postTokens: 1, durationMs: 1 });
     expect(first.open, 'the compaction folds it').toBe(false);
-    m.apply({ kind: 'assistant_message', msgId: 's1', parentToolUseId: 'A', message: { content: [{ type: 'tool_use', id: 'sb1', name: 'Bash', input: {} }] } });
+    m.apply({ kind: 'assistant_message', msgId: 's1', blockIdx: 1, parentToolUseId: 'A', message: { content: [{ type: 'tool_use', id: 'sb1', name: 'Bash', input: {} }] } });
     const groups = subGroups(m);
     expect(groups.map(groupText)).toEqual(['1 action · Read', '1 action · Bash']);
     expect(groups.map((g) => g.open)).toEqual([false, true]);

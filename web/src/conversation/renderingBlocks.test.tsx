@@ -23,7 +23,7 @@ describe('nested sub-agent rows', () => {
     const m = new ConversationModel();
     m.apply({ kind: 'tool_use_start', msgId: 'o1', blockIdx: 0, toolUseId: 'A', name: 'Agent' });
     m.apply({ kind: 'tool_use', msgId: 'o1', blockIdx: 0, toolUseId: 'A', name: 'Agent', input: { description: 'd', prompt: 'p' } });
-    m.apply({ kind: 'assistant_message', msgId: 'c1', parentToolUseId: 'A', message: { id: 'c1', content: [{ type: 'tool_use', id: 'kb1', name: RAW, input: { cardId: 'c1' } }, { type: 'tool_use', id: 'rd1', name: 'Read', input: { file_path: '/x' } }] } });
+    m.apply({ kind: 'assistant_message', msgId: 'c1', blockIdx: 0, parentToolUseId: 'A', message: { id: 'c1', content: [{ type: 'tool_use', id: 'kb1', name: RAW, input: { cardId: 'c1' } }, { type: 'tool_use', id: 'rd1', name: 'Read', input: { file_path: '/x' } }] } });
     const { root } = renderModel(m);
     await flush();
     const sub = root.querySelector('[data-sub-trigger]')!;

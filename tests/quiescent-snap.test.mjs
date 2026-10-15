@@ -31,7 +31,7 @@ const tuStart = (id, m = 'm', i = 0) => ({ kind: 'tool_use_start', msgId: m, blo
 const tuDelta = (id, m = 'm', i = 0) => ({ kind: 'tool_use_input_delta', msgId: m, blockIdx: i, toolUseId: id, partialJson: '{' });
 const tu = (id, m = 'm', i = 0, name = 'Bash') => ({ kind: 'tool_use', msgId: m, blockIdx: i, toolUseId: id, name, input: {} });
 const tr = (id) => ({ kind: 'tool_result', toolUseId: id, content: 'ok', isError: false });
-const asstMsg = (m) => ({ kind: 'assistant_message', msgId: m, message: { id: m, content: [{ type: 'text', text: 'sub' }] } });
+const asstMsg = (m) => ({ kind: 'assistant_message', msgId: m, blockIdx: 0, message: { id: m, content: [{ type: 'text', text: 'sub' }] } });
 const child = (ev, pid) => ({ ...ev, parentToolUseId: pid });
 
 // Invariant checker: window [s, end) must contain only whole outer blocks,
