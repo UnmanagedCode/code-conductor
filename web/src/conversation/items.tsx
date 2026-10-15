@@ -104,7 +104,7 @@ function ViewToggle({ view, onChange }: { view: 'rendered' | 'raw'; onChange: (v
 
 // Single newlines inside a paragraph are line breaks people typed: keep them.
 const MD_TEXT = 'whitespace-pre-wrap';
-/** A user bubble's horizontal padding; the attachments and the action row below it share it, so they start at its text. */
+/** A user bubble's horizontal padding; the attachments row below it shares it, so its chips start at the bubble's text. */
 const USER_BUBBLE_PAD_X = 'px-4';
 /** A user bubble: a soft tint and an accent strip on its right edge, the side its author speaks from; no outline. A tone adds the colours. */
 export const USER_BUBBLE = `rounded-l-2xl rounded-r-md border-r-[3px] py-2.5 ${USER_BUBBLE_PAD_X}`;
@@ -137,13 +137,18 @@ function Folded({ icon, title, children, tone = 'muted', kind, multiline = false
   );
 }
 
+/** A transcript item's row of helper icons (raw toggle, copy, rewind, fork). Every such row is right-aligned. */
+function ActionRow({ className, ...props }: React.ComponentProps<'div'>) {
+  return <div data-action-row className={cn('flex items-center justify-end gap-0.5', className)} {...props} />;
+}
+
 function FoldedBody({ text, render, view, onViewChange }: { text: string; render?: () => React.ReactNode; view: TextView; onViewChange: (view: TextView) => void }) {
   return (
     <div className="space-y-2">
-      <div className="flex justify-end gap-0.5">
+      <ActionRow>
         <ViewToggle view={view} onChange={onViewChange} />
         <CopyButton getText={() => text} label="Copy text" />
-      </div>
+      </ActionRow>
       <BubbleBody>
         {view === 'raw' ? <pre className="text-sm whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</pre> : render ? render() : <Markdown text={text} className={MD_TEXT} />}
       </BubbleBody>
@@ -289,7 +294,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
         </div>
       ) : null}
       <Attachments list={node.attachments} resolve={actions?.resolveAttachmentUrl} />
-      <div className={cn('flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100', USER_BUBBLE_PAD_X)} data-user-actions>
+      <ActionRow className="opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100" data-user-actions>
         {node.transcribed && (
           <Tooltip><TooltipTrigger asChild><span className="px-1 text-muted-foreground" data-voice-badge><MicIcon className="size-3.5" /></span></TooltipTrigger><TooltipContent>Transcribed from voice</TooltipContent></Tooltip>
         )}
@@ -321,7 +326,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
             </Tooltip>
           </>
         )}
-      </div>
+      </ActionRow>
     </div>
   );
 }
@@ -378,10 +383,10 @@ const TURN_END_CONTROLS_REVEAL = `${ASSISTANT_CONTROLS_REVEAL} [[data-item=assis
 /** The raw/rendered toggle and copy of one assistant bubble, wherever they are placed. */
 function AssistantControls({ node, model, className }: { node: AssistantNode; model: ConversationModel; className: string }) {
   return (
-    <div className={cn('flex items-center gap-0.5', className)}>
+    <ActionRow className={className}>
       <ViewToggle view={node.view} onChange={(v) => model.setAssistantView(node, v)} />
       <CopyButton getText={() => ConversationModel.assistantCopyText(node)} label="Copy message" />
-    </div>
+    </ActionRow>
   );
 }
 
@@ -403,7 +408,7 @@ function AssistantBubble({ node, ctx, controlsBelow }: { node: AssistantNode; ct
           return <CallUsageLine key={c.id} node={c} />;
         })}
         {assistantHasText(node) && !controlsBelow && (
-          <AssistantControls node={node} model={ctx.model} className={cn('justify-end', ASSISTANT_CONTROLS_REVEAL)} />
+          <AssistantControls node={node} model={ctx.model} className={ASSISTANT_CONTROLS_REVEAL} />
         )}
       </div>
     </div>
