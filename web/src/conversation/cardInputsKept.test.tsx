@@ -63,12 +63,12 @@ async function frame(type: string, detail?: object) {
   for (let i = 0; i < 6; i++) await flush();
 }
 
-async function boot() {
+async function boot(transcript: UiEvent[] = TRANSCRIPT) {
   n += 1;
   ids = { a: `iA${n}`, b: `iB${n}` };
   wire.sent.length = 0;
-  wire.transcripts.set(ids.a, TRANSCRIPT);
-  wire.transcripts.set(ids.b, TRANSCRIPT);
+  wire.transcripts.set(ids.a, transcript);
+  wire.transcripts.set(ids.b, transcript);
   const instances = [inst(ids.a), inst(ids.b)];
   routeFetch({
     'GET /api/instances/': () => ({ json: { events: [], hasMore: false, nextBefore: null, segment: null } }),
@@ -238,5 +238,49 @@ describe('a question card once answered', () => {
     // A rewind to before the answer: the transcript carries no echo.
     await frame('snapshot', { id: ids.a, events: TRANSCRIPT });
     expect(await readCard(questions(root)[0])).toEqual(START_CARD);
+  });
+});
+
+describe('picks alone, and a session whose instance id changes', () => {
+  const picked = (card: HTMLElement) => [...card.querySelectorAll('[data-option][aria-pressed="true"]')].map((b) => b.getAttribute('data-option'));
+
+  it('options picked on single-question cards, with no note typed and no tab touched, come back after a reconnect and are sent', async () => {
+    const one: UiEvent[] = [
+      { kind: 'user_echo', text: 'ask me', userIndex: 0 },
+      { kind: 'user_question', toolUseId: 'qs', questions: [FRUIT] },
+      { kind: 'user_question', toolUseId: 'qm', questions: [TOPPINGS] },
+      turnEnd({ subtype: 'success' }),
+    ];
+    const root = await boot(one);
+    const [single, multi] = questions(root);
+    await click(opt(single, 'Apple'));
+    await click(opt(multi, 'Nuts'));
+    await click(opt(multi, 'Syrup'));
+    expect([picked(single), picked(multi)], 'fixture check: the picks are on the cards').toEqual([['Apple'], ['Nuts', 'Syrup']]);
+    const clears = conversation.clears;
+    await frame('close');
+    await frame('open');
+    expect(conversation.clears, 'premise: the transcript was rebuilt').toBeGreaterThan(clears);
+    const [single2, multi2] = questions(root);
+    expect([picked(single2), picked(multi2)]).toEqual([['Apple'], ['Nuts', 'Syrup']]);
+    await click(within(single2).getByRole('button', { name: /Send answer/ }));
+    expect(prompts().at(-1), 'the pick is sent').toBe(formatUserQuestionAnswers([FRUIT], [{ kind: 'option', label: 'Apple' }]));
+  });
+
+  it('the same session under a new instance id (a resume) keeps the card input', async () => {
+    const root = await boot();
+    await setAll(root);
+    expect(feedbacks(root), 'fixture check: the plans hold their feedback').toEqual(FEEDBACK);
+    // The old instance is gone, the resumed one lists the same session under a new id, and the client selects it.
+    const resumed = { ...inst(ids.a), id: `${ids.a}-resumed`, sessionId: `s-${ids.a}` };
+    wire.transcripts.set(resumed.id, TRANSCRIPT);
+    const clears = conversation.clears;
+    act(() => { appStore.set({ instances: [resumed, inst(ids.b)] }); });
+    act(() => { selectInstance(resumed.id, { userGesture: true }); });
+    for (let i = 0; i < 4; i++) await flush();
+    expect(conversation.clears, 'premise: the transcript was rebuilt').toBeGreaterThan(clears);
+    expect(subscribes().at(-1), 'premise: the resumed instance was subscribed').toBe(resumed.id);
+    expect(await readCard(questions(root)[0])).toEqual(SET_Q1);
+    expect(feedbacks(root)).toEqual(FEEDBACK);
   });
 });

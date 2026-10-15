@@ -367,6 +367,25 @@ describe('a card from an older page', () => {
     return { feedback: textbox(again).value, editable: !textbox(again).disabled };
   }
 
+  it('a question card and a plan card that exist only on an older page keep their input when the tail is replaced and the page loads again', async () => {
+    const { el } = mount();
+    await showPaged('i1');
+    const [olderPlan] = olderAndNewer(el);
+    const [card] = questions(el);
+    await type(textbox(olderPlan), 'older plan feedback');
+    await click(card.querySelector('[data-option="Banana"]')!);
+    await type(textbox(card), 'older note');
+    // A reconnect: the snapshot's tail no longer carries the older cards; they page in again.
+    await showPaged('i1');
+    const [again] = olderAndNewer(el);
+    const [cardAgain] = questions(el);
+    expect(textbox(again).value, 'the older plan\'s feedback').toBe('older plan feedback');
+    expect({
+      picked: [...cardAgain.querySelectorAll('[data-option][aria-pressed="true"]')].map((b) => b.getAttribute('data-option')),
+      note: textbox(cardAgain).value,
+    }, 'the older question\'s pick and note').toEqual({ picked: ['Banana'], note: 'older note' });
+  });
+
   it('another session selected and coming back pages the older card in again, awaiting a decision', async () => {
     expect(await lockThenReset(async () => {
       act(() => { selectInstance('i2'); });
