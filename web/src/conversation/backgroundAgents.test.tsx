@@ -353,6 +353,16 @@ describe('a backgrounded agent\'s run spans outer run-enders', () => {
     expect(subGroups(m, 'agentA').map((g) => g.open)).toEqual([false, false]);
   });
 
+  it('with no task ids, one of two live runs ending leaves the other open across an outer turn end (T21)', () => {
+    const m = launched(true, { started: false });
+    apply(m, taskStarted('agentA', true, null));
+    apply(m, taskStarted('agentB', true, null));
+    apply(m, ended('agentA', 'completed', 'done', null));
+    apply(m, childThinking('agentB'));
+    apply(m, turnEnd());
+    expect(subGroups(m, 'agentB').map((g) => g.open)).toEqual([true]);
+  });
+
   it('a transcript replaced in place forgets which runs ended: the same run started again is tracked as backgrounded (T20)', () => {
     const m = launched(true);
     apply(m, ended('agentA', 'completed', 'done'));

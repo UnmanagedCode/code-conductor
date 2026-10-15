@@ -723,7 +723,10 @@ export class ConversationModel {
     this.pushRoot(this.make<SystemNode>({ type: 'system', ev, inCard, reader: { open: false } }, this));
   }
 
-  /** A backgrounded task's start and end: its end (any status) folds its sub-agent's open groups. */
+  /**
+   * A backgrounded task's start and end: its end (any status) folds its sub-agent's open groups. Assumes a
+   * run's task_started and its notification carry the same `task_id`, or both lack it.
+   */
   private trackBackgroundTask(ev: UiEventOf<'system'>) {
     const { backgroundTasks: tasks, endedTasks: ended } = this.root;
     const runKey = (toolUseId: string) => (typeof ev.data?.task_id === 'string' ? ev.data.task_id : toolUseId);
