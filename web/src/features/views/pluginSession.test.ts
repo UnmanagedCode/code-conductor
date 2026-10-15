@@ -300,14 +300,18 @@ describe('exactly one result per call', () => {
   });
 
   it('answers LOOKUP_FAILED when the locate read never settles', async () => {
-    // Invariant: the lookup is bounded (10 s, as the send ack is), so a stalled read cannot leave a frame unanswered.
+    // Invariant: the lookup is bounded (10 s, as the send ack is), so a stalled read cannot leave a frame unanswered, and the read itself is aborted at the bound.
     vi.useFakeTimers();
     try {
-      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+      let seen: AbortSignal | null | undefined;
+      vi.stubGlobal('fetch', vi.fn((_u: string, o?: RequestInit) => { seen = o?.signal; return new Promise<Response>(() => {}); }));
       postFrom(shared, { cc: 1, type: 'openSession', id: 'slow', sessionId: 's-gone' });
       await vi.advanceTimersByTimeAsync(9_000);
       expect(results(shared), 'not before the bound').toEqual([]);
+      expect(seen, 'precondition: the read carries a signal').toBeDefined();
+      expect(seen?.aborted, 'not aborted before the bound').toBe(false);
       await vi.advanceTimersByTimeAsync(2_000);
+      expect(seen?.aborted, 'aborted at the bound').toBe(true);
       expect(results(shared)).toEqual([{ cc: 1, type: 'result', id: 'slow', ok: false, code: 'LOOKUP_FAILED' }]);
     } finally { vi.useRealTimers(); }
   });
