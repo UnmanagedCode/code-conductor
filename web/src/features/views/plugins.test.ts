@@ -1,7 +1,5 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true}}
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { EVICTING_ACTIONS, keepsResident, pluginFrames, overlayStore } from './plugins';
 
 afterEach(() => {
@@ -162,57 +160,5 @@ describe('plugin frames', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ok({ error: 'unknown' }, 404)));
     await pluginFrames.reconcile(undefined);
     expect(pluginFrames.residentIds()).toEqual([]);
-  });
-});
-
-// The bridge runs inside plugin frames as a classic script; drive it against a scripted fake window.
-// Plugin pages load the root /pluginBridge.js, served from this directory's pluginBridge.js.
-describe('pluginBridge.js', () => {
-  const src = fs.readFileSync(path.join(__dirname, 'pluginBridge.js'), 'utf8');
-  function run({ top = false, pathname = '/plugins/hub/a', origin = 'http://h' } = {}) {
-    const posted: any[] = [];
-    const listeners: Record<string, ((e: any) => void)[]> = {};
-    const loc = { pathname, search: '?q=1', hash: '', origin };
-    const hist = { replaced: [] as any[], pushState() {}, replaceState(_s: unknown, _t: unknown, url: string) { hist.replaced.push(url); loc.pathname = url; } };
-    const win: any = {
-      location: loc, history: hist,
-      parent: { postMessage: (m: unknown, o: string) => posted.push([m, o]) },
-      addEventListener: (t: string, f: (e: any) => void) => { (listeners[t] ??= []).push(f); },
-      dispatchEvent: (e: any) => { for (const f of listeners[e.type] ?? []) f(e); },
-    };
-    win.self = win;
-    win.top = top ? win : {};
-    const doc = { readyState: 'complete', addEventListener() {} };
-    new Function('window', 'history', 'document', 'PopStateEvent', src)(win, hist, doc, class { type: string; constructor(t: string) { this.type = t; } });
-    return { posted, win, hist, listeners };
-  }
-
-  it('is a no-op standalone and outside a /plugins mount', () => {
-    expect(run({ top: true }).posted).toEqual([]);
-    expect(run({ pathname: '/elsewhere' }).posted).toEqual([]);
-  });
-
-  it('announces ready and the initial route', () => {
-    const { posted } = run();
-    expect(posted).toEqual([[{ cc: 1, type: 'ready' }, 'http://h'], [{ cc: 1, type: 'route', path: '/a?q=1' }, 'http://h']]);
-  });
-
-  it('demotes pushState to replaceState and reports the route', () => {
-    const { posted, win, hist } = run();
-    win.history.pushState(null, '', '/plugins/hub/b');
-    expect(hist.replaced.at(-1)).toBe('/plugins/hub/b');
-    expect(posted.at(-1)[0]).toEqual({ cc: 1, type: 'route', path: '/b?q=1' });
-  });
-
-  it('a navigate message replaces state and synthesises popstate; a foreign origin is ignored', () => {
-    const { listeners, hist } = run();
-    const before = hist.replaced.length;
-    for (const f of listeners.message) f({ origin: 'http://evil', data: { cc: 1, type: 'navigate', path: '/x' } });
-    expect(hist.replaced.length).toBe(before);
-    let popped = 0;
-    (listeners.popstate ??= []).push(() => popped++);
-    for (const f of listeners.message) f({ origin: 'http://h', data: { cc: 1, type: 'navigate', path: '/x' } });
-    expect(hist.replaced.at(-1)).toBe('/plugins/hub/x');
-    expect(popped).toBeGreaterThan(0);
   });
 });

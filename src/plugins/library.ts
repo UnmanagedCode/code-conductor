@@ -109,6 +109,8 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     name: 'Code Karpathy Wiki',
     description: 'Durable-knowledge wiki conventions: a per-project .wiki/ plus the conductor\'s .conduct/wiki/.',
     repo: 'https://github.com/UnmanagedCode/code-karpathy-wiki',
+    postClone: 'npm install',
+    postPull: 'npm install',
   },
   {
     id: 'code-kanban',
@@ -151,6 +153,8 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     name: 'Code Live',
     description: 'A voice console for code-conductor: talk to Gemini Live, which drives conductor sessions.',
     repo: 'https://github.com/UnmanagedCode/code-live',
+    postClone: 'npm install',
+    postPull: 'npm install',
   },
 ];
 

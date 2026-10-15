@@ -27,6 +27,7 @@ import { restoreFromResumeManifest } from './src/resumeRestart.ts';
 import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.ts';
 import { createPluginLibrary } from './src/plugins/library.ts';
 import { buildPluginProxy } from './src/plugins/proxy.ts';
+import { pluginThemeRouter } from './src/pluginTheme.ts';
 import { setPluginConventionsProvider } from './src/projectConventions.ts';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.ts';
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
@@ -131,9 +132,11 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
-  // Plugin pages load the bridge from here. It is served from its source, not
-  // the web build, so it answers with no build in place.
+  // Plugin pages load the bridge and the host theme (/pluginTheme.css + its
+  // fonts) from here. Both are served from their sources, not the web build, so
+  // they answer with no build in place.
   app.get('/pluginBridge.js', (_req, res) => res.sendFile(PLUGIN_BRIDGE));
+  app.use(pluginThemeRouter());
   // The web UI at the root. `webDistDir` is for tests; it defaults to web/dist.
   app.use(webHandler(webDistDir ? { distDir: webDistDir } : {}));
 

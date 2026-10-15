@@ -1,7 +1,8 @@
 // The keep-alive probe plugin (fixtures/keepalive-plugin) installed under any id,
 // and its page's live counters read through page.frames(), shown or hidden: a
 // per-load nonce (a reload makes a new one), interval ticks, WebSocket messages,
-// requestAnimationFrame callbacks and, once its Start button ran, the microphone.
+// requestAnimationFrame callbacks and, once its Start button ran, the microphone;
+// and the theme its page shows (readTheme).
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, type Frame, type Page } from '@playwright/test';
@@ -39,4 +40,23 @@ export async function readProbe(page: Page, id: string): Promise<Probe | null> {
   const f = probeFrame(page, id);
   if (!f) return null;
   return f.evaluate(() => JSON.parse(JSON.stringify((window as unknown as { __probe?: Probe }).__probe ?? null)));
+}
+
+export type FrameTheme = { dark: boolean; attr: string | null; atParse: string | null; bg: string; geist: boolean };
+
+/** Plugin `id`'s theme as its page sees it: `.dark` and `data-cc-theme` on its <html>, the attribute when its head was parsed, its body's computed background, and whether the host-served Geist face loads; null while no frame serves it. */
+export async function readTheme(page: Page, id: string): Promise<FrameTheme | null> {
+  const f = probeFrame(page, id);
+  if (!f) return null;
+  return f.evaluate(async () => {
+    const root = document.documentElement;
+    const faces = await document.fonts.load('16px "Geist Variable"');
+    return {
+      dark: root.classList.contains('dark'),
+      attr: root.getAttribute('data-cc-theme'),
+      atParse: (window as unknown as { __themeAtParse?: string | null }).__themeAtParse ?? null,
+      bg: getComputedStyle(document.body).backgroundColor,
+      geist: faces.length > 0,
+    };
+  });
 }

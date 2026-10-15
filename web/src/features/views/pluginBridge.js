@@ -1,5 +1,6 @@
 // Conductor plugin bridge — served by the conductor at /pluginBridge.js and
-// included by plugin frontends via `<script src="/pluginBridge.js" defer>`.
+// included by plugin frontends as a blocking `<script src="/pluginBridge.js">`
+// first in `<head>` (no `defer`, so the theme is applied before first paint).
 // Standalone (not iframed, or served outside a /plugins/<id>/ mount) it is a
 // no-op, so plugins stay independently runnable (a 404 for this script
 // outside the embed is harmless).
@@ -8,6 +9,10 @@
 //   child → parent  ready            (bridge alive, initial route follows)
 //   child → parent  route {path}     (child-relative path incl. search+hash)
 //   parent → child  navigate {path}  (replaceState + synthetic popstate)
+//
+// Theme (not a message): the host's resolved theme — `.dark` on the parent's
+// <html> — is mirrored onto this page's <html> as `.dark` plus
+// `data-cc-theme="light|dark"`, when the script runs and on every change.
 //
 // History contract: entering a plugin costs exactly ONE joint history entry,
 // so hardware Back always lands on the conductor. The bridge enforces it by
@@ -21,6 +26,22 @@
   var prefix = '/plugins/' + m[1];
   var origin = window.location.origin;
   var replace = history.replaceState.bind(history);
+
+  // Theme: read the parent's <html> directly (same origin) rather than wait for
+  // a message, which could only arrive after DOMContentLoaded. A parent whose
+  // document cannot be read (cross-origin) leaves the theme alone.
+  var hostRoot = null;
+  try { hostRoot = window.parent.document.documentElement; } catch (e) { hostRoot = null; }
+  if (hostRoot) {
+    var host = hostRoot, root = document.documentElement;
+    var syncTheme = function () {
+      var dark = host.classList.contains('dark');
+      root.classList.toggle('dark', dark);
+      root.setAttribute('data-cc-theme', dark ? 'dark' : 'light');
+    };
+    syncTheme();
+    new MutationObserver(syncTheme).observe(host, { attributes: true, attributeFilter: ['class'] });
+  }
 
   function currentPath() {
     var p = window.location.pathname;
