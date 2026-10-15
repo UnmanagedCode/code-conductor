@@ -5,7 +5,8 @@
 // The single source for what that line is made of: the rendering rule, the
 // sentence parsers, the UI event shape, and the two adapters that build that
 // event — from the live stdout `system/task_notification` frame and from the
-// persisted `queue-operation` `enqueue` line. Wired by src/parser.ts (live),
+// persisted `queue-operation` `enqueue` line — plus the replay-only
+// `turn_boundary` its delivery line marks. Wired by src/parser.ts (live),
 // src/transcript.ts (replay), src/eventArchive.ts (correlation) and
 // web/src/conversation/items.tsx (render).
 //
@@ -159,6 +160,19 @@ const tagValues = (xml: string, tag: string): string[] =>
 
 // The CLI escapes exactly these three; `&amp;` last, so an escaped entity stays literal.
 const unescapeXml = (s: string): string => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+// Replay adapter for the delivery: the `type:"user"` line whose content is a
+// `<task-notification>` block is the first line of the unprompted turn the CLI
+// runs to deliver it, so it marks that turn's start. Its first task's
+// tool-use-id and status, as written. `content` is the line's string or its
+// text blocks.
+export function turnBoundaryFromDelivery(content: unknown): UiEvent {
+  const text = typeof content === 'string' ? content
+    : Array.isArray(content) ? content.map((b) => (b && typeof b.text === 'string' ? b.text : '')).join('\n') : '';
+  const [toolUseId] = tagValues(text, 'tool-use-id');
+  const [status] = tagValues(text, 'status');
+  return { kind: 'turn_boundary', toolUseId: toolUseId ?? null, status: status ?? null };
+}
 
 // Replay adapter: the persisted enqueue, written at completion time in the live
 // frame's slot. Null for every other line, for an enqueue that is not one task's

@@ -92,8 +92,11 @@ export type UserNode = Base & {
   /** The prompt's view, and its fold (skill, wake, renew or forward) with the fold body's view. */
   reader: { view: TextView; foldOpen: boolean; foldView: TextView };
 };
-/** `reader.open`: a task notification's fold. */
-export type SystemNode = Base & { type: 'system'; ev: UiEventOf<'system'>; reader: { open: boolean } };
+/**
+ * `reader.open`: a task notification's fold. `inCard`: the notification's Agent card already shows its
+ * report: its transcript's last text, trimmed, is the notification's `summary`.
+ */
+export type SystemNode = Base & { type: 'system'; ev: UiEventOf<'system'>; inCard: boolean; reader: { open: boolean } };
 export type TurnEndNode = Base & { type: 'turn_end'; ev: UiEventOf<'turn_end'> };
 export type PlanNode = Base & {
   type: 'plan';
@@ -146,10 +149,12 @@ export type ReaderNode = ThinkingNode | ResultNode | ToolNode | UserNode | Syste
 // ── Rules shared with the old renderer ───────────────────────────────────
 
 // System annotations that END the machinery run (interrupt, process death).
-const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
-// Account and cache notices: one landing after a turn's last item renders below that turn's turn-end row.
+const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit', 'crashed']);
+// Account and cache notices, and a background task's notification: one landing after a turn's last
+// item renders below that turn's turn-end row.
 const TURN_TAIL_NOTICES = new Set(['rate_limit_event', 'cache_miss']);
-const isTurnTailNotice = (it: RootItem | undefined) => it?.type === 'system' && TURN_TAIL_NOTICES.has(it.ev.subtype);
+const isTurnTailNotice = (it: RootItem | undefined) => it?.type === 'system'
+  && (TURN_TAIL_NOTICES.has(it.ev.subtype) || (it.ev.subtype === 'task_notification' && it.ev.data?.notified === true));
 /** Where a turn-end row goes in `items`: above the run of turn-tail notices `items` ends with. */
 function turnEndSlot(items: RootItem[]): number {
   let at = items.length;
@@ -157,7 +162,7 @@ function turnEndSlot(items: RootItem[]): number {
   return at;
 }
 // Content that ends the window in which a compaction's own command output is absorbed.
-const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_use_start', 'tool_result', 'turn_end']);
+const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_use_start', 'tool_result', 'turn_end', 'turn_boundary']);
 const TRANSCRIBED_PREFIX = '<transcribed>\n';
 // A result outside its call's card longer than this many characters starts collapsed.
 const LOOSE_RESULT_OPEN_MAX = 600;
@@ -195,6 +200,19 @@ function looseResultOpens(ev: UiEventOf<'tool_result'>): boolean {
   if (ev.isError || ev.yielded) return false;
   const { text, images } = splitResultContent(ev.content);
   return images.length > 0 || text.length < LOOSE_RESULT_OPEN_MAX;
+}
+
+/** The last text block a (sub-)conversation shows, trimmed; null when it shows none. */
+function lastText(m: ConversationModel): string | null {
+  for (let i = m.items.length - 1; i >= 0; i--) {
+    const it = m.items[i];
+    if (it.type !== 'assistant') continue;
+    for (let k = it.children.length - 1; k >= 0; k--) {
+      const c = it.children[k];
+      if (c.type === 'text') return c.buffer.trim();
+    }
+  }
+  return null;
 }
 
 function answersToLock(questions: any[], text: string): AnswerState[] {
@@ -253,6 +271,15 @@ export class ConversationModel {
   private messageWraps = new Map<string | null, AssistantNode>();
   private reconcileCounts = new Map<string | null, number>();
   private subConvs = new Map<string, ConversationModel>();
+  /**
+   * Root model only: the backgrounded runs still going, run key → the toolUseId hosting the run. An outer
+   * run-ender does not end such an agent's run, so its sub-agent's groups stay open until its
+   * task_notification or the process dies. A run key is the run's `task_id`, else its toolUseId: a
+   * resumed Agent starts a new run on the same tool use.
+   */
+  private backgroundTasks = new Map<string, string>();
+  /** Root model only: the run keys whose notification has arrived; a task_started read after it does not reopen them. */
+  private endedTasks = new Set<string>();
   private activeWrap: AssistantNode | null = null;
   private activeThinkingKey: string | null = null;
   /** First assistant wrap before any segment-closer: the merge target for a page spliced above. */
@@ -365,6 +392,8 @@ export class ConversationModel {
     this.messageWraps.clear();
     this.reconcileCounts.clear();
     this.subConvs.clear();
+    this.backgroundTasks.clear();
+    this.endedTasks.clear();
     this.questionNodes.clear();
     this.answeredQuestions.clear();
     this.planNodes.clear();
@@ -424,6 +453,7 @@ export class ConversationModel {
         this.touch(t);
       }
     }
+    this.root.backgroundTasks.clear();
     this.closeAllActionGroups();
     for (const sub of this.subConvs.values()) sub.finalizeDanglingBlocks();
   }
@@ -630,14 +660,17 @@ export class ConversationModel {
       case 'system': return this.renderSystemEvent(ev);
       case 'turn_end':
         this.failPendingCompaction(null);
-        this.closeAllActionGroups();
+        // A turn the CLI starts unprompted (a background task's notification) has no user_echo to end this one.
+        this.closeAssistantSegment();
         return this.pushRoot(this.make<TurnEndNode>({ type: 'turn_end', ev }, this), turnEndSlot(this.items));
+      // Replay's mark of an unprompted turn's start, where the jsonl kept no turn_end: no row.
+      case 'turn_boundary': return this.closeAssistantSegment();
       case 'assistant_message':
         // Outer turns are driven by stream deltas; sub-agent turns arrive only as envelopes.
         if (this.isSub) this.reconcileAssistantMessage(ev);
         return;
       case 'raw':
-        return this.pushRoot(this.make<SystemNode>({ type: 'system', ev: { kind: 'system', subtype: 'raw', data: { line: ev.line } }, reader: { open: false } }, this));
+        return this.pushRoot(this.make<SystemNode>({ type: 'system', ev: { kind: 'system', subtype: 'raw', data: { line: ev.line } }, inCard: false, reader: { open: false } }, this));
       // Drawn by nothing in the transcript (the header trackers read some of them).
       case 'message_start':
       case 'context_usage':
@@ -667,6 +700,9 @@ export class ConversationModel {
       this.closeAssistantSegment();
       return;
     }
+    this.trackBackgroundTask(ev);
+    // A background task dies with its process.
+    if (ev.subtype === 'exit' || ev.subtype === 'crashed') this.root.backgroundTasks.clear();
     if (RUN_ENDING_SYSTEM_SUBTYPES.has(ev.subtype)) this.closeAllActionGroups();
     if (ev.subtype === 'exit' || ev.subtype === 'crashed') this.failPendingCompaction(null);
     if (this.renderCompactionStatus(ev)) return;
@@ -679,7 +715,46 @@ export class ConversationModel {
       }
     }
     if (!shouldRenderSystem(ev)) return;
-    this.pushRoot(this.make<SystemNode>({ type: 'system', ev, reader: { open: false } }, this));
+    // An Agent's children (its final report included) precede its notification, live and on replay alike. A
+    // failed agent's summary is the CLI's failure sentence, which no card holds, so the test is the text itself.
+    const card = ev.subtype === 'task_notification' && ev.toolUseId ? this.toolBlocks.get(ev.toolUseId) : null;
+    const summary = ev.data?.summary;
+    const inCard = card?.name === 'Agent' && card.sub != null && typeof summary === 'string' && lastText(card.sub) === summary;
+    this.pushRoot(this.make<SystemNode>({ type: 'system', ev, inCard, reader: { open: false } }, this));
+  }
+
+  /**
+   * A backgrounded task's start and end: its end (any status) folds its sub-agent's open groups. Assumes a
+   * run's task_started and its notification carry the same `task_id`, or both lack it.
+   */
+  private trackBackgroundTask(ev: UiEventOf<'system'>) {
+    const { backgroundTasks: tasks, endedTasks: ended } = this.root;
+    const runKey = (toolUseId: string) => (typeof ev.data?.task_id === 'string' ? ev.data.task_id : toolUseId);
+    if (ev.subtype === 'task_started' && ev.data?.is_backgrounded === true && typeof ev.data.tool_use_id === 'string') {
+      const key = runKey(ev.data.tool_use_id);
+      if (!ended.has(key)) tasks.set(key, ev.data.tool_use_id);
+    } else if (ev.subtype === 'task_notification' && ev.toolUseId) {
+      const key = runKey(ev.toolUseId);
+      tasks.delete(key);
+      ended.add(key);
+      this.root.findSub(ev.toolUseId)?.closeAllActionGroups();
+    }
+  }
+
+  /** Whether a backgrounded run on this tool use is still going. */
+  private hostsBackgroundRun(toolUseId: string): boolean {
+    for (const host of this.root.backgroundTasks.values()) if (host === toolUseId) return true;
+    return false;
+  }
+
+  private findSub(toolUseId: string): ConversationModel | null {
+    const own = this.subConvs.get(toolUseId);
+    if (own) return own;
+    for (const sub of this.subConvs.values()) {
+      const found = sub.findSub(toolUseId);
+      if (found) return found;
+    }
+    return null;
   }
 
   // ── Assistant envelopes and action groups ─────────────────────────────
@@ -729,7 +804,7 @@ export class ConversationModel {
 
   private closeAllActionGroups() {
     for (const w of new Set(this.messageWraps.values())) this.closeGroup(w);
-    for (const sub of this.subConvs.values()) sub.closeAllActionGroups();
+    for (const [id, sub] of this.subConvs) if (!this.hostsBackgroundRun(id)) sub.closeAllActionGroups();
   }
 
   private closeAssistantSegment() {

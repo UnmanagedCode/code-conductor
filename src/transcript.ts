@@ -22,7 +22,7 @@ import { PlanFileTracker, planPathFromInput } from './planFile.ts';
 import type { UiEvent } from '../shared/uiEvent.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
 import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
-import { taskNotificationFromEnqueue } from './taskNotification.ts';
+import { taskNotificationFromEnqueue, turnBoundaryFromDelivery } from './taskNotification.ts';
 import { getModelSwitchesForSegment, type ModelSwitchEntry } from './sessionStore.ts';
 
 // A persisted jsonl line is a WireEnvelope plus the fields the CLI writes to
@@ -156,11 +156,15 @@ export function replayPersistedLine(
       events.push({ kind: 'system', subtype: 'soft_interrupted' });
       return tagAndReturn();
     }
-    // Background-task completion ping, written when it was DELIVERED — drop
-    // silently, same as live (parser.ts:_handleUser): the notification's event
-    // is rebuilt from its `queue-operation` enqueue below, and this never
-    // produced a user_echo live.
-    if (isTaskNotificationContent(content)) return tagAndReturn();
+    // Background-task completion ping, written when it was DELIVERED: the first
+    // line of the unprompted turn the CLI runs for it. Never a user_echo (live
+    // produced none) and never the notification itself (rebuilt from its
+    // `queue-operation` enqueue below). The jsonl keeps no turn end, so this
+    // line's `turn_boundary` is all that separates that turn from the one before.
+    if (isTaskNotificationContent(content)) {
+      events.push(turnBoundaryFromDelivery(content));
+      return tagAndReturn();
+    }
     // The CLI's local-command caveat — never a bubble, same as live.
     if (isLocalCommandCaveatLine(line)) return tagAndReturn();
     if (typeof content === 'string') {

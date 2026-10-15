@@ -237,7 +237,8 @@ export interface TurnIndex {
 }
 
 // Index the ring for turn-scoped bonding: map each top-level msgId to the _seq
-// of its first ring event, and collect the non-parent turn_end seqs. The
+// of its first ring event, and collect the non-parent turn_end seqs (and the
+// turn_boundary seqs a ring holding replayed history carries). The
 // current turn's messages are always in the ring (they just streamed), so this
 // lets the default-count bond scope its walk-back to the turn that produced the
 // last message even when the surrounding message list came from the disk merge.
@@ -246,7 +247,7 @@ export function ringTurnIndex(ring: ReconEvent[]): TurnIndex {
   const turnBoundarySeqs: number[] = [];
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
-    if (ev.kind === 'turn_end') { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
+    if (ev.kind === 'turn_end' || ev.kind === 'turn_boundary') { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
     if ('msgId' in ev && ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
       firstSeqByMsgId.set(ev.msgId, ev._seq);
     }
@@ -264,13 +265,15 @@ export function ringTurnIndex(ring: ReconEvent[]): TurnIndex {
 // previous turn's last message and this turn's first — exactly the position a
 // turn_end occupies for partitioning purposes. Feeding echo seqs where
 // bondTrailingTurn expects boundary seqs yields the same partition, so its
-// comparison logic is unchanged.
+// comparison logic is unchanged. An unprompted turn (the CLI delivering a
+// background task's notification) has no echo: replay marks its start with a
+// `turn_boundary` in the same position, so that counts too.
 export function diskTurnIndex(events: ReconEvent[]): TurnIndex {
   const firstSeqByMsgId = new Map<string, number>();
   const turnBoundarySeqs: number[] = [];
   for (const ev of events) {
     if (ev.parentToolUseId) continue;
-    if (isOuterUserEcho(ev)) { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
+    if (isOuterUserEcho(ev) || ev.kind === 'turn_boundary') { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
     if ('msgId' in ev && ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
       firstSeqByMsgId.set(ev.msgId, ev._seq);
     }

@@ -163,6 +163,13 @@ describe('compaction bubble', () => {
       apply(m, stdoutEcho);
       expect(users(m)).toHaveLength(1);
     });
+    it('a replayed turn boundary closes the window, so a stdout echo after it renders', () => {
+      const m = new ConversationModel();
+      apply(m, { kind: 'compaction', trigger: 'auto', preTokens: 5, postTokens: 1, durationMs: null });
+      apply(m, { kind: 'turn_boundary', toolUseId: 'tuBg', status: 'completed' });
+      apply(m, stdoutEcho);
+      expect(users(m)).toHaveLength(1);
+    });
     it('any other echo ends the window', () => {
       const m = new ConversationModel();
       apply(m, { kind: 'compaction', trigger: 'auto', preTokens: 5, postTokens: 1, durationMs: null });

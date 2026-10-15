@@ -491,6 +491,18 @@ test('turn_end force-resets even with a dangling tool before it', () => {
   assert.equal(snapStartToQuiescent(arr, 4, arr.length), 4);
 });
 
+test('a replayed turn_boundary force-resets a dangling tool span, as an echo does', () => {
+  // Replay keeps no turn_end: an unprompted turn's start is marked by its turn_boundary alone.
+  const arr = [
+    /*0*/ echo('A'),
+    /*1*/ tuStart('t1', 'm1'), /*2*/ tu('t1', 'm1'), // result never arrives
+    /*3*/ ({ kind: 'turn_boundary', toolUseId: 'tuBg', status: 'completed' }),
+    /*4*/ ({ kind: 'system', subtype: 'task_notification', data: {} }),
+    /*5*/ tDelta('m2'), /*6*/ tEnd('m2'),
+  ];
+  assert.equal(snapStartToQuiescent(arr, 4, arr.length), 4);
+});
+
 test('window fully inside a giant block run snaps back to the run start', () => {
   const arr = [echo('A')];
   for (let i = 0; i < 40; i++) arr.push(tDelta('big'));
