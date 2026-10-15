@@ -5,6 +5,9 @@ import * as React from 'react';
 /** The edge of the resized box the handle sits on: 'right' grows with +dx (sidebar), 'left' grows with -dx (plugin column). */
 export type ResizeEdge = 'left' | 'right';
 export const RESIZE_KEY_STEP = 16;
+/** The look of an edge handle's strip; callers add the position (`absolute inset-y-0 -left-1`, ...). */
+export const RESIZE_HANDLE_CLASS =
+  'w-2 cursor-col-resize touch-none outline-none transition-colors hover:bg-primary/20 focus-visible:bg-primary/30 data-[active=true]:bg-primary/30';
 
 export type ResizableWidthOptions = {
   /** The committed width persists here as String(px). */
@@ -38,7 +41,8 @@ function readWidth(key: string, min: number): number | null {
   }
 }
 
-function setResizing(on: boolean) {
+/** The body flag every edge drag sets: the iframe safeguard and no text selection. */
+export function setResizing(on: boolean) {
   document.body.style.userSelect = on ? 'none' : '';
   if (on) document.body.dataset.resizing = '';
   else delete document.body.dataset.resizing;

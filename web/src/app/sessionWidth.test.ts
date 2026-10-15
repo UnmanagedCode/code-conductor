@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { SESSION_WIDTH_MIN } from './sessionWidthScale';
 
-const KEY = 'code-conductor:session-width';
+const KEY = 'code-conductor:session-column';
 async function fresh() {
   vi.resetModules();
   return import('./sessionWidth');
@@ -17,44 +18,43 @@ describe('the session width setting', () => {
     expect((await fresh()).sessionWidthStore.get()).toEqual({ width: 768, full: false });
   });
 
-  it.each([
-    ['normal', { width: 768, full: false }],
-    ['wide', { width: 1024, full: false }],
-    ['full', { width: 768, full: true }],
-  ])('a legacy %s value maps to today\'s px/Full, is rewritten in place once, and re-running is a no-op', async (legacy, want) => {
-    // Invariant: legacy values map to today's px/Full, are rewritten in place once, and re-running is a no-op.
-    localStorage.setItem(KEY, legacy);
-    expect((await fresh()).sessionWidthStore.get()).toEqual(want);
-    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual(want);
-    const setItem = vi.spyOn(localStorage, 'setItem');
-    expect((await fresh()).sessionWidthStore.get()).toEqual(want);
-    expect(setItem).not.toHaveBeenCalled();
-  });
-
-  it('garbage stored values are never adopted', async () => {
-    // Invariant: no garbage is adopted; the setting falls back to the default.
-    for (const garbage of ['', 'Wide', 'huge', '{"preset":"full"}', '{"width":"wide","full":false}', '{"width":900}', '{"width":900,"full":"yes"}']) {
-      localStorage.setItem(KEY, garbage);
-      expect((await fresh()).sessionWidthStore.get(), garbage).toEqual({ width: 768, full: false });
+  it('old or unknown stored values fall back to the default and never crash startup', async () => {
+    // Invariant: the old key is never read, and any unparseable, wrong-shaped or unreadable value under the current key reads as Resizable at Normal.
+    for (const old of ['wide', 'full', '{"width":1200,"full":true}']) {
+      localStorage.clear();
+      localStorage.setItem('code-conductor:session-width', old);
+      expect((await fresh()).sessionWidthStore.get(), `old key ${old}`).toEqual({ width: 768, full: false });
     }
-  });
-
-  it('a stored width is clamped to the slider range', async () => {
-    // Invariant: a stored width outside the slider range reads back clamped.
-    localStorage.setItem(KEY, '{"width":4000,"full":false}');
-    expect((await fresh()).sessionWidthStore.get().width).toBe(1600);
-    localStorage.setItem(KEY, '{"width":100,"full":true}');
-    expect((await fresh()).sessionWidthStore.get()).toEqual({ width: 480, full: true });
-  });
-
-  it('unreadable storage falls back to the default', async () => {
-    // Invariant: a throwing localStorage never breaks startup.
+    for (const garbage of ['', 'huge', '{"width":"wide","full":false}', '{"width":900}', '{"preset":"full"}']) {
+      localStorage.clear();
+      localStorage.setItem(KEY, garbage);
+      expect((await fresh()).sessionWidthStore.get(), `new key ${garbage}`).toEqual({ width: 768, full: false });
+    }
+    localStorage.clear();
     const spy = vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('denied'); });
     try {
       expect((await fresh()).sessionWidthStore.get()).toEqual({ width: 768, full: false });
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('a width above the old slider ceiling persists as set', async () => {
+    // Invariant: there is no fixed maximum; a wide width survives a reload unchanged.
+    let m = await fresh();
+    m.setSessionWidth(2400);
+    m = await fresh();
+    expect(m.sessionWidthStore.get().width).toBe(2400);
+  });
+
+  it('the floor holds', async () => {
+    // Invariant: neither the setter nor a stored value can go below the minimum width.
+    let m = await fresh();
+    m.setSessionWidth(10);
+    expect(m.sessionWidthStore.get().width).toBe(SESSION_WIDTH_MIN);
+    localStorage.setItem(KEY, '{"width":100,"full":true}');
+    m = await fresh();
+    expect(m.sessionWidthStore.get()).toEqual({ width: SESSION_WIDTH_MIN, full: true });
   });
 
   it('Full never overwrites the width, across reloads', async () => {
@@ -69,15 +69,6 @@ describe('the session width setting', () => {
     m.setSessionFull(false);
     m = await fresh();
     expect(m.sessionWidthStore.get()).toEqual({ width: 896, full: false });
-  });
-
-  it('the setters clamp to the slider range', async () => {
-    // Invariant: setters clamp, so no out-of-range width is stored.
-    const m = await fresh();
-    m.setSessionWidth(5000);
-    expect(m.sessionWidthStore.get().width).toBe(1600);
-    m.setSessionWidth(10);
-    expect(m.sessionWidthStore.get().width).toBe(480);
   });
 
   it('resetSessionWidth returns to the default width and keeps Full', async () => {

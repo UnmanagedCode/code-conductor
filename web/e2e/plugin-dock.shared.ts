@@ -3,7 +3,7 @@
 // (hidden, a split beside the transcript, the whole row), the one mode toggle in
 // its header strip, the handle's drag clamps, reset and keys, Back and Escape
 // from the full view, a window too narrow for a split, a reload, a session
-// width (slider setting) beside it, a toast beside the strip, and the phone layout
+// width (handle drags) beside it, a toast beside the strip, and the phone layout
 // without it. A reload of a probe page makes a new nonce, so every "same page"
 // check fails on one. The bodies are shared by the spec files; this module
 // declares no tests.
@@ -12,8 +12,8 @@ import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, spawnSession } from './harness/api.ts';
 import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
-import { parkPointer, setWidth } from './session-width.shared.ts';
-import { SESSION_WIDTH_MAX, SESSION_WIDTH_SNAPS } from '../src/app/sessionWidthScale.ts';
+import { dragSessionHandle, dragToLimit, parkPointer, sessionHandle, setWidth } from './session-width.shared.ts';
+import { SESSION_WIDTH_GUTTER, SESSION_WIDTH_SNAPS } from '../src/app/sessionWidthScale.ts';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from '../src/features/views/dockLayout.ts';
 import { RESIZE_KEY_STEP } from '../src/lib/useResizableWidth.ts';
 import { TOAST_EDGE_GAP } from '../src/ui/toastLayout.ts';
@@ -350,31 +350,74 @@ export async function persistFlow({ page, cc }: Args): Promise<void> {
 }
 
 export async function sessionWidthFlow({ page, cc }: Args): Promise<void> {
-  // Invariant: beside the dock a session width still applies — Normal is capped at its width in a transcript wider than it, Wide grows past it within its own, a custom width above the transcript fills it — and the transcript never runs under the column.
+  // Invariant: beside the dock a session width still applies — Normal is capped at its width in a transcript wider than it, a Wide set before docking renders clamped to the narrowed transcript (a gutter clear per side) and stays the setting, a session dragged to its limit leaves a gutter clear per side — and the transcript never runs under the column.
   desktopOnly();
   await onSession(page, cc, 'width');
   const list = page.locator('[data-conversation] [data-session-width]').first();
   await expect(list).toBeVisible();
+  const [normal, wide] = SESSION_WIDTH_SNAPS;
+  // Wide fits the full-width row, not the narrowed transcript beside the dock: set it first, so docking only clamps its rendering.
+  await setWidth(page, { width: wide.px, full: false });
   await dockSplit(page, PLAIN);
   await dragHandle(page, DOCK_PANEL_DEFAULT_WIDTH - DOCK_PANEL_MIN_WIDTH);
   await expect(handle(page), 'fixture check: docked at the minimum').toHaveAttribute('aria-valuenow', String(DOCK_PANEL_MIN_WIDTH));
-  const [normal, wide] = SESSION_WIDTH_SNAPS;
   const transcript = (await boxOf(main(page), 'the transcript')).width;
   expect(transcript, 'fixture check: the transcript is wider than Normal').toBeGreaterThan(normal.px + 1);
-  expect(transcript, 'fixture check: the transcript is narrower than the maximum').toBeLessThan(SESSION_WIDTH_MAX);
-  const widths: Record<string, number> = {};
-  for (const [name, width] of [[normal.label, normal.px], [wide.label, wide.px], ['Maximum', SESSION_WIDTH_MAX]] as const) {
-    await setWidth(page, { width, full: false });
-    await expect(list).toHaveAttribute('data-session-width', String(width));
+  expect(transcript, 'fixture check: the transcript is narrower than Wide').toBeLessThan(wide.px);
+  const room = () => page.locator('[data-conversation]').evaluate((el) => el.clientWidth);
+  const leftOfColumn = async (name: string) => {
     const l = await boxOf(list, `${name}: the list`);
-    widths[name] = l.width;
-    expect(l.width, `${name}: no wider than its setting`).toBeLessThanOrEqual(width + 0.5);
     expect(right(l), `${name}: left of the column`).toBeLessThanOrEqual((await boxOf(column(page), 'the column')).x + 0.5);
+    return l;
+  };
+  await expect(list, 'Wide stays the setting').toHaveAttribute('data-session-width', String(wide.px));
+  const clamped = await leftOfColumn(wide.label);
+  expect(clamped.width, `${wide.label}: grows past Normal`).toBeGreaterThan(normal.px + 1);
+  expect(Math.abs(clamped.width - ((await room()) - 2 * SESSION_WIDTH_GUTTER)), `${wide.label}: clamped a gutter clear per side`).toBeLessThanOrEqual(0.5);
+  await setWidth(page, { width: normal.px, full: false });
+  expect(Math.abs((await leftOfColumn(normal.label)).width - normal.px), 'Normal is capped at its width').toBeLessThanOrEqual(0.5);
+  await dragToLimit(page);
+  const limit = await leftOfColumn('Limit');
+  expect(Math.abs(limit.width - ((await room()) - 2 * SESSION_WIDTH_GUTTER)), 'the limit leaves a gutter clear per side').toBeLessThanOrEqual(0.5);
+}
+
+export async function sessionHandleCoexistFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: at the session limit with the dock at its minimum, the session handles are physically disjoint from the dock handle, the sidebar handle and the scrollbar, and each grab moves only its own box.
+  desktopOnly();
+  await onSession(page, cc, 'coexist');
+  await dockSplit(page, PLAIN);
+  await dragHandle(page, DOCK_PANEL_DEFAULT_WIDTH - DOCK_PANEL_MIN_WIDTH);
+  await expect(handle(page), 'fixture check: docked at the minimum').toHaveAttribute('aria-valuenow', String(DOCK_PANEL_MIN_WIDTH));
+  await expect(sessionHandle(page, 'right')).toHaveCount(1);
+  await dragToLimit(page);
+  const sessionWidth = () => page.locator('[data-conversation] [data-session-width]').first().getAttribute('data-session-width');
+  const limit = await sessionWidth();
+  expect(Number(limit), 'fixture check: dragged off Normal').toBeGreaterThan(768);
+
+  const sidebarHandle = page.getByRole('separator', { name: 'Resize sidebar' });
+  const [sl, sr, dock, sidebar] = [
+    await boxOf(sessionHandle(page, 'left'), 'the session left handle'),
+    await boxOf(sessionHandle(page, 'right'), 'the session right handle'),
+    await boxOf(handle(page), 'the dock handle'),
+    await boxOf(sidebarHandle, 'the sidebar handle'),
+  ];
+  const scrollerEdge = await page.locator('[data-conversation]').evaluate((el) => el.getBoundingClientRect().left + el.clientLeft + el.clientWidth);
+  expect(right(sr), 'the right handle is clear of the scrollbar').toBeLessThanOrEqual(scrollerEdge + 0.5);
+  expect(right(sr), 'the right handle is left of the dock handle').toBeLessThan(dock.x);
+  expect(sl.x, 'the left handle is right of the sidebar handle').toBeGreaterThanOrEqual(right(sidebar) - 0.5);
+  for (const [edge, b] of [['left', sl], ['right', sr]] as const) {
+    const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-session-handle]')?.getAttribute('data-session-handle') ?? null, [b.x + b.width / 2, b.y + b.height / 2]);
+    expect(hit, `a press at the ${edge} handle's centre lands on it`).toBe(edge);
   }
-  expect(Math.abs(widths.Normal - normal.px), 'Normal is capped at its width').toBeLessThanOrEqual(0.5);
-  expect(widths.Wide, 'Wide grows past Normal').toBeGreaterThan(normal.px + 1);
-  const room = await page.locator('[data-conversation]').evaluate((el) => el.clientWidth);
-  expect(Math.abs(widths.Maximum - room), 'a width above the transcript fills it').toBeLessThanOrEqual(0.5);
+
+  await dragHandle(page, -40);
+  await expect(handle(page), 'the dock grab moves the dock').not.toHaveAttribute('aria-valuenow', String(DOCK_PANEL_MIN_WIDTH));
+  expect(await sessionWidth(), 'the dock grab leaves the session setting').toBe(limit);
+
+  const dockNow = await handle(page).getAttribute('aria-valuenow');
+  await dragSessionHandle(page, 'right', -40, { release: true });
+  await expect.poll(sessionWidth, { message: 'the session grab moves the session setting' }).not.toBe(limit);
+  await expect(handle(page), 'the session grab leaves the dock').toHaveAttribute('aria-valuenow', dockNow!);
 }
 
 export async function phoneFlow({ page, cc }: Args): Promise<void> {

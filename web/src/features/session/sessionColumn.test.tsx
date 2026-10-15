@@ -13,7 +13,7 @@ vi.mock('@/features/composer/Composer', () => ({ Composer: () => <div /> }));
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { stickyPrompt } from '@/app/controller';
-import { sessionWidthStore, setSessionFull, setSessionWidth } from '@/app/sessionWidth';
+import { setSessionFull, setSessionWidth } from '@/app/sessionWidth';
 import type { Instance } from '@/state/types';
 import { SessionView } from './SessionView';
 
@@ -25,7 +25,7 @@ const inst: Instance = {
 beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
-  sessionWidthStore.set({ width: 768, full: false });
+  act(() => { setSessionWidth(768); setSessionFull(false); });
   appStore.set({
     connection: 'open', everDropped: false, activeId: 'A', sidebarStatus: null,
     projects: [], workspaces: [], conductSessions: [], conductorSpawns: {}, instances: [inst],
@@ -44,10 +44,13 @@ describe('the session column', () => {
       [() => setSessionFull(true), 'full', 'none'],
       [() => setSessionFull(false), '896', '896px'],
     ];
-    for (const [apply, key, maxWidth] of steps) {
+    for (const [apply, key, cap] of steps) {
       act(apply);
       expect(boxes().map((b) => b.dataset.sessionWidth), key).toEqual([key, key, key]);
-      expect(boxes().map((b) => b.style.maxWidth), key).toEqual([maxWidth, maxWidth, maxWidth]);
+      const caps = boxes().map((b) => b.style.maxWidth);
+      expect(new Set(caps).size, key).toBe(1);
+      if (cap === 'none') expect(caps[0], key).toBe('none');
+      else expect(caps[0], key).toContain(cap);
     }
   });
 
