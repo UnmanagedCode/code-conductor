@@ -28,7 +28,8 @@ test('create a project from the sidebar and start a session in it', async ({ pag
   const row = side.locator(`[data-project-row="${name}"]`);
   await expect(row).toBeVisible();
   await row.hover();
-  await row.getByRole('button', { name: 'New session' }).click();
+  await row.getByRole('button', { name: 'Project menu' }).click();
+  await page.getByRole('menuitem', { name: 'New session' }).click();
 
   const spawn = page.getByRole('dialog');
   await expect(spawn.getByRole('heading', { name: 'New session' })).toBeVisible();

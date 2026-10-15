@@ -166,6 +166,24 @@ test('Deleting a project on a system names its path, target and system, and Canc
   await page.unrouteAll({ behavior: 'wait' });
 });
 
+test('A project with no conventions shows a dot on its ⋮; Edit conventions… saves the pick and the dot clears', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the dot flags an empty selection; a save through the dialog records the pick in the project's marker and the row stops flagging it.
+  const name = uniq('conv');
+  await createProject(cc, name);
+  await ui.open(page);
+  await ui.lens(page, 'projects');
+  const row = await ui.projectRow(page, name);
+  await expect(row.locator('[data-conventions-attention]')).toBeVisible();
+  const d = await ui.openEditConventions(page, name);
+  await d.locator('[data-convention="design-guidelines"]').click();
+  await d.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(d).toBeHidden();
+  await ui.lens(page, 'projects');
+  await expect((await ui.projectRow(page, name)).locator('[data-conventions-attention]')).toHaveCount(0);
+  const listed = ((await api(cc, 'GET', '/api/projects')).body as { name: string; conventions?: { selected: string[] } }[]).find((p) => p.name === name)!;
+  expect(listed.conventions?.selected).toEqual(['design-guidelines']);
+});
+
 test('Change target from the system pill: a refusal shows the server message and keeps the dialog, Cancel sends nothing, a reopen starts clean, and Save PUTs the trimmed target and refreshes the list', async ({ page, ui, uniq }) => {
   const name = uniq('remote');
   const fake = { name, path: '/app', system: 'prod-box', remoteId: 'ctr-7', systemUnreachable: null, workspace: null, isGitRepo: true, unbornHead: false, worktrees: [] };

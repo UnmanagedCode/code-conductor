@@ -90,7 +90,7 @@ import {
   updateCustomConvention as updateProjectConvention,
   deleteCustomConvention as deleteProjectConvention,
 } from './projectConventions.ts';
-import { regenerateAllProjectConventions } from './projectClaudeMd.ts';
+import { readProjectSelection, regenerateAllProjectConventions, setProjectConventions } from './projectClaudeMd.ts';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductorConventionsCatalog,
@@ -479,7 +479,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     } catch (e) { next(e); }
   });
 
-  // Compute the git-heavy facts for one project. Called via getOrCompute() so
+  // Compute the tree facts for one project — its git state and its recorded
+  // convention selection. Called via getOrCompute() so
   // results are cached for TTL_MS and concurrent callers share one in-flight
   // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
@@ -532,7 +533,14 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         projIsGitRepo = undefined;
       }
     }
+    // The selection line 1 of the project's CONVENTIONS.md records. A failed
+    // read is this row's value, never the list's failure; undefined when the
+    // project could not be resolved, which `systemUnreachable` explains.
+    const selection: string[] | { error: string } | undefined = system
+      ? await readProjectSelection(system, p.path).catch((e: unknown) => ({ error: errMessage(e) }))
+      : undefined;
     return {
+      selection,
       systemUnreachable: unreachable ?? deadMidListing,
       gitRefusal,
       isGitRepo: projIsGitRepo,
@@ -549,6 +557,9 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.get('/projects', async (req, res, next) => {
     try {
       const projects = await listProjects();
+      // One catalog read per request, so a slug the catalog has lost reads as
+      // unresolved on the next list read, cache or not.
+      const catalogSlugs = new Set((await getProjectConventionsCatalog()).map(e => e.slug));
       const enriched = await Promise.all(projects.map(async (p) => {
         // Git facts are cached for TTL_MS; concurrent requests coalesce.
         // Keyed on the PLACEMENT, not the name: git facts are measured on the
@@ -583,6 +594,12 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
           worktrees: worktreesWithSessions,
           sessions: await summarizeSessions(projPlace, projTempSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
+          // {selected, unresolved} in marker order; {error} when the file could
+          // not be read; absent when the project could not be resolved.
+          conventions: gitFacts.selection === undefined ? undefined
+            : Array.isArray(gitFacts.selection)
+              ? { selected: gitFacts.selection, unresolved: gitFacts.selection.filter(s => !catalogSlugs.has(s)) }
+              : gitFacts.selection,
         };
       }));
       res.json(enriched);
@@ -679,6 +696,23 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const result = await ensureConductProject();
       res.json({ ok: true, ...result });
+    } catch (e) { next(e); }
+  });
+
+  // Replace a project's convention selection (the sidebar's Edit
+  // conventions…). Body: {slugs, expected}, both arrays of slug strings;
+  // `expected` is the selection the caller showed. Refusals and the write are
+  // setProjectConventions' (src/projectClaudeMd.ts), whose write signals the
+  // `projects` hint itself.
+  r.put('/projects/:name/conventions', async (req, res, next) => {
+    try {
+      const { slugs, expected } = jsonBody(req);
+      const isSlugList = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string');
+      if (!isSlugList(slugs) || !isSlugList(expected)) {
+        throw httpError(400, 'slugs and expected must both be arrays of slug strings');
+      }
+      if (new Set(slugs).size !== slugs.length) throw httpError(400, 'slugs must not repeat a slug');
+      res.json(await setProjectConventions(req.params.name, slugs, expected, { log: console }));
     } catch (e) { next(e); }
   });
 
@@ -2319,7 +2353,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
 
   // Settings → Conventions → Project block — catalog read + custom CRUD.
   // Selection is per-project (recorded in each project's in-tree CONVENTIONS.md
-  // marker at creation); there is no global selection. Each mutation to a custom
+  // marker at creation, and changed by PUT /projects/:name/conventions); there
+  // is no global selection. Each mutation to a custom
   // convention's body fans out to regenerate every project that selected it —
   // a since-deleted slug becomes unresolvable: the project's other, resolvable
   // conventions still refresh, and the missing one is named in the file (see

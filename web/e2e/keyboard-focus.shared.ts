@@ -257,6 +257,15 @@ async function projectMenuItem(page: Page, act: Act, item: string, dialog: Locat
   return { dialog, returnsTo };
 }
 
+/** An item of a project row's ⋮ menu; focus comes back to the ⋮. */
+async function rowMenuItem(page: Page, act: Act, project: string, item: string, dialog: Locator): Promise<Opened> {
+  const sb = await sidebarBy(page, act);
+  const trigger = sb.locator(`[data-project-row="${project}"]`).getByRole('button', { name: 'Project menu', exact: true });
+  await act(page, trigger);
+  await act(page, page.getByRole('menuitem', { name: item, exact: true }));
+  return { dialog, returnsTo: trigger };
+}
+
 async function rowButton(page: Page, act: Act, row: string, name: string, dialog: Locator): Promise<Opened> {
   const sb = await sidebarBy(page, act);
   const button = sb.locator(row).getByRole('button', { name, exact: true });
@@ -278,8 +287,9 @@ export const RETURNS: { name: string; open: (c: ReturnCtx, act: Act) => Promise<
       return { dialog: page.locator('[role="dialog"][data-dialog="rename"]'), returnsTo: actions };
     },
   },
-  { name: 'Spawn', open: ({ page, project }, act) => rowButton(page, act, `[data-project-row="${project}"]`, 'New session', page.locator('[role="dialog"][data-dialog="spawn"]')) },
-  { name: 'Delete project', open: ({ page, project }, act) => rowButton(page, act, `[data-project-row="${project}"]`, 'Delete project', page.locator('[role="dialog"][data-dialog="delete-project"]')) },
+  { name: 'Spawn', open: ({ page, project }, act) => rowMenuItem(page, act, project, 'New session', page.locator('[role="dialog"][data-dialog="spawn"]')) },
+  { name: 'Edit conventions', open: ({ page, project }, act) => rowMenuItem(page, act, project, 'Edit conventions…', page.locator('[role="dialog"][data-dialog="edit-conventions"]')) },
+  { name: 'Delete project', open: ({ page, project }, act) => rowMenuItem(page, act, project, 'Delete…', page.locator('[role="dialog"][data-dialog="delete-project"]')) },
   {
     name: 'a row action confirm',
     open: ({ page, session }, act) => rowButton(page, act, `[data-session-row="${session.sessionId}"] > [data-row]`, 'Archive session (keeps history)', page.getByRole('dialog', { name: /^Archive session / })),
@@ -352,7 +362,8 @@ export async function keepsActionFocusFlow({ page, cc }: Ctx): Promise<void> {
   await next.open(page);
   await next.lens(page, 'projects');
   const sb = await sidebarBy(page, byKey);
-  await press(page, sb.locator(`[data-project-row="${project}"]`).getByRole('button', { name: 'New session', exact: true }), 'Enter');
+  await press(page, sb.locator(`[data-project-row="${project}"]`).getByRole('button', { name: 'Project menu', exact: true }), 'Enter');
+  await press(page, page.getByRole('menuitem', { name: 'New session', exact: true }), 'Enter');
   const dialog = page.locator('[role="dialog"][data-dialog="spawn"]');
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Start session' }).click();
@@ -361,5 +372,5 @@ export async function keepsActionFocusFlow({ page, cc }: Ctx): Promise<void> {
   await expect(prompt, 'Start session focuses the prompt bar').toBeFocused();
   // Past the closing dialog's focus return (a timer after its unmount) and another frame.
   await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => setTimeout(r, 50)), 0)));
-  await expect(prompt, 'the dialog closing does not take focus back to New session').toBeFocused();
+  await expect(prompt, 'the dialog closing does not take focus back to the project menu').toBeFocused();
 }

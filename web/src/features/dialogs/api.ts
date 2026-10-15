@@ -16,6 +16,7 @@ export type DialogState = {
   adoptProject: boolean;
   deleteProject: { project: Project; instanceCount: number } | null;
   projectRemote: { project: Project } | null;
+  editConventions: { project: Project } | null;
   /** null name = create a new workspace. */
   workspace: { name: string | null } | null;
   summary: { sessionId: string } | null;
@@ -30,6 +31,7 @@ export const dialogStore = createStore<DialogState>({
   adoptProject: false,
   deleteProject: null,
   projectRemote: null,
+  editConventions: null,
   workspace: null,
   summary: null,
   stats: null,
@@ -44,6 +46,7 @@ export const openNewProjectDialog = () => dialogStore.set({ newProject: true });
 export const openAdoptProjectDialog = () => dialogStore.set({ adoptProject: true });
 export const openDeleteProjectDialog = (project: Project, instanceCount: number) => dialogStore.set({ deleteProject: { project, instanceCount } });
 export const openProjectRemoteDialog = (project: Project) => dialogStore.set({ projectRemote: { project } });
+export const openEditConventionsDialog = (project: Project) => dialogStore.set({ editConventions: { project } });
 export const openWorkspaceDialog = (name: string | null) => dialogStore.set({ workspace: { name } });
 export const openSummaryDialog = (sessionId: string) => dialogStore.set({ summary: { sessionId } });
 export const openStatsDialog = (sessionId: string) => dialogStore.set({ stats: { sessionId } });

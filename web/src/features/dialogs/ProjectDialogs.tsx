@@ -21,6 +21,7 @@ import { PathInput } from './PathInput';
 import { PlacementFields, usePlacement } from './placement';
 import { messageFor } from './adoptMessages';
 import { useOpenKey } from './useOpenKey';
+import { ConventionChecklist, groupConventions, type Convention } from './ConventionChecklist';
 
 const NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
@@ -44,25 +45,6 @@ function SubmitButton({ busy, children, ...rest }: React.ComponentProps<typeof B
 }
 
 // ── New project ──────────────────────────────────────────────────────────
-
-type Convention = { slug: string; name: string; description: string; plugin?: string | null };
-
-/** Project conventions grouped: core ones first, then one group per contributing plugin. */
-export function groupConventions(conventions: Convention[]) {
-  const pluginOf = (c: Convention) => c.plugin ?? (c.slug.includes('/') ? c.slug.split('/')[0] : null);
-  const groups: { label: string; items: Convention[] }[] = [];
-  const core = conventions.filter((c) => !pluginOf(c));
-  if (core.length) groups.push({ label: 'Project conventions', items: core });
-  const byPlugin = new Map<string, Convention[]>();
-  for (const c of conventions) {
-    const p = pluginOf(c);
-    if (!p) continue;
-    if (!byPlugin.has(p)) byPlugin.set(p, []);
-    byPlugin.get(p)!.push(c);
-  }
-  for (const p of [...byPlugin.keys()].sort()) groups.push({ label: p, items: byPlugin.get(p)! });
-  return groups;
-}
 
 function NewProjectBody() {
   const p = usePlacement();
@@ -155,33 +137,12 @@ function NewProjectBody() {
         </Field>
       )}
       <p className="text-xs text-muted-foreground">Creates <code className="rounded bg-muted px-1 py-0.5 font-mono" data-preview>{preview}</code></p>
-      {groups.length > 0 && (
-        <div className="grid max-h-64 gap-3 overflow-y-auto rounded-xl border p-3">
-          {groups.map((g) => (
-            <fieldset key={g.label} className="grid gap-2">
-              <legend className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{g.label}</legend>
-              {g.items.map((c) => {
-                const id = `np-conv-${c.slug}`;
-                return (
-                  <div key={c.slug} className="flex items-start gap-3">
-                    <Checkbox
-                      id={id}
-                      checked={picked.has(c.slug)}
-                      data-convention={c.slug}
-                      onCheckedChange={(v) => setPicked((s) => { const n = new Set(s); if (v === true) n.add(c.slug); else n.delete(c.slug); return n; })}
-                      className="mt-0.5"
-                    />
-                    <div className="grid gap-0.5">
-                      <Label htmlFor={id}>{c.name}</Label>
-                      <p className="text-xs text-muted-foreground">{c.description}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </fieldset>
-          ))}
-        </div>
-      )}
+      <ConventionChecklist
+        groups={groups}
+        picked={picked}
+        onToggle={(slug, on) => setPicked((s) => { const n = new Set(s); if (on) n.add(slug); else n.delete(slug); return n; })}
+        idPrefix="np"
+      />
       <FormError>{error}</FormError>
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={() => closeDialog('newProject')}>Cancel</Button>

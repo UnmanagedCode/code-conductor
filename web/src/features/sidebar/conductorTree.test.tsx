@@ -61,7 +61,7 @@ const worktreeItem = (tree: HTMLElement, name: string) => (tree.querySelector(`[
 const workerRows = (root: HTMLElement) => [...root.querySelectorAll('[data-session-row]')].map((e) => e.getAttribute('data-session-row'));
 const labels = (root: HTMLElement) => new Set([...root.querySelectorAll('button[aria-label]')].map((b) => b.getAttribute('aria-label')));
 /** The tree's structural and close actions: none may appear in a conductor tree. */
-const STRUCTURAL = ['New session', 'Delete project', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.stop, CLOSE_TITLES.archive];
+const STRUCTURAL = ['Project menu', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.stop, CLOSE_TITLES.archive];
 
 beforeEach(() => {
   localStorage.clear();
@@ -241,7 +241,7 @@ describe('expanded conductor tree', () => {
     act(() => uiStore.set({ lens: 'projects' }));
     await settle();
     const projects = labels(el('[data-project-list]'));
-    for (const l of ['New session', 'Delete project', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.archive]) expect(projects.has(l), `positive control: ${l}`).toBe(true);
+    for (const l of ['Project menu', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.archive]) expect(projects.has(l), `positive control: ${l}`).toBe(true);
   });
 
   it('a worker with no session yet gets no row in the tree, beside its sibling that has one', async () => {

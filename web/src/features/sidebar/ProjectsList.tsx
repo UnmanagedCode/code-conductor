@@ -246,7 +246,7 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
       />
       {showSessions && <SessionsGroup ctx={ctx} project={p.name} liveInstances={direct} summary={summary} />}
       {!showSessions && worktrees.length === 0 && !owner && (
-        <div className="ml-2 py-0.5 text-xs text-muted-foreground/80 italic">No sessions yet · tap + to start</div>
+        <div className="ml-2 py-0.5 text-xs text-muted-foreground/80 italic">No sessions yet · start one from ⋮</div>
       )}
       {showWorktrees && <WorktreeGroup ctx={ctx} project={p} worktrees={worktrees} />}
     </li>

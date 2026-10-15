@@ -346,7 +346,7 @@ describe('Projects-lens filter', () => {
     await settle();
     await pick(ALPHA);
     const before = { ...sidebarStore.get() };
-    const toggles = () => [...document.querySelectorAll('[data-project-list] button[aria-expanded]')].map((b) => b.getAttribute('aria-expanded'));
+    const toggles = () => [...document.querySelectorAll('[data-project-list] button[aria-expanded]:not([aria-haspopup])')].map((b) => b.getAttribute('aria-expanded'));
     const shown = toggles();
     select(`i-${B}`);
     await settle();

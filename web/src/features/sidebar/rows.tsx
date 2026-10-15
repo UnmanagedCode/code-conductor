@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   ArrowUpIcon, FolderGit2Icon, FolderIcon, GitBranchIcon, LockIcon, PlusIcon, ServerIcon,
-  ServerOffIcon, Trash2Icon, XIcon, FileDiffIcon, ArchiveIcon, SquareIcon,
+  ServerOffIcon, XIcon, FileDiffIcon, ArchiveIcon, SquareIcon,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { conductorColor } from '@shared/conductorColor';
@@ -14,10 +14,11 @@ import type { Project, Worktree } from '@/state/types';
 import { closeSession, promoteSession, removeWorktree, resumeSession, type CloseArgs } from '@/app/sessionActions';
 import { selectInstance } from '@/app/controller';
 import { closeSidebarOnMobile } from '@/app/ui';
-import { openDeleteProjectDialog, openProjectRemoteDialog, openSpawnDialog } from '@/features/dialogs/api';
+import { openProjectRemoteDialog, openSpawnDialog } from '@/features/dialogs/api';
 import { openCommits, openReview } from '@/features/views/api';
 import { dotState, sessionLabel, type SessionItem } from './derive';
 import { useAgoTick } from './state';
+import { ProjectMenu } from './ProjectMenu';
 
 /** The owner bar: a 3px left bar in the conductor's colour. */
 export function ownerStyle(owner: string | null | undefined): React.CSSProperties | undefined {
@@ -101,7 +102,7 @@ export function UnreadPill({ n }: { n: number }) {
   );
 }
 
-const ROW_ACTION = 'flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring';
+export const ROW_ACTION = 'flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring';
 /** Hover-revealed on pointer devices, always shown on touch and on keyboard focus. */
 export const REVEAL = 'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100';
 
@@ -293,18 +294,7 @@ export function ProjectRow({ project: p, readOnly = false, liveCount = 0, instan
       )}
       {meta}
       {liveCount > 0 && <span className="size-1.5 shrink-0 rounded-full bg-success" title={`${liveCount} live`} />}
-      {!readOnly && (
-        <>
-          {!unreachable && (
-            <IconAction label="New session" onClick={() => openSpawnDialog(p.name)} className={REVEAL}>
-              <PlusIcon className="size-3.5" />
-            </IconAction>
-          )}
-          <IconAction label="Delete project" onClick={() => openDeleteProjectDialog(p, instanceCount)} className={cn(REVEAL, 'hover:text-destructive')}>
-            <Trash2Icon className="size-3.5" />
-          </IconAction>
-        </>
-      )}
+      {!readOnly && <ProjectMenu project={p} instanceCount={instanceCount} />}
     </div>
   );
 }

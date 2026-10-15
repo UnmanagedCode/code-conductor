@@ -12,7 +12,7 @@ type Inst = { id: string; sessionId: string; status: string; temp?: boolean; pla
 
 const label = (s: string) => `e2e-cl-${s}-${test.info().project.name}`;
 /** The tree's structural and close actions: none may appear in a conductor tree. */
-const STRUCTURAL = ['New session', 'Delete project', 'New session in this worktree', 'Remove worktree', 'Stop session', 'Archive session (keeps history)'];
+const STRUCTURAL = ['Project menu', 'New session in this worktree', 'Remove worktree', 'Stop session', 'Archive session (keeps history)'];
 
 // Invariant: the expanded tree offers no structural or close action while commit history and review stay; ↑ sits on exactly
 // the live temp conductor and worker rows of the lens, once each; a stage line shows exactly on a bound worker, matching /api/instances.
@@ -51,7 +51,7 @@ export async function treeFlow({ page, cc }: Ctx): Promise<void> {
     expect(actions).toContain('Review changes');
     await next.lens(page, 'projects');
     const row = await next.projectRow(page, P);
-    await expect(row.getByRole('button', { name: 'New session' }), 'positive control: the Projects lens offers it').toHaveCount(1);
+    await expect(row.getByRole('button', { name: 'Project menu' }), 'positive control: the Projects lens offers it').toHaveCount(1);
     await next.lens(page, 'conductors');
     await expect(await next.treeWorkerRow(page, a.sessionId, main.sessionId)).toHaveCount(1);
   });
