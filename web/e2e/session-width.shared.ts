@@ -42,7 +42,7 @@ export async function dragSessionHandle(page: Page, edge: Edge, dx: number, { re
   if (release) await page.mouse.up();
 }
 
-/** The room a drag is bounded by: the handle layer's width (main's). */
+/** Main's width: more than enough pointer travel to pass the limit. */
 export const layerWidth = async (page: Page) => (await layer(page).boundingBox())!.width;
 
 /** Drag the right handle far past the room and release: the column ends at the limit. */
@@ -180,7 +180,7 @@ export async function widthsFlow({ page, cc }: Ctx): Promise<void> {
   await setWidth(page, { width: 768 });
   await dragToLimit(page);
   await expect(widthToggle(page)).toHaveAccessibleName(/^Session width: Resizable, \d+ px$/);
-  const limit = Math.floor((await measure(page)).layerWidth - 2 * SESSION_WIDTH_GUTTER);
+  const limit = Math.floor((await measure(page)).scrollerClient - 2 * SESSION_WIDTH_GUTTER);
   const limited = await expectColumnFollows('limit', { width: limit });
   expect(Math.abs(limited.listWidth - (limited.scrollerClient - 2 * SESSION_WIDTH_GUTTER)), 'limit: a gutter clear per side').toBeLessThanOrEqual(0.5);
 
@@ -283,8 +283,8 @@ export async function dragFlow({ page, cc }: Ctx): Promise<void> {
   await test.info().attach('width-drag-wide', { body: await page.screenshot(), contentType: 'image/png' });
 }
 
-// Invariants: there is no fixed maximum (a width past the old cap works and persists); a drag stops a gutter clear per side of the room and stores that px; a stored width wider than the window renders clamped and survives.
-/** Desktop on a very wide window: past the old cap, the limit, and a narrower window. */
+// Invariants: there is no fixed maximum (a width wider than any fixed cap works and persists); a drag stops a gutter clear per side of the room and stores that px; a stored width wider than the window renders clamped and survives.
+/** Desktop on a very wide window: a very wide width, the limit, and a narrower window. */
 export async function roomFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name !== 'desktop', 'the handles are a desktop-layout feature');
   await page.setViewportSize({ width: 2560, height: 1000 });
@@ -293,14 +293,14 @@ export async function roomFlow({ page, cc }: Ctx): Promise<void> {
   await dragSessionHandle(page, 'right', 500, { release: true });
   await expect(layerList(page)).toHaveAttribute('data-session-width', '1768');
   const wide = await geometry(page);
-  expect(Math.abs(wide.list.width - 1768), 'a width past the old cap').toBeLessThanOrEqual(0.5);
+  expect(Math.abs(wide.list.width - 1768), 'a width wider than any fixed cap').toBeLessThanOrEqual(0.5);
   expect(Math.abs(mid(wide.list) - mid(wide.scroller)), 'centred').toBeLessThanOrEqual(wide.gutter / 2 + 0.5);
   await page.reload();
   await expect(layerList(page)).toHaveAttribute('data-session-width', '1768');
 
   await setWidth(page, { width: 768 });
   await dragToLimit(page);
-  const limit = Math.floor((await geometry(page)).layer.width - 2 * SESSION_WIDTH_GUTTER);
+  const limit = Math.floor((await geometry(page)).scrollerClient - 2 * SESSION_WIDTH_GUTTER);
   await expect(layerList(page), 'the limit stores the shown px').toHaveAttribute('data-session-width', String(limit));
   const g = await geometry(page);
   expect(Math.abs(g.list.left - (g.scroller.left + g.scrollerClientLeft + SESSION_WIDTH_GUTTER)), 'a gutter clear on the left').toBeLessThanOrEqual(0.5);

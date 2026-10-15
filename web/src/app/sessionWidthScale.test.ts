@@ -32,6 +32,9 @@ describe('dragSessionWidth', () => {
     expect(dragSessionWidth(768, 130, 'right', ROOM)).toBe(1024);
     expect(dragSessionWidth(768, 150, 'right', ROOM)).toBe(1068);
     const room = 1000;
+    // Invariant: a drag never exceeds the ceiling, even when the ceiling falls inside a snap's catch zone (fit must follow snap).
+    expect(sessionWidthCeiling(1048)).toBe(1000);
+    expect(dragSessionWidth(768, 131, 'right', 1048)).toBe(sessionWidthCeiling(1048));
     expect(sessionWidthCeiling(room)).toBeLessThan(1024);
     expect(dragSessionWidth(768, 120, 'right', room)).toBe(sessionWidthCeiling(room));
   });

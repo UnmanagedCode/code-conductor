@@ -41,10 +41,15 @@ const handle = (edge: 'left' | 'right') => document.querySelector<HTMLElement>(`
 const boxes = () => [...document.querySelectorAll<HTMLElement>('[data-session-width]')];
 const storedWidth = () => JSON.parse(localStorage.getItem(KEY)!).width as number;
 
+/** The transcript scroller's client width is the drag's room; happy-dom lays nothing out, so stub it. */
+function stubRoom(client: number) {
+  const scroller = document.querySelector<HTMLElement>('[data-conversation]');
+  if (scroller) Object.defineProperty(scroller, 'clientWidth', { configurable: true, value: client });
+}
+
 function mount() {
   render(<TooltipProvider><SessionView /></TooltipProvider>);
-  const l = layer();
-  if (l) l.getBoundingClientRect = () => ({ left: 0, right: ROOM, width: ROOM, top: 0, bottom: 800, height: 800, x: 0, y: 0, toJSON: () => ({}) });
+  stubRoom(ROOM);
 }
 
 const X0 = 500;
@@ -134,6 +139,21 @@ describe('the session width handles', () => {
     up('right');
     expect(setItem).not.toHaveBeenCalled();
     expect(boxes().map((b) => b.dataset.sessionWidth)).toEqual(['2400', '2400', '2400']);
+  });
+
+  it('a drag that loses pointer capture reverts like a cancel', () => {
+    // Invariant: lostpointercapture mid-drag (no pointerup) clears the body flag and the live width and writes nothing.
+    mount();
+    expect(handle('right')).not.toBeNull();
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    down('right');
+    move('right', 40);
+    expect(boxes()[0].style.maxWidth).toContain('848px');
+    expect('resizing' in document.body.dataset).toBe(true);
+    fireEvent.lostPointerCapture(handle('right')!, { pointerId: 1 });
+    expect('resizing' in document.body.dataset).toBe(false);
+    expect(setItem).not.toHaveBeenCalled();
+    for (const b of boxes()) expect(b.style.maxWidth).toContain('768px');
   });
 
   it('a cancelled drag commits nothing and the boxes revert', () => {

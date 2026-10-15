@@ -39,8 +39,10 @@ const boxes = () => [...document.querySelectorAll<HTMLElement>('[data-session-wi
 const handle = () => document.querySelector<HTMLElement>('[data-session-handle="right"]')!;
 const stored = () => JSON.parse(localStorage.getItem(KEY)!).width as number;
 
-function mount() {
+/** The transcript scroller's client width, which a classic scrollbar makes narrower than main. */
+function mount(client = ROOM) {
   render(<TooltipProvider><SessionView /></TooltipProvider>);
+  Object.defineProperty(document.querySelector('[data-conversation]')!, 'clientWidth', { configurable: true, value: client });
   document.querySelector<HTMLElement>('[data-session-handles]')!.getBoundingClientRect =
     () => ({ left: 0, right: ROOM, width: ROOM, top: 0, bottom: 800, height: 800, x: 0, y: 0, toJSON: () => ({}) });
 }
@@ -67,6 +69,16 @@ describe('the room bounds on a session width drag', () => {
     moveBy(-10);
     release();
     expect(stored()).toBe(LIMIT - 20);
+  });
+
+  it('the room is the scroller\'s client width, so a scrollbar narrows the limit', () => {
+    // Invariant: with a scrollbar (scroller clientWidth < layer width) a drag to the limit commits the narrower basis less a gutter per side.
+    const SCROLLBAR = 15;
+    mount(ROOM - SCROLLBAR);
+    press();
+    moveBy(1000);
+    release();
+    expect(stored()).toBe(ROOM - SCROLLBAR - 2 * SESSION_WIDTH_GUTTER);
   });
 
   it('the gutter caps the column on desktop only', () => {

@@ -101,6 +101,8 @@ export function useResizableWidth(o: ResizableWidthOptions) {
   };
   // A cancelled drag (the browser took the pointer) commits nothing; the live width reverts.
   const onPointerCancel = () => { end(); };
+  // Capture lost with no pointerup (window blur, an OS drag): revert like a cancel. After a normal release the drag is already over, so this is a no-op.
+  const onLostPointerCapture = () => { end(); };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
     const grow = o.edge === 'right' ? 'ArrowRight' : 'ArrowLeft';
@@ -127,7 +129,7 @@ export function useResizableWidth(o: ResizableWidthOptions) {
       'aria-valuemin': o.collapsible ? 0 : o.min,
       'aria-valuemax': Math.round(ceiling),
       tabIndex: 0 as const,
-      onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onDoubleClick: toggle, onKeyDown,
+      onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onLostPointerCapture, onDoubleClick: toggle, onKeyDown,
       'data-active': active,
     },
   };

@@ -42,7 +42,8 @@ export function SessionWidthHandles() {
   const onPointerDown = (edge: Edge) => (e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
     e.preventDefault();
-    const room = layerRef.current?.getBoundingClientRect().width ?? 0;
+    // The transcript scroller's client width is the basis every box's `100%` resolves against (a classic scrollbar excluded).
+    const room = layerRef.current?.parentElement?.querySelector<HTMLElement>('[data-conversation]')?.clientWidth ?? 0;
     const start = fitSessionWidth(sessionWidthStore.get().width, room);
     drag.current = { startX: e.clientX, start, room, last: start, moved: false };
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
@@ -70,6 +71,7 @@ export function SessionWidthHandles() {
       onPointerMove={onPointerMove(edge)}
       onPointerUp={onPointerUp}
       onPointerCancel={() => { end(); }}
+      onLostPointerCapture={() => { end(); }}
       onDoubleClick={resetSessionWidth}
     />
   );
