@@ -25,6 +25,9 @@
 // dock's saved subpath in split — so whatever names the frame's place always
 // reads where the frame is, and an outside change back to an earlier subpath
 // still reads as a change; an outside subpath change is forwarded as `navigate`.
+// `ready` and the id-carrying session calls (`openSession` / `sendPrompt`) from
+// any known frame go to the BridgeHandler (pluginSession.ts); `broadcast` posts
+// to every frame, hidden resident ones included.
 import { ApiError, apiFetch, apiResponse, readApiBody } from '@shared/http';
 import { createSignal, createStore } from '@/state/createStore';
 import { replaceHash } from '@/state/route';
@@ -37,6 +40,11 @@ export type RouteMirror = (id: string, path: string) => void;
 export const hashMirror: RouteMirror = (id, path) => {
   const hash = `#plugin/${id}${path}`;
   if (location.hash !== hash) replaceHash(hash);
+};
+/** Parent-side session awareness (pluginSession.ts); `reply` posts to the frame that sent the message. */
+export type BridgeHandler = {
+  ready(reply: (m: unknown) => void): void;
+  call(d: { type: string; id: string; [k: string]: unknown }, reply: (m: unknown) => void): void;
 };
 type Record_ = { id: string; subpath: string; frame: HTMLIFrameElement };
 type Current = PluginTarget | Record_;
@@ -64,6 +72,7 @@ class PluginFrames {
   private current: Current | null = null;
   private token = 0;
   private mirror: RouteMirror = hashMirror;
+  private handler: BridgeHandler | null = null;
   readonly resident = new Map<string, Record_>();
 
   constructor() {
@@ -72,6 +81,16 @@ class PluginFrames {
 
   attach(host: HTMLElement | null) {
     this.host = host;
+  }
+
+  setBridgeHandler(h: BridgeHandler | null) {
+    this.handler = h;
+  }
+
+  /** Posts to the shared frame and every resident frame, hidden ones included. */
+  broadcast(msg: unknown) {
+    this.shared?.contentWindow?.postMessage(msg, location.origin);
+    for (const r of this.resident.values()) r.frame.contentWindow?.postMessage(msg, location.origin);
   }
 
   residentIds() {
@@ -245,7 +264,7 @@ class PluginFrames {
     }));
   }
 
-  // Child → parent ({cc:1}; ready / route), attributed by the frame that posted
+  // Child → parent ({cc:1}; ready / route / openSession / sendPrompt), attributed by the frame that posted
   // it. A frame that is not the current plugin's (a hidden resident one, or the
   // page being replaced while the next plugin loads) has its route tracked on
   // its own record only — the user is somewhere else.
@@ -262,7 +281,11 @@ class PluginFrames {
     if (d.type === 'route' && typeof d.path === 'string' && d.path.startsWith('/')) {
       record.subpath = d.path;
       if (active) this.mirror(record.id, d.path);
+      return;
     }
+    const reply = (m: unknown) => (ev.source as Window).postMessage(m, location.origin);
+    if (d.type === 'ready') this.handler?.ready(reply);
+    else if ((d.type === 'openSession' || d.type === 'sendPrompt') && typeof d.id === 'string') this.handler?.call(d, reply);
   }
 }
 
