@@ -417,6 +417,17 @@ describe('change model', () => {
     expect(checked(await openModelPicker(base()))).toEqual(['Powerful']);
   });
 
+  it('a model id registered only on another backend never clears the ✓ of a tier that resolves to it on the running backend', async () => {
+    // Invariant: the ✓-clearing is per backend: a tier's ✓ yields only to a registered entry in its own backend group.
+    catalog({ backends: PROXY_BACKENDS, backendModels: { ollama: [], 'my-proxy': [{ model: 'qwen3:8b', label: 'Proxy Qwen' }] } });
+    const inst = base({ backend: 'ollama', model: 'qwen3:8b' });
+    const groups = new Map(modelGroups(inst));
+    expect(groups.get('ollama')!.map((e) => [e.label, e.selected])).toEqual([['Local', true]]);
+    expect(groups.get('my-proxy')!.map((e) => [e.label, e.selected])).toEqual([['Proxy Qwen', false]]);
+    const sub = await openModelPicker(inst);
+    expect(within(sub).getAllByRole('menuitem').filter((i) => i.querySelector('svg:not([data-restart-mark])')).map((i) => i.textContent)).toEqual(['Local']);
+  });
+
   it('a models payload applied while the picker is open replaces its registered models: an added one appears, a removed one goes', async () => {
     const reg = (...names: string[]) => ({ ollama: names.map((n) => ({ model: n.toLowerCase(), label: n })) });
     catalog({ tierBackend: ALL_CLAUDE, backendModels: reg('Alpha', 'Beta', 'Gamma') });
