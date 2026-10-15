@@ -202,6 +202,19 @@ function looseResultOpens(ev: UiEventOf<'tool_result'>): boolean {
   return images.length > 0 || text.length < LOOSE_RESULT_OPEN_MAX;
 }
 
+/** The last text block a (sub-)conversation shows, trimmed; null when it shows none. */
+function lastText(m: ConversationModel): string | null {
+  for (let i = m.items.length - 1; i >= 0; i--) {
+    const it = m.items[i];
+    if (it.type !== 'assistant') continue;
+    for (let k = it.children.length - 1; k >= 0; k--) {
+      const c = it.children[k];
+      if (c.type === 'text') return c.buffer.trim();
+    }
+  }
+  return null;
+}
+
 function answersToLock(questions: any[], text: string): AnswerState[] {
   return parseCanonicalUserQuestionAnswers(questions, text) ?? questions.map(() => ({ kind: 'none' as const }));
 }
@@ -263,6 +276,8 @@ export class ConversationModel {
    * such an agent's run, so its sub-agent's groups stay open until its task_notification or the process dies.
    */
   private backgroundTasks = new Set<string>();
+  /** Root model only: tasks whose notification has arrived; a task_started read after it does not reopen them. */
+  private endedTasks = new Set<string>();
   private activeWrap: AssistantNode | null = null;
   private activeThinkingKey: string | null = null;
   /** First assistant wrap before any segment-closer: the merge target for a page spliced above. */
@@ -376,6 +391,7 @@ export class ConversationModel {
     this.reconcileCounts.clear();
     this.subConvs.clear();
     this.backgroundTasks.clear();
+    this.endedTasks.clear();
     this.questionNodes.clear();
     this.answeredQuestions.clear();
     this.planNodes.clear();
@@ -697,19 +713,22 @@ export class ConversationModel {
       }
     }
     if (!shouldRenderSystem(ev)) return;
-    // An Agent's children (its final report included) precede its notification, live and on replay alike.
+    // An Agent's children (its final report included) precede its notification, live and on replay alike. A
+    // failed agent's summary is the CLI's failure sentence, which no card holds, so the test is the text itself.
     const card = ev.subtype === 'task_notification' && ev.toolUseId ? this.toolBlocks.get(ev.toolUseId) : null;
-    const inCard = card?.name === 'Agent' && card.sub != null;
+    const summary = ev.data?.summary;
+    const inCard = card?.name === 'Agent' && card.sub != null && typeof summary === 'string' && lastText(card.sub) === summary;
     this.pushRoot(this.make<SystemNode>({ type: 'system', ev, inCard, reader: { open: false } }, this));
   }
 
   /** A backgrounded task's start and end: its end (any status) folds its sub-agent's open groups. */
   private trackBackgroundTask(ev: UiEventOf<'system'>) {
-    const tasks = this.root.backgroundTasks;
+    const { backgroundTasks: tasks, endedTasks: ended } = this.root;
     if (ev.subtype === 'task_started' && ev.data?.is_backgrounded === true && typeof ev.data.tool_use_id === 'string') {
-      tasks.add(ev.data.tool_use_id);
+      if (!ended.has(ev.data.tool_use_id)) tasks.add(ev.data.tool_use_id);
     } else if (ev.subtype === 'task_notification' && ev.toolUseId) {
       tasks.delete(ev.toolUseId);
+      ended.add(ev.toolUseId);
       this.root.findSub(ev.toolUseId)?.closeAllActionGroups();
     }
   }
