@@ -78,6 +78,30 @@ describe('the session width control', () => {
     closePopover();
   });
 
+  it('after a pointer drag, a keyboard step still does not snap', () => {
+    // Invariant: a drag does not leave the slider in snapping mode; the next keyboard step from Normal sticks at 784.
+    render(<TooltipProvider><AppSidebar /></TooltipProvider>);
+    const slider = openPopover();
+    const root = document.querySelector('[data-slot=slider]') as HTMLElement;
+    root.getBoundingClientRect = () => ({ left: 0, right: 1120, width: 1120, top: 0, bottom: 20, height: 20, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.pointerDown(root, { pointerId: 1, clientX: 900 - 480, button: 0 });
+    fireEvent.pointerUp(root, { pointerId: 1 });
+    act(() => sessionWidthStore.set({ width: 768 }));
+    slider.focus();
+    fireEvent.keyDown(slider, { key: 'ArrowRight' });
+    expect(sessionWidthStore.get().width).toBe(784);
+    closePopover();
+  });
+
+  it('Escape closes the popover', () => {
+    // Invariant: the popover is dismissed by Escape.
+    render(<TooltipProvider><AppSidebar /></TooltipProvider>);
+    openPopover();
+    expect(document.querySelector('[data-session-width-popover]')).not.toBeNull();
+    closePopover();
+    expect(document.querySelector('[data-session-width-popover]')).toBeNull();
+  });
+
   it('Full greys the slider and keeps the custom width', () => {
     // Invariant: Full disables the slider without touching width; turning it off restores a live slider at that width.
     render(<TooltipProvider><AppSidebar /></TooltipProvider>);

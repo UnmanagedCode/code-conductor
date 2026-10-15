@@ -2,8 +2,8 @@
 // one plain): the desktop column right of the session whose width is its mode
 // (hidden, a split beside the transcript, the whole row), the one mode toggle in
 // its header strip, the handle's drag clamps, reset and keys, Back and Escape
-// from the full view, a window too narrow for a split, a reload, the session
-// width presets beside it, a toast beside the strip, and the phone layout
+// from the full view, a window too narrow for a split, a reload, a session
+// width (slider setting) beside it, a toast beside the strip, and the phone layout
 // without it. A reload of a probe page makes a new nonce, so every "same page"
 // check fails on one. The bodies are shared by the spec files; this module
 // declares no tests.
@@ -12,7 +12,7 @@ import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, spawnSession } from './harness/api.ts';
 import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
-import { setWidth } from './session-width.shared.ts';
+import { parkPointer, setWidth } from './session-width.shared.ts';
 import { SESSION_WIDTH_MAX, SESSION_WIDTH_SNAPS } from '../src/app/sessionWidthScale.ts';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from '../src/features/views/dockLayout.ts';
 import { RESIZE_KEY_STEP } from '../src/lib/useResizableWidth.ts';
@@ -96,7 +96,7 @@ async function pick(page: Page, p: ProbePlugin) {
 
 /** Escape with the pointer clear of every tooltip (a closing tooltip takes the Escape). */
 async function escape(page: Page) {
-  await page.mouse.move(10, 450);
+  await parkPointer(page);
   await expect(page.locator('[data-slot="tooltip-content"]')).toHaveCount(0);
   await page.keyboard.press('Escape');
 }

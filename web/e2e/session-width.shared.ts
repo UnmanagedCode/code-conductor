@@ -23,9 +23,24 @@ export async function openWidthPopover(page: Page) {
   await expect(popover(page)).toBeVisible();
 }
 
+/** Move the pointer to a spot with no interactive element under it, so no tooltip trigger holds a tooltip open. */
+export async function parkPointer(page: Page) {
+  const spot = await page.evaluate(() => {
+    for (let y = window.innerHeight - 8; y > 0; y -= 24) {
+      for (let x = window.innerWidth - 8; x > 0; x -= 24) {
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest('button, a, input, textarea, select, iframe, [role], [tabindex], [data-slot*="trigger"]')) return { x, y };
+      }
+    }
+    return null;
+  });
+  if (!spot) throw new Error('no spot clear of interactive elements to park the pointer');
+  await page.mouse.move(spot.x, spot.y);
+}
+
 /** Escape with the pointer clear of every tooltip (a closing tooltip takes the Escape). */
 async function closeWidthPopover(page: Page) {
-  await page.mouse.move(10, 450);
+  await parkPointer(page);
   await expect(page.locator('[data-slot="tooltip-content"]')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(popover(page)).toBeHidden();
@@ -34,11 +49,12 @@ async function closeWidthPopover(page: Page) {
 /** Reach a setting through the real controls: a snap by its tick, any other width by Home then arrow steps. */
 export async function setWidth(page: Page, s: Setting) {
   await openWidthPopover(page);
-  // The slider is disabled under Full: leave Full before moving it, and enter Full after.
+  // A bare width means Full off. The slider is disabled under Full: leave Full before moving it, and enter Full after.
+  const full = s.full ?? (s.width === undefined ? undefined : false);
   const toggleFull = async () => {
-    if ((await fullSwitch(page).getAttribute('aria-checked')) !== String(s.full)) await fullSwitch(page).click();
+    if ((await fullSwitch(page).getAttribute('aria-checked')) !== String(full)) await fullSwitch(page).click();
   };
-  if (s.full === false) await toggleFull();
+  if (full === false) await toggleFull();
   if (s.width !== undefined) {
     const snap = SESSION_WIDTH_SNAPS.find((n) => n.px === s.width);
     if (snap) await popover(page).getByRole('button', { name: snap.label }).click();
@@ -49,7 +65,7 @@ export async function setWidth(page: Page, s: Setting) {
     }
     await expect(thumb(page)).toHaveAttribute('aria-valuenow', String(s.width));
   }
-  if (s.full === true) await toggleFull();
+  if (full === true) await toggleFull();
   await closeWidthPopover(page);
 }
 
