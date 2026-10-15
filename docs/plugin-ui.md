@@ -61,7 +61,7 @@ What cc runs on Library **Install** and **Update**:
 | Step | What runs |
 |---|---|
 | **Install** (Settings → Plugins → Library) | `git clone`, then the catalog entry's `postClone`, before the plugin's first start |
-| **Update** | `git pull --ff-only`, then the entry's `postPull`, then the plugin's auto-restart |
+| **Update** | `git pull --ff-only`, then the entry's `postPull`, then a restart of the plugin's backend if it is running (a stopped one picks the pull up when it next starts) |
 
 - **The hook is the catalog entry's command**, run through `bash -lc`, with cc's own environment, with cwd = the checkout. cc runs nothing else: no `npm install`, no `pip install`, no build.
 - **Whatever builds the UI (and installs the backend's dependencies) happens in that hook**, so the checkout is servable by the time the plugin first starts. Built output is not tracked in git.
@@ -69,7 +69,7 @@ What cc runs on Library **Install** and **Update**:
 - **The hook runs code with cc's privileges:** as cc's user with cc's environment. That is the trust the hook itself carries ([docs/plugins.md](plugins.md) → **`postClone`/`postPull` execution**), and it extends to whatever the command runs (lifecycle scripts, dependency install scripts). Add no dependency you would not run as cc.
 - A failed hook is a warning, not an error: the clone or pull stays. Update is the retry. A failed `postPull` skips the restart.
 - The hook is bounded by `POST_HOOK_TIMEOUT_MS` (`src/plugins/library.ts`).
-- The hook must not leave the checkout dirty: Update's `git pull --ff-only` refuses to run over uncommitted changes. Untrack or ignore anything the hook writes.
+- Leave nothing in the checkout that an incoming commit can collide with: Update's `git pull --ff-only` aborts when an incoming commit touches a path the hook left modified, or adds a path the hook left untracked. Untrack or ignore anything the hook writes.
 - `npm install` plus a `prepare` script is one way to meet this: see [Build on install](#build-on-install) in the reference.
 
 ## Standalone legibility
@@ -85,7 +85,7 @@ What cc runs on Library **Install** and **Update**:
 - [ ] The page follows the sidebar theme toggle live in cc, and the OS theme while cc's theme is "system". It has no toggle of its own.
 - [ ] Navigation adds no history entry beyond cc's one: Back from the plugin returns to cc.
 - [ ] A fresh `git clone` plus the Library entry's hook, with no other step, leaves a servable checkout; `git status` is clean afterwards.
-- [ ] In cc, Settings → Plugins → Library → **Install** reports the `postClone` hook ok; **Update** rebuilds and restarts the backend.
+- [ ] In cc, Settings → Plugins → Library → **Install** reports the `postClone` hook ok; **Update** rebuilds, and restarts the backend if it is running (a stopped one picks the pull up when it next starts).
 - [ ] Outside cc the UI is legible; the only console errors name the two host URLs (their 404, and the browser refusing the 404's body as a script or stylesheet).
 - [ ] The plugin's own tests pass.
 
@@ -227,7 +227,7 @@ frontend/dist/
 package-lock.json
 ```
 
-- `package-lock.json` stays untracked because `npm install` may rewrite it, and that leaves the checkout dirty. Update's `git pull --ff-only` refuses to run over the dirt.
+- `package-lock.json` stays untracked because `npm install` may rewrite it, and a rewritten tracked lockfile makes Update's `git pull --ff-only` abort whenever an incoming commit touches it.
 
 **Library entries and the hook:**
 - cc's built-in Library entries for the UI plugins this setup is for — code-hub, code-kanban, code-karpathy-wiki, code-share, code-system, code-live and code-playbook — run `npm install` in both hooks, so Install builds `frontend/dist` and Update rebuilds it. Other built-in entries run other commands (code-playwright runs `bash install.sh`) or none; `DEFAULT_ENTRIES` in `<cc-checkout>/src/plugins/library.ts` is the authority.
@@ -258,7 +258,7 @@ export default defineConfig({
 });
 ```
 
-- **`base: './'` is required here** to meet the relative-URL contract: the page is served at `/plugins/<id>/` inside cc and at `/` standalone, and relative asset URLs work under both.
+- **`base: './'` is what makes this setup meet the relative-URL rule:** the page is served at `/plugins/<id>/` inside cc and at `/` standalone, and relative asset URLs work under both.
 - Replace the port with your backend's default port.
 
 `frontend/tsconfig.json`:

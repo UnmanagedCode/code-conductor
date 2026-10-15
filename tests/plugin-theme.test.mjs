@@ -165,7 +165,7 @@ test('the served plugin theme, booted with no build', async (t) => {
       const doc = await fs.readFile(path.join(REPO, 'docs', 'plugin-ui.md'), 'utf8');
       const block = [...doc.matchAll(/```css\n([\s\S]*?)```/g)].map((m) => m[1]).find((b) => b.includes('@theme inline'));
       assert.ok(block, "docs/plugin-ui.md has a css block with @theme inline");
-      assert.deepEqual([...themeMapping(block)].sort(), [...mapping].sort(), "the recipe's @theme inline is index.css's");
+      assert.deepEqual([...themeMapping(block)].sort(), [...mapping].sort(), "the reference setup's @theme inline is index.css's");
     });
 
     await t.test("the font route refuses anything but an allowlisted package's .woff2", async () => {
