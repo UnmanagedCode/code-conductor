@@ -131,7 +131,9 @@ function normalizeWindow(before: number | null, after: number | null, lastSeq: n
 // nudge per hook, so the id names exactly one. A notified
 // `system`/`task_notification` correlates by its task's tool_use_id AND status:
 // a background Agent may notify more than once per tool use, and the pair is
-// unique within a session. A model-switch divider correlates by its ledger
+// unique within a session. A `turn_boundary` (replay-only, but a ring holding
+// replayed history carries it) correlates by the same pair, for the same reason:
+// it is built from that notification's delivery line. A model-switch divider correlates by its ledger
 // `switchId`. Anything else needs both `msgId` and a numeric `blockIdx`.
 // Returns null when none applies.
 function correlationKey(ev: UiEvent): string | null {
@@ -140,6 +142,7 @@ function correlationKey(ev: UiEvent): string | null {
   if (switchId != null) return `msw ${switchId}`;
   if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
   if (isNotifiedTask(ev) && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${(ev.data as { status?: unknown }).status}`;
+  if (ev.kind === 'turn_boundary' && typeof ev.toolUseId === 'string') return `tb ${ev.toolUseId} ${ev.status}`;
   if ('blockIdx' in ev && typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number') return `${ev.kind} ${ev.msgId} ${ev.blockIdx}`;
   return null;
 }

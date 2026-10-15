@@ -162,7 +162,7 @@ function turnEndSlot(items: RootItem[]): number {
   return at;
 }
 // Content that ends the window in which a compaction's own command output is absorbed.
-const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_use_start', 'tool_result', 'turn_end']);
+const COMPACTION_WINDOW_ENDERS = new Set(['text_delta', 'thinking_start', 'tool_use_start', 'tool_result', 'turn_end', 'turn_boundary']);
 const TRANSCRIBED_PREFIX = '<transcribed>\n';
 // A result outside its call's card longer than this many characters starts collapsed.
 const LOOSE_RESULT_OPEN_MAX = 600;
@@ -645,6 +645,8 @@ export class ConversationModel {
         // A turn the CLI starts unprompted (a background task's notification) has no user_echo to end this one.
         this.closeAssistantSegment();
         return this.pushRoot(this.make<TurnEndNode>({ type: 'turn_end', ev }, this), turnEndSlot(this.items));
+      // Replay's mark of an unprompted turn's start, where the jsonl kept no turn_end: no row.
+      case 'turn_boundary': return this.closeAssistantSegment();
       case 'assistant_message':
         // Outer turns are driven by stream deltas; sub-agent turns arrive only as envelopes.
         if (this.isSub) this.reconcileAssistantMessage(ev);

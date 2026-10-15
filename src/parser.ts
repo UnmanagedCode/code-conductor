@@ -580,7 +580,9 @@ export class Parser {
     // conversation as though it were a user turn. Drop silently — the
     // streaming `system/task_notification` frame already became this
     // notification's event (src/taskNotification.ts), so this would be a
-    // duplicate, and it never produced a user_echo live.
+    // duplicate, and it never produced a user_echo live. Nor a turn mark: live,
+    // the turn before ended with its own turn_end (replay, which has none, marks
+    // the delivery with a turn_boundary — src/transcript.ts).
     if (isTaskNotificationContent(content)) return [];
     // The CLI's local-command caveat — never a bubble (isLocalCommandCaveatLine).
     if (isLocalCommandCaveatLine(obj)) return [];
@@ -1079,7 +1081,7 @@ export function snapStartToGroupBoundary(arr: UiEvent[], start: number, end: num
 // "nothing half-streamed, no tool unreturned" invariant, applied to a cut in
 // time rather than in the array.
 //
-// Outer user_echo / turn_end FORCE-RESET the state: they are always
+// Outer user_echo / turn_end / turn_boundary FORCE-RESET the state: they are always
 // boundaries. Without the reset, a hard-interrupted turn (a tool_use whose
 // tool_result never arrives) would poison every later index forever; the
 // dangling tool renders `· incomplete` via the client's finalize backstop.
@@ -1215,6 +1217,7 @@ export class QuiescenceScan {
     switch (ev.kind) {
       case 'user_echo':
       case 'turn_end':
+      case 'turn_boundary': // replay's only mark of an unprompted turn's start
         for (const open of this.openBlocks.values()) if (!open.stale) this.boundarySeq += 1;
         this.openBlocks.clear(); this.pendingTools.clear(); break;
       case 'text_delta':     this._open(blockKey(ev, 'text'), ev); break;

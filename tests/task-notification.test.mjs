@@ -184,14 +184,12 @@ test('7: replaying a background case\'s enqueue yields exactly the live event', 
   }
 });
 
-test('8: a notification\'s delivery lines replay nothing', async (t) => {
+test('8: a notification\'s mid-turn delivery and its dequeue replay nothing', async (t) => {
   const lines = await readJsonl(`${MAIN}.transcript.jsonl`);
   const enq = await enqueueFor(MAIN, BG.C1.tu);
-  const delivered = lines.find((l) => l.type === 'user' && l.message?.content === enq.content);
   const dequeue = lines.find((l) => l.type === 'queue-operation' && l.operation === 'dequeue');
-  assert.ok(delivered && dequeue, 'fixture check: the delivery user line and a dequeue are in the fixture');
+  assert.ok(dequeue, 'fixture check: a dequeue is in the fixture');
   const cases = {
-    'the <task-notification> user line': delivered,
     'a dequeue': dequeue,
     // Shapes from older sessions, built from this enqueue's real content.
     'a remove': { ...enq, operation: 'remove', reason: 'absorbed_mid_turn' },
@@ -352,4 +350,44 @@ test('22: a task name containing a closing quote and a verb is captured whole', 
       assert.equal(sentenceExitCode(s), code);
     });
   }
+});
+
+// ── The unprompted turn a delivery starts ────────────────────────────────────
+// The CLI delivers a queued notification to an idle model as a `type:"user"`
+// line, the first line of an unprompted turn. The jsonl keeps no turn end, so
+// replay marks that turn's start with a `turn_boundary`.
+// bg-agents-reinvoke.* is a real session: three background Agents whose
+// notifications each started one such turn.
+const REINVOKE = 'bg-agents-reinvoke';
+const REINVOKE_DELIVERED = ['toolu_01MBEWr1rB6iD4GGqk7fUp7g', 'toolu_01Eat1wLEwMh69bFp5ng99Lj', 'toolu_01YPwsVaS2QZAwD2Gity8ueh'];
+const isBoundary = (e) => e.kind === 'turn_boundary';
+const ASSISTANT_CONTENT = new Set(['text_delta', 'text_end', 'thinking_start', 'thinking_delta', 'thinking_end', 'thinking_redacted', 'tool_use_start', 'tool_use', 'tool_result']);
+
+for (const [fx, delivered] of [[REINVOKE, REINVOKE_DELIVERED], [MAIN, MAIN_BG]]) {
+  test(`23[${fx}]: replay emits one turn_boundary per delivered task-notification user line, carrying its tool-use-id and status`, async () => {
+    const lines = await readJsonl(`${fx}.transcript.jsonl`);
+    const deliveries = lines.filter((l) => l.type === 'user' && l.turnOrigin === 'task_notification');
+    assert.equal(deliveries.length, delivered.length, 'fixture check: one delivery user line per background task');
+    const events = lines.flatMap((l) => replayPersistedLine(l));
+    const boundaries = events.filter(isBoundary);
+    assert.deepEqual(boundaries.map((e) => e.toolUseId), delivered);
+    // Nothing of the turn before it lands after it: the next assistant content is the new turn's first thinking.
+    for (const b of boundaries) {
+      const next = events.slice(events.indexOf(b) + 1).find((e) => ASSISTANT_CONTENT.has(e.kind));
+      assert.equal(next?.kind, 'thinking_start', `after the ${b.toolUseId} boundary`);
+    }
+  });
+}
+
+test('24: each turn_boundary carries its delivery\'s status', async () => {
+  const lines = await readJsonl(`${MAIN}.transcript.jsonl`);
+  const statuses = lines.flatMap((l) => replayPersistedLine(l)).filter(isBoundary).map((e) => [e.toolUseId, e.status]);
+  assert.deepEqual(statuses, [[BG.C1.tu, 'completed'], [BG.C2.tu, 'failed'], [BG.C6.tu, 'completed'], [BG.C8.tu, 'completed']]);
+});
+
+test('25: a mid-turn queued_command delivery and the enqueue emit no turn_boundary', async () => {
+  const enq = await enqueueFor(MAIN, BG.C1.tu);
+  const queued = { type: 'attachment', uuid: 'att-tn', attachment: { type: 'queued_command', commandMode: 'task-notification', prompt: enq.content } };
+  assert.deepEqual(replayPersistedLine(queued), []);
+  assert.deepEqual(replayPersistedLine(enq).map((e) => e.kind), ['system']);
 });

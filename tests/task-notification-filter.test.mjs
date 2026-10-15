@@ -1,8 +1,8 @@
 // Background-subagent completion pings are re-injected by the CLI into a
 // worker's own conversation as a `type:"user"` line whose content is the raw
-// string `<task-notification>...</task-notification>`. This must be hidden
-// everywhere a real user prompt would surface: the live parser, the
-// transcript replay, and the rewind/fork prompt-counter — mirrors
+// string `<task-notification>...</task-notification>`. It must never surface as
+// a user prompt: not in the live parser, the transcript replay (which marks it as
+// a `turn_boundary` instead), or the rewind/fork prompt-counter — mirrors
 // tests/soft-interrupt-filter.test.mjs for the analogous soft-interrupt case.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,8 +32,11 @@ test('live parser drops a task-notification line entirely (no events, no user bu
   assert.equal(normal.filter((e) => e.kind === 'user_echo').length, 1);
 });
 
-test('replay drops a task-notification line entirely, keeps real prompts', () => {
-  assert.deepEqual(replayPersistedLine(userLine(NOTIF)), []);
+// The line starts the unprompted turn that delivers the notification; replay marks that start, and nothing else.
+test('replay turns a task-notification line into a turn_boundary alone, never a user bubble; keeps real prompts', () => {
+  const boundary = { kind: 'turn_boundary', toolUseId: null, status: 'completed', parentToolUseId: null };
+  assert.deepEqual(replayPersistedLine(userLine(NOTIF)), [boundary]);
+  assert.deepEqual(replayPersistedLine(userLine([{ type: 'text', text: NOTIF }])), [boundary]);
   assert.equal(replayPersistedLine(userLine('real')).filter((e) => e.kind === 'user_echo').length, 1);
 });
 

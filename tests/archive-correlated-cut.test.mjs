@@ -245,6 +245,7 @@ const keyOf = ev => {
       && typeof ev.data?.switchId === 'string' && ev.data.switchId) return `msw ${ev.data.switchId}`;
   if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
   if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.notified === true && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${ev.data.status}`;
+  if (ev.kind === 'turn_boundary' && typeof ev.toolUseId === 'string') return `tb ${ev.toolUseId} ${ev.status}`;
   return typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number'
     ? `${ev.kind} ${ev.msgId} ${ev.blockIdx}` : null;
 };
@@ -645,7 +646,7 @@ test('T28: a notified task_notification head present in the archive correlates b
       assistant,
       enqueueLine('tuBg'),
       { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'after' }] } },
-      // The delivery line: replay drops it, so the archive holds one notification.
+      // The delivery line: replay marks a turn boundary there, not a second notification.
       { type: 'user', uuid: 'u1', message: { role: 'user', content: enqueueLine('tuBg').content } },
     ]);
     const ring = [notifiedHead('tuBg'), { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'after', _seq: 60 }];
@@ -715,5 +716,38 @@ test('T30: notifications sharing a toolUseId correlate by status', async (t) => 
         await rmrf(r.home);
       }
     });
+  }
+});
+
+// The delivery user line starts an unprompted turn, and replay marks it with a
+// `turn_boundary` (src/transcript.ts). After a cc restart the ring holds that
+// replayed history, so a trim can leave one at the ring head.
+//
+// PINS: a `turn_boundary` ring head correlates to its archive twin by
+// `tb <toolUseId> <status>` — an exact cut, no gap, no duplication.
+test('T31: a turn_boundary ring head correlates to its archive twin', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t31';
+    const [prompt, assistant] = textBlockLines();
+    await writeJsonl(cwd, SID, [
+      prompt,
+      assistant,
+      enqueueLine('tuBg'),
+      { type: 'user', uuid: 'u1', turnOrigin: 'task_notification', message: { role: 'user', content: enqueueLine('tuBg').content } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'after' }] } },
+    ]);
+    const ring = [
+      { kind: 'turn_boundary', toolUseId: 'tuBg', status: 'completed', parentToolUseId: null, _seq: 59 },
+      { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'after', _seq: 60 },
+    ];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 1 });
+    assert.equal(arch.events[25].subtype, 'task_notification', 'fixture check: replay emits the notification at flat index 25');
+    assert.equal(arch.cut, 26, 'cut lands exactly on the archived turn boundary, right after the notification');
+    assert.equal(arch.events[26].kind, 'turn_boundary');
+    assert.equal(arch.gap, false, 'a correlated cut is an exact stitch — no gap');
+    assertNoDuplication(arch, ring, 'T31');
+  } finally {
+    await rmrf(r.home);
   }
 });

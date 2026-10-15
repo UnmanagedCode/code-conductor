@@ -63,6 +63,24 @@ async function replayEvents({ omit = [] as string[] } = {}): Promise<UiEvent[]> 
     await fs.rm(home, { recursive: true, force: true });
   }
 }
+/** The replay's events, one list per transcript line (no sub-agent file is dropped). */
+async function replayLines(): Promise<UiEvent[][]> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-bga-'));
+  const prev = process.env.CLAUDE_PROJECTS_ROOT;
+  process.env.CLAUDE_PROJECTS_ROOT = home;
+  try {
+    const dir = path.join(home, S.encodeCwd(CWD));
+    await fs.mkdir(path.join(dir, SID), { recursive: true });
+    await fs.copyFile(path.join(FIXTURES, TRANSCRIPT), path.join(dir, `${SID}.jsonl`));
+    await fs.cp(path.join(FIXTURES, SUBAGENTS), path.join(dir, SID, 'subagents'), { recursive: true });
+    const result = await S.loadPersistedTranscript({ place: S.localPlace(CWD), sessionId: SID, seqHint: 0 });
+    return result.lines.map((l: any) => l.events);
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_PROJECTS_ROOT;
+    else process.env.CLAUDE_PROJECTS_ROOT = prev;
+    await fs.rm(home, { recursive: true, force: true });
+  }
+}
 function modelOf(events: UiEvent[]) {
   const m = new ConversationModel();
   for (const ev of events) apply(m, ev);
@@ -247,5 +265,39 @@ describe('a backgrounded agent\'s run spans outer run-enders', () => {
     for (const a of AGENTS) expect(subGroups(m, a).map((g) => g.open)).toEqual([false]);
     for (const a of AGENTS) apply(m, { kind: 'system', subtype: 'task_notification', toolUseId: a, data: { status: 'completed', notified: false } });
     for (const a of AGENTS) expect(subGroups(m, a).map((g) => g.open)).toEqual([false]);
+  });
+});
+
+/** Each user section's bubbles, as their full text blocks. */
+const sections = (m: ConversationModel) => [1, 2].map((n) =>
+  afterUser(m, n).filter((i): i is AssistantNode => i.type === 'assistant').map(texts));
+
+describe('a restart replays the same turns', () => {
+  it('the replayed session gives the launching turn and each unprompted turn their own bubble (T10)', async () => {
+    const evs = await replayEvents();
+    expect(evs.filter((e): e is UiEventOf<'system'> => e.kind === 'system' && e.subtype === 'task_notification').map((e) => e.toolUseId))
+      .toEqual([BG[0], BG[2], BG[1]]);
+    expect(textPartition(afterUser(modelOf(evs), 2), TURN2_ON)).toEqual(TURN2_ON);
+  });
+
+  it('a reload shows the same bubbles, with the same prose, as the live stream did (T11)', async () => {
+    const live = sections(liveModel());
+    expect(live[1]).toHaveLength(4);
+    expect(sections(modelOf(await replayEvents()))).toEqual(live);
+  });
+
+  it('a lazy page ending on an unprompted turn\'s eve does not merge into that turn\'s bubble (T12)', async () => {
+    const lines = await replayLines();
+    const jsonl = readJsonl(TRANSCRIPT);
+    expect(lines).toHaveLength(jsonl.length);
+    // The second delivery line starts the turn the live chunk opens with.
+    const delivery = jsonl.map((l, i) => (l.turnOrigin === 'task_notification' ? i : -1)).filter((i) => i >= 0)[1];
+    const page = lines.slice(0, delivery).flat();
+    const tail = lines.slice(delivery).flat();
+    const live = new ConversationModel();
+    for (const ev of tail) apply(live, ev);
+    expect(live.leadingAssistantWrap).toBeNull();
+    live.prependPage(live.renderPage(page, null, null), live.leadingAssistantWrap);
+    expect(textPartition(afterUser(live, 2), TURN2_ON)).toEqual(TURN2_ON);
   });
 });

@@ -211,6 +211,11 @@ interface TurnEndEvent extends UiEventBase {
   contextGrowthTokens?: number | null;
   contextWindowTokens?: number | null;
 }
+/**
+ * Replay only: an unprompted turn starts here, delivering a background task's notification. Built
+ * from the delivered `<task-notification>` user line; the live stream has `turn_end` instead.
+ */
+interface TurnBoundaryEvent extends UiEventBase { kind: 'turn_boundary'; toolUseId: string | null; status: string | null }
 interface ControlResponseEvent extends UiEventBase {
   kind: 'control_response';
   requestId: unknown;
@@ -240,7 +245,7 @@ export type UiEvent =
   | ThinkingStartEvent | ThinkingDeltaEvent | ThinkingEndEvent | ThinkingRedactedEvent
   | ToolUseStartEvent | ToolUseInputDeltaEvent | ToolUseEvent
   | UserQuestionEvent | PlanRequestEvent | ToolResultEvent | UserEchoEvent
-  | CompactionEvent | HookEvent | AssistantMessageEvent | TurnEndEvent | ControlResponseEvent
+  | CompactionEvent | HookEvent | AssistantMessageEvent | TurnEndEvent | TurnBoundaryEvent | ControlResponseEvent
   | RawEvent | OverageMessageQueuedEvent | SegmentSeamEvent | HistoryGapEvent | TaskCompletionEvent
   | SystemEvent;
 
