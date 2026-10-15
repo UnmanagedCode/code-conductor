@@ -339,6 +339,149 @@ describe('question card', () => {
   });
 });
 
+describe('Enter in the card field', () => {
+  const tabOf = (card: HTMLElement) => card.querySelector('[aria-pressed="true"][data-tab]')?.getAttribute('data-tab');
+  const goTab = async (card: HTMLElement, i: number) => {
+    fireEvent.click(card.querySelector(`[data-tab="${i}"]`)!);
+    await flush();
+  };
+  const pick = async (card: HTMLElement, label: string) => {
+    fireEvent.click(opt(card, label));
+    await flush();
+  };
+  const enter = async (card: HTMLElement, init: Record<string, unknown> = {}) => {
+    input(card).focus();
+    fireEvent.keyDown(input(card), { key: 'Enter', ...init });
+    await flush();
+  };
+  const THREE = () => CARD([FRUIT, TOPPINGS, SIZE]);
+  const prompt = (qs: Question[], answers: UserQuestionAnswer[]) => [
+    { t: 'prompt', payload: { id: 'inst-1', text: formatUserQuestionAnswers(qs, answers) }, opts: { ack: true } },
+  ];
+
+  it('skips answered questions and keeps the field focused (invariant: next UNANSWERED, not next)', async () => {
+    const { card } = await show([THREE()]);
+    await goTab(card(), 1);
+    await pick(card(), 'Nuts');
+    await goTab(card(), 0);
+    await pick(card(), 'Apple');
+    await enter(card());
+    expect(tabOf(card())).toBe('2');
+    expect(document.activeElement === input(card())).toBe(true);
+    expect(sent).toEqual([]);
+  });
+
+  it('searches after the current question, not from the start (invariant: search starts at tab + 1)', async () => {
+    const { card } = await show([THREE()]);
+    await goTab(card(), 1);
+    await pick(card(), 'Nuts');
+    await enter(card());
+    expect(tabOf(card())).toBe('2');
+  });
+
+  it('wraps past the last question to an earlier unanswered one (invariant: cyclic search)', async () => {
+    const { card } = await show([THREE()]);
+    await goTab(card(), 1);
+    await pick(card(), 'Nuts');
+    await goTab(card(), 2);
+    await pick(card(), 'L');
+    await enter(card());
+    expect(tabOf(card())).toBe('0');
+    expect(sent).toEqual([]);
+  });
+
+  it('with every question answered, Enter sends the card once with the right body (invariant: Enter == Send, no double send)', async () => {
+    const { card } = await show([THREE()]);
+    await goTab(card(), 1);
+    await pick(card(), 'Nuts');
+    await goTab(card(), 2);
+    await pick(card(), 'L');
+    await goTab(card(), 0);
+    await pick(card(), 'Apple');
+    fireEvent.change(input(card()), { target: { value: 'ripe' } });
+    await flush();
+    await enter(card());
+    expect(sent).toEqual(prompt([FRUIT, TOPPINGS, SIZE], [
+      { kind: 'option', label: 'Apple', note: 'ripe' }, { kind: 'multi', labels: ['Nuts'] }, { kind: 'option', label: 'L' },
+    ]));
+    expect(statusOf(card())).toBe('Sending…');
+    await enter(card());
+    expect(sent.length).toBe(1);
+  });
+
+  it('an unanswered current question moves on when others remain (invariant: one rule, acts as skip)', async () => {
+    const { card } = await show([THREE()]);
+    await enter(card());
+    expect(tabOf(card())).toBe('1');
+    expect(sent).toEqual([]);
+  });
+
+  it('the only unanswered question stays put and sends nothing (invariant: Send gate still holds)', async () => {
+    const { card } = await show([THREE()]);
+    await goTab(card(), 1);
+    await pick(card(), 'Nuts');
+    await goTab(card(), 2);
+    await pick(card(), 'L');
+    await goTab(card(), 0);
+    await enter(card());
+    expect(tabOf(card())).toBe('0');
+    expect(sent).toEqual([]);
+  });
+
+  it('own-answer role obeys the same gate as the button (invariant: blank custom never sends; text does)', async () => {
+    const { card } = await show([CARD([FRUIT])]);
+    fireEvent.change(input(card()), { target: { value: '   ' } });
+    await flush();
+    expect(sendBtn(card()).disabled).toBe(true);
+    await enter(card());
+    expect(sent).toEqual([]);
+    fireEvent.change(input(card()), { target: { value: 'a mango' } });
+    await flush();
+    await enter(card());
+    expect(sent).toEqual(prompt([FRUIT], [{ kind: 'custom', text: 'a mango' }]));
+  });
+
+  describe('keys that must not act (invariant: only a plain, non-composing, non-repeated Enter acts)', () => {
+    const rows: [string, Record<string, unknown>, 'isComposing' | 'keyCode' | 'repeat' | null][] = [
+      ['Shift', { shiftKey: true }, null],
+      ['Ctrl', { ctrlKey: true }, null],
+      ['Alt', { altKey: true }, null],
+      ['Meta', { metaKey: true }, null],
+      ['composing', { isComposing: true }, 'isComposing'],
+      ['keyCode 229', { keyCode: 229 }, 'keyCode'],
+      ['repeat', { repeat: true }, 'repeat'],
+    ];
+    const recorded = (card: HTMLElement) => {
+      const seen: Record<string, unknown>[] = [];
+      input(card).addEventListener('keydown', (ev) => {
+        const k = ev as KeyboardEvent;
+        seen.push({ isComposing: k.isComposing, keyCode: k.keyCode, repeat: k.repeat });
+      });
+      return seen;
+    };
+    it.each(rows)('%s+Enter does not advance', async (_n, init, field) => {
+      const { card } = await show([CARD([FRUIT, SIZE])]);
+      await pick(card(), 'Apple');
+      const seen = recorded(card());
+      await enter(card(), init);
+      if (field) expect(seen[0][field]).toBe(init[field]);
+      expect(tabOf(card())).toBe('0');
+      await enter(card());
+      expect(tabOf(card())).toBe('1');
+    });
+    it.each(rows)('%s+Enter does not send', async (_n, init, field) => {
+      const { card } = await show([CARD([FRUIT])]);
+      await pick(card(), 'Apple');
+      const seen = recorded(card());
+      await enter(card(), init);
+      if (field) expect(seen[0][field]).toBe(init[field]);
+      expect(sent).toEqual([]);
+      await enter(card());
+      expect(sent.length).toBe(1);
+    });
+  });
+});
+
 describe('answer bubble', () => {
   it('a stamped echo is an answer bubble keeping its user index and rewind/fork', async () => {
     const calls: any[] = [];

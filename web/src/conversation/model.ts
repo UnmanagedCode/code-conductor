@@ -464,8 +464,22 @@ export class ConversationModel {
     this.touch(node);
   }
 
+  static questionAnswered(a: AnswerState): boolean {
+    return a.kind === 'none' ? false : a.kind === 'custom' ? a.text.trim().length > 0 : true;
+  }
+
   static questionReady(node: QuestionNode): boolean {
-    return node.answers.length > 0 && node.answers.every((a) => (a.kind === 'none' ? false : a.kind === 'custom' ? a.text.trim().length > 0 : true));
+    return node.answers.length > 0 && node.answers.every(ConversationModel.questionAnswered);
+  }
+
+  // Cyclic, starting after the showing tab; never the showing tab itself.
+  static nextUnansweredQuestion(node: QuestionNode): number | null {
+    const n = node.answers.length;
+    for (let k = 1; k < n; k++) {
+      const i = (node.tab + k) % n;
+      if (!ConversationModel.questionAnswered(node.answers[i])) return i;
+    }
+    return null;
   }
 
   questionSubmitted(node: QuestionNode) {

@@ -175,6 +175,14 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
         <Input
           value={node.drafts[active] ?? ''}
           onChange={(e) => model.questionDraft(node, active, e.target.value)}
+          // Enter moves to the next unanswered question, or sends once every question is answered.
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.repeat) return;
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            const next = ConversationModel.nextUnansweredQuestion(node);
+            if (next !== null) model.questionTab(node, next);
+            else submit();
+          }}
           disabled={node.submitted}
           placeholder={noteMode ? 'Add a note (optional)' : 'Or write your own answer…'}
           data-custom-input={answer.kind === 'custom' ? 'active' : ''}
