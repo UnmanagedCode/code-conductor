@@ -64,7 +64,7 @@ An **optional host capability, not a contract requirement**: a plugin that ignor
   - `ccBridge.onSession(fn)` → unsubscribe. `fn` runs on every change, and at once if a session message has already arrived.
   - `ccBridge.openSession(sessionId)` → `Promise<{ok, code?}>`: makes a live session the selection. A session that is not live is refused (`SESSION_NOT_LIVE`); cc never resumes one for a plugin.
   - `ccBridge.sendPrompt(sessionId, text)` → `Promise<{ok, code?}>`: behaves exactly like typing into that session's composer (a steer when it is busy, the overage queue, the conductor wake for a conducted worker), without switching to it and without touching the human's draft.
-  - A promise always resolves; read `ok` and `code`.
+  - A promise never rejects; read `ok` and `code`. cc replies exactly once per call and bounds its own slow reads (10 s), but a page that navigates or reloads mid-call loses the reply, so set your own deadline if you need one.
 - **Active session** is cc's one selection (`activeInstance`), whatever the layout:
 
 | Layout | Active session |

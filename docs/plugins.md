@@ -157,7 +157,8 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 **`session` is sent** to one frame on its `ready` (a reload in place sends a fresh `ready`), and to **every** frame — the shared frame and each resident frame, hidden ones included — whenever the active `(sessionId, project, worktree)` triple changes. An unchanged triple (an instance-list refresh, a status change) posts nothing.
 
 **`openSession` / `sendPrompt` rules:**
-- `id` must be a string; a call without one is ignored (nowhere to reply). Exactly one `result` per call.
+- `id` must be a string; a call without one is ignored (nowhere to reply). Exactly one `result` per received call.
+- The child accepts `session`, `result` and `navigate` only from `window.parent` (same origin and `ev.source`).
 - Accepted from any known frame (shared or resident, hidden included): same origin, and `ev.source` is that frame's `contentWindow`. An unknown source gets no reply.
 - Instance lookup by `sessionId`: the listed instances plus the pristine slot; a live instance (status not `exited`/`crashed`) wins over a dead one sharing the id; none → `GET /api/sessions/:sid/locate`.
 - `openSession` on a live session calls `selectInstance(id, {userGesture: true})` — what a sidebar row pick does (split: the session column switches and the dock stays; full-screen / phone: leaves the plugin view for the session). A session that is not live is refused; nothing is resumed.
@@ -170,11 +171,12 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 | `SESSION_NOT_LIVE` | the session exists but no live instance carries it (`exited`/`crashed`, or a `locate` hit, archived or not) |
 | `SESSION_NOT_READY` | `sendPrompt` only: live, but the composer's Send would be disabled (status not `idle`/`turn`, a `modelSwitch` in flight, `overageStoppedUnarmed`) |
 | `SEND_FAILED` | `sendPrompt` only: the acked `prompt` frame was rejected (server error ack, closed socket, the 10 s ack timeout in `shared/ws.ts`) |
-| `LOOKUP_FAILED` | the `locate` read failed with a network error |
+| `LOOKUP_FAILED` | the `locate` read failed with a network error, or did not settle within 10 s |
+| `HOST_ERROR` | an unexpected failure inside cc while carrying out the call |
 
 `SESSION_UNKNOWN` and `SESSION_NOT_LIVE` reuse the MCP vocabulary of `src/mcp/handlers.ts`.
 
-**Child API.** Outside an embed, or on a host without these messages, `window.ccBridge` is absent. Embedded it holds `session` (`undefined` until the first `session` message, then the payload or `null`), `onSession(fn)` → unsubscribe (`fn` runs on every `session` message, and at once when one has arrived), and `openSession(sessionId)` / `sendPrompt(sessionId, text)` → `Promise<{ok, code?}>`. A promise always resolves, never rejects; there is no client timeout (the parent always replies and bounds the send at 10 s).
+**Child API.** Outside an embed, or on a host without these messages, `window.ccBridge` is absent. Embedded it holds `session` (`undefined` until the first `session` message, then the payload or `null`), `onSession(fn)` → unsubscribe (`fn` runs on every `session` message, and at once when one has arrived), and `openSession(sessionId)` / `sendPrompt(sessionId, text)` → `Promise<{ok, code?}>`. A promise never rejects: it resolves with the host's `result`. The parent sends exactly one `result` per received call, and bounds the slow parts: the send ack and the `locate` read at 10 s each. A frame that navigates or reloads mid-call loses its reply, so a plugin that needs a deadline sets its own.
 
 **Security.** `openSession` / `sendPrompt` let any plugin page, hidden keep-alive frames included, drive any session. That adds no reach: a plugin page is same-origin with cc and can already call cc's unauthenticated API and socket. It is why the content-rendering rules in [plugin-ui.md](plugin-ui.md) Part 2 matter.
 

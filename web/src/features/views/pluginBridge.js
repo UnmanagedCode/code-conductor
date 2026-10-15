@@ -70,7 +70,7 @@
   window.addEventListener('hashchange', reportRoute);
 
   // Session awareness. `session` stays undefined until the host's first
-  // message; a call's promise always resolves ({ok, code?}), never rejects.
+  // message; a call's promise resolves with the host's result ({ok, code?}) and never rejects.
   /** @type {{sessionId: string, project: string, worktree: string | null} | null | undefined} */
   var session;
   var hasSession = false;

@@ -21,6 +21,11 @@ export function activeSessionPayload(): BridgeSession | null {
 
 const sessionMsg = (session: BridgeSession | null) => ({ cc: 1, type: 'session', session });
 
+/** Bound on the `locate` read; the same bound `shared/ws.ts` puts on a send's ack. */
+const LOCATE_TIMEOUT_MS = 10_000;
+
+class LocateTimeout extends Error {}
+
 type Lookup = { inst: Instance } | { code: 'SESSION_UNKNOWN' | 'SESSION_NOT_LIVE' | 'LOOKUP_FAILED' };
 
 /** A live instance carrying `sessionId`, else why there is none. */
@@ -30,11 +35,19 @@ async function lookup(sessionId: string): Promise<Lookup> {
   const live = carrying.find((i) => isLiveStatus(i.status));
   if (live) return { inst: live };
   if (carrying.length) return { code: 'SESSION_NOT_LIVE' };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(new LocateTimeout()), LOCATE_TIMEOUT_MS);
   try {
-    await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/locate`);
+    // apiFetch may not honour the signal in every path, so the timeout also races the read.
+    await Promise.race([
+      apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/locate`, { signal: ctl.signal }),
+      new Promise<never>((_, reject) => ctl.signal.addEventListener('abort', () => reject(new LocateTimeout()))),
+    ]);
     return { code: 'SESSION_NOT_LIVE' };
   } catch (e) {
     return { code: e instanceof ApiError ? 'SESSION_UNKNOWN' : 'LOOKUP_FAILED' };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -72,7 +85,13 @@ export function startPluginSessionBridge(): () => void {
   pluginFrames.setBridgeHandler({
     ready: (reply: Reply) => reply(sessionMsg(activeSessionPayload())),
     call: (d, reply: Reply) => {
-      void handleCall(d).then((r) => reply({ cc: 1, type: 'result', id: d.id, ...r }));
+      // Exactly one reply per received call: an unexpected throw is HOST_ERROR.
+      handleCall(d)
+        .catch((e): { ok: false; code: string } => {
+          console.error('plugin bridge call failed', e);
+          return { ok: false, code: 'HOST_ERROR' };
+        })
+        .then((r) => reply({ cc: 1, type: 'result', id: d.id, ...r }));
     },
   });
   return () => {

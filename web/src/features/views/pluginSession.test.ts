@@ -77,7 +77,8 @@ beforeEach(async () => {
   await pluginFrames.load({ id: 'hub', subpath: '/' });
   shared = standInWindow(host.querySelector('iframe[data-plugin-frame="shared"]') as HTMLIFrameElement);
   resident = standInWindow(host.querySelector('iframe[data-plugin-frame="resident"]') as HTMLIFrameElement);
-  stranger = { posted: [], postMessage() {} } as unknown as StandIn;
+  const recorder: StandIn & { postMessage(m: unknown, o?: unknown): void } = { posted: [], origins: [], postMessage(m, o) { recorder.posted.push(m); recorder.origins.push(o); } };
+  stranger = recorder;
   stop = startPluginSessionBridge();
 });
 
@@ -126,6 +127,24 @@ describe('the session broadcast', () => {
     expect(sessionMsgs(shared).map((m) => m.session), 'still null: not re-sent').toEqual([null]);
     selectInstance('b');
     expect(sessionMsgs(shared).map((m) => m.session)).toEqual([null, { sessionId: 's-b', project: 'p', worktree: null }]);
+  });
+
+  it('names the pristine conductor when it is the active session', () => {
+    // Invariant: the active session is activeInstance (instances plus the pristine slot), so a pristine conductor is reported as itself.
+    appStore.set({ pristine: inst('pr', { pristine: true, sessionId: 's-pr' }), activeId: 'pr' });
+    expect(sessionMsgs(shared).map((m) => m.session), 'broadcast on selection').toEqual([{ sessionId: 's-pr', project: 'p', worktree: null }]);
+    postFrom(resident, { cc: 1, type: 'ready' });
+    expect(sessionMsgs(resident)[0].session).toEqual({ sessionId: 's-pr', project: 'p', worktree: null });
+  });
+
+  it('posts session and result with the host origin as the target', async () => {
+    // Invariant: nothing the host sends a frame is addressed to "*" or another origin — broadcast, ready replies and results all target location.origin.
+    postFrom(shared, { cc: 1, type: 'ready' });
+    selectInstance('b');
+    await ask(shared, 'openSession', { sessionId: 's-a' });
+    expect(shared.posted.length, 'precondition: a ready reply, a broadcast and a result').toBeGreaterThanOrEqual(3);
+    expect(resident.origins.length, 'precondition: the resident frame was broadcast to').toBeGreaterThan(0);
+    for (const w of [shared, resident]) expect(w.origins.every((o) => o === location.origin)).toBe(true);
   });
 
   it('answers nothing to a message from a window that is no frame', () => {
@@ -268,6 +287,29 @@ describe('sendPrompt', () => {
     expect(promptCalls()).toEqual([['prompt', { id: 'pr', text: 'go' }, { ack: true }]]);
     selectInstance('b');
     expect(sendMock.mock.calls.some((c) => c[0] === 'pristine_leave')).toBe(false);
+  });
+});
+
+describe('exactly one result per call', () => {
+  it('answers HOST_ERROR once when the host throws mid-call', async () => {
+    // Invariant: an unexpected host-side failure still yields exactly one {ok:false, code:'HOST_ERROR'} (ask() asserts one reply per id).
+    sendMock.mockImplementation(() => { throw new Error('socket layer blew up'); });
+    expect(await ask(shared, 'openSession', { sessionId: 's-b' })).toMatchObject({ ok: false, code: 'HOST_ERROR' });
+    await settle();
+    expect(results(shared)).toHaveLength(1);
+  });
+
+  it('answers LOOKUP_FAILED when the locate read never settles', async () => {
+    // Invariant: the lookup is bounded (10 s, as the send ack is), so a stalled read cannot leave a frame unanswered.
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+      postFrom(shared, { cc: 1, type: 'openSession', id: 'slow', sessionId: 's-gone' });
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(results(shared), 'not before the bound').toEqual([]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(results(shared)).toEqual([{ cc: 1, type: 'result', id: 'slow', ok: false, code: 'LOOKUP_FAILED' }]);
+    } finally { vi.useRealTimers(); }
   });
 });
 
