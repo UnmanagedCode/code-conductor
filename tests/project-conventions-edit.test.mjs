@@ -106,11 +106,16 @@ describe('PUT /api/projects/:name/conventions', () => {
     assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before);
   });
 
-  // PINS: the guard compares content and order, not just length.
-  test('refuses an expected of the right length but different slugs or order with 409 and writes nothing', async () => {
+  // PINS: the guard compares length, content and order — a longer expected
+  // with the marker as its prefix is stale too.
+  test('refuses an expected with different slugs, a different order or an extra trailing slug with 409 and writes nothing', async () => {
     await projectWith('p', ['design-guidelines', 'testing-guidelines']);
     const before = await fs.readFile(conventionsPath('p'), 'utf8');
-    for (const expected of [['design-guidelines', 'documentation-guidelines'], ['testing-guidelines', 'design-guidelines']]) {
+    for (const expected of [
+      ['design-guidelines', 'documentation-guidelines'],
+      ['testing-guidelines', 'design-guidelines'],
+      ['design-guidelines', 'testing-guidelines', 'documentation-guidelines'],
+    ]) {
       const r = await put('p', { slugs: ['documentation-guidelines'], expected });
       assert.equal(r.status, 409, `${JSON.stringify(expected)} → ${JSON.stringify(r.body)}`);
       assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before, `${JSON.stringify(expected)}: file unchanged`);
