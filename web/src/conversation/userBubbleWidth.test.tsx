@@ -87,8 +87,8 @@ describe('user item width', () => {
     for (const el of item.children) expect(selfAlignClasses(el), `child: ${el.className}`).toEqual([]);
   });
 
-  // Invariant: the attachments row and the action row carry the bubble's own horizontal padding, so their contents start at its text.
-  it('the attachments row and the action row start at the bubble\'s text', async () => {
+  // Invariant: the attachments row carries the bubble's own horizontal padding, so its chips start at its text; the action row carries none, so its controls end at the bubble's right edge as the assistant controls end at the body's.
+  it('the attachments row starts at the bubble\'s text; the action row ends at its right edge', async () => {
     const root = await render([ATTACHED]);
     const text = root.querySelector('[data-user-text]')!;
     const attachments = root.querySelector('[data-user-attachments]');
@@ -97,7 +97,8 @@ describe('user item width', () => {
     expect(actions, 'the action row').not.toBeNull();
     expect(padX(text).length).toBeGreaterThan(0);
     expect(padX(attachments!)).toEqual(padX(text));
-    expect(padX(actions!)).toEqual(padX(text));
+    expect(padX(actions!)).toEqual([]);
+    expect(actions!.hasAttribute('data-action-row')).toBe(true);
   });
 
   // Invariant: the prompt, answer and queued bubbles all carry USER_BUBBLE's shape (tint strip, no outline ring); a typed prompt carries USER_TONE_PROMPT.

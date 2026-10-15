@@ -1,6 +1,6 @@
 // User bubbles span the transcript column's content box as the question and plan cards do, whatever
 // their length or variant, at every session width and on a phone, and fill a sub-agent panel's content
-// box; their attachments and controls start at their text. The bodies are shared by the per-project
+// box; their attachments start at their text and their controls end at their right edge. The bodies are shared by the per-project
 // spec files.
 import type { Locator, Page, WebSocketRoute } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -25,7 +25,8 @@ async function measure(page: Page) {
     const rect = (el: Element | null | undefined) => (el as HTMLElement).getBoundingClientRect();
     const listEl = document.querySelector('[data-conversation] [data-session-width]') as HTMLElement;
     const lr = listEl.getBoundingClientRect();
-    const leftOf = (el: Element | null) => (el ? el.getBoundingClientRect().left : null);
+    // The right edge of a row's buttons (CopyButton adds an sr-only span beside its button).
+    const rightOfButtons = (row: Element | null) => (row ? Math.max(...[...row.querySelectorAll('button')].map((b) => b.getBoundingClientRect().right)) : null);
     const bubbles = [...document.querySelectorAll('[data-item=user]')].map((item) => {
       const box = rect(item.querySelector('[data-user-text]'));
       const md = item.querySelector('[data-user-text] .md') as HTMLElement;
@@ -37,10 +38,9 @@ async function measure(page: Page) {
         left: box.left,
         right: box.right,
         width: box.width,
-        textLeft: md.getBoundingClientRect().left,
         // The first text node's own extent: what a shrink-to-fit bubble would wrap (a block's rect is its container's width).
         glyphWidth: range.getBoundingClientRect().width,
-        actionsLeft: leftOf(item.querySelector('[data-user-actions] > *')),
+        actionsRight: rightOfButtons(item.querySelector('[data-user-actions]')),
       };
     });
     return {
@@ -64,8 +64,8 @@ function expectAligned(m: Geometry, where: string): void {
   for (const b of m.bubbles) {
     expect(Math.abs(b.left - m.columnLeft), `${where}: ${b.tag} starts at the column's content left edge`).toBeLessThanOrEqual(1);
     expect(Math.abs(b.right - m.columnRight), `${where}: ${b.tag} ends at the column's right edge`).toBeLessThanOrEqual(1);
-    expect(b.actionsLeft, `${where}: ${b.tag}'s action row is measured`).not.toBeNull();
-    expect(Math.abs(b.actionsLeft! - b.textLeft), `${where}: ${b.tag}'s controls start at its text`).toBeLessThanOrEqual(1);
+    expect(b.actionsRight, `${where}: ${b.tag}'s action row is measured`).not.toBeNull();
+    expect(Math.abs(b.actionsRight! - b.right), `${where}: ${b.tag}'s controls end at its right edge`).toBeLessThanOrEqual(1);
   }
   const { short, long } = pair(m, where);
   expect(Math.abs(short.width - long.width), `${where}: a one-word bubble is as wide as a long one`).toBeLessThanOrEqual(1);
@@ -111,7 +111,7 @@ async function expectStrip(page: Page, where: string): Promise<void> {
 
 const shoot = async (page: Page, name: string) => test.info().attach(name, { body: await page.screenshot(), contentType: 'image/png' });
 
-// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble spans the column's content box (starts at its left edge, ends at its right edge) and is as wide as any other; its controls start at its text.
+// Invariants: in both themes each prompt bubble has a visible 3px right strip and no left border; at every preset each user bubble spans the column's content box (starts at its left edge, ends at its right edge) and is as wide as any other; its controls end at its right edge.
 /** Desktop: cycles every session width preset, then switches theme for the visual pass. */
 export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name !== 'desktop', 'the width presets are a desktop-layout feature');
@@ -138,7 +138,7 @@ export async function desktopPresetsFlow({ page, cc }: Ctx): Promise<void> {
   await shoot(page, `user-bubble-${wasDark ? 'light' : 'dark'}`);
 }
 
-// Invariants: on a phone each prompt bubble has a visible 3px right strip and no left border, and each user bubble spans the column's content box and is as wide as any other; its controls start at its text.
+// Invariants: on a phone each prompt bubble has a visible 3px right strip and no left border, and each user bubble spans the column's content box and is as wide as any other; its controls end at its right edge.
 /** Drawer viewports: the same geometry in the stacked layout. */
 export async function narrowFlow({ page, cc }: Ctx): Promise<void> {
   test.skip(test.info().project.name === 'desktop', 'the stacked layout is below md');
