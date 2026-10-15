@@ -149,7 +149,7 @@ export type ReaderNode = ThinkingNode | ResultNode | ToolNode | UserNode | Syste
 // ── Rules shared with the old renderer ───────────────────────────────────
 
 // System annotations that END the machinery run (interrupt, process death).
-const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit']);
+const RUN_ENDING_SYSTEM_SUBTYPES = new Set(['soft_interrupted', 'exit', 'crashed']);
 // Account and cache notices, and a background task's notification: one landing after a turn's last
 // item renders below that turn's turn-end row.
 const TURN_TAIL_NOTICES = new Set(['rate_limit_event', 'cache_miss']);
@@ -258,6 +258,11 @@ export class ConversationModel {
   private messageWraps = new Map<string | null, AssistantNode>();
   private reconcileCounts = new Map<string | null, number>();
   private subConvs = new Map<string, ConversationModel>();
+  /**
+   * Root model only: the toolUseIds of backgrounded tasks still running. An outer run-ender does not end
+   * such an agent's run, so its sub-agent's groups stay open until its task_notification or the process dies.
+   */
+  private backgroundTasks = new Set<string>();
   private activeWrap: AssistantNode | null = null;
   private activeThinkingKey: string | null = null;
   /** First assistant wrap before any segment-closer: the merge target for a page spliced above. */
@@ -370,6 +375,7 @@ export class ConversationModel {
     this.messageWraps.clear();
     this.reconcileCounts.clear();
     this.subConvs.clear();
+    this.backgroundTasks.clear();
     this.questionNodes.clear();
     this.answeredQuestions.clear();
     this.planNodes.clear();
@@ -429,6 +435,7 @@ export class ConversationModel {
         this.touch(t);
       }
     }
+    this.root.backgroundTasks.clear();
     this.closeAllActionGroups();
     for (const sub of this.subConvs.values()) sub.finalizeDanglingBlocks();
   }
@@ -673,6 +680,9 @@ export class ConversationModel {
       this.closeAssistantSegment();
       return;
     }
+    this.trackBackgroundTask(ev);
+    // A background task dies with its process.
+    if (ev.subtype === 'exit' || ev.subtype === 'crashed') this.root.backgroundTasks.clear();
     if (RUN_ENDING_SYSTEM_SUBTYPES.has(ev.subtype)) this.closeAllActionGroups();
     if (ev.subtype === 'exit' || ev.subtype === 'crashed') this.failPendingCompaction(null);
     if (this.renderCompactionStatus(ev)) return;
@@ -689,6 +699,27 @@ export class ConversationModel {
     const card = ev.subtype === 'task_notification' && ev.toolUseId ? this.toolBlocks.get(ev.toolUseId) : null;
     const inCard = card?.name === 'Agent' && card.sub != null;
     this.pushRoot(this.make<SystemNode>({ type: 'system', ev, inCard, reader: { open: false } }, this));
+  }
+
+  /** A backgrounded task's start and end: its end (any status) folds its sub-agent's open groups. */
+  private trackBackgroundTask(ev: UiEventOf<'system'>) {
+    const tasks = this.root.backgroundTasks;
+    if (ev.subtype === 'task_started' && ev.data?.is_backgrounded === true && typeof ev.data.tool_use_id === 'string') {
+      tasks.add(ev.data.tool_use_id);
+    } else if (ev.subtype === 'task_notification' && ev.toolUseId) {
+      tasks.delete(ev.toolUseId);
+      this.root.findSub(ev.toolUseId)?.closeAllActionGroups();
+    }
+  }
+
+  private findSub(toolUseId: string): ConversationModel | null {
+    const own = this.subConvs.get(toolUseId);
+    if (own) return own;
+    for (const sub of this.subConvs.values()) {
+      const found = sub.findSub(toolUseId);
+      if (found) return found;
+    }
+    return null;
   }
 
   // ── Assistant envelopes and action groups ─────────────────────────────
@@ -738,7 +769,7 @@ export class ConversationModel {
 
   private closeAllActionGroups() {
     for (const w of new Set(this.messageWraps.values())) this.closeGroup(w);
-    for (const sub of this.subConvs.values()) sub.closeAllActionGroups();
+    for (const [id, sub] of this.subConvs) if (!this.root.backgroundTasks.has(id)) sub.closeAllActionGroups();
   }
 
   private closeAssistantSegment() {

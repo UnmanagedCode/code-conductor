@@ -11,7 +11,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ConversationModel, type AssistantNode, type RootItem } from './model';
-import { FIXTURES, apply, readJsonl, serverModules } from './testkit';
+import { FIXTURES, apply, groupsOf, readJsonl, serverModules, tool, toolResult, turnEnd } from './testkit';
 import { flush, renderModel } from './renderModel';
 import type { UiEvent, UiEventOf } from '@shared/uiEvent';
 
@@ -179,5 +179,73 @@ describe('a background agent\'s report lives only in its card', () => {
     await flush();
     expect(rowOf(r.root, 1).querySelector('[data-fold-body]')!.textContent).toContain(notification(evs, BG[0]).data!.summary);
     for (const n of [2, 3]) expect(rowOf(r.root, n).querySelector('[data-fold-body]')).toBeNull();
+  });
+});
+
+/** The action groups of a sub-agent's transcript, by the Agent card hosting it. */
+const subGroups = (m: ConversationModel, agent: string) =>
+  m.toolBlocks.get(agent)!.sub!.items.filter((i): i is AssistantNode => i.type === 'assistant').flatMap(groupsOf);
+const kinds = (g: ReturnType<typeof groupsOf>[number]) => g.children.map((c) => (c.type === 'tool' ? c.name : c.type));
+
+describe('a backgrounded agent\'s run spans outer run-enders', () => {
+  it('live, a background agent\'s machinery run stays one group across the outer turn\'s end (T7)', () => {
+    const frames = readJsonl(FRAMES);
+    const turn2End = frames.map((f, i) => (f.type === 'result' ? i : -1)).filter((i) => i >= 0)[1];
+    for (const id of [BG[0], BG[2]]) {
+      const at = frames.map((f, i) => (f.parent_tool_use_id === id ? i : -1)).filter((i) => i >= 0);
+      expect(at.some((i) => i < turn2End) && at.some((i) => i > turn2End)).toBe(true);
+    }
+    const m = liveModel();
+    for (const id of [BG[0], BG[2]]) {
+      expect(subGroups(m, id).map(kinds)).toEqual([['thinking', 'Bash', 'thinking']]);
+      expect(subGroups(m, id)[0].open).toBe(false);
+    }
+  });
+
+  const AGENTS = ['agentA', 'agentB', 'agentC'];
+  let n = 0;
+  const child = (agent: string, block: Record<string, unknown>): UiEvent =>
+    ({ kind: 'assistant_message', msgId: `c${++n}`, message: { content: [block] }, parentToolUseId: agent }) as UiEvent;
+  const childThinking = (agent: string) => child(agent, { type: 'thinking', thinking: 'pondering' });
+  const childBash = (agent: string) => child(agent, { type: 'tool_use', id: `${agent}-bash`, name: 'Bash', input: { command: 'ls' } });
+  /** Three agents launched in one turn, each mid-run when the turn ends and when the next prompt arrives. */
+  function interleaved(backgrounded: boolean) {
+    const m = new ConversationModel();
+    const evs: UiEvent[] = [
+      ...AGENTS.flatMap((a, i) => tool('m1', i, a, 'Agent', { result: null, input: { run_in_background: backgrounded } })),
+      ...AGENTS.map((a, i): UiEvent => ({ kind: 'system', subtype: 'task_started', data: { task_id: `task${i}`, tool_use_id: a, is_backgrounded: backgrounded } })),
+      ...AGENTS.map((a) => toolResult({ toolUseId: a, content: 'Async agent launched successfully.' })),
+      ...AGENTS.map(childThinking),
+      ...AGENTS.map(childBash),
+      turnEnd(),
+    ];
+    for (const ev of evs) apply(m, ev);
+    return m;
+  }
+  function onwards(m: ConversationModel) {
+    for (const a of AGENTS) apply(m, toolResult({ toolUseId: `${a}-bash`, content: 'ok', parentToolUseId: a }));
+    for (const a of AGENTS) apply(m, childThinking(a));
+    apply(m, { kind: 'user_echo', text: 'next prompt' });
+    for (const a of AGENTS) apply(m, childThinking(a));
+  }
+
+  for (const subtype of ['exit', 'crashed']) {
+    it(`background agents' runs stay open across a turn end and a new prompt; a process ${subtype} folds them (T8)`, () => {
+      const m = interleaved(true);
+      onwards(m);
+      for (const a of AGENTS) {
+        expect(subGroups(m, a).map(kinds)).toEqual([['thinking', 'Bash', 'thinking', 'thinking']]);
+        expect(subGroups(m, a)[0].open).toBe(true);
+      }
+      apply(m, { kind: 'system', subtype });
+      for (const a of AGENTS) expect(subGroups(m, a)[0].open).toBe(false);
+    });
+  }
+
+  it('a foreground agent\'s run folds at the outer turn\'s end, its notification arriving after (T9)', () => {
+    const m = interleaved(false);
+    for (const a of AGENTS) expect(subGroups(m, a).map((g) => g.open)).toEqual([false]);
+    for (const a of AGENTS) apply(m, { kind: 'system', subtype: 'task_notification', toolUseId: a, data: { status: 'completed', notified: false } });
+    for (const a of AGENTS) expect(subGroups(m, a).map((g) => g.open)).toEqual([false]);
   });
 });

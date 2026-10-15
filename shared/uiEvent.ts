@@ -68,6 +68,7 @@ export interface SystemData {
   request_id?: string;
   task_id?: string | null;
   task_type?: string;
+  is_backgrounded?: boolean;
   tool_use_id?: string;
   patch?: { status?: string };
   tasks?: unknown[];
