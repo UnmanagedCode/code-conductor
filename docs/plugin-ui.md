@@ -26,7 +26,7 @@ Load both in the page's `<head>`:
 
 - These are the only root-relative URLs a plugin page uses (plus the font files the sheet names).
 - Standalone (not in a frame, or not under `/plugins/<id>/`) the bridge does nothing, and both URLs answer 404 from the plugin's own server.
-- **A page served to another origin than cc's** (a deliberately public second listener, see [Part 2](#part-2--security-strongly-recommended)) is never embedded. It loads neither host URL, because that listener's authentication may prompt for them, and relies on its own fallback theme.
+- **A page served to another origin than cc's** (a deliberately public second listener, see [Part 2](#part-2--security-strongly-recommended)) is never embedded. It loads neither host URL: they are root-relative, so they would resolve to its own server, which answers them 404. It relies on its own fallback theme.
 - Wire detail: [docs/plugins.md](plugins.md) → Bridge protocol, Theme stylesheet.
 
 ## Follow the host theme
@@ -295,7 +295,7 @@ npm pkg set private=true --json
 npm pkg set type=module   # only for an ESM backend, as `server.js` below is
 ```
 
-- **`type=module` is for an ESM backend only.** On a CommonJS backend it breaks every `require` (`require is not defined in ES module scope`). Leave it unset there: Vite loads `frontend/vite.config.ts` either way.
+- **`type=module` is for an ESM backend only.** On a CommonJS backend it breaks every `require` (`require is not defined in ES module scope`). Leave it unset there: Vite loads `frontend/vite.config.ts` either way. On a package with no `type` Vite prints a `configLoader: 'native'` warning on every build; it is harmless, and naming the file `vite.config.mts` (and passing it to `--config`) silences it.
 
 The keys it sets (`type` only for an ESM backend), beside the `devDependencies` (and a backend's `dependencies`) already in the file:
 
@@ -717,7 +717,7 @@ app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 - **Loopback only** (see Security): `127.0.0.1`, as above.
 - **Order:** the CSP and `nosniff` middleware first, outside the built check, so API responses, the 404 and the 503 carry them too; then the API routes; then the UI middleware.
 - **No SPA fallback:** an unknown path is a 404, so the host URLs 404 standalone, and routes live in the query string.
-- **Unbuilt:** HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) answer a plain-text 503; every other path answers 404, the API routes and the two host URLs included.
+- **Unbuilt:** HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) answer a plain-text 503; every other path answers 404, the two host URLs included; the API routes and `healthPath` stay up.
 - **An explicit allowlist, not `express.static`.** `ASSET_RE` pins the extension and the name's first character, so `.map` files, dotfiles and `.vite/` (where `build.manifest` writes) never match. It is tested on the decoded path, because `req.path` is not percent-decoded and `%2Emap` would otherwise slip past a suffix check. The match is case-sensitive, so `.MAP` and `.JS.MAP` fail it too. `express.static(dist)` serves all of those and redirects `/assets` to `/assets/`; if you do use it, put the allowlist in front and pass `redirect: false`.
 - **`sendFile(rel, {root: dist, dotfiles: 'deny'})` with a relative name.** An absolute path makes `dotfiles: 'deny'` refuse every checkout that sits under a dot-directory such as `.plugins/` or `.worktrees/` (a 403).
 - **`inside()` resolves per request and caches nothing,** so a symlink in `dist` that leads out of it is refused, and a `dist` that is replaced by a rebuild is followed.
