@@ -19,6 +19,7 @@ import {
   type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
 } from './parser.ts';
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
+import { isNarration, type BlockProbe } from './narration.ts';
 import type { UiEvent } from '../shared/uiEvent.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
 import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
@@ -114,7 +115,7 @@ export function replayPersistedLine(
     seqHint?: number;
     parentToolUseId?: string | null;
     allowSidechain?: boolean;
-    blockCursor?: Map<string, number> | null;
+    blockCursor?: Map<string, BlockCursor> | null;
     pendingSkillLoads?: PendingSkillLoad[] | null;
     planFiles?: PlanFileTracker | null;
   } = {},
@@ -252,15 +253,24 @@ export function replayPersistedLine(
     // would give every block of a fragmented message blockIdx 0, colliding
     // same-type blocks on the UI's `${msgId}:${blockIdx}:${type}` dedup key
     // (two thinking blocks merge into one on replay). `blockCursor` — a
-    // per-file Map(msgId → blocks seen so far) threaded in by the
-    // load*Transcript loops — continues the index across lines so replayed
-    // indices match the live stream's content_block_start indices. Callers
-    // replaying a single line in isolation omit it (per-line indexing).
-    const base = blockCursor?.get(msgId) ?? 0;
-    if (blockCursor && blocks.length) blockCursor.set(msgId, base + blocks.length);
+    // per-file Map(msgId → blocks seen so far, and the last of them) threaded
+    // in by the load*Transcript loops — continues the index across lines so
+    // replayed indices match the live stream's content_block_start indices,
+    // and carries the block before this line's first one so narration
+    // (src/narration.ts) is classified across lines as live classifies it.
+    // Callers replaying a single line in isolation omit it (per-line indexing
+    // and adjacency).
+    const cursor = blockCursor?.get(msgId);
+    const base = cursor?.next ?? 0;
+    let prev = cursor?.prev ?? null;
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
       const blockIdx = base + i;
+      const probe = blockProbe(b);
+      // Live, sub-agent turns arrive as finals-only envelopes that are never
+      // classified, so replay leaves them unclassified too.
+      const narration = !parentToolUseId && isNarration(prev, probe);
+      prev = probe;
       if (!b || typeof b !== 'object') continue;
       if (b.type === 'text') {
         events.push({ kind: 'text_delta', msgId, blockIdx, text: typeof b.text === 'string' ? b.text : '' });
@@ -268,7 +278,7 @@ export function replayPersistedLine(
       } else if (b.type === 'thinking') {
         const text = typeof b.thinking === 'string' ? b.thinking : typeof b.text === 'string' ? b.text : '';
         events.push({ kind: 'thinking_start', msgId, blockIdx });
-        if (text) events.push({ kind: 'thinking_delta', msgId, blockIdx, text });
+        if (text) events.push({ kind: 'thinking_delta', msgId, blockIdx, text, ...(narration ? { narration: true as const } : {}) });
         else events.push({ kind: 'thinking_redacted', msgId, blockIdx });
         events.push({ kind: 'thinking_end', msgId, blockIdx });
       } else if (b.type === 'tool_use') {
@@ -311,10 +321,24 @@ export function replayPersistedLine(
         }
       }
     }
+    if (blockCursor && blocks.length) blockCursor.set(msgId, { next: base + blocks.length, prev });
     return tagAndReturn();
   }
 
   return tagAndReturn();
+}
+
+// Per-msgId replay state threaded across one file's lines by the
+// load*Transcript loops (see replayPersistedLine).
+export interface BlockCursor { next: number; prev: BlockProbe | null }
+
+// What the narration rule reads off a persisted content block.
+function blockProbe(b: WireContentBlock | null | undefined): BlockProbe {
+  if (!b || typeof b !== 'object') return { type: null, text: '' };
+  const text = b.type === 'thinking'
+    ? (typeof b.thinking === 'string' ? b.thinking : typeof b.text === 'string' ? b.text : '')
+    : (typeof b.text === 'string' ? b.text : '');
+  return { type: typeof b.type === 'string' ? b.type : null, text };
 }
 
 // Read a single sub-agent transcript jsonl at
@@ -338,7 +362,7 @@ export async function loadSubAgentTranscript(options: {
   catch (e) { if (errCode(e) === 'ENOENT') return []; throw e; }
   const out: UiEvent[] = [];
   let seq = seqHint;
-  const blockCursor = new Map<string, number>();
+  const blockCursor = new Map<string, BlockCursor>();
   const pendingSkillLoads: PendingSkillLoad[] = [];
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
@@ -462,7 +486,7 @@ export async function replayPersistedText(options: {
   let lastAssistantUsage: { msgId: string | null; usage: PersistedUsage } | null = null;
   let replayedCount = 0;
   let seq = seqHint;
-  const blockCursor = new Map<string, number>();
+  const blockCursor = new Map<string, BlockCursor>();
   const pendingSkillLoads: PendingSkillLoad[] = [];
   const questionAnswers = new QuestionAnswerCorrelator();
   // Its final path is handed back so the live tracker can resume from it.

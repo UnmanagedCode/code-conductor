@@ -172,9 +172,9 @@ describe('assistant envelopes', () => {
 
   it('empty thinking renders as redacted; assistant text finalizes for markdown on text_end', () => {
     const m = new ConversationModel();
-    m.apply({ kind: 'assistant_message', msgId: 'x', message: {} }); // outer envelope: ignored
+    m.apply({ kind: 'assistant_message', msgId: 'x', blockIdx: 0, message: {} }); // outer envelope: ignored
     const sub = new ConversationModel({ isSub: true });
-    sub.apply({ kind: 'assistant_message', msgId: 's', message: { content: [{ type: 'thinking', thinking: '' }] } });
+    sub.apply({ kind: 'assistant_message', msgId: 's', blockIdx: 0, message: { content: [{ type: 'thinking', thinking: '' }] } });
     expect(groupsOf(assistants(sub)[0])[0].children[0]).toMatchObject({ type: 'thinking', redacted: true });
     m.apply({ kind: 'text_delta', msgId: 'm', blockIdx: 0, text: 'see https://example.com' });
     expect(assistants(m)[0].children[0]).toMatchObject({ finalized: false });

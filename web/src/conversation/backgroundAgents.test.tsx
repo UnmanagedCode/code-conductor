@@ -223,7 +223,7 @@ describe('a backgrounded agent\'s run spans outer run-enders', () => {
   const AGENTS = ['agentA', 'agentB', 'agentC'];
   let n = 0;
   const child = (agent: string, block: Record<string, unknown>): UiEvent =>
-    ({ kind: 'assistant_message', msgId: `c${++n}`, message: { content: [block] }, parentToolUseId: agent }) as UiEvent;
+    ({ kind: 'assistant_message', msgId: `c${++n}`, blockIdx: 0, message: { content: [block] }, parentToolUseId: agent }) as UiEvent;
   const childThinking = (agent: string) => child(agent, { type: 'thinking', thinking: 'pondering' });
   const childBash = (agent: string) => child(agent, { type: 'tool_use', id: `${agent}-bash`, name: 'Bash', input: { command: 'ls' } });
   /** Three agents launched in one turn, each mid-run when the turn ends and when the next prompt arrives. */

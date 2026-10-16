@@ -95,7 +95,7 @@ test('B-2: a ring LEADING with assistant_message alone is skipped, not treated a
     const cwd = '/fake/t16b';
     await writeJsonl(cwd, SID, textBlockLines());
     const ring = [
-      { kind: 'assistant_message', msgId: 'mLive', message: { id: 'mLive', role: 'assistant', content: [] }, _seq: 58 },
+      { kind: 'assistant_message', msgId: 'mLive', blockIdx: 0, message: { id: 'mLive', role: 'assistant', content: [] }, _seq: 58 },
       { kind: 'text_end', msgId: 'm0', blockIdx: 7, _seq: 60 },
     ];
     const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });

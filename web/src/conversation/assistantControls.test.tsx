@@ -222,7 +222,7 @@ describe('copy', () => {
     const agent = await show([
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
-      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S1' }, { type: 'text', text: '' }, { type: 'text', text: 'S2' }] } },
+      { kind: 'assistant_message', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S1' }, { type: 'text', text: '' }, { type: 'text', text: 'S2' }] } },
     ]);
     const card = groupsOf(agent.m.items[0] as AssistantNode)[0].children[0] as ToolNode;
     expect((card.sub!.items[0] as AssistantNode).children.filter((c) => c.type === 'text'), "fixture check: the sub-agent's empty block is in its bubble").toHaveLength(3);
@@ -246,7 +246,7 @@ describe('copy', () => {
       ...text('m1', 0, 'A'),
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
-      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
+      { kind: 'assistant_message', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
       ...text('m1', 2, 'B'),
       { kind: 'user_question', toolUseId: 'q1', questions: [{ question: 'QUESTION-MARKER?', header: 'h', options: [{ label: 'x', description: 'y' }, { label: 'z', description: 'w' }] }] },
     ]);
@@ -357,7 +357,7 @@ describe('read-aloud', () => {
       ...text('m1', 0, 'A'),
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
-      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
+      { kind: 'assistant_message', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
       ...text('m1', 2, 'B'),
     ]);
     const card = groupsOf(m.items[0] as AssistantNode)[0].children[0] as ToolNode;
@@ -808,7 +808,7 @@ describe('on the turn-end row', () => {
     const { root } = await show([
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
-      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
+      { kind: 'assistant_message', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
       ...text('m1', 1, 'OUTER'),
       turnEnd(),
     ]);

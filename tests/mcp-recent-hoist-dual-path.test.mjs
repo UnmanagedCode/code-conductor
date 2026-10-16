@@ -39,7 +39,7 @@ function envelopeRing(segments, planRequests = []) {
   const content = segments.map(s => (s.t === 'text'
     ? { type: 'text', text: s.text }
     : { type: 'tool_use', name: s.name, input: s.input, id: s.id }));
-  ring.push({ kind: 'assistant_message', msgId: MSG, message: { content }, _seq: seq++ });
+  ring.push({ kind: 'assistant_message', msgId: MSG, blockIdx: 0, message: { content }, _seq: seq++ });
   return ring;
 }
 
@@ -201,7 +201,7 @@ for (const c of CASES) {
 test('delta-hoisted plan survives a text-only reconciled envelope, WITHOUT a planSeq', () => {
   const m = only([
     { kind: 'tool_use', msgId: MSG, name: 'ExitPlanMode', input: { plan: 'P' }, toolUseId: 'tu1', _seq: 0 },
-    { kind: 'assistant_message', msgId: MSG, message: { content: [{ type: 'text', text: 'prose' }] }, _seq: 1 },
+    { kind: 'assistant_message', msgId: MSG, blockIdx: 0, message: { content: [{ type: 'text', text: 'prose' }] }, _seq: 1 },
   ]);
   assert.equal(m.plan, 'P', 'plan/planPath/questions are SHARED across the two passes');
   assert.equal(m.planSeq, undefined, 'the seq counters are NOT shared — the reconciled pass never hoisted');
@@ -215,7 +215,7 @@ test('delta-hoisted plan survives a text-only reconciled envelope, WITHOUT a pla
 test('an unhoistable ExitPlanMode still lands in blocks[] even when plan is already set', () => {
   const m = only([
     { kind: 'tool_use', msgId: MSG, name: 'ExitPlanMode', input: { plan: 'P' }, toolUseId: 'tu1', _seq: 0 },
-    { kind: 'assistant_message', msgId: MSG, message: { content: [{ type: 'tool_use', name: 'ExitPlanMode', input: {}, id: 'tu2' }] }, _seq: 1 },
+    { kind: 'assistant_message', msgId: MSG, blockIdx: 0, message: { content: [{ type: 'tool_use', name: 'ExitPlanMode', input: {}, id: 'tu2' }] }, _seq: 1 },
   ]);
   assert.equal(m.plan, 'P');
   assert.deepEqual(m.blocks, [{ type: 'tool_use', name: 'ExitPlanMode', input: {}, toolUseId: 'tu2' }],
@@ -229,7 +229,7 @@ test('an unhoistable ExitPlanMode still lands in blocks[] even when plan is alre
 test('a delta text block recovered under a reconciled plan gets textSeq -1', () => {
   const m = only([
     { kind: 'text_delta', msgId: MSG, blockIdx: 0, text: 'streamed prose', _seq: 0 },
-    { kind: 'assistant_message', msgId: MSG, message: { content: [{ type: 'tool_use', name: 'ExitPlanMode', input: { plan: 'P' }, id: 'tu1' }] }, _seq: 1 },
+    { kind: 'assistant_message', msgId: MSG, blockIdx: 0, message: { content: [{ type: 'tool_use', name: 'ExitPlanMode', input: { plan: 'P' }, id: 'tu1' }] }, _seq: 1 },
   ]);
   assert.equal(m.text, 'streamed prose');
   assert.equal(m.textSeq, -1, 'pinned below any reconciled-counter position');

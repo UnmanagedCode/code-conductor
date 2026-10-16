@@ -151,6 +151,73 @@ test('parser: thinking deltas tracked separately from text', async () => {
   assert.equal(textEnds.length, 1);
 });
 
+// ── narration (src/narration.ts) ─────────────────────────────────────────
+const narrationStdout = async () =>
+  (await fs.readFile(path.join(FX, 'narration', 'claude-narration.stdout.jsonl'), 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+
+test('parser: every delta of a thinking block straight after a redacted one carries narration:true; its neighbours are unchanged', async () => {
+  const p = new Parser();
+  const events = (await narrationStdout()).flatMap(l => p.handleObject(l));
+  const block = (idx) => events.filter(e => 'blockIdx' in e && e.blockIdx === idx && e.kind.startsWith('thinking_'));
+
+  const narration = block(1).filter(e => e.kind === 'thinking_delta');
+  assert.ok(narration.length > 1, 'the narration block streams several deltas');
+  assert.deepEqual(narration.map(e => e.narration), narration.map(() => true), 'every delta is flagged');
+
+  assert.deepEqual(block(0).map(e => e.kind), ['thinking_start', 'thinking_redacted', 'thinking_end'],
+    'the redacted predecessor still emits its placeholder and end');
+  assert.equal(block(0).some(e => 'narration' in e), false);
+  const start = block(1).find(e => e.kind === 'thinking_start');
+  assert.ok(start, 'the narration block opens with thinking_start');
+  assert.equal('narration' in start, false, 'thinking_start is unflagged');
+  assert.equal(block(1).at(-1).kind, 'thinking_end');
+});
+
+test('parser: each assistant envelope carries the message-level index of its first block', async () => {
+  const p = new Parser();
+  const env = (id, content, parent = null) => ({ type: 'assistant', parent_tool_use_id: parent, message: { id, content } });
+  const stamps = (frames) => frames.flatMap(f => p.handleObject(f)).filter(e => e.kind === 'assistant_message').map(e => [e.msgId, e.blockIdx]);
+  // One envelope per block (the real capture): 0, 1, 2.
+  assert.deepEqual(stamps(await narrationStdout()), [['msg_011Cg4aZkEcqTrXhBFw7EJnj', 0], ['msg_011Cg4aZkEcqTrXhBFw7EJnj', 1], ['msg_011Cg4aZkEcqTrXhBFw7EJnj', 2]]);
+  assert.deepEqual(stamps([
+    env('m2', [{ type: 'thinking', thinking: 'a' }, { type: 'text', text: 'b' }]), // one envelope for two blocks
+    env('m2', [{ type: 'text', text: 'c' }]),
+    env('s1', [{ type: 'text', text: 'sub' }], 'tuA'), // a sub-agent counts on its own
+    env('m2', [{ type: 'text', text: 'd' }]),
+    env('m3', [{ type: 'text', text: 'e' }]), // a new message starts again at 0
+  ]), [['m2', 0], ['m2', 2], ['s1', 0], ['m2', 3], ['m3', 0]]);
+});
+
+test('parser: a thinking block with text after a text or tool_use block is not narration', async (t) => {
+  const se = (event) => ({ type: 'stream_event', event });
+  const thinkingBlock = (index) => [
+    se({ type: 'content_block_start', index, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+    se({ type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: 'a progress note' } }),
+    se({ type: 'content_block_stop', index }),
+  ];
+  const predecessors = {
+    text: [
+      se({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      se({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } }),
+      se({ type: 'content_block_stop', index: 0 }),
+    ],
+    tool_use: [
+      se({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Bash', input: {} } }),
+      se({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } }),
+      se({ type: 'content_block_stop', index: 0 }),
+    ],
+  };
+  for (const [label, prev] of Object.entries(predecessors)) {
+    await t.test(label, () => {
+      const p = new Parser();
+      const frames = [se({ type: 'message_start', message: { id: 'm1', usage: { input_tokens: 1 } } }), ...prev, ...thinkingBlock(1)];
+      const deltas = frames.flatMap(f => p.handleObject(f)).filter(e => e.kind === 'thinking_delta');
+      assert.equal(deltas.length, 1);
+      assert.equal('narration' in deltas[0], false);
+    });
+  }
+});
+
 // ── rate_limit_event ─────────────────────────────────────────────────────
 test('parser: rate_limit_event with nested isUsingOverage passes through as system', () => {
   const p = new Parser();

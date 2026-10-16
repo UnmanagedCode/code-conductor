@@ -71,7 +71,7 @@ describe('ConversationModel', () => {
   it('routes sub-agent events into the Agent tool and parks those whose parent is not rendered', () => {
     const m = new ConversationModel();
     m.applyEvents(tool('m1', 'agent1', 'Agent', { description: 'x' }));
-    m.apply({ kind: 'assistant_message', msgId: 's1', parentToolUseId: 'agent1', message: { content: [{ type: 'text', text: 'from the sub-agent' }] } });
+    m.apply({ kind: 'assistant_message', msgId: 's1', blockIdx: 0, parentToolUseId: 'agent1', message: { content: [{ type: 'text', text: 'from the sub-agent' }] } });
     const agent = m.toolBlocks.get('agent1')!;
     expect(agent.sub?.items[0]).toMatchObject({ type: 'assistant' });
     m.apply({ kind: 'user_echo', text: 'child', parentToolUseId: 'unknown' });

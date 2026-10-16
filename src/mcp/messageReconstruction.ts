@@ -15,6 +15,7 @@ import { loadPersistedTranscript } from '../transcript.ts';
 import { stampArchiveEvents } from '../eventArchive.ts';
 import type { InstanceLike } from '../instanceTypes.ts';
 import { isOuterUserEcho } from '../parser.ts';
+import { isNarration, type BlockProbe } from '../narration.ts';
 import type { UiEvent } from '../../shared/uiEvent.ts';
 import { normalizeQuestions, type Question } from '../../shared/userQuestionAnswers.ts';
 
@@ -77,9 +78,13 @@ export interface ReconMessage {
   plan?: string;
   planPath?: string;
   questions?: Question[];
+  // The message's narration blocks (src/narration.ts), each trimmed, joined by
+  // a blank line. Never in blocks[] and never gated by includeThinking.
+  narration?: string;
   textSeq?: number;
   planSeq?: number;
   questionsSeq?: number;
+  narrationSeq?: number;
 }
 
 // Reconstruct ordered assistant messages from an event array (ring or disk-
@@ -111,7 +116,8 @@ export function reconstructMessages(events: UiEvent[], includeThinking: boolean)
     if (ev.parentToolUseId) continue; // ignore sub-agent content
     if (!('msgId' in ev) || !ev.msgId) continue;
     if (ev.kind !== 'text_delta' && ev.kind !== 'text_end'
-        && ev.kind !== 'assistant_message' && ev.kind !== 'tool_use') continue;
+        && ev.kind !== 'assistant_message' && ev.kind !== 'tool_use'
+        && !(ev.kind === 'thinking_delta' && ev.narration)) continue;
     if (seen.has(ev.msgId)) continue;
     seen.add(ev.msgId);
     reverseIds.push(ev.msgId);
@@ -197,9 +203,9 @@ function describeToolInput(input: Record<string, unknown> | null | undefined): {
 // ceiling: even a pathological input with dozens of keys can only ever grow the
 // descriptor to what today's single cap already allowed.
 //
-// A thinking block is unchanged on both paths — includeThinking already gates it,
-// and its text is prose through the same cap as message text, not JSON-escaped
-// tool arguments.
+// A thinking block is unchanged on both paths — includeThinking already gates it
+// (narration never reaches blocks[]), and its text is prose through the same cap
+// as message text, not JSON-escaped tool arguments.
 //
 // `cap` lowers that ceiling for get_recent_messages' result-budget fit only.
 export function capBlockInput(b: ReconBlockOut, verbatim: boolean, cap = MSG_TEXT_CAP) {
@@ -218,6 +224,11 @@ export function capBlockInput(b: ReconBlockOut, verbatim: boolean, cap = MSG_TEX
     return { type: 'thinking', text, inputTruncated: truncated };
   }
   return b;
+}
+
+// A reconstructed message carries prose for the reader: text, or narration.
+function hasProse(m: ReconMessage): boolean {
+  return (m.text ?? '').length > 0 || !!m.narration;
 }
 
 // A reconstructed message carries an actionable plan or questions (hoisted from
@@ -314,7 +325,7 @@ export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: TurnIndex):
   const lastIdx = filtered.length - 1;
   const last = filtered[lastIdx];
   if (!last) return filtered;
-  const lastIsPureProse = !hasPlanOrQuestions(last) && (last.text ?? '').length > 0;
+  const lastIsPureProse = !hasPlanOrQuestions(last) && hasProse(last);
   if (!lastIsPureProse) return [last];
   const lastFirstSeq = ringTurn.firstSeqByMsgId.get(last.msgId);
   if (lastFirstSeq == null) return [last]; // last off-ring (shouldn't happen) — no bond
@@ -351,6 +362,7 @@ interface SegmentSeqs {
   textSeq: number | null;
   planSeq: number | null;
   questionsSeq: number | null;
+  narrationSeq: number | null;
 }
 
 // Hoist an ExitPlanMode / AskUserQuestion tool_use out of a message's blocks[]
@@ -403,7 +415,12 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
   const blockOrder: number[] = [];
   const otherBlocks: ReconBlockOut[] = []; // tool_use blocks etc, for context
   let hasToolUse = false;
-  let assistantContent: ReconBlock[] | null = null; // content blocks merged across all assistant_message envelopes for this msgId
+  // Content blocks merged across all assistant_message envelopes for this
+  // msgId, in arrival order, each with its message-level index (the envelope's
+  // blockIdx plus its position in that envelope) — null when the envelope
+  // carries no finite blockIdx, which leaves its blocks without a reconciled
+  // narration verdict.
+  let assistantContent: Array<{ idx: number | null; block: ReconBlock }> | null = null;
   // SHARED across both passes below — the delta pass writes these first and the
   // reconciled pass, if it runs, writes into the same object.
   const hoist: HoistTarget = { plan: null, planPath: null, questions: null };
@@ -411,7 +428,11 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
   // the body renderer (handlers.ts) can interleave prose/plan/questions in the
   // order the underlying blocks actually occurred instead of hardcoding
   // "prose then plan" — set once, at each segment's first occurrence.
-  const d: SegmentSeqs = { next: 0, textSeq: null, planSeq: null, questionsSeq: null };
+  const d: SegmentSeqs = { next: 0, textSeq: null, planSeq: null, questionsSeq: null, narrationSeq: null };
+  // Narration as the delta stream flagged it (the live parser, or transcript
+  // replay), by blockIdx in arrival order — the only source for disk-replayed
+  // events, which carry no assistant_message.
+  const narrationByBlock = new Map<number, string>();
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (!('msgId' in ev) || ev.msgId !== targetMsgId) continue;
@@ -423,6 +444,9 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
         if (d.textSeq === null) d.textSeq = d.next++;
       }
       byBlock.set(idx, (byBlock.get(idx) ?? '') + (ev.text ?? ''));
+    } else if (ev.kind === 'thinking_delta' && ev.narration) {
+      if (d.narrationSeq === null) d.narrationSeq = d.next++;
+      narrationByBlock.set(ev.blockIdx, (narrationByBlock.get(ev.blockIdx) ?? '') + ev.text);
     } else if (ev.kind === 'tool_use') {
       hasToolUse = true;
       if (!hoistPlanAndQuestions(ev.name, ev.input, ev.toolUseId, planPaths, hoist, d)) {
@@ -430,7 +454,10 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
       }
     } else if (ev.kind === 'assistant_message') {
       const content = ev.message?.content;
-      if (Array.isArray(content) && content.length) (assistantContent ??= []).push(...content as ReconBlock[]);
+      if (Array.isArray(content) && content.length) {
+        const base = Number.isFinite(ev.blockIdx) ? ev.blockIdx : null;
+        (assistantContent ??= []).push(...(content as ReconBlock[]).map((block, i) => ({ idx: base === null ? null : base + i, block })));
+      }
     }
   }
   // If reconciled assistant_message envelopes arrived (real CLI), they're the
@@ -445,9 +472,20 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
     const blocks: ReconBlockOut[] = [];
     // A FRESH counter — the delta pass's positions live on `d` and are never
     // comparable by value against these.
-    const r: SegmentSeqs = { next: 0, textSeq: null, planSeq: null, questionsSeq: null };
-    for (const block of assistantContent) {
-      if (block?.type === 'text' && typeof block.text === 'string') {
+    const r: SegmentSeqs = { next: 0, textSeq: null, planSeq: null, questionsSeq: null, narrationSeq: null };
+    const narrationParts: string[] = [];
+    // Adjacency is by block index, never by position in the merged list: an
+    // envelope the ring dropped leaves a gap, and a block across that gap is
+    // not the one immediately before.
+    const byIdx = new Map<number, ReconBlock>();
+    for (const { idx, block } of assistantContent) if (idx !== null) byIdx.set(idx, block);
+    for (const { idx, block } of assistantContent) {
+      const probe = reconProbe(block);
+      const prevBlock = idx === null ? undefined : byIdx.get(idx - 1);
+      if (isNarration(prevBlock && reconProbe(prevBlock), probe)) {
+        narrationParts.push(probe.text);
+        if (r.narrationSeq === null) r.narrationSeq = r.next++;
+      } else if (block?.type === 'text' && typeof block.text === 'string') {
         textParts.push(block.text);
         if (r.textSeq === null) r.textSeq = r.next++;
       } else if (block?.type === 'tool_use') {
@@ -470,14 +508,22 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
     // which — per the arrival-order comment above — always finalizes before
     // any block a reconciled envelope in THIS pass reports on.
     if (!text) { text = blockOrder.map(idx => byBlock.get(idx) ?? '').join(''); if (text) r.textSeq = -1; }
+    // The same never-regress rule for narration, for the same reason (e.g. the
+    // redacted predecessor's envelope evicted from the ring while the deltas
+    // survived) and with the same -1 pin.
+    let narration = joinNarration(narrationParts);
+    if (!narration) { narration = joinNarration([...narrationByBlock.values()]); if (narration) r.narrationSeq = -1; }
     return { msgId: targetMsgId, text, ...(blocks.length ? { blocks } : {}), hasToolUse,
       ...(hoist.plan ? { plan: hoist.plan } : {}),
       ...(hoist.planPath ? { planPath: hoist.planPath } : {}),
       ...(hoist.questions ? { questions: hoist.questions } : {}),
       ...(r.textSeq !== null ? { textSeq: r.textSeq } : {}),
       ...(r.planSeq !== null ? { planSeq: r.planSeq } : {}),
-      ...(r.questionsSeq !== null ? { questionsSeq: r.questionsSeq } : {}) };
+      ...(r.questionsSeq !== null ? { questionsSeq: r.questionsSeq } : {}),
+      ...(narration ? { narration } : {}),
+      ...(narration && r.narrationSeq !== null ? { narrationSeq: r.narrationSeq } : {}) };
   }
+  const narration = joinNarration([...narrationByBlock.values()]);
   const text = blockOrder.map(idx => byBlock.get(idx) ?? '').join('');
   return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse,
     ...(hoist.plan ? { plan: hoist.plan } : {}),
@@ -485,5 +531,20 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
     ...(hoist.questions ? { questions: hoist.questions } : {}),
     ...(d.textSeq !== null ? { textSeq: d.textSeq } : {}),
     ...(d.planSeq !== null ? { planSeq: d.planSeq } : {}),
-    ...(d.questionsSeq !== null ? { questionsSeq: d.questionsSeq } : {}) };
+    ...(d.questionsSeq !== null ? { questionsSeq: d.questionsSeq } : {}),
+    ...(narration ? { narration } : {}),
+    ...(narration && d.narrationSeq !== null ? { narrationSeq: d.narrationSeq } : {}) };
+}
+
+// What the narration rule reads off a reconciled envelope block.
+function reconProbe(block: ReconBlock | null | undefined): BlockProbe {
+  const type = typeof block?.type === 'string' ? block.type : null;
+  const raw = type === 'thinking' ? block?.thinking : block?.text;
+  return { type, text: typeof raw === 'string' ? raw : '' };
+}
+
+// A message's narration field: each block trimmed, empties dropped, joined by a
+// blank line.
+function joinNarration(parts: string[]): string {
+  return parts.map(p => p.trim()).filter(Boolean).join('\n\n');
 }

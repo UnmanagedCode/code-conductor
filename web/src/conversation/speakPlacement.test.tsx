@@ -233,7 +233,7 @@ describe('read-aloud placement', () => {
       ...text('m1', 0, 'A'),
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 1, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
-      { kind: 'assistant_message', msgId: 'ms', parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
+      { kind: 'assistant_message', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'S' }] } },
       ...text('m1', 2, 'B'),
     ]);
     const outer = bubbles(root)[0];
