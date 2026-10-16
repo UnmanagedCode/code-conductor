@@ -640,7 +640,7 @@ tokens; each row has **Edit** (loads the shared form with backend and model id l
 (which reveals the shared backend/model pickers), a **default-effort select** whose
 first option reads `Inherit (<level>)` — the payload's `inheritsTo`, so a row is
 never opaque about what it will run at — a name-only add form for custom roles, an
-`×` remove on user rows, and a badge naming the plugin on plugin rows. A plugin role's
+`×` remove on user rows, and a badge naming the plugin, on its own line under the role name, on plugin rows. A plugin role's
 effort is user-settable like its binding, persisted under `models.roleEffort` by the
 namespaced id.
 
@@ -665,7 +665,8 @@ form follows the width of its list, not the viewport or the sidebar.
   `WIDE.role` breakpoint a row is one line (name, binding, and for a **Custom** binding the
   backend, model and effort); below it the name takes its own line and the selects wrap in two
   columns. A user role's `×` remove sits on the name line when narrow and at the row's end
-  when wide.
+  when wide. A plugin role's chip takes its own line under the name, so the name keeps the label
+  column's full width; a long name or plugin id truncates.
 - **The model/effort pair.** Model and effort are wrapped together in one `[data-field-pair]`
   element (`BackendPicker`), which goes `display: contents` on a one-line row. A tier-bound role
   has no model select, so its effort stands alone and no pair is emitted.

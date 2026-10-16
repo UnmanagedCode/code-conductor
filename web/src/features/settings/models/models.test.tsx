@@ -354,6 +354,46 @@ describe('Models → role effort', () => {
   });
 });
 
+describe('Models → role label', () => {
+  const tier = { kind: 'tier', tier: 'powerful', model: '' } as const;
+  const data: ModelsPayload = {
+    ...PICK,
+    roles: [
+      { role: 'conductor', label: 'Conductor', builtin: true },
+      { role: 'code-dialectic/dialectician', label: 'Dialectician', plugin: 'code-dialectic' },
+      { role: 'tester' },
+    ],
+    roleBackend: { conductor: tier, 'code-dialectic/dialectician': tier, tester: tier },
+  };
+  const row = (role: string) => document.querySelector(`li[data-role="${role}"]`) as HTMLElement;
+  const wrapperOf = (role: string) => row(role).querySelector('[data-role-label]') as HTMLElement | null;
+
+  // A plugin role's chip is the name's next sibling inside the label block; a chipless role's block holds only its name, and the remove button stays outside it.
+  it("a plugin role's chip is its own block under the name, and a chipless role's label block holds only its name", () => {
+    mockFetch({ 'GET /api/settings/spawn': () => ({}) });
+    show(data);
+    const wrapper = wrapperOf('code-dialectic/dialectician');
+    expect(wrapper).not.toBeNull();
+    const chips = row('code-dialectic/dialectician').querySelectorAll('[data-role-plugin]');
+    expect(chips).toHaveLength(1);
+    const chip = chips[0];
+    const kids = [...wrapper!.children];
+    expect(kids).toHaveLength(2);
+    expect(kids[0].textContent).toBe('Dialectician');
+    expect(kids[1] === chip).toBe(true);
+    expect(chip.textContent).toBe('code-dialectic');
+    expect(chip.parentElement === wrapper).toBe(true);
+    for (const role of ['conductor', 'tester']) {
+      const w = wrapperOf(role);
+      expect(w).not.toBeNull();
+      expect(w!.children).toHaveLength(1);
+      expect(row(role).querySelector('[data-role-plugin]')).toBeNull();
+    }
+    const removes = within(row('tester')).getAllByLabelText('Remove role tester');
+    for (const remove of removes) expect(wrapperOf('tester')!.contains(remove)).toBe(false);
+  });
+});
+
 describe('Models → Conductor session', () => {
   const sw = () => screen.getByRole('switch', { name: 'Override the compact window for the Conduct session' });
   const slider = () => screen.queryByLabelText('Window') as HTMLInputElement | null;

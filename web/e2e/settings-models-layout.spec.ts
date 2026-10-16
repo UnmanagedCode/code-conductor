@@ -1,8 +1,9 @@
 // Settings → Models layout in the web UI across viewports and the sidebar's
 // widths: nothing overflows, the selected model reads, every select is
 // captioned, every control is tappable, and the Settings nav changes form with
-// its column. The DOM this rests on is
-// web/src/features/settings/models/fieldLabels.test.tsx.
+// its column; a plugin role's name shows in full above its chip. The DOM this
+// rests on is web/src/features/settings/models/fieldLabels.test.tsx, and
+// models.test.tsx → "Models → role label" is the plugin-chip structure's twin.
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { api } from './harness/api.ts';
@@ -14,6 +15,23 @@ const LONG_LABEL = 'MyVeryLongLocalModelLabelForLayoutTesting';
 // A user role on a Claude model: a role row whose model select must read.
 const READ_ROLE = 'tester';
 const EPS = 0.5;
+const PLUGIN_ROLE = 'code-dialectic/dialectician';
+const LONG_PLUGIN_ROLE = 'long-plugin/worker';
+
+type ModelsBody = { roles: { role: string; label?: string; plugin?: string }[]; roleBackend: Record<string, unknown> };
+// Two tier-bound plugin roles: the common chip and a plugin id too long to fit.
+function withPluginRoles<T extends ModelsBody>(body: T): T {
+  const bound = { kind: 'tier', tier: 'powerful' };
+  return {
+    ...body,
+    roles: [
+      ...body.roles,
+      { role: PLUGIN_ROLE, label: 'Dialectician', plugin: 'code-dialectic' },
+      { role: LONG_PLUGIN_ROLE, label: 'Worker', plugin: 'extremely-long-plugin-identifier-for-layout-testing' },
+    ],
+    roleBackend: { ...body.roleBackend, [PLUGIN_ROLE]: bound, [LONG_PLUGIN_ROLE]: bound },
+  };
+}
 
 // SIDEBAR_WIDTH_STORAGE_KEY (web/src/features/sidebar/derive.ts) and the
 // clamp's min, default and max (derive.ts); `settle` checks each one lands.
@@ -51,7 +69,7 @@ test.beforeAll(async ({ cc }) => {
   await post('/api/settings/models/roles', { role: READ_ROLE });
   await post('/api/settings/models/prefs', { roleBackend: { role: READ_ROLE, backend: { backend: 'claude', model: 'claude-sonnet-5-5' } } });
   type Bound = { kind?: string; backend?: string; model?: string };
-  const m = (await api<{ tiers: { tier: string }[]; tierBackend: Record<string, Bound>; roles: { role: string; builtin?: boolean; plugin?: string }[]; roleBackend: Record<string, Bound> }>(cc, 'GET', '/api/settings/models')).body;
+  const m = withPluginRoles((await api<{ tiers: { tier: string }[]; tierBackend: Record<string, Bound>; roles: { role: string; builtin?: boolean; plugin?: string }[]; roleBackend: Record<string, Bound> }>(cc, 'GET', '/api/settings/models')).body);
   const custom = (role: string) => m.roleBackend[role]?.kind !== 'tier';
   TIERS = m.tiers.length;
   SELECTS = TIERS * 3 + m.roles.reduce((n, r) => n + (custom(r.role) ? 4 : 2), 0);
@@ -155,6 +173,7 @@ function layout(eps: number): Layout {
 /** Waits for the rows, the web font and two frames; checks the sidebar is the width the point names. */
 async function settle(page: Page, p: Point): Promise<void> {
   await expect(page.locator(`[data-role="${LONG_ROLE}"] select[aria-label^="Model for"]`)).toBeVisible();
+  await expect(page.locator(`[data-role="${PLUGIN_ROLE}"] [data-role-plugin]`)).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.evaluate(() => document.fonts.ready.then(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))));
   if (p.sidebar !== null) {
@@ -167,9 +186,19 @@ async function seedSidebar(page: Page, width: number): Promise<void> {
   await page.reload();
 }
 
+/** Rewrites the page's Models GET to carry the plugin roles; every other method passes through. */
+async function routePluginRoles(page: Page): Promise<void> {
+  await page.route('**/api/settings/models', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    return route.fulfill({ response, json: withPluginRoles(await response.json()) });
+  });
+}
+
 /** Lays Settings → Models out at each swept point and hands each to `visit`. */
 async function sweep(page: Page, visit: (p: Point) => Promise<void>): Promise<void> {
   const height = page.viewportSize()!.height;
+  await routePluginRoles(page);
   await page.goto('/#settings/models');
   let seeded: number | null = null;
   for (const p of points()) {
@@ -245,12 +274,36 @@ test.describe('Settings → Models layout', () => {
     });
   });
 
+  // A plugin role's name is not truncated and its chip sits below it, left-aligned, wherever the column is at least a 320px phone's.
+  test("a plugin role's name shows in full above its chip, left-aligned with it, wherever the Models column is at least as wide as on a 320px phone", async ({ page }) => {
+    let floor: number | null = null;
+    await sweep(page, async (p) => {
+      const m = await page.evaluate(layout, EPS);
+      if (p.viewport === 320) floor = m.section.width;
+      expect(floor, 'the sweep starts at 320px').not.toBeNull();
+      if (m.section.width < floor! - EPS) return;
+      const g = await page.evaluate((role) => {
+        const row = document.querySelector(`[data-role="${role}"]`)!;
+        const name = row.querySelector('[data-role-label] > :first-child')!;
+        const chip = row.querySelector('[data-role-plugin]')!;
+        const n = name.getBoundingClientRect();
+        const c = chip.getBoundingClientRect();
+        return { text: name.textContent, truncated: name.scrollWidth - name.clientWidth, nameBottom: n.bottom, nameLeft: n.left, chipTop: c.top, chipLeft: c.left };
+      }, PLUGIN_ROLE);
+      expect(g.text).toBe('Dialectician');
+      expect(g.truncated, `${at(p)}: the name is truncated`).toBeLessThanOrEqual(0);
+      expect(g.chipTop, `${at(p)}: the chip is not below the name`).toBeGreaterThanOrEqual(g.nameBottom - EPS);
+      expect(Math.abs(g.chipLeft - g.nameLeft), `${at(p)}: the chip is not left-aligned with the name`).toBeLessThanOrEqual(EPS);
+    });
+  });
+
   // The nav is beside the content at the widest column and above it at the narrowest; every link is hit-testable and navigates.
   test('the Settings nav sits beside the content where the column has room and above it where it has not, and every section link is reachable in both forms', async ({ page }) => {
     const cases: (Point & { form: 'beside' | 'above' })[] = test.info().project.name === 'desktop'
       ? [{ viewport: 1920, sidebar: 220, form: 'beside' }, { viewport: 768, sidebar: 560, form: 'above' }]
       : [{ viewport: 412, sidebar: null, form: 'above' }];
     const height = page.viewportSize()!.height;
+    await routePluginRoles(page);
     await page.goto('/#settings/models');
     for (const c of cases) {
       await page.setViewportSize({ width: c.viewport, height });

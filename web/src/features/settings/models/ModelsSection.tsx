@@ -287,8 +287,14 @@ function RolesCard({ data }: { data: ModelsPayload }) {
           return (
             <li key={r.role} data-role={r.role} className="flex flex-wrap items-center gap-2 py-3 first:pt-0 last:pb-0">
               <div className="flex w-full min-w-0 items-center gap-2 @min-[43rem]:w-36">
-                <span className="truncate text-sm font-medium">{label}</span>
-                {r.plugin && <Badge variant="plan" className="shrink-0">{r.plugin}</Badge>}
+                <div data-role-label className="flex min-w-0 flex-col items-start gap-1">
+                  <span className="max-w-full truncate text-sm font-medium">{label}</span>
+                  {r.plugin && (
+                    <Badge data-role-plugin variant="plan" className="max-w-full">
+                      <span className="truncate">{r.plugin}</span>
+                    </Badge>
+                  )}
+                </div>
                 {isUser && (
                   <Button variant="ghost" size="icon-sm" className="ml-auto size-7 text-muted-foreground @min-[43rem]:hidden" aria-label={`Remove role ${r.role}`} onClick={() => void removeRole(r.role)}>
                     <XIcon className="size-3.5" />
