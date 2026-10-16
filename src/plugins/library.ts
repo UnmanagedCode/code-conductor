@@ -83,7 +83,7 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
   {
     id: 'code-share',
     name: 'Code Share',
-    description: 'Share code snippets and sync files between conductor projects.',
+    description: 'Peer-to-peer, read-only Git repo sharing: serve selected projects over LAN or a tunnel and pull-only sync from peers.',
     repo: 'https://github.com/UnmanagedCode/code-share',
     postClone: 'npm install',
     postPull: 'npm install',
