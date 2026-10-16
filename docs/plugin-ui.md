@@ -107,7 +107,7 @@ What cc runs on Library **Install** and **Update**:
 - A failed hook is a warning, not an error: the clone or pull stays. Update is the retry. A failed `postPull` skips the restart.
 - **Start anyway when the UI is not built.** The plugin can still be started after a failed or skipped build, and nothing in cc tells the user the entry file is missing. Have the backend start regardless, log the missing entry file, and keep the API and `healthPath` up.
   - **HTML entry pages** (`/`, `/index.html`, any other `.html` the plugin serves) answer a readable plain-text 503 that says to build or reinstall.
-  - **Every other path answers 404,** the two host URLs included, so the standalone 404 rule below holds while unbuilt.
+  - **Every other non-API path answers 404,** the two host URLs included, so the standalone 404 rule below holds while unbuilt.
   - Example: [Serving](#serving-frontenddist-from-the-backend).
 - The hook is bounded by `POST_HOOK_TIMEOUT_MS` (`src/plugins/library.ts`).
 - Leave nothing in the checkout that an incoming commit can collide with: Update's `git pull --ff-only` aborts when an incoming commit touches a path the hook left modified, or adds a path the hook left untracked. Untrack or ignore anything the hook writes.
@@ -687,7 +687,7 @@ app.use(express.json());
 // …the plugin's API routes, under /api…
 
 // The UI. While it is unbuilt, HTML entry pages (an allowlisted .html path; `/` is index.html) answer 503
-// and every other path falls through to the 404.
+// and every other non-API path falls through to the 404.
 app.use((req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
   let p;
@@ -717,7 +717,7 @@ app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 - **Loopback only** (see Security): `127.0.0.1`, as above.
 - **Order:** the CSP and `nosniff` middleware first, outside the built check, so API responses, the 404 and the 503 carry them too; then the API routes; then the UI middleware.
 - **No SPA fallback:** an unknown path is a 404, so the host URLs 404 standalone, and routes live in the query string.
-- **Unbuilt:** HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) answer a plain-text 503; every other path answers 404, the two host URLs included; the API routes and `healthPath` stay up.
+- **Unbuilt:** HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) answer a plain-text 503; every other non-API path answers 404, the two host URLs included; the API routes and `healthPath` stay up.
 - **An explicit allowlist, not `express.static`.** `ASSET_RE` pins the extension and the name's first character, so `.map` files, dotfiles and `.vite/` (where `build.manifest` writes) never match. It is tested on the decoded path, because `req.path` is not percent-decoded and `%2Emap` would otherwise slip past a suffix check. The match is case-sensitive, so `.MAP` and `.JS.MAP` fail it too. `express.static(dist)` serves all of those and redirects `/assets` to `/assets/`; if you do use it, put the allowlist in front and pass `redirect: false`.
 - **`sendFile(rel, {root: dist, dotfiles: 'deny'})` with a relative name.** An absolute path makes `dotfiles: 'deny'` refuse every checkout that sits under a dot-directory such as `.plugins/` or `.worktrees/` (a 403).
 - **`inside()` resolves per request and caches nothing,** so a symlink in `dist` that leads out of it is refused, and a `dist` that is replaced by a rebuild is followed.
@@ -730,7 +730,7 @@ app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
   - resolve each file's real path against the real path of `dist` on every request;
   - answer every other path with a 404, never `index.html`;
   - set the CSP and `nosniff` on every response, whatever its status;
-  - while `index.html` is missing, answer HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) with a plain-text 503 and every other path with a 404, and keep the API and `healthPath` up.
+  - while `index.html` is missing, answer HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) with a plain-text 503 and every other non-API path with a 404, and keep the API and `healthPath` up.
 - `$PORT`, `healthPath` and the rest of the backend contract: [docs/plugins.md](plugins.md) → Plugin-compliance checklist (`<cc-checkout>/docs/plugins.md`, or `https://github.com/UnmanagedCode/code-conductor/blob/main/docs/plugins.md`).
 
 ## Reference checks
@@ -738,7 +738,7 @@ app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 For a plugin that follows this setup, beside the contract checks:
 
 - [ ] `npm install` → `frontend/dist/index.html` exists.
-- [ ] With `frontend/dist` removed, `npm start` still starts, logs the missing entry file, answers HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) with a plain-text 503 and every other path with a 404, and keeps `healthPath` up.
+- [ ] With `frontend/dist` removed, `npm start` still starts, logs the missing entry file, answers HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) with a plain-text 503 and every other non-API path with a 404, and keeps `healthPath` up.
 - [ ] `.map` files, dotfiles and `.vite/` answer 404 on a built UI, `%2Emap` included.
 - [ ] Every response carries the CSP, the 404 and the 503 included.
 - [ ] The built CSS has no absolute URL: `perl -0pe 's{/\*.*?\*/}{}gs' frontend/dist/assets/*.css | grep -nE 'https?://|url\(//'` prints nothing. The `perl` strips the `/* */` comments first, because Tailwind's header comment contains `https://tailwindcss.com`.
