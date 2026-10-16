@@ -6,6 +6,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
 import { api, installFakePlugin } from './harness/api.ts';
+import { SESSION_WIDTH_MIN } from '../src/app/sessionWidthScale.ts';
 
 // Underscores and dots, not hyphens: CSS breaks a word at a hyphen, so only this form is unbreakable.
 const LONG = 'Extremely_Long_Unbreakable_Token_For_Layout_Testing.v2';
@@ -16,6 +17,8 @@ const EPS = 0.5;
 // clamp's min, default and max (derive.ts); `settle` checks each one lands.
 const SIDEBAR_KEY = 'code-conductor:sidebar-width';
 const SIDEBARS = [220, 288, 560];
+// The session width setting (web/src/app/sessionWidth.ts, which e2e cannot import): Settings is the session column.
+const COLUMN_KEY = 'code-conductor:session-column';
 // Below md the sidebar is a drawer, so these widths take no sidebar.
 const NARROW = [320, 360, 412, 640, 767];
 const WIDE = [768, 900, 1024, 1140, 1280, 1440, 1920];
@@ -23,10 +26,16 @@ const PHONE = [320, 360, 412];
 // The sections whose overflow was measured before this sweep existed.
 const MEASURED = ['conventions', 'backends', 'account', 'voice', 'about'];
 
-type Point = { viewport: number; sidebar: number | null };
-const at = (p: Point) => `${p.viewport}px${p.sidebar === null ? '' : `, sidebar ${p.sidebar}`}`;
+type Point = { viewport: number; sidebar: number | null; column?: { width: number; full: boolean } };
+const at = (p: Point) => `${p.viewport}px${p.sidebar === null ? '' : `, sidebar ${p.sidebar}`}${p.column ? `, column ${p.column.full ? 'Full' : p.column.width}` : ''}`;
+// The existing points run at the default Normal width; the extras are the floor, Full and a Wide column.
+const COLUMN_POINTS: Point[] = [
+  { viewport: 1920, sidebar: 220, column: { width: SESSION_WIDTH_MIN, full: false } },
+  { viewport: 1920, sidebar: 220, column: { width: SESSION_WIDTH_MIN, full: true } },
+  { viewport: 1440, sidebar: 288, column: { width: 1024, full: false } },
+];
 const points = (): Point[] => test.info().project.name === 'desktop'
-  ? [...NARROW.map((viewport) => ({ viewport, sidebar: null })), ...SIDEBARS.flatMap((sidebar) => WIDE.map((viewport) => ({ viewport, sidebar })))]
+  ? [...NARROW.map((viewport) => ({ viewport, sidebar: null })), ...SIDEBARS.flatMap((sidebar) => WIDE.map((viewport) => ({ viewport, sidebar }))), ...COLUMN_POINTS]
   : PHONE.map((viewport) => ({ viewport, sidebar: null }));
 
 test.use({ ccOptions: { server: 'settings-layout' } });
@@ -185,13 +194,17 @@ test.describe('Settings layout', () => {
 
     const violations: string[] = [];
     const seen = new Set<string>();
-    let seeded: number | null = null;
+    let seeded: string | null = null;
     for (const p of points()) {
       await page.setViewportSize({ width: p.viewport, height });
-      if (p.sidebar !== null && p.sidebar !== seeded) {
-        await page.evaluate(([k, w]) => localStorage.setItem(k, w), [SIDEBAR_KEY, String(p.sidebar)] as const);
+      const seed = `${p.sidebar}|${JSON.stringify(p.column ?? null)}`;
+      if ((p.sidebar !== null || p.column) && seed !== seeded) {
+        await page.evaluate(([sk, w, ck, c]) => {
+          localStorage.setItem(sk, w);
+          if (c) localStorage.setItem(ck, c); else localStorage.removeItem(ck);
+        }, [SIDEBAR_KEY, String(p.sidebar), COLUMN_KEY, p.column ? JSON.stringify(p.column) : ''] as const);
         await page.reload();
-        seeded = p.sidebar;
+        seeded = seed;
       }
       for (const id of sections) {
         await nav.getByRole('link', { name: new RegExp(`^${id}$`, 'i') }).click();

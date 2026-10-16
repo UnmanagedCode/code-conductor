@@ -11,6 +11,7 @@ vi.mock('@shared/capabilities', () => ({ loadCapabilities: vi.fn(), capabilities
 
 import { loadCapabilities } from '@shared/capabilities';
 import { routeStore, syncRoute, useRoute } from '@/state/route';
+import { setSessionFull, setSessionWidth } from '@/app/sessionWidth';
 import { modelsSettingsStore } from './models/store';
 import { SettingsView } from './SettingsView';
 
@@ -62,6 +63,29 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Settings view', () => {
+  // The Settings column is the session column: one width box under the view, carrying the stored setting with no gutter, live.
+  it('Settings renders at the session width and follows a width change and Full live', async () => {
+    vi.mocked(loadCapabilities).mockResolvedValue({ remoteSystems: true, voice: true });
+    localStorage.clear();
+    act(() => { setSessionWidth(768); setSessionFull(false); });
+    openAt('#settings');
+    await screen.findByRole('heading', { level: 2, name: 'Models' });
+    const box = document.querySelector<HTMLElement>('[data-settings-view] [data-session-width]');
+    expect(box).not.toBeNull();
+    expect(document.querySelectorAll('[data-settings-view] [data-session-width]')).toHaveLength(1);
+    const steps: [() => void, string, string][] = [
+      [() => { setSessionWidth(896); }, '896', '896px'],
+      [() => { setSessionFull(true); }, 'full', 'none'],
+      [() => { setSessionFull(false); }, '896', '896px'],
+    ];
+    for (const [apply, key, maxWidth] of steps) {
+      act(apply);
+      expect(box!.dataset.sessionWidth).toBe(key);
+      expect(box!.style.maxWidth).toBe(maxWidth);
+    }
+    act(() => { setSessionWidth(768); });
+  });
+
   // The nav link switches the routed section: the Account body (with its overage card) replaces the Models body.
   it('picking Account shows the Account section and hides Models', async () => {
     vi.mocked(loadCapabilities).mockResolvedValue({ remoteSystems: true, voice: true });

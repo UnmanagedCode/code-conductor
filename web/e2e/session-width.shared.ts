@@ -5,7 +5,7 @@ import { test, expect } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
 import { next } from './flows/ui.ts';
 import { bringTo, reveal, sendAll, tallPrompt } from './flows/stickyPin.ts';
-import { SESSION_WIDTH_GUTTER, sessionWidthKey, sessionWidthLabel } from '../src/app/sessionWidthScale.ts';
+import { SESSION_WIDTH_GUTTER, SESSION_WIDTH_MIN, sessionWidthKey, sessionWidthLabel } from '../src/app/sessionWidthScale.ts';
 
 type Ctx = { page: Page; cc: Parameters<typeof spawnSession>[0] };
 type Setting = { width?: number; full?: boolean };
@@ -327,4 +327,62 @@ export async function drawerHasNoControlFlow({ page, cc }: Ctx): Promise<void> {
   // Must-match query first: while the drawer closes the page is aria-hidden and an absence check passes vacuously.
   await expect(page.getByRole('button', { name: /^(Dark|Light) theme$/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /^Session width/ })).toHaveCount(0);
+}
+
+const SETTINGS_BOX = '[data-settings-view] [data-session-width]';
+const SETTINGS_PANE = '[data-settings-view] > .overflow-y-auto';
+const COSTS_BOX = 'main[data-view="costs"] [data-session-width]';
+// The session width setting's storage key (web/src/app/sessionWidth.ts, which e2e cannot import).
+const COLUMN_KEY = 'code-conductor:session-column';
+
+const boxWidth = async (page: Page, sel: string) => (await page.locator(sel).boundingBox())!.width;
+
+// Invariants: Settings and the Costs view render at the session width (plain px, no gutter), follow Full live through the sidebar footer toggle, and lay their breakpoints out by the column: at the floor the Settings nav sits above the section.
+/** Desktop: the full-page views follow the setting. */
+export async function viewsFollowFlow({ page, cc }: Ctx): Promise<void> {
+  test.skip(test.info().project.name !== 'desktop', 'the width setting is a desktop-layout feature');
+  await onSessionPage(page, cc, 'e2e-session-width-views');
+  await setWidth(page, { width: 896 });
+
+  await page.goto('/#settings');
+  await expect(page.locator(SETTINGS_BOX)).toHaveAttribute('data-session-width', '896');
+  const pane = async () => page.locator(SETTINGS_PANE).evaluate((e) => ({ left: e.getBoundingClientRect().left + e.clientLeft, width: e.clientWidth }));
+  expect(Math.abs((await boxWidth(page, SETTINGS_BOX)) - 896), 'Settings is the session width').toBeLessThanOrEqual(0.5);
+  const box = (await page.locator(SETTINGS_BOX).boundingBox())!;
+  const p = await pane();
+  expect(Math.abs(mid({ left: box.x, width: box.width }) - mid(p)), 'Settings is centred in its pane').toBeLessThanOrEqual(0.5);
+  await widthToggle(page).click();
+  await expect(page.locator(SETTINGS_BOX)).toHaveAttribute('data-session-width', 'full');
+  await expect.poll(async () => Math.abs((await boxWidth(page, SETTINGS_BOX)) - (await pane()).width), { message: 'Full fills the pane' }).toBeLessThanOrEqual(0.5);
+  await widthToggle(page).click();
+  await expect(page.locator(SETTINGS_BOX)).toHaveAttribute('data-session-width', '896');
+  expect(Math.abs((await boxWidth(page, SETTINGS_BOX)) - 896)).toBeLessThanOrEqual(0.5);
+  await test.info().attach('settings-896', { body: await page.screenshot(), contentType: 'image/png' });
+
+  // A scratch cc has no cost rows, so the totals tiles need a served summary.
+  await page.route('**/api/costs/summary', (r) => r.fulfill({ json: {
+    total_usd: 1.5, row_count: 3, daily_trend: [{ date: '2026-01-01', cost_usd: 1.5 }],
+    by_project: [{ project: 'p', cost_usd: 1.5, turns: 3, sessions: 1, cache_misses: 0, duration_api_ms: 1000, duration_ms: 1000 }],
+    by_model: [],
+  } }));
+  await page.goto('/#costs');
+  await expect(page.locator('[data-costs-total]')).toBeVisible();
+  await expect(page.locator(COSTS_BOX)).toHaveAttribute('data-session-width', '896');
+  expect(Math.abs((await boxWidth(page, COSTS_BOX)) - 896), 'Costs is the session width').toBeLessThanOrEqual(0.5);
+  const tilesInside = async () => page.evaluate(([b, t]) => document.querySelector(t)!.getBoundingClientRect().right <= document.querySelector(b)!.getBoundingClientRect().right + 0.5, [COSTS_BOX, '[data-costs-total]'] as const);
+  expect(await tilesInside(), 'the totals stay inside the column').toBe(true);
+  await widthToggle(page).click();
+  await expect(page.locator(COSTS_BOX)).toHaveAttribute('data-session-width', 'full');
+  await widthToggle(page).click();
+  await expect(page.locator(COSTS_BOX)).toHaveAttribute('data-session-width', '896');
+  expect(Math.abs((await boxWidth(page, COSTS_BOX)) - 896)).toBeLessThanOrEqual(0.5);
+
+  await page.evaluate(([k, v]) => localStorage.setItem(k, v), [COLUMN_KEY, JSON.stringify({ width: SESSION_WIDTH_MIN, full: false })] as const);
+  await page.goto('/#settings');
+  await page.reload();
+  await expect(page.locator(SETTINGS_BOX)).toHaveAttribute('data-session-width', String(SESSION_WIDTH_MIN));
+  expect(Math.abs((await boxWidth(page, SETTINGS_BOX)) - SESSION_WIDTH_MIN), 'Settings at the floor').toBeLessThanOrEqual(0.5);
+  const nav = (await page.getByRole('navigation', { name: 'Settings sections' }).boundingBox())!;
+  const section = (await page.locator('[data-section]').boundingBox())!;
+  expect(nav.y + nav.height, 'the nav sits above the section on a narrow column').toBeLessThanOrEqual(section.y + 0.5);
 }

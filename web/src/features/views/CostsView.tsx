@@ -229,7 +229,7 @@ export function CostsBody({ data }: { data: CostsSummary }) {
   const peak = data.daily_trend.reduce((a, d) => (d.cost_usd > a.cost_usd ? d : a), data.daily_trend[0] ?? { date: '', cost_usd: 0 });
   return (
     <div className="space-y-8">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4" data-costs-total>
+      <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4" data-costs-total>
         <Stat label="Total spend" value={fmtCost(data.total_usd)} sub={`across ${data.row_count} turn${data.row_count === 1 ? '' : 's'}`} />
         <Stat label="Sessions" value={String(sessions)} sub={`${data.by_project.length} project${data.by_project.length === 1 ? '' : 's'}`} />
         <Stat label="LLM time" value={formatDuration(llm)} />
@@ -268,12 +268,11 @@ export function CostsView() {
       subtitle="Spend by project, model and day"
       icon={<CoinsIcon className="size-4" />}
       actions={<Button size="sm" variant="ghost" onClick={() => void load()} aria-label="Refresh"><RotateCwIcon /></Button>}
-      wide
       data-view="costs"
     >
       {state.phase === 'loading' ? (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-20 rounded-xl" />)}</div>
+          <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-20 rounded-xl" />)}</div>
           <Skeleton className="h-56 rounded-xl" />
         </div>
       ) : state.phase === 'error' ? <ViewMessage tone="error">Failed to load: {state.error}</ViewMessage>

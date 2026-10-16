@@ -7,6 +7,7 @@ import { appStore, activeInstance } from '@/state/app';
 import { closeView, syncRoute } from '@/state/route';
 import { writeSessionAnchor } from '@shared/anchor';
 import { uiStore } from '@/app/ui';
+import { useSessionColumn } from '@/app/sessionWidth';
 import { cn } from '@/lib/utils';
 
 /** Leave the full-page view: back where the user came from, else to the active session. */
@@ -36,7 +37,7 @@ export function useEscapeToClose(enabled = true, onClose: () => void = leaveView
 
 /** The frame every full-page view shares: back button, title, stats, actions, scrolling body. */
 export function ViewShell({
-  title, subtitle, icon, actions, children, className, wide = false, ...rest
+  title, subtitle, icon, actions, children, className, ...rest
 }: {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
@@ -44,9 +45,9 @@ export function ViewShell({
   actions?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
-  wide?: boolean;
 } & Omit<React.HTMLAttributes<HTMLElement>, 'title'>) {
   useEscapeToClose();
+  const column = useSessionColumn({ gutter: false });
   return (
     <main className="flex min-w-0 flex-1 flex-col" {...rest}>
       <header className="sticky top-[env(safe-area-inset-top,0px)] z-10 flex min-h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 py-2 backdrop-blur md:px-5">
@@ -70,7 +71,7 @@ export function ViewShell({
       </header>
       {/* Positioned: an absolutely positioned descendant (Radix's hidden form input) stays in this pane and scrolls with it instead of extending the page. */}
       <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className={cn('mx-auto w-full px-3 py-5 md:px-6 md:py-8', wide ? 'max-w-6xl' : 'max-w-4xl', className)}>{children}</div>
+        <div {...column} className={cn('@container mx-auto w-full px-3 py-5 md:px-6 md:py-8', className)}>{children}</div>
       </div>
     </main>
   );
