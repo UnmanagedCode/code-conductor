@@ -640,9 +640,9 @@ tokens; each row has **Edit** (loads the shared form with backend and model id l
 (which reveals the shared backend/model pickers), a **default-effort select** whose
 first option reads `Inherit (<level>)` — the payload's `inheritsTo`, so a row is
 never opaque about what it will run at — a name-only add form for custom roles, an
-`×` remove on user rows, and a badge naming the plugin, on its own line under the role name, on plugin rows. A plugin role's
-effort is user-settable like its binding, persisted under `models.roleEffort` by the
-namespaced id.
+`×` remove on user rows, and a badge naming the plugin, on its own line under the
+role name, on plugin rows. A plugin role's effort is user-settable like its binding,
+persisted under `models.roleEffort` by the namespaced id.
 
 Every mutation is a single request (POST, PATCH or DELETE) that returns the full refreshed state, re-rendered
 immediately — no restart. Endpoints: [protocol.md](protocol.md#rest-endpoints).
@@ -675,4 +675,7 @@ Verified by `web/e2e/settings-models-layout.spec.ts` (geometry in a browser, swe
 viewports and sidebar widths: nothing overflows the page, the Settings column or the Models
 section; each Claude model's name fits its select; every select and default radio shows a
 caption its name contains; every control is uncovered and clear of its row's other
-controls) + `web/src/features/settings/models/fieldLabels.test.tsx` (the DOM contract).
+controls; a plugin role's name is not truncated and its chip sits below it,
+left-aligned) + `web/src/features/settings/models/fieldLabels.test.tsx` (the DOM
+contract) + `web/src/features/settings/models/models.test.tsx` → `Models → role label`
+(the plugin chip's DOM structure).
