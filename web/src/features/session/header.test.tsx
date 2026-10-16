@@ -551,6 +551,26 @@ describe('mode toggle', () => {
     expect(screen.getByRole('button', { name: 'Plan' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: 'Code' }).getAttribute('aria-pressed')).toBe('false');
   });
+
+  it('the active look follows aria-pressed and is the same for Plan and Code', () => {
+    const classes: string[] = [];
+    for (const [mode, active, other] of [['plan', 'Plan', 'Code'], ['bypassPermissions', 'Code', 'Plan']] as const) {
+      const r = wrap(<ModeToggle inst={base({ mode })} />);
+      const on = screen.getByRole('button', { name: active });
+      const off = screen.getByRole('button', { name: other });
+      // Exactly the instance's mode is the pressed segment.
+      expect(on.getAttribute('aria-pressed')).toBe('true');
+      expect(off.getAttribute('aria-pressed')).toBe('false');
+      // No per-mode or per-state styling: the pressed and unpressed segments share one class string.
+      expect(on.className).toBe(off.className);
+      classes.push(on.className);
+      r.unmount();
+    }
+    // The class string does not depend on which mode is active.
+    expect(classes[0]).toBe(classes[1]);
+    // The active tint exists and is keyed on aria-pressed, on the primary token.
+    expect(classes[0]).toMatch(/(^|\s)aria-pressed:bg-primary\b/);
+  });
 });
 
 describe('session menu', () => {
