@@ -10,6 +10,7 @@ import { probeVoice } from '@/features/voice/store';
 import { startViewedMarker } from '@/app/viewedMarker';
 import { startNotifications } from '@/features/notifications';
 import { startVoice } from '@/features/voice';
+import { startPluginSessionBridge } from '@/features/views/pluginSession';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -24,3 +25,4 @@ probeVoice();
 startViewedMarker();
 startNotifications();
 startVoice();
+startPluginSessionBridge();

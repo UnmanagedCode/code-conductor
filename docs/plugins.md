@@ -140,17 +140,51 @@ The scan-time policy is therefore a **strict superset** of the compose-time one,
 
 ### Bridge protocol — `/pluginBridge.js`
 
-Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blocking script, first in `<head>` (no `defer`: the theme sync below then runs before first paint; a deferred bridge still syncs, but only at deferred-script time) (`web/src/features/views/pluginBridge.js`, served by an explicit `GET /pluginBridge.js` route in `server.ts` whether or not the web UI is built; harmless 404 standalone, no-op when not iframed; the parent side is `pluginFrames` in `web/src/features/views/plugins.ts`). Envelope `{cc:1, type, ...}` over `postMessage`, same-origin both ways. Exactly three messages:
+Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blocking script, first in `<head>` (no `defer`: the theme sync below then runs before first paint; a deferred bridge still syncs, but only at deferred-script time) (`web/src/features/views/pluginBridge.js`, served by an explicit `GET /pluginBridge.js` route in `server.ts` whether or not the web UI is built; harmless 404 standalone, no-op when not iframed; the parent side is `pluginFrames` in `web/src/features/views/plugins.ts`). Envelope `{cc:1, type, ...}` over `postMessage`, same-origin both ways. Three core messages (every page) plus four optional session-awareness messages (pages that use `window.ccBridge`):
 
 | Direction | Type | Payload | Meaning |
 |---|---|---|---|
-| child → parent | `ready` | — | bridge alive (initial `route` follows) |
+| child → parent | `ready` | — | bridge alive (initial `route` follows); the parent answers with a `session` |
 | child → parent | `route` | `{path}` | child-relative path (incl. search+hash), which **must begin with `/`** — the parent ignores a `route` whose path does not; parent mirrors it into `#plugin/<id><path>` via `replaceState` |
 | parent → child | `navigate` | `{path}` | external navigation; bridge `replaceState`s `<prefix><path>` and dispatches a synthetic `popstate` |
+| parent → child | `session` | `{session: {sessionId, project, worktree} \| null}` | the active session. `worktree` is the instance's `worktree.worktreeName` (the `worktreeName` key of `GET /api/projects/:name/worktrees`), `null` for the main checkout |
+| child → parent | `openSession` | `{id, sessionId}` | make a live session the selection, as a sidebar pick does |
+| child → parent | `sendPrompt` | `{id, sessionId, text}` | deliver `text` to a live session as its composer's Send does, without selecting it |
+| parent → child | `result` | `{id, ok, code?}` | the answer to one `openSession` / `sendPrompt`, posted to the calling frame only |
+
+**Active session** = `activeInstance(appStore.get())` (`web/src/state/app.ts`): cc's one selection, in every layout; `null` when nothing is selected or the selected instance has no `sessionId` yet. The per-layout table is in [plugin-ui.md](plugin-ui.md) → Session awareness.
+
+**`session` is sent** to one frame on its `ready` (a reload in place sends a fresh `ready`), and to **every** frame — the shared frame and each resident frame, hidden ones included — whenever the active `(sessionId, project, worktree)` triple changes. An unchanged triple (an instance-list refresh, a status change) posts nothing.
+
+**`openSession` / `sendPrompt` rules:**
+- `id` must be a string; a call without one is ignored (nowhere to reply). Exactly one `result` per received call.
+- The child accepts `session`, `result` and `navigate` only from `window.parent` (same origin and `ev.source`).
+- Accepted from any known frame (shared or resident, hidden included): same origin, and `ev.source` is that frame's `contentWindow`. An unknown source gets no reply.
+- Instance lookup by `sessionId`: the listed instances plus the pristine slot; a live instance (status not `exited`/`crashed`) wins over a dead one sharing the id; none → `GET /api/sessions/:sid/locate`.
+- `openSession` on a live session calls `selectInstance(id, {userGesture: true})` — what a sidebar row pick does (split: the session column switches and the dock stays; full-screen / phone: leaves the plugin view for the session). A session that is not live is refused; nothing is resumed.
+- `sendPrompt` goes through `web/src/features/composer/send.ts` (`promptSendable`, `sendPrompt`), the composer's own path: `text` is trimmed, `notePristineSent` runs, the `prompt` frame is sent with `{ack: true}`. The server treats it as typed text (`promptOrQueueSteer`: a steer when busy, queued under the overage lockout; a conducted worker's conductor wake fires on its turn end). It never changes the selection, the route, drafts or attachments.
+
+| `code` | When |
+|---|---|
+| `INVALID_ARGUMENT` | `sessionId` is not a non-empty string, or (`sendPrompt`) `text` is not a string or is empty after `trim()` |
+| `SESSION_UNKNOWN` | no instance carries the id and `locate` refuses it (`ApiError`) |
+| `SESSION_NOT_LIVE` | the session exists but no live instance carries it (`exited`/`crashed`, or a `locate` hit, archived or not) |
+| `SESSION_NOT_READY` | `sendPrompt` only: live, but the composer's Send would be disabled (status not `idle`/`turn`, a `modelSwitch` in flight, `overageStoppedUnarmed`) |
+| `SEND_FAILED` | `sendPrompt` only: the acked `prompt` frame was rejected (server error ack, closed socket, the 10 s ack timeout in `shared/ws.ts`) |
+| `LOOKUP_FAILED` | the `locate` read failed with a network error, or did not settle within 10 s |
+| `HOST_ERROR` | an unexpected failure inside cc while carrying out the call |
+
+`SESSION_UNKNOWN` and `SESSION_NOT_LIVE` reuse the MCP vocabulary of `src/mcp/handlers.ts`.
+
+**Child API.** Outside an embed, or on a host without these messages, `window.ccBridge` is absent. Embedded it holds `session` (`undefined` until the first `session` message, then the payload or `null`), `onSession(fn)` → unsubscribe (`fn` runs on every `session` message, and at once when one has arrived), and `openSession(sessionId)` / `sendPrompt(sessionId, text)` → `Promise<{ok, code?}>`. A promise never rejects: it resolves with the host's `result`. The parent sends exactly one `result` per received call, and bounds the slow parts: the send ack and the `locate` read at 10 s each. A frame that navigates or reloads mid-call loses its reply, so a plugin that needs a deadline sets its own.
+
+**Security.** `openSession` / `sendPrompt` let any plugin page, hidden keep-alive frames included, drive any session. That adds no reach: a plugin page is same-origin with cc and can already call cc's unauthenticated API and socket. It is why the content-rendering rules in [plugin-ui.md](plugin-ui.md) Part 2 matter.
+
+**REST metadata a plugin backend reads** alongside these messages (full shapes in [protocol.md](protocol.md)): `GET /api/projects/:name/worktrees` per worktree — `worktreePath`, `branch`, `baseBranch`, `baseSha`, `baseWorktree` (the parent worktree's `worktreeName`; absent = forked from the main checkout), `parentPath` (the main checkout); `GET /api/projects` row `path` (the main checkout when a project has no worktrees); `GET /api/instances` — `{sessionId, project, status, cwd, worktree: {worktreeName, branch, baseBranch, baseSha} | null}` per instance, `worktree: null` = the main checkout. **Live = `status` not `exited`/`crashed`**: the `sessionIds` lists on the worktrees and projects rows are *not* liveness-filtered (they include retained exited non-temp instances), so use `GET /api/instances` for "live".
 
 Inside the iframe the bridge patches `history.pushState` → `replaceState`, so a plugin visit adds exactly one joint-history entry (hardware Back exits to the conductor). Multi-page plugins bypass this and pollute history.
 
-**Theme sync** (not a message, so the set stays three): the bridge reads the parent's `<html>` directly and mirrors cc's resolved theme onto the page's own `<html>` — the `dark` class, plus `data-cc-theme="light"|"dark"`, which is present only while cc owns the theme. It applies it synchronously when the script executes and again on every change through a `MutationObserver` on the parent `<html>`'s `class`, hidden frames included. cc's `<html>` carries `.dark` exactly when its resolved theme is dark (`web/index.html`'s pre-paint script, then `web/src/app/theme.ts`, which also follows `prefers-color-scheme` under "system"). A parent whose `document` cannot be read (cross-origin: `SecurityError`) leaves the page's theme alone; standalone or outside a `/plugins/<id>/` mount the bridge does nothing at all.
+**Theme sync** (not a message): the bridge reads the parent's `<html>` directly and mirrors cc's resolved theme onto the page's own `<html>` — the `dark` class, plus `data-cc-theme="light"|"dark"`, which is present only while cc owns the theme. It applies it synchronously when the script executes and again on every change through a `MutationObserver` on the parent `<html>`'s `class`, hidden frames included. cc's `<html>` carries `.dark` exactly when its resolved theme is dark (`web/index.html`'s pre-paint script, then `web/src/app/theme.ts`, which also follows `prefers-color-scheme` under "system"). A parent whose `document` cannot be read (cross-origin: `SecurityError`) leaves the page's theme alone; standalone or outside a `/plugins/<id>/` mount the bridge does nothing at all.
 
 ### Theme stylesheet — `/pluginTheme.css`
 

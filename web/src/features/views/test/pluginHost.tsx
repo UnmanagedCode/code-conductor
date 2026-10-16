@@ -14,8 +14,8 @@ import { pluginFrames, type PluginRow } from '../plugins';
 export type StatusRow = { state?: string; enabled?: boolean; frontendKeepAlive?: boolean };
 /** A status read's answer: a row, an HTTP error status, a rejected fetch, or a 200 whose body does not parse. */
 export type Answer = StatusRow | number | 'network' | 'unreadable';
-/** What the host posted to a frame. */
-export type StandIn = { posted: unknown[] };
+/** What the host posted to a frame, and the target origin of each post. */
+export type StandIn = { posted: unknown[]; origins: unknown[] };
 
 export const keepRow = (over: StatusRow = {}): StatusRow => ({ state: 'ready', enabled: true, frontendKeepAlive: true, ...over });
 export const plainRow = (over: StatusRow = {}): StatusRow => keepRow({ frontendKeepAlive: false, ...over });
@@ -116,7 +116,7 @@ export const shownFrames = () => [...pluginView().querySelectorAll('iframe')].fi
 
 /** Pins a stand-in window on `frame`. */
 export function standInWindow(frame: HTMLIFrameElement): StandIn {
-  const win = { posted: [] as unknown[], postMessage(m: unknown) { win.posted.push(m); } };
+  const win = { posted: [] as unknown[], origins: [] as unknown[], postMessage(m: unknown, origin?: unknown) { win.posted.push(m); win.origins.push(origin); } };
   Object.defineProperty(frame, 'contentWindow', { value: win, configurable: true });
   return win;
 }

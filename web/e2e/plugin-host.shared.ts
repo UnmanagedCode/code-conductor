@@ -2,7 +2,7 @@
 // picking a plugin while a session is open lands on the first pick; the hash
 // opens, steers and swaps plugin pages without reloading them; a keep-alive
 // page keeps running while hidden and comes back as the same page load, while a
-// plain one reloads; a plugin page follows the host's light/dark theme. A
+// plain one reloads; a plugin page follows the host's light/dark theme; a plugin page follows the viewed session and can open or prompt one. A
 // reload makes a new nonce, so every "same page" check fails on one. The bodies are shared by the per-project spec files; this
 // module declares no tests.
 import type { Locator, Page } from '@playwright/test';
@@ -234,4 +234,45 @@ export async function themeFlow({ page }: Args): Promise<void> {
   await toggleTheme(page, 'Light theme');
   await follows(page, KEEP.id, 'light', 'hidden behind Settings');
   await expect(pluginView(page), 'still hidden').toBeHidden();
+}
+
+// ── session awareness ────────────────────────────────────────────────────
+
+type BridgeResult = { ok: boolean; code?: string };
+/** What `window.ccBridge` in plugin `id`'s page holds as its session. */
+const bridgeSession = (page: Page, id: string) => probeFrame(page, id)?.evaluate(() => (window as unknown as { ccBridge: { session: { sessionId: string } | null | undefined } }).ccBridge.session) ?? Promise.resolve(undefined);
+/** Calls `ccBridge.<call>(...args)` in plugin `id`'s page and returns the host's result. */
+const bridgeCall = (page: Page, id: string, call: 'openSession' | 'sendPrompt', args: string[]): Promise<BridgeResult> =>
+  probeFrame(page, id)!.evaluate(([c, a]) => (window as unknown as { ccBridge: Record<string, (...x: string[]) => Promise<{ ok: boolean; code?: string }>> }).ccBridge[c as string](...(a as string[])), [call, args] as const);
+
+export async function sessionFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: a plugin page, shown or hidden, follows the session the user views; sendPrompt delivers a prompt to another session without switching to it; openSession switches to a live one; an unknown id is refused with its code.
+  const project = `plugin-session-${test.info().project.name}`;
+  const a = await spawnSession(cc, project);
+  const b = await spawnSession(cc, project);
+  await next.open(page);
+  const rowA = await next.sessionRow(page, project, a.sessionId);
+  await expect.poll(() => next.sessionRowLive(rowA), { message: 'fixture check: session A is live', timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => next.sessionRowLive(await next.sessionRow(page, project, b.sessionId)), { message: 'fixture check: session B is live', timeout: 15_000 }).toBe(true);
+  await rowA.click();
+  await expect(page, 'precondition: A is open').toHaveURL(new RegExp(`#session=${a.sessionId}$`));
+
+  await next.openPlugin(page, KEEP.id);
+  await loaded(page, KEEP.id, 'opened beside A');
+  await expect.poll(async () => (await bridgeSession(page, KEEP.id))?.sessionId, { message: 'the page learns A on ready' }).toBe(a.sessionId);
+
+  await (await next.sessionRow(page, project, b.sessionId)).click();
+  await expect(page, 'B is open').toHaveURL(new RegExp(`#session=${b.sessionId}$`));
+  await expect.poll(async () => (await bridgeSession(page, KEEP.id))?.sessionId, { message: 'the page follows the pick to B' }).toBe(b.sessionId);
+
+  expect(await bridgeCall(page, KEEP.id, 'sendPrompt', [a.sessionId, 'from plugin']), 'the prompt is delivered').toEqual({ ok: true });
+  await expect(page, 'sending to A left the view on B').toHaveURL(new RegExp(`#session=${b.sessionId}$`));
+  expect(await bridgeSession(page, KEEP.id), 'and the page still reads B').toMatchObject({ sessionId: b.sessionId });
+
+  expect(await bridgeCall(page, KEEP.id, 'openSession', [a.sessionId]), 'openSession').toEqual({ ok: true });
+  await expect(page, 'A is open again').toHaveURL(new RegExp(`#session=${a.sessionId}$`));
+  await expect(next.userMessages(page).filter({ hasText: 'from plugin' }), "A's transcript holds the plugin's prompt").toBeVisible();
+
+  expect(await bridgeCall(page, KEEP.id, 'openSession', ['nope']), 'an unknown session').toEqual({ ok: false, code: 'SESSION_UNKNOWN' });
+  await expect(page, 'the refusal changed nothing').toHaveURL(new RegExp(`#session=${a.sessionId}$`));
 }

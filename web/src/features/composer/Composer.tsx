@@ -6,13 +6,14 @@ import { useStore } from '@/state/createStore';
 import type { Instance } from '@/state/types';
 import { projectLabel } from '@shared/conductors';
 import { formatAutoResumeTime } from '@shared/usage';
-import { send, stickyPrompt } from '@/app/controller';
+import { stickyPrompt } from '@/app/controller';
 import { on } from '@/app/events';
-import { notePristineSent, reportPristineDraft, setPristineDraftSource } from '@/app/pristine';
+import { reportPristineDraft, setPristineDraftSource } from '@/app/pristine';
 import { voiceStore } from '@/features/voice/store';
 import { cn } from '@/lib/utils';
 import { NO_ATTACHMENTS, attachmentStore, type Pending } from './attachments';
 import { DRAFT_SAVE_DEBOUNCE_MS, EMPTY_DRAFT, draftStore, joinDictation, prependTranscribedTag } from './drafts';
+import { promptSendable, sendPrompt } from './send';
 import { useDictation, type BoxDelivery } from './useDictation';
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -58,7 +59,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   const status = inst?.status ?? null;
   const canType = !!inst && ['idle', 'turn', 'spawning'].includes(status!);
   const overageUnarmed = !!inst?.overageStoppedUnarmed;
-  const canSend = !!inst && ['idle', 'turn'].includes(status!) && !inst.modelSwitch && !overageUnarmed;
+  const canSend = !!inst && promptSendable(inst);
   const overagePaused = !!(inst?.overageActive || inst?.autoResumeAt) && !overageUnarmed;
   const resumeAt = (inst?.autoResumeAt ?? inst?.overageResetsAt ?? null) as number | null;
   const voiceOn = voice.supported;
@@ -184,10 +185,10 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     const t = text.trim();
     const ready = pending.filter((p) => !p.error && typeof p.dataBase64 === 'string');
     if (!t && !ready.length) return;
-    const payload: Record<string, unknown> = { id: inst.id, text: prependTranscribedTag(t, transcribed) };
-    if (ready.length) payload.attachments = ready.map((p) => ({ name: p.name, mediaType: p.mediaType, dataBase64: p.dataBase64 }));
-    notePristineSent(inst.id);
-    send('prompt', payload);
+    sendPrompt(inst, {
+      text: prependTranscribedTag(t, transcribed),
+      attachments: ready.map((p) => ({ name: p.name, mediaType: p.mediaType, dataBase64: p.dataBase64 as string })),
+    });
     setText('');
     setTranscribed(false);
     clearAttachments();
