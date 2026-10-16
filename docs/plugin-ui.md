@@ -37,6 +37,7 @@ Load both in the page's `<head>`:
 - **The token names are the custom properties in `web/src/themeTokens.css`**, which the served sheet carries.
 - **The served sheet is unlayered.** It wins over anything the page declares inside `@layer`, whatever the source order.
 - **No theme toggle of the plugin's own.** A plugin-side toggle stops the page following the host.
+- **A restrictive CSP must let the host assets through.** Under `default-src 'none'`, the sheet needs `style-src 'self'`, its Geist fonts (served from `/pluginTheme/fonts/…` on the same origin) need `font-src 'self'`, and the bridge needs `script-src 'self'`. Without `font-src` the fonts are blocked silently and the page falls back to the system font. A policy example: [Part 2](#part-2--security-strongly-recommended).
 
 ## Relative URLs
 
@@ -52,6 +53,9 @@ Load both in the page's `<head>`:
 - **Keep the document at the plugin root.** The page is served at `/plugins/<id>/` inside cc and at `/` standalone; on a deep path, relative URLs resolve against the wrong directory.
 - **Read the route on load and on `popstate`.** cc's `navigate` message arrives as a `popstate`.
 - Example scheme: route state in the query string. Write it with `history.pushState(null, '', '?view=card&id=42')`, read it from `location.search`.
+- Two examples for the cases that tempt a hash:
+  - **An in-page anchor** (`<a href="#section">`): have its click handler call `preventDefault()` and then `scrollIntoView()` on the target, so the click changes no URL.
+  - **A legacy hash URL** (an old bookmark such as `#/card/42`): parse it once on load and `history.replaceState` it into the query form, so the document never keeps a hash.
 - Multi-page plugins bypass the bridge and pollute history.
 
 ## Session awareness (optional)
@@ -87,10 +91,12 @@ What cc runs on Library **Install** and **Update**:
 | **Update** | `git pull --ff-only`, then the entry's `postPull`, then a restart of the plugin's backend if it is running (a stopped one picks the pull up when it next starts) |
 
 - **The hook is the catalog entry's command**, run through `bash -lc`, with cc's own environment, with cwd = the checkout. cc runs nothing else: no `npm install`, no `pip install`, no build.
+- **The hook inherits cc's environment**, so a variable set on the cc process (a build-mode or package-manager switch, say) changes what the hook does. A step that depends on one can be skipped or fail under a cc started differently from yours.
 - **Whatever builds the UI (and installs the backend's dependencies) happens in that hook**, so the checkout is servable by the time the plugin first starts. Built output is not tracked in git.
 - **A drop-in catalog JSON sets the hooks itself** (schema: [docs/plugins.md](plugins.md) → Plugin Library). A built-in entry is the authority for its own command: `DEFAULT_ENTRIES` in `src/plugins/library.ts`.
 - **The hook runs code with cc's privileges:** as cc's user with cc's environment. That is the trust the hook itself carries ([docs/plugins.md](plugins.md) → **`postClone`/`postPull` execution**), and it extends to whatever the command runs (lifecycle scripts, dependency install scripts). Add no dependency you would not run as cc.
 - A failed hook is a warning, not an error: the clone or pull stays. Update is the retry. A failed `postPull` skips the restart.
+- **Start anyway when the UI is not built.** The plugin can still be started after a failed or skipped build, and nothing in cc tells the user the entry file is missing. Have the backend start regardless, log the missing entry file, and answer every UI request with a readable non-HTML 503 that says to build or reinstall. Example: [Serving](#serving-frontenddist-from-the-backend).
 - The hook is bounded by `POST_HOOK_TIMEOUT_MS` (`src/plugins/library.ts`).
 - Leave nothing in the checkout that an incoming commit can collide with: Update's `git pull --ff-only` aborts when an incoming commit touches a path the hook left modified, or adds a path the hook left untracked. Untrack or ignore anything the hook writes.
 - `npm install` plus a `prepare` script is one way to meet this: see [Build on install](#build-on-install) in the reference.
@@ -109,8 +115,15 @@ What cc runs on Library **Install** and **Update**:
 - [ ] Navigation adds no history entry beyond cc's one: Back from the plugin returns to cc.
 - [ ] A fresh `git clone` plus the Library entry's hook, with no other step, leaves a servable checkout; `git status` is clean afterwards.
 - [ ] In cc, Settings → Plugins → Library → **Install** reports the `postClone` hook ok; **Update** rebuilds, and restarts the backend if it is running (a stopped one picks the pull up when it next starts).
-- [ ] Outside cc the UI is legible; the only console errors name the two host URLs (their 404, and the browser refusing the 404's body as a script or stylesheet).
-- [ ] The plugin's own tests pass.
+- [ ] Outside cc the UI is legible; the only console errors concern the two host URLs: their 404, and, when the plugin sends `X-Content-Type-Options: nosniff`, the browser refusing the 404 body (JSON or otherwise, not HTML) as a script or stylesheet. Chromium logs the `/pluginTheme.css` refusal twice.
+
+**Trying an unmerged plugin branch in a scratch cc** (leaves your own cc and its plugins alone):
+
+1. In a cc checkout, start an isolated instance: `PORT=<port> scripts/run-isolated.sh` (its own projects root, Claude config dir and port).
+2. Adopt the plugin's checkout: `POST /api/projects/external` with `{"name": "<project>", "path": "<absolute path>"}`.
+3. `POST /api/plugins/rescan`, then `POST /api/plugins/<id>/enable`. Enable does not start the backend: it starts on first use, or `POST /api/plugins/<id>/start`.
+4. Open `http://127.0.0.1:<port>/plugins/<id>/`.
+5. Before stopping the scratch cc, `POST /api/plugins/<id>/stop`. Plugin backends run detached and outlive cc, and a restarted cc re-adopts a live one.
 
 # Part 2 — Security (strongly recommended)
 
@@ -121,19 +134,30 @@ These are not enforced by cc. Each is strongly recommended, and the consequence 
   - Avoid `innerHTML` / `outerHTML` / `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, and framework raw-HTML escape hatches.
   - Markdown, if you need it: a renderer that builds elements and drops raw HTML, with its links filtered as below.
 - **Allowlist link schemes.** Consequence: a `javascript:` or `data:` href built from content runs script on click.
-  - Link only `http:`, `https:` and `mailto:`; render anything else as plain text.
+  - The set of schemes is the plugin's choice. Link only schemes you have decided to allow (for external content, typically `http:`, `https:` and `mailto:`) and render anything else as plain text.
   - An external link gets `target="_blank" rel="noopener noreferrer"`. Never put unchecked text into `src`, `href` or `style`.
-- **Send your own CSP.** Consequence: without one, an injected inline script or event handler runs. cc's proxy passes the plugin's CSP through unchanged. Example:
+  - Resolve an external content link with `new URL(u)` and no base. With a base such as `location.href`, `relative/x` and `//evil` both resolve to http(s) links.
+- **Send your own CSP, as a minimum.** Consequence: without one, an injected inline script or event handler runs. Start from the policy below and add only what the UI needs. cc's proxy passes the plugin's CSP through unchanged.
 
 ```
-default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'self'
+default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'
 ```
 
-  - `style-src 'unsafe-inline'` is in the example because the reference setup's Radix and sonner inject `<style>` elements; drop it if yours do not.
+  - `font-src 'self'` carries the host's Geist fonts; `style-src 'self'` the host sheet; `script-src 'self'` the bridge.
+  - Add `style-src 'unsafe-inline'` only when a library you use injects a `<style>` element or sets styles as markup (in the reference setup: Radix Dialog, Sheet and ScrollArea, and sonner).
+  - Add `img-src` only if the UI shows images (`'self'`, plus `data:` if it needs inline ones).
   - No inline scripts are allowed under this policy, so a page script lives in a file.
+  - **Send it on every response**, the 404, the 503 and error responses included, and send `X-Content-Type-Options: nosniff` with it. Do not serve `.map` files.
+  - **Where `'unsafe-inline'` styles are allowed, never emit a `style` attribute or a `<style>` element from content.** Injected CSS is live and can exfiltrate data (attribute selectors with `url()` requests, for one).
   - **What a CSP does not do:**
     - It protects the plugin's own document only. cc's own responses carry no CSP and no framing protection (no `X-Frame-Options`, no `frame-ancestors`).
     - `script-src 'self'` allows every script on cc's origin, which is the plugin page's origin too: every path under `/plugins/<id>/` of every plugin, and cc's own. So it stops an injected inline script or event handler, but it is no containment boundary: an injected `<script src="/…">` naming any script on that origin still runs. Rendering content as text, never markup, is the actual defence.
+- **Keep untrusted-content parsing off the thread that answers `healthPath`.** Consequence: a backend that parses content synchronously on the same thread can be stalled by a parser that is quadratic or worse. cc's liveness probe of `healthPath` is bounded, so a stalled backend reads as a dead child, is marked `crashed` and restarted with backoff, and the loop can end in `failed`.
+  - No nested or adjacent quantifiers over untrusted lines.
+  - A quantifier before `(.*)` is quadratic on a run of characters `.` does not match: `\n`, `\r`, U+2028 and U+2029. Splitting on `\n` first still leaves the other three inside a line.
+  - An unanchored `/x+$/` rescans from every start position.
+  - Bound nesting depth, and cap the bytes per page.
+  - Time your parser at doubling input sizes: a time that grows about fourfold per doubling is quadratic.
 - **Bind loopback: `127.0.0.1`, never `0.0.0.0` or `::`.** Consequence: the plugin's API has no authentication, so any interface beyond loopback lets anyone on the network drive it. cc's proxy reaches the backend over loopback.
 - **Do not script `window.parent`.** Consequence: it is cc's own page, and the bridge is the supported channel to it.
 - **Prefix storage keys** `<plugin-id>:`, and never read or write cc's `code-conductor:*` keys. Consequence: plugins and cc share one origin's storage, so unprefixed keys collide with and corrupt each other's state.
@@ -143,10 +167,10 @@ Example link guard (the reference setup's `frontend/src/lib/safeHref.ts`):
 ```ts
 const ALLOWED = new Set(['http:', 'https:', 'mailto:']);
 
-/** `u` as an href when it parses to an http(s) or mailto URL; null otherwise (render it as text). */
+/** `u` as an href when it is an absolute http(s) or mailto URL; null otherwise (render it as text). No base: a relative `u` throws. */
 export function safeHref(u: string): string | null {
   try {
-    const url = new URL(u, location.href);
+    const url = new URL(u);
     return ALLOWED.has(url.protocol) ? url.href : null;
   } catch {
     return null;
@@ -194,7 +218,7 @@ frontend/
 - **`devDependencies`: everything the UI needs.** It is bundled at build time, so nothing of it is needed at runtime. The list:
   - build: `vite @vitejs/plugin-react @tailwindcss/vite tailwindcss tw-animate-css typescript`
   - UI: `react react-dom @types/react @types/react-dom radix-ui class-variance-authority clsx tailwind-merge lucide-react sonner`
-- **Use the ranges cc's own `package.json` declares.** Those builds run on every platform cc runs on, Termux included. This command reads them and installs them as devDependencies, creating `package.json` when the repo has none yet. **Run it in bash** (in another shell, start `bash` first): it splits the specs into a bash array.
+- **Use the ranges cc's own `package.json` declares.** Those builds run on every platform cc runs on, Termux included. This command reads them and installs them as devDependencies, creating `package.json` when the repo has none yet. It adds to an existing `devDependencies` and removes nothing. **Run it in bash** (in another shell, start `bash` first): it splits the specs into a bash array.
 
 ```bash
 CC_PKG=<cc-checkout>/package.json
@@ -209,6 +233,8 @@ SPECS=$(node -e '
   && read -ra SPEC_LIST <<< "$SPECS" && npm install -D "${SPEC_LIST[@]}"
 ```
 
+- **Keep what npm writes.** `npm install -D pkg@<range>` records a caret range as `^<installed version>` (cc's `^2.0.0` becomes `^2.1.1`), which stays within cc's major version.
+- **Node:** Vite 8 and `@vitejs/plugin-react` declare `engines.node` as `^20.19.0 || >=22.12.0`. Use `>=22.12` as the one floor and record it in `package.json` (`engines.node` below).
 - Do **not** add `@fontsource-variable/*`. Embedded, cc serves the fonts; standalone, the font stack falls back to the system font.
 
 ## Build on install
@@ -216,7 +242,9 @@ SPECS=$(node -e '
 **Add these keys to the `package.json` the Dependencies step wrote, and keep its `devDependencies` exactly as installed.** Do not replace the file: without those devDependencies, `prepare` fails with `Cannot find package 'vite'`. `npm pkg set` merges the keys in place:
 
 ```sh
-npm pkg set name=my-plugin type=module \
+# only when `npm pkg get name` prints {}: set would rename an existing package
+npm pkg set name=my-plugin
+npm pkg set type=module engines.node=">=22.12" \
   scripts.start="node server.js" \
   scripts.prepare="vite build --config frontend/vite.config.ts" \
   scripts.dev="vite --config frontend/vite.config.ts" \
@@ -231,6 +259,7 @@ The keys it sets, beside the `devDependencies` (and a backend's `dependencies`) 
   "name": "my-plugin",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=22.12" },
   "scripts": {
     "start": "node server.js",
     "prepare": "vite build --config frontend/vite.config.ts",
@@ -256,7 +285,7 @@ package-lock.json
 - cc's built-in Library entries for the UI plugins this setup is for — code-hub, code-kanban, code-karpathy-wiki, code-share, code-system, code-live and code-playbook — run `npm install` in both hooks, so Install builds `frontend/dist` and Update rebuilds it. Other built-in entries run other commands (code-playwright runs `bash install.sh`) or none; `DEFAULT_ENTRIES` in `<cc-checkout>/src/plugins/library.ts` is the authority.
 - A drop-in catalog JSON sets `"postClone": "npm install", "postPull": "npm install"`.
 - `npm install` runs the repo's own lifecycle scripts (`prepare` included) and its dependencies' install scripts, as cc's user: the hook trust in the contract applies.
-- An environment with `NODE_ENV=production` (or `npm_config_omit=dev`) makes `npm install` skip the devDependencies, and the build then fails.
+- The hook inherits cc's `process.env` (`runHookCommand` in `<cc-checkout>/src/plugins/library.ts`). A cc started with `NODE_ENV=production` or `npm_config_omit=dev` makes `npm install` skip the devDependencies, `vite` is absent, and `prepare` fails, so `npm install` exits non-zero and the Library reports the hook failed. The checkout then has no `frontend/dist`: the backend's 503 ([Serving](#serving-frontenddist-from-the-backend)) is what the user sees.
 
 ## `frontend/vite.config.ts`
 
@@ -391,7 +420,7 @@ export default defineConfig({
 }
 ```
 
-- The `@theme inline` block is cc's own (`<cc-checkout>/web/src/index.css`), without its mascot animations. cc's `tests/plugin-theme.test.mjs` fails when the two differ.
+- Keep this `@theme inline` block as written: its `--font-*`, `--radius-*` and `--color-*` entries are the ones in `<cc-checkout>/web/src/index.css`, and cc's `tests/plugin-theme.test.mjs` fails when this doc's block differs from them. cc's own `index.css` also carries mascot animations, which are not part of the comparison and not part of this setup.
 
 **The standalone fallback, `frontend/src/cc-theme-fallback.css`:** a one-time snapshot of cc's tokens wrapped in `@layer base`. Make it from any one of these sources:
 
@@ -445,7 +474,7 @@ export const isEmbedded = (): boolean => document.documentElement.hasAttribute('
 ```
 
 **Recommended styling practice (cc's own; a design choice, not a contract rule):**
-- **Colours only through the tokens:** the Tailwind utilities (`bg-card`, `text-muted-foreground`, `border-border`, `text-destructive`, …) or `var(--token)`. Avoid a literal colour: it does not follow the host theme.
+- **Colours in the plugin's own code only through the tokens:** the Tailwind utilities (`bg-card`, `text-muted-foreground`, `border-border`, `text-destructive`, …) or `var(--token)`. Avoid a literal colour there: it does not follow the host theme. The components you copy carry a few of their own (`bg-black/40` on the `dialog.tsx` and `sheet.tsx` overlays, `text-white` on `button.tsx`'s `destructive`); leave those or edit them.
 - **Plain CSS:** `background: var(--background); color: var(--foreground); font-family: 'Geist Variable', system-ui, sans-serif;`
 - **Canvas or chart code** reads the colour when it draws, and draws again when `useTheme()` changes: `getComputedStyle(document.documentElement).getPropertyValue('--primary')`.
 
@@ -465,10 +494,10 @@ curl -fsSLo frontend/src/components/ui/button.tsx https://raw.githubusercontent.
 - A component imports only `react`, `radix-ui`, `class-variance-authority`, `lucide-react` and `@/lib/…`. Check its `import` lines when you copy it.
 - **What is available:** the files in `<cc-checkout>/web/src/components/ui/`, which is the authority. Among them: `button`, `input`, `label`, `textarea`, `card`, `badge`, `dialog`, `dropdown-menu`, `select`, `native-select`, `tooltip`, `tabs`, `switch`, `checkbox`, `separator`, `skeleton`, `scroll-area`, `alert`, `popover`, `sheet`.
 - **Icons:** lucide's `*Icon` names, e.g. `import { PlusIcon } from 'lucide-react'`. An icon-only button needs an `aria-label`.
-- **Toasts:** `sonner`. Render `<Toaster theme={useTheme()} />` once, and call `toast(…)` / `toast.error(…)`.
+- **Toasts:** `sonner`. Render `<Toaster theme={useTheme()} />` once, and call `toast(…)` / `toast.error(…)`. Render it only if the plugin calls `toast`: sonner injects a `<style>` element, which forces `style-src 'unsafe-inline'` in the CSP.
 - **A copy is the plugin's code.** Edit it freely; nothing syncs it back.
 
-`frontend/src/main.tsx`:
+`frontend/src/main.tsx` (without toasts, drop the `Toaster` import and element and render `<App />` directly):
 
 ```tsx
 import { StrictMode } from 'react';
@@ -505,19 +534,49 @@ The variants are `button.tsx`'s. This is how cc uses them:
 
 - **Every non-submit `Button` inside a `<form>` gets `type="button"`.** A button's default type submits the form.
 
+### What a badge or alert variant means
+
+The variants are `badge.tsx`'s and `alert.tsx`'s. `Badge`:
+
+| Variant | Meaning |
+|---|---|
+| `outline` | The neutral chip: a label, count or tag with no status |
+| `secondary` | A neutral filled label (a source such as "built in", a state such as "installed") |
+| `default` | An emphasised label in the primary colour |
+| `success`, `warning`, `info`, `plan` | Status chips (translucent fill, matching text) |
+| `destructive` | An error or failure status |
+
+`Alert` has `default` (a neutral card), `destructive`, `warning` and `info`; it has no `success` or `plan`.
+
 ## API helper
 
 `frontend/src/lib/api.ts`:
 
 ```ts
+/** A failed request: the HTTP status, and the backend's `{error, code}` body when it sent one. */
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string, readonly code?: string) {
+    super(message);
+  }
+}
+
 /** A JSON request to this plugin's own backend. `path` is relative: a `/`-led path would reach cc's API. */
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith('/')) throw new Error(`api('${path}'): root-relative, so it would reach cc, not this plugin`);
   const res = await fetch(path, init);
-  if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${path}: ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    const body: { error?: unknown; code?: unknown } | null = await res.json().catch(() => null);
+    throw new ApiError(
+      res.status,
+      typeof body?.error === 'string' ? body.error : `HTTP ${res.status}`,
+      typeof body?.code === 'string' ? body.code : undefined,
+    );
+  }
   return (await res.json()) as T;
 }
 ```
+
+- A failure carries `status` and the parsed `{error, code}`, never the raw body: show `error.message`, branch on `status` or `code`.
 
 ## Serving `frontend/dist` from the backend
 
@@ -531,18 +590,23 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(here, 'frontend', 'dist');
-const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'self'";
+const indexHtml = path.join(dist, 'index.html');
+// The Part 2 minimum. Add `style-src 'unsafe-inline'` only for a library that needs it, `img-src` only for images.
+const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'";
 
 const app = express();
+app.use((_req, res, next) => {
+  res.set({ 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff' });
+  next();
+});
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use(express.json());
 // …the plugin's API routes, under /api…
 
-if (fs.existsSync(path.join(dist, 'index.html'))) {
-  app.use((_req, res, next) => { res.set('Content-Security-Policy', CSP); next(); });
+if (fs.existsSync(indexHtml)) {
   app.use(express.static(dist));
 } else {
-  console.error(`UI not built: ${path.join(dist, 'index.html')} is missing — run npm install`);
+  console.error(`UI not built: ${indexHtml} is missing — run npm install`);
   app.use((_req, res) => res.status(503).type('text/plain').send('UI not built — run npm install'));
 }
 
@@ -550,8 +614,13 @@ app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 ```
 
 - **Loopback only** (see Security): `127.0.0.1`, as above.
-- **Order:** the API routes, then the CSP, then `express.static`.
+- **Order:** the CSP and `nosniff` middleware first, outside the built check, so API responses, the 404 and the 503 carry them too; then the API routes; then `express.static`.
 - **No SPA fallback:** an unknown path is a 404, so the host URLs 404 standalone, and routes live in the query string.
+- **For a backend that is not Express** (`node:http`, or another language), the same requirements hold:
+  - serve the build's `assets/` directory, whose file names carry a base64url hash (letters, digits, `-` and `_`, e.g. `index-D11uSzBd.js`), and serve `index.html` for `/` only;
+  - answer every other path with a 404, never `index.html`;
+  - set the CSP and `nosniff` on every response, whatever its status;
+  - while `index.html` is missing, answer every UI path with a 503 and a plain-text reason, and keep the API and `healthPath` up.
 - `$PORT`, `healthPath` and the rest of the backend contract: [docs/plugins.md](plugins.md) → Plugin-compliance checklist (`<cc-checkout>/docs/plugins.md`, or `https://github.com/UnmanagedCode/code-conductor/blob/main/docs/plugins.md`).
 
 ## Reference checks
@@ -559,6 +628,9 @@ app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 For a plugin that follows this setup, beside the contract checks:
 
 - [ ] `npm install` → `frontend/dist/index.html` exists.
+- [ ] With `frontend/dist` removed, `npm start` still starts, logs the missing entry file, and answers `/` with a 503 that is not HTML.
+- [ ] Every response carries the CSP, the 404 and the 503 included.
+- [ ] The built CSS has no absolute URL: `perl -0pe 's{/\*.*?\*/}{}gs' frontend/dist/assets/*.css | grep -nE 'https?://|url\(//'` prints nothing. The `perl` strips the `/* */` comments first, because Tailwind's header comment contains `https://tailwindcss.com`.
 - [ ] `PORT=<port> npm start` → `http://127.0.0.1:<port>/` loads.
 - [ ] The backend listens on `127.0.0.1` only: `http://<this machine's LAN address>:<port>/` does not answer.
 - [ ] Legible with the OS in light and in dark (DevTools → Rendering → Emulate CSS `prefers-color-scheme`), and it follows a flip live.
