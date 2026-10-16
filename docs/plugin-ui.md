@@ -115,7 +115,7 @@ What cc runs on Library **Install** and **Update**:
 - [ ] Navigation adds no history entry beyond cc's one: Back from the plugin returns to cc.
 - [ ] A fresh `git clone` plus the Library entry's hook, with no other step, leaves a servable checkout; `git status` is clean afterwards.
 - [ ] In cc, Settings → Plugins → Library → **Install** reports the `postClone` hook ok; **Update** rebuilds, and restarts the backend if it is running (a stopped one picks the pull up when it next starts).
-- [ ] Outside cc the UI is legible; the only console errors concern the two host URLs: their 404, and, when the plugin sends `X-Content-Type-Options: nosniff`, the browser refusing the 404 body (JSON or otherwise, not HTML) as a script or stylesheet. Chromium logs the `/pluginTheme.css` refusal twice.
+- [ ] Outside cc the UI is legible; the only console errors concern the two host URLs: their 404, and, when the plugin sends `X-Content-Type-Options: nosniff`, the browser refusing the 404 response as a script or stylesheet because of its MIME type (whatever the body is). Chromium logs the `/pluginTheme.css` refusal twice.
 
 **Trying an unmerged plugin branch in a scratch cc** (leaves your own cc and its plugins alone):
 
@@ -144,7 +144,7 @@ default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connec
 ```
 
   - `font-src 'self'` carries the host's Geist fonts; `style-src 'self'` the host sheet; `script-src 'self'` the bridge.
-  - Add `style-src 'unsafe-inline'` only when a library you use injects a `<style>` element or sets styles as markup (in the reference setup: Radix Dialog, Sheet and ScrollArea, and sonner).
+  - Add `style-src 'unsafe-inline'` only when a library you use injects a `<style>` element or sets styles as markup (in the reference setup: Radix Dialog, Sheet, Select and ScrollArea, and sonner).
   - Add `img-src` only if the UI shows images (`'self'`, plus `data:` if it needs inline ones).
   - No inline scripts are allowed under this policy, so a page script lives in a file.
   - **Send it on every response**, the 404, the 503 and error responses included, and send `X-Content-Type-Options: nosniff` with it. Do not serve `.map` files.
@@ -152,9 +152,11 @@ default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connec
   - **What a CSP does not do:**
     - It protects the plugin's own document only. cc's own responses carry no CSP and no framing protection (no `X-Frame-Options`, no `frame-ancestors`).
     - `script-src 'self'` allows every script on cc's origin, which is the plugin page's origin too: every path under `/plugins/<id>/` of every plugin, and cc's own. So it stops an injected inline script or event handler, but it is no containment boundary: an injected `<script src="/…">` naming any script on that origin still runs. Rendering content as text, never markup, is the actual defence.
-- **Keep untrusted-content parsing off the thread that answers `healthPath`.** Consequence: a backend that parses content synchronously on the same thread can be stalled by a parser that is quadratic or worse. cc's liveness probe of `healthPath` is bounded, so a stalled backend reads as a dead child, is marked `crashed` and restarted with backoff, and the loop can end in `failed`.
+- **Keep untrusted-content parsing off the thread that answers `healthPath`.** Consequence: a backend that parses content synchronously on that thread can be stalled by a parser that is quadratic or worse, and cc cannot see it.
+  - A backend that is already `ready` stays `ready`: cc marks a child dead only when its process is gone, there is no periodic health poll, and the proxy sets no request timeout. Its row keeps saying `ready` while its requests hang.
+  - At start it is different: a backend that does not answer within the readiness deadline is recorded as a crash, restarted with backoff, and marked `failed` after repeated crashes. A parser that runs on load (indexing the content before listening, say) lands there.
   - No nested or adjacent quantifiers over untrusted lines.
-  - A quantifier before `(.*)` is quadratic on a run of characters `.` does not match: `\n`, `\r`, U+2028 and U+2029. Splitting on `\n` first still leaves the other three inside a line.
+  - A leading quantifier over characters `.` does not match, followed by `(.*)` and a tail that cannot match, is quadratic on a run of them: `\n`, `\r`, U+2028 and U+2029. Example: `/\s*(.*)x$/` on a string of U+2028 took about 0.5 s at 20,000 characters, 3 s at 40,000 and 13 s at 80,000. Splitting on `\n` first still leaves the other three inside a line.
   - An unanchored `/x+$/` rescans from every start position.
   - Bound nesting depth, and cap the bytes per page.
   - Time your parser at doubling input sizes: a time that grows about fourfold per doubling is quadratic.
@@ -242,8 +244,8 @@ SPECS=$(node -e '
 **Add these keys to the `package.json` the Dependencies step wrote, and keep its `devDependencies` exactly as installed.** Do not replace the file: without those devDependencies, `prepare` fails with `Cannot find package 'vite'`. `npm pkg set` merges the keys in place:
 
 ```sh
-# only when `npm pkg get name` prints {}: set would rename an existing package
-npm pkg set name=my-plugin
+# only when the package has no name yet: `npm pkg set name=…` would rename an existing one
+[ "$(npm pkg get name)" = '{}' ] && npm pkg set name=my-plugin
 npm pkg set type=module engines.node=">=22.12" \
   scripts.start="node server.js" \
   scripts.prepare="vite build --config frontend/vite.config.ts" \
@@ -540,7 +542,7 @@ The variants are `badge.tsx`'s and `alert.tsx`'s. `Badge`:
 
 | Variant | Meaning |
 |---|---|
-| `outline` | The neutral chip: a label, count or tag with no status |
+| `outline` | The un-filled chip: a count, tag or label, or a muted negative such as "not installed" |
 | `secondary` | A neutral filled label (a source such as "built in", a state such as "installed") |
 | `default` | An emphasised label in the primary colour |
 | `success`, `warning`, `info`, `plan` | Status chips (translucent fill, matching text) |
@@ -609,6 +611,12 @@ if (fs.existsSync(indexHtml)) {
   console.error(`UI not built: ${indexHtml} is missing — run npm install`);
   app.use((_req, res) => res.status(503).type('text/plain').send('UI not built — run npm install'));
 }
+// Terminal 404 and error handlers: Express's own pages replace the plugin's CSP with `default-src 'none'`.
+app.use((_req, res) => res.status(404).type('text/plain').send('Not found'));
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500).type('text/plain').send('Internal error');
+});
 
 app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
 ```
