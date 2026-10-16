@@ -613,9 +613,11 @@ if (fs.existsSync(indexHtml)) {
 }
 // Terminal 404 and error handlers: Express's own pages replace the plugin's CSP with `default-src 'none'`.
 app.use((_req, res) => res.status(404).type('text/plain').send('Not found'));
-app.use((err, _req, res, _next) => {
+app.use((err, _req, res, next) => {
+  if (res.headersSent) return next(err);
   console.error(err);
-  res.status(500).type('text/plain').send('Internal error');
+  const status = err.status ?? err.statusCode ?? 500;
+  res.status(status).type('text/plain').send(status === 500 ? 'Internal error' : err.message);
 });
 
 app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
