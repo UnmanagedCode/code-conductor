@@ -2073,3 +2073,227 @@ test('2026-0230: an overage stop against a latched-stream worker reaches a real 
     else process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS = prevDeadline;
   }
 });
+
+// ── An idle tree at the trip: job-waiting conductors and arm-on-sever ──────
+//
+// The observed strand: at the trip the conductor was idle holding no wake, and its
+// worker was idle with live background Bash jobs. Routing stopped nothing in that
+// tree, and every later job-driven re-invocation of the worker was cut by the
+// turn-start guard — whose sever drops the wake `onTurnStart` just re-armed and
+// marks the conductor, but never armed it. The conductor ended with no deadline and
+// no resume at reset.
+//
+// These tests drive the trip through `_handleOverageTrip(null, …)` (the poll's
+// account-global entry, synchronous, so routing state is assertable right after),
+// and the worker's re-invocation as an injected `message_start` — a turn prompt()
+// never sees, exactly the job-exit shape. The worker is never WARMED: warming it
+// would arm and then spend the conductor's wake before the test begins.
+
+function trip() {
+  instances._handleOverageTrip(null, { resetsAt: nowSec() + 3600 });
+}
+
+function injectMessageStart(inst, id = 'msg_job_exit') {
+  inst._handleStdoutLine(JSON.stringify({
+    type: 'stream_event',
+    event: {
+      type: 'message_start',
+      message: { id, role: 'assistant', model: 'claude-sonnet-4-6', usage: { input_tokens: 10, output_tokens: 1 } },
+    },
+  }));
+}
+
+// The CLI's level-triggered background-task snapshot: `ids` is the full live set.
+function setJobs(inst, ids) {
+  inst._handleStdoutLine(JSON.stringify({ type: 'system', subtype: 'background_tasks_changed',
+    tasks: ids.map(id => ({ task_id: id, task_type: 'local_bash', description: 'tests' })) }));
+  assert.equal(inst.backgroundJobs.length, ids.length, 'precondition: the job snapshot landed');
+}
+
+// An idle conductor C owning (by spawn) an idle worker W, neither holding a wake.
+async function idleTree() {
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  return { conductor, worker };
+}
+
+function assertIdleNoWake(conductor) {
+  assert.equal(conductor.status, 'idle', 'precondition: the conductor is idle');
+  assert.equal(instances.isIdleCaller(conductor.id), false, 'precondition: and holds no wake');
+}
+
+function assertUnarmed(inst, label) {
+  assert.equal(inst.autoStoppedForOverage, false, `${label}: not marked for resume`);
+  assert.equal(inst.autoResumeAt, null, `${label}: no resume badge`);
+  assert.equal(instances._autoResumeTimers.has(inst.id), false, `${label}: no deadline`);
+}
+
+// REGRESSION — Invariant: an idle conductor whose idle worker holds a live background
+// job at the trip is armed EXACTLY ONCE and resumed idle-parked, carrying the
+// dropped-callbacks clause the worker's guarded re-invocation earned it. Both arming
+// paths see it (routing at the trip, the sever at the guard); the second must not
+// re-arm, and the resume is delivered once.
+test('ARM-T1 REGRESSION: an idle conductor of a job-holding worker is armed once and resumed', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  const cEvs = collect(conductor);
+  const cStatuses = [];
+  conductor.on('status', (sm) => cStatuses.push(sm));
+  setJobs(worker, ['bj1']);
+  assertIdleNoWake(conductor);
+
+  trip();
+  const armedAt = conductor.autoResumeAt;
+
+  // The job exits: the CLI clears the snapshot and re-invokes the worker unprompted.
+  setJobs(worker, []);
+  injectMessageStart(worker);
+  assert.equal(instances.hasArmedWake(worker.id), false,
+    'precondition: the guard severed the wake onTurnStart re-armed');
+  await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+
+  assert.notEqual(conductor.autoResumeAt, null, 'the conductor has a resume badge');
+  assert.equal(instances._autoResumeTimers.has(conductor.id), true, 'and a deadline');
+  assert.equal(conductor._overageWasIdleParked, true, 'recorded as idle-parked');
+  assert.equal(conductor._overageWasStopped, false, 'not as stopped mid-work');
+  assert.equal(cStatuses.every(sm => sm.status !== 'turn'), true, 'it never entered a turn');
+  assertUnarmed(worker, 'the worker (its conductor is the sole driver)');
+  assert.equal(conductor.autoResumeAt, armedAt, 'the guard did not re-arm it');
+  assert.equal(sub(cEvs, 'auto_stop_overage').length, 1, 'one stop notice on the conductor');
+
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'the resume fired');
+  const expected = buildConductorResumePreamble({ kind: 'idle-parked', droppedCallbacks: true });
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
+  await settle();
+  assert.equal(cEvs.filter(e => e.kind === 'user_echo').length, 1, 'exactly one resume delivered');
+  assert.equal(instances._fireAutoResumeNow(conductor.id), false, 'no second deadline remains');
+});
+
+// Invariant: ROUTING alone arms the job-waiting conductor at the trip — before any
+// re-invocation — so its ⏸ badge shows from the trip on. The idle job-holding worker
+// it protects is neither stopped nor flagged un-armed, and nothing was severed, so
+// the resume is the bare idle-parked text with no clause.
+test('ARM-T2 routing arms a job-waiting idle conductor at the trip', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  const cEvs = collect(conductor);
+  const wEvs = collect(worker);
+  setJobs(worker, ['bj1']);
+  assertIdleNoWake(conductor);
+
+  trip();
+  const notices = sub(cEvs, 'auto_stop_overage');
+  assert.equal(notices.length, 1, 'the conductor is stopped at the trip');
+  assert.equal(notices[0].data.resume, true, 'and told it will auto-resume');
+  assert.equal(conductor.autoStoppedForOverage, true, 'marked for resume');
+  assert.notEqual(conductor.autoResumeAt, null, 'badge set at the trip');
+  assert.equal(instances._autoResumeTimers.has(conductor.id), true, 'deadline armed at the trip');
+  assert.equal(conductor._overageWasIdleParked, true, 'idle-parked');
+  assert.equal(conductor._overageWasStopped, false);
+  assert.equal(sub(wEvs, 'auto_stop_overage').length, 0, 'the idle worker is not stopped');
+  assert.equal(worker._overageStoppedUnarmed, false, 'nor flagged un-armed');
+
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'the resume fired');
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo'), { timeout: 10000 });
+  assert.equal(cEvs.find(e => e.kind === 'user_echo').text, IDLE_PARKED_RESUME_TEXT,
+    'the bare idle-parked text: nothing severed, nothing un-armed');
+});
+
+// Invariant: the SEVER arms what routing never saw. With no job and no wake at the
+// trip, routing leaves the conductor alone (the scope pin — in-control is not "every
+// root"); the worker's later guarded turn re-arms and severs the conductor's wake,
+// and that sever arms the conductor idle-parked with the dropped-callbacks clause,
+// leaving the worker un-armed.
+test('ARM-T3 a guarded worker turn arms its idle, un-routed conductor', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  const cEvs = collect(conductor);
+  assertIdleNoWake(conductor);
+
+  trip();
+  assert.equal(sub(cEvs, 'auto_stop_overage').length, 0, 'scope: routing does not stop this conductor');
+  assertUnarmed(conductor, 'scope: the conductor at the trip');
+
+  injectMessageStart(worker);
+  assert.equal(instances.hasArmedWake(worker.id), false, 'precondition: the guard severed the wake');
+  assert.notEqual(conductor.autoResumeAt, null, 'the sever armed the conductor');
+  assert.equal(instances._autoResumeTimers.has(conductor.id), true, 'with a deadline');
+  assert.equal(conductor._overageWasIdleParked, true, 'idle-parked');
+  assert.equal(conductor._overageWasStopped, false);
+  assert.equal(conductor._overageDroppedCallbacks, true, 'and marked dropped');
+  assertUnarmed(worker, 'the worker');
+  await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'the resume fired');
+  const expected = buildConductorResumePreamble({ kind: 'idle-parked', droppedCallbacks: true });
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
+});
+
+function assertUnarmedUnmarked(inst, label) {
+  assertUnarmed(inst, label);
+  assert.equal(inst._overageWasIdleParked, false, `${label}: no resume selector written`);
+}
+
+// PIN — Invariant: a worker the trip stopped UN-ARMED stays un-armed when a later
+// sever cuts a wake it holds — even once its conductor is gone, so the
+// `_overageStoppedUnarmed` conjunct alone must protect it. It is still marked.
+test('ARM-T4a a stopped-un-armed worker that loses a wake stays un-armed', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  worker.prompt('STAY');
+  await waitFor(() => worker.status === 'turn');
+  assert.equal(instances.isIdleCaller(conductor.id), true, 'precondition: the conductor holds a wake');
+
+  trip();
+  await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+  assert.equal(worker._overageStoppedUnarmed, true, 'precondition: Pass 3 stopped it un-armed');
+  await instances.remove(conductor.id);
+  assert.equal(instances._ownerConductor(worker), null, 'precondition: its owner is gone');
+
+  const other = await createInst({});
+  instances.noteDispatch(worker.sessionId, other.sessionId);
+  assert.equal(other._overageGate().active, true, 'precondition: the lockout is still live');
+  assert.equal(worker._overageDroppedCallbacks, false, 'precondition: the worker has lost nothing yet');
+  injectMessageStart(other);
+  assert.equal(instances.hasArmedWake(other.id), false, 'precondition: the guard severed the wake');
+
+  assertUnarmedUnmarked(worker, 'the un-armed worker');
+  assert.equal(worker._overageDroppedCallbacks, true, 'but it is marked dropped');
+  await waitFor(() => other.status === 'idle', { timeout: 10000 });
+});
+
+// Invariant: a worker whose live conductor is armed is never armed by a sever —
+// the conductor is its sole driver — and that conductor is marked instead, so its
+// resume says a callback was dropped. The worker here is idle at the trip, so the
+// owner-armed conjunct alone protects it.
+test('ARM-T4b a worker under an armed conductor is skipped, and the conductor is told', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  const cEvs = collect(conductor);
+  setJobs(worker, ['bj1']);
+  assertIdleNoWake(conductor);
+
+  trip();
+  assert.equal(conductor.autoStoppedForOverage, true, 'precondition: routing armed the conductor');
+  assert.equal(worker._overageStoppedUnarmed, false, 'precondition: the worker was not stopped');
+  assert.equal(conductor._overageDroppedCallbacks, false, 'precondition: the conductor lost nothing');
+  assert.equal(worker._overageDroppedCallbacks, false, 'precondition: nor did the worker');
+
+  const other = await createInst({});
+  instances.noteDispatch(worker.sessionId, other.sessionId);
+  injectMessageStart(other);
+  assert.equal(instances.hasArmedWake(other.id), false, 'precondition: the guard severed the wake');
+
+  assert.equal(worker._overageDroppedCallbacks, true, 'precondition: the sever reached the worker');
+  assertUnarmedUnmarked(worker, 'the protected worker');
+  assert.equal(conductor._overageDroppedCallbacks, true, 'its driver is marked instead');
+  await waitFor(() => other.status === 'idle', { timeout: 10000 });
+
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'the resume fired');
+  const expected = buildConductorResumePreamble({ kind: 'idle-parked', droppedCallbacks: true });
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
+});

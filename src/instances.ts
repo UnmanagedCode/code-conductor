@@ -5237,15 +5237,23 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // list_sessions' `awaiting-wake` column both read it.
   // `waitingOnJob` is display-only and UI-only: a live session with a running
   // background Bash job, or any live owner above one. Distinct from
-  // `awaitingWake`, which is the held-wake predicate.
+  // `awaitingWake`, which is the held-wake predicate. The same set is overage
+  // routing's job-waiter input (`_jobWaiters`).
   list(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }> {
     const insts = [...this.byId.values()];
-    const waiters = jobWaiters(insts, id => this._idleHub.ownersOf(id));
+    const waiters = this._jobWaiters();
     return insts.map(i => ({
       ...i.summary(),
       awaitingWake: this.isIdleCaller(i.id),
       waitingOnJob: waiters.has(i.id),
     }));
+  }
+
+  // Every live instance waiting on a background job — its own, or one held by a
+  // session it owns (src/backgroundJobs.ts → jobWaiters). Read by list() and by
+  // `_routeOverageStop`'s in-control test.
+  _jobWaiters(): Set<string> {
+    return jobWaiters([...this.byId.values()], id => this._idleHub.ownersOf(id));
   }
 
   // list() minus the hidden pristine conductors: what every list PAYLOAD serves
@@ -6457,11 +6465,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // callers + the overage tests reach for them on the manager).
   _armAutoResume(inst: Instance): void { return this._overageResume.arm(inst); }
   // Arm a resume deadline IMMEDIATELY, for a session with no turn→idle transition
-  // for the status handler to arm on. Two callers, two reasons:
+  // for the status handler to arm on. Three callers, three reasons:
   //   - a QUEUED-ONLY session (idle/new — it queued a send while the window was
   //     active but was never stopped mid-work): it may already be idle;
   //   - an IDLE-PARKED conductor (`_directOverageStop` with midTurn false): it is
-  //     never prompted and never interrupted, so it never transitions at all.
+  //     never prompted and never interrupted, so it never transitions at all;
+  //   - an idle caller whose wake the overage sever cut (`_armSeveredCaller`): no
+  //     stop reached it, so nothing else arms it.
   // Deliberately touches NO preamble selector — `_overageWasStopped` /
   // `_overageWasIdleParked` are the caller's to set (queued-only leaves both false).
   _armResumeNow(inst: Instance, resetsAt: number | null): void {
@@ -6674,13 +6684,20 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // so it is stopped along with the conductor.
     const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
     // Pass 1: resolve which conductors are in control and which workers they protect.
+    // In control = mid-turn, holding a wake (`isIdleCaller`), or a JOB WAITER: an
+    // idle conductor whose worker holds a live background job holds no wake now,
+    // but the job's exit re-invokes that worker and re-arms one — and the guard
+    // then severs it. Stopping it here arms it at the trip, so its resume is
+    // badged from the start. A job that never ends (a promoted dev server) still
+    // counts, which costs that conductor one idle-parked resume turn per reset.
+    const jobWaiting = this._jobWaiters();
     const inControlConductors = new Map<string, Instance>();  // conductor id → conductor instance
     const protectedWorkers = new Set<string>(); // worker ids owned by an in-control conductor
     for (const inst of live) {
       if (!inst.conducted) continue;
       const conductor = this._ownerConductor(inst);
       const inControl = conductor && conductor.proc &&
-        (conductor.status === 'turn' || this.isIdleCaller(conductor.id));
+        (conductor.status === 'turn' || this.isIdleCaller(conductor.id) || jobWaiting.has(conductor.id));
       if (inControl) {
         inControlConductors.set(conductor.id, conductor);
         protectedWorkers.add(inst.id);
@@ -6769,16 +6786,20 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // arm that never reaches a boundary escalates instead of latching for the turn.
     inst.interrupt({ deadlineMs: softInterruptDeadlineMs() }).catch(() => {});
     // An idle session makes no turn→idle transition for the status handler to arm
-    // on — and now that it is never prompted either, this is its ONLY arming. Armed
-    // through the same controller entry point a queued-only session uses.
+    // on, and it is never prompted either, so this is its arming at the stop (a
+    // later sever skips it as already armed). Armed through the same controller
+    // entry point a queued-only session uses.
     if (armResume && !midTurn) this._armResumeNow(inst, resetsAt);
   }
 
   // Sever the idle-wake graph around a session, and MARK every caller that loses a
   // wait — marked, not notified: the mark only reaches a caller that has a resume
   // prompt of its own to carry it, which an un-armed or plain-`stop` caller does
-  // not. The purge is bidirectional, so a third session waiting ON this one loses
-  // its wait too and is marked as well.
+  // not. So each marked caller is also ARMED when nothing else will arm it
+  // (`_armSeveredCaller`): an idle conductor whose wake is cut has no stop and no
+  // turn→idle transition, and would otherwise wait out the window with no resume.
+  // The purge is bidirectional, so a third session waiting ON this one loses its
+  // wait too and is marked as well.
   //
   // Why sever at all: a wake is an `internal:true` prompt, which the overage queue
   // intercept deliberately does NOT hold, so it would start a fresh turn inside the
@@ -6796,8 +6817,48 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _severOverageWakes(inst: Instance): void {
     for (const callerId of this._idleHub.severForOverageStop(inst.id)) {
       const caller = this.byId.get(callerId);
-      if (caller) caller._overageDroppedCallbacks = true;
+      if (!caller) continue;
+      caller._overageDroppedCallbacks = true;
+      this._armSeveredCaller(caller);
     }
+  }
+
+  // Arm a caller that just lost a wake to the overage sever, idle-parked: the sever
+  // interrupted none of its own work. Every check runs BEFORE any flag is written —
+  // a stray `autoStoppedForOverage` with no deadline holds `_maybeReleaseOverageLock`
+  // forever.
+  //
+  // Gated on the lockout's mode flags plus tree membership, NOT `_overageGate().active`:
+  // the gate's future-`resetsAt` rail would make this a no-op on a trip with no reset
+  // time, where routing still arms (and arm() rechecks soon).
+  //
+  // A PROTECTED worker is skipped and its conductor marked instead — the conductor is
+  // the sole driver on resume, and must be told a callback is gone or it resumes in
+  // front of a worker waiting on a wake nothing will send. Order-safe without a sort:
+  // severForOverageStop lists a target's callers before the target itself, so when
+  // the guard severs a worker that holds its own waits, its owner is armed first and
+  // the worker then reads as protected.
+  _armSeveredCaller(caller: Instance): void {
+    if (!this._overageActive || !this._overageResumeMode) return; // plain Stop, or released
+    if (!caller.proc || !this._inUsageWindowFlow(caller)) return;  // dead, or root-exempt
+    // Already armed — or marked by a stop and arming at its idle transition. Covers a
+    // routed session's own sever: `_directOverageStop` sets the flag before severing.
+    if (caller.autoStoppedForOverage || caller.autoResumeAt != null ||
+        this._autoResumeTimers.has(caller.id)) return;
+    const owner = caller.conducted ? this._ownerConductor(caller) : null;
+    // `_overageStoppedUnarmed` stays load-bearing after its owner is gone: the
+    // `_armResumeNow` backstop fires only after the selectors below were written,
+    // and the mid-turn branch bypasses it entirely.
+    if (caller._overageStoppedUnarmed || (owner?.proc && owner.autoStoppedForOverage)) {
+      if (owner) owner._overageDroppedCallbacks = true;
+      return;
+    }
+    caller._overageWasStopped = false;
+    caller._overageWasIdleParked = true;
+    caller._overageResetsAt = this._overageResetsAt;
+    // Mid-turn: the status handler arms it at idle, as for a routed mid-turn stop.
+    if (caller.status === 'turn') caller.autoStoppedForOverage = true;
+    else this._armResumeNow(caller, this._overageResetsAt);
   }
 
   // Turn-start lockout guard. A turn that begins during an overage
