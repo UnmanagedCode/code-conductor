@@ -138,9 +138,8 @@ export function ModeToggle({ inst }: { inst: Instance }) {
               onClick={() => set(mode)}
               className={cn(
                 'h-full rounded-md px-3 transition-colors disabled:cursor-not-allowed',
-                inst.mode === mode
-                  ? mode === 'plan' ? 'bg-background text-plan shadow-xs dark:bg-input/40' : 'bg-background text-foreground shadow-xs dark:bg-input/40'
-                  : 'text-muted-foreground hover:text-foreground',
+                'not-aria-pressed:text-muted-foreground not-aria-pressed:hover:text-foreground',
+                'aria-pressed:bg-primary/15 aria-pressed:text-accent-foreground aria-pressed:shadow-xs',
               )}
             >
               {label}
