@@ -44,6 +44,9 @@ test('the absolute run cap fires, fails the run, and still prints the verdict', 
   assert.match(r.out, /hang-guard: RUN CAP TRIPPED/);
   assert.match(r.out, /hang-guard: \d+\/\d+ files reported.*RUN CAP TRIPPED/,
     'the verdict line must still print on the cap path');
+  // FILE_KILL is above the cap, so no synthesized failure flushes this file:
+  // only the cap path's dump can print its held-back output.
+  assert.match(r.out, /busyloop: entering the spin/, 'the cap must print the wedged file\'s held-back output');
   assert.ok(r.wallMs < 20_000, `capped run took ${r.wallMs}ms — the cap did not bound it`);
 });
 
@@ -84,7 +87,9 @@ test('a healthy run whose stdout consumer stalls is NOT reported as a stall', as
   // chatty.fixture.mjs. ~4MB reproduces (writes block ~4030ms); ~200KB provably
   // does NOT (finishes in ~134ms with 0 bytes read), so a trimmed fixture would
   // make this case pass against the broken code. Do not shrink it to speed this
-  // file up; the file was split instead (card 2026-0198).
+  // file up; the file was split instead (card 2026-0198). It also needs
+  // `verbose: true`: the quiet reporter holds a passing file's output back, so a
+  // quiet run puts none of the volume on stdout and builds no backpressure.
   //
   // The gate is `nodeFinished` (node's single run-level test:summary): emitted at
   // push time on a healthy run, never emitted in a genuine wedge.
@@ -102,7 +107,7 @@ test('a healthy run whose stdout consumer stalls is NOT reported as a stall', as
   assert.ok(PAUSE > SWEEP * 2,
     `the ${PAUSE}ms pause must outlast the ${SWEEP}ms stall grace, or the stream ends before an ` +
     'ungated check could ever declare a stall and this case cannot fail');
-  const r = await runGuard('chatty', FAST, { stdoutPauseMs: PAUSE, discardStdout: true });
+  const r = await runGuard('chatty', FAST, { stdoutPauseMs: PAUSE, discardStdout: true, verbose: true });
   assert.equal(r.code, 0, `a healthy run must stay green behind a slow consumer:\n${r.out}`);
   assert.ok(r.wallMs > PAUSE * 0.9,
     `the run finished in ${r.wallMs}ms behind a ${PAUSE}ms pause — backpressure did not defer ` +

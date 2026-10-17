@@ -11,3 +11,7 @@ Named `*.fixture.mjs`, NOT `*.test.mjs`, on purpose: `discover()` in
 several of them hang or wedge by design. `runGuard()` in `hangGuardCase.mjs` runs
 each by passing its explicit path to a child `tests/run.mjs`, which still
 executes it.
+
+`quiet-pass` and `quiet-fail` are not hang shapes: they are the passing and
+failing files `tests/runner-quiet.test.mjs` runs to pin what the quiet reporter
+(`tests/quietReporter.mjs`) prints for each, through the same `runGuard()`.

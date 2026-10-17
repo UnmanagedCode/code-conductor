@@ -12,6 +12,7 @@ import { snapshot, censusMatching, liveChildren, descendants, killTree, killDesc
          processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
 import { enableCompileCache, COMPILE_CACHE_MAX_BYTES } from './compileCache.mjs';
+import { QuietFilter, isVerbose, renderEvents } from './quietReporter.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -322,6 +323,9 @@ const procSampler = setInterval(() => {
   // node emits it at push time in the clean case (~44ms, with nothing consuming
   // our stdout) and NEVER in the genuine wedge (absent through 5s). So node
   // finished ⇒ never a stall; node didn't finish ⇒ detection unchanged.
+  // In quiet mode a passing run's stdout carries almost nothing, so backpressure
+  // there comes only from CC_TEST_VERBOSE=1 or a failing file's flushed output;
+  // the gate is the same either way.
   const shouldBeOver = !nodeFinished &&
     settledAt.size === discovered.size &&
     now - Math.max(...settledAt.values()) > ORPHAN_SWEEP_MS;
@@ -487,8 +491,28 @@ stream.on('test:complete', (d) => {
   const startedAt = fileStartedAt.get(d.file);
   if (startedAt !== undefined) fileDurations.set(d.file, Date.now() - startedAt);
 });
-const reporter = stream.compose(new spec());
+// The quiet reporter (tests/quietReporter.mjs) sits between the source and spec
+// unless CC_TEST_VERBOSE=1. It changes only what spec SEES: every ledger and
+// hang-guard listener above stays on the source `stream`, so `reported`,
+// `killedFiles`, `nodeFinished` and `settledAt` do not depend on it, and
+// `reporter`'s `end` still waits for the source to end and both transforms to
+// flush.
+const quiet = isVerbose() ? null : new QuietFilter();
+const reporter = quiet ? stream.compose(quiet).compose(new spec()) : stream.compose(new spec());
 reporter.pipe(process.stdout);
+
+// A red run that no FILE owns — the cap, a stream stall, a leaked-process sweep —
+// cannot name its culprit, which has usually already passed. So print every
+// file's held-back output. The write is deliberately NOT awaited: on the stall
+// path the consumer may be paused, and waiting on it would be a new hang. The
+// verdict lines that follow use the same stream, so the order holds.
+async function printUnshown(why) {
+  const groups = quiet?.takeUnshown() ?? [];
+  if (groups.length === 0) return;
+  process.stdout.write(
+    `\nquiet-reporter: the run went red for a reason no file owns (${why}); ` +
+    "every file's held-back output follows.\n" + await renderEvents(groups));
+}
 
 // A3 — absolute run cap. Races the stream's own end against RUN_CAP_MS so a
 // wedge we somehow failed to kill still produces OUR verdict rather than an
@@ -524,6 +548,10 @@ try {
   clearInterval(procSampler);
   clearTimeout(capTimer);
 }
+
+// BEFORE the cap block: its killDescendants makes node synthesize a test:fail for
+// the wedged file, which would move that file onto the main pipe instead.
+if (capTripped || streamStalled) await printUnshown(capTripped ? 'run cap' : 'stream stall');
 
 if (capTripped) {
   console.error(
@@ -577,6 +605,7 @@ if (residual.length > 0) {
   console.error(`\nhang-guard: ${reapResidual(residual).message}`);
   failed++;
 }
+if (sweptOrphans > 0) await printUnshown('leaked process swept');
 
 // A2b — the verdict line, printed UNCONDITIONALLY (green or red). A green run
 // must STATE the property rather than merely not violate it, and a red run needs
@@ -623,6 +652,10 @@ if (slowest.length > 0) {
     `hang-guard: slowest files (limit ${FILE_KILL_MS}ms): ` +
     slowest.map(([f, ms]) => `${path.basename(f)} ${ms}ms`).join(', '),
   );
+}
+if (quiet) {
+  console.log("quiet-reporter: passing files' per-test lines and output were held back; " +
+    'CC_TEST_VERBOSE=1 prints the full spec report.');
 }
 for (const file of unreported) {
   // Never silently absent — whatever the cause (wedged child, a truncated

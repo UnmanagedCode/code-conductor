@@ -46,7 +46,10 @@ test('silent-orphan: leaks a live process that holds nothing of ours', async () 
   // buffered away by the in-child reporter. That is ALL the fd-2 choice buys:
   // this line does NOT arrive on the runner's stderr. node:test relays it as a
   // `test:stderr` event and run.mjs's spec reporter pipes to process.stdout, so
-  // runGuard sees it on the runner's STDOUT either way (measured 5/5).
+  // runGuard sees it on the runner's STDOUT either way (measured 5/5). This file
+  // passes, so the quiet reporter holds the line back: it arrives LIVE only under
+  // CC_TEST_VERBOSE=1 (the interrupt legs pass `verbose: true`), and otherwise
+  // in the `quiet-reporter:` dump the run-end sweep prints.
   //
   // LOAD-BEARING TEXT. The case reads this pid back and asserts it is DEAD
   // (`SWEPT` being printed is not proof of death), and the two interrupt legs

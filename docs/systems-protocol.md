@@ -908,6 +908,9 @@ CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
   node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 ```
 
+A passing battery prints its counts and skip lines only; prefix
+`CC_TEST_VERBOSE=1` to list every case. A failing one prints its whole report.
+
 `CC_CONFORMANCE_PROVIDER` is a JSON argv array. The suite **appends flags** to
 it: the `flags` of every entry in `CAPABILITY_CONFIGS`
 (`tests/referenceProviderHarness.mjs` owns that list) for the core battery, and

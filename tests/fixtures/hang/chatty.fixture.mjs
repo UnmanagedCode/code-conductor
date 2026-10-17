@@ -17,6 +17,8 @@
 // shrink now goes loud red rather than silently green, via the
 // `wallMs > PAUSE * 0.9` assertion in the slow-consumer case of
 // tests/hang-guard-run-cap.test.mjs (measured 4022ms at 400 tests vs 117ms at 20).
+// The volume reaches stdout only under CC_TEST_VERBOSE=1 — the quiet reporter
+// holds a passing file's output back — so that case passes `verbose: true`.
 //
 // Nothing here leaks, nothing hangs, and the run must be green.
 import test from 'node:test';

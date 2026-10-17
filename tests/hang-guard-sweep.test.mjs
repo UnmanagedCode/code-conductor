@@ -265,6 +265,16 @@ test('runGuard refuses signalWhen together with discardStdout', () => {
     'runGuard accepted signalWhen with stdout discarded — the signal can never be sent');
 });
 
+test('runGuard refuses signalWhen without verbose', () => {
+  // The other silent no-signal: silent-orphan PASSES, so the quiet reporter holds
+  // its holder line back until the dwell the signal was meant to interrupt is
+  // over. Synchronous for the same reason as the case above.
+  assert.throws(
+    () => runGuard('silent-orphan', FAST, { signalWhen: HOLDER_LINE }),
+    /quiet reporter holds back/,
+    'runGuard accepted signalWhen on a quiet run — the signal could not land mid-run');
+});
+
 test('a leak that wedges nothing is still swept, at the END of a healthy run', async () => {
   // THE CASE THIS WHOLE CARD EXISTS FOR, and the only behavioural proof that the
   // class is closed. Every other sweep case leaks a holder of the runner's own
@@ -273,6 +283,9 @@ test('a leak that wedges nothing is still swept, at the END of a healthy run', a
   // ended cleanly, the cap was never reached, NOTHING looked, and the run exited
   // 0 with a live process left on the box. Measured pre-fix: exit 0,
   // `0 leaked process(es) swept`, holder still alive after the run.
+  //
+  // This run is QUIET and the fixture passes, so the holder line read below
+  // reaches `r.out` only through the `quiet-reporter:` dump a sweep prints.
   const r = await runGuard('silent-orphan');
   const holder = holderPidFrom(r.out);
 
@@ -340,9 +353,12 @@ for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
     // arrives goes red (measured 5.0-5.8 s per leg at 72-way with the
     // rendezvous neutered). SIGKILL is deliberately not tested — no in-process handler can
     // run for it, which is what tests/reapOrphans.mjs exists for.
+    //
+    // `verbose: true`, because the holder line must arrive WHILE the file dwells
+    // and the quiet reporter holds a passing file's output back until it reports.
     const r = await runGuard('silent-orphan',
       { ...FAST, CC_TEST_DWELL_MS: '4000' },
-      { signalWhen: HOLDER_LINE, signal });
+      { signalWhen: HOLDER_LINE, signal, verbose: true });
     const holder = holderPidFrom(r.out);
 
     assert.match(r.out, new RegExp(`hang-guard: ${signal} — sweeping this run's processes before exiting\\.`),
