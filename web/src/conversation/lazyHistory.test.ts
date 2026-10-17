@@ -67,6 +67,7 @@ describe('auto-fill', () => {
   });
 
   it('a fetch error stops the loop and keeps the control', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const calls: string[] = [];
     vi.stubGlobal('fetch', makeFetch(['error'], calls));
     const { h } = install({ scrollHeight: { value: 100 } });
@@ -74,6 +75,7 @@ describe('auto-fill', () => {
     await settle();
     expect(calls).toHaveLength(1);
     expect(h.status.get().visible).toBe(true);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('load earlier failed:', expect.objectContaining({ message: 'boom' }));
   });
 
   it('an already-scrollable tail fetches nothing but offers the control', async () => {
@@ -193,6 +195,7 @@ describe('loadUntil', () => {
   });
 
   it('stalls on a fetch error with one fetch, keeping hasMore for a retry', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const calls: string[] = [];
     vi.stubGlobal('fetch', makeFetch(['error'], calls));
     const { h } = install();
@@ -200,6 +203,7 @@ describe('loadUntil', () => {
     expect(await h.loadUntil(() => false, () => true)).toBe('stalled');
     expect(calls).toHaveLength(1);
     expect(h.state().hasMore).toBe(true);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('load earlier failed:', expect.objectContaining({ message: 'boom' }));
   });
 
   it('is cancelled once keepGoing goes false', async () => {
@@ -257,6 +261,7 @@ describe('loadUntil', () => {
   });
 
   it('joins a scroll-triggered fetch already in flight; a joined failure is not a stall', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const calls: string[] = [];
     const gate = gatedFetch(makePages(5), calls);
     vi.stubGlobal('fetch', gate.fetch);
@@ -284,6 +289,7 @@ describe('loadUntil', () => {
     expect(calls2).toHaveLength(2);
     gate2.release();
     expect(await run2).toBe('found');
+    expect(warn).toHaveBeenCalledExactlyOnceWith('load earlier failed:', expect.objectContaining({ message: 'boom' }));
   });
 
   it('a reset between pages cancels instead of reading as exhausted', async () => {

@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
-import { computeGraph, laneEmanates } from './graph';
+import { describe, expect, it, vi } from 'vitest';
+import { MAX_LANES, computeGraph, laneEmanates } from './graph';
 
 describe('laneEmanates', () => {
   it('a converged-then-reused lane emanates from the dot', () => {
@@ -68,6 +68,8 @@ describe('computeGraph', () => {
 
   it('clamps past the lane cap instead of growing without bound', () => {
     const commits = Array.from({ length: 20 }, (_, i) => ({ sha: `t${i}`, parents: [`p${i}`] }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(computeGraph(commits).maxCols).toBe(12);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(`lane count exceeded ${MAX_LANES}`));
   });
 });

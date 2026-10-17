@@ -818,7 +818,10 @@ describe('Archived', () => {
       fireEvent.click(screen.getByRole('button', { name: /^p/ }));
       fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
       await waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
-      expect(warn.mock.calls.map((c) => (c[1] as Error).message).sort()).toEqual(['instances read refused', 'projects read refused']);
+      expect(warn.mock.calls).toEqual(expect.arrayContaining([
+        ['refreshProjects after an archive change failed:', expect.objectContaining({ message: 'projects read refused' })],
+        ['refreshInstances after an archive change failed:', expect.objectContaining({ message: 'instances read refused' })],
+      ]));
       await waitFor(() => expect(resumeSession).toHaveBeenCalledWith({ projectName: 'p', worktreeName: undefined, sessionId: 's1' }));
     } finally {
       warn.mockRestore();

@@ -286,6 +286,7 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(controller.refreshInstances).not.toHaveBeenCalled();
     expect(controller.selectInstance).not.toHaveBeenCalled();
     expect(toasts).toEqual([]);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('anchor auto-resume failed', expect.objectContaining({ message: SERVER_UNREACHABLE_MESSAGE }));
     warn.mockRestore();
   });
 

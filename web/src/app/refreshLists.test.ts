@@ -78,7 +78,10 @@ describe('refreshing the lists', () => {
       bus.dispatchEvent(new CustomEvent('instances'));
       bus.dispatchEvent(new CustomEvent('projects'));
       await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
-      expect(warn.mock.calls.map((c) => (c[1] as Error).message)).toEqual(['hint read refused', 'hint read refused']);
+      expect(warn.mock.calls).toEqual([
+        ['refreshInstances on a hint failed:', expect.objectContaining({ message: 'hint read refused' })],
+        ['refreshProjects on a hint failed:', expect.objectContaining({ message: 'hint read refused' })],
+      ]);
       expect(appStore.get().instances).toEqual([live]);
       expect(appStore.get().projects).toEqual([{ name: 'beta' }]);
     } finally {

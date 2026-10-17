@@ -30,6 +30,7 @@ async function boot({ instances = [] as any[], locate = null as null | ((sid: st
       const r = locate?.(sid);
       return r ? { ok: true, json: async () => r } : { ok: false, status: 404, json: async () => ({}) };
     }
+    if (url.includes('/lineage-events')) return { ok: true, json: async () => ({ events: [], hasMore: false, segment: null, nextBefore: null }) };
     return { ok: true, json: async () => (url.includes('conductors') ? {} : []) };
   });
   vi.stubGlobal('fetch', fetch);

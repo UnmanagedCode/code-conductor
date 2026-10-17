@@ -385,7 +385,7 @@ describe('change model', () => {
       ['Llama 70B', { model: 'llama3:70b', backend: 'ollama' }],
     ]);
     expect(ollama.filter((e) => e.model === 'qwen3:8b')).toHaveLength(2);
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error');
     try {
       let sub = await openModelPicker(base());
       expect(within(sub).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Fast', 'Powerful', 'Local', 'Qwen 8B', 'Llama 70B']);

@@ -228,7 +228,9 @@ describe('targeted worktree sync', () => {
   });
 
   it('a refresh failure keeps the result and still offers the rebase prompt', async () => {
-    refreshProjectsError.value = new Error('boom');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const boom = new Error('boom');
+    refreshProjectsError.value = boom;
     bodies = { sync: { ok: true, action: 'fast-forwarded', newSha: '0123456789abcdef' } };
     expect(await syncWorktree(TARGET)).toEqual(bodies.sync);
     expect(toastText()).not.toMatch(/failed/i);
@@ -237,6 +239,7 @@ describe('targeted worktree sync', () => {
     await syncWorktree(TARGET);
     expect(confirms).toHaveLength(1);
     expect(posts('/rebase-prompt')).toHaveLength(1);
+    expect(warn.mock.calls).toEqual([['refreshProjects after worktree op failed:', boom], ['refreshProjects after worktree op failed:', boom]]);
   });
 });
 
@@ -266,10 +269,13 @@ describe('merge and lock', () => {
   });
 
   it('a refresh failure after a merge keeps the result', async () => {
-    refreshProjectsError.value = new Error('boom');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const boom = new Error('boom');
+    refreshProjectsError.value = boom;
     bodies = { merge: { ok: true, newSha: '0123456789abcdef' } };
     expect(await mergeWorktree(TARGET)).toEqual(bodies.merge);
     expect(toastText()).not.toMatch(/failed/i);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('refreshProjects after worktree op failed:', boom);
   });
 
   it('merge and lock encode names', async () => {

@@ -293,10 +293,12 @@ describe('sendPrompt', () => {
 describe('exactly one result per call', () => {
   it('answers HOST_ERROR once when the host throws mid-call', async () => {
     // Invariant: an unexpected host-side failure still yields exactly one {ok:false, code:'HOST_ERROR'} (ask() asserts one reply per id).
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     sendMock.mockImplementation(() => { throw new Error('socket layer blew up'); });
     expect(await ask(shared, 'openSession', { sessionId: 's-b' })).toMatchObject({ ok: false, code: 'HOST_ERROR' });
     await settle();
     expect(results(shared)).toHaveLength(1);
+    expect(error).toHaveBeenCalledExactlyOnceWith('plugin bridge call failed', expect.objectContaining({ message: 'socket layer blew up' }));
   });
 
   it('answers LOOKUP_FAILED when the locate read never settles', async () => {

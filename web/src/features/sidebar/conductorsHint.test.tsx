@@ -51,7 +51,7 @@ const fetchMock = vi.fn(async (url: string) => {
 });
 
 /** Delivers one server message to the controller, as the socket does. */
-const hint = (t: string) => act(() => { bus.dispatchEvent(new CustomEvent(t, { detail: {} })); });
+const hint = (t: string) => act(async () => { bus.dispatchEvent(new CustomEvent(t, { detail: {} })); });
 
 const conductors = () => [...document.querySelectorAll('[data-conductor]')].map((e) => e.getAttribute('data-conductor')).sort();
 const blockOf = (sid: string) => document.querySelector(`[data-conductor="${sid}"]`) as HTMLElement;

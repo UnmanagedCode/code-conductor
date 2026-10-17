@@ -43,6 +43,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 async function answer(url: string, method: string): Promise<Response> {
   net.calls.push(`${method} ${url}`);
   if (url === '/api/plugins') return json({ rows: net.catalog });
+  if (url === '/api/health') return json({ capabilities: { remoteSystems: true, fuseUnion: true, voice: true } });
   const m = /^\/api\/plugins\/([^/]+)\/(status|start)$/.exec(url);
   if (!m) return json({});
   const row = net.status[m[1]];

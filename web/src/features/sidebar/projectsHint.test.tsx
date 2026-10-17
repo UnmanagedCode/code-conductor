@@ -58,7 +58,7 @@ const fetchMock = vi.fn(async (url: string) => {
 });
 
 /** Delivers one server message to the controller, as the socket does. */
-const hint = (t: string, detail: Record<string, unknown> = {}) => act(() => { bus.dispatchEvent(new CustomEvent(t, { detail })); });
+const hint = (t: string, detail: Record<string, unknown> = {}) => act(async () => { bus.dispatchEvent(new CustomEvent(t, { detail })); });
 /** Lets pending reads resolve and React re-render. */
 const settle = () => act(async () => { for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0)); });
 
