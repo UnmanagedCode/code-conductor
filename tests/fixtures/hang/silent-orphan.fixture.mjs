@@ -49,7 +49,8 @@ test('silent-orphan: leaks a live process that holds nothing of ours', async () 
   // runGuard sees it on the runner's STDOUT either way (measured 5/5). This file
   // passes, so the quiet reporter holds the line back: it arrives LIVE only under
   // CC_TEST_VERBOSE=1 (the interrupt legs pass `verbose: true`), and otherwise
-  // in the `quiet-reporter:` dump the run-end sweep prints.
+  // in the `quiet-reporter:` dump the run-end sweep prints — which it does only
+  // when the sweep is the run's sole red cause.
   //
   // LOAD-BEARING TEXT. The case reads this pid back and asserts it is DEAD
   // (`SWEPT` being printed is not proof of death), and the two interrupt legs

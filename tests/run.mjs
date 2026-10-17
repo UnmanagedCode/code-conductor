@@ -605,13 +605,28 @@ if (residual.length > 0) {
   console.error(`\nhang-guard: ${reapResidual(residual).message}`);
   failed++;
 }
-if (sweptOrphans > 0) await printUnshown('leaked process swept');
+const unreported = [...discovered].filter(f => !reported.has(f));
+// The sweep dumps ONLY when it is the run's sole red cause — then the culprit
+// passed, and its held-back output is the only place it shows. When anything
+// else is already red, those files printed their own output, and dumping every
+// passing file on top would bury it (a run killed under load would print the
+// whole verbose report). `failed` is read BEFORE the sweep's own increment
+// below. A cap or stall has already dumped at its own site, so it gets no line.
+if (sweptOrphans > 0) {
+  const soleCause = failed === 0 && killedFiles.size === 0 && unreported.length === 0 &&
+    !capTripped && !streamStalled;
+  if (soleCause) await printUnshown('leaked process swept');
+  else if (quiet && !capTripped && !streamStalled) {
+    console.log('\nquiet-reporter: a leaked process was swept, but passing files\' held-back output was ' +
+      'not dumped: other failures already made the run red and printed their own output. ' +
+      'CC_TEST_VERBOSE=1 prints everything.');
+  }
+}
 
 // A2b — the verdict line, printed UNCONDITIONALLY (green or red). A green run
 // must STATE the property rather than merely not violate it, and a red run needs
 // it just as much: the slowest-file figure is the standing evidence that
 // FILE_KILL_MS's margin is still real as the suite grows.
-const unreported = [...discovered].filter(f => !reported.has(f));
 const slowest = [...fileDurations.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
 // A sweep means a test leaked a live process that had to be SIGKILLed — a defect
 // in the test, not a tidy-up. Without this branch the run reads exit 0 and we

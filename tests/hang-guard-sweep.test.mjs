@@ -285,7 +285,9 @@ test('a leak that wedges nothing is still swept, at the END of a healthy run', a
   // `0 leaked process(es) swept`, holder still alive after the run.
   //
   // This run is QUIET and the fixture passes, so the holder line read below
-  // reaches `r.out` only through the `quiet-reporter:` dump a sweep prints.
+  // reaches `r.out` only through the `quiet-reporter:` dump a sweep prints when
+  // it is the run's sole red cause, as it is here. The case after this one pins
+  // the other half.
   const r = await runGuard('silent-orphan');
   const holder = holderPidFrom(r.out);
 
@@ -320,9 +322,30 @@ test('the run-end sweep runs BEFORE the run root is removed', async () => {
   // SIGKILL had not landed by the time the check reads /proc would print it too,
   // which is why the check reads `environ` (empty for a zombie) and so fails
   // closed toward clean.
-  const r = await runGuard('silent-orphan');
+  //
+  // quiet-fail rides along so this same run also pins the quiet reporter's
+  // OTHER sweep half: a sweep that is NOT the run's only red cause dumps nothing.
+  // The ORDER check above is indifferent to a failing neighbour — it asserts no
+  // exit code — which is why the second half lives here and not on a case that
+  // reads `r.code`.
+  const r = await runGuard(['quiet-fail', 'silent-orphan']);
   assert.doesNotMatch(r.out, /hang-guard: RESIDUAL/,
     `a marked process was still alive at teardown:\n${r.out}`);
+  // Premise: the run-end sweep did fire, or the absence of its dump is vacuous.
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: run end\)/,
+    `the run-end sweep never fired, so nothing below is tested:\n${r.out}`);
+  // A failing file already made the run red and printed its own output, so the
+  // sweep must not dump every passing file on top of it.
+  assert.doesNotMatch(r.out, /\(leaked process swept\)/,
+    `a sweep alongside a failing file dumped the held-back output:\n${r.out}`);
+  assert.doesNotMatch(r.out, HOLDER_LINE,
+    `the passing leaker's held-back output was printed:\n${r.out}`);
+  // …and says so, naming the switch that shows it.
+  assert.match(r.out, /^quiet-reporter: .*not dumped.*CC_TEST_VERBOSE=1/m,
+    `a skipped sweep dump must say what was not shown:\n${r.out}`);
+  // The failing file's own output is untouched by any of this.
+  assert.match(r.out, /quiet-fail: before stdout/);
+  assert.match(r.out, /quiet-fail: deliberate failure/);
 });
 
 // BOTH signal legs, because run.mjs pairs each with its OWN exit status and a
