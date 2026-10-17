@@ -69,18 +69,32 @@ describe('the sidebar scroll region', () => {
   });
 
   it('the scroller is the list\'s body, and the strip is its own bounded scroller', async () => {
-    // Invariant: the list's body is the one scroll container above the list, and the strip scrolls within itself.
-    uiStore.set({ lens: 'conductors' });
+    // Invariant: between the sidebar root and the list, [data-sidebar-body] is the only scroll container, in both lenses; the strip scrolls within itself.
     seedFleet(fleet());
     renderSidebar();
     await settle();
     const body = el('[data-sidebar-body]');
     expect(el('[data-strip]')).not.toBeNull();
-    expect(body.classList.contains('overflow-y-auto')).toBe(true);
-    for (let n = body.parentElement; n && !n.hasAttribute('data-sidebar'); n = n.parentElement) {
-      expect(n.classList.contains('overflow-y-auto')).toBe(false);
+    for (const [lens, list] of [['conductors', '[data-conductor-list]'], ['projects', '[data-project-list]']] as const) {
+      act(() => uiStore.set({ lens }));
+      const between: Element[] = [];
+      let n: Element | null = el(list).parentElement;
+      for (; n && !n.hasAttribute('data-sidebar'); n = n.parentElement) between.push(n);
+      expect(n, `${lens}: the walk from the list reached the sidebar root`).not.toBeNull();
+      expect(between, `${lens}: the body is between the list and the root`).toContain(body);
+      expect(between.filter((e) => e.classList.contains('overflow-y-auto')), `${lens}: the scroll containers above the list`).toEqual([body]);
     }
     expect(el('[data-strip]').classList.contains('overflow-y-auto')).toBe(true);
+  });
+
+  it('the strip\'s height is capped and the list body keeps a minimum height', async () => {
+    // Invariant: a tall strip cannot take the whole sidebar (a max-height on its root), and a short sidebar cannot squeeze the list to nothing (a non-zero min-height on the body).
+    seedFleet(fleet());
+    renderSidebar();
+    await settle();
+    const has = (e: Element, prefix: string, not?: string) => [...e.classList].some((c) => c.startsWith(prefix) && c !== not);
+    expect(has(el('[data-strip]'), 'max-h-'), 'the strip root carries a max-height').toBe(true);
+    expect(has(el('[data-sidebar-body]'), 'min-h-', 'min-h-0'), 'the body carries a min-height other than zero').toBe(true);
   });
 
   describe('on remount', () => {
