@@ -1,8 +1,9 @@
 // Background Bash jobs — a worker's `Bash` calls with `run_in_background:true`
 // that are still running after its turn ended. The CLI re-invokes the worker
 // when each one exits, so they are display state (the session and every live
-// owner above it read as "waiting") and a line in the owner's wake stub — never
-// a hold on the wake itself.
+// owner above it read as "waiting"), a line in the owner's wake stub, and an
+// input to overage routing's in-control test (`_routeOverageStop`) — never a
+// hold on the wake itself.
 //
 // The single source is the CLI's `system/background_tasks_changed` frame: a
 // level-triggered snapshot of EVERY live background task, emitted whenever the

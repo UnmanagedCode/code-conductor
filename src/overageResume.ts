@@ -44,7 +44,9 @@ function baseFor(kind: ResumeKind): string {
   return kind === 'idle-parked' ? IDLE_PARKED_RESUME_TEXT : AUTO_RESUME_TEXT;
 }
 
-// The two facts a stopped CONDUCTOR must ACT on, appended to AUTO_RESUME_TEXT.
+// The two facts a resumed session must ACT on, appended to AUTO_RESUME_TEXT — a
+// stopped conductor's, and the dropped-callbacks one also any session the overage
+// sever arms idle-parked, a plain session with no workers included.
 // Each is gated on its OWN flag because either can hold without the other — a
 // callback can be severed with no un-armed worker (the conductor was waiting on a
 // session it does not own), and a worker can be stopped un-armed while the
@@ -53,8 +55,8 @@ function baseFor(kind: ResumeKind): string {
 // anything was stopped: the conductor does nothing differently for that, and it
 // cannot be stated truthfully for a mixed set.
 const DROPPED_CALLBACKS_CLAUSE =
-  'Your pending idle callbacks were dropped — re-check the sessions you were waiting ' +
-  'on directly with `mcp__code-conductor__list_sessions` and ' +
+  'Pending idle callbacks in your tree were dropped — re-check the sessions you or your ' +
+  'workers were waiting on directly with `mcp__code-conductor__list_sessions` and ' +
   '`mcp__code-conductor__get_recent_messages` instead of waiting to be woken.';
 const UNARMED_WORKERS_CLAUSE =
   'Any worker of yours that was stopped is un-armed — it will NOT resume itself, so ' +

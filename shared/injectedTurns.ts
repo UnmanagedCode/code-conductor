@@ -35,8 +35,8 @@ export const QUEUED_ONLY_RESUME_TEXT: string =
 // parked awaiting a worker's wake. Nothing of its own was interrupted, so
 // AUTO_RESUME_TEXT's "continue where you left off" would be false; and it queued
 // nothing, so QUEUED_ONLY_RESUME_TEXT's promise of queued messages would be too.
-// Its conductor clauses still ride along — an idle-parked conductor held ≥1 armed
-// wake by construction (that is what made it in-control), so the stop severed it.
+// Its conductor clauses still ride along: an idle-parked conductor may have had a
+// wake severed or workers stopped un-armed, and each clause says so when it did.
 export const IDLE_PARKED_RESUME_TEXT: string =
   'The rate-limit window has reset. You were idle when the overage stop fired, so none '
   + 'of your own work was interrupted.';
