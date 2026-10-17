@@ -4,8 +4,11 @@
 // selected from any of them, the plugin view's teardown, and the viewed check
 // every exit re-runs.
 import '@/test/browserHash';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, screen } from '@testing-library/react';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
 vi.mock('@/app/sessionActions', () => ({
@@ -21,83 +24,25 @@ import { emit } from '@/app/events';
 import { startViewedMarker } from '@/app/viewedMarker';
 import { appStore } from '@/state/app';
 import { parseHash, syncRoute } from '@/state/route';
-import { openCommits, openCosts, openPlugin, openReview, openSettings } from './api';
 import { exitToConductor } from './AppSwitcher';
 import { pluginFrames } from './plugins';
-import { ACTIVE, endHost, mountApp, net, plainRow, resetHost, settle, viewOpen } from './test/pluginHost';
+import { ACTIVE, mountApp, net, settle } from './test/pluginHost';
+import { ANCHOR, escape, only, open, sha, useViewSwitchHost, VIEWS, viewedPosts, type View } from './test/viewSwitch';
 
-type View = 'settings' | 'commits' | 'review' | 'costs' | 'plugin';
-const VIEWS: View[] = ['settings', 'commits', 'review', 'costs', 'plugin'];
-const HASH: Record<View, string> = { settings: '#settings', commits: '#commits', review: '#review', costs: '#costs', plugin: '#plugin/fake/' };
-const OPEN: Record<View, () => void> = {
-  settings: () => openSettings(),
-  commits: () => openCommits('p', 'wt'),
-  review: () => openReview({ title: 'p / wt', url: '/api/projects/p/worktrees/wt/diff' }),
-  costs: () => openCosts(),
-  plugin: () => openPlugin('fake'),
-};
-const ANCHOR = '#session=sess-1';
-const sha = (c: string) => c.repeat(40);
-const LIST = { branch: 'feature', hasUncommitted: false, aheadCount: 0, aheadOf: null, locked: false, commits: [{ sha: sha('a'), shortSha: 'aaaaaaa', subject: 'first', parents: [] }] };
-
-/** The main views on screen: each full-page view's root, and the session pane. */
-function shown(): string[] {
-  const out: string[] = [];
-  if (document.querySelector('[data-settings-view]')) out.push('settings');
-  for (const v of ['commits', 'review', 'costs']) if (document.querySelector(`main[data-view="${v}"]`)) out.push(v);
-  if (viewOpen()) out.push('plugin');
-  if (document.querySelector('div[data-view="session"]')) out.push('session');
-  return out;
-}
-/** Waits until `view` alone is on screen (a lazily loaded view keeps the one it replaces hidden in the DOM meanwhile; its first load is slow under load). */
-async function only(view: View | 'session', what: string) {
-  await waitFor(() => expect(shown(), what).toEqual([view]), { timeout: 10_000 });
-}
-async function open(view: View) {
-  await act(async () => { OPEN[view](); });
-  await only(view, `${view} opened`);
-}
-/** Escape: every full-page view's Back. */
-async function escape() {
-  await act(async () => { fireEvent.keyDown(window, { key: 'Escape' }); });
-  await settle();
-}
-const viewedPosts = () => net.calls.filter((c) => c === 'POST /api/sessions/sess-1/viewed').length;
-
-beforeEach(() => {
-  resetHost(`/${ANCHOR}`);
-  net.status = { fake: plainRow() };
-  const inner = fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>;
-  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
-    const json = (body: unknown) => { net.calls.push(`${init.method ?? 'GET'} ${url}`); return Promise.resolve(new Response(JSON.stringify(body))); };
-    if (url === '/api/costs/summary') return json({ row_count: 0 });
-    if (url.endsWith('/commits')) return json(LIST);
-    return inner(url, init);
-  }));
-});
-afterEach(async () => {
-  vi.restoreAllMocks();
-  await endHost();
-});
+useViewSwitchHost();
 
 describe('switching full-page views', () => {
-  it('opening any full-page view from any other shows only the one opened, with the URL naming it, and Back returns to the one it replaced, then to the session', async () => {
-    await mountApp();
-    for (const from of VIEWS) {
-      for (const to of VIEWS) {
-        if (from === to) continue;
-        await open(from);
-        await open(to);
-        expect(location.hash, `${from} → ${to}: the URL`).toBe(HASH[to]);
-        await escape();
-        await only(from, `${from} → ${to}: Back returns to ${from}`);
-        expect(location.hash, `${from} → ${to}: the URL after Back`).toBe(HASH[from]);
-        await escape();
-        await only('session', `${from} → ${to}: Back again reaches the session`);
-        expect(location.hash).toBe(ANCHOR);
-      }
-    }
-  }, 30_000);
+  it('every full-page view has its pairs file, and each file runs the pairs from the view its name says, so every from → to pair runs', () => {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    const covered = fs.readdirSync(dir).flatMap((f) => {
+      const named = /^viewSwitch\.from-(.+)\.test\.tsx$/.exec(f)?.[1];
+      if (named === undefined) return [];
+      const calls = [...fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/^pairsFrom\('([^']*)'\);$/gm)].map((m) => m[1]);
+      expect(calls, `${f}: exactly one pairsFrom call, for the view in its name`).toEqual([named]);
+      return calls;
+    });
+    expect(covered.sort()).toEqual([...VIEWS].sort());
+  });
 
   it('a commit row opens its review over the commit history, and Back returns to that same history', async () => {
     await mountApp();

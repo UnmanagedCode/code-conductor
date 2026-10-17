@@ -1,3 +1,4 @@
+// @vitest-environment node
 // The Settings fetch helpers on a 2xx whose body is not JSON: each resolves
 // `{}`, never apiFetch's null, so a caller can read a field off the answer.
 import { afterEach, describe, expect, it, vi } from 'vitest';

@@ -1,3 +1,4 @@
+// @vitest-environment node
 // routeFetch honours a request's AbortSignal as the real fetch does, so a test
 // of code that cancels and retries cannot pass on a fake that ignores aborts.
 import { afterEach, describe, expect, it, vi } from 'vitest';
