@@ -31,6 +31,7 @@ test('a wedged file is SIGKILLed and reported failed', async () => {
   const r = await runGuard('busyloop');
   assert.equal(r.code, 1, `expected a red run:\n${r.out}`);
   assert.match(r.out, /hang-guard: KILLED .*busyloop\.fixture\.mjs after \d+ms/);
+  assert.match(r.out, /busyloop: entering the spin/, 'a killed file\'s held-back output must be printed');
   assert.ok(r.wallMs < FILE_KILL + 7000,
     `busyloop run took ${r.wallMs}ms — the per-file kill watchdog did not bound it`);
 });
@@ -43,4 +44,8 @@ test('a file that never reports is never silently absent', async () => {
   assert.equal(r.code, 1, `a file that produced no report must fail the run:\n${r.out}`);
   assert.match(r.out, /hang-guard: NO REPORT from .*exit-before-report\.fixture\.mjs/);
   assert.match(r.out, /hang-guard: 0\/1 files reported/);
+  // The file's segment is a lone file-level test:pass — no failure, no summary —
+  // so only the end of the run releases its held-back output.
+  assert.match(r.out, /exit-before-report: exiting before any test/,
+    'a file that never reported must have its held-back output printed');
 });

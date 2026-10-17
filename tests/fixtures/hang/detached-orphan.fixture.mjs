@@ -15,6 +15,7 @@
 // in tests/procTree.mjs).
 import test from 'node:test';
 import { spawn } from 'node:child_process';
+import { writeSync } from 'node:fs';
 
 // The holder SELF-TERMINATES. That is deliberate hygiene, not part of the
 // behaviour under test: an immortal holder would leak one live process onto the
@@ -34,4 +35,7 @@ test('detached-orphan: reports cleanly, then outlives itself on our stdio', () =
     ['-e', `setTimeout(() => process.exit(0), ${HOLDER_LIFETIME_MS})`],
     { stdio: 'inherit', detached: true });
   orphan.unref();
+  // Held back by the quiet reporter, since this file PASSES; the stall that
+  // follows is what must print it.
+  writeSync(2, 'detached-orphan: reported, holder left on our stdio\n');
 });

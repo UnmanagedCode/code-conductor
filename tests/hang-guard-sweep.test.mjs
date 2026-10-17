@@ -265,6 +265,16 @@ test('runGuard refuses signalWhen together with discardStdout', () => {
     'runGuard accepted signalWhen with stdout discarded — the signal can never be sent');
 });
 
+test('runGuard refuses signalWhen without verbose', () => {
+  // The other silent no-signal: silent-orphan PASSES, so the quiet reporter holds
+  // its holder line back until the dwell the signal was meant to interrupt is
+  // over. Synchronous for the same reason as the case above.
+  assert.throws(
+    () => runGuard('silent-orphan', FAST, { signalWhen: HOLDER_LINE }),
+    /quiet reporter holds back/,
+    'runGuard accepted signalWhen on a quiet run — the signal could not land mid-run');
+});
+
 test('a leak that wedges nothing is still swept, at the END of a healthy run', async () => {
   // THE CASE THIS WHOLE CARD EXISTS FOR, and the only behavioural proof that the
   // class is closed. Every other sweep case leaks a holder of the runner's own
@@ -273,6 +283,11 @@ test('a leak that wedges nothing is still swept, at the END of a healthy run', a
   // ended cleanly, the cap was never reached, NOTHING looked, and the run exited
   // 0 with a live process left on the box. Measured pre-fix: exit 0,
   // `0 leaked process(es) swept`, holder still alive after the run.
+  //
+  // This run is QUIET and the fixture passes, so the holder line read below
+  // reaches `r.out` only through the `quiet-reporter:` dump a sweep prints when
+  // it is the run's sole red cause, as it is here. The case after this one pins
+  // the other half.
   const r = await runGuard('silent-orphan');
   const holder = holderPidFrom(r.out);
 
@@ -307,9 +322,53 @@ test('the run-end sweep runs BEFORE the run root is removed', async () => {
   // SIGKILL had not landed by the time the check reads /proc would print it too,
   // which is why the check reads `environ` (empty for a zombie) and so fails
   // closed toward clean.
-  const r = await runGuard('silent-orphan');
+  //
+  // quiet-fail rides along so this same run also pins the quiet reporter's
+  // OTHER sweep half: a sweep that is NOT the run's only red cause dumps nothing.
+  // The ORDER check above is indifferent to a failing neighbour — it asserts no
+  // exit code — which is why the second half lives here and not on a case that
+  // reads `r.code`.
+  const r = await runGuard(['quiet-fail', 'silent-orphan']);
   assert.doesNotMatch(r.out, /hang-guard: RESIDUAL/,
     `a marked process was still alive at teardown:\n${r.out}`);
+  // Premise: the run-end sweep did fire, or the absence of its dump is vacuous.
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: run end\)/,
+    `the run-end sweep never fired, so nothing below is tested:\n${r.out}`);
+  // A failing file already made the run red and printed its own output, so the
+  // sweep must not dump every passing file on top of it.
+  assert.doesNotMatch(r.out, /\(leaked process swept\)/,
+    `a sweep alongside a failing file dumped the held-back output:\n${r.out}`);
+  assert.doesNotMatch(r.out, HOLDER_LINE,
+    `the passing leaker's held-back output was printed:\n${r.out}`);
+  // …and says so, naming the switch that shows it.
+  assert.match(r.out, /^quiet-reporter: .*not dumped.*CC_TEST_VERBOSE=1/m,
+    `a skipped sweep dump must say what was not shown:\n${r.out}`);
+  // The failing file's own output is untouched by any of this.
+  assert.match(r.out, /quiet-fail: before stdout/);
+  assert.match(r.out, /quiet-fail: deliberate failure/);
+});
+
+test('a sweep beside a file that never reported dumps nothing and says so', async () => {
+  // The quiet reporter's sole-red-cause rule, for its unreported-file clause.
+  // exit-before-report fails no test — its segment is a lone file-level pass with
+  // no summary — so `failed` is still 0 at the sweep and ONLY the unreported
+  // count says the run was already red. Its own case in
+  // tests/hang-guard-file-kill.test.mjs cannot carry this: a leaker beside it
+  // would redden that run by itself and unpin its `code === 1`.
+  const r = await runGuard(['exit-before-report', 'silent-orphan']);
+  // Premises: the run-end sweep fired, and the other file is red only as
+  // unreported, or the absences below prove nothing.
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: run end\)/,
+    `the run-end sweep never fired, so nothing below is tested:\n${r.out}`);
+  assert.match(r.out, /hang-guard: NO REPORT from .*exit-before-report\.fixture\.mjs/);
+  assert.doesNotMatch(r.out, /✖/, `a test failed, so \`failed\` discriminates and this case pins nothing:\n${r.out}`);
+  // No dump, so the passing leaker's held-back line stays unprinted…
+  assert.doesNotMatch(r.out, /\(leaked process swept\)/,
+    `a sweep beside an unreported file dumped the held-back output:\n${r.out}`);
+  assert.doesNotMatch(r.out, HOLDER_LINE, `the passing leaker's held-back output was printed:\n${r.out}`);
+  // …and the run says so.
+  assert.match(r.out, /^quiet-reporter: .*not dumped.*CC_TEST_VERBOSE=1/m,
+    `a skipped sweep dump must say what was not shown:\n${r.out}`);
 });
 
 // BOTH signal legs, because run.mjs pairs each with its OWN exit status and a
@@ -340,9 +399,12 @@ for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
     // arrives goes red (measured 5.0-5.8 s per leg at 72-way with the
     // rendezvous neutered). SIGKILL is deliberately not tested — no in-process handler can
     // run for it, which is what tests/reapOrphans.mjs exists for.
+    //
+    // `verbose: true`, because the holder line must arrive WHILE the file dwells
+    // and the quiet reporter holds a passing file's output back until it reports.
     const r = await runGuard('silent-orphan',
       { ...FAST, CC_TEST_DWELL_MS: '4000' },
-      { signalWhen: HOLDER_LINE, signal });
+      { signalWhen: HOLDER_LINE, signal, verbose: true });
     const holder = holderPidFrom(r.out);
 
     assert.match(r.out, new RegExp(`hang-guard: ${signal} — sweeping this run's processes before exiting\\.`),

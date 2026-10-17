@@ -12,6 +12,7 @@ import { snapshot, censusMatching, liveChildren, descendants, killTree, killDesc
          processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
 import { enableCompileCache, COMPILE_CACHE_MAX_BYTES } from './compileCache.mjs';
+import { QuietFilter, isVerbose, renderEvents } from './quietReporter.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -322,6 +323,9 @@ const procSampler = setInterval(() => {
   // node emits it at push time in the clean case (~44ms, with nothing consuming
   // our stdout) and NEVER in the genuine wedge (absent through 5s). So node
   // finished ⇒ never a stall; node didn't finish ⇒ detection unchanged.
+  // In quiet mode a passing run's stdout carries almost nothing, so backpressure
+  // there comes only from CC_TEST_VERBOSE=1 or a failing file's flushed output;
+  // the gate is the same either way.
   const shouldBeOver = !nodeFinished &&
     settledAt.size === discovered.size &&
     now - Math.max(...settledAt.values()) > ORPHAN_SWEEP_MS;
@@ -487,8 +491,28 @@ stream.on('test:complete', (d) => {
   const startedAt = fileStartedAt.get(d.file);
   if (startedAt !== undefined) fileDurations.set(d.file, Date.now() - startedAt);
 });
-const reporter = stream.compose(new spec());
+// The quiet reporter (tests/quietReporter.mjs) sits between the source and spec
+// unless CC_TEST_VERBOSE=1. It changes only what spec SEES: every ledger and
+// hang-guard listener above stays on the source `stream`, so `reported`,
+// `killedFiles`, `nodeFinished` and `settledAt` do not depend on it, and
+// `reporter`'s `end` still waits for the source to end and both transforms to
+// flush.
+const quiet = isVerbose() ? null : new QuietFilter();
+const reporter = quiet ? stream.compose(quiet).compose(new spec()) : stream.compose(new spec());
 reporter.pipe(process.stdout);
+
+// A red run that no FILE owns — the cap, a stream stall, a leaked-process sweep —
+// cannot name its culprit, which has usually already passed. So print every
+// file's held-back output. The write is deliberately NOT awaited: on the stall
+// path the consumer may be paused, and waiting on it would be a new hang. The
+// verdict lines that follow use the same stream, so the order holds.
+async function printUnshown(why) {
+  const groups = quiet?.takeUnshown() ?? [];
+  if (groups.length === 0) return;
+  process.stdout.write(
+    `\nquiet-reporter: the run went red for a reason no file owns (${why}); ` +
+    "every file's held-back output follows.\n" + await renderEvents(groups));
+}
 
 // A3 — absolute run cap. Races the stream's own end against RUN_CAP_MS so a
 // wedge we somehow failed to kill still produces OUR verdict rather than an
@@ -524,6 +548,10 @@ try {
   clearInterval(procSampler);
   clearTimeout(capTimer);
 }
+
+// BEFORE the cap block: its killDescendants makes node synthesize a test:fail for
+// the wedged file, which would move that file onto the main pipe instead.
+if (capTripped || streamStalled) await printUnshown(capTripped ? 'run cap' : 'stream stall');
 
 if (capTripped) {
   console.error(
@@ -577,12 +605,34 @@ if (residual.length > 0) {
   console.error(`\nhang-guard: ${reapResidual(residual).message}`);
   failed++;
 }
+const unreported = [...discovered].filter(f => !reported.has(f));
+// The fake-claude guardrail's verdict, decided HERE rather than where it is
+// printed below, because the sweep must count it as a red cause. The sampler
+// stopped at the clearInterval above, so the peak is already final.
+// RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.
+const guardrailFailed = sampledProcs && process.env.RUN_REAL_CLAUDE !== '1' &&
+  peakFakeClaude > FAKE_CLAUDE_BUDGET;
+// The sweep dumps ONLY when it is the run's sole red cause — then the culprit
+// passed, and its held-back output is the only place it shows. When anything
+// else is already red, those files printed their own output, and dumping every
+// passing file on top would bury it (a run killed under load would print the
+// whole verbose report). `failed` is read BEFORE the sweep's own increment
+// below. A cap or stall has already dumped at its own site, so it gets no line.
+if (sweptOrphans > 0) {
+  const soleCause = failed === 0 && killedFiles.size === 0 && unreported.length === 0 &&
+    !capTripped && !streamStalled && !guardrailFailed;
+  if (soleCause) await printUnshown('leaked process swept');
+  else if (quiet && !capTripped && !streamStalled) {
+    console.log('\nquiet-reporter: a leaked process was swept, but passing files\' held-back output was ' +
+      'not dumped: other failures already made the run red and printed their own output. ' +
+      'CC_TEST_VERBOSE=1 prints everything.');
+  }
+}
 
 // A2b — the verdict line, printed UNCONDITIONALLY (green or red). A green run
 // must STATE the property rather than merely not violate it, and a red run needs
 // it just as much: the slowest-file figure is the standing evidence that
 // FILE_KILL_MS's margin is still real as the suite grows.
-const unreported = [...discovered].filter(f => !reported.has(f));
 const slowest = [...fileDurations.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
 // A sweep means a test leaked a live process that had to be SIGKILLed — a defect
 // in the test, not a tidy-up. Without this branch the run reads exit 0 and we
@@ -624,6 +674,10 @@ if (slowest.length > 0) {
     slowest.map(([f, ms]) => `${path.basename(f)} ${ms}ms`).join(', '),
   );
 }
+if (quiet) {
+  console.log("quiet-reporter: passing files' per-test lines and output were held back; " +
+    'CC_TEST_VERBOSE=1 prints the full spec report.');
+}
 for (const file of unreported) {
   // Never silently absent — whatever the cause (wedged child, a truncated
   // report, a process.exit before any test registered), the file is named and
@@ -636,7 +690,6 @@ for (const file of unreported) {
 }
 
 await removeSafeRoot(safeRoot.root);
-let guardrailFailed = false;
 if (sampledProcs) {
   console.log(`\nguardrail: peak concurrent fake-claude subprocesses = ${peakFakeClaude} (budget ${FAKE_CLAUDE_BUDGET})`);
   // Only when the box held more than we own. It is not decoration: it is the one
@@ -662,14 +715,12 @@ if (sampledProcs) {
       'nowhere. A counted figure near zero against a high box-wide one is not a clean run.',
     );
   }
-  // RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.
-  if (process.env.RUN_REAL_CLAUDE !== '1' && peakFakeClaude > FAKE_CLAUDE_BUDGET) {
+  if (guardrailFailed) {
     console.error(
       `guardrail FAILED: peak ${peakFakeClaude} exceeded budget ${FAKE_CLAUDE_BUDGET}. ` +
       'A test likely spawns real fake-claude subprocesses without bootServer({realProcess:true}) ' +
       '— the default must stay in-process.',
     );
-    guardrailFailed = true;
   }
 } else {
   console.log('\nguardrail: /proc unavailable — peak subprocess sampling skipped');

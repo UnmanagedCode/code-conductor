@@ -32,6 +32,15 @@ test('a file that REPORTS CLEANLY but leaves an orphan still terminates and fail
   assert.match(r.out, /hang-guard: STREAM STALLED/);
   assert.match(r.out, /hang-guard: 1\/1 files reported.*STREAM STALLED/,
     'the verdict line must record the stall even though the file itself reported');
+  // The culprit PASSED, so its output was held back; the stall must print it.
+  assert.match(r.out, /detached-orphan: reported, holder left/,
+    'the stall must print the passed file\'s held-back output');
+  // The stall dumped, so no `not dumped` line may follow. Premise: the stall's
+  // own sweep fired, or the absence would prove nothing.
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: stream stall\)/,
+    `the stall swept nothing, so the line below is untested:\n${r.out}`);
+  assert.doesNotMatch(r.out, /quiet-reporter: .*not dumped/,
+    `a stalled run claimed held-back output was not dumped:\n${r.out}`);
   assert.ok(r.wallMs < 20_000,
     `run took ${r.wallMs}ms — the stall check did not abandon the wait, so it fell to the cap`);
 });

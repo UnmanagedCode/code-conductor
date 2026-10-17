@@ -27,7 +27,9 @@ import { killDescendants } from './procTree.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const RUNNER = path.join(__dirname, 'run.mjs');
-export const fixture = name => path.join(__dirname, 'fixtures', 'hang', `${name}.fixture.mjs`);
+// An absolute path is taken as-is, so a case can run a fixture through a path of
+// its own making (tests/runner-quiet.test.mjs reaches one through a symlink).
+export const fixture = name => path.isAbsolute(name) ? name : path.join(__dirname, 'fixtures', 'hang', `${name}.fixture.mjs`);
 
 // Squeezed deadlines shared by every case except where a test overrides one.
 export const LEAK_GRACE = 1500;
@@ -91,13 +93,23 @@ export function redactTotals(out) {
 // It targets `child.pid` alone, never a process group: the runner shares OUR
 // group (spawn without `detached`), so a group signal would hit this test file
 // too.
-export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPauseMs = 0, discardStdout = false, signalWhen = null, signal = 'SIGTERM' } = {}) {
+// `name` may be an array, so one inner run can mix a passing and a failing
+// fixture. `verbose` is ALWAYS written into the child's env, as '1' or '0', so a
+// developer's exported CC_TEST_VERBOSE=1 cannot leak into the nested runner and
+// flip a case that asserts the quiet reporter's output.
+export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPauseMs = 0, discardStdout = false, signalWhen = null, signal = 'SIGTERM', verbose = false } = {}) {
   // The rendezvous reads the SAME accumulator the case asserts on, so with
   // stdout discarded it could never match and the signal would silently never be
   // sent — a green-looking case that exercised no interrupt path at all.
   if (signalWhen && discardStdout) throw new Error(
     'runGuard: signalWhen rendezvouses on the captured stream, which discardStdout throws away — ' +
     'the signal would silently never be sent');
+  // The same silent no-signal, through the reporter: a fixture's live output is
+  // held back while its file is still passing, so the marker would arrive only
+  // after the dwell the signal was meant to interrupt — or never.
+  if (signalWhen && !verbose) throw new Error(
+    'runGuard: signalWhen rendezvouses on a fixture\'s live output, which the quiet reporter ' +
+    'holds back for a passing file — pass verbose: true');
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     // NODE_TEST_CONTEXT must not reach the child. node:test sets it in every
@@ -105,9 +117,9 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     // being called recursively within a test file. skipping running files" and
     // silently runs NOTHING — the inner runner would report 0 tests and every
     // assertion below would fail for the wrong reason.
-    const childEnv = { ...process.env, ...env };
+    const childEnv = { ...process.env, ...env, CC_TEST_VERBOSE: verbose ? '1' : '0' };
     delete childEnv.NODE_TEST_CONTEXT;
-    const child = spawn(process.execPath, [RUNNER, fixture(name)], {
+    const child = spawn(process.execPath, [RUNNER, ...[].concat(name).map(fixture)], {
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -151,8 +163,10 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     // exercised today: a fixture's own `writeSync(2, …)` reaches us on the
     // runner's STDOUT, because node:test relays it as a `test:stderr` event and
     // run.mjs's spec reporter pipes to process.stdout (measured 5/5 with
-    // silent-orphan). So this call is currently unexercised — deleting it leaves
-    // the suite green — and it is NOT dead code.
+    // silent-orphan). It arrives there only under `verbose`, for a FAILING file,
+    // or inside a `quiet-reporter:` dump — a passing file's output is otherwise
+    // held back (tests/quietReporter.mjs). So this call is currently unexercised
+    // — deleting it leaves the suite green — and it is NOT dead code.
     //
     // THE WRITER CALL DECIDES THE HANDLER, and `hang-guard:` output is split
     // across both. run.mjs's console.error diagnostics reach the handler here:
