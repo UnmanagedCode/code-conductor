@@ -42,8 +42,8 @@ async function dropLibraryEntry(name, entry) {
 // the built-in set. Every built-in fact left in this file is an invariant a
 // well-formed entry cannot trip (see the whole-catalog checks).
 const OWN_ID = 'owned';
-const OWN_REPO = 'https://example.com/org/owned'; // derives OWN_PROJECT below
-const OWN_PROJECT = 'owned'; // == OWN_REPO's last path segment, .git/.bundle stripped
+const OWN_REPO = 'https://example.com/org/owned-project'; // derives OWN_PROJECT below
+const OWN_PROJECT = 'owned-project'; // == OWN_REPO's last path segment, .git/.bundle stripped
 async function dropOwnEntry(over = {}) {
   await dropLibraryEntry('owned.json',
     { id: OWN_ID, name: 'Owned', description: 'a test-owned entry', repo: OWN_REPO, ...over });
@@ -80,24 +80,15 @@ test('list(): the built-in catalog serves with no library dir, uninstalled and u
 
 // Whole-catalog invariants a WELL-FORMED add or edit can never trip — which is
 // why they may stay while per-row content assertions may not. Anything that
-// could fire on a legitimate row is deliberately absent: "a repo's last path
-// segment equals the entry's id" fails on the catalog as it stands (the
-// `code-wiki` entry's repo is `code-karpathy-wiki`), so it is left out entirely.
-test('list(): whole-catalog invariants — unique ids, and postClone/postPull set together', async () => {
-  const env = await makePluginRoot();
-  try {
-    const { entries: rows } = await createPluginLibrary().list();
-    const ids = rows.map(r => r.id);
-    assert.equal(new Set(ids).size, ids.length, `ids are unique across the catalog: ${ids.join(', ')}`);
-    for (const row of rows) {
-      assert.equal(row.postClone === undefined, row.postPull === undefined,
-        `${row.id} sets postClone and postPull together, or neither`);
-    }
-  } finally {
-    await env.restore();
-  }
-});
-
+// could fire on a legitimate row is deliberately absent, and that turns out to
+// leave nothing here: `postClone`/`postPull` are independently optional in the
+// format (`LibraryEntry`, and `readCatalogDir` sets each on its own), so an
+// unpaired entry is well-formed; and uniqueness cannot fail at all, since
+// `readLibraryEntries` keys `byId` by id and returns `[...byId.values()]`. The
+// dedup is pinned behaviourally by the "duplicate ids within one dir" test.
+// Completeness itself is unguardable here — every comparison below is a self-read
+// of the same loader, and `DEFAULT_ENTRIES` is not exported — so a partially
+// truncated built-in set is invisible to this file by design.
 test('list(): an entry\'s postClone/postPull reach the wire row; an entry without them omits both', async () => {
   const env = await makePluginRoot();
   try {
@@ -433,7 +424,9 @@ test('install(): happy path clones (fake impl), rescans, and enables the discove
     assert.equal(cloneCalls[0].url, OWN_REPO);
     assert.ok((await fs.stat(path.join(env.root, '.plugins', OWN_PROJECT))).isDirectory());
     assert.equal(rescanned, 1);
-    assert.deepEqual(enabled, [OWN_PROJECT], 'the freshly discovered plugin is enabled by default');
+    // The row's id differs from its project name on purpose: this pins that install
+    // enables the discovered ROW's id, not the project name it resolved.
+    assert.deepEqual(enabled, [OWN_ID], 'the freshly discovered plugin is enabled by its row id');
     assert.equal(result.postClone, null, 'the owned entry configures no postClone');
 
     const { entries: rows } = await lib.list();
@@ -675,7 +668,12 @@ test('update(): not installed -> 404', async () => {
   try {
     await dropOwnEntry();
     const lib = createPluginLibrary();
-    await rejectsWithStatus(lib.update(OWN_ID), 404);
+    // A bare 404 cannot tell "known id, not installed" from "unknown id", so
+    // without this the test would migrate to the other 404 branch and stay green
+    // if the drop-in layer stopped serving.
+    assert.equal(ownRow((await lib.list()).entries).installed, false, 'the id is known and merely not installed');
+    const e = await rejectsWithStatus(lib.update(OWN_ID), 404);
+    assert.match(e.message, /not installed/, 'the not-installed branch answered, not unknown-id');
   } finally {
     await env.restore();
   }
@@ -714,8 +712,12 @@ test('update(): onValidated never fires when validation rejects (not installed)'
   try {
     await dropOwnEntry();
     const lib = createPluginLibrary();
+    // Same precondition as `update(): not installed -> 404`: the 404 must be the
+    // not-installed branch, not unknown-id, or this covers the wrong path.
+    assert.equal(ownRow((await lib.list()).entries).installed, false, 'the id is known and merely not installed');
     let validated = false;
-    await rejectsWithStatus(lib.update(OWN_ID, { onValidated: () => { validated = true; } }), 404);
+    const e = await rejectsWithStatus(lib.update(OWN_ID, { onValidated: () => { validated = true; } }), 404);
+    assert.match(e.message, /not installed/, 'the not-installed branch answered, not unknown-id');
     assert.equal(validated, false);
   } finally {
     await env.restore();
