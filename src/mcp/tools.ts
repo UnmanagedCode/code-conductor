@@ -689,7 +689,9 @@ export function buildTools(): Tool[] {
         'to merge (NOTHING_TO_MERGE), or another worktree is based on this one ' +
         '(WORKTREE_HAS_DEPENDENTS, listing them — see sync_worktree). That last one is about the worktree ' +
         'being merged, never the one being merged INTO: merging a task into a feature succeeds while the ' +
-        'feature still has other tasks based on it.',
+        'feature still has other tasks based on it. On success the result also carries postWorktreeMerge: the ' +
+        'report of the project\'s post-worktree-merge.sh, run in the merge target after the merge landed, shaped ' +
+        'like postWorktreeCreate. A hook failure, timeout or skip never changes ok — the merge has landed either way.',
       inputSchema: {
         type: 'object',
         properties: {

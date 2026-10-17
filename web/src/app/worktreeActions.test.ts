@@ -358,3 +358,54 @@ describe('removing a worktree', () => {
     expect(toasts).toEqual([]);
   });
 });
+
+// The post-merge hook's report rides on a landed merge: it is named in the
+// success toast, and a hook that did not do its job adds a warning carrying the
+// output's tail. The merge itself is reported as landed whatever the hook did.
+describe('the post-merge hook report on a merge', () => {
+  const merged = (postWorktreeMerge: Record<string, unknown>) => ({ ok: true, newSha: '0123456789abcdef', postWorktreeMerge });
+  const titles = () => toasts.map((t) => t.split('\n')[0]);
+
+  it('a hook that exited 0 shows one success toast naming the hook, and no warning', async () => {
+    bodies = { merge: merged({ ran: true, source: 'in-tree', exitCode: 0, durationMs: 40, output: 'built' }) };
+    await mergeWorktree(TARGET);
+    expect(titles()).toEqual(['Merged into parent']);
+    expect(toasts[0]).toMatch(/Post-merge hook: exit 0 \(40ms\)/);
+  });
+
+  it.each([
+    ['a non-zero exit', { ran: true, exitCode: 1, durationMs: 5, output: 'line 1\nvite build failed' }, 'Post-merge hook failed', /exit 1[\s\S]*vite build failed/],
+    ['a timeout', { ran: true, exitCode: null, timedOut: true, durationMs: 100, output: 'building…' }, 'Post-merge hook failed', /timed out[\s\S]*building…/],
+    ['a hook that could not start', { ran: true, exitCode: null, error: true, output: 'spawn bash ENOENT' }, 'Post-merge hook failed', /failed to start[\s\S]*spawn bash ENOENT/],
+    ['an error before it ran', { ran: false, error: true, output: 'stat failed' }, 'Post-merge hook failed', /failed[\s\S]*stat failed/],
+    ['a store hook refused on a remote project', { ran: false, source: 'store', skipped: 'STORE_HOOK_LOCAL_ONLY' }, 'Post-merge hook not run', /store hook runs only on this machine/],
+  ])('%s adds a warning after the success toast', async (_name, hook, title, body) => {
+    bodies = { merge: merged(hook) };
+    const result = await mergeWorktree(TARGET);
+    expect(result?.ok).toBe(true);
+    expect(titles()).toEqual(['Merged into parent', title]);
+    expect(toasts[1]).toMatch(body);
+  });
+
+  it('the warning quotes only the tail of a long output', async () => {
+    const output = Array.from({ length: 40 }, (_, i) => `out-${i}`).join('\n');
+    bodies = { merge: merged({ ran: true, exitCode: 2, output }) };
+    await mergeWorktree(TARGET);
+    expect(toasts[1]).toMatch(/out-39/);
+    expect(toasts[1]).not.toMatch(/out-0\b/);
+  });
+
+  it('a disabled hook is named in the success toast without a warning', async () => {
+    bodies = { merge: merged({ ran: false, skipped: 'disabled' }) };
+    await mergeWorktree(TARGET);
+    expect(titles()).toEqual(['Merged into parent']);
+    expect(toasts[0]).toMatch(/Post-merge hook: disabled/);
+  });
+
+  it('no hook (ran:false, nothing skipped) adds nothing to the success toast', async () => {
+    bodies = { merge: merged({ ran: false }) };
+    await mergeWorktree(TARGET);
+    expect(titles()).toEqual(['Merged into parent']);
+    expect(toasts[0]).not.toMatch(/hook/i);
+  });
+});

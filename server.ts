@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
@@ -33,7 +33,9 @@ import { setPluginConductorConventionsProvider } from './src/conductorConvention
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
-import { WEB_ROOT, ensureWebBuild, webHandler } from './src/webBuild.ts';
+import { WEB_ROOT, ensureWebBuild, webBuildRunning, webHandler, webInputs } from './src/webBuild.ts';
+import { bootCommitHookVars, bootSwapGuard, measureBootCommit, type BootCommit } from './src/bootCommit.ts';
+import { setMergeHookVarsProvider } from './src/worktrees.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -203,18 +205,37 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 // CC_SKIP_WEB_BUILD=1 turns the web build off (at boot and before a restart),
 // and only CC_SKIP_DEPS_SYNC=1 the dependency install before a restart;
 // tests/run.mjs sets both so the `node server.ts` children the suite spawns
-// never build web/dist or install into the shared node_modules.
-export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean } {
+// never build web/dist or install into the shared node_modules. Only the real
+// entry captures the boot commit (src/bootCommit.ts) and hands it to merge
+// hooks into its own checkout.
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean } {
   return {
     port: Number(env.PORT ?? 8787),
     host: env.HOST ?? '127.0.0.1',
     buildWeb: env.CC_SKIP_WEB_BUILD !== '1',
     syncDeps: env.CC_SKIP_DEPS_SYNC !== '1',
+    recordBootCommit: true,
   };
 }
 
-export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild = ensureWebBuild }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown> } = {}) {
+const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
+
+export async function start({
+  port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild,
+  recordBootCommit = false, checkoutRoot = SERVER_ROOT,
+}: {
+  port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown>;
+  // `checkoutRoot` is the checkout this server runs from; a test points it at a fixture.
+  recordBootCommit?: boolean; checkoutRoot?: string;
+} = {}) {
   warnIfNodeUnsupported();
+  // What this process runs, measured first: the boot below regenerates files
+  // in every project, this checkout included. Never throws.
+  let bootCommit: BootCommit | undefined;
+  if (recordBootCommit) {
+    bootCommit = await measureBootCommit(checkoutRoot);
+    console.log(`boot commit: ${'sha' in bootCommit ? bootCommit.sha : `unknown — ${bootCommit.unknown}`}`);
+  }
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
@@ -295,6 +316,11 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   // path. Once-per-boot; no-op if already assigned or self can't be found.
   try { await ensureSelfProjectWorkspace(WORKSPACE_AUTO_ASSIGN); }
   catch (e) { console.warn('self workspace seed failed:', e); }
+  // Handed to merge hooks before listen, so no merge can land ahead of it.
+  if (bootCommit) {
+    setMergeHookVarsProvider(bootCommitHookVars({ checkoutRoot, boot: bootCommit, webBuildRunning }));
+    server.on('close', () => setMergeHookVarsProvider(null));
+  }
   await listenWithRetry(server, port, host);
   const addr = server.address();
   // listenWithRetry only resolves after the 'listening' event, so the bound
@@ -319,7 +345,11 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   if (instances) instances._usageMonitor.start();
   // Build the web UI if its sources changed. Fire-and-forget: the API is
   // already answering, and / serves a "building" page until a build exists.
-  if (buildWeb) void webBuild();
+  // Guarded against the boot commit: a merge landing while it builds must not
+  // put its sources live in front of this backend (bootSwapGuard). The build
+  // and its guard hash one `inputs` value, so they cannot judge different trees.
+  const bootWebInputs = webInputs(checkoutRoot);
+  if (buildWeb) void (webBuild ?? (() => ensureWebBuild({ inputs: bootWebInputs, guard: bootCommit && bootSwapGuard(checkoutRoot, bootCommit, bootWebInputs) })))();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can
   // connect while sessions re-spawn + get their resume notifications, staggered.
@@ -336,7 +366,7 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   checkClaudeReadiness({ platform })
     .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
     .catch((e) => process.stderr.write(`claude readiness check failed: ${errText(e)}\n`));
-  return { server, instances, wss, pluginHost, port: addr.port, host: addr.address };
+  return { server, instances, wss, pluginHost, port: addr.port, host: addr.address, bootCommit };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

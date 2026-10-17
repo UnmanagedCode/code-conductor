@@ -15,7 +15,8 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import {
-  ensureWebBuild, runViteBuild, stageWebBuild, webHandler, webInputs, webSourceHash, WEB_ROOT, type WebBuilder, type WebState,
+  ensureWebBuild, isWebInput, refreshWebDist, runViteBuild, stageWebBuild, webHandler, webInputFiles, webInputs, webSourceHash, WEB_ROOT,
+  type WebBuilder, type WebState,
 } from '../../src/webBuild.ts';
 
 const quiet = () => ({ log: vi.fn(), error: vi.fn() });
@@ -213,6 +214,59 @@ describe('the default inputs (webInputs) over a fixture checkout', () => {
     expect(afterShared).not.toBe(before);
     fs.writeFileSync(path.join(root, 'web', 'main.ts'), 'export const y = 1;');
     expect(webSourceHash(webInputs(root))).not.toBe(afterShared);
+  });
+
+  // The build reads both: shared/tsconfig.json extends the root tsconfig.json,
+  // whose compiler options the transform of shared/*.ts takes, and module
+  // resolution reads the root package.json.
+  it('the root package.json and tsconfig.json are inputs', () => {
+    for (const name of ['package.json', 'tsconfig.json']) {
+      const before = webSourceHash(webInputs(root));
+      fs.writeFileSync(path.join(root, name), `{"probe":"${name}"}`);
+      expect(webSourceHash(webInputs(root)), name).not.toBe(before);
+    }
+  });
+});
+
+// cc's post-merge step decides "did the UI build's inputs change" with
+// isWebInput on git paths; the hash covers webInputFiles. They must name the
+// same regular files, or a merge is judged by a different set than the build
+// hashes. isWebInput is path-only (a git path may be deleted), so it cannot
+// see that a path inside an input dir is a symlink, which the hash skips.
+describe('isWebInput names exactly the regular files the hash covers', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webagree-'));
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+  const tree = [
+    'web/main.ts', 'web/src/App.tsx', 'web/public/sw.js', 'web/vite.config.ts', 'web/tsconfig.json',
+    'web/e2e/a.spec.ts', 'web/dist/index.html', 'web/dist.next/index.html', 'web/node_modules/x/i.js',
+    'web/src/test-results/r.txt', 'web/src/distx/a.js',
+    'shared/http.ts', 'shared/tsconfig.json', 'shared/e2e/x.ts',
+    'package.json', 'tsconfig.json', 'package-lock.json', 'node_modules/.package-lock.json', 'node_modules/vite/i.js',
+    'src/server.ts', 'docs/a.md', 'webx/a.ts', 'README.md',
+  ];
+  for (const rel of tree) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), rel);
+  }
+
+  it('for every file in a fixture checkout, isWebInput agrees with webInputFiles', () => {
+    const inputs = webInputs(root);
+    const hashed = new Set(webInputFiles(inputs).map((f) => path.relative(root, f).split(path.sep).join('/')));
+    const judged = new Set(tree.filter((rel) => isWebInput(inputs, rel)));
+    expect([...judged].sort()).toEqual([...hashed].sort());
+    // Premise: the fixture exercises both sides of every rule.
+    expect(hashed.has('web/src/App.tsx') && hashed.has('shared/http.ts') && hashed.has('tsconfig.json') && hashed.has('package.json')).toBe(true);
+    expect(hashed.has('web/e2e/a.spec.ts') || hashed.has('web/dist/index.html') || hashed.has('src/server.ts') || hashed.has('webx/a.ts')).toBe(false);
+  });
+
+  it('a symlink inside an input dir is not hashed, but isWebInput counts it: the one direction they differ, toward relevant', () => {
+    const inputs = webInputs(root);
+    fs.symlinkSync(path.join(root, 'web', 'main.ts'), path.join(root, 'web', 'link.ts'));
+    try {
+      const hashed = webInputFiles(inputs).map((f) => path.relative(root, f).split(path.sep).join('/'));
+      expect(hashed).not.toContain('web/link.ts');
+      expect(isWebInput(inputs, 'web/link.ts')).toBe(true);
+    } finally { fs.rmSync(path.join(root, 'web', 'link.ts')); }
   });
 });
 
@@ -416,7 +470,7 @@ describe('staging a build before a relaunch, and adopting it at boot', () => {
     expect(siblings(dist)).toEqual([]);
   });
 
-  it('ensureWebBuild leaves a current <dist> and a stale staged dir alone', async () => {
+  it('ensureWebBuild with a current <dist> builds nothing and removes a stale staged dir', async () => {
     const dist = path.join(parentDir(), 'dist');
     stamped(dist, 'current', webSourceHash());
     stamped(`${dist}.next`, 'stale staged', 'stale');
@@ -424,6 +478,85 @@ describe('staging a build before a relaunch, and adopting it at boot', () => {
     expect(await ensureWebBuild({ log: quiet(), distDir: dist, build })).toEqual({ phase: 'ready', error: null });
     expect(build).not.toHaveBeenCalled();
     expect(served(dist)).toContain('current');
+    expect(siblings(dist)).toEqual([]);
+  });
+
+  // refreshWebDist is the one "make <dist> current" both boot (ensureWebBuild)
+  // and cc's post-merge hook run.
+  it('refreshWebDist reports what it did: up to date, adopted the stage, or built', async () => {
+    const current = path.join(parentDir(), 'dist');
+    stamped(current, 'current', webSourceHash());
+    const none = builder('x');
+    expect(await refreshWebDist({ distDir: current, build: none, log: quiet() })).toBe('up-to-date');
+    expect(none).not.toHaveBeenCalled();
+
+    const staged = path.join(parentDir(), 'dist');
+    stamped(staged, 'previous', 'stale');
+    stamped(`${staged}.next`, 'staged', webSourceHash());
+    expect(await refreshWebDist({ distDir: staged, build: none, log: quiet() })).toBe('adopted-staged');
+    expect(none).not.toHaveBeenCalled();
+    expect(served(staged)).toContain('staged');
+    expect(siblings(staged)).toEqual([]);
+
+    const built = path.join(parentDir(), 'dist');
+    stamped(built, 'previous', 'stale');
+    const build = builder('rebuilt');
+    expect(await refreshWebDist({ distDir: built, build, log: quiet() })).toBe('built');
+    expect(build).toHaveBeenCalledOnce();
+    expect(served(built)).toContain('rebuilt');
+    expect(fs.readFileSync(path.join(built, '.source-hash'), 'utf8').trim()).toBe(webSourceHash());
+  });
+
+  it('refreshWebDist removes a stale <dist>.next after it builds, renamed aside so nothing is left behind', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'previous', 'stale');
+    stamped(`${dist}.next`, 'stale staged', 'older');
+    expect(await refreshWebDist({ distDir: dist, build: builder('rebuilt'), log: quiet() })).toBe('built');
+    expect(served(dist)).toContain('rebuilt');
+    expect(siblings(dist)).toEqual([]);
+  });
+
+  // A relaunch stages in the server while the hook runs in its own process:
+  // a stage of the current sources is never the hook's to remove.
+  it('refreshWebDist keeps a <dist>.next stamped with the current sources', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'current', webSourceHash());
+    stamped(`${dist}.next`, 'relaunch stage', webSourceHash());
+    expect(await refreshWebDist({ distDir: dist, build: builder('x'), log: quiet() })).toBe('up-to-date');
+    expect(served(`${dist}.next`)).toContain('relaunch stage');
+  });
+
+  it('a failed refreshWebDist throws and leaves the previous <dist> served', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'previous', 'stale');
+    await expect(refreshWebDist({ distDir: dist, build: failing(), log: quiet() })).rejects.toThrow('vite build failed (exit 1)');
+    expect(served(dist)).toContain('previous');
+    expect(siblings(dist)).toEqual([]);
+  });
+
+  // Another process staging the same sources while this stage fails: its stage
+  // is whole (the stamp is written before the rename), so it is kept.
+  it('a failed stage keeps a <dist>.next of the current sources that another process put there', async () => {
+    const dist = path.join(parentDir(), 'dist');
+    stamped(dist, 'serving', 'stale');
+    const raced = vi.fn<WebBuilder>(async () => {
+      stamped(`${dist}.next`, 'the other stage', webSourceHash());
+      throw new Error('vite build failed (exit 1)');
+    });
+    expect(await stageWebBuild({ distDir: dist, build: raced })).toEqual({ staged: true });
+    expect(served(`${dist}.next`)).toContain('the other stage');
+  });
+
+  it('stageWebBuild and refreshWebDist hash the inputs they are given', async () => {
+    const root = parentDir();
+    fs.mkdirSync(path.join(root, 'web'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'web', 'app.tsx'), 'fixture');
+    const inputs = webInputs(root);
+    const dist = path.join(root, 'web', 'dist');
+    expect(await stageWebBuild({ distDir: dist, inputs, build: builder('staged') })).toEqual({ staged: true });
+    expect(fs.readFileSync(path.join(`${dist}.next`, '.source-hash'), 'utf8').trim()).toBe(webSourceHash(inputs));
+    expect(webSourceHash(inputs)).not.toBe(webSourceHash());
+    expect(await refreshWebDist({ distDir: dist, inputs, build: builder('x'), log: quiet() })).toBe('adopted-staged');
   });
 
   it('a failed boot build names the dependency drift when node_modules does not satisfy package.json, and only then', async () => {

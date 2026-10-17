@@ -234,7 +234,7 @@ test('output capped at 16 KB tail — truncated:true, output starts with truncat
   assert.ok(h.output.length <= 16 * 1024 + 200, 'output exceeds 16 KB cap by too much');
 });
 
-test('hook not executable: chmod +x applied and hook still runs', async () => {
+test('hook not executable: still runs, and its mode is left as committed', async () => {
   const repoPath = await makeRealRepo('demo');
   const hookDir = path.join(repoPath, '.code-conductor');
   await fs.mkdir(hookDir, { recursive: true });
@@ -248,6 +248,9 @@ test('hook not executable: chmod +x applied and hook still runs', async () => {
   assert.equal(h.ran, true);
   assert.equal(h.exitCode, 0);
   assert.ok(h.output.includes('chmod-test'));
+  // A chmod would be a mode change git reports, dirtying the parent.
+  assert.equal((await fs.stat(hookPath)).mode & 0o111, 0, 'no exec bit was added');
+  assert.equal((await git(repoPath, 'status', '--porcelain')).stdout, '', 'the parent stays clean');
 });
 
 test('hook present in parent only (uncommitted) — read from parent checkout, not worktree', async () => {

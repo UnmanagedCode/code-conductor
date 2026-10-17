@@ -295,13 +295,18 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     await kill(w.id);
   });
 
-  test('worktree create runs the hook; commit, sync, merge land on parent', { timeout: 180_000 }, async () => {
+  test('worktree create runs the hook; commit, sync, merge land on parent and run the merge hook', { timeout: 180_000 }, async () => {
     assert.ok(state.project, 'needs the create-project step');
     const storeDir = path.join(projects, '.code-conductor', 'projects', 'demo');
     fs.mkdirSync(storeDir, { recursive: true });
     const markerName = `cc-smoke-hook-${randomBytes(4).toString('hex')}.txt`;
     const marker = path.join(os.tmpdir(), markerName);
     fs.writeFileSync(path.join(storeDir, 'post-worktree-create.sh'), `echo ran > "$TEMP/${markerName}"\n`);
+    // The merge hook takes the same env-then-bash route through Git's env.exe
+    // and bash.exe, with the two merge SHAs as extra CC_* args.
+    const mergeMarkerName = `cc-smoke-merge-hook-${randomBytes(4).toString('hex')}.txt`;
+    const mergeMarker = path.join(os.tmpdir(), mergeMarkerName);
+    fs.writeFileSync(path.join(storeDir, 'post-worktree-merge.sh'), `echo "$CC_POST_MERGE_SHA" > "$TEMP/${mergeMarkerName}"\n`);
     try {
       const r = await api(base, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', worktree: true, temp: false });
       assert.ok(r.body?.id, fail(`worktree spawn refused: ${JSON.stringify(r.body)}`));
@@ -319,7 +324,9 @@ d('Windows smoke (real claude, Git for Windows)', () => {
       assert.ok(m.body?.ok, `merge: ${JSON.stringify(m.body)}`);
       assert.ok(await git(demoDir(), 'log', '--merges', '--oneline', '-1'), 'no merge commit on parent');
       assert.ok(fs.existsSync(path.join(demoDir(), 'smoke.txt')), 'smoke.txt not on parent');
-    } finally { fs.rmSync(marker, { force: true }); }
+      assert.equal(m.body.postWorktreeMerge?.exitCode, 0, `merge hook: ${JSON.stringify(m.body.postWorktreeMerge)}`);
+      assert.equal(fs.readFileSync(mergeMarker, 'utf8').trim(), m.body.newSha, 'the merge hook ran with CC_POST_MERGE_SHA');
+    } finally { fs.rmSync(marker, { force: true }); fs.rmSync(mergeMarker, { force: true }); }
   });
 
   test('project_bash runs under Git Bash via /mcp', { timeout: 60_000 }, async () => {

@@ -183,6 +183,33 @@ describe('a system that dies mid-operation', () => {
     assert.match(r.reason, new RegExp(remote.id));
   });
 
+  // PINS: a merge that LANDED is reported as landed when the system dies
+  // during the post-merge hook. The death matches the hook's own exec frame
+  // (only it carries CC_POST_MERGE_SHA), after every git step has answered: the
+  // result is ok with the hook marked errored — never SYSTEM_UNREACHABLE or
+  // mayHaveCompleted for a merge that certainly completed.
+  for (const [how, cfg] of [
+    ['the provider dies on the hook\'s exec', { dieOn: 'CC_POST_MERGE_SHA' }],
+    ['the provider refuses to start the hook', { errorFrame: 'CC_POST_MERGE_SHA' }],
+  ]) {
+    test(`a merge hook whose system fails it still reports the landed merge: ${how}`, async () => {
+      // Committed on the branch: the hook is read from the target after the
+      // merge, so the merge itself brings it in.
+      await fs.mkdir(path.join(wt.worktreePath, '.code-conductor'), { recursive: true });
+      await fs.writeFile(path.join(wt.worktreePath, '.code-conductor', 'post-worktree-merge.sh'), '#!/bin/bash\necho hook\n');
+      await git(wt.worktreePath, 'add', '-A');
+      await git(wt.worktreePath, 'commit', '-q', '-m', 'merge hook');
+      await goFlaky(cfg);
+      const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.match(r.newSha, /^[0-9a-f]{40}$/);
+      assert.equal(r.postWorktreeMerge.error, true, JSON.stringify(r.postWorktreeMerge));
+      assert.equal(r.code, undefined);
+      assert.equal(r.mayHaveCompleted, undefined);
+      assert.equal(r.newSha, (await git(tree, 'rev-parse', 'HEAD')).stdout.trim(), 'the merge really landed');
+    });
+  }
+
   // PINS: the uncertainty is ABSENT — not false — when the death happened
   // before the merge was ever issued, so its presence always means something.
   test('a death before the merge is issued carries no such uncertainty', async () => {
