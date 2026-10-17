@@ -30,6 +30,9 @@ export function SettingsCard({ title, description, action, children, className }
   );
 }
 
+/** A status line's text and tone, as a section's store holds it for `Status`. */
+export type StatusLine = { text: string; tone?: 'error' | 'ok' | 'muted' };
+
 /** A one-line status: neutral, ok or error. `null`/'' renders nothing. */
 export function Status({ text, tone = 'muted', className }: { text?: React.ReactNode; tone?: 'muted' | 'ok' | 'error'; className?: string }) {
   if (!text) return null;

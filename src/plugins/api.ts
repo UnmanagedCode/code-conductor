@@ -1,5 +1,6 @@
 import express from 'express';
 import { regenerateAllProjectConventions } from '../projectClaudeMd.ts';
+import { streamNdjsonAction } from '../ndjsonAction.ts';
 
 // REST surface for the plugin system — thin delegations to the registry
 // (src/plugins/registry.ts), which is the shared service layer for REST,
@@ -28,37 +29,6 @@ export interface PluginLibraryApiLike {
   list(): Promise<unknown>;
   install(id: string, opts: { onChunk: (phase: string, text: string) => void; onValidated: () => void }): Promise<unknown>;
   update(id: string, opts: { onChunk: (phase: string, text: string) => void; onValidated: () => void }): Promise<unknown>;
-}
-
-// Runs an install/update call that reports progress via onChunk and flips
-// into streaming mode via onValidated (see pluginLibrary.install/update).
-// Before onValidated fires, a rejection is a normal thrown error — routed to
-// the shared trailing error middleware via `next`, same as every other route
-// here (preserves today's 404/409/400 status codes for validation failures).
-// After onValidated fires, response bytes are already committed as 200
-// NDJSON, so both success and failure resolve into a single terminal
-// {type:'result', ...} line instead of an HTTP status.
-function streamLibraryAction(res: express.Response, next: express.NextFunction, run: (onChunk: (phase: string, text: string) => void, onValidated: () => void) => Promise<unknown>): void {
-  let streaming = false;
-  const write = (obj: unknown) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
-  const onValidated = () => {
-    streaming = true;
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Cache-Control', 'no-store');
-    res.flushHeaders();
-  };
-  const onChunk = (phase: string, text: string) => write({ type: 'chunk', phase, text });
-  run(onChunk, onValidated).then(
-    (result) => {
-      if (streaming) { write({ type: 'result', ok: true, result }); res.end(); }
-      else res.json(result);
-    },
-    (e) => {
-      const err = e as { message?: unknown; tail?: unknown };
-      if (streaming) { write({ type: 'result', ok: false, error: err.message, tail: err.tail }); res.end(); }
-      else next(e);
-    },
-  );
 }
 
 // Regenerating project CONVENTIONS.md is plumbing on top of a mutation that
@@ -96,13 +66,13 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
     try { res.json(await lib.list()); } catch (e) { next(e); }
   });
 
-  r.post('/library/:id/install', (req, res, next) => streamLibraryAction(res, next, async (onChunk, onValidated) => {
+  r.post('/library/:id/install', (req, res, next) => streamNdjsonAction(res, next, async (onChunk, onValidated) => {
     const result = await lib.install(req.params.id, { onChunk, onValidated });
     await refreshProjectConventions();
     return result;
   }));
 
-  r.post('/library/:id/update', (req, res, next) => streamLibraryAction(res, next, async (onChunk, onValidated) => {
+  r.post('/library/:id/update', (req, res, next) => streamNdjsonAction(res, next, async (onChunk, onValidated) => {
     const result = await lib.update(req.params.id, { onChunk, onValidated });
     await refreshProjectConventions();
     return result;

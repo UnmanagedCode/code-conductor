@@ -6,7 +6,8 @@
 //     package.json (src/depsDrift.ts), never into a linked node_modules, and
 //     verified by a re-check afterwards;
 //   - the web build staged beside the served one (src/webBuild.ts stageWebBuild);
-//   - withMaintenanceLock: one restart-or-update at a time.
+//   - withMaintenanceLock: one restart, self-update or Claude CLI update
+//     (src/claudeUpdate.ts) at a time.
 //
 // A failure throws, and the caller refuses the relaunch, so the running cc keeps
 // serving.
@@ -62,11 +63,12 @@ export async function ensureDependencies({
   return { ran: true, ok: true, code: r.code, tail };
 }
 
-// The one slot restart and self-update share: a pull under a draining restart,
-// or two installs into one tree, must never overlap.
+// The one slot restart, self-update and the Claude CLI update share: a pull
+// under a draining restart, or two installs into one tree, must never overlap,
+// and a restart mid `claude update` would orphan it and lose its log.
 let maintenance: string | null = null;
 
-export async function withMaintenanceLock<T>(kind: 'restart' | 'update', fn: () => Promise<T>): Promise<T> {
+export async function withMaintenanceLock<T>(kind: 'restart' | 'update' | 'claude-update', fn: () => Promise<T>): Promise<T> {
   if (maintenance) {
     throw httpError(409, `a restart or update is already in progress (${maintenance})`, { code: 'MAINTENANCE_IN_PROGRESS' });
   }

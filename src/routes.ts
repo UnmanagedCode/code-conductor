@@ -33,6 +33,9 @@ import { buildPlaybookApi } from './playbookApi.ts';
 import { runRestart, type RestartPhase } from './restart.ts';
 import { withMaintenanceLock, type RelaunchPrep } from './relaunchPrep.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
+import { applyClaudeUpdate } from './claudeUpdate.ts';
+import { probeClaudeBin } from './health.ts';
+import { streamNdjsonAction } from './ndjsonAction.ts';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
@@ -438,32 +441,21 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try { res.json(await getSelfUpdateStatus()); } catch (e) { next(e); }
   });
 
-  // Same streaming contract as the plugin library update (see
-  // streamLibraryAction in src/plugins/api.ts): before onValidated fires a
-  // rejection is a normal thrown error (→ trailing error middleware, preserving
-  // status codes); after it, bytes are committed as 200 NDJSON and both
-  // outcomes resolve into one terminal {type:'result',...} line.
-  r.post('/settings/self-update', (req, res, next) => {
-    let streaming = false;
-    const write = (obj: unknown) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
-    const onValidated = () => {
-      streaming = true;
-      res.setHeader('Content-Type', 'application/x-ndjson');
-      res.setHeader('Cache-Control', 'no-store');
-      res.flushHeaders();
-    };
-    const onChunk = (phase: 'pull' | 'npm', text: string) => write({ type: 'chunk', phase, text });
-    return applySelfUpdate({ onChunk, onValidated }).then(
-      (result) => {
-        if (streaming) { write({ type: 'result', ok: true, result }); res.end(); }
-        else res.json(result);
-      },
-      (e) => {
-        if (streaming) { write({ type: 'result', ok: false, error: errMessage(e), tail: (e as { tail?: unknown }).tail }); res.end(); }
-        else next(e);
-      },
-    );
+  // Same streaming contract as the plugin library update (streamNdjsonAction,
+  // src/ndjsonAction.ts): before onValidated fires a rejection is a normal
+  // thrown error (→ trailing error middleware, preserving status codes); after
+  // it, bytes are committed as 200 NDJSON and both outcomes resolve into one
+  // terminal {type:'result',...} line.
+  r.post('/settings/self-update', (req, res, next) => streamNdjsonAction(res, next,
+    (onChunk, onValidated) => applySelfUpdate({ onChunk, onValidated })));
+
+  // Settings → About's Claude CLI update (src/claudeUpdate.ts) — same NDJSON
+  // contract as self-update; no restart follows. GET is the `--version` probe.
+  r.get('/settings/claude-update', async (req, res, next) => {
+    try { res.json(await probeClaudeBin({ platform: hostPlatform })); } catch (e) { next(e); }
   });
+  r.post('/settings/claude-update', (req, res, next) => streamNdjsonAction(res, next,
+    (onChunk, onValidated) => applyClaudeUpdate({ platform: hostPlatform, onChunk: (t) => onChunk('update', t), onValidated })));
 
   // Settings → About: whether newly spawned instances default to debug
   // capture when a spawn call doesn't name `debug` explicitly (see

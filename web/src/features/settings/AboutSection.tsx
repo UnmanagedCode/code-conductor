@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button';
 import { OctopusBadge } from '@/components/mascot/Octopus';
 import { performRestart } from '@/features/sidebar/restart';
 import { createStore, useStore } from '@/state/createStore';
-import { SettingsCard, Status, LogBox } from './ui';
+import { SettingsCard, Status, LogBox, type StatusLine } from './ui';
+import { ClaudeUpdateCard } from './ClaudeUpdateCard';
 import { ApiError } from '@shared/http';
 import { json, errText, streamAction, capLog } from './api';
 
@@ -22,12 +23,10 @@ export function describeUpdate(d: SelfUpdateStatus): { text: string; canUpdate: 
   return { text: `${v} · up to date`, canUpdate: false };
 }
 
-type Line = { text: string; tone?: 'error' | 'ok' | 'muted' };
-
 // The running self-update lives at module scope, not in the section: the pull
 // keeps streaming after About is left, and a remounted section must show it and
 // offer no second Update.
-export const selfUpdateStore = createStore<{ line: Line; canUpdate: boolean; updating: boolean; label: string; log: string }>({
+export const selfUpdateStore = createStore<{ line: StatusLine; canUpdate: boolean; updating: boolean; label: string; log: string }>({
   line: { text: 'Checking for updates…' }, canUpdate: false, updating: false, label: 'Update', log: '',
 });
 
@@ -90,6 +89,7 @@ export function AboutSection() {
         <Status text={line.text} tone={line.tone ?? 'muted'} />
         <LogBox text={log} />
       </SettingsCard>
+      <ClaudeUpdateCard />
       <SettingsCard title="License">
         <div className="max-w-[70ch] space-y-3 text-sm leading-relaxed text-muted-foreground" data-testid="legal-notice">
           <p>Copyright © 2026 UnmanagedCode.</p>

@@ -23,7 +23,9 @@ export interface ClaudeBinProbe {
   stderr?: string;
 }
 
-async function probeBin({ timeoutMs, platform }: { timeoutMs: number; platform: Platform }): Promise<ClaudeBinProbe> {
+// `<resolved claude> --version` — the boot readiness probe, and the version
+// Settings → About's Claude Code card shows (src/claudeUpdate.ts).
+export async function probeClaudeBin({ timeoutMs = DEFAULT_TIMEOUT_MS, platform }: { timeoutMs?: number; platform: Platform }): Promise<ClaudeBinProbe> {
   const { command, prefixArgs } = resolveClaudeBin(platform);
   return new Promise((resolve) => {
     let proc;
@@ -103,7 +105,7 @@ export interface ReadinessResult {
 // is not reading. Injectable for tests; production takes the derivation.
 export async function checkClaudeReadiness({ configDir = claudeConfigDir(), timeoutMs = DEFAULT_TIMEOUT_MS, platform }: { configDir?: string; timeoutMs?: number; platform: Platform }): Promise<ReadinessResult> {
   const [claudeBin, claudeDir, authenticated] = await Promise.all([
-    probeBin({ timeoutMs, platform }),
+    probeClaudeBin({ timeoutMs, platform }),
     probeDir(configDir),
     probeAuth(configDir),
   ]);
