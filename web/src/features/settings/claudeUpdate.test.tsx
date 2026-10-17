@@ -26,6 +26,20 @@ const line = () => status()?.textContent ?? '';
 const log = () => claudeCard().querySelector('pre')?.textContent ?? '';
 const buttons = () => (within(claudeCard()).queryAllByRole('button') as HTMLButtonElement[]).map((b) => [b.textContent?.trim(), b.disabled]);
 
+// A version check the test holds: the route answers `response` (with `status`)
+// at once, and its JSON body arrives only when the test calls `release`.
+function heldCheck(status = 200) {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+  return {
+    response: new Response(body, { status, headers: { 'content-type': 'application/json' } }),
+    release(json: unknown) { controller.enqueue(new TextEncoder().encode(JSON.stringify(json))); controller.close(); },
+  };
+}
+
+// Long enough for a released check's body to be read and its settle handler to run.
+const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+
 beforeEach(() => {
   selfUpdateStore.set(INITIAL_SELF);
   claudeUpdateStore.set(INITIAL_CLAUDE);
@@ -124,5 +138,66 @@ describe('About → Claude Code', () => {
     act(() => { stream.push({ type: 'result', ok: true, result: { ok: true, version: '2.1.0' } }); stream.end(); });
     await waitFor(() => expect(line()).toContain('v2.1.0'));
     expect(buttons()).toEqual([['Update', false]]);
+  });
+
+  // Control for the held-check tests below: with no run started, the same held check lands its version once released.
+  it('a held version check lands its version when released with no run started', async () => {
+    const check = heldCheck();
+    mockFetch({ ...SELF_UP_TO_DATE, [`GET ${CLAUDE_URL}`]: () => check.response });
+    render(<AboutSection />);
+    await settle();
+    expect(line()).toBe('Checking Claude Code version…');
+    check.release({ found: true, command: 'claude', version: '2.0.0' });
+    await settle();
+    expect(line()).toBe('v2.0.0');
+  });
+
+  // Invariant: a version check that settles after Update was clicked — success or failure, during the run or after its outcome — never overwrites the run's line.
+  it.each([
+    ['answers', 'during the run'],
+    ['answers', 'after the outcome'],
+    ['fails', 'during the run'],
+    ['fails', 'after the outcome'],
+  ] as const)('a version check that %s %s leaves the run\'s line alone', async (arm, when) => {
+    const check = heldCheck(arm === 'fails' ? 500 : 200);
+    const stream = ndjsonStream();
+    const calls = mockFetch({ ...SELF_UP_TO_DATE, [`GET ${CLAUDE_URL}`]: () => check.response, [`POST ${CLAUDE_URL}`]: () => stream.response });
+    render(<AboutSection />);
+    await waitFor(() => expect(calls.some((c) => c.method === 'GET' && c.url === CLAUDE_URL)).toBe(true));
+    fireEvent.click(within(claudeCard()).getByRole('button', { name: 'Update' }));
+    const release = () => check.release(arm === 'answers' ? { found: true, command: 'claude', version: '2.0.0' } : { error: 'probe exploded' });
+    if (when === 'during the run') {
+      release();
+      await settle();
+      expect(line()).toBe('Updating Claude Code…');
+    }
+    act(() => { stream.push({ type: 'result', ok: true, result: { ok: true, version: '2.1.0' } }); stream.end(); });
+    await waitFor(() => expect(line()).toContain('v2.1.0'));
+    if (when === 'after the outcome') {
+      release();
+      await settle();
+    }
+    expect(line()).toContain('Claude Code v2.1.0 · update finished.');
+    expect(status()?.dataset.tone).toBe('ok');
+  });
+
+  // Invariant: two clicks before the disabled re-render commits (a double-click in one frame) start exactly one run.
+  it('two clicks before the re-render start one update, not two', async () => {
+    const stream = ndjsonStream();
+    const calls = mockFetch({ ...SELF_UP_TO_DATE, ...CLAUDE_FOUND, [`POST ${CLAUDE_URL}`]: () => stream.response });
+    render(<AboutSection />);
+    await waitFor(() => expect(line()).toContain('v2.0.0'));
+    const button = within(claudeCard()).getByRole('button', { name: 'Update' }) as HTMLButtonElement;
+    act(() => {
+      button.click();
+      // Premise: the run has started, yet React has not committed the disabled button, so the second click reaches the handler.
+      expect(claudeUpdateStore.get().updating).toBe(true);
+      expect(button.disabled).toBe(false);
+      button.click();
+    });
+    await settle();
+    expect(calls.filter((c) => c.method === 'POST' && c.url === CLAUDE_URL)).toHaveLength(1);
+    act(() => { stream.push({ type: 'result', ok: true, result: { ok: true, version: '2.1.0' } }); stream.end(); });
+    await waitFor(() => expect(buttons()).toEqual([['Update', false]]));
   });
 });

@@ -129,7 +129,7 @@ import {
   deleteCustomConvention as deleteWorkspaceConvention,
 } from './workspaceConventions.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
-import { httpError } from './httpError.ts';
+import { httpError, errMessage } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
 import type { PlaybookGate } from './mcp/playbookGate.ts';
 
@@ -197,15 +197,6 @@ function errCode(e: unknown): string | undefined {
   return undefined;
 }
 
-// The trailing error middleware's message extraction (err may be any thrown
-// value; express only types it `any`).
-function errMessage(e: unknown): string {
-  if (e && typeof e === 'object' && 'message' in e) {
-    const m = (e as { message?: unknown }).message;
-    if (typeof m === 'string') return m;
-  }
-  return 'internal error';
-}
 
 // Upper bound, in characters, on everything the trailing error middleware logs
 // for one error (its line plus, for a 5xx, the stack frames). Some refusals

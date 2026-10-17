@@ -24,19 +24,27 @@ export const claudeUpdateStore = createStore<{ line: StatusLine; updating: boole
   line: CHECKING, updating: false, log: '',
 });
 
+// Bumped by every Update. Update is offered while the version check is still
+// in flight, so a check that settles after a run began must leave the run's
+// line alone.
+let runs = 0;
+
 export function ClaudeUpdateCard() {
   const { line, updating, log } = useStore(claudeUpdateStore, (s) => s);
 
   React.useEffect(() => {
     if (claudeUpdateStore.get().updating) return;
     claudeUpdateStore.set({ line: CHECKING, log: '' });
+    const checkedAt = runs;
+    const settle = (line: StatusLine) => { if (runs === checkedAt) claudeUpdateStore.set({ line }); };
     json<ClaudeBinProbe>('/api/settings/claude-update')
-      .then((p) => claudeUpdateStore.set({ line: describeClaude(p) }))
-      .catch((e) => claudeUpdateStore.set({ line: { text: `Failed to check the Claude Code version: ${errText(e)}`, tone: 'error' } }));
+      .then((p) => settle(describeClaude(p)))
+      .catch((e) => settle({ text: `Failed to check the Claude Code version: ${errText(e)}`, tone: 'error' }));
   }, []);
 
   async function update() {
     if (claudeUpdateStore.get().updating) return;
+    runs++;
     claudeUpdateStore.set({ updating: true, line: { text: 'Updating Claude Code…' }, log: '' });
     try {
       const result = await streamAction('/api/settings/claude-update', (t) => claudeUpdateStore.set({ log: capLog(claudeUpdateStore.get().log, t) }));

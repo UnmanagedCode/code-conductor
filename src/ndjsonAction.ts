@@ -1,4 +1,5 @@
 import type express from 'express';
+import { errMessage } from './httpError.ts';
 
 // Runs a long action that reports progress via onChunk and flips into
 // streaming mode via onValidated — the plugin library's install/update
@@ -26,8 +27,7 @@ export function streamNdjsonAction(res: express.Response, next: express.NextFunc
       else res.json(result);
     },
     (e) => {
-      const err = e as { message?: unknown; tail?: unknown };
-      if (streaming) { write({ type: 'result', ok: false, error: err.message, tail: err.tail }); res.end(); }
+      if (streaming) { write({ type: 'result', ok: false, error: errMessage(e), tail: (e as { tail?: unknown } | null)?.tail }); res.end(); }
       else next(e);
     },
   );

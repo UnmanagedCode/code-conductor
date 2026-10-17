@@ -130,6 +130,10 @@ test('refused 409 MAINTENANCE_IN_PROGRESS while a restart holds the lock — nev
 
 const ndjson = (text) => text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
 
+// Every response the route test opens is read through `read`, so its `finally`
+// can release the gate (ending any gated run, a second one a broken lock let
+// through included), wait a bounded time for the bodies, then abort and close:
+// a regression fails at its assertion instead of hanging server.close().
 test('routes: GET /api/settings/claude-update reports the version; POST streams NDJSON; a second POST mid-run is refused 409; a failing CLI is a result ok:false line', async () => {
   await withFake({ FAKE_UPDATE_MODE: 'gate', FAKE_UPDATE_TO: '2.1.0' }, async (files) => {
     const app = express();
@@ -137,23 +141,28 @@ test('routes: GET /api/settings/claude-update reports the version; POST streams 
     const server = http.createServer(app);
     await new Promise((res) => server.listen(0, '127.0.0.1', res));
     const url = `http://127.0.0.1:${server.address().port}/api/settings/claude-update`;
+    const abort = new AbortController();
+    const bodies = [];
+    const post = () => fetch(url, { method: 'POST', signal: abort.signal });
+    const read = (res) => { const body = res.text(); bodies.push(body.catch(() => {})); return body; };
     try {
-      const gres = await fetch(url);
+      const gres = await fetch(url, { signal: abort.signal });
       assert.equal(gres.status, 200);
       const probe = await gres.json();
       assert.equal(probe.found, true);
       assert.equal(probe.version, '2.0.0');
 
-      const first = await fetch(url, { method: 'POST' });
+      const first = await post();
+      const firstBody = read(first);
       assert.equal(first.status, 200);
       assert.match(first.headers.get('content-type') || '', /ndjson/);
-      const firstBody = first.text();
       await waitForFile(files.record);
 
-      const second = await fetch(url, { method: 'POST' });
+      const second = await post();
+      const secondBody = read(second);
       assert.equal(second.status, 409);
       assert.match(second.headers.get('content-type') || '', /json/);
-      assert.equal((await second.json()).code, 'MAINTENANCE_IN_PROGRESS');
+      assert.equal(JSON.parse(await secondBody).code, 'MAINTENANCE_IN_PROGRESS');
 
       await fs.writeFile(files.gate, '');
       const lines = ndjson(await firstBody);
@@ -163,15 +172,22 @@ test('routes: GET /api/settings/claude-update reports the version; POST streams 
       assert.deepEqual(lines.at(-1), { type: 'result', ok: true, result: { ok: true, version: '2.1.0' } });
 
       await withEnv({ FAKE_UPDATE_MODE: 'fail' }, async () => {
-        const failed = await fetch(url, { method: 'POST' });
+        const failed = await post();
+        const failedBody = read(failed);
         assert.equal(failed.status, 200);
-        const result = ndjson(await failed.text()).at(-1);
+        const result = ndjson(await failedBody).at(-1);
         assert.equal(result.type, 'result');
         assert.equal(result.ok, false);
         assert.match(result.error, /exited with code 1/);
         assert.match(result.tail, /failed to install update/);
       });
     } finally {
+      await fs.writeFile(files.gate, '');
+      let timer;
+      await Promise.race([Promise.all(bodies), new Promise((r) => { timer = setTimeout(r, 5000); })]);
+      clearTimeout(timer);
+      abort.abort();
+      server.closeAllConnections();
       await new Promise((res) => server.close(res));
     }
   });
