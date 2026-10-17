@@ -27,6 +27,8 @@ function spawnServer(port, tmpHome) {
     cwd: path.dirname(SERVER_TS),
     env: {
       ...process.env,
+      // Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} on boot; keep it off the real HOME.
+      HOME: tmpHome,
       PORT: String(port),
       HOST: '127.0.0.1',
       PROJECTS_ROOT: path.join(tmpHome, 'project'),

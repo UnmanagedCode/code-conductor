@@ -78,6 +78,8 @@ test('server.ts\'s entry block starts the server with exactly start(entryStartOp
 async function startWith(buildWeb) {
   const home = await mkdtemp('cc-webwire-');
   const env = {
+    // Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} on boot; keep it off the real HOME.
+    HOME: home,
     PROJECTS_ROOT: path.join(home, 'projects'),
     CLAUDE_PROJECTS_ROOT: path.join(home, 'claude', 'projects'),
     CLAUDE_CONFIG_DIR: path.join(home, 'claude'),
