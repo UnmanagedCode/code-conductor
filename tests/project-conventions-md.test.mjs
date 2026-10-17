@@ -7,7 +7,8 @@
 // locally and names the rest in a visible in-body note, keeping them in the
 // marker so they recover verbatim if they resolve again. Every project is
 // written — no file, a non-marker first line and a zero-slug marker all mean
-// "no project selection recorded", not "skip me". The single exception is a
+// unset ("no project selection recorded"), and the `:none` marker records a
+// deliberate choice of none; neither means "skip me". The single exception is a
 // transient one: a degraded catalog holding an unresolvable marker slug freezes
 // the whole file (workspace block included) until the next regenerate.
 
@@ -20,13 +21,14 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { createProject } from '../src/projects.ts';
 import {
   addCustomConvention, deleteCustomConvention, composeProjectConventionsBlock, setPluginConventionsProvider,
-  getCatalog as getProjectConventionsCatalog,
+  getCatalog as getProjectConventionsCatalog, SEED_PROJECT_CONVENTIONS,
 } from '../src/projectConventions.ts';
 import {
-  buildMarker, parseMarker, composeProjectConventionsDoc, composeProjectConventionsDocWithMeta,
-  conventionsTargetPath, ensureProjectConventionsMd, regenerateAllProjectConventions,
+  buildMarker, parseMarker, selectionOf, composeProjectConventionsDoc, composeProjectConventionsDocWithMeta,
+  conventionsTargetPath, ensureProjectConventionsMd, regenerateAllProjectConventions, slugSelection,
 } from '../src/projectClaudeMd.ts';
-import { composeCurrentWorkspace } from '../src/workspaceConventions.ts';
+import { composeCurrentWorkspace, setSelection as setWorkspaceSelection } from '../src/workspaceConventions.ts';
+import { isSlug } from '../src/identifiers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -56,35 +58,67 @@ const claudeMdPath = (name) => path.join(projectsRoot, name, 'CLAUDE.md');
 
 // ── marker helpers (unit) ────────────────────────────────────────────────────
 
-test('buildMarker / parseMarker round-trip', () => {
-  assert.equal(buildMarker(['a', 'b']), '<!-- cc:conventions a,b -->');
-  assert.deepEqual(parseMarker('<!-- cc:conventions a,b -->'), ['a', 'b']);
-  assert.deepEqual(parseMarker(buildMarker(['x'])), ['x']);
+// T1a — each of the three states has exactly one marker spelling and reads back as itself.
+test('buildMarker / parseMarker round-trip for unset, none and selected', () => {
+  const cases = [
+    [{ mode: 'unset' }, '<!-- cc:conventions -->'],
+    [{ mode: 'none' }, '<!-- cc:conventions :none -->'],
+    [{ mode: 'selected', slugs: ['a', 'b'] }, '<!-- cc:conventions a,b -->'],
+  ];
+  for (const [sel, line] of cases) {
+    assert.equal(buildMarker(sel), line, `${sel.mode} builds its one spelling`);
+    assert.deepEqual(parseMarker(line), sel, `${sel.mode} reads back as itself`);
+  }
 });
 
-test('parseMarker: empty marker → [] ; non-marker / blank → null', () => {
-  assert.deepEqual(parseMarker('<!-- cc:conventions -->'), []);
-  assert.deepEqual(parseMarker(buildMarker([])), []);
+// T1b — none is only the exact reserved form; no state is inferred from a
+// mixed or absent marker.
+test('parseMarker: a mixed marker is a selection, a non-marker / blank is null, and no file is unset', () => {
+  assert.deepEqual(parseMarker('<!-- cc:conventions :none,design-guidelines -->'),
+    { mode: 'selected', slugs: [':none', 'design-guidelines'] });
   assert.equal(parseMarker('# Just a heading'), null);
   assert.equal(parseMarker(''), null);
   assert.equal(parseMarker('@../CLAUDE.md'), null);
+  assert.deepEqual(selectionOf(null), { mode: 'unset' });
+  assert.deepEqual(selectionOf('# My own conventions\n'), { mode: 'unset' });
+});
+
+// T1c — an older cc, whose parser splits the marker into slugs and rebuilds it
+// by joining them, keeps a none marker byte-for-byte.
+test('the pre-tri-state marker grammar reads a none marker as one slug and rebuilds it verbatim', () => {
+  const line = buildMarker({ mode: 'none' });
+  const legacy = /^<!-- cc:conventions ?(.*?) ?-->$/.exec(line);
+  assert.ok(legacy, 'the legacy pattern still recognises the marker');
+  const slugs = legacy[1].trim().split(',').map(s => s.trim()).filter(Boolean);
+  assert.equal(slugs.length, 1);
+  assert.equal(`<!-- cc:conventions ${slugs.join(',')} -->`, line);
+});
+
+// T1d — the none token is outside every slug grammar, so it can never collide
+// with a built-in, custom or plugin convention.
+test('the none token can never be a convention slug', async () => {
+  const { NONE_TOKEN } = await import('../src/projectClaudeMd.ts');
+  assert.equal(buildMarker({ mode: 'none' }), `<!-- cc:conventions ${NONE_TOKEN} -->`);
+  assert.equal(isSlug(NONE_TOKEN), false);
+  assert.doesNotMatch(NONE_TOKEN, /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/);
+  for (const { slug } of SEED_PROJECT_CONVENTIONS) assert.equal(isSlug(slug), true, slug);
 });
 
 test('composeProjectConventionsDoc: marker on line 1, then composed bodies', async () => {
-  const doc = await composeProjectConventionsDoc(['documentation-guidelines']);
+  const doc = await composeProjectConventionsDoc(slugSelection(['documentation-guidelines']));
   assert.equal(doc.split('\n', 1)[0], '<!-- cc:conventions documentation-guidelines -->');
   assert.match(doc, /## Documentation guidelines/);
   assert.ok(doc.indexOf('# Workspace conventions') < doc.indexOf('# Project conventions'),
     'the workspace block sits above the project one');
   // Empty selection → marker + the workspace block, and NO project heading.
-  const empty = await composeProjectConventionsDoc([]);
+  const empty = await composeProjectConventionsDoc({ mode: 'unset' });
   assert.equal(empty, '<!-- cc:conventions -->\n\n' + await composeCurrentWorkspace());
 });
 
 // ── regeneration (refresh improved text) ──────────────────────────────────────
 
 test('ensureProjectConventionsMd rewrites a mangled body back to canonical; marker preserved', async () => {
-  const doc = await composeProjectConventionsDoc(['documentation-guidelines']);
+  const doc = await composeProjectConventionsDoc(slugSelection(['documentation-guidelines']));
   await createProject('refresh-proj', { conventionsDoc: doc });
   const target = conventionsPath('refresh-proj');
 
@@ -105,7 +139,7 @@ test('a project with no CONVENTIONS.md gets one created, workspace block and all
   assert.equal(res.regenerated, true);
   assert.deepEqual(res.missing, []);
   const content = await fs.readFile(conventionsPath('plain'), 'utf8');
-  assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions -->', 'a zero-slug marker is written');
+  assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions -->', 'the unset (zero-slug) marker is written');
   assert.match(content, /# Workspace conventions/);
   assert.doesNotMatch(content, /# Project conventions/, 'no project part, so no project heading');
 });
@@ -119,7 +153,7 @@ test('a CONVENTIONS.md with no marker is rewritten, not preserved', async () => 
   const res = await ensureProjectConventionsMd('legacy');
   assert.equal(res.regenerated, true);
   const content = await fs.readFile(target, 'utf8');
-  assert.equal(content, await composeProjectConventionsDoc([]), 'the composed zero-slug document');
+  assert.equal(content, await composeProjectConventionsDoc({ mode: 'unset' }), 'the composed unset document');
   assert.doesNotMatch(content, /not managed by cc/, 'the hand-authored body is discarded');
 });
 
@@ -135,6 +169,48 @@ test('a zero-slug marker keeps the marker, gains the workspace block, drops the 
   assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions -->', 'marker verbatim');
   assert.match(content, /# Workspace conventions/);
   assert.doesNotMatch(content, /keep me/);
+});
+
+// T2a — a none marker survives regeneration byte-stably while the workspace
+// block still refreshes.
+test('a none marker regenerates byte-stably to the workspace block alone, and follows a workspace change', async () => {
+  await createProject('chose-none');
+  const target = conventionsPath('chose-none');
+  await fs.writeFile(target, '<!-- cc:conventions :none -->\n\nSTALE\n');
+  const res = await ensureProjectConventionsMd('chose-none');
+  assert.equal(res.regenerated, true);
+  const doc = await fs.readFile(target, 'utf8');
+  assert.equal(doc, '<!-- cc:conventions :none -->\n\n' + await composeCurrentWorkspace(), 'marker + the workspace block, no project part');
+  assert.equal(doc, await composeProjectConventionsDoc({ mode: 'none' }), 'what creation composes for none');
+  await ensureProjectConventionsMd('chose-none');
+  assert.equal(await fs.readFile(target, 'utf8'), doc, 'a second sweep is byte-identical');
+
+  await setWorkspaceSelection(['git-hygiene']);
+  await regenerateAllProjectConventions();
+  const after = await fs.readFile(target, 'utf8');
+  assert.equal(after.split('\n', 1)[0], '<!-- cc:conventions :none -->', 'the none marker is kept');
+  assert.equal(after, '<!-- cc:conventions :none -->\n\n' + await composeCurrentWorkspace(), 'the new workspace block');
+  assert.notEqual(after, doc, 'premise: the workspace change altered the block');
+  assert.doesNotMatch(after, /# Project conventions/);
+});
+
+// T2b — none never freezes: it has no slug a degraded catalog could drop.
+test('a degraded catalog does NOT freeze a none marker', async () => {
+  await createProject('none-degraded');
+  const target = conventionsPath('none-degraded');
+  await fs.writeFile(target, '<!-- cc:conventions :none -->\n\nSTALE\n');
+  setPluginConventionsProvider(async () => { throw new Error('transient plugin host failure'); });
+  try {
+    const res = await ensureProjectConventionsMd('none-degraded');
+    assert.equal(res.regenerated, true);
+    assert.deepEqual(res.missing, []);
+    const content = await fs.readFile(target, 'utf8');
+    assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions :none -->');
+    assert.match(content, /# Workspace conventions/);
+    assert.doesNotMatch(content, /STALE/);
+  } finally {
+    setPluginConventionsProvider(null);
+  }
 });
 
 // T4 — the `unresolvable` freeze is retired, but the recovery guarantee it used
@@ -173,7 +249,7 @@ test('regeneration ensures the @CONVENTIONS.md import, prepending it and never d
 
 // T12 — the workspace block cannot accumulate across regenerations.
 test('repeated regeneration is byte-identical and the workspace block appears exactly once', async () => {
-  await createProject('repeat', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
+  await createProject('repeat', { conventionsDoc: await composeProjectConventionsDoc(slugSelection(['design-guidelines'])) });
   const target = conventionsPath('repeat');
   await ensureProjectConventionsMd('repeat');
   const first = await fs.readFile(target, 'utf8');
@@ -190,7 +266,7 @@ test('repeated regeneration is byte-identical and the workspace block appears ex
 // T5 — the sweep skips nobody: a project with a marker doc and one with no
 // CONVENTIONS.md at all both come out carrying the workspace block.
 test('regenerateAllProjectConventions covers every project, marker or not', async () => {
-  await createProject('split', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
+  await createProject('split', { conventionsDoc: await composeProjectConventionsDoc(slugSelection(['design-guidelines'])) });
   await createProject('grand');            // no CONVENTIONS.md at all
   await fs.writeFile(conventionsPath('split'), '<!-- cc:conventions design-guidelines -->\n\nSTALE\n');
 
@@ -310,7 +386,7 @@ test('regeneration with an unresolvable slug is idempotent across repeated runs'
 
 test('the note disappears and the real text returns byte-identically once the slug resolves again', async () => {
   await addCustomConvention({ slug: 'house-style', name: 'House style', description: 'x', body: '## House style\n- v1 rule' });
-  const clean = await composeProjectConventionsDoc(['house-style', 'design-guidelines']);
+  const clean = await composeProjectConventionsDoc(slugSelection(['house-style', 'design-guidelines']));
   await createProject('recovers', { conventionsDoc: clean });
   const target = conventionsPath('recovers');
 
@@ -328,7 +404,7 @@ test('the note disappears and the real text returns byte-identically once the sl
 });
 
 test('a degraded catalog does NOT freeze a marker whose slugs all resolve — the failure is unrelated to this project', async () => {
-  await createProject('degraded-but-unaffected', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
+  await createProject('degraded-but-unaffected', { conventionsDoc: await composeProjectConventionsDoc(slugSelection(['design-guidelines'])) });
   const target = conventionsPath('degraded-but-unaffected');
   await fs.writeFile(target, '<!-- cc:conventions design-guidelines -->\n\nSTALE\n');
 
@@ -367,7 +443,7 @@ test('a degraded catalog DOES freeze a marker that has an unresolvable slug — 
   ]);
   let target;
   try {
-    const doc = await composeProjectConventionsDoc(['plug/foo', 'design-guidelines']);
+    const doc = await composeProjectConventionsDoc(slugSelection(['plug/foo', 'design-guidelines']));
     await createProject('degraded-and-affected', { conventionsDoc: doc });
     target = conventionsPath('degraded-and-affected');
   } finally {
@@ -535,8 +611,8 @@ test('composeProjectConventionsDocWithMeta returns the same document, plus the c
     setPluginConventionsProvider(provider);
     try {
       for (const slugs of [[], ['design-guidelines'], ['design-guidelines', 'testing-guidelines']]) {
-        const meta = await composeProjectConventionsDocWithMeta(slugs);
-        assert.equal(meta.text, await composeProjectConventionsDoc(slugs),
+        const meta = await composeProjectConventionsDocWithMeta(slugSelection(slugs));
+        assert.equal(meta.text, await composeProjectConventionsDoc(slugSelection(slugs)),
           `${label}: the document is byte-identical for ${JSON.stringify(slugs)}`);
         assert.equal(meta.degraded, (await getProjectConventionsCatalog()).degraded,
           `${label}: the flag mirrors the catalog for ${JSON.stringify(slugs)}`);
@@ -544,8 +620,8 @@ test('composeProjectConventionsDocWithMeta returns the same document, plus the c
       // The `missing`/note branch and the placement branch compose through the
       // same body, so they are checked on the same equality.
       const opts = { missing: ['ghost'], system: { id: 'box', path: '/srv/p' } };
-      const metaOpts = await composeProjectConventionsDocWithMeta(['ghost', 'design-guidelines'], opts);
-      assert.equal(metaOpts.text, await composeProjectConventionsDoc(['ghost', 'design-guidelines'], opts),
+      const metaOpts = await composeProjectConventionsDocWithMeta(slugSelection(['ghost', 'design-guidelines']), opts);
+      assert.equal(metaOpts.text, await composeProjectConventionsDoc(slugSelection(['ghost', 'design-guidelines']), opts),
         `${label}: the note + placement branches compose identically too`);
     } finally {
       setPluginConventionsProvider(null);
@@ -554,7 +630,7 @@ test('composeProjectConventionsDocWithMeta returns the same document, plus the c
 });
 
 test('a CRLF CONVENTIONS.md keeps its selection and stays CRLF; a CRLF CLAUDE.md gains a CRLF import', async () => {
-  const doc = await composeProjectConventionsDoc(['documentation-guidelines']);
+  const doc = await composeProjectConventionsDoc(slugSelection(['documentation-guidelines']));
   await createProject('crlf-proj', { conventionsDoc: doc });
   const target = conventionsPath('crlf-proj');
   await fs.writeFile(target, doc.replace(/\n/g, '\r\n'));

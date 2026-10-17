@@ -92,6 +92,12 @@ export type Worktree = {
   [k: string]: unknown;
 };
 
+/** A project's convention selection: never chosen (`unset`), chosen to have none (`none`), or these slugs in marker order. */
+export type ProjectConventionSelection =
+  | { mode: 'unset' }
+  | { mode: 'none' }
+  | { mode: 'selected'; slugs: string[] };
+
 export type Project = {
   name: string;
   path: string;
@@ -106,8 +112,8 @@ export type Project = {
   worktrees: Worktree[];
   sessions?: { count: number; archivedCount: number; handCount: number; lastActivity: number };
   mergeStatus?: { ahead: number | null; behind: number | null; upstream: string | null };
-  /** The selection its CONVENTIONS.md records; `{error}` when unreadable, absent when the project can't be resolved. */
-  conventions?: { selected: string[]; unresolved: string[] } | { error: string };
+  /** The selection its CONVENTIONS.md records, with `unresolved` naming its slugs the catalog lacks; `{error}` when unreadable, absent when the project can't be resolved. */
+  conventions?: (ProjectConventionSelection & { unresolved: string[] }) | { error: string };
   branch?: string | null;
   dirty?: number;
   [k: string]: unknown;

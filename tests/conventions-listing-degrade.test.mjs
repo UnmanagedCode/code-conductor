@@ -46,7 +46,7 @@ import { setPluginConventionsProvider } from '../src/projectConventions.ts';
 import { setPluginConductorConventionsProvider } from '../src/conductorConventions.ts';
 import {
   composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath,
-  regenerateAllProjectConventions,
+  regenerateAllProjectConventions, slugSelection,
 } from '../src/projectClaudeMd.ts';
 import { listProjectConventions, listConductorConventions, createProject as mcpCreateProject } from '../src/mcp/handlers.ts';
 
@@ -483,7 +483,7 @@ describe('the conventions listings and the project created from them, over a deg
     const names = ['plain0', 'plain1', 'plain2', 'plain3', 'plain4'];
     const healthy = {};
     for (const n of names) {
-      const doc = await composeProjectConventionsDoc(['design-guidelines']);
+      const doc = await composeProjectConventionsDoc(slugSelection(['design-guidelines']));
       await createProject(n, { conventionsDoc: doc });
       healthy[n] = doc;
     }

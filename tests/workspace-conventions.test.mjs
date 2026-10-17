@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { createProject } from '../src/projects.ts';
-import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
+import { composeProjectConventionsDoc, slugSelection } from '../src/projectClaudeMd.ts';
 import {
   SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
   addCustomConvention, deleteCustomConvention, composeWorkspace, composeCurrentWorkspace,
@@ -124,7 +124,7 @@ test('GET /api/settings/conventions/workspace returns core + 6 built-in conventi
 // installation-wide, so BOTH must carry every workspace mutation.
 const conventionsPath = (name) => path.join(projectsRoot, name, 'CONVENTIONS.md');
 async function twoProjects() {
-  await createProject('with-conv', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
+  await createProject('with-conv', { conventionsDoc: await composeProjectConventionsDoc(slugSelection(['design-guidelines'])) });
   await createProject('without-conv');   // no CONVENTIONS.md at creation
   return ['with-conv', 'without-conv'];
 }

@@ -14,7 +14,7 @@ import {
   getCatalog, addCustomConvention, deleteCustomConvention,
   composeProjectConventionsBlock, SEED_PROJECT_CONVENTIONS,
 } from '../src/projectConventions.ts';
-import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
+import { composeProjectConventionsDoc, slugSelection } from '../src/projectClaudeMd.ts';
 import { createProject } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -183,7 +183,7 @@ test('createProject with no conventions still seeds the @CONVENTIONS.md import',
 });
 
 test('createProject with conventions imports + writes CONVENTIONS.md', async () => {
-  const conventionsDoc = await composeProjectConventionsDoc(['documentation-guidelines']);
+  const conventionsDoc = await composeProjectConventionsDoc(slugSelection(['documentation-guidelines']));
   const { path: projPath } = await createProject('convention-proj', { conventionsDoc });
   const claude = await fs.readFile(path.join(projPath, 'CLAUDE.md'), 'utf8');
   assert.equal(claude, '@CONVENTIONS.md\n');
@@ -293,6 +293,45 @@ test('POST /api/projects with no conventions still writes a CONVENTIONS.md carry
   assert.doesNotMatch(conventions, /# Project conventions/);
 });
 
+const markerOf = async (name) => (await fs.readFile(path.join(projectsRoot, name, 'CONVENTIONS.md'), 'utf8')).split('\n', 1)[0];
+const listedConventions = async (name) => (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === name)?.conventions;
+
+// T5a — PINS: the flag records none, with or without an empty `conventions`.
+test('POST /api/projects with noProjectConventions records none', async () => {
+  for (const [name, extra] of [['chose-none', {}], ['chose-none-empty', { conventions: [] }]]) {
+    const r = await api(baseUrl, 'POST', '/api/projects', { name, noProjectConventions: true, ...extra });
+    assert.equal(r.status, 201, `${name}: ${JSON.stringify(r.body)}`);
+    assert.equal(await markerOf(name), '<!-- cc:conventions :none -->', name);
+    assert.deepEqual(await listedConventions(name), { mode: 'none', unresolved: [] }, name);
+  }
+});
+
+// T5b — PINS: `[]` and omission are both unset; only the flag is none.
+test('POST /api/projects with conventions [] or neither field records unset', async () => {
+  for (const [name, extra] of [['empty-list', { conventions: [] }], ['omitted', {}], ['flag-false', { noProjectConventions: false }]]) {
+    const r = await api(baseUrl, 'POST', '/api/projects', { name, ...extra });
+    assert.equal(r.status, 201, `${name}: ${JSON.stringify(r.body)}`);
+    assert.equal(await markerOf(name), '<!-- cc:conventions -->', name);
+    assert.deepEqual(await listedConventions(name), { mode: 'unset', unresolved: [] }, name);
+  }
+});
+
+// T5c — PINS: a contradictory or malformed create writes nothing.
+test('POST /api/projects refuses noProjectConventions with slugs, or a non-boolean flag, and creates nothing', async () => {
+  const both = await api(baseUrl, 'POST', '/api/projects', {
+    name: 'contradiction', conventions: ['design-guidelines'], noProjectConventions: true,
+  });
+  assert.equal(both.status, 400, JSON.stringify(both.body));
+  assert.equal(both.body.code, 'CONVENTIONS_NONE_WITH_SLUGS');
+  const malformed = await api(baseUrl, 'POST', '/api/projects', { name: 'malformed', noProjectConventions: 'yes' });
+  assert.equal(malformed.status, 400, JSON.stringify(malformed.body));
+  const listed = (await api(baseUrl, 'GET', '/api/projects')).body.map(p => p.name);
+  for (const name of ['contradiction', 'malformed']) {
+    assert.equal(listed.includes(name), false, `${name} is not registered`);
+    await assert.rejects(fs.stat(path.join(projectsRoot, name)), { code: 'ENOENT' }, `${name} has no directory`);
+  }
+});
+
 // ── MCP tools ─────────────────────────────────────────────────────────────
 
 test('list_project_conventions MCP tool returns seeds (no body field)', async () => {
@@ -341,6 +380,20 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
   assert.ok(conventions.includes('## Documentation guidelines'));
 });
 
+// T5d — PINS: the MCP tool shares the REST create semantics for none.
+test('create_project MCP tool records none with noProjectConventions, and refuses it beside slugs', async () => {
+  const { buildTools } = await import('../src/mcp/tools.ts');
+  const tool = buildTools().find(t => t.name === 'create_project');
+  assert.equal(tool.inputSchema.properties.noProjectConventions?.type, 'boolean');
+  await tool.handler({ name: 'mcp-none', noProjectConventions: true }, { instances });
+  assert.equal(await markerOf('mcp-none'), '<!-- cc:conventions :none -->');
+  await assert.rejects(
+    tool.handler({ name: 'mcp-both', conventions: ['design-guidelines'], noProjectConventions: true }, { instances }),
+    (e) => { assert.equal(e.code, 'CONVENTIONS_NONE_WITH_SLUGS'); assert.equal(e.statusCode, 400); return true; },
+  );
+  await assert.rejects(fs.stat(path.join(projectsRoot, 'mcp-both')), { code: 'ENOENT' });
+});
+
 // ── Plugin-contributed conventions (+ optional scaffold facet) ─────────────
 // These exercise the provider seam directly (no real plugin host): the
 // fragment-catalog extraProvider (projectConventions). A plugin convention
@@ -374,7 +427,7 @@ test('compose resolves a plugin convention slug; create_project writes it to CON
   setPluginConventionsProvider(async () => [
     { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- always verify UX', plugin: 'playwright-harness' },
   ]);
-  const doc = await composeProjectConventionsDoc(['playwright-harness/visual-verification']);
+  const doc = await composeProjectConventionsDoc(slugSelection(['playwright-harness/visual-verification']));
   assert.ok(doc.includes('## Visual verification'));
 
   await createProject('plugin-guided', { conventionsDoc: doc });

@@ -271,11 +271,11 @@ describe('the projects hint on the local system', () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'conv' });
     let status = 0;
     assert.equal(await framesFor(client, async () => {
-      status = (await api(baseUrl, 'PUT', '/api/projects/conv/conventions', { slugs: ['design-guidelines'], expected: [] })).status;
+      status = (await api(baseUrl, 'PUT', '/api/projects/conv/conventions', { selection: { mode: 'selected', slugs: ['design-guidelines'] }, expected: { mode: 'unset' } })).status;
     }), 1, 'edit');
     assert.equal(status, 200);
     assert.equal(await framesFor(client, async () => {
-      status = (await api(baseUrl, 'PUT', '/api/projects/conv/conventions', { slugs: [], expected: [] })).status;
+      status = (await api(baseUrl, 'PUT', '/api/projects/conv/conventions', { selection: { mode: 'unset' }, expected: { mode: 'unset' } })).status;
     }), 0, 'stale edit');
     assert.equal(status, 409);
   });

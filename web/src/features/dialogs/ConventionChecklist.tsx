@@ -55,3 +55,19 @@ export function ConventionChecklist({ groups, picked, onToggle, idPrefix }: {
     </div>
   );
 }
+
+/** The deliberate choice of no project conventions. Rendered outside the checklist, so it never scrolls away. */
+export function NoConventionsChoice({ checked, onChange, idPrefix }: {
+  checked: boolean; onChange: (checked: boolean) => void; idPrefix: string;
+}) {
+  const id = `${idPrefix}-no-conventions`;
+  return (
+    <div className="flex items-start gap-3">
+      <Checkbox id={id} checked={checked} data-no-conventions onCheckedChange={(v) => onChange(v === true)} className="mt-0.5" />
+      <div className="grid gap-0.5">
+        <Label htmlFor={id}>This project uses no project conventions</Label>
+        <p className="text-xs text-muted-foreground">Workspace conventions still apply.</p>
+      </div>
+    </div>
+  );
+}

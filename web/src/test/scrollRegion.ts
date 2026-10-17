@@ -11,7 +11,11 @@ export function scrollersBetween(el: Element, root: Element): HTMLElement[] {
   return found;
 }
 
-/** The absolutely positioned hidden inputs Radix renders beside each Checkbox inside a form. */
-export function bubbleInputs(root: Element): HTMLInputElement[] {
-  return [...root.querySelectorAll<HTMLInputElement>('input[type="checkbox"][aria-hidden="true"]')];
+/**
+ * The absolutely positioned hidden inputs Radix renders beside each Checkbox inside a form; with `of`, only
+ * those of the Checkboxes matching it (Radix renders the input as its Checkbox's next sibling).
+ */
+export function bubbleInputs(root: Element, of?: string): HTMLInputElement[] {
+  const input = 'input[type="checkbox"][aria-hidden="true"]';
+  return [...root.querySelectorAll<HTMLInputElement>(of ? `${of} + ${input}` : input)];
 }

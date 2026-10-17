@@ -4,9 +4,11 @@
 //   - workspace ("applies to every project"), composed unconditionally from the
 //     installation-wide selection in <store>/conventions/workspace.json;
 //   - project (per-project pick), whose source of truth is line 1 of this very
-//     file — a machine-readable marker
-//       <!-- cc:conventions design-guidelines,testing-guidelines -->
-//     listing the selected slugs.
+//     file — a machine-readable marker recording one of three states
+//     (ProjectConventionSelection):
+//       <!-- cc:conventions -->                                      unset: never chosen
+//       <!-- cc:conventions :none -->                                none: chosen to have none
+//       <!-- cc:conventions design-guidelines,testing-guidelines --> selected: these slugs
 //
 // The selection is chosen at creation, or afterwards by setProjectConventions
 // (the sidebar's Edit conventions…), which rewrites the file through the same
@@ -27,9 +29,9 @@
 // keeping them in the marker so they recover verbatim if they resolve again,
 // and it declines to write at all when a marker slug is unresolvable while the
 // catalog is degraded (can't tell "genuinely gone" from "temporarily
-// unreachable" — see getCatalog). That is the ONLY decline: a project with no
-// file, a non-marker first line, or a zero-slug marker is regenerated with the
-// workspace block and an empty project part.
+// unreachable" — see getCatalog). That is the ONLY decline: a project whose
+// selection is unset (no file, a non-marker first line, a zero-slug marker) or
+// none is regenerated with the workspace block and an empty project part.
 
 import path from 'node:path';
 import { listProjects, resolveProjectDir } from './projects.ts';
@@ -107,9 +109,31 @@ export function placementDisclosure(system: unknown, systemPath: unknown): { id:
   return { id: system, path: systemPath };
 }
 
-// Line-1 marker: `<!-- cc:conventions a,b,c -->` (slugs are comma-safe — the
-// slug charset is [a-zA-Z0-9._-] plus plugin `<id>/<slug>`, never a comma).
+// Line-1 marker: `<!-- cc:conventions <inner> -->`. An empty inner is unset,
+// exactly NONE_TOKEN is none, anything else is a comma-separated slug list.
+// Slugs are comma-safe and can never be NONE_TOKEN: a convention slug is
+// SLUG_RE (src/identifiers.ts), or a plugin's `<plugin-id>/<slug>` of two of
+// them, and neither starts with `:`.
 const MARKER_RE = /^<!-- cc:conventions ?(.*?) ?-->$/;
+export const NONE_TOKEN = ':none';
+
+// A project's convention selection. `unset` (never chosen) and `none` (chosen
+// to have none) compose the same document; only the marker and the sidebar's
+// flag tell them apart. `selected` slugs are in marker order, verbatim, and may
+// repeat.
+export type ProjectConventionSelection =
+  | { mode: 'unset' }
+  | { mode: 'none' }
+  | { mode: 'selected'; slugs: string[] };
+
+export function slugsOf(sel: ProjectConventionSelection): string[] {
+  return sel.mode === 'selected' ? sel.slugs : [];
+}
+
+// A slug list as a selection: no slugs is unset, never none.
+export function slugSelection(slugs: string[]): ProjectConventionSelection {
+  return slugs.length ? { mode: 'selected', slugs } : { mode: 'unset' };
+}
 
 interface RegenerateLog {
   log?: (...args: unknown[]) => void;
@@ -120,8 +144,9 @@ export function conventionsTargetPath(projectPath: string): string {
   return path.join(projectPath, CONVENTIONS_FILENAME);
 }
 
-export function buildMarker(slugs: string[]): string {
-  return slugs.length ? `<!-- cc:conventions ${slugs.join(',')} -->` : '<!-- cc:conventions -->';
+export function buildMarker(sel: ProjectConventionSelection): string {
+  if (sel.mode === 'unset') return '<!-- cc:conventions -->';
+  return `<!-- cc:conventions ${sel.mode === 'none' ? NONE_TOKEN : sel.slugs.join(',')} -->`;
 }
 
 // Visible in-body note naming marker slugs that don't resolve locally. This is
@@ -135,20 +160,65 @@ function unresolvedNote(missing: string[]): string {
   return `> Convention unavailable: ${missing.map(s => `\`${s}\``).join(', ')}.`;
 }
 
-// Parse the first line of a CONVENTIONS.md. Returns the slug array (possibly
-// empty) if it is a valid marker, else null (not our file / grandfathered).
-export function parseMarker(firstLine: string | null | undefined): string[] | null {
+// Parse the first line of a CONVENTIONS.md: its selection if it is a marker,
+// else null (not our file / grandfathered). Only the exact NONE_TOKEN inner is
+// none — a hand-edited `:none,foo` is a selection whose `:none` slug resolves
+// to nothing.
+export function parseMarker(firstLine: string | null | undefined): ProjectConventionSelection | null {
   const m = MARKER_RE.exec(firstLine ?? '');
   if (!m) return null;
   const inner = m[1].trim();
-  return inner === '' ? [] : inner.split(',').map(s => s.trim()).filter(Boolean);
+  if (inner === NONE_TOKEN) return { mode: 'none' };
+  return slugSelection(inner.split(',').map(s => s.trim()).filter(Boolean));
 }
 
 // The project selection a CONVENTIONS.md holding `existing` (null: absent)
-// regenerates with — its line-1 marker's slugs, else none. Also how
+// regenerates with — its line-1 marker's, else unset. Also how
 // src/conventionsCheckout.ts derives the marker cc would write from HEAD's copy.
-export function selectionOf(existing: string | null): string[] {
-  return (existing === null ? null : parseMarker(firstLine(existing))) ?? [];
+export function selectionOf(existing: string | null): ProjectConventionSelection {
+  return (existing === null ? null : parseMarker(firstLine(existing))) ?? { mode: 'unset' };
+}
+
+// The selection a PUT body field names, or a 400. `allowRepeats` is for
+// `expected`, which mirrors a marker verbatim and a marker may repeat a slug.
+export function selectionInput(v: unknown, field: string, { allowRepeats }: { allowRepeats: boolean }): ProjectConventionSelection {
+  const mode = typeof v === 'object' && v !== null ? (v as { mode?: unknown }).mode : undefined;
+  if (mode !== 'unset' && mode !== 'none' && mode !== 'selected') {
+    throw httpError(400, `${field}.mode must be one of 'unset', 'none', 'selected'`);
+  }
+  if (mode !== 'selected') {
+    if ('slugs' in (v as object)) {
+      throw httpError(400, `${field} of mode '${mode}' carries no slugs`, { code: 'CONVENTIONS_NONE_WITH_SLUGS' });
+    }
+    return { mode };
+  }
+  const slugs = (v as { slugs?: unknown }).slugs;
+  if (!Array.isArray(slugs) || slugs.length === 0 || !slugs.every(s => typeof s === 'string')) {
+    throw httpError(400, `${field}.slugs must be a non-empty array of slug strings (use mode 'unset' or 'none' for no slugs)`);
+  }
+  if (!allowRepeats && new Set(slugs).size !== slugs.length) throw httpError(400, `${field}.slugs must not repeat a slug`);
+  return { mode: 'selected', slugs };
+}
+
+// The selection a project is created with, from the create body's
+// `conventions` and `noProjectConventions` (POST /api/projects and the
+// create_project tool). Omitting both, or `conventions: []`, is unset; only
+// the flag is none.
+export function creationSelection({ conventions, noProjectConventions }: { conventions?: unknown; noProjectConventions?: unknown }): ProjectConventionSelection {
+  if (conventions !== undefined && !(Array.isArray(conventions) && conventions.every(s => typeof s === 'string'))) {
+    throw httpError(400, 'conventions must be an array of slug strings');
+  }
+  if (noProjectConventions !== undefined && typeof noProjectConventions !== 'boolean') {
+    throw httpError(400, 'noProjectConventions must be a boolean');
+  }
+  const slugs = (conventions ?? []) as string[];
+  if (noProjectConventions === true) {
+    if (slugs.length) {
+      throw httpError(400, 'noProjectConventions cannot be combined with conventions', { code: 'CONVENTIONS_NONE_WITH_SLUGS' });
+    }
+    return { mode: 'none' };
+  }
+  return slugSelection(slugs);
 }
 
 // Full CONVENTIONS.md document for a project selection: marker, the composed
@@ -157,7 +227,7 @@ export function selectionOf(existing: string | null): string[] {
 // convention recovers verbatim if it returns — but contributes a visible note
 // instead of a body. Unknown slug outside `missing` → 400 (via
 // composeProjectConventionsBlockWithMeta); callers at project creation rely on that.
-// With no project part at all (zero slugs, or none of them resolving to a body
+// With no project part at all (unset or none, or no slug resolving to a body
 // or a note) the heading is omitted too and the document is marker + workspace.
 // Also returns the project catalog's `degraded` flag, off the read the block
 // composition already makes — because degradedness is a property OF THIS
@@ -169,13 +239,13 @@ export function selectionOf(existing: string | null): string[] {
 // The WORKSPACE block can never be the degraded one (no extraProvider — see
 // src/workspaceConventions.ts), so the flag comes from the project block alone.
 export async function composeProjectConventionsDocWithMeta(
-  slugs: string[],
+  selection: ProjectConventionSelection,
   { missing = [], system = null }: { missing?: string[]; system?: { id: string; path: string } | null } = {},
 ): Promise<{ text: string; degraded: boolean }> {
-  const marker = buildMarker(slugs);
+  const marker = buildMarker(selection);
   const workspace = await composeCurrentWorkspace();          // ends with '\n'
   const gone = new Set(missing);
-  const { text: body, degraded } = await composeProjectConventionsBlockWithMeta(slugs.filter(s => !gone.has(s)));
+  const { text: body, degraded } = await composeProjectConventionsBlockWithMeta(slugsOf(selection).filter(s => !gone.has(s)));
   const note = gone.size ? `${unresolvedNote(missing)}\n` : '';
   const project = (note || body)
     ? `\n${PROJECT_HEADING}\n${note ? `\n${note}` : ''}${body}`
@@ -190,17 +260,17 @@ export async function composeProjectConventionsDocWithMeta(
 // takes this one, and a caller that does takes the WithMeta form above rather
 // than reading the catalog a second time.
 export async function composeProjectConventionsDoc(
-  slugs: string[],
+  selection: ProjectConventionSelection,
   opts: { missing?: string[]; system?: { id: string; path: string } | null } = {},
 ): Promise<string> {
-  return (await composeProjectConventionsDocWithMeta(slugs, opts)).text;
+  return (await composeProjectConventionsDocWithMeta(selection, opts)).text;
 }
 
 // The project selection recorded in a CONVENTIONS.md at `projPath` on
-// `system`: its line-1 marker's slugs, else none (no file, a non-marker first
-// line or a zero-slug marker). Any read failure but ENOENT is rethrown. The one
-// reader the sweep, the listing and the edit share.
-export async function readProjectSelection(system: System, projPath: string): Promise<string[]> {
+// `system`: its line-1 marker's, else unset (no file or a non-marker first
+// line; a zero-slug marker is unset too). Any read failure but ENOENT is
+// rethrown. The one reader the sweep, the listing and the edit share.
+export async function readProjectSelection(system: System, projPath: string): Promise<ProjectConventionSelection> {
   return selectionOf(await readExisting(system, conventionsTargetPath(projPath)));
 }
 
@@ -222,9 +292,9 @@ type WriteResult =
 //     — the ONLY decline, and it freezes the WHOLE file, workspace block
 //     included; transient by definition, so the next regenerate picks it up.
 //   - anything else            → recompose + overwrite → { regenerated: true, missing }
-//     (no file / non-marker line 1 / zero-slug marker all mean "no project
-//     selection recorded": the old body is discarded, the marker — when there
-//     is one — is kept verbatim.)
+//     (no file / non-marker line 1 / zero-slug marker all mean unset; unset and
+//     none carry no slug, so they never decline. The old body is discarded and
+//     the marker — when there is one — is kept verbatim.)
 // Also ensures the project's CLAUDE.md carries the `@CONVENTIONS.md` import on
 // every non-declining run: a CONVENTIONS.md nothing imports delivers nothing,
 // and a project can appear at any time (a repo dropped into the projects root).
@@ -241,7 +311,7 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
 // the old marker must not land after an edit and write it back.
 function writeProjectConventions(
   projectName: string,
-  choose: (current: string[], catalog: CatalogList) => string[],
+  choose: (current: ProjectConventionSelection, catalog: CatalogList) => ProjectConventionSelection,
   { log }: { log?: RegenerateLog } = {},
 ): Promise<WriteResult> {
   return withProjectLock(projectName, () => writeUnlocked(projectName, choose, { log }));
@@ -252,7 +322,7 @@ const withProjectLock = createKeyedQueue();
 
 async function writeUnlocked(
   projectName: string,
-  choose: (current: string[], catalog: CatalogList) => string[],
+  choose: (current: ProjectConventionSelection, catalog: CatalogList) => ProjectConventionSelection,
   { log }: { log?: RegenerateLog },
 ): Promise<WriteResult> {
   const projects = await listProjects();
@@ -275,14 +345,14 @@ async function writeUnlocked(
 
   const existing = await readExisting(system, target);
   const catalog = await getCatalog();
-  const slugs = choose(selectionOf(existing), catalog);
+  const selection = choose(selectionOf(existing), catalog);
 
   // Resolve against the local catalog. Unresolvable slugs (a custom convention
   // absent on this instance, a disabled/absent plugin, a retired seed) stay in
   // the marker — so the text returns verbatim if they do — but drop out of the
   // body in favour of a visible note. The resolvable ones refresh normally.
   const bySlug = new Map(catalog.map(e => [e.slug, e]));
-  const missing = slugs.filter(s => !bySlug.has(s));
+  const missing = slugsOf(selection).filter(s => !bySlug.has(s));
   // A degraded catalog (extraProvider threw, or a plugin's own cwd resolution
   // transiently failed — see CatalogList) can't tell "genuinely gone" from
   // "temporarily unreachable" for a slug it's about to drop. Degradation only
@@ -291,8 +361,8 @@ async function writeUnlocked(
   // to be dropped (i.e. `missing` is non-empty here): if every marker slug
   // still resolves, the composed output is identical to what a healthy
   // catalog would produce, and declining the write would freeze a project
-  // over a failure that has nothing to do with it. A project with no marker
-  // slugs at all therefore always writes — `missing` is empty — and the
+  // over a failure that has nothing to do with it. An unset or none project
+  // therefore always writes — `missing` is empty — and the
   // WORKSPACE catalog carries no extraProvider (src/workspaceConventions.ts),
   // so it can never be the degraded one.
   if (catalog.degraded && missing.length > 0) {
@@ -301,7 +371,7 @@ async function writeUnlocked(
   }
 
   await ensureConventionsImport(system, projPath);
-  const content = await composeProjectConventionsDoc(slugs, {
+  const content = await composeProjectConventionsDoc(selection, {
     missing,
     // `resolved.path` IS the path on the system for a remote project, and null
     // placement for a local one — so a local project's document is unchanged.
@@ -318,29 +388,30 @@ async function writeUnlocked(
   return { path: target, regenerated: true, missing };
 }
 
-// Replace a project's selection (the sidebar's Edit conventions…). `slugs` is
-// written verbatim, in request order. `expected` is the selection the caller
-// last saw: a file whose marker has changed since is refused 409, so a stale
-// dialog cannot drop a slug written meanwhile. A slug the catalog lacks can
-// only be KEPT from the current marker, never introduced (400), and keeping one
-// while the catalog is degraded is refused 503, as the sweep declines it.
+// Replace a project's selection (the sidebar's Edit conventions…) with any of
+// the three states; a `selected` one is written verbatim, in request order.
+// `expected` is the selection the caller last saw: a file whose selection has
+// changed since — another mode, or other slugs — is refused 409, so a stale
+// dialog cannot drop a slug written meanwhile nor confuse unset with none. A
+// slug the catalog lacks can only be KEPT from the current marker, never
+// introduced (400), and keeping one while the catalog is degraded is refused
+// 503, as the sweep declines it; unset and none keep no slug, so never 503.
 export async function setProjectConventions(
   projectName: string,
-  slugs: string[],
-  expected: string[],
+  selection: ProjectConventionSelection,
+  expected: ProjectConventionSelection,
   { log }: { log?: RegenerateLog } = {},
-): Promise<{ ok: true; path: string; selected: string[]; unresolved: string[] }> {
+): Promise<{ ok: true; path: string; selection: ProjectConventionSelection; unresolved: string[] }> {
   const r = await writeProjectConventions(projectName, (current, catalog) => {
-    if (!sameList(current, expected)) {
-      throw httpError(409, `the conventions of '${projectName}' changed since they were read: `
-        + `now ${current.length ? current.join(', ') : 'none'}`);
+    if (!sameSelection(current, expected)) {
+      throw httpError(409, `the conventions of '${projectName}' changed since they were read: now ${describe(current)}`);
     }
-    const known = new Set([...catalog.map(e => e.slug), ...current]);
-    const unknown = slugs.find(s => !known.has(s));
+    const known = new Set([...catalog.map(e => e.slug), ...slugsOf(current)]);
+    const unknown = slugsOf(selection).find(s => !known.has(s));
     if (unknown !== undefined) throw httpError(400, `unknown convention slug '${unknown}'`);
-    return slugs;
+    return selection;
   }, { log });
-  if ('regenerated' in r) return { ok: true, path: r.path, selected: slugs, unresolved: r.missing };
+  if ('regenerated' in r) return { ok: true, path: r.path, selection, unresolved: r.missing };
   if (r.skipped === 'no-project') throw httpError(404, `project '${projectName}' not found`);
   throw httpError(503,
     `the convention catalog is incomplete, so ${r.missing.join(', ')} cannot be told apart from a removed `
@@ -348,8 +419,14 @@ export async function setProjectConventions(
     { code: 'CONVENTIONS_CATALOG_DEGRADED' });
 }
 
-function sameList(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((s, i) => s === b[i]);
+function sameSelection(a: ProjectConventionSelection, b: ProjectConventionSelection): boolean {
+  if (a.mode !== 'selected' || b.mode !== 'selected') return a.mode === b.mode;
+  return a.slugs.length === b.slugs.length && a.slugs.every((s, i) => s === b.slugs[i]);
+}
+
+function describe(sel: ProjectConventionSelection): string {
+  if (sel.mode === 'selected') return sel.slugs.join(', ');
+  return sel.mode === 'none' ? 'no project conventions (chosen)' : 'unset';
 }
 
 // Boot / post-mutation fan-out over every project. Per-project try/catch so one

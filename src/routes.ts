@@ -93,7 +93,10 @@ import {
   updateCustomConvention as updateProjectConvention,
   deleteCustomConvention as deleteProjectConvention,
 } from './projectConventions.ts';
-import { readProjectSelection, regenerateAllProjectConventions, setProjectConventions } from './projectClaudeMd.ts';
+import {
+  readProjectSelection, regenerateAllProjectConventions, selectionInput, setProjectConventions, slugsOf,
+  type ProjectConventionSelection,
+} from './projectClaudeMd.ts';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductorConventionsCatalog,
@@ -519,7 +522,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // The selection line 1 of the project's CONVENTIONS.md records. A failed
     // read is this row's value, never the list's failure; undefined when the
     // project could not be resolved, which `systemUnreachable` explains.
-    const selection: string[] | { error: string } | undefined = system
+    const selection: ProjectConventionSelection | { error: string } | undefined = system
       ? await readProjectSelection(system, p.path).catch((e: unknown) => ({ error: errMessage(e) }))
       : undefined;
     return {
@@ -577,12 +580,11 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
           worktrees: worktreesWithSessions,
           sessions: await summarizeSessions(projPlace, projTempSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
-          // {selected, unresolved} in marker order; {error} when the file could
-          // not be read; absent when the project could not be resolved.
-          conventions: gitFacts.selection === undefined ? undefined
-            : Array.isArray(gitFacts.selection)
-              ? { selected: gitFacts.selection, unresolved: gitFacts.selection.filter(s => !catalogSlugs.has(s)) }
-              : gitFacts.selection,
+          // The selection ({mode, slugs?}) plus `unresolved`, its slugs the
+          // catalog lacks, in marker order; {error} when the file could not be
+          // read; absent when the project could not be resolved.
+          conventions: gitFacts.selection === undefined || 'error' in gitFacts.selection ? gitFacts.selection
+            : { ...gitFacts.selection, unresolved: slugsOf(gitFacts.selection).filter(s => !catalogSlugs.has(s)) },
         };
       }));
       res.json(enriched);
@@ -592,7 +594,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.post('/projects', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { name, conventions, system, remoteId, systemPath } = body;
+      const { name, conventions, noProjectConventions, system, remoteId, systemPath } = body;
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
@@ -606,10 +608,6 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
           { statusCode: 400 },
         );
       }
-      if (conventions !== undefined && !Array.isArray(conventions)) {
-        throw httpError(400, 'conventions must be an array of slug strings');
-      }
-      const slugs = (conventions ?? []) as string[];
       // ONE implementation of the create sequence, shared with the MCP tool
       // (card 2026-0282). It composes the conventions document — seeded with
       // the placement disclosure when the project is being created ON a system,
@@ -624,7 +622,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       // Scaffold directive is returned (not persisted) — the caller folds it
       // into the first worker brief. See conventions/conductor/core.md.
       const created = await createProject({
-        name: validName, conventions: slugs, system, remoteId, systemPath,
+        name: validName, conventions, noProjectConventions, system, remoteId, systemPath,
       }, { capabilities });
       res.status(201).json(created);
     } catch (e) { next(e); }
@@ -683,19 +681,17 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   });
 
   // Replace a project's convention selection (the sidebar's Edit
-  // conventions…). Body: {slugs, expected}, both arrays of slug strings;
-  // `expected` is the selection the caller showed. Refusals and the write are
-  // setProjectConventions' (src/projectClaudeMd.ts), whose write signals the
-  // `projects` hint itself.
+  // conventions…). Body: {selection, expected}, both tagged selections
+  // ({mode: 'unset' | 'none'} or {mode: 'selected', slugs}); `expected` is the
+  // selection the caller showed. Body checks are selectionInput's, refusals
+  // and the write setProjectConventions' (src/projectClaudeMd.ts), whose write
+  // signals the `projects` hint itself.
   r.put('/projects/:name/conventions', async (req, res, next) => {
     try {
-      const { slugs, expected } = jsonBody(req);
-      const isSlugList = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string');
-      if (!isSlugList(slugs) || !isSlugList(expected)) {
-        throw httpError(400, 'slugs and expected must both be arrays of slug strings');
-      }
-      if (new Set(slugs).size !== slugs.length) throw httpError(400, 'slugs must not repeat a slug');
-      res.json(await setProjectConventions(req.params.name, slugs, expected, { log: console }));
+      const body = jsonBody(req);
+      const selection = selectionInput(body.selection, 'selection', { allowRepeats: false });
+      const expected = selectionInput(body.expected, 'expected', { allowRepeats: true });
+      res.json(await setProjectConventions(req.params.name, selection, expected, { log: console }));
     } catch (e) { next(e); }
   });
 

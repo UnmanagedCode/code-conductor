@@ -52,7 +52,7 @@ function measure(a: { dialog: string; list: string | null; primary: string | nul
   const footer = dialog.querySelector('[data-slot="dialog-footer"]') as HTMLElement | null;
   const inside = (inner: DOMRect, outer: DOMRect) => inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1;
   const view = new DOMRect(0, 0, innerWidth, innerHeight);
-  const inputs = [...dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"][aria-hidden="true"]')];
+  const inputs = [...list.querySelectorAll<HTMLInputElement>('input[type="checkbox"][aria-hidden="true"]')];
   const hit = (name: string) => {
     const b = [...dialog.querySelectorAll('button')].find((x) => x.textContent?.trim() === name);
     if (!b) return false;
@@ -117,7 +117,7 @@ async function measured(page: Page, at: string, dialogSel: string, listSel: stri
   const m = await page.evaluate(measure, { dialog: dialogSel, list: listSel, primary });
   // Positive control: the list really overflows its cap and holds hidden inputs, so the checks below can fail.
   expect(m.listOver, `${at}: the list overflows`).toBeGreaterThan(0);
-  expect(m.inputs, `${at}: the dialog holds hidden inputs`).toBeGreaterThan(0);
+  expect(m.inputs, `${at}: the list holds hidden inputs`).toBeGreaterThan(0);
   return { found: violations(at, m, primary, chrome), dialogHeight: m.dialogHeight };
 }
 

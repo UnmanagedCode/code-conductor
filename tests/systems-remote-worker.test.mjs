@@ -621,7 +621,7 @@ describe('a worker session on a remote system', () => {
   });
 
   test('a remote project discloses its system, and a local one says nothing', async () => {
-    const doc = await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } });
+    const doc = await composeProjectConventionsDoc({ mode: 'unset' }, { system: { id: 'prod-box', path: '/app' } });
     const block = doc.split('# Workspace conventions')[0];
   
     assert.match(block, /^<!-- cc:conventions/, 'the marker is still line 1');
@@ -636,7 +636,7 @@ describe('a worker session on a remote system', () => {
     assert.ok(!/never at their/.test(block),
       'the doc still forbids the system path, which is now the working directory');
   
-    const local = await composeProjectConventionsDoc([]);
+    const local = await composeProjectConventionsDoc({ mode: 'unset' });
     assert.ok(!/^# System$/m.test(local), 'a local project carries no such section');
   });
   
@@ -645,7 +645,7 @@ describe('a worker session on a remote system', () => {
   // and every wording this sentence has had was falsified by a later change, so
   // the claims it must not make are pinned rather than only the ones it makes.
   test('the disclosure makes no claim the geometry has falsified', async () => {
-    const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
+    const block = (await composeProjectConventionsDoc({ mode: 'unset' }, { system: { id: 'prod-box', path: '/app' } }))
       .split('# Workspace conventions')[0];
     // Two dead wordings: "appears only in command output", and the local/system
     // path split that the chroot collapsed.
@@ -673,7 +673,7 @@ describe('a worker session on a remote system', () => {
   // NOT CLAIMING that the two surviving sentences are enough — the tests above
   // pin what each of them says.
   test('the disclosure says nothing about shells, agents or where a command starts', async () => {
-    const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
+    const block = (await composeProjectConventionsDoc({ mode: 'unset' }, { system: { id: 'prod-box', path: '/app' } }))
       .split('# Workspace conventions')[0];
 
     assert.ok(!/shell/i.test(block), `it makes no claim about shells: ${block}`);
@@ -683,7 +683,7 @@ describe('a worker session on a remote system', () => {
     assert.ok(!/export/i.test(block), `nor about exported variables: ${block}`);
 
     // And a local project still says nothing at all.
-    assert.ok(!/^# System$/m.test(await composeProjectConventionsDoc([])));
+    assert.ok(!/^# System$/m.test(await composeProjectConventionsDoc({ mode: 'unset' })));
   });
 
   // PINS: the sentence really reaches the worker — it is written into the
