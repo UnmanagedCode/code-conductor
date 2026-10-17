@@ -5,10 +5,11 @@ import { closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
 import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
 import { appStore, activeInstance } from '@/state/app';
 import { syncRoute } from '@/state/route';
-import type { Instance, Project } from '@/state/types';
+import type { Instance, PostWorktreeHook, Project } from '@/state/types';
 import { confirmDialog, toast } from '@/ui/feedback';
 import { ensureSubscribed, refreshInstances, refreshProjects, selectInstance } from './controller';
 import { emit } from './events';
+import { hookFailed, hookOutputTail, hookResultLabel } from './hookResult';
 import { beginGesture, gestureOvertaken } from './gestures';
 
 const instances = () => appStore.get().instances;
@@ -262,6 +263,7 @@ export type WorktreeOpResult = {
   behind?: number;
   branch?: string;
   baseBranch?: string;
+  postWorktreeMerge?: PostWorktreeHook;
   [k: string]: unknown;
 };
 
@@ -335,7 +337,13 @@ export async function mergeWorktree(target: WorktreeTarget) {
   try {
     const result = await apiFetch<WorktreeOpResult>(`/api/projects/${encodeURIComponent(target.project)}/worktrees/${encodeURIComponent(target.worktree)}/merge`, { method: 'POST' });
     if (result.ok) {
-      toast.success('Merged into parent', `Now at ${result.newSha?.slice(0, 12) ?? '?'}.`);
+      const hook = result.postWorktreeMerge;
+      const named = hook && (hook.ran || hook.skipped) ? ` Post-merge hook: ${hookResultLabel(hook)}.` : '';
+      toast.success('Merged into parent', `Now at ${result.newSha?.slice(0, 12) ?? '?'}.${named}`);
+      if (hook && hookFailed(hook)) {
+        toast.warning(hook.ran || hook.error ? 'Post-merge hook failed' : 'Post-merge hook not run',
+          [hookResultLabel(hook), hookOutputTail(hook)].filter(Boolean).join('\n'));
+      }
       await refreshProjectsAfterOp();
     } else {
       toast.error('Cannot merge', result.reason);

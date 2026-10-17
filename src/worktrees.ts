@@ -25,6 +25,7 @@ import {
 } from './systems/transcriptKey.ts';
 import { classifySpawnError, type FsErrorCode } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
+import { createKeyedQueue } from './keyedQueue.ts';
 import { REBASE_PROMPT_LEAD } from '../shared/injectedTurns.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
@@ -407,11 +408,11 @@ async function systemFileExists(system: System, p: string): Promise<boolean> {
   catch { return false; }
 }
 
-interface PostWorktreeHookResult {
+interface WorktreeHookResult {
   ran: boolean;
   // Why the hook did not run, when a hook was found: `'disabled'` for the
-  // kill-switch, `'STORE_HOOK_LOCAL_ONLY'` for a store-sourced script on a
-  // non-local system (see runPostWorktreeHook).
+  // event's kill-switch, `'STORE_HOOK_LOCAL_ONLY'` for a store-sourced script on
+  // a non-local system (see runWorktreeHook).
   skipped?: 'disabled' | 'STORE_HOOK_LOCAL_ONLY';
   source?: string | null;
   exitCode?: number | null;
@@ -428,22 +429,48 @@ interface PostWorktreeHookResult {
   error?: boolean;
 }
 
-// Run `post-worktree-create.sh` with cwd in the new worktree. Resolved
+export type WorktreeHookEvent = 'create' | 'merge';
+
+// Per event: the script name, its kill-switch and its timeout variable. Each
+// event has its own pair so turning off a slow build-on-merge never turns off
+// the worktree setup workers depend on.
+const WORKTREE_HOOKS: Record<WorktreeHookEvent, { script: string; disableVar: string; timeoutVar: string }> = {
+  create: {
+    script: 'post-worktree-create.sh',
+    disableVar: 'ORCH_DISABLE_POST_WORKTREE_HOOK',
+    timeoutVar: 'ORCH_POST_WORKTREE_TIMEOUT_MS',
+  },
+  merge: {
+    script: 'post-worktree-merge.sh',
+    disableVar: 'ORCH_DISABLE_POST_WORKTREE_MERGE_HOOK',
+    timeoutVar: 'ORCH_POST_WORKTREE_MERGE_TIMEOUT_MS',
+  },
+};
+const WORKTREE_HOOK_TIMEOUT_MS = 120_000;
+
+// Run a worktree lifecycle hook: `post-worktree-create.sh` with cwd in the new
+// worktree, or `post-worktree-merge.sh` with cwd in the merge target. Resolved
 // from two locations, in priority order:
-//   1. in-tree: `<parentPath>/.code-conductor/post-worktree-create.sh`
-//      (read from the parent checkout — need not be committed).
-//   2. store:   `<projectStoreDir>/post-worktree-create.sh` (the central
-//      orchestrator store, out of the tracked tree).
-// Always resolves — never rejects — so a broken hook cannot abort a
-// successful worktree create. Result is attached to the createWorktree()
-// return value as `postWorktreeCreate`; `source` records which location ran.
-async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<PostWorktreeHookResult> {
-  if (process.env.ORCH_DISABLE_POST_WORKTREE_HOOK === '1') {
+//   1. in-tree: `<parentPath>/.code-conductor/<script>` (read from the parent
+//      checkout at run time — need not be committed);
+//   2. store:   `<projectStoreDir>/<script>` (the central orchestrator store,
+//      out of the tracked tree).
+// Every hook gets the `CC_*` vars built from `meta`; `vars` appends the
+// event's own. Always resolves when `system.exec` does — `source` records which
+// location ran. Exported so a test can drive it with an injected platform.
+export async function runWorktreeHook(
+  system: System,
+  event: WorktreeHookEvent,
+  meta: WorktreeMeta,
+  { cwd, vars = {} }: { cwd: string; vars?: Record<string, string> },
+): Promise<WorktreeHookResult> {
+  const hook = WORKTREE_HOOKS[event];
+  if (process.env[hook.disableVar] === '1') {
     return { ran: false, skipped: 'disabled' };
   }
 
-  const inTree = path.join(meta.parentPath, '.code-conductor', 'post-worktree-create.sh');
-  const inStore = path.join(projectStoreDir(meta.parentProject), 'post-worktree-create.sh');
+  const inTree = path.join(meta.parentPath, '.code-conductor', hook.script);
+  const inStore = path.join(projectStoreDir(meta.parentProject), hook.script);
   let scriptPath: string | null = null;
   let source: string | null = null;
   // The in-tree script is read from the project's system; the store one is cc's
@@ -467,19 +494,12 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
     return { ran: false, source, skipped: 'STORE_HOOK_LOCAL_ONLY' };
   }
 
-  // Ensure the executable bit is set — the script may have been committed
-  // without it (e.g. on Windows / FAT filesystems). Non-fatal if chmod fails.
-  try {
-    if (source === 'in-tree') {
-      const st = await system.stat(scriptPath);
-      if (st && !(st.mode & 0o111)) await system.chmod(scriptPath, st.mode | 0o111);
-    } else {
-      const st = await fs.stat(scriptPath);
-      if (!(st.mode & 0o111)) await fs.chmod(scriptPath, st.mode | 0o111);
-    }
-  } catch { /* best-effort */ }
+  // NO CHMOD. The script runs as `bash <script>`, so its exec bit is never
+  // read, and setting it on a tracked in-tree hook is a mode change git
+  // reports: the target reads dirty, and the next merge into it is refused
+  // PARENT_DIRTY.
 
-  const timeoutMs = Number(process.env.ORCH_POST_WORKTREE_TIMEOUT_MS) || 120_000;
+  const timeoutMs = Number(process.env[hook.timeoutVar]) || WORKTREE_HOOK_TIMEOUT_MS;
   // THE `CC_*` VARS RIDE IN ARGV, through `env(1)` — the same idiom the derived
   // operations use for `LC_ALL=C`. That ADDS them to the environment of the
   // machine the hook runs on rather than replacing it, which is the whole point:
@@ -493,6 +513,7 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
     `CC_BRANCH=${meta.branch}`,
     `CC_BASE_BRANCH=${meta.baseBranch}`,
     `CC_PARENT_PATH=${meta.parentPath}`,
+    ...Object.entries(vars).map(([k, v]) => `${k}=${v}`),
     'bash', scriptPath,
   ];
 
@@ -503,7 +524,7 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   // flag with a null exitCode instead of the runner's 124 convention, and it
   // prefixes a truncation marker at a clean line boundary.
   const r = await system.exec({ argv: hookArgv }, {
-    cwd: meta.worktreePath, timeoutMs, cap: HOOK_OUTPUT_CAP,
+    cwd, timeoutMs, cap: HOOK_OUTPUT_CAP,
   });
 
   if (r.spawnError) {
@@ -522,7 +543,7 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
     output = '… [truncated]\n' + (nl >= 0 ? output.slice(nl + 1) : output);
   }
 
-  const result: PostWorktreeHookResult = {
+  const result: WorktreeHookResult = {
     ran: true,
     source,
     exitCode: r.timedOut ? null : r.code,
@@ -535,8 +556,34 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   return result;
 }
 
+// Merge hooks run one at a time per project: two merges landing at once would
+// otherwise run two builds against overlapping trees.
+const mergeHookQueue = createKeyedQueue();
+
+// The merge event's hook, run after a merge has landed. Queued per parent
+// project, so the script is resolved at run time and an in-tree copy is read
+// from the target AFTER the merge. The timeout bounds the hook's own run, not
+// the wait in the queue: N merges queued behind each other can block up to N
+// times the timeout.
+//
+// NEVER THROWS. Past this point the merge has landed, and a throw would reach
+// mergeWorktreeIntoParent's catch — SYSTEM_UNREACHABLE with mayHaveCompleted,
+// or a 500 — for a merge that definitely completed. `system.exec` itself never
+// rejects, so what this catches is a stat, a store-path or a programming
+// error, reported as an errored hook.
+async function runMergeHook(system: System, meta: WorktreeMeta, preSha: string, postSha: string): Promise<WorktreeHookResult> {
+  try {
+    return await mergeHookQueue(meta.parentProject, () => runWorktreeHook(system, 'merge', meta, {
+      cwd: meta.parentPath,
+      vars: { CC_PRE_MERGE_SHA: preSha, CC_POST_MERGE_SHA: postSha },
+    }));
+  } catch (e) {
+    return { ran: false, error: true, output: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 interface CreateWorktreeResult extends WorktreeMeta {
-  postWorktreeCreate: PostWorktreeHookResult;
+  postWorktreeCreate: WorktreeHookResult;
 }
 
 interface CreateWorktreeOptions {
@@ -687,7 +734,7 @@ export async function createWorktree(
   // dir + branch + metadata are written, BEFORE the instance subprocess is
   // created — so a slow hook never interferes with the 5 s control-request
   // timeout. Non-fatal: a failure warns but does not roll back the worktree.
-  const postWorktreeCreate = await runPostWorktreeHook(system, meta);
+  const postWorktreeCreate = await runWorktreeHook(system, 'create', meta, { cwd: meta.worktreePath });
   return { ...meta, postWorktreeCreate };
 }
 
@@ -1176,6 +1223,7 @@ interface MergeSuccess {
   output: string;
   newSha: string;
   worktreeFastForwarded: boolean;
+  postWorktreeMerge: WorktreeHookResult;
 }
 
 // Run `git merge --no-ff --no-edit <branch>` on the parent repo. Always
@@ -1188,9 +1236,12 @@ interface MergeSuccess {
 // effort — the worktree branch is always an ancestor of the new parent
 // HEAD, so this keeps a kept worktree at ahead:0/behind:0 instead of
 // looking permanently one commit behind). Returns {ok:true, newSha,
-// worktreeFastForwarded} on success or {ok:false, reason} when the merge
-// can't proceed (parent on wrong branch, dirty parent, conflicts, etc.)
-// — caller surfaces the reason to the UI rather than throwing.
+// worktreeFastForwarded, postWorktreeMerge} on success or {ok:false, reason}
+// when the merge can't proceed (parent on wrong branch, dirty parent,
+// conflicts, etc.) — caller surfaces the reason to the UI rather than
+// throwing. After a merge lands, the project's `post-worktree-merge.sh` runs
+// in the target (runMergeHook): serialised per project, reported as
+// `postWorktreeMerge`, and never able to change `ok`.
 export async function mergeWorktreeIntoParent(
   projectName: string,
   worktreeName: string,
@@ -1376,11 +1427,15 @@ export async function mergeWorktreeIntoParent(
   //    failure here (e.g. a worktree tree that went dirty mid-merge) must
   //    not turn the overall result into a failure.
   const ff = await runGit(system, meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
+  const newSha = newHead.stdout.trim();
+  // 9. The merge hook. PRE is the HEAD the gates above measured.
+  const postWorktreeMerge = await runMergeHook(system, meta, head.sha, newSha);
   return {
     ok: true,
     output: merge.stdout.trim() || merge.stderr.trim(),
-    newSha: newHead.stdout.trim(),
+    newSha,
     worktreeFastForwarded: ff.code === 0,
+    postWorktreeMerge,
   };
   }
 }

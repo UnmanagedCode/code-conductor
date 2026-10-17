@@ -21,6 +21,7 @@ import {
 import { modelsSignal } from '@/app/models';
 import { refreshInstances, refreshProjects, selectInstance } from '@/app/controller';
 import { beginGesture, gestureOvertaken } from '@/app/gestures';
+import { hookFailed, hookResultLabel } from '@/app/hookResult';
 import { cn } from '@/lib/utils';
 import { closeDialog, dialogStore } from './api';
 import { FormError } from './FormError';
@@ -120,7 +121,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
     }
   }
 
-  const hookLabel = hook && `${hook.timedOut ? 'timed out' : hook.exitCode === 0 ? 'exit 0' : `exit ${hook.exitCode}`}${hook.durationMs != null ? ` (${hook.durationMs}ms)` : ''}${hook.truncated ? ' · output truncated' : ''}`;
+  const hookLabel = hook && hookResultLabel(hook);
 
   return (
     <form
@@ -221,8 +222,8 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
       <FormError>{error}</FormError>
 
       {hook && (
-        <Collapsible defaultOpen={hook.exitCode !== 0 || !!hook.timedOut} className="rounded-xl border">
-          <CollapsibleTrigger className={cn('group/hook flex w-full items-center gap-2 px-3 py-2 text-left text-sm', hook.exitCode === 0 && !hook.timedOut ? 'text-success' : 'text-warning')}>
+        <Collapsible defaultOpen={hookFailed(hook)} className="rounded-xl border">
+          <CollapsibleTrigger className={cn('group/hook flex w-full items-center gap-2 px-3 py-2 text-left text-sm', hookFailed(hook) ? 'text-warning' : 'text-success')}>
             <TerminalIcon className="size-4" /> Worktree hook: {hookLabel}
             <ChevronRightIcon className="ml-auto size-4 transition-transform group-data-[state=open]/hook:rotate-90" />
           </CollapsibleTrigger>

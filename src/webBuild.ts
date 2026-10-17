@@ -5,12 +5,24 @@
 // the same code path on Linux, Windows and Termux — because a long-lived process
 // that has just run `npm install` holds the pre-install vite in its module cache.
 //
-// Two callers:
+// Callers:
 //   - a relaunch (src/relaunchPrep.ts) stages the build into `web/dist.next` in
 //     the OLD process, before anything is torn down, and never touches what is
 //     served; a failure refuses the relaunch;
 //   - boot (ensureWebBuild) adopts a staged build whose stamp matches, and
-//     otherwise builds web/dist itself.
+//     otherwise builds web/dist itself;
+//   - cc's own post-merge hook (src/webPostMerge.ts), in a separate process,
+//     either makes web/dist current while the server runs (refreshWebDist) or
+//     stages the build for the next start (stageWebBuild).
+//
+// Boot and the hook share refreshWebDist, so "make dist current" has one
+// implementation. A staged build is adopted only while its stamp matches the
+// current sources, so a stale stage can never override a newer build. Only a
+// stale stage is ever removed, and always renamed aside first: a stage
+// stamped with the current hash may be a relaunch's, prepared concurrently in
+// the server while the hook runs, and is redundant with a current dist at
+// worst. A whole-dir rename is atomic, so no removal can leave a partial stage
+// that still carries a matching stamp.
 //
 // The boot build runs after the server is listening, so /api/health and the MCP
 // endpoint answer at once (the Termux widget and the Windows launcher poll
@@ -158,6 +170,22 @@ export async function runViteBuild(outDir: string, { onChunk, root = repoRoot }:
   }
 }
 
+// Remove `dir` by renaming it aside to `<dir>.old-<pid>` first, so a reader
+// never sees it half-deleted. A dir that is already gone is fine; a failure is
+// logged, never thrown.
+function removeAside(dir: string, log: Pick<Console, 'error'>): void {
+  const aside = `${dir}.old-${process.pid}`;
+  try {
+    fs.rmSync(aside, { recursive: true, force: true });
+    fs.renameSync(dir, aside);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') log.error(`web: could not remove ${dir}: ${errText(e)}`);
+    return;
+  }
+  try { fs.rmSync(aside, { recursive: true, force: true }); }
+  catch (e) { log.error(`web: could not remove ${aside}: ${errText(e)}`); }
+}
+
 // Build into `<dir>.tmp-<pid>`, stamp it, then swap it in as `dir`. The tmp is
 // removed on failure.
 async function buildInto(dir: string, hash: string, build: WebBuilder, onChunk: ((text: string) => void) | undefined, log: Pick<Console, 'error'>): Promise<void> {
@@ -179,20 +207,52 @@ async function buildInto(dir: string, hash: string, build: WebBuilder, onChunk: 
  * not match. Throws on failure, leaving no staged or tmp dir behind.
  */
 export async function stageWebBuild(
-  { onChunk, distDir = WEB_DIST, build = runViteBuild, log = console }:
-  { onChunk?: (text: string) => void; distDir?: string; build?: WebBuilder; log?: Pick<Console, 'error'> } = {},
+  { onChunk, distDir = WEB_DIST, inputs = DEFAULT_INPUTS, build = runViteBuild, log = console }:
+  { onChunk?: (text: string) => void; distDir?: string; inputs?: WebInputs; build?: WebBuilder; log?: Pick<Console, 'error'> } = {},
 ): Promise<{ staged: boolean }> {
   const staged = stagedDirOf(distDir);
-  const hash = webSourceHash();
+  const hash = webSourceHash(inputs);
   if (builtHash(distDir) === hash) return { staged: false };
   if (builtHash(staged) === hash) return { staged: true };
   try { await buildInto(staged, hash, build, onChunk, log); }
   catch (e) {
+    // Another process (a relaunch, or cc's post-merge hook) staged the same
+    // sources meanwhile: its stage is whole — the stamp is written before the
+    // rename — so it is kept, not deleted as this one's failure.
+    if (builtHash(staged) === hash) return { staged: true };
     // A failed swap can leave a half-replaced staged dir; a stage is all or nothing.
-    try { fs.rmSync(staged, { recursive: true, force: true }); } catch { /* best effort */ }
+    removeAside(staged, log);
     throw e;
   }
   return { staged: true };
+}
+
+export type RefreshOutcome = 'up-to-date' | 'adopted-staged' | 'built';
+
+/**
+ * Make `<dist>` hold a build of the current sources: already current, adopt
+ * `<dist>.next` when its stamp matches, else build. Then removes `<dist>.next`
+ * if it is stale (stamped with another hash). Throws on a failed build or swap,
+ * leaving the previous `<dist>` in place (see swapIn).
+ */
+export async function refreshWebDist(
+  { distDir = WEB_DIST, inputs = DEFAULT_INPUTS, build = runViteBuild, onChunk, log = console }:
+  { distDir?: string; inputs?: WebInputs; build?: WebBuilder; onChunk?: (text: string) => void; log?: Pick<Console, 'log' | 'error'> } = {},
+): Promise<RefreshOutcome> {
+  const staged = stagedDirOf(distDir);
+  const hash = webSourceHash(inputs);
+  let outcome: RefreshOutcome;
+  if (builtHash(distDir) === hash) outcome = 'up-to-date';
+  else if (builtHash(staged) === hash) {
+    swapIn(staged, distDir, log);
+    outcome = 'adopted-staged';
+  } else {
+    log.log('web: frontend sources changed — building web/dist …');
+    await buildInto(distDir, hash, build, onChunk, log);
+    outcome = 'built';
+  }
+  if (fs.existsSync(staged) && builtHash(staged) !== hash) removeAside(staged, log);
+  return outcome;
 }
 
 export type WebState = { phase: 'idle' | 'building' | 'ready' | 'failed'; error: string | null };
@@ -208,28 +268,17 @@ export async function ensureWebBuild(
   { log?: Pick<Console, 'log' | 'error'>; distDir?: string; build?: WebBuilder; drift?: () => { reason: string } | null } = {},
 ): Promise<WebState> {
   const started = Date.now();
-  const staged = stagedDirOf(distDir);
   // Everything, the input hash included, is inside the try: start() fires this
   // unawaited, so a rejection would be unhandled and take the server down.
   try {
     sweepLeftovers(distDir, log);
-    const hash = webSourceHash();
-    if (builtHash(distDir) === hash) { Object.assign(state, { phase: 'ready', error: null }); return { ...state }; }
-    if (builtHash(staged) === hash) {
-      swapIn(staged, distDir, log);
-      Object.assign(state, { phase: 'ready', error: null });
-      log.log('web: adopted the build staged before restart');
-      return { ...state };
-    }
-    try { fs.rmSync(staged, { recursive: true, force: true }); }
-    catch (e) { log.error(`web: could not remove the stale staged build ${staged}: ${errText(e)}`); }
     state.phase = 'building';
-    log.log('web: frontend sources changed — building web/dist …');
     let output = '';
-    await buildInto(distDir, hash, build, (t) => { output += t; }, log);
+    const outcome = await refreshWebDist({ distDir, build, log, onChunk: (t) => { output += t; } });
     if (output.trim()) log.log(output.trimEnd());
     Object.assign(state, { phase: 'ready', error: null });
-    log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    if (outcome === 'adopted-staged') log.log('web: adopted the build staged before restart');
+    if (outcome === 'built') log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } catch (e) {
     let error = failureText(e);
     let d: { reason: string } | null = null;

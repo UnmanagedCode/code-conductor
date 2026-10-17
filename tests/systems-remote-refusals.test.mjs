@@ -300,6 +300,72 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.match(wt.postWorktreeCreate.output, /store-hook-ran/);
   });
 
+  // ── Bucket 3: the store-sourced post-worktree-MERGE hook ─────────────
+
+  // A worktree of `name` with one commit, on a tree whose adopt-written files
+  // are committed so the merge reaches its hook rather than PARENT_DIRTY.
+  async function mergeableWorktree(tree, name) {
+    await git(tree, 'add', '-A');
+    await git(tree, 'commit', '-q', '--allow-empty', '-m', 'fixture');
+    const wt = await createWorktree(name, { name: 'feature' });
+    await fs.writeFile(path.join(wt.worktreePath, 'f.txt'), 'v2\n');
+    await git(wt.worktreePath, 'add', '-A');
+    await git(wt.worktreePath, 'commit', '-q', '-m', 'v2');
+    return wt;
+  }
+
+  // PINS: the same refusal as the create hook's, for the merge event — the
+  // merge itself still lands (`ok: true`) and the report says why the hook did
+  // not run. The marker proves the script never executed.
+  test('a store-sourced post-worktree-merge hook refuses on a remote project, and the merge still lands', async () => {
+    const tree = await adoptRemote();
+    const marker = path.join(home, 'store-merge-hook-ran');
+    await fs.mkdir(projectStoreDir('app'), { recursive: true });
+    await fs.writeFile(path.join(projectStoreDir('app'), 'post-worktree-merge.sh'),
+      `#!/bin/bash\ntouch ${JSON.stringify(marker)}\n`);
+    const wt = await mergeableWorktree(tree, 'app');
+
+    const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.deepEqual(r.postWorktreeMerge, { ran: false, source: 'store', skipped: 'STORE_HOOK_LOCAL_ONLY' });
+    assert.equal(await exists(marker), false, 'the script really did not execute anywhere');
+  });
+
+  // PINS: an IN-TREE merge hook runs on a remote project, in the merge target
+  // at its path on the system.
+  test('an in-tree post-worktree-merge hook runs on a remote project, in the target', async () => {
+    const tree = await adoptRemote();
+    await fs.mkdir(path.join(tree, '.code-conductor'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.code-conductor', 'post-worktree-merge.sh'),
+      '#!/bin/bash\necho in-tree-merge-hook-ran\npwd -P\n');
+    const wt = await mergeableWorktree(tree, 'app');
+
+    const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const hook = r.postWorktreeMerge;
+    assert.equal(hook.ran, true, JSON.stringify(hook));
+    assert.equal(hook.source, 'in-tree');
+    assert.equal(hook.exitCode, 0);
+    assert.deepEqual(hook.output.split('\n'), ['in-tree-merge-hook-ran', await fs.realpath(tree)]);
+  });
+
+  // PINS: a store-sourced merge hook on a LOCAL project still runs.
+  test('a store-sourced merge hook still runs on a local project', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'localone' });
+    const dir = path.join(projectsRoot(), 'localone');
+    await git(dir, 'config', 'user.email', 'test@example.com');
+    await git(dir, 'config', 'user.name', 'Test');
+    await fs.mkdir(projectStoreDir('localone'), { recursive: true });
+    await fs.writeFile(path.join(projectStoreDir('localone'), 'post-worktree-merge.sh'),
+      '#!/bin/bash\necho store-merge-hook-ran\n');
+    const wt = await mergeableWorktree(dir, 'localone');
+
+    const r = await mergeWorktreeIntoParent('localone', wt.worktreeName);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.postWorktreeMerge.source, 'store');
+    assert.match(r.postWorktreeMerge.output, /store-merge-hook-ran/);
+  });
+
   // ── Bucket 3: plugins (the SEVENTH site) ─────────────────────────────
 
   // PINS THE WRONG-MACHINE READ: plugin discovery reads the manifest through the

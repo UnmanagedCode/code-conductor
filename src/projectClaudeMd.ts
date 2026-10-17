@@ -42,6 +42,7 @@ import type { System } from './systems/system.ts';
 import type { CatalogList } from './fragmentCatalog.ts';
 import { httpError } from './httpError.ts';
 import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
+import { createKeyedQueue } from './keyedQueue.ts';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 
@@ -246,16 +247,8 @@ function writeProjectConventions(
   return withProjectLock(projectName, () => writeUnlocked(projectName, choose, { log }));
 }
 
-// The tail of each project's queue of CONVENTIONS.md writes, in this process.
-const writeQueues = new Map<string, Promise<unknown>>();
-
-function withProjectLock<T>(projectName: string, fn: () => Promise<T>): Promise<T> {
-  const run = (writeQueues.get(projectName) ?? Promise.resolve()).then(fn);
-  const tail = run.catch(() => {});
-  writeQueues.set(projectName, tail);
-  void tail.then(() => { if (writeQueues.get(projectName) === tail) writeQueues.delete(projectName); });
-  return run;
-}
+// Each project's queue of CONVENTIONS.md writes, in this process.
+const withProjectLock = createKeyedQueue();
 
 async function writeUnlocked(
   projectName: string,

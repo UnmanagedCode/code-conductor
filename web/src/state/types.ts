@@ -56,10 +56,14 @@ export type Instance = {
   [k: string]: unknown;
 };
 
-/** `postWorktreeCreate` on a spawn's worktree (PostWorktreeHookResult, src/worktrees.ts). */
+/** A worktree hook's report — `postWorktreeCreate` / `postWorktreeMerge` (WorktreeHookResult, src/worktrees.ts). */
 export type PostWorktreeHook = {
   ran: boolean;
+  source?: string | null;
+  skipped?: 'disabled' | 'STORE_HOOK_LOCAL_ONLY';
+  error?: boolean;
   timedOut?: boolean;
+  descendantsMaySurvive?: true;
   exitCode?: number | null;
   durationMs?: number;
   truncated?: boolean;

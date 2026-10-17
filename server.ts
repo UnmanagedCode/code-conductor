@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
@@ -34,6 +34,7 @@ import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
 import { WEB_ROOT, ensureWebBuild, webHandler } from './src/webBuild.ts';
+import { recordBootCommit as writeBootCommit } from './src/bootCommit.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -203,17 +204,28 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 // CC_SKIP_WEB_BUILD=1 turns the web build off (at boot and before a restart),
 // and only CC_SKIP_DEPS_SYNC=1 the dependency install before a restart;
 // tests/run.mjs sets both so the `node server.ts` children the suite spawns
-// never build web/dist or install into the shared node_modules.
-export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean } {
+// never build web/dist or install into the shared node_modules. Only the real
+// entry records the boot commit (src/bootCommit.ts): an in-process start() in a
+// test must never write into this checkout's git dir.
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean } {
   return {
     port: Number(env.PORT ?? 8787),
     host: env.HOST ?? '127.0.0.1',
     buildWeb: env.CC_SKIP_WEB_BUILD !== '1',
     syncDeps: env.CC_SKIP_DEPS_SYNC !== '1',
+    recordBootCommit: true,
   };
 }
 
-export async function start({ port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild = ensureWebBuild }: { port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown> } = {}) {
+const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
+
+export async function start({
+  port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild = ensureWebBuild,
+  recordBootCommit = false, bootCommit = () => writeBootCommit({ repoRoot: SERVER_ROOT, log: console }),
+}: {
+  port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown>;
+  recordBootCommit?: boolean; bootCommit?: () => Promise<unknown>;
+} = {}) {
   warnIfNodeUnsupported();
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
@@ -295,6 +307,9 @@ export async function start({ port = 8787, host = '127.0.0.1', platform = hostPl
   // path. Once-per-boot; no-op if already assigned or self can't be found.
   try { await ensureSelfProjectWorkspace(WORKSPACE_AUTO_ASSIGN); }
   catch (e) { console.warn('self workspace seed failed:', e); }
+  // Before listen, so no merge can land — and no merge hook read the record —
+  // ahead of it. recordBootCommit never throws.
+  if (recordBootCommit) await bootCommit();
   await listenWithRetry(server, port, host);
   const addr = server.address();
   // listenWithRetry only resolves after the 'listening' event, so the bound

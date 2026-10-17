@@ -38,9 +38,9 @@ test('tests/run.mjs sets CC_SKIP_WEB_BUILD=1 and CC_SKIP_DEPS_SYNC=1 before it s
 });
 
 test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1 / CC_SKIP_DEPS_SYNC=1 turn their step off', () => {
-  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: true });
-  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false, syncDeps: true });
-  assert.deepEqual(entryStartOptions({ CC_SKIP_DEPS_SYNC: '1' }), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: false });
+  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: true, recordBootCommit: true });
+  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false, syncDeps: true, recordBootCommit: true });
+  assert.deepEqual(entryStartOptions({ CC_SKIP_DEPS_SYNC: '1' }), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: false, recordBootCommit: true });
   for (const v of ['', '0', 'true', 'yes', ' 1']) {
     assert.equal(entryStartOptions({ CC_SKIP_WEB_BUILD: v }).buildWeb, true, JSON.stringify(v));
     assert.equal(entryStartOptions({ CC_SKIP_DEPS_SYNC: v }).syncDeps, true, JSON.stringify(v));
@@ -63,7 +63,7 @@ test('server.ts\'s entry block starts the server with exactly start(entryStartOp
 // A real in-process start() on port 0 against a throwaway store, with the web
 // build replaced by a counter. CLAUDE_BIN is a node that exits at once, so the
 // boot readiness probe spawns nothing that outlives the test.
-async function startWith(buildWeb) {
+async function startWith(buildWeb, extra = {}) {
   const home = await mkdtemp('cc-webwire-');
   const env = {
     PROJECTS_ROOT: path.join(home, 'projects'),
@@ -77,9 +77,14 @@ async function startWith(buildWeb) {
   const prev = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
   Object.assign(process.env, env);
   let calls = 0;
-  const booted = await start({ port: 0, host: '127.0.0.1', buildWeb, webBuild: async () => { calls++; } });
+  let bootCommits = 0;
+  const booted = await start({
+    port: 0, host: '127.0.0.1', buildWeb, webBuild: async () => { calls++; },
+    bootCommit: async () => { bootCommits++; }, ...extra,
+  });
   return {
     calls: () => calls,
+    bootCommits: () => bootCommits,
     async close() {
       const { server, instances, wss, pluginHost } = booted;
       if (instances) await instances.shutdown();
@@ -107,5 +112,20 @@ test('start({buildWeb:false}) never invokes the web build; buildWeb:true invokes
   await t.test('buildWeb: true (control)', async () => {
     const s = await startWith(true);
     try { assert.equal(s.calls(), 1); } finally { await s.close(); }
+  });
+});
+
+// Only the real entry records the boot commit: an in-process start() — every
+// test that boots one — must never write into this checkout's git dir. The
+// writer is injected, so the dev checkout is never touched by the control
+// either.
+test('start() records the boot commit only when asked to: off by default, once with recordBootCommit:true', async (t) => {
+  await t.test('default', async () => {
+    const s = await startWith(false);
+    try { assert.equal(s.bootCommits(), 0); } finally { await s.close(); }
+  });
+  await t.test('recordBootCommit: true (control)', async () => {
+    const s = await startWith(false, { recordBootCommit: true });
+    try { assert.equal(s.bootCommits(), 1); } finally { await s.close(); }
   });
 });
