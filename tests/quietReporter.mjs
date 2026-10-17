@@ -89,10 +89,23 @@ export class QuietFilter extends Transform {
     }
     if (type === 'test:summary' && e.state === 'held') {
       // spec's own skip and todo lines, each alone: at a segment boundary spec's
-      // stack is empty, so a test:pass with no test:start is accepted.
-      for (const ev of e.events) {
-        if (ev.type === 'test:pass' && (ev.data.skip !== undefined || ev.data.todo !== undefined)) this.push(ev);
-      }
+      // stack is empty, so a test:pass with no test:start is accepted. Each is
+      // then dropped from the kept buffer WITH its test:start, so a later dump
+      // neither prints it twice nor leaves spec a start that nothing pairs with.
+      const shown = new Set();
+      e.events.forEach((ev, i) => {
+        if (ev.type !== 'test:pass' || (ev.data.skip === undefined && ev.data.todo === undefined)) return;
+        this.push(ev);
+        shown.add(i);
+        for (let j = i - 1; j >= 0; j--) {
+          const s = e.events[j];
+          if (s.type === 'test:start' && !shown.has(j) && s.data.name === ev.data.name && s.data.nesting === ev.data.nesting) {
+            shown.add(j);
+            break;
+          }
+        }
+      });
+      e.events = e.events.filter((_, i) => !shown.has(i));
       e.state = 'passed';
     }
     // Everything else spec ignores: enqueue/dequeue/complete/plan, a per-file

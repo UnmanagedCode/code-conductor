@@ -20,6 +20,17 @@ const SWEPT = /SWEPT/;
 // The slow-consumer case's forcing delay, named so the case can assert on it.
 const PAUSE = 4000;
 
+// The text of the quiet reporter's dump printed for `why`: from its header up to
+// the next runner line. The dump is ONE stdout write, so nothing interleaves it.
+const dumpFor = (out, why) => {
+  const at = out.indexOf(`quiet-reporter: the run went red for a reason no file owns (${why})`);
+  if (at === -1) return null;
+  const rest = out.slice(at).split('\n');
+  const end = rest.findIndex((l, i) => i > 0 && /^(hang-guard|quiet-reporter|guardrail):/.test(l));
+  return rest.slice(0, end === -1 ? undefined : end).join('\n');
+};
+const count = (out, re) => (out.match(new RegExp(re.source, 'gm')) ?? []).length;
+
 test("the guard's own timers cannot outlive the run", async () => {
   // A ref'd cap timer that teardown fails to clear would hang EVERY clean run
   // for the full cap. With the cap set to an hour, a clean run must still finish
@@ -37,16 +48,37 @@ test('the absolute run cap fires, fails the run, and still prints the verdict', 
   // the runner exit 0 naturally and skip the verdict). Here a child is still
   // alive, so the loop is non-empty and an unref'd timer would fire too — this
   // test does not discriminate ref'd from unref'd. See docs/architecture.md.
-  const r = await runGuard('busyloop', {
+  //
+  // quiet-pass rides along, FIRST in `files` order so node reports it before the
+  // cap: it is the file that has already PASSED when the cap fires, whose output
+  // the quiet reporter has held back and only a dump can print.
+  const r = await runGuard(['quiet-pass', 'busyloop'], {
     ...FAST, CC_TEST_FILE_KILL_MS: '60000', CC_TEST_RUN_CAP_MS: '3000',
   });
   assert.notEqual(r.code, 0, `a capped run must fail:\n${r.out}`);
   assert.match(r.out, /hang-guard: RUN CAP TRIPPED/);
   assert.match(r.out, /hang-guard: \d+\/\d+ files reported.*RUN CAP TRIPPED/,
     'the verdict line must still print on the cap path');
-  // FILE_KILL is above the cap, so no synthesized failure flushes this file:
-  // only the cap path's dump can print its held-back output.
-  assert.match(r.out, /busyloop: entering the spin/, 'the cap must print the wedged file\'s held-back output');
+  // THE CAP PATH'S OWN DUMP. A passed file's output reaches no other channel but
+  // the run-end sweep's dump, whose header names a different reason — so finding
+  // it under `(run cap)` is what proves the cap path dumped it.
+  const capDump = dumpFor(r.out, 'run cap');
+  assert.ok(capDump, `the cap path printed no dump:\n${r.out}`);
+  assert.match(capDump, /quiet-pass: stdout marker/,
+    'the cap dump must carry the held-back output of a file that already passed');
+  assert.equal(dumpFor(r.out, 'leaked process swept'), null,
+    'the cap path must leave nothing for the run-end sweep\'s dump');
+  // The WEDGED file's marker is not asserted inside the cap dump: node relays it
+  // to the runner either before the cap (it is then dumped) or only once the kill
+  // ends the child (it then arrives with the synthesized file-level test:fail) —
+  // measured 2 of 12 runs inside the dump. Either way it must print exactly ONCE:
+  // a dumped buffer must not be printed again by that synthesized failure.
+  assert.equal(count(r.out, /busyloop: entering the spin/), 1,
+    `the wedged file's output did not print exactly once:\n${r.out}`);
+  // A passed file's skip and todo lines print at its summary; the dump must not
+  // print them a second time.
+  assert.equal(count(r.out, /^\s*﹣ quiet-pass: skipped/), 1, `the skip line did not print exactly once:\n${r.out}`);
+  assert.equal(count(r.out, /# quiet-pass todo reason$/), 1, `the todo line did not print exactly once:\n${r.out}`);
   assert.ok(r.wallMs < 20_000, `capped run took ${r.wallMs}ms — the cap did not bound it`);
 });
 
