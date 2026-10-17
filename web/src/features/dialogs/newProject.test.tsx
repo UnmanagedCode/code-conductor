@@ -23,6 +23,7 @@ import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openNewProjectDialog } from './api';
 import { loadCapabilities } from '@shared/capabilities';
 import { routeFetch, type Route, type RoutedCall } from '@/test/routeFetch';
+import { bubbleInputs, scrollersBetween } from '@/test/scrollRegion';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listed, listedAnswer, pathNote, system, typePath } from '@/test/placementDriver';
 
 const CREATED = { name: 'demo', path: '/x', system: 'local' };
@@ -493,5 +494,25 @@ describe('New project dialog', () => {
     expect(dialogStore.get().newProject).toBe(true);
     fireEvent.keyDown(pathField(), { key: 'Escape' });
     expect(dialogStore.get().newProject).toBe(false);
+  });
+
+  it('the conventions checklist is one positioned scroller holding every hidden convention input', async () => {
+    // Invariant: the New project checklist is the only scroller above its checkboxes and is `relative`, so Radix's hidden inputs scroll with it instead of lengthening the dialog.
+    stub({
+      'GET /api/settings/conventions/project': () => ({ json: { conventions: [
+        { slug: 'design-guidelines', name: 'Design guidelines', description: 'core', builtin: true },
+        { slug: 'plug/one', name: 'One', description: 'x', plugin: 'plug', builtin: false },
+      ] } }),
+    });
+    await renderNew();
+    await waitFor(() => expect(document.querySelectorAll('[data-convention]')).toHaveLength(2));
+    const dialog = document.querySelector('[data-slot="dialog-content"]') as HTMLElement;
+    const scrollers = scrollersBetween(document.querySelector('[data-convention]')!, dialog);
+    expect(scrollers).toHaveLength(1);
+    const list = scrollers[0];
+    expect(list.classList.contains('relative')).toBe(true);
+    const inputs = bubbleInputs(dialog);
+    expect(inputs).toHaveLength(2);
+    for (const i of inputs) expect(list.contains(i)).toBe(true);
   });
 });

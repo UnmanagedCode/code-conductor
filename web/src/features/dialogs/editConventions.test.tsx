@@ -23,6 +23,7 @@ import { closeDialog, dialogStore, openEditConventionsDialog } from './api';
 import { refreshProjects } from '@/app/controller';
 import { held, routeFetch, type Route, type RoutedCall } from '@/test/routeFetch';
 import type { Project } from '@/state/types';
+import { bubbleInputs, scrollersBetween } from '@/test/scrollRegion';
 
 const CATALOG = [
   { slug: 'design-guidelines', name: 'Design guidelines', description: 'core', builtin: true },
@@ -216,5 +217,30 @@ describe('Edit conventions dialog', () => {
     save();
     await waitFor(() => expect(puts(calls)).toHaveLength(2));
     expect(puts(calls)[1].body).toEqual({ slugs: [...INITIAL, 'documentation-guidelines'], expected: INITIAL });
+  });
+
+  it('the conventions list is the dialog\'s only scroller and a positioned box holding every hidden checkbox input; the header and footer sit outside it, and the dialog → form → list chain lets the list shrink', async () => {
+    // Invariant: only the list scrolls; Radix's absolutely positioned hidden inputs stay inside it (it is `relative`), so they cannot lengthen the dialog; the flex chain lets the list shrink below its cap.
+    stub();
+    render(<DialogsHost />);
+    await open();
+    const dialog = document.querySelector('[data-slot="dialog-content"]') as HTMLElement;
+    const scrollers = scrollersBetween(box('design-guidelines'), dialog);
+    expect(scrollers).toHaveLength(1);
+    const list = scrollers[0];
+    expect(list.classList.contains('relative')).toBe(true);
+    const inputs = bubbleInputs(dialog);
+    expect(inputs.length).toBeGreaterThan(0);
+    expect(inputs).toHaveLength(document.querySelectorAll('[data-convention]').length);
+    for (const i of inputs) expect(list.contains(i)).toBe(true);
+    expect(list.contains(dialog.querySelector('[data-slot="dialog-header"]'))).toBe(false);
+    expect(list.contains(dialog.querySelector('[data-slot="dialog-footer"]'))).toBe(false);
+    expect(dialog.classList.contains('flex')).toBe(true);
+    expect(dialog.classList.contains('flex-col')).toBe(true);
+    expect(dialog.classList.contains('grid')).toBe(false);
+    const form = list.parentElement as HTMLElement;
+    expect(form.tagName).toBe('FORM');
+    expect(form.parentElement).toBe(dialog);
+    for (const c of ['flex', 'flex-col', 'min-h-0']) expect(form.classList.contains(c)).toBe(true);
   });
 });

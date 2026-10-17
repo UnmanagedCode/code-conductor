@@ -23,6 +23,7 @@ import { appStore } from '@/state/app';
 import { refreshProjects } from '@/app/controller';
 import { held, routeFetch, type Route, type RoutedCall } from '@/test/routeFetch';
 import type { Project } from '@/state/types';
+import { bubbleInputs, scrollersBetween } from '@/test/scrollRegion';
 
 const proj = (name: string, workspace: string | null): Project => ({ name, path: `/w/${name}`, workspace, system: 'local', remoteId: null, worktrees: [] });
 
@@ -158,5 +159,21 @@ describe('workspace dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
     alert = await screen.findByRole('alert');
     expect(alert.textContent).toBe('c: disk full');
+  });
+
+  it('the project list is one positioned scroller holding every hidden project input', () => {
+    // Invariant: the dialog's project list is the only scroller above its checkboxes and is `relative`, so Radix's hidden inputs scroll with it instead of lengthening the dialog.
+    renderHost();
+    act(() => openWorkspaceDialog(null));
+    const dialog = document.querySelector('[data-slot="dialog-content"]') as HTMLElement;
+    const scrollers = scrollersBetween(box('a'), dialog);
+    expect(scrollers).toHaveLength(1);
+    const list = scrollers[0];
+    expect(list.matches('[data-project-list]')).toBe(true);
+    expect(list.classList.contains('relative')).toBe(true);
+    const inputs = bubbleInputs(dialog);
+    expect(inputs).toHaveLength(document.querySelectorAll('[data-project]').length);
+    expect(inputs.length).toBeGreaterThan(0);
+    for (const i of inputs) expect(list.contains(i)).toBe(true);
   });
 });
