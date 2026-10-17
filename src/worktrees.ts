@@ -560,6 +560,13 @@ export async function runWorktreeHook(
 // otherwise run two builds against overlapping trees.
 const mergeHookQueue = createKeyedQueue();
 
+// Extra merge-hook vars for a target, from the running server: set by
+// server.ts start() to bootCommitHookVars (src/bootCommit.ts), unset otherwise.
+let mergeHookVars: ((targetPath: string) => Record<string, string>) | null = null;
+export function setMergeHookVarsProvider(fn: ((targetPath: string) => Record<string, string>) | null): void {
+  mergeHookVars = fn;
+}
+
 // The merge event's hook, run after a merge has landed. Queued per parent
 // project, so the script is resolved at run time and an in-tree copy is read
 // from the target AFTER the merge. The timeout bounds the hook's own run, not
@@ -575,7 +582,13 @@ async function runMergeHook(system: System, meta: WorktreeMeta, preSha: string, 
   try {
     return await mergeHookQueue(meta.parentProject, () => runWorktreeHook(system, 'merge', meta, {
       cwd: meta.parentPath,
-      vars: { CC_PRE_MERGE_SHA: preSha, CC_POST_MERGE_SHA: postSha },
+      vars: {
+        CC_PRE_MERGE_SHA: preSha,
+        CC_POST_MERGE_SHA: postSha,
+        // Only a target on THIS machine: the node running cc, and what the
+        // server says about its own checkout. Read when the hook's turn comes.
+        ...(system.id === LOCAL_SYSTEM_ID ? { CC_SERVER_NODE: process.execPath, ...mergeHookVars?.(meta.parentPath) } : {}),
+      },
     }));
   } catch (e) {
     return { ran: false, error: true, output: e instanceof Error ? e.message : String(e) };

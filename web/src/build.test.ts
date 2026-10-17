@@ -15,7 +15,8 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import {
-  ensureWebBuild, refreshWebDist, runViteBuild, stageWebBuild, webHandler, webInputs, webSourceHash, WEB_ROOT, type WebBuilder, type WebState,
+  ensureWebBuild, isWebInput, refreshWebDist, runViteBuild, stageWebBuild, webHandler, webInputFiles, webInputs, webSourceHash, WEB_ROOT,
+  type WebBuilder, type WebState,
 } from '../../src/webBuild.ts';
 
 const quiet = () => ({ log: vi.fn(), error: vi.fn() });
@@ -213,6 +214,47 @@ describe('the default inputs (webInputs) over a fixture checkout', () => {
     expect(afterShared).not.toBe(before);
     fs.writeFileSync(path.join(root, 'web', 'main.ts'), 'export const y = 1;');
     expect(webSourceHash(webInputs(root))).not.toBe(afterShared);
+  });
+
+  // The build reads both: shared/tsconfig.json extends the root tsconfig.json,
+  // whose compiler options the transform of shared/*.ts takes, and module
+  // resolution reads the root package.json.
+  it('the root package.json and tsconfig.json are inputs', () => {
+    for (const name of ['package.json', 'tsconfig.json']) {
+      const before = webSourceHash(webInputs(root));
+      fs.writeFileSync(path.join(root, name), `{"probe":"${name}"}`);
+      expect(webSourceHash(webInputs(root)), name).not.toBe(before);
+    }
+  });
+});
+
+// cc's post-merge step decides "did the UI build's inputs change" with
+// isWebInput on git paths; the hash covers webInputFiles. They must name the
+// same files, or a merge is judged by a different set than the build hashes.
+describe('isWebInput names exactly the files the hash covers', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webagree-'));
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+  const tree = [
+    'web/main.ts', 'web/src/App.tsx', 'web/public/sw.js', 'web/vite.config.ts', 'web/tsconfig.json',
+    'web/e2e/a.spec.ts', 'web/dist/index.html', 'web/dist.next/index.html', 'web/node_modules/x/i.js',
+    'web/src/test-results/r.txt', 'web/src/distx/a.js',
+    'shared/http.ts', 'shared/tsconfig.json', 'shared/e2e/x.ts',
+    'package.json', 'tsconfig.json', 'package-lock.json', 'node_modules/.package-lock.json', 'node_modules/vite/i.js',
+    'src/server.ts', 'docs/a.md', 'webx/a.ts', 'README.md',
+  ];
+  for (const rel of tree) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), rel);
+  }
+
+  it('for every file in a fixture checkout, isWebInput agrees with webInputFiles', () => {
+    const inputs = webInputs(root);
+    const hashed = new Set(webInputFiles(inputs).map((f) => path.relative(root, f).split(path.sep).join('/')));
+    const judged = new Set(tree.filter((rel) => isWebInput(inputs, rel)));
+    expect([...judged].sort()).toEqual([...hashed].sort());
+    // Premise: the fixture exercises both sides of every rule.
+    expect(hashed.has('web/src/App.tsx') && hashed.has('shared/http.ts') && hashed.has('tsconfig.json') && hashed.has('package.json')).toBe(true);
+    expect(hashed.has('web/e2e/a.spec.ts') || hashed.has('web/dist/index.html') || hashed.has('src/server.ts') || hashed.has('webx/a.ts')).toBe(false);
   });
 });
 

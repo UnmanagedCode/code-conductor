@@ -160,7 +160,7 @@ test('the in-tree hook is read from the target AFTER the merge: a branch that ed
 
 // ── Environment and cwd ────────────────────────────────────────────────────
 
-test('env: the base CC_* vars, plus CC_PRE_MERGE_SHA = the target HEAD before the merge and CC_POST_MERGE_SHA = newSha', async () => {
+test('env: the base CC_* vars, CC_PRE_MERGE_SHA = the target HEAD before the merge, CC_POST_MERGE_SHA = newSha, CC_SERVER_NODE = this node; no boot vars without a server', async () => {
   const repo = await makeRealRepo('demo');
   await installHook(repo, [
     '#!/bin/sh',
@@ -171,6 +171,8 @@ test('env: the base CC_* vars, plus CC_PRE_MERGE_SHA = the target HEAD before th
     'echo "BRANCH=$CC_BRANCH"',
     'echo "BASE=$CC_BASE_BRANCH"',
     'echo "PARENT=$CC_PARENT_PATH"',
+    'echo "NODE=$CC_SERVER_NODE"',
+    'echo "BOOT=${CC_SERVER_BOOT_SHA-unset}/${CC_SERVER_BOOT_UNKNOWN-unset}"',
     'echo "CHANGED=$(git diff --name-only "$CC_PRE_MERGE_SHA" "$CC_POST_MERGE_SHA" | tr "\\n" " ")"',
   ].join('\n') + '\n');
   const wt = await worktreeWithCommit('demo', {}, 'merged-file.txt');
@@ -188,6 +190,8 @@ test('env: the base CC_* vars, plus CC_PRE_MERGE_SHA = the target HEAD before th
   assert.equal(val('BRANCH'), wt.branch);
   assert.equal(val('BASE'), 'main');
   assert.equal(val('PARENT'), wt.parentPath);
+  assert.equal(val('NODE'), process.execPath);
+  assert.equal(val('BOOT'), 'unset/unset', 'only a running server hands over a boot commit (tests/server-boot-commit.test.mjs)');
   assert.equal(val('CHANGED').trim(), 'merged-file.txt', 'the PRE..POST diff lists exactly what the merge brought in');
 });
 

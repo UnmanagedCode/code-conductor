@@ -27,7 +27,7 @@ import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo, git, referenceLaunch } from './remoteSystem.mjs';
 import { adoptProject, listProjects, orchStoreRoot, projectsRoot, projectStoreDir } from '../src/projects.ts';
-import { createWorktree, mergeWorktreeIntoParent } from '../src/worktrees.ts';
+import { createWorktree, mergeWorktreeIntoParent, setMergeHookVarsProvider } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 
@@ -347,6 +347,23 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.equal(hook.source, 'in-tree');
     assert.equal(hook.exitCode, 0);
     assert.deepEqual(hook.output.split('\n'), ['in-tree-merge-hook-ran', await fs.realpath(tree)]);
+  });
+
+  // PINS: the local-only merge vars never reach a remote target — cc's node
+  // path and the running server's boot commit name THIS machine. The provider
+  // here answers for every path, so only the placement check can keep it out.
+  test('a merge hook on a remote project gets neither CC_SERVER_NODE nor the server\'s boot vars', async () => {
+    const tree = await adoptRemote();
+    await fs.mkdir(path.join(tree, '.code-conductor'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.code-conductor', 'post-worktree-merge.sh'),
+      '#!/bin/bash\necho "NODE=${CC_SERVER_NODE-unset} SHA=${CC_SERVER_BOOT_SHA-unset}"\n');
+    const wt = await mergeableWorktree(tree, 'app');
+    setMergeHookVarsProvider(() => ({ CC_SERVER_BOOT_SHA: 'a'.repeat(40) }));
+    try {
+      const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(r.postWorktreeMerge.output, 'NODE=unset SHA=unset');
+    } finally { setMergeHookVarsProvider(null); }
   });
 
   // PINS: a store-sourced merge hook on a LOCAL project still runs.

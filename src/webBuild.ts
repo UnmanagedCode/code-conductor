@@ -71,21 +71,44 @@ function listFiles(dir: string, out: string[]): void {
 /** The build's inputs; injectable so a test can hash a fixture tree. Paths in the hash are relative to `root`. */
 export type WebInputs = { root: string; dirs: string[]; files: string[] };
 // The inputs of a checkout at `root`: the web app itself, the shared modules it
-// imports from shared/, and npm's hidden lockfile, which records the installed
-// tree (a dependency change changes the bundle). A cache key only; absent, it
-// is left out.
+// imports from shared/, the root package.json and tsconfig.json the build reads
+// (module resolution; shared/tsconfig.json extends the root one, and the
+// transform of shared/*.ts takes its compiler options), and npm's hidden
+// lockfile, which records the installed tree (a dependency change changes the
+// bundle). A file input that is absent is left out.
 export const webInputs = (root: string): WebInputs => ({
   root,
   dirs: [path.join(root, 'web'), path.join(root, 'shared')],
-  files: [path.join(root, 'node_modules', '.package-lock.json')],
+  files: ['package.json', 'tsconfig.json', path.join('node_modules', '.package-lock.json')].map((f) => path.join(root, f)),
 });
 const DEFAULT_INPUTS = webInputs(repoRoot);
 
-export function webSourceHash({ root, dirs, files: inputFiles }: WebInputs = DEFAULT_INPUTS): string {
+/** Every file the hash covers, absolute and sorted. */
+export function webInputFiles({ dirs, files: inputFiles }: WebInputs = DEFAULT_INPUTS): string[] {
   const files: string[] = [];
   for (const d of dirs) listFiles(d, files);
   files.push(...inputFiles.filter((f) => fs.existsSync(f)));
-  files.sort();
+  return files.sort();
+}
+
+/**
+ * Whether the path `rel` (relative to `inputs.root`, POSIX or native
+ * separators) is one the hash would cover: the same dirs, the same skipped
+ * dirs, the same files. Path arithmetic only — it does not look at the disk.
+ */
+export function isWebInput({ root, dirs, files }: WebInputs, rel: string): boolean {
+  const abs = path.join(root, ...rel.split('/'));
+  if (files.includes(abs)) return true;
+  return dirs.some((d) => {
+    const r = path.relative(d, abs);
+    if (!r || r.startsWith('..') || path.isAbsolute(r)) return false;
+    return !r.split(path.sep).slice(0, -1).some(skipDir);
+  });
+}
+
+export function webSourceHash(inputs: WebInputs = DEFAULT_INPUTS): string {
+  const { root } = inputs;
+  const files = webInputFiles(inputs);
   const h = createHash('sha256');
   for (const f of files) {
     // Path relative + POSIX-separated so the hash is identical across hosts.
@@ -200,6 +223,13 @@ async function buildInto(dir: string, hash: string, build: WebBuilder, onChunk: 
   }
 }
 
+// How many web builds THIS process has running: boot's ensureWebBuild and a
+// relaunch's stage. The server withholds its boot commit from a merge hook
+// while one runs (src/bootCommit.ts), so the hook stages instead of racing
+// this process's swap of the same dirs.
+let buildsRunning = 0;
+export const webBuildRunning = (): boolean => buildsRunning > 0;
+
 /**
  * The relaunch's half: make `<dist>.next` hold a build of the current sources
  * unless `<dist>` already does. Never touches `<dist>` or the serving state, so
@@ -209,6 +239,15 @@ async function buildInto(dir: string, hash: string, build: WebBuilder, onChunk: 
 export async function stageWebBuild(
   { onChunk, distDir = WEB_DIST, inputs = DEFAULT_INPUTS, build = runViteBuild, log = console }:
   { onChunk?: (text: string) => void; distDir?: string; inputs?: WebInputs; build?: WebBuilder; log?: Pick<Console, 'error'> } = {},
+): Promise<{ staged: boolean }> {
+  buildsRunning++;
+  try { return await stageUnlocked({ onChunk, distDir, inputs, build, log }); }
+  finally { buildsRunning--; }
+}
+
+async function stageUnlocked(
+  { onChunk, distDir, inputs, build, log }:
+  { onChunk?: (text: string) => void; distDir: string; inputs: WebInputs; build: WebBuilder; log: Pick<Console, 'error'> },
 ): Promise<{ staged: boolean }> {
   const staged = stagedDirOf(distDir);
   const hash = webSourceHash(inputs);
@@ -268,6 +307,9 @@ export async function ensureWebBuild(
   { log?: Pick<Console, 'log' | 'error'>; distDir?: string; build?: WebBuilder; drift?: () => { reason: string } | null } = {},
 ): Promise<WebState> {
   const started = Date.now();
+  // Counted from the first statement: start() calls this synchronously after
+  // listen, so no merge hook can run before it reads as running.
+  buildsRunning++;
   // Everything, the input hash included, is inside the try: start() fires this
   // unawaited, so a rejection would be unhandled and take the server down.
   try {
@@ -293,6 +335,8 @@ export async function ensureWebBuild(
       state.error,
       '='.repeat(60),
     ].join('\n'));
+  } finally {
+    buildsRunning--;
   }
   return { ...state };
 }

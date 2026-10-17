@@ -1,14 +1,14 @@
-// src/bootCommit.ts: what the running server booted from, recorded in the
-// checkout's own git dir, and read back as a commit only when it can be
-// vouched for.
+// src/bootCommit.ts: what a checkout would run as (measureBootCommit), and the
+// merge-hook vars the server derives from it (bootCommitHookVars). Nothing is
+// written anywhere: the capture lives in the serving process.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs, writeFileSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { recordBootCommit, readBootCommit, bootCommitPath } from '../src/bootCommit.ts';
+import { measureBootCommit, bootCommitHookVars } from '../src/bootCommit.ts';
 
 function git(cwd, ...args) {
   return new Promise((resolve, reject) => {
@@ -34,109 +34,72 @@ async function repo({ commit = true } = {}) {
   }
   return dir;
 }
-
-const quiet = () => {
-  const lines = [];
-  return { lines, log: { log: (m) => lines.push(m), warn: (m) => lines.push(m) } };
-};
 const head = async (dir) => (await git(dir, 'rev-parse', 'HEAD')).trim();
-const recordFile = async (dir) => (await git(dir, 'rev-parse', '--git-path', 'cc-boot-commit')).trim();
 
-test('a clean checkout records HEAD, with this pid, and reads back as that commit', async () => {
-  const dir = await repo();
-  const rec = await recordBootCommit({ repoRoot: dir, log: quiet().log });
-  assert.equal(rec.sha, await head(dir));
-  assert.equal(rec.pid, process.pid);
-  assert.deepEqual(await readBootCommit(dir), { sha: await head(dir) });
-});
+// ── measureBootCommit ──────────────────────────────────────────────────────
 
-test('the record lands at `git rev-parse --git-path cc-boot-commit` and leaves `git status` clean', async () => {
+test('a clean checkout measures as HEAD, and writes nothing into the checkout or its git dir', async () => {
   const dir = await repo();
-  await recordBootCommit({ repoRoot: dir, log: quiet().log });
-  const expected = path.resolve(dir, await recordFile(dir));
-  assert.equal(await bootCommitPath(dir), expected);
-  assert.equal(JSON.parse(await fs.readFile(expected, 'utf8')).sha, await head(dir));
+  const gitDirBefore = (await fs.readdir(path.join(dir, '.git'))).sort();
+  assert.deepEqual(await measureBootCommit(dir), { sha: await head(dir) });
+  assert.deepEqual((await fs.readdir(path.join(dir, '.git'))).sort(), gitDirBefore);
   assert.equal(await git(dir, 'status', '--porcelain', '--untracked-files=all'), '');
 });
 
-test('in a linked worktree the record is that worktree\'s own, not the main checkout\'s', async () => {
-  const dir = await repo();
-  const wt = path.join(path.dirname(dir), `${path.basename(dir)}-wt`);
-  await git(dir, 'worktree', 'add', '-q', wt, '-b', 'side');
-  try {
-    await recordBootCommit({ repoRoot: wt, log: quiet().log });
-    assert.notEqual(await bootCommitPath(wt), await bootCommitPath(dir));
-    assert.deepEqual(await readBootCommit(wt), { sha: await head(wt) });
-    assert.match((await readBootCommit(dir)).unknown, /no boot record/);
-  } finally {
-    await git(dir, 'worktree', 'remove', '--force', wt);
-  }
-});
-
-test('a tracked change only under web/ still records HEAD: the backend matches it', async () => {
+test('a tracked change only under web/ still measures as HEAD: the backend matches it', async () => {
   const dir = await repo();
   await fs.writeFile(path.join(dir, 'web', 'app.tsx'), 'v2\n');
-  const rec = await recordBootCommit({ repoRoot: dir, log: quiet().log });
-  assert.equal(rec.sha, await head(dir));
+  assert.deepEqual(await measureBootCommit(dir), { sha: await head(dir) });
 });
 
-test('an untracked file outside web/ still records HEAD: it is not something the server runs from', async () => {
+test('an untracked file outside web/ still measures as HEAD: it is not something the server runs from', async () => {
   const dir = await repo();
   await fs.writeFile(path.join(dir, 'notes.txt'), 'scratch\n');
-  assert.equal((await recordBootCommit({ repoRoot: dir, log: quiet().log })).sha, await head(dir));
+  assert.deepEqual(await measureBootCommit(dir), { sha: await head(dir) });
 });
 
-test('a tracked change outside web/ records sha:null with a reason naming it, and reads as unknown', async () => {
+test('a tracked change outside web/ is unknown, naming the file', async () => {
   const dir = await repo();
   await fs.writeFile(path.join(dir, 'src', 'server.ts'), 'v2\n');
-  const rec = await recordBootCommit({ repoRoot: dir, log: quiet().log });
-  assert.equal(rec.sha, null);
-  assert.match(rec.reason, /src\/server\.ts/);
-  const read = await readBootCommit(dir);
-  assert.equal('sha' in read, false);
-  assert.match(read.unknown, /src\/server\.ts/);
+  const r = await measureBootCommit(dir);
+  assert.equal('sha' in r, false);
+  assert.match(r.unknown, /tracked changes outside web\/.*src\/server\.ts/);
 });
 
-test('an unborn HEAD records sha:null with a reason', async () => {
+test('an unborn HEAD is unknown', async () => {
   const dir = await repo({ commit: false });
-  const rec = await recordBootCommit({ repoRoot: dir, log: quiet().log });
-  assert.equal(rec.sha, null);
-  assert.match(rec.reason, /unborn/);
-  assert.match((await readBootCommit(dir)).unknown, /unborn/);
+  assert.match((await measureBootCommit(dir)).unknown, /unborn/);
 });
 
-test('outside a git checkout: writes nothing, says so, and does not throw', async () => {
+test('outside a git checkout: unknown, and no throw', async () => {
   const dir = await fs.realpath(await mkdtemp('cc-bootcommit-nogit-'));
-  const { lines, log } = quiet();
-  assert.equal(await recordBootCommit({ repoRoot: dir, log }), null);
+  assert.match((await measureBootCommit(dir)).unknown, /not a git checkout/);
   assert.deepEqual(await fs.readdir(dir), []);
-  assert.match(lines.join('\n'), /not a git checkout/);
-  assert.match((await readBootCommit(dir)).unknown, /not a git checkout/);
 });
 
-test('readBootCommit: a missing, unparseable, dead-pid or null-sha record each reads as unknown, naming its case', async (t) => {
-  const dir = await repo();
-  const file = path.resolve(dir, await recordFile(dir));
-  const sha = await head(dir);
-  await t.test('missing', async () => {
-    await fs.rm(file, { force: true });
-    assert.match((await readBootCommit(dir)).unknown, /no boot record/);
-  });
-  await t.test('unparseable', async () => {
-    writeFileSync(file, '{not json');
-    assert.match((await readBootCommit(dir)).unknown, /unparseable/);
-  });
-  await t.test('a pid that is no longer running', async () => {
-    // A pid far above any default pid_max is never a live process.
-    writeFileSync(file, JSON.stringify({ sha, pid: 2 ** 30, bootedAt: new Date().toISOString() }));
-    assert.match((await readBootCommit(dir)).unknown, /no longer running/);
-  });
-  await t.test('sha null', async () => {
-    writeFileSync(file, JSON.stringify({ sha: null, reason: 'because', pid: process.pid, bootedAt: new Date().toISOString() }));
-    assert.match((await readBootCommit(dir)).unknown, /because/);
-  });
-  await t.test('control: a live pid with a sha reads as that commit', async () => {
-    writeFileSync(file, JSON.stringify({ sha, pid: process.pid, bootedAt: new Date().toISOString() }));
-    assert.deepEqual(await readBootCommit(dir), { sha });
-  });
+// ── bootCommitHookVars ─────────────────────────────────────────────────────
+
+test('hook vars: only the server\'s own checkout gets the boot commit, and only while no web build of its own runs', async () => {
+  const root = await repo();
+  const other = await repo();
+  const link = `${root}-link`;
+  await fs.symlink(root, link);
+  let building = false;
+  const vars = bootCommitHookVars({ checkoutRoot: root, boot: { sha: 'a'.repeat(40) }, webBuildRunning: () => building });
+  try {
+    assert.deepEqual(vars(root), { CC_SERVER_BOOT_SHA: 'a'.repeat(40) });
+    assert.deepEqual(vars(link), { CC_SERVER_BOOT_SHA: 'a'.repeat(40) }, 'compared by realpath');
+    assert.deepEqual(vars(other), {}, 'another checkout gets neither var');
+    assert.deepEqual(vars(path.join(root, 'web')), {}, 'a directory inside it is not the checkout');
+    building = true;
+    assert.deepEqual(vars(root), { CC_SERVER_BOOT_UNKNOWN: 'the server\'s own web build is running' },
+      'read when called: a build that started since the capture counts');
+    assert.deepEqual(vars(other), {});
+  } finally { await fs.rm(link, { force: true }); }
+});
+
+test('hook vars: an unknown boot commit reaches its own checkout as CC_SERVER_BOOT_UNKNOWN with the reason', async () => {
+  const root = await repo();
+  const vars = bootCommitHookVars({ checkoutRoot: root, boot: { unknown: 'HEAD is unborn or unreadable' }, webBuildRunning: () => false });
+  assert.deepEqual(vars(root), { CC_SERVER_BOOT_UNKNOWN: 'HEAD is unborn or unreadable' });
 });
