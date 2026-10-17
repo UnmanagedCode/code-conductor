@@ -1,6 +1,6 @@
 # CodeConductor
 
-[Live demo](https://unmanagedcode.github.io/code-conductor-promo/) · [Windows installer releases](https://github.com/UnmanagedCode/code-conductor-windows/releases)
+[Promo video](https://unmanagedcode.github.io/code-conductor-promo/) · [Windows installer releases](https://github.com/UnmanagedCode/code-conductor-windows/releases)
 
 Local webapp for orchestrating multiple Claude Code CLI instances across projects in the parent directory of this repo (override with the `PROJECTS_ROOT` env var). Spawn, watch, and interact with several `claude` subprocesses in parallel from one browser tab.
 
