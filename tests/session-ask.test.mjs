@@ -11,9 +11,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { buildSessionPrompt, flattenTranscript } from '../src/summarize.ts';
-import { runSessionOneShot } from '../src/sessionOneShot.ts';
 import { orchStoreRoot, localPlace } from '../src/projects.ts';
-import { summarySpawnDir } from '../src/sessionOneShot.ts';
+import { runSessionOneShot, summarySpawnDir } from '../src/sessionOneShot.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -258,30 +257,57 @@ describe('POST /api/sessions/:sid/ask', () => {
 });
 
 describe('runSessionOneShot abort window', () => {
-  // D1 pins: an abort landing after the entry guard but before spawn rejects
-  // AbortError, starts no child, and leaves no temp dir. The signal reports
-  // not-aborted to the entry guard and aborted to every later read, so the
-  // abort lands in the mkdir/mkdtemp/writeFile window deterministically.
-  test('D1: an abort between the entry guard and spawn rejects AbortError, spawns no child, and removes the temp dir', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ask-d1-'));
+  // Runs `fn(tmp, argvOut)` with TMPDIR on a private dir, the fake as CLAUDE_BIN
+  // and its argv capture file (written only if a child actually starts).
+  async function inPrivateTmp(fn) {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ask-abort-'));
     const argvOut = path.join(tmp, 'argv.json');
-    const saved = { TMPDIR: process.env.TMPDIR, CLAUDE_BIN: process.env.CLAUDE_BIN, A: process.env.FAKE_SUMMARIZE_ARGV_FILE };
+    const keys = ['TMPDIR', 'CLAUDE_BIN', 'FAKE_SUMMARIZE_ARGV_FILE'];
+    const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
     process.env.TMPDIR = tmp;
     process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
     process.env.FAKE_SUMMARIZE_ARGV_FILE = argvOut;
-    let reads = 0;
-    const signal = { get aborted() { return ++reads > 1; }, addEventListener() {}, removeEventListener() {} };
-    try {
+    try { await fn(tmp, argvOut); }
+    finally {
+      for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }
+  const leftovers = async (tmp) => (await fs.readdir(tmp)).filter(n => n.startsWith('cc-oneshot-'));
+
+  // D1 pins only the region between the entry guard and the first later read of
+  // `aborted`: a signal that reports aborted from its second read on makes the
+  // call reject AbortError with no child and no temp dir. It does not pin WHERE
+  // that later read sits relative to the fs awaits; D2 does.
+  test('D1: a signal aborted after the entry guard rejects AbortError, spawns no child, and removes the temp dir', async () => {
+    await inPrivateTmp(async (tmp, argvOut) => {
+      let reads = 0;
+      const signal = { get aborted() { return ++reads > 1; }, addEventListener() {}, removeEventListener() {} };
       await assert.rejects(runSessionOneShot({ systemPrompt: 's', prompt: 'p', signal }), { name: 'AbortError' });
       await new Promise(r => setTimeout(r, 200));
       assert.equal(await fs.stat(argvOut).catch(() => null), null, 'no child ran');
-      assert.deepEqual((await fs.readdir(tmp)).filter(n => n.startsWith('cc-oneshot-')), []);
-    } finally {
-      for (const [k, v] of [['TMPDIR', saved.TMPDIR], ['CLAUDE_BIN', saved.CLAUDE_BIN], ['FAKE_SUMMARIZE_ARGV_FILE', saved.A]]) {
-        if (v === undefined) delete process.env[k]; else process.env[k] = v;
-      }
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
+      assert.deepEqual(await leftovers(tmp), []);
+    });
+  });
+
+  // D2 pins: a REAL abort fired inside the last fs await before spawn (the
+  // system-prompt writeFile) is still observed: AbortError, no child, no temp dir.
+  test('D2: a real abort during the system-prompt write rejects AbortError, spawns no child, and removes the temp dir', async () => {
+    await inPrivateTmp(async (tmp, argvOut) => {
+      const ac = new AbortController();
+      const origWrite = fs.writeFile;
+      fs.writeFile = async function (file, ...rest) {
+        const r = await origWrite.call(this, file, ...rest);
+        if (String(file).endsWith('system-prompt.txt')) ac.abort();
+        return r;
+      };
+      try {
+        await assert.rejects(runSessionOneShot({ systemPrompt: 's', prompt: 'p', signal: ac.signal }), { name: 'AbortError' });
+      } finally { fs.writeFile = origWrite; }
+      await new Promise(r => setTimeout(r, 200));
+      assert.equal(await fs.stat(argvOut).catch(() => null), null, 'no child ran');
+      assert.deepEqual(await leftovers(tmp), []);
+    });
   });
 });
 
