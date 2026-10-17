@@ -344,6 +344,22 @@ test('guard (c): an uncommitted input edit made before the hook hashes (HEAD unm
   assert.match(out.join('\n'), /uncommitted changes under web/);
 });
 
+// The clean check refuses on a git diff that could not ANSWER, not only on one
+// that found changes: a failure must never read as clean. The index is
+// corrupted while the build runs, so everything before it answered normally,
+// and only `git diff` reads the index — HEAD resolves and the inputs hash is
+// unmoved, so the clean check is the only one that can refuse.
+test('guard (c): a git diff that fails (exit 128, corrupt index) refuses the swap — web/dist unchanged, "could not tell" named', async () => {
+  const { root, boot, pre, post, before } = await swapScenario();
+  const index = path.join(root, '.git', 'index');
+  const { out, log } = lines();
+  const r = await runWebPostMerge({ root, pre, post, boot, log, build: movingBuilder(() => fs.writeFile(index, 'not an index')) });
+  assert.equal(r.action, 'swap', 'premise: POST alone was web-only');
+  assert.equal(r.outcome, 'skipped');
+  assert.deepEqual(await distState(root), before, 'web/dist byte-unchanged, no dist.next, no leftover tmp');
+  assert.match(out.join('\n'), /swap skipped — the tree moved since this merge \(could not tell whether web, shared, .* are clean \(git diff exited 128\)\)/);
+});
+
 test('guard: the adopted-staged branch is guarded too — a stage of the current sources is not swapped in once HEAD moved', async () => {
   const { root, boot, pre, post } = await swapScenario();
   await land(root, ['src/server.ts']);
