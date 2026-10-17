@@ -335,6 +335,14 @@ const COSTS_BOX = 'main[data-view="costs"] [data-session-width]';
 // The session width setting's storage key (web/src/app/sessionWidth.ts, which e2e cannot import).
 const COLUMN_KEY = 'code-conductor:session-column';
 
+/** The number of distinct left edges among the Costs totals tiles; every tile must have a rendered box. */
+async function tileColumns(page: Page): Promise<number> {
+  const rects = await page.locator('[data-costs-total] > *').evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { left: Math.round(r.left), width: r.width, height: r.height }; }));
+  expect(rects.length, 'the totals tiles render').toBeGreaterThan(0);
+  for (const r of rects) expect(r.width * r.height, 'every totals tile has a box').toBeGreaterThan(0);
+  return new Set(rects.map((r) => r.left)).size;
+}
+
 const boxWidth = async (page: Page, sel: string) => (await page.locator(sel).boundingBox())!.width;
 
 // Invariants: Settings and the Costs view render at the session width (plain px, no gutter), follow Full live through the sidebar footer toggle, and lay their breakpoints out by the column: at the floor the Settings nav sits above the section.
@@ -371,6 +379,7 @@ export async function viewsFollowFlow({ page, cc }: Ctx): Promise<void> {
   expect(Math.abs((await boxWidth(page, COSTS_BOX)) - 896), 'Costs is the session width').toBeLessThanOrEqual(0.5);
   const tilesInside = async () => page.evaluate(([b, t]) => document.querySelector(t)!.getBoundingClientRect().right <= document.querySelector(b)!.getBoundingClientRect().right + 0.5, [COSTS_BOX, '[data-costs-total]'] as const);
   expect(await tilesInside(), 'the totals stay inside the column').toBe(true);
+  expect(await tileColumns(page), 'the totals sit four to a row at 896').toBe(4);
   await widthToggle(page).click();
   await expect(page.locator(COSTS_BOX)).toHaveAttribute('data-session-width', 'full');
   await widthToggle(page).click();
@@ -385,4 +394,10 @@ export async function viewsFollowFlow({ page, cc }: Ctx): Promise<void> {
   const nav = (await page.getByRole('navigation', { name: 'Settings sections' }).boundingBox())!;
   const section = (await page.locator('[data-section]').boundingBox())!;
   expect(nav.y + nav.height, 'the nav sits above the section on a narrow column').toBeLessThanOrEqual(section.y + 0.5);
+
+  // The totals grid steps on the column's width: two to a row at the floor, where the viewport is still desktop-wide.
+  await page.goto('/#costs');
+  await expect(page.locator('[data-costs-total]')).toBeVisible();
+  await expect(page.locator(COSTS_BOX)).toHaveAttribute('data-session-width', String(SESSION_WIDTH_MIN));
+  expect(await tileColumns(page), 'the totals do not sit four to a row on a narrow column').toBeLessThan(4);
 }
