@@ -64,11 +64,14 @@ test('a tracked change outside web/ is unknown, naming the file', async () => {
   const r = await measureBootCommit(dir);
   assert.equal('sha' in r, false);
   assert.match(r.unknown, /tracked changes outside web\/.*src\/server\.ts/);
+  assert.equal(r.head, await head(dir), 'still carries the HEAD it read, for the boot build\'s guard');
 });
 
 test('an unborn HEAD is unknown', async () => {
   const dir = await repo({ commit: false });
-  assert.match((await measureBootCommit(dir)).unknown, /unborn/);
+  const r = await measureBootCommit(dir);
+  assert.match(r.unknown, /unborn/);
+  assert.equal(r.head, undefined);
 });
 
 test('outside a git checkout: unknown, and no throw', async () => {

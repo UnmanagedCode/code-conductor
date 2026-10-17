@@ -17,9 +17,11 @@ import path from 'node:path';
 import { runGit } from './worktrees.ts';
 import { localSystem } from './systems/registry.ts';
 import { sourcesUnmovedGuard } from './swapGuard.ts';
-import { inputPaths, webInputs, type SwapGuard } from './webBuild.ts';
+import { inputPaths, type SwapGuard, type WebInputs } from './webBuild.ts';
 
-export type BootCommit = { sha: string } | { unknown: string };
+// An unknown boot commit still carries `head` when HEAD was readable: the boot
+// build's guard measures against it (bootSwapGuard).
+export type BootCommit = { sha: string } | { unknown: string; head?: string };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -31,29 +33,35 @@ export async function measureBootCommit(root: string): Promise<BootCommit> {
     const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD']);
     if (head.code !== 0 || !head.stdout.trim()) return { unknown: 'HEAD is unborn or unreadable' };
     const status = await git(['status', '--porcelain', '--untracked-files=no', '--', '.', ':(exclude)web']);
-    if (status.code !== 0) return { unknown: `could not read the working tree (git status exited ${status.code})` };
+    const sha = head.stdout.trim();
+    if (status.code !== 0) return { unknown: `could not read the working tree (git status exited ${status.code})`, head: sha };
     const dirty = status.stdout.split('\n').filter(Boolean);
     if (dirty.length > 0) {
       const named = dirty.slice(0, 5).map(l => l.slice(3)).join(', ') + (dirty.length > 5 ? ', …' : '');
-      return { unknown: `tracked changes outside web/ at boot (${named})` };
+      return { unknown: `tracked changes outside web/ at boot (${named})`, head: sha };
     }
-    return { sha: head.stdout.trim() };
+    return { sha };
   } catch (e) {
     return { unknown: `could not read the checkout: ${errText(e)}` };
   }
 }
 
 /**
- * The guard the boot build asks before it swaps (ensureWebBuild): HEAD still
- * the boot commit, the hash still the build's stamp, and the inputs outside
- * web/ still clean — the capture's own rule, which lets web/ be dirty at boot.
- * None for an unknown boot commit: there is nothing to measure against.
+ * The guard the boot build asks before it swaps (ensureWebBuild), over the
+ * same `inputs` that build hashes: HEAD still the one captured at boot, the
+ * hash still the build's stamp, and — for a known boot commit — the inputs
+ * outside web/ still clean, the capture's own rule, which lets web/ be dirty
+ * at boot. An unknown boot commit was dirty by definition, so it skips that
+ * last check; one with no readable HEAD has nothing to measure against and
+ * gets no guard.
  */
-export function bootSwapGuard(checkoutRoot: string, boot: BootCommit): SwapGuard | undefined {
-  if (!('sha' in boot)) return undefined;
-  const inputs = webInputs(checkoutRoot);
-  const cleanPaths = inputPaths(inputs).filter((p) => p !== 'web' && !p.startsWith('web/'));
-  return sourcesUnmovedGuard({ root: checkoutRoot, inputs, head: boot.sha, cleanPaths });
+export function bootSwapGuard(checkoutRoot: string, boot: BootCommit, inputs: WebInputs): SwapGuard | undefined {
+  if ('sha' in boot) {
+    const cleanPaths = inputPaths(inputs).filter((p) => p !== 'web' && !p.startsWith('web/'));
+    return sourcesUnmovedGuard({ root: checkoutRoot, inputs, head: boot.sha, cleanPaths });
+  }
+  if (!boot.head) return undefined;
+  return sourcesUnmovedGuard({ root: checkoutRoot, inputs, head: boot.head, cleanPaths: [] });
 }
 
 const realpathOr = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };

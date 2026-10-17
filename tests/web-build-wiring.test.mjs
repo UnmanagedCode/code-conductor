@@ -53,6 +53,18 @@ test('start() hands its buildWeb and syncDeps to createServer as the restart rou
   assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps } } })']);
 });
 
+// The boot build is guarded against the boot commit, and the build and its
+// guard hash ONE inputs value, so they cannot judge different trees.
+test('start() builds the web UI with bootSwapGuard, over the same inputs it hands the build', async () => {
+  const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
+  const body = src.slice(src.indexOf('export async function start('));
+  const lines = body.split('\n').map((l) => l.trim());
+  assert.deepEqual(lines.filter((l) => l.startsWith('const bootWebInputs')), ['const bootWebInputs = webInputs(checkoutRoot);']);
+  assert.deepEqual(lines.filter((l) => l.includes('ensureWebBuild(')), [
+    'if (buildWeb) void (webBuild ?? (() => ensureWebBuild({ inputs: bootWebInputs, guard: bootCommit && bootSwapGuard(checkoutRoot, bootCommit, bootWebInputs) })))();',
+  ]);
+});
+
 test('server.ts\'s entry block starts the server with exactly start(entryStartOptions(process.env))', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const entry = /^if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) \{\n([\s\S]*?)^\}$/m.exec(src);

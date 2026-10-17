@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootCommitFromEnv, decideWebPostMerge, runWebPostMerge } from '../src/webPostMerge.ts';
 import { ensureWebBuild, refreshWebDist, stageWebBuild, webInputs, webSourceHash } from '../src/webBuild.ts';
-import { bootSwapGuard } from '../src/bootCommit.ts';
+import { bootSwapGuard, measureBootCommit } from '../src/bootCommit.ts';
 
 const ENTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'webPostMergeMain.ts');
 
@@ -365,8 +365,10 @@ async function bootScenario({ previous }) {
   await fs.writeFile(path.join(root, 'web', 'app.tsx'), 'v2\n'); // uncommitted: the boot build has work to do
   return { root, boot, dist };
 }
-const bootBuild = ({ root, boot, dist }, build, log = quiet()) =>
-  ensureWebBuild({ distDir: dist, inputs: webInputs(root), build, log, guard: bootSwapGuard(root, boot), drift: () => null });
+const bootBuild = ({ root, boot, dist }, build, log = quiet()) => {
+  const inputs = webInputs(root);
+  return ensureWebBuild({ distDir: dist, inputs, build, log, guard: bootSwapGuard(root, boot, inputs), drift: () => null });
+};
 
 test('boot guard: a merge committed during the boot build, with a previous build in place, is not swapped in; the previous build keeps serving', async () => {
   const s = await bootScenario({ previous: true });
@@ -399,8 +401,50 @@ test('boot guard: uncommitted web/ edits at boot still swap (the capture allows 
   assert.match(out.join('\n'), /uncommitted changes under shared/);
 });
 
-test('boot guard: an unknown boot commit has nothing to measure against, so no guard', () => {
-  assert.equal(bootSwapGuard('/anywhere', { unknown: 'HEAD is unborn or unreadable' }), undefined);
+// An unknown boot commit: the server booted with tracked changes outside web/
+// (here shared/), so it is measured the real way and carries the HEAD it read.
+async function unknownBootScenario() {
+  const root = await fixture();
+  const dist = path.join(root, 'web', 'dist');
+  stamped(dist, 'previous', 'older-hash');
+  await fs.writeFile(path.join(root, 'shared', 'http.ts'), 'dirty at boot\n');
+  const boot = await measureBootCommit(root);
+  assert.match(boot.unknown, /tracked changes outside web\//, 'premise: the boot commit is unknown');
+  assert.equal(boot.head, await git(root, 'rev-parse', 'HEAD'), 'premise: and HEAD was readable');
+  return { root, boot, dist };
+}
+
+test('boot guard, unknown boot commit with a readable HEAD: a merge committed during the boot build is still not swapped in', async () => {
+  const s = await unknownBootScenario();
+  const before = await distState(s.root);
+  const { out, log } = lines();
+  assert.deepEqual(await bootBuild(s, movingBuilder(() => land(s.root, ['src/server.ts'])), log), { phase: 'ready', error: null });
+  assert.deepEqual(await distState(s.root), before);
+  assert.match(out.join('\n'), /kept the previous build — the sources moved during the boot build \(HEAD moved/);
+});
+
+test('boot guard, unknown boot commit: the inputs-clean check is skipped — the tree was dirty by definition — so a build of an unmoved tree swaps', async () => {
+  const s = await unknownBootScenario();
+  assert.deepEqual(await bootBuild(s, builder('dirty shared at boot')), { phase: 'ready', error: null });
+  assert.match(readFileSync(path.join(s.dist, 'index.html'), 'utf8'), /dirty shared at boot/);
+});
+
+test('boot guard, unknown boot commit: a change to the inputs during the build is still refused (the hash check stays)', async () => {
+  const s = await unknownBootScenario();
+  const before = await distState(s.root);
+  const { out, log } = lines();
+  await bootBuild(s, movingBuilder(() => fs.writeFile(path.join(s.root, 'web', 'app.tsx'), 'edited mid-build\n')), log);
+  assert.deepEqual(await distState(s.root), before);
+  assert.match(out.join('\n'), /inputs changed while it was building/);
+});
+
+test('boot guard: no readable HEAD at boot means nothing to measure against, so no guard', async () => {
+  assert.equal(bootSwapGuard('/anywhere', { unknown: 'HEAD is unborn or unreadable' }, webInputs('/anywhere')), undefined);
+  const unborn = await fs.realpath(await mkdtemp('cc-webpostmerge-unborn-'));
+  await git(unborn, 'init', '-q', '-b', 'main');
+  const boot = await measureBootCommit(unborn);
+  assert.equal(boot.head, undefined);
+  assert.equal(bootSwapGuard(unborn, boot, webInputs(unborn)), undefined);
 });
 
 // ── The entry the hook script execs ────────────────────────────────────────

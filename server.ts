@@ -33,7 +33,7 @@ import { setPluginConductorConventionsProvider } from './src/conductorConvention
 import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
-import { WEB_ROOT, ensureWebBuild, webBuildRunning, webHandler } from './src/webBuild.ts';
+import { WEB_ROOT, ensureWebBuild, webBuildRunning, webHandler, webInputs } from './src/webBuild.ts';
 import { bootCommitHookVars, bootSwapGuard, measureBootCommit, type BootCommit } from './src/bootCommit.ts';
 import { setMergeHookVarsProvider } from './src/worktrees.ts';
 
@@ -346,8 +346,10 @@ export async function start({
   // Build the web UI if its sources changed. Fire-and-forget: the API is
   // already answering, and / serves a "building" page until a build exists.
   // Guarded against the boot commit: a merge landing while it builds must not
-  // put its sources live in front of this backend (bootSwapGuard).
-  if (buildWeb) void (webBuild ?? (() => ensureWebBuild({ guard: bootCommit && bootSwapGuard(checkoutRoot, bootCommit) })))();
+  // put its sources live in front of this backend (bootSwapGuard). The build
+  // and its guard hash one `inputs` value, so they cannot judge different trees.
+  const bootWebInputs = webInputs(checkoutRoot);
+  if (buildWeb) void (webBuild ?? (() => ensureWebBuild({ inputs: bootWebInputs, guard: bootCommit && bootSwapGuard(checkoutRoot, bootCommit, bootWebInputs) })))();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can
   // connect while sessions re-spawn + get their resume notifications, staggered.
