@@ -28,7 +28,7 @@ const MEASURED = ['conventions', 'backends', 'account', 'voice', 'about'];
 
 type Point = { viewport: number; sidebar: number | null; column?: { width: number; full: boolean } };
 const at = (p: Point) => `${p.viewport}px${p.sidebar === null ? '' : `, sidebar ${p.sidebar}`}${p.column ? `, column ${p.column.full ? 'Full' : p.column.width}` : ''}`;
-// The existing points run at the default Normal width; the extras are the floor, Full and a Wide column.
+// The viewport and sidebar points run at the default Normal width; COLUMN_POINTS adds the floor, Full and a Wide column.
 const COLUMN_POINTS: Point[] = [
   { viewport: 1920, sidebar: 220, column: { width: SESSION_WIDTH_MIN, full: false } },
   { viewport: 1920, sidebar: 220, column: { width: SESSION_WIDTH_MIN, full: true } },
