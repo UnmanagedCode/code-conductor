@@ -8,8 +8,10 @@
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { installProbePlugin, probeFrame, readProbe, readTheme, type FrameTheme, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
+import { installProbePlugin, probeFrame, readProbe, readTheme, readWidth, type FrameTheme, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
+import { widthToggle } from './session-width.shared.ts';
+import { sessionWidthCss } from '../src/app/sessionWidthScale.ts';
 
 type Args = { page: Page; cc: Cc };
 
@@ -233,6 +235,42 @@ export async function themeFlow({ page }: Args): Promise<void> {
   expect(probeFrame(page, KEEP.id), 'precondition: its page is resident').toBeDefined();
   await toggleTheme(page, 'Light theme');
   await follows(page, KEEP.id, 'light', 'hidden behind Settings');
+  await expect(pluginView(page), 'still hidden').toBeHidden();
+}
+
+// ── session width ────────────────────────────────────────────────────────
+
+const COLUMN_KEY = 'code-conductor:session-column';
+/** Polls until plugin `id`'s computed `--cc-session-width` is `want`. */
+const widthIs = (page: Page, id: string, want: string, what: string) => expect.poll(async () => (await readWidth(page, id).catch(() => null))?.computed ?? null,
+  { message: `${what}: ${id}'s --cc-session-width is ${want}` }).toBe(want);
+
+export async function widthFlow({ page }: Args): Promise<void> {
+  // Invariant: a plugin page carries the session width setting (px, or none under Full) on its <html> when its head is parsed, and follows every change live, shown or hidden.
+  test.skip(test.info().project.name !== 'desktop', 'the width control is a desktop-layout feature');
+  const set = { width: 896, full: false };
+  await next.open(page);
+  await page.evaluate(([k, v]) => localStorage.setItem(k, v), [COLUMN_KEY, JSON.stringify(set)] as const);
+  await page.goto('about:blank');
+  await page.goto(`/#plugin/${PLAIN.id}/`);
+  await loaded(page, PLAIN.id, 'booted on its hash');
+  await widthIs(page, PLAIN.id, sessionWidthCss(set), 'booted');
+  expect((await readWidth(page, PLAIN.id))!.atParse, 'set when its head was parsed').toBe(sessionWidthCss(set));
+
+  await next.openSidebar(page);
+  await widthToggle(page).click();
+  await widthIs(page, PLAIN.id, 'none', 'Full on');
+  await widthToggle(page).click();
+  await widthIs(page, PLAIN.id, '896px', 'Full off');
+
+  await next.openPlugin(page, KEEP.id);
+  await loaded(page, KEEP.id, 'the keep-alive plugin');
+  await widthIs(page, KEEP.id, '896px', 'shown');
+  await next.openSettings(page);
+  await expect(pluginView(page), 'precondition: hidden behind Settings').toBeHidden();
+  expect(probeFrame(page, KEEP.id), 'precondition: its page is resident').toBeDefined();
+  await widthToggle(page).click();
+  await widthIs(page, KEEP.id, 'none', 'hidden behind Settings');
   await expect(pluginView(page), 'still hidden').toBeHidden();
 }
 

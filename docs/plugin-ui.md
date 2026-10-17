@@ -21,7 +21,7 @@ Load both in the page's `<head>`:
 
 | URL | Load as | Provides |
 |---|---|---|
-| `/pluginBridge.js` | Blocking classic script (no `defer`/`async`), first in `<head>` | Theme sync onto `<html>` before first paint; the history contract below; route reporting to cc; optional session awareness (`window.ccBridge`) |
+| `/pluginBridge.js` | Blocking classic script (no `defer`/`async`), first in `<head>` | Theme and session-width sync onto `<html>` before first paint; the history contract below; route reporting to cc; optional session awareness (`window.ccBridge`) |
 | `/pluginTheme.css` | Stylesheet `<link>` | cc's palette tokens (`:root` and `.dark` custom properties) and the Geist `@font-face` rules |
 
 - These are the only root-relative URLs a plugin page uses (plus the font files the sheet names).
@@ -39,6 +39,13 @@ Load both in the page's `<head>`:
 - **The served sheet is unlayered.** It wins over anything the page declares inside `@layer`, whatever the source order.
 - **No theme toggle of the plugin's own.** A plugin-side toggle stops the page following the host.
 - **A restrictive CSP must let the host assets through.** Under `default-src 'none'`, the sheet needs `style-src 'self'`, its Geist fonts (served from `/pluginTheme/fonts/…` on the same origin) need `font-src 'self'`, and the bridge needs `script-src 'self'`. Without `font-src` the fonts are blocked silently and the page falls back to the system font. A policy example: [Part 2](#part-2--security-strongly-recommended).
+
+## Follow the session width
+
+- **Cap the content width with `var(--cc-session-width, <fallback>)`.** Embedded, the bridge sets `--cc-session-width` on the page's `<html>` to cc's committed session-column width: `<n>px`, or `none` under Full.
+- It applies this when it runs, before first paint, and again on every change, including while the page is hidden. A handle drag updates the page on release.
+- Example: `max-width: var(--cc-session-width, 48rem)`.
+- **Never read cc's `localStorage`.** The property is the contract.
 
 ## Relative URLs
 
@@ -117,13 +124,14 @@ What cc runs on Library **Install** and **Update**:
 
 - **The UI is readable when the host URLs 404** (the plugin run outside cc, e.g. `PORT=<port>` on loopback).
 - The plugin's server answers `/pluginBridge.js` and `/pluginTheme.css` with a real 404, not with an HTML fallback page.
-- Standalone, the page has no host theme to follow. Ship a fallback that keeps it legible (the OS theme, a default palette).
+- Standalone, the page has no host theme to follow. Ship a fallback that keeps it legible (the OS theme, a default palette). `--cc-session-width` is unset too, so the `var()` fallback applies.
 
 ## Contract checks
 
 - [ ] The page loads `/pluginBridge.js` (blocking, first in `<head>`) and `/pluginTheme.css`.
 - [ ] Every asset, API and WebSocket URL is relative; no root-relative URL other than the two host URLs.
 - [ ] The page follows the sidebar theme toggle live in cc, and the OS theme while cc's theme is "system". It has no toggle of its own.
+- [ ] Content width uses `var(--cc-session-width, <fallback>)` if the page caps its width.
 - [ ] Navigation adds no history entry beyond cc's one: Back from the plugin returns to cc.
 - [ ] A fresh `git clone` plus the Library entry's hook, with no other step, leaves a servable checkout; `git status` is clean afterwards.
 - [ ] In cc, Settings → Plugins → Library → **Install** reports the `postClone` hook ok; **Update** rebuilds, and restarts the backend if it is running (a stopped one picks the pull up when it next starts).

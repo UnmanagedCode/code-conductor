@@ -58,6 +58,11 @@ export function sessionWidthKey(s: SessionWidthState): string {
   return s.full ? 'full' : String(s.width);
 }
 
+/** The CSS value plugin pages see as `--cc-session-width`: the width in px, or `none` under Full. */
+export function sessionWidthCss(s: SessionWidthState): string {
+  return s.full ? 'none' : `${s.width}px`;
+}
+
 /** The stored JSON shape; anything else reads as the default. */
 export function parseSessionWidth(raw: string | null): SessionWidthState {
   try {

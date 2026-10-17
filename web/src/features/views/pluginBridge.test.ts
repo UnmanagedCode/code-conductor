@@ -9,12 +9,14 @@ describe('pluginBridge.js', () => {
   it('is a no-op standalone and outside a /plugins mount, theme included', () => {
     const hostRoot = document.createElement('html');
     hostRoot.classList.add('dark');
+    hostRoot.setAttribute('data-cc-session-width', '896px');
     for (const opts of [{ top: true }, { pathname: '/elsewhere' }]) {
       const b = runBridge({ ...opts, hostRoot });
       b.contentLoaded();
       expect(b.posted).toEqual([]);
       expect(b.frameRoot.classList.contains('dark')).toBe(false);
       expect(b.frameRoot.hasAttribute('data-cc-theme')).toBe(false);
+      expect(b.frameRoot.style.getPropertyValue('--cc-session-width')).toBe('');
       expect(b.win.ccBridge, 'no ccBridge outside an embed').toBeUndefined();
     }
   });
@@ -109,8 +111,69 @@ describe('pluginBridge.js', () => {
       const b = runBridge({ parentThrows: true });
       expect(b.frameRoot.classList.contains('dark')).toBe(false);
       expect(b.frameRoot.hasAttribute('data-cc-theme')).toBe(false);
+      expect(b.frameRoot.style.getPropertyValue('--cc-session-width')).toBe('');
       b.contentLoaded();
       expect(b.posted).toEqual([[{ cc: 1, type: 'ready' }, 'http://h'], [{ cc: 1, type: 'route', path: '/a?q=1' }, 'http://h']]);
+    });
+  });
+
+  describe('session width', () => {
+    const WIDTH = '--cc-session-width';
+    const hostWith = (w?: string) => {
+      const h = document.createElement('html');
+      if (w !== undefined) h.setAttribute('data-cc-session-width', w);
+      return h;
+    };
+
+    it("sets the host's published width at script execution, before DOMContentLoaded", () => {
+      // Invariant: the frame carries the host's value synchronously, px and none alike, and an absent attribute clears a stale value.
+      for (const w of ['896px', 'none']) {
+        const b = runBridge({ hostRoot: hostWith(w) });
+        expect(b.docListeners.DOMContentLoaded?.length, 'precondition: DOMContentLoaded has not fired').toBe(1);
+        expect(b.frameRoot.style.getPropertyValue(WIDTH)).toBe(w);
+      }
+      const bare = runBridge({ hostRoot: hostWith(), frameSetup: (r) => r.style.setProperty(WIDTH, '500px') });
+      expect(bare.frameRoot.style.getPropertyValue(WIDTH)).toBe('');
+    });
+
+    it('follows every host change', async () => {
+      // Invariant: each later value the host publishes reaches the frame.
+      const host = hostWith('896px');
+      const b = runBridge({ hostRoot: host });
+      for (const w of ['none', '1024px']) {
+        host.setAttribute('data-cc-session-width', w);
+        await observerTurn();
+        expect(b.frameRoot.style.getPropertyValue(WIDTH)).toBe(w);
+      }
+    });
+
+    it("the setting composes end to end into the frame, and a live drag is not followed", async () => {
+      // Invariant: stored setting -> published attribute -> frame property; only the committed setting is mirrored.
+      const root = document.documentElement;
+      localStorage.setItem('code-conductor:session-column', JSON.stringify({ width: 896, full: false }));
+      try {
+        vi.resetModules();
+        const { startPluginSessionWidth } = await import('./pluginSessionWidth');
+        const { setSessionFull, setSessionWidth, sessionWidthDragStore } = await import('@/app/sessionWidth');
+        startPluginSessionWidth();
+        const b = runBridge({ hostRoot: root });
+        expect(b.frameRoot.style.getPropertyValue(WIDTH)).toBe('896px');
+        const step = async (expected: string) => {
+          await observerTurn();
+          expect(b.frameRoot.style.getPropertyValue(WIDTH)).toBe(expected);
+        };
+        setSessionFull(true);
+        await step('none');
+        setSessionWidth(1024);
+        await step('none');
+        setSessionFull(false);
+        await step('1024px');
+        sessionWidthDragStore.set({ live: 1500 });
+        await step('1024px');
+      } finally {
+        root.removeAttribute('data-cc-session-width');
+        localStorage.clear();
+      }
     });
   });
 });

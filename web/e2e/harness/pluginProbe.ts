@@ -2,7 +2,7 @@
 // and its page's live counters read through page.frames(), shown or hidden: a
 // per-load nonce (a reload makes a new one), interval ticks, WebSocket messages,
 // requestAnimationFrame callbacks and, once its Start button ran, the microphone;
-// and the theme its page shows (readTheme).
+// the theme its page shows (readTheme) and its session width (readWidth).
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, type Frame, type Page } from '@playwright/test';
@@ -59,4 +59,16 @@ export async function readTheme(page: Page, id: string): Promise<FrameTheme | nu
       geist: faces.length > 0,
     };
   });
+}
+
+export type FrameWidth = { atParse: string | null; computed: string };
+
+/** Plugin `id`'s `--cc-session-width` as its page sees it: the value on its <html> when its head was parsed, and the computed value now; null while no frame serves it. */
+export async function readWidth(page: Page, id: string): Promise<FrameWidth | null> {
+  const f = probeFrame(page, id);
+  if (!f) return null;
+  return f.evaluate(() => ({
+    atParse: (window as unknown as { __widthAtParse?: string | null }).__widthAtParse ?? null,
+    computed: getComputedStyle(document.documentElement).getPropertyValue('--cc-session-width').trim(),
+  }));
 }
