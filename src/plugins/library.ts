@@ -156,6 +156,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-review',
+    name: 'Code Review',
+    description: 'Review a checkout\'s diff hunk-by-hunk with agents: a review UI, REST/SSE API, MCP tools and a Claude Code skill.',
+    repo: 'https://github.com/UnmanagedCode/code-review',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in

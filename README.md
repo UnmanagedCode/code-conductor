@@ -1,5 +1,7 @@
 # CodeConductor
 
+[Live demo](https://unmanagedcode.github.io/code-conductor-promo/) · [Windows installer releases](https://github.com/UnmanagedCode/code-conductor-windows/releases)
+
 Local webapp for orchestrating multiple Claude Code CLI instances across projects in the parent directory of this repo (override with the `PROJECTS_ROOT` env var). Spawn, watch, and interact with several `claude` subprocesses in parallel from one browser tab.
 
 Runs on Termux (localhost-only, single user) or any host with Node 24+ and the `claude` CLI on `$PATH`. Windows 11: see [Windows](#windows). Server-side `src/*.ts` runs directly via Node 24's native type stripping (no build step) and is type-checked by an enforced `tsc --noEmit` gate — see `npm run typecheck` below.

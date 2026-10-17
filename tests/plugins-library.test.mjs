@@ -39,7 +39,7 @@ test('list(): default code-share entry present with no library dir', async () =>
   try {
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
-    assert.equal(rows.length, 10);
+    assert.equal(rows.length, 11);
     assert.equal(rows[0].id, 'code-share');
     assert.equal(rows[0].repo, 'https://github.com/UnmanagedCode/code-share');
     assert.equal(rows[0].installed, false);
@@ -57,15 +57,16 @@ test('list(): code-playwright is a built-in entry alongside code-share, with its
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
     const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-live', 'code-mutant', 'code-playbook', 'code-playwright', 'code-share', 'code-system', 'code-wiki']);
+    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-live', 'code-mutant', 'code-playbook', 'code-playwright', 'code-review', 'code-share', 'code-system', 'code-wiki']);
     const cp = rows.find(r => r.id === 'code-playwright');
     assert.equal(cp.repo, 'https://github.com/UnmanagedCode/code-playwright');
     assert.equal(cp.postClone, 'bash install.sh');
     assert.equal(cp.postPull, 'bash install.sh');
+    assert.equal(rows.find(r => r.id === 'code-review').repo, 'https://github.com/UnmanagedCode/code-review');
     const cs = rows.find(r => r.id === 'code-share');
     assert.equal(cs.postClone, 'npm install');
     assert.equal(cs.postPull, 'npm install');
-    for (const id of ['code-wiki', 'code-live']) {
+    for (const id of ['code-wiki', 'code-live', 'code-review']) {
       const row = rows.find(r => r.id === id);
       assert.equal(row.postClone, 'npm install', `${id} postClone`);
       assert.equal(row.postPull, 'npm install', `${id} postPull`);
@@ -89,7 +90,7 @@ test('list(): a dropped file adds an entry; malformed files are skipped, not fat
     const lib = createPluginLibrary();
     const { entries: rows, skipped } = await lib.list();
     const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-live', 'code-mutant', 'code-playbook', 'code-playwright', 'code-share', 'code-system', 'code-wiki', 'extra-plugin']);
+    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-live', 'code-mutant', 'code-playbook', 'code-playwright', 'code-review', 'code-share', 'code-system', 'code-wiki', 'extra-plugin']);
 
     // A silently-dropped drop-in is indistinguishable from one never written, so
     // both per-file skip reasons are reported by name.
@@ -136,7 +137,7 @@ test('list(): a dropped file whose id matches the built-in overrides it', async 
     await dropLibraryEntry('code-share.json', { id: 'code-share', name: 'Custom Code Share', repo: 'https://example.com/fork/code-share' });
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
-    assert.equal(rows.length, 10);
+    assert.equal(rows.length, 11);
     assert.equal(rows[0].name, 'Custom Code Share');
     assert.equal(rows[0].repo, 'https://example.com/fork/code-share');
   } finally {
@@ -1773,7 +1774,7 @@ test('list(): a missing configured dir is reported in skipped with file:null; bu
     assert.equal(skipped[0].dir, gone);
     assert.equal(skipped[0].file, null);
     assert.match(skipped[0].reason, /unreadable/);
-    assert.equal(entries.length, 10);
+    assert.equal(entries.length, 11);
   } finally {
     console.warn = origWarn;
     await env.restore();
