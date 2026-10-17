@@ -85,10 +85,16 @@ export function installConsoleGuard() {
     restoreSpies();
     if (inTestLogs.length) throw new Error(`unexpected console output in this test:\n${inTestLogs.splice(0).join('\n')}`);
   });
-  afterAll(() => {
+  afterAll(async () => {
+    // One real turn, as afterEach yields: a log the last test queued for the next turn lands first.
+    await new Promise((r) => realSetImmediate(r));
     // The last test has no next beforeEach to collect its stranded logs.
     const skipped = [...skippedLogs.splice(0), ...inTestLogs.splice(0)];
-    if (skipped.length) throw new Error(`unexpected console output in a test whose afterEach hooks were cut short:\n${skipped.join('\n')}`);
-    if (outsideLogs.length) throw new Error(`unexpected console output outside any test:\n${outsideLogs.splice(0).join('\n')}`);
+    const outside = outsideLogs.splice(0);
+    const sections = [
+      skipped.length && `unexpected console output in a test whose afterEach hooks were cut short:\n${skipped.join('\n')}`,
+      outside.length && `unexpected console output outside any test:\n${outside.join('\n')}`,
+    ].filter(Boolean);
+    if (sections.length) throw new Error(sections.join('\n\n'));
   });
 }

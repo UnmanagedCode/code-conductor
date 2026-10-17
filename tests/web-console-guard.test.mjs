@@ -3,7 +3,8 @@
 // web/src/test/consoleGuard.proof.test.ts is run through Vitest and its
 // output read back. The guard that fails a web test on console.error /
 // console.warn (installConsoleGuard) is proved through the two
-// consoleGuard.{raise,outside}.proof.test.ts fixtures and Vitest's JSON report.
+// consoleGuard.*.proof.test.ts fixtures (the files beside it with that name)
+// and Vitest's JSON report.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -98,6 +99,25 @@ test('a throwing file afterEach skips the guard afterEach: its spy is still rest
     assert.equal(file.status, 'failed', 'the skipped test\'s logs fail the file');
     assert.match(file.message, /skipped-test-marker/);
     assert.match(file.message, /last-test-marker/, 'the last test has no next beforeEach, and its logs still fail the file');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a next-turn log from a test whose guard afterEach was skipped still fails the file, together with an outside-test log', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-console-guard-'));
+  const outputFile = path.join(dir, 'report.json');
+  try {
+    const r = spawnSync(process.execPath, [
+      vitestBin, 'run', '--config', 'web/vitest.config.ts', 'src/test/consoleGuard.late.proof.test.ts',
+      '--reporter=json', `--outputFile=${outputFile}`,
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, CC_CONSOLE_GUARD_PROOF: '1' } });
+    assert.ok(fs.existsSync(outputFile), `a report was written:\n${r.stdout}${r.stderr}`);
+    const file = JSON.parse(fs.readFileSync(outputFile, 'utf8')).testResults[0];
+    assert.equal(file.assertionResults.length, 1, 'premise: the fixture test ran');
+    assert.equal(file.status, 'failed');
+    assert.match(file.message, /late-next-turn-marker/, 'the log fired after the last test body still fails the file');
+    assert.match(file.message, /late-outside-marker/, 'the outside-test log is named alongside the cut-short one');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
