@@ -134,7 +134,8 @@ The scan-time policy is therefore a **strict superset** of the compose-time one,
 ### Reverse proxy — `/plugins/<id>/*`
 
 - `/plugins/<id>/foo?q=1` → child `/foo?q=1` (prefix strip). Injected headers: `X-Forwarded-Prefix: /plugins/<id>`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Forwarded-For`.
-- `GET /plugins/<id>` → `301 /plugins/<id>/` (query preserved). Child `Location:` headers starting with `/` get the prefix re-added — the only header rewrite.
+- `GET /plugins/<id>` → `301 /plugins/<id>/` (query preserved). Child `Location:` headers starting with `/` get the prefix re-added.
+- cc's own security headers (`HOST_SECURITY_HEADERS`) are removed from proxied responses; the plugin's `Content-Security-Policy`, `X-Frame-Options` and `X-Content-Type-Options` pass through unchanged. `X-Frame-Options: SAMEORIGIN` is added only when the plugin sends no `X-Frame-Options` and no `frame-ancestors` directive in its `Content-Security-Policy` (`proxiedPluginHeaders`, `src/securityHeaders.ts`), so cc's same-origin frame loads the page and no other origin can. The proxy's own 301/404/502/503 responses carry cc's full policy.
 - Bodies are never parsed — pure req→upstream→res streaming (SSE works). WebSocket upgrades are raw-socket piped with the original header order/casing replayed.
 - Requests to an enabled-but-stopped plugin wait through the lazy start (`READY_TIMEOUT_MS` in `src/plugins/supervisor.ts`). Unknown/disabled id → 404 JSON; `failed` → `503 {error, status:"failed", tail}`; crash-backoff window → `503 {error, status:"crashed", retryAfter, tail?}`; child unreachable mid-request → 502.
 

@@ -1,6 +1,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
+import { proxiedPluginHeaders } from '../securityHeaders.ts';
 
 // Same-origin reverse proxy for plugin backends — `/plugins/<id>/*` → the
 // child's `/*`. Hand-rolled on node:http/node:net (code-hub authproxy
@@ -88,9 +89,10 @@ export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLi
         'x-forwarded-for': req.socket.remoteAddress ?? '',
       },
     }, (upRes) => {
-      const headers = { ...upRes.headers };
-      // Root-relative redirects from the child point back into its prefix —
-      // the only header rewrite in v1.
+      // cc's own security headers are dropped and a framing default added
+      // (proxiedPluginHeaders); the plugin's CSP and MIME types stay its own.
+      const headers = proxiedPluginHeaders(res, upRes.headers);
+      // Root-relative redirects from the child point back into its prefix.
       if (typeof headers.location === 'string' && headers.location.startsWith('/')) {
         headers.location = `/plugins/${id}${headers.location}`;
       }

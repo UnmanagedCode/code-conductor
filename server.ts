@@ -36,6 +36,7 @@ import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
 import { WEB_ROOT, ensureWebBuild, webBuildRunning, webHandler, webInputs } from './src/webBuild.ts';
 import { bootCommitHookVars, bootSwapGuard, measureBootCommit, type BootCommit } from './src/bootCommit.ts';
 import { setMergeHookVarsProvider } from './src/worktrees.ts';
+import { hostSecurityHeaders } from './src/securityHeaders.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -50,6 +51,8 @@ interface ServerCtx {
 
 export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions } = {}) {
   const app = express();
+  app.disable('x-powered-by');
+  app.use(hostSecurityHeaders());
   const instances = withInstances ? new InstanceManager({ claudeLauncher, platform }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
   // than delete a backend out from under a running/respawnable instance, whose next
