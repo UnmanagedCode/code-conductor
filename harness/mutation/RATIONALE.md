@@ -31,11 +31,8 @@ conditions.
   10 distinct narrow baselines), 9 expected `KILLED` + 1 deliberate `SURVIVED`. Measured
   2026-08-12; the bench scripts and raw artifacts were not kept — see §9 for how to redo it.
 - **Every figure above and in §6 was measured with `npm test` as `baselineCommand`** (the pretest
-  typecheck, then the node suite), not today's `node harness/mutation/suite.ts --all`, which adds the
-  Vitest suite. Today's baseline command on the same host (16 cores, node v24.18.0), 2026-10-10, one
-  run, `/proc/loadavg` 2.52 at start: **88.8 s** wall, 8973 tests (8948 pass / 0 fail / 25 skipped,
-  node + Vitest), ~4.0 MB of stdout against code-mutant's 8 MiB capture cap — the node section is
-  the same volume `npm test` prints, and the Vitest section is ids and statuses only.
+  typecheck, then the node suite), not today's routed baseline, which adds the Vitest suite.
+  MEASURED_BASELINE
 - **Do not re-cite any number below without these conditions**, and specifically not for a catalog
   with a different files-to-mutants ratio; §6 explains why that ratio is the dominant variable.
 
@@ -160,6 +157,10 @@ Keep the mechanism and the measured trap; the *procedure* for obtaining an id no
   cannot, so the pre-flight is clean and the rule has to be written down instead.
 - It degrades safely (`IMPRECISE`/`ERROR`, never a false `KILLED`/`SURVIVED`) — the cost is a wasted
   review round, not a wrong verdict.
+- Under `routes`, code-mutant additionally refuses `narrowTo: "names"` for a mutant whose command
+  runs the opt-in `playwright` route, and any per-mutant `narrowCommand` for every mutant (a config
+  with an opt-in route cannot attest it): `canary-not-established`, and `validate` reports
+  `opt-in-unattested`. Node and Vitest mutants are not refused for `narrowTo`.
 
 ### §5 The env-gate list, and how to re-derive it
 
@@ -265,12 +266,13 @@ Two consequences worth knowing before filing a verdict:
 - A mutant that declares **neither** `expectFail` nor `expectPass` does not map to "nothing" and
   does not map to the whole suite: in counted mode `planNarrowing` **throws**
   (`cannot narrow without at least one entry in expectFail or expectPass`). Only `learn` mode falls
-  back to `baselineCommand`, i.e. `suite.ts --all` (typecheck, the whole node suite, the whole
-  Vitest suite).
+  back to the composite of the non-opt-in routes' `baselineCommand`s (the typecheck and the whole
+  node suite, the whole Vitest suite); the opt-in `playwright` route never runs there.
 - `harness/mutation/config.json` therefore has **no scope list to maintain**. `tests/run.mjs`
   auto-discovers `tests/*.test.mjs` and Vitest its `include`, so a new test file is inside
-  `baselineCommand` the moment it exists, and inside `{tests}` the moment a mutant names it. A
-  Playwright spec is inside `{tests}` only: no baseline runs a browser.
+  a route's `baselineCommand` the moment it exists, and inside `{tests}` the moment a mutant names
+  it. A Playwright spec is inside `{tests}` only (the route is opt-in, and no baseline runs a
+  browser); the `routes[].tests` globs must still mirror each runner's own discovery.
 
 **§5.2 The recipe.** The skip count is host- and gate-dependent — re-derive it, don't trust a fixed
 number (13 at measurement time, per §1):
@@ -363,11 +365,12 @@ reason this section exists rather than living beside the values.
 
 | Field | Value | Why |
 |---|---|---|
-| `baselineCommand` | `node harness/mutation/suite.ts --all` | `npm run typecheck`, then the whole node suite (`node tests/run.mjs`), then the whole Vitest suite. The typecheck lives here and only here, so a type break is a build break of the tree under test, never a mutant's verdict. No Playwright: a browser run is opt-in by naming a spec. |
-| `testCommand` | `node harness/mutation/suite.ts {tests}` | The default substitution (no custom `substitute`) passes space-joined single-quoted repo-relative test paths; `suite.ts` routes each to its runner by path. The node row is `node tests/run.mjs <files>`: it runs neither the typecheck nor the `npm test` gate's Vitest step, and the heap cap is single-sourced in `tests/run.mjs`. |
-| `runner` | `custom` | One adapter per config, three runners: `parse.mjs` binds `scoring.ts` to the shipped `node-test` adapter (its `describe >` path recovery and canary, unchanged) and the shipped `vitest` canary, and adds the Vitest and Playwright report parsing those adapters lack for this layout (the shipped `vitest` parser reads the default reporter's console output, not a JSON report). It exports no `scopeOf`/`substitute`/`canNameFilter`, so the node-test defaults apply — file-part scopes and `refsNameFiles: true` — and a mutant's narrow canary stays eligible. Proven here by the `baseline` canary gate and a narrow canary per suite. |
+| `routes` | `node`, `vitest`, `playwright` | One route per runner, in this order (a ref routes to the first match; the `tests` globs do not overlap). Each `tests` mirrors that runner's own discovery. A mutant's command runs only the routes that own one of its scope files. |
+| `routes[node]` | `node-test`; `baselineCommand` `npm run typecheck >&2 && node tests/run.mjs`; `testCommand` `node tests/run.mjs {tests}` | The typecheck lives in this baseline only (`>&2` keeps tsc's output off the stdout the node-test parser reads), so a type break is a build break of the tree under test, never a mutant's verdict; a red one reads `route "node": the command ran ZERO tests`. `testCommand` runs neither the typecheck nor the `npm test` gate's Vitest step, and the heap cap is single-sourced in `tests/run.mjs`. |
+| `routes[vitest]` | `vitest`; commands prefixed `NO_COLOR=1`, `--config web/vitest.config.ts --reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"` | The shipped adapter reads the JSON report from the report dir. Its load-failure reading is the plugin's: a failed file with a message and no assertions. A file that fails in a hook while its assertions pass reads `ERROR` (`unexplained-exit`), not `IMPRECISE` (`compile-error`): it fails closed. The vitest CLI filters by substring and every reported file counts, which can only widen a scope. |
+| `routes[playwright]` | `custom`, `optIn: true`, no `baselineCommand`; `testCommand` pins `--project="${CC_MUTATION_PW_PROJECT:-desktop}"` and writes `$CODE_MUTANT_REPORT_DIR/playwright.json` | Opt-in so the baseline runs no browser. `parse.mjs` returns `files`, so a spec the project does not select makes the narrow baseline non-green. Because it is the config's opt-in route, a per-mutant `narrowCommand` is refused for every mutant and `narrowTo: "names"` for a mutant that runs it (`canary-not-established`; §4). |
 | `isolation` | `in-place` | Full reasoning in §2 above. The conclusion is decided-and-deferred, not infeasible: copy mode *works* here with one `setup` hook and costs ~5% of wall clock at best (§6) — it is rejected on honesty (§2.2's three green-for-the-wrong-reason assertions) and on the ≤8% ceiling (§6), not on feasibility. Also: the suite boots real express+ws servers on ephemeral ports and forks child processes. |
-| `timeoutMs` | `300000` | Sized for the slow case, not the ~89 s (§1, `suite.ts --all`) baseline this host measures — a low-core/Termux host is a multiple of that. It is the deadline only for commands with no unmutated reference — the full-suite baseline, each narrow baseline, the `setup`/`teardown` hooks. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. A mutant run gets the derived `hang` deadline instead (next row), which this value only caps. The suite's own per-file bound is `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`); the 60 s in `tests/run.mjs` is node's **per-test** timeout (§6). |
+| `timeoutMs` | `300000` | Sized for the slow case, not the routed baseline this host measures (§1) — a low-core/Termux host is a multiple of that. It is the deadline only for commands with no unmutated reference — the full-suite baseline, each narrow baseline, the `setup`/`teardown` hooks — and it bounds one measured command: the route driver over every route it runs. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. A mutant run gets the derived `hang` deadline instead (next row), which this value only caps. The suite's own per-file bound is `FILE_KILL_MS` (`tests/hangGuardConfig.mjs`); the 60 s in `tests/run.mjs` is node's **per-test** timeout (§6). |
 | `hang` | `{factor: 10, floorMs: 50000}` | The mutant-run deadline, derived from that scope's narrow baseline. `factor` restates the runner default so the whole derivation is visible here; `floorMs` is raised so a mutant that breaks an awaited event fails as `KILLED` rather than `TIMEOUT`, while staying under node's per-test timeout so a real hang still reads `TIMEOUT`. Bounds, measurements and residue in §7.1. |
 | `baseBranch` | `main` | The real integration branch. Unset, `run`'s empty-diff-vs-base gate reports `not-established` and checks nothing — a branch with no committed work would read as a clean sweep. |
 
@@ -375,10 +378,10 @@ Defaults left alone: `preserve` (in-place copies nothing, and `node_modules` is 
 the primary checkout), `jobs` (clamped to 1 in-place regardless — see §6 for why chasing it wouldn't
 pay even if it weren't), `setup`/`teardown` (nothing to build or reset in-place).
 
-`parse.mjs` exists because no shipped adapter covers three runners in one command. It reuses the
-shipped node-test parser and canary rather than reimplementing them, and it is the one file that
-imports code-mutant's internals: `scoring.ts` stays plugin-free so `npm test`
-(`tests/harness-mutation-suite.test.mjs`) can load it on a machine with no plugins.
+`parse.mjs` is the Playwright route's parser because no shipped adapter reads Playwright's JSON
+report. It imports nothing from code-mutant; `playwright.ts` is plugin-free so `npm test`
+(`tests/harness-mutation-parse.test.mjs`) can load it on a machine with no plugins. The 8 MiB capture
+cap is one budget across every route in a command (stdout, stderr and reports), not one per route.
 
 ### §7.1 The hang floor
 
@@ -441,9 +444,10 @@ on 16 cores — 6.6 s under the floor.
   while the floor binds, and above the floor while `factor × referenceMs` stays under the chain's
   duration. A loaded narrow baseline (6.2 s → 62 s above) lets it finish, so the verdict depends on
   load at both measurements. Re-measure it at whole-suite scope
-  (`narrowCommand: "node harness/mutation/suite.ts --all"` — framed output, so it is counted, where
-  `npm test`'s is not; a type-breaking mutant reads as a build break there), whose reference lifts
-  the deadline to the `timeoutMs` cap.
+  (`expectPass` listing every bare file from
+  `git ls-files 'tests/*.test.mjs' 'web/src/**/*.test.ts' 'web/src/**/*.test.tsx'` — counted, where
+  `npm test`'s output is not, and it runs no typecheck), whose reference lifts the deadline to the
+  `timeoutMs` cap.
 - **A spinning mutant** (a busy loop) is a real hang; `TIMEOUT` is correct. Rewrite the mutant.
 - **A mutant that leaves a child process alive** is ended by the suite's Layer-B leak guard
   (`LEAK_GRACE_MS`, `tests/hangGuardConfig.mjs`), and reads `ERROR`/`IMPRECISE`, not `KILLED`.
