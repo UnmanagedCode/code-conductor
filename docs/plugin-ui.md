@@ -411,7 +411,7 @@ export default defineConfig({
 </html>
 ```
 
-- **Keep that order.** The bridge is a blocking script with no `defer`, first in `<head>`, so cc's theme is on `<html>` before anything paints. `theme-init.js` runs after it and reads what the bridge set.
+- **Keep that order.** The bridge is a blocking script with no `defer`, first in `<head>`, so cc's theme and session width are on `<html>` before anything paints. `theme-init.js` runs after it and reads what the bridge set.
 - **`vite-ignore`** silences Vite 8's build warnings about these three tags (a classic script it cannot bundle, a stylesheet that does not exist at build time). The build copies the tags into `frontend/dist/index.html` unchanged either way, and strips the attribute. Keep it: the build log then shows only real problems.
 - **A file the page links by a relative URL** (a favicon, a manifest, `theme-init.js`) lives in `frontend/public/`, which the build copies to the dist root. A favicon or manifest needs no `vite-ignore`, and needs the CSP directives in [Part 2](#part-2--security-strongly-recommended).
 - Standalone, the two host URLs 404. The backend answers them with a 404, not `index.html`, so it has no SPA fallback ([Serving](#serving-frontenddist-from-the-backend)).

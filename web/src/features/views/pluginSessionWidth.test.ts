@@ -44,9 +44,12 @@ describe('startPluginSessionWidth', () => {
   });
 
   it('does not publish a live drag width', async () => {
-    // Invariant: only the committed setting is published.
+    // Invariant: the publisher performs no write when only the drag store changes (no per-pointermove churn).
     const w = await boot(JSON.stringify({ width: 896, full: false }));
+    const write = vi.spyOn(document.documentElement, 'setAttribute');
     w.sessionWidthDragStore.set({ live: 1500 });
+    expect(write, 'a drag-store change performs no write on <html>').not.toHaveBeenCalled();
     expect(published()).toBe('896px');
+    write.mockRestore();
   });
 });
