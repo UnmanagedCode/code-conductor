@@ -7,7 +7,7 @@ import type { Project, ProjectConventionSelection } from '@/state/types';
 import { apiFetch } from '@shared/http';
 import { refreshProjects } from '@/app/controller';
 import { closeDialog, dialogStore } from './api';
-import { ConventionChecklist, NoConventionsChoice, groupConventions, type Convention } from './ConventionChecklist';
+import { ConventionChecklist, NoConventionsChoice, groupConventions, useConventionPicks, type Convention } from './ConventionChecklist';
 import { FormError } from './FormError';
 import { useOpenKey } from './useOpenKey';
 
@@ -23,8 +23,7 @@ function EditConventionsBody({ project }: { project: Project }) {
   }, [project]);
   const initial = React.useMemo(() => [...new Set(recorded.mode === 'selected' ? recorded.slugs : [])], [recorded]);
   const [catalog, setCatalog] = React.useState<Convention[] | null>(null);
-  const [picked, setPicked] = React.useState<Set<string>>(() => new Set(initial));
-  const [none, setNone] = React.useState(recorded.mode === 'none');
+  const { picked, none, chooseNone, togglePick } = useConventionPicks(initial, recorded.mode === 'none');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
 
@@ -73,15 +72,12 @@ function EditConventionsBody({ project }: { project: Project }) {
           Saving rewrites <code className="font-mono">CONVENTIONS.md</code> in this project's tree and leaves it as an uncommitted change.
         </DialogDescription>
       </DialogHeader>
-      <NoConventionsChoice checked={none} onChange={(on) => { setNone(on); if (on) setPicked(new Set()); }} idPrefix="ec" />
+      <NoConventionsChoice checked={none} onChange={chooseNone} idPrefix="ec" />
       {!catalog && !error && <p className="text-sm text-muted-foreground">Loading conventions…</p>}
       <ConventionChecklist
         groups={groups}
         picked={picked}
-        onToggle={(slug, on) => {
-          if (on) setNone(false);
-          setPicked((s) => { const n = new Set(s); if (on) n.add(slug); else n.delete(slug); return n; });
-        }}
+        onToggle={togglePick}
         idPrefix="ec"
       />
       {added.filter((c) => !!c.scaffold).map((c) => (

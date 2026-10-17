@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 
@@ -70,4 +71,22 @@ export function NoConventionsChoice({ checked, onChange, idPrefix }: {
       </div>
     </div>
   );
+}
+
+/**
+ * The picks and the none choice, kept mutually exclusive: choosing none clears every pick, and picking a
+ * convention clears none.
+ */
+export function useConventionPicks(initialPicked: Iterable<string>, initialNone: boolean) {
+  const [picked, setPicked] = React.useState<Set<string>>(() => new Set(initialPicked));
+  const [none, setNone] = React.useState(initialNone);
+  const chooseNone = (on: boolean) => {
+    setNone(on);
+    if (on) setPicked(new Set());
+  };
+  const togglePick = (slug: string, on: boolean) => {
+    if (on) setNone(false);
+    setPicked((s) => { const n = new Set(s); if (on) n.add(slug); else n.delete(slug); return n; });
+  };
+  return { picked, none, chooseNone, togglePick };
 }

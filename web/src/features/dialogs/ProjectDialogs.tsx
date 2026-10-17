@@ -21,7 +21,7 @@ import { PathInput } from './PathInput';
 import { PlacementFields, usePlacement } from './placement';
 import { messageFor } from './adoptMessages';
 import { useOpenKey } from './useOpenKey';
-import { ConventionChecklist, NoConventionsChoice, groupConventions, type Convention } from './ConventionChecklist';
+import { ConventionChecklist, NoConventionsChoice, groupConventions, useConventionPicks, type Convention } from './ConventionChecklist';
 
 const NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
@@ -51,8 +51,7 @@ function NewProjectBody() {
   const [name, setName] = React.useState('');
   const [systemPath, setSystemPath] = React.useState('');
   const [conventions, setConventions] = React.useState<Convention[]>([]);
-  const [picked, setPicked] = React.useState<Set<string>>(new Set());
-  const [none, setNone] = React.useState(false);
+  const { picked, none, chooseNone, togglePick } = useConventionPicks([], false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [created, setCreated] = React.useState<{ scaffold?: string; gitSkipped?: string } | null>(null);
@@ -140,14 +139,11 @@ function NewProjectBody() {
         </Field>
       )}
       <p className="text-xs text-muted-foreground">Creates <code className="rounded bg-muted px-1 py-0.5 font-mono" data-preview>{preview}</code></p>
-      <NoConventionsChoice checked={none} onChange={(on) => { setNone(on); if (on) setPicked(new Set()); }} idPrefix="np" />
+      <NoConventionsChoice checked={none} onChange={chooseNone} idPrefix="np" />
       <ConventionChecklist
         groups={groups}
         picked={picked}
-        onToggle={(slug, on) => {
-          if (on) setNone(false);
-          setPicked((s) => { const n = new Set(s); if (on) n.add(slug); else n.delete(slug); return n; });
-        }}
+        onToggle={togglePick}
         idPrefix="np"
       />
       <FormError>{error}</FormError>

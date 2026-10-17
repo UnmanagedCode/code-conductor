@@ -39,6 +39,7 @@ const PROJECT = {
   conventions: { mode: 'selected', slugs: INITIAL, unresolved: ['gone'] },
 } as unknown as Project;
 const NONE_PROJECT = { ...PROJECT, conventions: { mode: 'none', unresolved: [] } } as unknown as Project;
+const UNSET_PROJECT = { ...PROJECT, conventions: { mode: 'unset', unresolved: [] } } as unknown as Project;
 const URL = '/api/projects/api/conventions';
 const SAVED = { json: { ok: true, path: '/p/api/CONVENTIONS.md', selection: { mode: 'unset' }, unresolved: [] } };
 
@@ -260,6 +261,22 @@ describe('Edit conventions dialog', () => {
     save();
     await waitFor(() => expect(puts(calls)).toHaveLength(1));
     expect(puts(calls)[0].body).toEqual({ selection: { mode: 'unset' }, expected: { mode: 'none' } });
+  });
+
+  it('an unset project opens with nothing chosen, and choosing none from there saves none', async () => {
+    // Invariant: an unset project opens with neither none nor any convention ticked and nothing to save; ticking none writes none against unset.
+    const calls = stub({ [`PUT ${URL}`]: () => SAVED });
+    render(<DialogsHost />);
+    await open(UNSET_PROJECT);
+    expect(noneBox()).toBeTruthy();
+    expect(noneChecked()).toBe(false);
+    expect(anyConventionChecked()).toBe(false);
+    expect(saveButton().disabled).toBe(true);
+    toggleNone();
+    expect(saveButton().disabled).toBe(false);
+    save();
+    await waitFor(() => expect(puts(calls)).toHaveLength(1));
+    expect(puts(calls)[0].body).toEqual({ selection: { mode: 'none' }, expected: { mode: 'unset' } });
   });
 
   it('reopening after a refused none save starts from the recorded selection, and the next save carries only the new toggle', async () => {
