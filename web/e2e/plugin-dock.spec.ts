@@ -8,7 +8,7 @@ import {
 test.use({ ccOptions: { server: 'plugin-dock' } });
 test.beforeAll(async ({ cc }) => { await installProbes(cc); });
 
-test('the column holds only its mode toggle in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
+test('the column holds its mode toggle and Close right of it in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
 test('Dock to side and Expand to full view never reload a plain plugin\'s page', noReloadFlow(PLAIN));
 test('Dock to side and Expand to full view never reload a keep-alive plugin\'s page', noReloadFlow(KEEP));
 test('Back and Escape from the full view land on Conductor, never on split, and a switch in full costs no entry', fullExitFlow);
@@ -19,4 +19,4 @@ test('a reload restores the split plugin at its width and the page\'s own route,
 test('a session width holds beside the dock', sessionWidthFlow);
 test('the session handles stay clear of the dock and sidebar handles and the scrollbar, and each grab moves only its own box', sessionHandleCoexistFlow);
 test('below md the plugin view is full-page whatever the remembered mode, with no toggle', phoneFlow);
-test('a toast sits below the strip and never covers its toggle', toastClearsToggleFlow);
+test('a toast sits below the strip and never covers its toggle or Close', toastClearsToggleFlow);

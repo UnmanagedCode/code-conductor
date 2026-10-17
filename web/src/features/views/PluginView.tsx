@@ -2,9 +2,10 @@
 // keep-alive frames survive and no mode change moves a frame. Its width is its
 // mode (dockLayout.ts): hidden, a split beside the session, or the whole row —
 // the full view (`#plugin/<id>/<subpath>`), or a split too narrow to fit. Its
-// bar carries the plugin's name and the one full ⇄ split toggle.
+// bar carries the plugin's name, the one full ⇄ split toggle and Close plugin
+// (the switcher's Conductor pick, which hides a keep-alive page and stops nothing).
 import * as React from 'react';
-import { LoaderCircleIcon, Maximize2Icon, MenuIcon, PanelRightIcon, PlugIcon, RotateCwIcon } from 'lucide-react';
+import { LoaderCircleIcon, Maximize2Icon, MenuIcon, PanelRightIcon, PlugIcon, RotateCwIcon, XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSignal, useStore } from '@/state/createStore';
@@ -14,6 +15,7 @@ import { pluginsChangedSignal, pluginsChangeStore } from '@/features/settings/pl
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { RESIZE_HANDLE_CLASS, useResizableWidth } from '@/lib/useResizableWidth';
 import { leaveView, useEscapeToClose } from './ViewShell';
+import { exitToConductor } from './AppSwitcher';
 import { appLabel, catalogStore, hashMirror, overlayStore, pluginFrames, refreshCatalog } from './plugins';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, dockLayout, maxPanel } from './dockLayout';
 import { closeDock, DOCK_WIDTH_STORAGE_KEY, dockFullStore, dockFullView, dockMirror, dockStore, expandDock } from './dock';
@@ -132,6 +134,16 @@ export function PluginView() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">{t.label}</TooltipContent>
+            </Tooltip>
+          )}
+          {shownId && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" aria-label="Close plugin" onClick={exitToConductor}>
+                  <XIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Close plugin</TooltipContent>
             </Tooltip>
           )}
         </header>
