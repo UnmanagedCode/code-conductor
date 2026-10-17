@@ -22,7 +22,7 @@ vi.mock('@/ui/feedback', async (importOriginal) => ({
 
 import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openPruneDialog, openRenameDialog, openStatsDialog, openSummaryDialog } from './api';
-import { routeFetch, type RoutedCall } from '@/test/routeFetch';
+import { held, routeFetch, type RoutedCall } from '@/test/routeFetch';
 import { applySessionTitle } from '@/app/sessionActions';
 import { refreshInstances } from '@/app/controller';
 import { toast } from '@/ui/feedback';
@@ -178,6 +178,111 @@ describe('session summary', () => {
     fireEvent.click(tier('title'));
     expect(screen.queryByRole('button', { name: /Use as session title/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'Generate summary' })).toBeTruthy();
+  });
+});
+
+describe('session summary — ask', () => {
+  const SUMMARY_GET = { 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data: { medium: { summary: 'Recap text.', isStale: false } } } }) };
+  const input = () => screen.getByRole('textbox', { name: 'Question about this session' }) as HTMLInputElement;
+  const askButton = () => screen.getByRole('button', { name: /^Ask$/ }) as HTMLButtonElement;
+  const pairs = () => Array.from(document.querySelectorAll('[data-qa]'));
+  const openIt = async () => {
+    act(() => openSummaryDialog('s1'));
+    await screen.findByText('Recap text.');
+  };
+  const type = (v: string) => fireEvent.change(input(), { target: { value: v } });
+
+  it('asking posts only the trimmed question and renders the markdown answer; a second question appends and the first stays', async () => {
+    // Invariant: each request carries only its own trimmed question (no history), the answer renders through the markdown pipeline with its cost, and earlier pairs stay listed in order.
+    const calls = routeFetch({
+      ...SUMMARY_GET,
+      'POST /api/sessions/s1/ask': (b) => ({ json: { ok: true, answer: `Answer to **${b.question}**`, costUsd: 0.002, usage: {} } }),
+    });
+    render(<DialogsHost />);
+    await openIt();
+    type('  a  ');
+    fireEvent.click(askButton());
+    await waitFor(() => expect(document.querySelector('[data-qa-answer] strong')?.textContent).toBe('a'));
+    expect(document.querySelector('[data-qa-cost]')?.textContent).toBe('Cost: $0.0020');
+    type('b');
+    fireEvent.submit(input().form!);
+    await waitFor(() => expect(pairs()).toHaveLength(2));
+    await waitFor(() => expect(pairs()[1].textContent).toContain('Answer to b'));
+    expect(pairs()[0].textContent).toContain('Answer to a');
+    expect(writes(calls).map((c) => c.body)).toEqual([{ question: 'a' }, { question: 'b' }]);
+  });
+
+  it('an empty or whitespace question cannot be sent', async () => {
+    // Invariant: Ask is disabled for an empty or whitespace-only draft, and a form submit then posts nothing.
+    const calls = routeFetch({ ...SUMMARY_GET });
+    render(<DialogsHost />);
+    await openIt();
+    expect(askButton().disabled).toBe(true);
+    type('   ');
+    expect(askButton().disabled).toBe(true);
+    fireEvent.submit(input().form!);
+    await Promise.resolve();
+    expect(writes(calls)).toHaveLength(0);
+    expect(pairs()).toHaveLength(0);
+    type('real');
+    expect(askButton().disabled).toBe(false);
+  });
+
+  it('reopening resets the Q&A list and the draft, and nothing reaches localStorage', async () => {
+    // Invariant: closing the dialog discards the Q&A list and the draft; the next ask sends only its own question; no localStorage write and no hash change.
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    const hash = location.hash;
+    const calls = routeFetch({
+      ...SUMMARY_GET,
+      'POST /api/sessions/s1/ask': () => ({ json: { ok: true, answer: 'Done.', costUsd: null, usage: {} } }),
+    });
+    render(<DialogsHost />);
+    await openIt();
+    type('first');
+    fireEvent.click(askButton());
+    await waitFor(() => expect(document.querySelector('[data-qa-answer]')).not.toBeNull());
+    type('unsent draft');
+    act(() => closeDialog('summary'));
+    await openIt();
+    expect(pairs()).toHaveLength(0);
+    expect(input().value).toBe('');
+    type('second');
+    fireEvent.click(askButton());
+    await waitFor(() => expect(writes(calls)).toHaveLength(2));
+    expect(writes(calls)[1].body).toEqual({ question: 'second' });
+    expect(setItem).not.toHaveBeenCalled();
+    expect(location.hash).toBe(hash);
+  });
+
+  it('closing while an answer is pending aborts the request and the late answer appears nowhere', async () => {
+    // Invariant: closing the dialog aborts the in-flight ask, and a late answer for it never shows in the dialog, including after a reopen.
+    const h = held();
+    const calls = routeFetch({ ...SUMMARY_GET, 'POST /api/sessions/s1/ask': () => h.answer });
+    render(<DialogsHost />);
+    await openIt();
+    type('slow');
+    fireEvent.click(askButton());
+    await waitFor(() => expect(document.querySelector('[data-qa-pending]')).not.toBeNull());
+    act(() => closeDialog('summary'));
+    expect(writes(calls)[0].signal?.aborted).toBe(true);
+    h.release({ json: { ok: true, answer: 'LATE ANSWER', costUsd: null, usage: {} } });
+    await openIt();
+    expect(pairs()).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('LATE ANSWER');
+  });
+
+  it('a failed question shows its error on that pair and Ask works again', async () => {
+    // Invariant: a refused ask shows the server's message on its own pair, keeps the question, and leaves Ask usable for the next draft.
+    routeFetch({ ...SUMMARY_GET, 'POST /api/sessions/s1/ask': () => ({ status: 500, json: { error: 'boom' } }) });
+    render(<DialogsHost />);
+    await openIt();
+    type('q1');
+    fireEvent.click(askButton());
+    await waitFor(() => expect(document.querySelector('[data-qa-error]')?.textContent).toContain('boom'));
+    expect(pairs()[0].textContent).toContain('q1');
+    expect(askButton().disabled).toBe(true);
+    type('q2');
+    expect(askButton().disabled).toBe(false);
   });
 });
 

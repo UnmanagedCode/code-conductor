@@ -13,6 +13,14 @@
 //     backend row's injected env reached the child).
 //   FAKE_SUMMARIZE_STDIN_FILE — path to dump the drained stdin (the prompt) to,
 //     so a test can assert which prompt template was sent.
+//   FAKE_SUMMARIZE_SYSTEM_PROMPT_OUT — path to write {path, content} of the
+//     file named by `--system-prompt-file` (read while the child runs, before
+//     the caller removes it).
+//   FAKE_SUMMARIZE_USAGE — a JSON object emitted as the envelope's `usage`.
+//   FAKE_SUMMARIZE_EXIT_CODE — exit with this code (stderr "fake failure") and
+//     no envelope.
+//   FAKE_SUMMARIZE_HANG=1 — after draining stdin, never answer; with
+//     FAKE_SUMMARIZE_PID_FILE the child's pid is written first.
 // Name-agnostic: this same script also stands in for a backend's WRAPPER command
 // (named by that row's `template`), since it only reacts to argv/stdin/env, never
 // to which binary name invoked it.
@@ -44,6 +52,24 @@ if (process.env.FAKE_SUMMARIZE_STDIN_FILE) {
   await fs.writeFile(process.env.FAKE_SUMMARIZE_STDIN_FILE, stdinLines.join('\n')).catch(() => {});
 }
 
+const spfIdx = args.indexOf('--system-prompt-file');
+if (process.env.FAKE_SUMMARIZE_SYSTEM_PROMPT_OUT && spfIdx !== -1) {
+  const file = args[spfIdx + 1];
+  const content = await fs.readFile(file, 'utf8').catch(() => null);
+  await fs.writeFile(process.env.FAKE_SUMMARIZE_SYSTEM_PROMPT_OUT, JSON.stringify({ path: file, content })).catch(() => {});
+}
+
+if (process.env.FAKE_SUMMARIZE_HANG === '1') {
+  if (process.env.FAKE_SUMMARIZE_PID_FILE) await fs.writeFile(process.env.FAKE_SUMMARIZE_PID_FILE, String(process.pid));
+  setInterval(() => {}, 1 << 30);
+  await new Promise(() => {});
+}
+
+if (process.env.FAKE_SUMMARIZE_EXIT_CODE) {
+  process.stderr.write('fake failure\n');
+  process.exit(Number(process.env.FAKE_SUMMARIZE_EXIT_CODE));
+}
+
 // Write cwd to the designated file (for test assertion).
 if (process.env.FAKE_SUMMARIZE_CWD_OUT) {
   await fs.writeFile(process.env.FAKE_SUMMARIZE_CWD_OUT, process.cwd()).catch(() => {});
@@ -73,5 +99,6 @@ process.stdout.write(JSON.stringify({
   session_id: sessionId ?? 'fake-session-id',
   cost_usd: 0.0001,
   total_cost_usd: 0.0001,
+  ...(process.env.FAKE_SUMMARIZE_USAGE ? { usage: JSON.parse(process.env.FAKE_SUMMARIZE_USAGE) } : {}),
 }) + '\n');
 process.exit(0);

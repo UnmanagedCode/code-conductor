@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { setSummary, getSummaries } from '../src/sessionStore.ts';
 import { orchStoreRoot, findSessionLocation, encodeCwd, localPlace} from '../src/projects.ts';
-import { summarySpawnDir } from '../src/summarize.ts';
+import { summarySpawnDir } from '../src/sessionOneShot.ts';
 import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -225,7 +225,7 @@ test('POST title sends the title prompt (not the summary template) and persists 
 
     const prompt = await fs.readFile(stdinFile, 'utf8');
     assert.match(prompt, /Name the CURRENT end goal/);
-    assert.doesNotMatch(prompt, /Summarize the following Claude Code session/);
+    assert.doesNotMatch(prompt, /Summarize the Claude Code session/);
     // The checkout-derived project name is passed as a labelled hint (the
     // conversation itself is the primary source — see projectNameHint in
     // src/summarize.ts), not appended to the model's output after the fact.
@@ -256,7 +256,7 @@ test('POST short still sends the summary template, not the title prompt (mirror 
     assert.equal(r.status, 200);
 
     const prompt = await fs.readFile(stdinFile, 'utf8');
-    assert.match(prompt, /Summarize the following Claude Code session/);
+    assert.match(prompt, /Summarize the Claude Code session/);
     assert.doesNotMatch(prompt, /Name the CURRENT end goal/);
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN;

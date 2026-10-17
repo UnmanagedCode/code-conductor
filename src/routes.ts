@@ -82,7 +82,7 @@ import { applySessionViewed } from './sessionViewed.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { getSummaries, setSummary, isArchived, setSegmentArchived, loadSessions, resolveOwner } from './sessionStore.ts';
 import { resolveBacking } from './sessionLineage.ts';
-import { generateSummary, countMessages } from './summarize.ts';
+import { generateSummary, askSession, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
 import type { ClaudeAuthStatus } from './claudeAuthStatus.ts';
 import type { ClaudeLoginFlow } from './claudeLogin.ts';
@@ -1319,6 +1319,24 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       // (no field on TierRecord) and absent from the GET response.
       res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount), costUsd });
     } catch (e) { next(e); }
+  });
+
+  // Ask a free-form question about a session via a one-shot Fast-tier call.
+  // Stores nothing — no summary record, no broadcast; the answer exists only in
+  // this response. A client disconnect aborts the call and kills the child.
+  r.post('/sessions/:sessionId/ask', async (req, res, next) => {
+    try {
+      const { sid, backing } = await sidParam(req.params.sessionId);
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw httpError(404, 'session not found');
+      const abort = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+      const { answer, costUsd, usage } = await askSession(backing, hit.place, jsonBody(req).question, abort.signal);
+      res.json({ ok: true, sessionId: sid, answer, costUsd, usage });
+    } catch (e) {
+      if ((e as { name?: unknown })?.name === 'AbortError') return; // the client is gone
+      next(e);
+    }
   });
 
   // Root owner → the projects it has ever had a worker spawned into, each with
