@@ -126,10 +126,12 @@ export function parsePlaywrightReport(
 
   const first = report.errors[0];
   const firstError = first ? truncateBytes(first.message ?? first.value ?? first.stack ?? 'unknown error', FIRST_ERROR_MAX_BYTES) : null;
-  out.compileError = report.errors.length > 0;
+  // "No tests found" is a selection (the project does not run the spec), not a build break.
+  const noTests = (e: PwReport['errors'][number]): boolean => /^Error: No tests found/.test(e.message ?? '');
+  out.compileError = report.errors.some((e) => !noTests(e));
   out.files = files;
   out.counts = { ...base, errors: report.errors.length, firstError };
-  if (firstError !== null && /^Error: No tests found/.test(first.message ?? '')) {
+  if (report.errors.length > 0 && report.errors.every(noTests)) {
     out.diagnostic = `Playwright found no test to run: a spec outside project ${project}'s testMatch/testIgnore `
       + 'in web/playwright.config.ts is not selected; set CC_MUTATION_PW_PROJECT to a project that runs it';
   } else {

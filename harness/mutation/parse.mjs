@@ -5,8 +5,9 @@
 // file imports nothing from the plugin.
 //
 // No scopeOf, substitute, canNameFilter or testFilePatterns is exported, on
-// purpose: the defaults keep a mutant's narrow canary eligible (an own scopeOf
-// would push every canary back to baseline scope), and the route's `tests`
+// purpose. Under `routes`, a custom parser that exports scopeOf has refs that
+// are not files, so code-mutant refuses to route it at all (loadHarness); the
+// other defaults keep a mutant's narrow canary eligible. The route's `tests`
 // globs in config.json are its file patterns.
 
 import { canaryFor, parsePlaywrightReport, pwProject, PW_REPORT_FILE } from './playwright.ts';

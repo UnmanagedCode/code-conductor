@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   parsePlaywrightReport, canaryFor, FIRST_ERROR_MAX_BYTES, pwProject, DEFAULT_PW_PROJECT, PW_REPORT_FILE,
@@ -18,6 +19,15 @@ const raw = (name) => fs.readFileSync(path.join(FIX, name), 'utf8');
 const load = (name) => JSON.parse(raw(name));
 const read = (report, project = 'desktop', exitCode = 1) =>
   parsePlaywrightReport(JSON.stringify(report), { cwd: '/repo', project, exitCode });
+// Runs fn with CC_MUTATION_PW_PROJECT set to `value` (unset when undefined), restoring the ambient value.
+const withProject = (value, fn) => {
+  const had = Object.hasOwn(process.env, 'CC_MUTATION_PW_PROJECT');
+  const old = process.env.CC_MUTATION_PW_PROJECT;
+  if (value === undefined) delete process.env.CC_MUTATION_PW_PROJECT; else process.env.CC_MUTATION_PW_PROJECT = value;
+  try { return fn(); } finally {
+    if (had) process.env.CC_MUTATION_PW_PROJECT = old; else delete process.env.CC_MUTATION_PW_PROJECT;
+  }
+};
 const config = JSON.parse(fs.readFileSync(path.join(REPO, 'harness', 'mutation', 'config.json'), 'utf8'));
 const route = (name) => config.routes.find((r) => r.name === name);
 
@@ -41,6 +51,38 @@ test('Playwright: counts, project-prefixed repo-relative ids and the reported fi
     { passed: 1, failed: 0, ran: 1, files: ['web/e2e/legacy/deep.spec.ts'] });
 });
 
+// Pins: a flaky Playwright result (passed on retry) counts as passed, not failed. Synthetic report: no captured fixture has a flaky test.
+test('Playwright: a flaky result counts as passed', () => {
+  const report = {
+    config: { rootDir: '/repo/web/e2e' }, errors: [],
+    suites: [{ title: 'flaky.spec.ts', file: 'flaky.spec.ts', specs: [
+      { title: 'retried ok', tests: [{ projectName: 'desktop', status: 'flaky' }] },
+      { title: 'plain ok', tests: [{ projectName: 'desktop', status: 'expected' }] },
+    ] }],
+  };
+  const r = read(report, 'desktop', 0);
+  assert.deepEqual({ passed: r.passed, failed: r.failed, skipped: r.skipped, ran: r.ran, failedTests: r.failedTests },
+    { passed: 2, failed: 0, skipped: 0, ran: 2, failedTests: [] });
+});
+
+// Pins: spec paths are relativised against cwd's realpath too, so a symlinked cwd still resolves.
+test('Playwright: paths resolve when cwd is a symlink to the real root the report names', () => {
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-pwparse-')));
+  try {
+    const link = path.join(tmp, 'link');
+    fs.mkdirSync(path.join(tmp, 'real', 'web', 'e2e'), { recursive: true });
+    fs.symlinkSync(path.join(tmp, 'real'), link);
+    const report = load('pw-desktop-pass.json');
+    report.config.rootDir = path.join(tmp, 'real', 'web', 'e2e');
+    const r = parsePlaywrightReport(JSON.stringify(report), { cwd: link, project: 'desktop', exitCode: 0 });
+    assert.deepEqual(r.files, ['web/e2e/legacy/deep.spec.ts']);
+    assert.equal(r.ran, 1);
+    assert.equal(r.diagnostic, null);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // Pins: a load error is a compile error that ran nothing, with a bounded first error.
 test('Playwright: a load error is a compile error with ran 0 and a bounded firstError', () => {
   const r = read(load('pw-desktop-load.json'));
@@ -53,11 +95,11 @@ test('Playwright: a load error is a compile error with ran 0 and a bounded first
 
 // Pins: parse() reads the report from context.reports and relativises against context.cwd.
 test('parse() reads playwright.json from context.reports and the paths against context.cwd', () => {
-  const ok = binding.parse('', '', 1, { cwd: '/repo', reports: { [PW_REPORT_FILE]: raw('pw-desktop-fail.json') } });
+  const ok = withProject(undefined, () => binding.parse('', '', 1, { cwd: '/repo', reports: { [PW_REPORT_FILE]: raw('pw-desktop-fail.json') } }));
   assert.equal(ok.failed, 2);
   assert.equal(ok.failedTests[0].id, 'web/e2e/mixed.spec.ts::desktop > top fails');
   // A different root puts the specs outside it: nothing reads as a pass.
-  const moved = binding.parse('', '', 1, { cwd: '/elsewhere', reports: { [PW_REPORT_FILE]: raw('pw-desktop-fail.json') } });
+  const moved = withProject(undefined, () => binding.parse('', '', 1, { cwd: '/elsewhere', reports: { [PW_REPORT_FILE]: raw('pw-desktop-fail.json') } }));
   assert.equal(moved.ran, 0);
   assert.deepEqual(moved.files, []);
 });
@@ -95,13 +137,19 @@ test('a test whose projectName is not the pinned project reads ran 0', () => {
   assert.match(r.diagnostic, /project desktop, not phone/);
 });
 
-// Pins: "No tests found" is reported with a pointer at the project selection, and the spec is absent from files.
-test('a "No tests found" report names CC_MUTATION_PW_PROJECT', () => {
+// Pins: "No tests found" is not a compile break; it keeps ran 0, an empty files list and the project diagnostic.
+test('a "No tests found" report names CC_MUTATION_PW_PROJECT and is not a compile error', async (t) => {
   const report = { config: { rootDir: '/repo/web/e2e' }, suites: [], errors: [{ message: 'Error: No tests found.\nMake sure that arguments are regular expressions' }] };
   const r = read(report);
+  assert.equal(r.compileError, false);
   assert.equal(r.ran, 0);
   assert.deepEqual(r.files, []);
   assert.match(r.diagnostic, /CC_MUTATION_PW_PROJECT/);
+  // A real load error beside it is still a compile break.
+  await t.test('another error beside it still flags a compile error', () => {
+    const both = { ...report, errors: [...report.errors, { message: 'Error: Cannot find module x' }] };
+    assert.equal(read(both).compileError, true);
+  });
 });
 
 // Pins: firstError is exactly the first FIRST_ERROR_MAX_BYTES bytes, cut on a character boundary.
@@ -169,6 +217,34 @@ test('parse.mjs binds the report file and keeps the narrow canary eligible', () 
   assert.equal(binding.scopeOf, undefined);
 });
 
+// Pins: REQUIRED_FLAGS is the exact flag assignment the playwright route's testCommand passes.
+test('parse.mjs REQUIRED_FLAGS is a substring of the playwright route\'s testCommand', () => {
+  assert.match(binding.REQUIRED_FLAGS, /^PLAYWRIGHT_JSON_OUTPUT_FILE=/);
+  assert.ok(route('playwright').testCommand.includes(binding.REQUIRED_FLAGS), route('playwright').testCommand);
+});
+
+// Pins: parse() and canary() both read the pinned project from CC_MUTATION_PW_PROJECT.
+test('the binding pins parse() and canary() to CC_MUTATION_PW_PROJECT', async (t) => {
+  await t.test('canary', () => {
+    withProject('phone', () => {
+      const c = binding.canary('', { file: 'web/e2e/a.spec.ts' });
+      assert.equal(c.testId, 'web/e2e/a.spec.ts::phone > code_mutant_canary_fires');
+      assert.equal(c.matches({ name: 'phone > code_mutant_canary_fires' }), true);
+      assert.equal(c.matches({ name: 'desktop > code_mutant_canary_fires' }), false);
+    });
+    withProject(undefined, () => {
+      assert.equal(binding.canary('', { file: 'web/e2e/a.spec.ts' }).testId, 'web/e2e/a.spec.ts::desktop > code_mutant_canary_fires');
+    });
+  });
+  await t.test('parse', () => {
+    const ctx = { cwd: '/repo', reports: { [PW_REPORT_FILE]: raw('pw-desktop-fail.json') } };
+    const phone = withProject('phone', () => binding.parse('', '', 1, ctx));
+    assert.equal(phone.ran, 0);
+    assert.equal(phone.counts.project, 'phone');
+    assert.equal(withProject('desktop', () => binding.parse('', '', 1, ctx)).ran, 4);
+  });
+});
+
 // Pins: the config keeps the typecheck out of every mutant command, and Playwright an opt-in route.
 test('config.json: routes, the typecheck placement and the single opt-in custom route', async (t) => {
   await t.test('no route\'s testCommand typechecks or runs the npm test gate', () => {
@@ -193,6 +269,26 @@ test('config.json: routes, the typecheck placement and the single opt-in custom 
     assert.ok(pw.testCommand.includes(`$CODE_MUTANT_REPORT_DIR/${PW_REPORT_FILE}`));
     assert.ok(pw.testCommand.includes(`:-${DEFAULT_PW_PROJECT}}`));
     assert.ok(pw.testCommand.includes('{tests}'));
+  });
+  await t.test('each route\'s tests globs match its own runner\'s files and no other route\'s', () => {
+    // Mirrors lib/glob.mjs of code-mutant (`*` within a segment, `**/` over zero or more
+    // segments); the plugin is not imported so this test needs no plugin installed.
+    const toRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .split('**/').join('\0').split('*').join('[^/]*').split('\0').join('(?:.*/)?') + '$');
+    const owns = (name, file) => route(name).tests.some((g) => toRe(g).test(file));
+    const samples = {
+      node: ['tests/x.test.mjs'],
+      vitest: ['web/src/x.test.ts', 'web/src/x.test.tsx', 'web/src/a/b/x.test.ts', 'web/src/a/b/x.test.tsx'],
+      playwright: ['web/e2e/x.spec.ts', 'web/e2e/flows/x.spec.ts'],
+    };
+    for (const [name, files] of Object.entries(samples)) {
+      for (const file of files) {
+        for (const r of config.routes) assert.equal(owns(r.name, file), r.name === name, `${r.name} vs ${file}`);
+      }
+    }
+    for (const file of ['tests/sub/x.test.mjs', 'tests/helpers.mjs', 'web/src/main.tsx', 'web/e2e/harness/boot.ts', 'src/x.ts']) {
+      for (const r of config.routes) assert.equal(owns(r.name, file), false, `${r.name} vs ${file}`);
+    }
   });
   await t.test('exactly one route is custom', () => {
     assert.equal(config.routes.filter((r) => r.runner === 'custom').length, 1);

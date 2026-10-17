@@ -62,8 +62,10 @@ mutates, to the first route whose `tests` globs match. Commands run from the rep
 | `playwright` (`optIn`) | `web/e2e/**/*.spec.ts` | `custom` (`parse.mjs`) | `npx playwright test --config web/playwright.config.ts --project="${CC_MUTATION_PW_PROJECT:-desktop}" --reporter=json {tests}`, report to `$CODE_MUTANT_REPORT_DIR/playwright.json` |
 
 A ref no route owns is refused: the mutant reads `ERROR` (`plan-failed`) naming every route's
-patterns. A test file a route's runner did not report is refused too: the narrow baseline is non-green
-and the mutant reads `ERROR` (`scope-non-green`), never a verdict. Mixing routes in one mutant's refs
+patterns. A scope file its route's runner did not report is refused too: when the runner reported other
+files, the narrow baseline is non-green and the mutant reads `ERROR` (`scope-non-green`); when it
+reported none, the narrow baseline "ran ZERO tests" and the mutant reads `ERROR` (`scope-empty`)
+with the parser's diagnostic. Never a verdict. Mixing routes in one mutant's refs
 is fine: each route gets its own files and the counts are summed.
 
 **Test ids**, all repo-relative — take them from a `--learn` pass, never hand-construct one:
@@ -107,15 +109,17 @@ runs last in the spec's worker — the root `beforeAll` runs once. Two consequen
 shared by several projects would fail the canary, and a real kill, once per project. So:
 
 - A spec the project does not run (`*.android.spec.ts` under `desktop` or `phone`; `live.spec.ts`
-  under `phone` or `android`) is refused: the narrow baseline is non-green (`scope-non-green`) and the diagnostic points at
-  `CC_MUTATION_PW_PROJECT` and the project's `testMatch`/`testIgnore` in `web/playwright.config.ts`.
+  under `phone` or `android`) is refused: Playwright reports "No tests found", which the parser does not read as a compile break,
+  so the mutant reads `ERROR` (`scope-empty`) with the detail `route "playwright": the command ran
+  ZERO tests … Playwright found no test to run: a spec outside project <P>'s testMatch/testIgnore in
+  web/playwright.config.ts is not selected; set CC_MUTATION_PW_PROJECT to a project that runs it`.
+  (A spec beside others the project does run reads `scope-non-green` instead.)
 - A test that skips itself outside its project reads *skipped* under the default, so a mutant
   touching only phone- or android-only behaviour reads `SURVIVED`. The honest reading is **"scored
   under desktop only"**, not "uncovered": re-run the whole invocation with
   `CC_MUTATION_PW_PROJECT=phone` (or `android`) to score it.
-- The project is a measuring condition code-mutant's journal cannot see (the parser records it in the
-  result's `counts.project`). **Never `--resume` across a change of
-  `CC_MUTATION_PW_PROJECT`**; start a fresh run.
+- The project is a measuring condition code-mutant's journal cannot see. **Never `--resume` across a
+  change of `CC_MUTATION_PW_PROJECT`**; start a fresh run.
 
 ## Four project-specific rules
 
@@ -141,14 +145,14 @@ shared by several projects would fail the canary, and a real kill, once per proj
    re-run `--learn` for the inherited mutants before reading a verdict**, and re-anchor from the
    observed set rather than editing the mutant.
 
-2. **No `narrowCommand`, and no `narrowTo: "names"` on a mutant that names a Playwright spec.**
-   `config.json` has an opt-in route, so a baseline-scope canary cannot stand in for a command that
-   runs it: code-mutant refuses `narrowTo: "names"` when the mutant's command runs an opt-in route
-   (here: a ref naming a `web/e2e/**/*.spec.ts`), and a per-mutant `narrowCommand` for every mutant,
-   because a config with any opt-in route cannot attest it. Both read `ERROR`
-   (`canary-not-established`); `validate` reports `opt-in-unattested`. code-mutant does not refuse
-   `narrowTo: "names"` for a Node or Vitest mutant; `tests/run.mjs` still misreads the node
-   route's name filter as file paths (RATIONALE §4), so file granularity stays the policy default.
+2. **No `narrowCommand`; `narrowTo: "names"` is downgraded to file granularity.** `config.json`
+   has an opt-in route, and the custom `playwright` route cannot filter by test name, so the routed
+   adapter cannot either: `narrowTo: "names"` is downgraded to file granularity for every mutant
+   (node and Vitest included), and `validate` warns `narrow-downgraded`. Nothing is refused. A
+   per-mutant `narrowCommand` is refused for every mutant, because a baseline-scope canary cannot
+   attest a command a config with an opt-in route narrows by hand: the mutant reads `ERROR`
+   (`canary-not-established`) and `validate` reports `opt-in-unattested`. Omit both; file
+   granularity is the default.
 
 3. **Env-gated opt-in tests are outside mutation proof.** Any test the suite skips because an opt-in
    env flag is unset is invisible to every run here — `baselineCommand` sets no opt-in flag. Mutate
@@ -213,7 +217,8 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
   `TIMEOUT` means the run outlived the deadline in force: a real hang, or a correctly failing
   mutant whose chain of `waitFor` expiries is longer than that deadline. RATIONALE.md §7.1 lists
   the shapes; re-measure the second at whole-suite scope with `expectPass` listing every bare test file:
-  `git ls-files 'tests/*.test.mjs' 'web/src/**/*.test.ts' 'web/src/**/*.test.tsx'`. That scope runs
+  `git ls-files ':(glob)tests/*.test.mjs' ':(glob)web/src/**/*.test.ts' ':(glob)web/src/**/*.test.tsx'`
+  (the `:(glob)` magic keeps top-level `web/src/*.test.ts` files in). That scope runs
   the node and Vitest suites and no typecheck, and a survivor confirmed there is a survivor of the
   whole suite.
 
