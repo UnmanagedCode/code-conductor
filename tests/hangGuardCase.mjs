@@ -27,7 +27,9 @@ import { killDescendants } from './procTree.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const RUNNER = path.join(__dirname, 'run.mjs');
-export const fixture = name => path.join(__dirname, 'fixtures', 'hang', `${name}.fixture.mjs`);
+// An absolute path is taken as-is, so a case can run a fixture through a path of
+// its own making (tests/runner-quiet.test.mjs reaches one through a symlink).
+export const fixture = name => path.isAbsolute(name) ? name : path.join(__dirname, 'fixtures', 'hang', `${name}.fixture.mjs`);
 
 // Squeezed deadlines shared by every case except where a test overrides one.
 export const LEAK_GRACE = 1500;

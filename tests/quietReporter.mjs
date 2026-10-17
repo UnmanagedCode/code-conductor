@@ -27,7 +27,11 @@
 //     (`data.file === undefined`) come last: test:plan, the `ℹ` count
 //     diagnostics, then the run-level test:summary, on which spec prints its
 //     `failing tests:` block.
+//   * Through a symlink, one file arrives under TWO spellings: enqueue, dequeue,
+//     complete, plan and summary carry the path given to run(); start, pass, fail,
+//     stdout and stderr carry its realpath. Hence #key.
 import { Transform, Readable } from 'node:stream';
+import { realpathSync } from 'node:fs';
 import { spec } from 'node:test/reporters';
 
 export const isVerbose = (env = process.env) => env.CC_TEST_VERBOSE === '1';
@@ -42,15 +46,29 @@ const DISPLAY = new Set(['test:start', 'test:pass', 'test:fail', 'test:stdout', 
 //            the buffer is KEPT for takeUnshown();
 //   dumped — takeUnshown() printed its buffer: later events are forwarded.
 export class QuietFilter extends Transform {
-  #files = new Map(); // file -> { state, events[] }, in first-seen order
+  #files = new Map(); // realpath -> { state, events[] }, in first-seen order
+  #keys = new Map();  // spelling as received -> realpath
+
+  // Both spellings resolve to the realpath, the identity node's own display
+  // events already use. A path that no longer resolves keeps its spelling: the
+  // file was there when node reported it, so this is only a file deleted mid-run.
+  #key(file) {
+    let key = this.#keys.get(file);
+    if (key === undefined) {
+      try { key = realpathSync(file); } catch { key = file; }
+      this.#keys.set(file, key);
+    }
+    return key;
+  }
 
   constructor() {
     super({ objectMode: true });
   }
 
   #entry(file) {
-    let e = this.#files.get(file);
-    if (!e) this.#files.set(file, e = { state: 'held', events: [] });
+    const key = this.#key(file);
+    let e = this.#files.get(key);
+    if (!e) this.#files.set(key, e = { state: 'held', events: [] });
     return e;
   }
 

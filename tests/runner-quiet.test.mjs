@@ -10,7 +10,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
-import { FAST, runGuard } from './hangGuardCase.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { FAST, fixture, runGuard } from './hangGuardCase.mjs';
 
 const QUIET_PASS_MARKERS = [/quiet-pass: stdout marker/, /quiet-pass: stderr marker/];
 const QUIET_FAIL_MARKERS = [
@@ -73,4 +76,34 @@ test('CC_TEST_VERBOSE=1 restores the full spec report', async () => {
   assert.match(r.out, /✔ quiet-pass: writes to both streams/);
   for (const marker of QUIET_PASS_MARKERS) assert.match(r.out, marker);
   assert.doesNotMatch(r.out, /quiet-reporter:/, 'a verbose run held nothing back and must not say it did');
+});
+
+test('a passing file reached through a symlinked path stays quiet', async (t) => {
+  // node names one file two ways when its path runs through a symlink: the
+  // enqueue/dequeue/complete/plan/summary events carry the path as given to
+  // run(), the start/pass/stdout/stderr events its realpath. The quiet reporter
+  // must treat both as ONE file, or the summary never reaches the entry holding
+  // the output and the end of the run prints it all. A symlinked workspace root,
+  // macOS's /tmp and a Windows junction all produce this shape.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-quiet-link-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const link = path.join(tmp, 'hang');
+  try {
+    fs.symlinkSync(path.dirname(fixture('quiet-pass')), link, 'dir');
+  } catch (e) {
+    if (!['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP'].includes(e.code)) throw e;
+    t.skip(`this host cannot create a directory symlink (${e.code})`);
+    return;
+  }
+  const r = await runGuard(path.join(link, 'quiet-pass.fixture.mjs'));
+  assert.equal(r.code, 0, `the quiet-pass run should be green:\n${r.out}`);
+  assert.deepEqual(passLines(r.out), [], 'a passing file printed its per-test lines');
+  assert.doesNotMatch(r.out, /^\s*▶/m, 'a passing file printed its describe header');
+  for (const marker of QUIET_PASS_MARKERS) {
+    assert.doesNotMatch(r.out, marker, `a passing file's output reached the runner's: ${marker}`);
+  }
+  // Printed at the file's summary — which reaches it only if both spellings are
+  // one file — and only there.
+  assert.equal((r.out.match(/^\s*﹣ quiet-pass: skipped/gm) ?? []).length, 1,
+    `the skip line did not print exactly once:\n${r.out}`);
 });
