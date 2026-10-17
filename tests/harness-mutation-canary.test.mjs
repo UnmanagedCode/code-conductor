@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { mkdtempSync } from './tmpRegistry.mjs';
 import { canaryFor, parsePlaywrightReport } from '../harness/mutation/playwright.ts';
 
 const REPO = path.resolve(import.meta.dirname, '..');
@@ -54,7 +55,6 @@ test('a spec test', async ({ cc }) => { if (!cc.url) throw new Error('no cc'); }
     file: 'web/e2e/legacy/plain.spec.ts',
     source: `import { test } from '@playwright/test';
 import { log } from '../harness/fixtures.ts';
-import { mkdtempSync } from './tmpRegistry.mjs';
 
 test.beforeAll(async ({}, info) => { log('beforeAll', info.workerIndex); });
 test('a spec test', async () => {});
