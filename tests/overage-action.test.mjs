@@ -2541,3 +2541,71 @@ test('ARM-T11 REGRESSION: a queued-only sub-conductor that loses a wake does not
   } finally { arms.restore(); }
   await waitFor(() => other.status === 'idle', { timeout: 10000 });
 });
+
+// PIN — Invariant: a sever that resolves to an owner ALREADY ARMED never rewrites that
+// owner's resume kind. C is stopped MID-TURN at the trip (the "stopped" kind); its
+// idle worker W later loses a wake to the guard's sever, so the driver is C — which
+// is only marked: it keeps its selectors and its single arming, and its resume is
+// the stopped-kind preamble plus the dropped-callbacks clause.
+test('ARM-T12 an armed owner reached through a worker\'s sever keeps its resume kind', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  const other = await createInst({});
+  const cEvs = collect(conductor);
+  instances.noteDispatch(worker.sessionId, other.sessionId);
+  conductor.prompt('STAY');
+  await waitFor(() => conductor.status === 'turn');
+
+  const arms = spyArms();
+  try {
+    trip();
+    await waitFor(() => instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
+    assert.equal(conductor._overageWasStopped, true, 'precondition: stopped mid-work');
+    assert.equal(conductor._overageWasIdleParked, false, 'precondition: not idle-parked');
+    assert.equal(conductor._overageDroppedCallbacks, false, 'precondition: its own stop lost nothing');
+    assert.equal(worker._overageStoppedUnarmed, false, 'precondition: the idle worker was not stopped');
+
+    injectMessageStart(other);
+    assert.equal(worker._overageDroppedCallbacks, true, 'precondition: the sever reached the worker');
+    assert.equal(conductor._overageDroppedCallbacks, true, 'the conductor is marked');
+    assert.equal(conductor._overageWasStopped, true, 'and keeps the stopped kind');
+    assert.equal(conductor._overageWasIdleParked, false, 'not rewritten to idle-parked');
+    assert.equal(arms.count(conductor.id), 1, 'armed exactly once');
+    assertUnarmedUnmarked(worker, 'the worker');
+  } finally { arms.restore(); }
+  await waitFor(() => other.status === 'idle', { timeout: 10000 });
+
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'the resume fired');
+  const expected = buildConductorResumePreamble({ kind: 'stopped', droppedCallbacks: true });
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
+});
+
+// PIN — Invariant: only a LIVE owner is a driver. A non-temp conductor whose process
+// exited stays registered in byId with no proc while its worker lives on; when that
+// worker loses a wake, the worker — now with no live owner — is armed itself, and the
+// dead conductor is untouched.
+test('ARM-T13 a worker whose conductor exited arms itself, not the dead conductor', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  const other = await createInst({});
+  instances.noteDispatch(worker.sessionId, other.sessionId);
+  await conductor.kill({ graceMs: 500 });
+  await waitFor(() => !conductor.proc, { timeout: 10000 });
+  assert.equal(instances.get(conductor.id), conductor, 'precondition: the dead conductor stays registered');
+  assert.equal(instances._inUsageWindowFlow(worker), true, 'precondition: the worker is in flow');
+
+  const arms = spyArms();
+  try {
+    trip();
+    injectMessageStart(other);
+    assert.equal(worker._overageDroppedCallbacks, true, 'precondition: the sever reached the worker');
+    assert.equal(instances._autoResumeTimers.has(worker.id), true, 'the worker is armed');
+    assert.equal(worker._overageWasIdleParked, true, 'idle-parked');
+    assert.equal(arms.count(worker.id), 1, 'exactly once');
+    assertUnarmedUnmarked(conductor, 'the dead conductor');
+    assert.equal(conductor._overageDroppedCallbacks, false, 'the dead conductor is not marked');
+    assert.equal(arms.count(conductor.id), 0, 'and never reached arm()');
+  } finally { arms.restore(); }
+  await waitFor(() => other.status === 'idle', { timeout: 10000 });
+});
