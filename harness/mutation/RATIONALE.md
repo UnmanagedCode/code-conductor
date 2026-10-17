@@ -32,7 +32,14 @@ conditions.
   2026-08-12; the bench scripts and raw artifacts were not kept — see §9 for how to redo it.
 - **Every figure above and in §6 was measured with `npm test` as `baselineCommand`** (the pretest
   typecheck, then the node suite), not today's routed baseline, which adds the Vitest suite.
-  MEASURED_BASELINE
+  The routed baseline (`node harness/mutation/run.mjs baseline`),
+  16 cores, node v24, 2026-10-17, one run, `/proc/loadavg` 1.96 at start (it rose to ~24 during
+  the run): the baseline command **157.8 s** wall, 9163 tests (9135 pass / 0 fail / 28 skipped:
+  `node` 6962 / 0 / 26, `vitest` 2173 / 0 / 2), and the baseline plus one canary per non-opt-in
+  route **500 s** in total. The route driver's JSON envelope is **4,676,022 bytes** (neither group
+  `truncated`) against code-mutant's 8 MiB capture cap, which is one budget shared by every route's
+  stdout, stderr and reports; Vitest contributes its full JSON report. A one-spec Playwright report
+  is ~8.8 KB.
 - **Do not re-cite any number below without these conditions**, and specifically not for a catalog
   with a different files-to-mutants ratio; §6 explains why that ratio is the dominant variable.
 
