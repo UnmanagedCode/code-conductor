@@ -2020,9 +2020,9 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
 // ---------- mutating: worktrees ----------
 
 export async function createWorktree(
-  { project, baseWorktree, name }: { project: string; baseWorktree?: string; name?: string },
+  { project, baseWorktree, name, lock }: { project: string; baseWorktree?: string; name?: string; lock?: boolean },
 ) {
-  return toMcpWorktree(await fsCreateWorktree(project, { baseWorktree, name }));
+  return toMcpWorktree(await fsCreateWorktree(project, { baseWorktree, name, lock }));
 }
 
 export async function deleteWorktree({ project, worktree, force = false }: { project: string; worktree: string; force?: boolean }, { instances }: McpCtx) {

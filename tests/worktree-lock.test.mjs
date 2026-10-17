@@ -1,6 +1,7 @@
 // The user's worktree lock (WorktreeMeta.locked).
 //
-// One persisted flag, written by the browser route alone, that refuses two
+// One persisted flag, written by the browser route (set or clear) and by
+// createWorktree's `lock` option (set at creation only), that refuses two
 // things: merging the locked worktree into its base (every merge surface, via
 // the shared mergeWorktreeIntoParent) and an AGENT deleting it (MCP
 // delete_worktree, even with force). It refuses nothing else: sync, a child
@@ -23,7 +24,7 @@ import {
   api, bootServer, freshProjectsRoot, rmrf, registerLocalProject, waitFor, instForSession,
 } from './helpers.mjs';
 import {
-  createWorktree, getWorktree, repairWorktreesAfterProjectMove,
+  createWorktree, getWorktree, listWorktrees, repairWorktreesAfterProjectMove,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir, getProject } from '../src/projects.ts';
 import { isDeadStatus } from '../src/instances.ts';
@@ -330,8 +331,8 @@ test('the lock persists in worktree.json, unlocks to an absent key, and is read 
 });
 
 // Invariant: deleting a worktree takes its lock with it — a worktree
-// re-created under the same name starts unlocked and merges.
-test('a worktree re-created under a deleted locked one\'s name is not locked', async () => {
+// re-created under the same name without `lock` starts unlocked and merges.
+test('a worktree re-created under a deleted locked one\'s name is not locked (created without lock)', async () => {
   await makeRealRepo('demo');
   const first = await createWorktree('demo', { name: 'reuse' });
   await lock(first.worktreeName);
@@ -433,8 +434,9 @@ async function tsFiles(dir) {
   return out;
 }
 
-// Invariant: no agent can set or clear the lock. The writer is named by no MCP
-// module and imported by routes.ts alone, and no MCP tool is a lock tool.
+// Invariant: no agent can clear the lock or set it on an existing worktree. The
+// writer is named by no MCP module and imported by routes.ts alone, and no MCP
+// tool is a lock tool.
 test('the lock writer is browser-only: routes.ts imports it, nothing under src/mcp names it, no lock tool exists', async () => {
   const files = await tsFiles(SRC);
   const rel = (f) => path.relative(SRC, f);
@@ -466,4 +468,90 @@ test('repairWorktreesAfterProjectMove keeps the lock while it rewrites parentPat
   assert.equal(after.parentPath, (await getProject('demo')).path, 'control: the repair rewrote the record');
   assert.deepEqual(after, { ...stale, parentPath: after.parentPath });
   assert.equal(after.locked, true);
+});
+
+// ---------------------------------------------------------------------------
+// Lock at creation
+// ---------------------------------------------------------------------------
+
+const createHeld = async (extra) =>
+  unwrap(await callTool('create_worktree', { project: 'demo', name: 'held', ...extra }));
+const listedRow = async (wt) => {
+  const text = (await callTool('list_worktrees', { project: 'demo' })).content[0].text;
+  const row = text.split('\n').find(line => line.trimStart().startsWith(`${wt} `));
+  assert.ok(row, `no list_worktrees row for '${wt}':\n${text}`);
+  return row;
+};
+
+// Invariant: create_worktree({lock:true}) writes the user's lock itself — the
+// worktree.json it leaves is byte-for-byte the one a hand lock (PUT …/lock) of
+// the same record produces: same flag, same key order, nothing else added.
+test('create_worktree({lock:true}) writes a record byte-identical to the same worktree locked by hand', async () => {
+  await makeRealRepo('demo');
+  const r = await createHeld({ lock: true });
+  assert.equal(r.locked, true, 'the response carries the lock');
+  const raw = await fs.readFile(metaFile('held'), 'utf8');
+
+  const { locked, ...unlocked } = JSON.parse(raw);
+  await fs.writeFile(metaFile('held'), JSON.stringify(unlocked, null, 2) + '\n');
+  assert.equal('locked' in await readMetaFile('held'), false, 'control: the record is unlocked again');
+  await lock('held');
+  assert.equal(await fs.readFile(metaFile('held'), 'utf8'), raw);
+});
+
+// Invariant: a creation lock is the user's lock in effect — list_worktrees
+// marks it, merge and agent delete (even forced) refuse WORKTREE_LOCKED and
+// change nothing, and the UI's unlock route lifts it so the same merge lands.
+test('a worktree locked at creation shows the locked marker and refuses merge and agent delete, until the user unlocks it', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const wt = await createHeld({ lock: true });
+  await commitFile(wt.worktreePath, 'work.txt', 'work\n', 'agent work');
+  const before = await headSha(repoPath);
+
+  assert.match(await listedRow('held'), /\slocked$/);
+
+  const merge = unwrap(await callTool('merge_worktree', { project: 'demo', worktree: 'held' }));
+  assert.equal(merge.code, 'WORKTREE_LOCKED');
+  assert.equal(await headSha(repoPath), before, 'the parent HEAD must not move');
+
+  const del = unwrap(await callTool('delete_worktree', { project: 'demo', worktree: 'held', force: true }));
+  assert.equal(del.code, 'WORKTREE_LOCKED');
+  assert.equal((await getWorktree('demo', 'held'))?.locked, true, 'the record survives, still locked');
+
+  await unlock('held');
+  assert.doesNotMatch(await listedRow('held'), /\slocked$/);
+  const ok = unwrap(await callTool('merge_worktree', { project: 'demo', worktree: 'held' }));
+  assert.equal(ok.ok, true, `control merge failed: ${JSON.stringify(ok)}`);
+});
+
+// Invariant: without `lock: true` the record carries no `locked` key at all
+// (never `locked: false`) and the worktree merges.
+test('create_worktree without lock, or with lock:false, leaves the worktree unlocked', async (t) => {
+  for (const [label, extra] of [['omitted', {}], ['lock: false', { lock: false }]]) {
+    await t.test(label, async () => {
+      await makeRealRepo('demo');
+      const r = await createHeld(extra);
+      assert.equal('locked' in r, false, 'the response carries no lock');
+      assert.equal('locked' in await readMetaFile('held'), false, 'the record carries no lock key');
+      await commitFile(r.worktreePath, 'work.txt', 'work\n', 'agent work');
+      const ok = unwrap(await callTool('merge_worktree', { project: 'demo', worktree: 'held' }));
+      assert.equal(ok.ok, true, JSON.stringify(ok));
+    });
+  }
+});
+
+// Invariant: create_worktree is the one tool that takes a lock parameter —
+// spawn_instance refuses `lock` as an unknown argument, before creating any
+// worktree.
+test('only create_worktree takes a lock parameter; spawn_instance does not', async () => {
+  await makeRealRepo('demo');
+  const { body } = await rpc('tools/list', {});
+  const withLock = body.result.tools
+    .filter(tool => Object.keys(tool.inputSchema?.properties ?? {}).some(k => k === 'lock' || k === 'locked'))
+    .map(tool => tool.name);
+  assert.deepEqual(withLock, ['create_worktree']);
+
+  const r = await callTool('spawn_instance', { project: 'demo', createWorktree: true, lock: true });
+  assert.match(r.content[0].text, /unexpected argument 'lock'/);
+  assert.deepEqual(await listWorktrees('demo'), []);
 });
