@@ -67,7 +67,7 @@ describe('About', () => {
     const stream = ndjsonStream();
     mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
     render(<AboutSection />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    fireEvent.click(await within(versionCard()).findByRole('button', { name: 'Update' }));
     act(() => stream.push({ type: 'chunk', text: 'Pulling 3 commits\n' }));
     await waitFor(() => expect(log()).toBe('Pulling 3 commits\n'));
     act(() => stream.push({ type: 'chunk', text: 'and one more\n' }));
@@ -90,7 +90,7 @@ describe('About', () => {
     const stream = ndjsonStream();
     mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
     render(<AboutSection />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    fireEvent.click(await within(versionCard()).findByRole('button', { name: 'Update' }));
     act(() => { stream.push({ type: 'chunk', text: 'pulled\n' }); stream.push({ type: 'result', ok: true, result: {} }); stream.end(); });
     await waitFor(() => expect(line()).toBe('Updated, but the restart was refused: vite build failed (exit 1). cc is still running the previous version; fix it and restart.'));
     expect(within(versionCard()).getByRole('status').dataset.tone).toBe('error');
@@ -108,7 +108,7 @@ describe('About', () => {
       'POST /api/settings/self-update': () => (++posts === 1 ? stream.response : ndjsonStream().response),
     });
     render(<AboutSection />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    fireEvent.click(await within(versionCard()).findByRole('button', { name: 'Update' }));
     act(() => { stream.push({ type: 'chunk', text: 'pulled\n' }); stream.push({ type: 'result', ok: true, result: { npm: { ok: false, tail: 'npm ERR! x' } } }); stream.end(); });
     await waitFor(() => expect(line()).toMatch('npm install failed'));
     expect(log()).toBe('npm ERR! x');
@@ -125,7 +125,7 @@ describe('About', () => {
     const stream = ndjsonStream();
     mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
     render(<AboutSection />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    fireEvent.click(await within(versionCard()).findByRole('button', { name: 'Update' }));
     act(() => { stream.push({ type: 'result', ok: true, result: { npm: { ran: false, ok: false, code: 1, error: refusal, tail: refusal } } }); stream.end(); });
     await waitFor(() => expect(line()).toBe(`The update was pulled but its dependencies were not installed: ${refusal}`));
     expect(line()).not.toContain('npm install failed');
@@ -139,7 +139,7 @@ describe('About', () => {
     const stream = ndjsonStream();
     const calls = mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
     const first = render(<AboutSection />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    fireEvent.click(await within(versionCard()).findByRole('button', { name: 'Update' }));
     act(() => { stream.push({ type: 'result', ok: true, result: { npm: { ok: false, tail: 'npm ERR! x' } } }); stream.end(); });
     await waitFor(() => expect(buttons().map((b) => b.textContent?.trim())).toEqual(['Retry']));
     expect(log()).toBe('npm ERR! x');
@@ -159,7 +159,7 @@ describe('About', () => {
       'POST /api/settings/self-update': () => ({ status: 409, json: { error: 'dirty tree', tail: 'M file' } }),
     });
     render(<AboutSection />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    fireEvent.click(await within(versionCard()).findByRole('button', { name: 'Update' }));
     await waitFor(() => expect(line()).toContain('dirty tree'));
     expect(log()).toBe('M file');
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Update', false]]);
@@ -172,7 +172,7 @@ describe('About', () => {
     const calls = mockFetch({ 'GET /api/settings/self-update': () => available, 'POST /api/settings/self-update': () => stream.response });
     const first = render(<AboutSection />);
     await waitFor(() => expect(line()).toMatch(/v1\.0.*3 commits/));
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(within(versionCard()).getByRole('button', { name: 'Update' }));
     act(() => stream.push({ type: 'chunk', text: 'Pulling…' }));
     await waitFor(() => expect(log()).toContain('Pulling…'));
     first.unmount();

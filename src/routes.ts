@@ -33,6 +33,9 @@ import { buildPlaybookApi } from './playbookApi.ts';
 import { runRestart, type RestartPhase } from './restart.ts';
 import { withMaintenanceLock, type RelaunchPrep } from './relaunchPrep.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
+import { applyClaudeUpdate } from './claudeUpdate.ts';
+import { probeClaudeBin } from './health.ts';
+import { streamNdjsonAction } from './ndjsonAction.ts';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
@@ -126,7 +129,7 @@ import {
   deleteCustomConvention as deleteWorkspaceConvention,
 } from './workspaceConventions.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
-import { httpError } from './httpError.ts';
+import { httpError, errMessage } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
 import type { PlaybookGate } from './mcp/playbookGate.ts';
 
@@ -194,15 +197,6 @@ function errCode(e: unknown): string | undefined {
   return undefined;
 }
 
-// The trailing error middleware's message extraction (err may be any thrown
-// value; express only types it `any`).
-function errMessage(e: unknown): string {
-  if (e && typeof e === 'object' && 'message' in e) {
-    const m = (e as { message?: unknown }).message;
-    if (typeof m === 'string') return m;
-  }
-  return 'internal error';
-}
 
 // Upper bound, in characters, on everything the trailing error middleware logs
 // for one error (its line plus, for a 5xx, the stack frames). Some refusals
@@ -438,32 +432,21 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try { res.json(await getSelfUpdateStatus()); } catch (e) { next(e); }
   });
 
-  // Same streaming contract as the plugin library update (see
-  // streamLibraryAction in src/plugins/api.ts): before onValidated fires a
-  // rejection is a normal thrown error (→ trailing error middleware, preserving
-  // status codes); after it, bytes are committed as 200 NDJSON and both
-  // outcomes resolve into one terminal {type:'result',...} line.
-  r.post('/settings/self-update', (req, res, next) => {
-    let streaming = false;
-    const write = (obj: unknown) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
-    const onValidated = () => {
-      streaming = true;
-      res.setHeader('Content-Type', 'application/x-ndjson');
-      res.setHeader('Cache-Control', 'no-store');
-      res.flushHeaders();
-    };
-    const onChunk = (phase: 'pull' | 'npm', text: string) => write({ type: 'chunk', phase, text });
-    return applySelfUpdate({ onChunk, onValidated }).then(
-      (result) => {
-        if (streaming) { write({ type: 'result', ok: true, result }); res.end(); }
-        else res.json(result);
-      },
-      (e) => {
-        if (streaming) { write({ type: 'result', ok: false, error: errMessage(e), tail: (e as { tail?: unknown }).tail }); res.end(); }
-        else next(e);
-      },
-    );
+  // Same streaming contract as the plugin library update (streamNdjsonAction,
+  // src/ndjsonAction.ts): before onValidated fires a rejection is a normal
+  // thrown error (→ trailing error middleware, preserving status codes); after
+  // it, bytes are committed as 200 NDJSON and both outcomes resolve into one
+  // terminal {type:'result',...} line.
+  r.post('/settings/self-update', (req, res, next) => streamNdjsonAction(res, next,
+    (onChunk, onValidated) => applySelfUpdate({ onChunk, onValidated })));
+
+  // Settings → About's Claude CLI update (src/claudeUpdate.ts) — same NDJSON
+  // contract as self-update; no restart follows. GET is the `--version` probe.
+  r.get('/settings/claude-update', async (req, res, next) => {
+    try { res.json(await probeClaudeBin({ platform: hostPlatform })); } catch (e) { next(e); }
   });
+  r.post('/settings/claude-update', (req, res, next) => streamNdjsonAction(res, next,
+    (onChunk, onValidated) => applyClaudeUpdate({ platform: hostPlatform, onChunk: (t) => onChunk('update', t), onValidated })));
 
   // Settings → About: whether newly spawned instances default to debug
   // capture when a spawn call doesn't name `debug` explicitly (see

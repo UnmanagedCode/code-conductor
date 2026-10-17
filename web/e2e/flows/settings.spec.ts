@@ -78,13 +78,22 @@ test('About shows the legal notice and the update state', async ({ page, ui }) =
   await page.route('**/api/settings/self-update', (r) => (r.request().method() === 'GET'
     ? r.fulfill({ json: { version: '9.9.9', canCheck: true, updateAvailable: true, behind: 2, upstream: 'origin/main' } })
     : r.abort()));
+  // Likewise never clicked: a real run would update the shared harness's CLI.
+  await page.route('**/api/settings/claude-update', (r) => (r.request().method() === 'GET'
+    ? r.fulfill({ json: { found: true, command: 'claude', version: '2.1.0' } })
+    : r.abort()));
   await ui.open(page);
   await ui.openSettingsSection(page, 'about');
   await expect(page.getByText('Copyright © 2026 UnmanagedCode')).toBeVisible();
   await expect(page.getByRole('link', { name: 'GNU Affero General Public License v3.0 (AGPL-3.0)' })).toHaveAttribute('href', 'https://www.gnu.org/licenses/agpl-3.0.html');
   await expect(page.getByRole('link', { name: 'github.com/UnmanagedCode/code-conductor' })).toHaveAttribute('href', 'https://github.com/UnmanagedCode/code-conductor');
-  await expect(page.getByText('update available (2 commits behind origin/main)')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Update', exact: true })).toBeVisible();
+  const card = (title: string) => page.locator('[data-slot="card"]').filter({ has: page.locator('[data-slot="card-title"]', { hasText: new RegExp(`^${title}$`) }) });
+  const version = card('Version');
+  await expect(version.getByText('update available (2 commits behind origin/main)')).toBeVisible();
+  await expect(version.getByRole('button', { name: 'Update', exact: true })).toBeVisible();
+  const claude = card('Claude Code');
+  await expect(claude.getByRole('status')).toHaveText('v2.1.0');
+  await expect(claude.getByRole('button', { name: 'Update', exact: true })).toBeVisible();
 });
 
 // Settings part 2 (card 2026-0636)

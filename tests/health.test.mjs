@@ -219,7 +219,7 @@ test('an EMPTY CLAUDE_BIN reaches the probe as the stock claude, never as ""', a
   // nothing at all.
   //
   // `found` is deliberately NOT asserted: whether a real `claude` is installed
-  // on the machine running this suite is not the claim. `probeBin` echoes
+  // on the machine running this suite is not the claim. `probeClaudeBin` echoes
   // `command` on every branch it can settle on (spawn throw, 'error', timeout,
   // exit), so the command is deterministic either way.
   const home = await mkTmp();
