@@ -1,7 +1,7 @@
 // The plugin dock in a real browser, with two probe plugins (one keep-alive,
 // one plain): the desktop column right of the session whose width is its mode
-// (hidden, a split beside the transcript, the whole row), the one mode toggle in
-// its header strip, the handle's drag clamps, reset and keys, Back and Escape
+// (hidden, a split beside the transcript, the whole row), the one mode toggle and
+// Close plugin right of it in its header strip, the handle's drag clamps, reset and keys, Back and Escape
 // from the full view, a window too narrow for a split, a reload, a session
 // width (handle drags) beside it, a toast beside the strip, and the phone layout
 // without it. A reload of a probe page makes a new nonce, so every "same page"
@@ -45,6 +45,8 @@ const section = (page: Page) => page.locator('section[data-view="plugin"]');
 const header = (page: Page) => section(page).locator('header');
 /** The column's mode toggle named `name`, in its header strip. */
 const toggle = (page: Page, name: 'Dock to side' | 'Expand to full view') => header(page).getByRole('button', { name, exact: true });
+/** The strip's Close plugin, the switcher's Conductor pick. */
+const closeBtn = (page: Page) => header(page).getByRole('button', { name: 'Close plugin', exact: true });
 const handle = (page: Page) => page.getByRole('separator', { name: 'Resize plugin dock' });
 const main = (page: Page) => page.locator('main').first();
 const desktopSidebar = (page: Page) => page.locator('[data-sidebar]:visible');
@@ -131,7 +133,7 @@ async function dockSplitAtW(page: Page, p: ProbePlugin) {
 // ── flows ────────────────────────────────────────────────────────────────
 
 export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F1, F3): the column holds only its mode toggle, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
+  // Invariant (F1, F3): the column holds only its mode toggle then Close plugin right of it, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
   desktopOnly();
   await onSession(page, cc, 'geometry');
   const viewport = page.viewportSize()!;
@@ -146,6 +148,10 @@ export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
   expect(Math.abs(h.y - s.y), 'the strip tops the section').toBeLessThanOrEqual(0.5);
   const dock = await boxOf(toggle(page, 'Dock to side'), 'Dock to side');
   expect(dock.y >= h.y - 0.5 && bottom(dock) <= bottom(h) + 0.5 && dock.x >= h.x - 0.5 && right(dock) <= right(h) + 0.5, 'Dock to side sits in the strip').toBe(true);
+  const c = await boxOf(closeBtn(page), 'Close plugin');
+  expect(c.x, 'full: Close is right of Dock to side').toBeGreaterThanOrEqual(right(dock) - 0.5);
+  expect(c.y < bottom(dock) && bottom(c) > dock.y, 'full: Close is on the toggle\'s row').toBe(true);
+  expect(right(c), 'full: Close is inside the strip').toBeLessThanOrEqual(right(h) + 0.5);
   const f = await boxOf(section(page).locator('iframe:visible'), 'the frame');
   expect(f.y, 'the frame starts below the strip').toBeGreaterThanOrEqual(bottom(h) - 0.5);
   expect(Math.abs(bottom(f) - bottom(s)), 'the frame reaches the section\'s bottom').toBeLessThanOrEqual(0.5);
@@ -161,7 +167,11 @@ export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
   const sh = await boxOf(header(page), 'the strip in split');
   const expand = await boxOf(toggle(page, 'Expand to full view'), 'Expand to full view');
   expect(expand.y >= sh.y - 0.5 && bottom(expand) <= bottom(sh) + 0.5, 'Expand sits in the strip').toBe(true);
-  await expect(header(page).getByRole('button'), 'one control').toHaveCount(1);
+  const sc = await boxOf(closeBtn(page), 'Close plugin in split');
+  expect(sc.x, 'split: Close is right of Expand to full view').toBeGreaterThanOrEqual(right(expand) - 0.5);
+  expect(sc.y < bottom(expand) && bottom(sc) > expand.y, 'split: Close is on the toggle\'s row').toBe(true);
+  expect(right(sc), 'split: Close is inside the strip').toBeLessThanOrEqual(right(sh) + 0.5);
+  await expect(header(page).getByRole('button'), 'two controls: the toggle and Close').toHaveCount(2);
 
   await next.leavePlugin(page);
   await expectHidden(page, 'Conductor');
@@ -288,7 +298,9 @@ export async function narrowWindowFlow({ page, cc }: Args): Promise<void> {
   const s = await boxOf(section(page), 'the section');
   expect(Math.abs(s.x - right(await boxOf(page.locator('aside[data-sidebar]').first(), 'the sidebar'))), 'from the sidebar').toBeLessThanOrEqual(0.5);
   expect(Math.abs(right(s) - NO_SPLIT), 'to the viewport edge').toBeLessThanOrEqual(0.5);
-  await expect(header(page).getByRole('button'), 'no toggle').toHaveCount(0);
+  await expect(toggle(page, 'Dock to side'), 'no toggle').toHaveCount(0);
+  await expect(toggle(page, 'Expand to full view'), 'no toggle').toHaveCount(0);
+  await expect(closeBtn(page), 'only Close').toBeVisible();
   expect(await stored(), 'nothing written').toBe(before);
 
   await page.setViewportSize({ width: CLAMPED, height });
@@ -421,7 +433,7 @@ export async function sessionHandleCoexistFlow({ page, cc }: Args): Promise<void
 }
 
 export async function phoneFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F10): below md a remembered split shows nothing beside the session, a pick opens the full-page view with the phone bar and no toggle, and leaving it hides it.
+  // Invariant (F10): below md a remembered split shows nothing beside the session, a pick opens the full-page view with the phone bar, Close and no toggle, and leaving it hides it.
   test.skip(isDesktop(), 'the phone layout has no split');
   await page.addInitScript(([k, v]) => localStorage.setItem(k, v), [DOCK_KEY, JSON.stringify({ id: PLAIN.id, subpath: '/', mode: 'split' })] as const);
   await onSession(page, cc, 'phone');
@@ -435,13 +447,14 @@ export async function phoneFlow({ page, cc }: Args): Promise<void> {
   await expect(header(page).getByRole('button', { name: 'Open sidebar' }), 'the phone bar').toBeVisible();
   await expect(toggle(page, 'Dock to side')).toHaveCount(0);
   await expect(toggle(page, 'Expand to full view')).toHaveCount(0);
+  await expect(closeBtn(page), 'Close in the phone bar').toBeVisible();
 
   await next.leavePlugin(page);
   await expect(section(page)).toBeHidden();
 }
 
 export async function toastClearsToggleFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F1): a toast sits below the column's strip, so its toggle stays hit-testable, and keeps TOAST_EDGE_GAP from the window's edge.
+  // Invariant (F1): a toast sits below the column's strip, so its toggle and Close stay hit-testable, and keeps TOAST_EDGE_GAP from the window's edge.
   desktopOnly();
   const { id, sessionId } = await spawnSession(cc, label('toast'), { worktree: true, temp: false });
   await expect.poll(async () => {
@@ -461,5 +474,8 @@ export async function toastClearsToggleFlow({ page, cc }: Args): Promise<void> {
   const b = await boxOf(toggle(page, 'Expand to full view'), 'the toggle');
   const hit = await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('button[aria-label="Expand to full view"]'), { x: b.x + b.width / 2, y: b.y + b.height / 2 });
   expect(hit, 'the toggle is hit at its centre').toBe(true);
+  const cb = await boxOf(closeBtn(page), 'Close plugin');
+  const closeHit = await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('button[aria-label="Close plugin"]'), { x: cb.x + cb.width / 2, y: cb.y + cb.height / 2 });
+  expect(closeHit, 'Close is hit at its centre').toBe(true);
   expect(right(await boxOf(toast, 'the toast')), 'the toast keeps the edge gap').toBeCloseTo(page.viewportSize()!.width - TOAST_EDGE_GAP, 0);
 }

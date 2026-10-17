@@ -1,6 +1,6 @@
 // The plugin view's top bar: on drawer viewports the drawer button sits in a bar above the
 // plugin's page, never over it, and stays reachable while the start overlay is up; on desktop
-// the same bar carries the plugin's name and Dock to side.
+// the same bar carries the plugin's name and Dock to side. Every viewport's bar ends in Close plugin.
 // The bodies are shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
@@ -40,7 +40,7 @@ async function drawerOpensFrom(page: Page, menu: Locator) {
   await boxOf(openDrawerRoot(page), 'the open drawer');
 }
 
-// Invariant: below md the view has a bar with the drawer button and the plugin's name; the frame starts under it and nothing covers the frame's top-left corner.
+// Invariant: below md the view has a bar with the drawer button, the plugin's name and Close plugin; the frame starts under it and nothing covers the frame's top-left corner.
 /** Drawer viewports: the bar, the frame under it, an uncovered corner, and the button opens the drawer. */
 export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
   test.skip(isDesktop(), 'a desktop has no phone top bar');
@@ -66,6 +66,12 @@ export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
 
   expect(await hitIs(page, frameBox.x + 4, frameBox.y + 4, 'iframe'), 'the frame owns its top-left corner').toBe(true);
   expect(await hitIs(page, menuBox.x + menuBox.width / 2, menuBox.y + menuBox.height / 2, 'button[aria-label="Open sidebar"]'), 'the button is hit at its centre').toBe(true);
+
+  const close = bar.getByRole('button', { name: 'Close plugin', exact: true });
+  await expect(close).toBeVisible();
+  const closeBox = await boxOf(close, 'Close plugin');
+  expect(closeBox.x >= barBox.x - 0.5 && closeBox.y >= barBox.y - 0.5 && closeBox.x + closeBox.width <= barBox.x + barBox.width + 0.5 && closeBox.y + closeBox.height <= barBox.y + barBox.height + 0.5, 'Close within the bar').toBe(true);
+  expect(await hitIs(page, closeBox.x + closeBox.width / 2, closeBox.y + closeBox.height / 2, 'button[aria-label="Close plugin"]'), 'Close is hit at its centre').toBe(true);
 
   const shot = test.info().outputPath('plugin-view.png');
   await page.screenshot({ path: shot });
@@ -96,8 +102,8 @@ export async function overlayBelowBarFlow({ page }: Ctx): Promise<void> {
   await drawerOpensFrom(page, menu);
 }
 
-// Invariant: on desktop the view's bar holds the plugin's name and Dock to side, no drawer button, and the frame fills the rest of the view below it.
-/** Desktop: the bar with the name and Dock to side, no drawer button, and the frame from the bar's bottom to the view's. */
+// Invariant: on desktop the view's bar holds the plugin's name, Dock to side and Close plugin, no drawer button, and the frame fills the rest of the view below it.
+/** Desktop: the bar with the name, Dock to side and Close plugin, no drawer button, and the frame from the bar's bottom to the view's. */
 export async function desktopStripFlow({ page }: Ctx): Promise<void> {
   test.skip(!isDesktop(), 'drawer viewports have the phone bar');
   await page.goto(`/#plugin/${PROBE.id}/`);
@@ -108,6 +114,7 @@ export async function desktopStripFlow({ page }: Ctx): Promise<void> {
   await expect(bar).toBeVisible();
   await expect(bar.getByRole('heading', { name: PROBE.name })).toBeVisible();
   await expect(bar.getByRole('button', { name: 'Dock to side', exact: true })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Close plugin', exact: true })).toBeVisible();
   const barBox = await boxOf(bar, 'the bar');
   const viewBox = await boxOf(v, 'the view');
   const frameBox = await boxOf(v.locator('iframe:visible'), 'the frame');
