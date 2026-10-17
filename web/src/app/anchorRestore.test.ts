@@ -7,6 +7,7 @@
 // its own session.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeStashedAnchor, stashCurrentAnchorForRelaunch } from '@shared/anchor';
+import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import type { Instance, Project } from '@/state/types';
 
@@ -209,9 +210,10 @@ describe('restoring the URL-named session on first connect', () => {
     await b.land(1, [A, B]);
     expect(b.locates(), 'fixture check: the unlisted anchor is being looked up').toBe(1);
     b.c.selectInstance('iB', { userGesture: true });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     lookup.release(new Error('offline'));
     await b.flush();
+    expect(warn).toHaveBeenCalledExactlyOnceWith('auto-resume from anchor failed', expect.objectContaining({ message: SERVER_UNREACHABLE_MESSAGE }));
     expect(location.hash).toBe('#session=s-b');
     expect(b.active()).toBe('iB');
     expect(b.subscribes()).toEqual(['iB']);
@@ -365,7 +367,7 @@ describe('a first connect whose list read is refused', () => {
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await b.open();
-    expect(warn.mock.calls.map((c) => (c[1] as Error).message)).toEqual(['projects read refused']);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('refreshProjects on open failed:', expect.objectContaining({ message: 'projects read refused' }));
     expect(b.appStore.get().projects).toEqual(kept);
     expect(b.active()).toBe('iA');
     expect(location.hash).toBe('#session=s-a');
@@ -383,7 +385,7 @@ describe('a first connect whose list read is refused', () => {
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await b.open();
-    expect(warn.mock.calls.map((c) => (c[1] as Error).message)).toEqual(['instances read refused']);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('refreshInstances on open failed:', expect.objectContaining({ message: 'instances read refused' }));
     expect(b.ids()).toEqual(['iA']);
     expect(b.active()).toBe('iA');
     expect(b.subscribes()).toEqual(['iA']);

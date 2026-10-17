@@ -69,10 +69,12 @@ describe('viewed marker', () => {
   });
 
   it('a rejected POST is retried on the next check', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const b = await boot([inst({})], 'A', { failFirst: true });
     b.events.emit('instances');
     await b.settle();
     expect(b.posts).toEqual([]);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('viewedMarker: marking sa viewed at 5 failed: boom');
     b.events.emit('instances');
     await b.settle();
     expect(b.posts).toEqual([['sa', 5]]);

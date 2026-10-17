@@ -224,7 +224,7 @@ describe('subscribing the active session when the socket opens', () => {
   });
 
   it('an open whose projects read never answers still subscribes the active session once the read times out', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const b = await boot({ holdProjects: true });
     void b.c.refreshInstances();
     await b.land(1, [A, B]);
@@ -240,11 +240,12 @@ describe('subscribing the active session when the socket opens', () => {
       b.reads[1].release({ json: [A, B] });
       await vi.advanceTimersByTimeAsync(0);
       expect(b.subscribes()).toEqual([['iB', 1]]);
+      expect(warn).toHaveBeenCalledExactlyOnceWith('refreshProjects on open failed:', expect.objectContaining({ message: `list read timed out after ${b.c.READ_TIMEOUT_MS} ms` }));
     } finally { vi.useRealTimers(); }
   });
 
   it('an open whose instances read never answers still subscribes the active session once the read times out', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const b = await boot();
     void b.c.refreshInstances();
     await b.land(1, [A, B]);
@@ -258,6 +259,7 @@ describe('subscribing the active session when the socket opens', () => {
       await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
       await vi.advanceTimersByTimeAsync(b.c.READ_TIMEOUT_MS);
       expect(b.subscribes()).toEqual([['iB', 1]]);
+      expect(warn).toHaveBeenCalledExactlyOnceWith('refreshInstances on open failed:', expect.objectContaining({ message: `list read timed out after ${b.c.READ_TIMEOUT_MS} ms` }));
     } finally { vi.useRealTimers(); }
   });
 });

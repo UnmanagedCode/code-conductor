@@ -61,7 +61,7 @@ async function clickBox() {
 }
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ own: {}, rolled: {} }) })));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => (url.includes('/lineage-events') ? { events: [], hasMore: false, segment: null, nextBefore: null } : { own: {}, rolled: {} }) })));
   act(() => { appStore.set({ instances: [inst('iA', 'sA'), inst('iB', 'sB')], activeId: null }); });
   startController();
 });

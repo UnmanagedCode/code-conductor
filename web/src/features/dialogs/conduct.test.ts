@@ -44,7 +44,7 @@ describe('Conduct', () => {
     vi.mocked(refreshProjects).mockRejectedValueOnce(new Error('projects down'));
     routeFetch({ 'POST /api/instances': () => ({ json: { id: 'i9', sessionId: 's9' } }) });
     await startConducting();
-    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledExactlyOnceWith('refreshProjects after Conduct failed:', expect.objectContaining({ message: 'projects down' })));
     expect(toast.error).not.toHaveBeenCalled();
     expect(selectInstance).toHaveBeenCalledWith('i9', { userGesture: true, gesture: expect.any(Number) });
   });
