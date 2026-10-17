@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fsp, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, cleanupAll, _forTesting } from './tmpRegistry.mjs';
+import { mkdtemp, mkdtempSync, cleanupAll, _forTesting } from './tmpRegistry.mjs';
 import { _forTesting as storeRootTesting, ensureSafeStoreEnv } from './safeStoreRoot.mjs';
 
 const REAL_TMP = realpathSync(os.tmpdir());
@@ -30,6 +30,15 @@ test('cleanupAll refuses to delete anything when the safe-root invariant is not 
   // Now that the invariant holds again, the SAME still-registered dir is removed.
   await cleanupAll();
   assert.equal(await exists(dir), false, 'cleanupAll must resume deleting once verified again');
+});
+
+test('mkdtempSync registers into the same registry and cleanupAll removes it', async () => {
+  const dir = mkdtempSync('cc-sync-reg-');
+  assert.equal(_forTesting.registry.has(path.resolve(dir)), true, 'the sync mint must be tracked');
+  assert.equal(await exists(dir), true);
+  await cleanupAll();
+  assert.equal(await exists(dir), false, 'cleanupAll must remove a sync-minted dir');
+  assert.equal(_forTesting.registry.has(path.resolve(dir)), false, 'the entry is dropped once removed');
 });
 
 // F3: validateForDeletion's direct-child / shape / symlink checks, each
