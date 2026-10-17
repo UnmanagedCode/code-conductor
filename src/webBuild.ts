@@ -94,7 +94,9 @@ export function webInputFiles({ dirs, files: inputFiles }: WebInputs = DEFAULT_I
 /**
  * Whether the path `rel` (relative to `inputs.root`, POSIX or native
  * separators) is one the hash would cover: the same dirs, the same skipped
- * dirs, the same files. Path arithmetic only — it does not look at the disk.
+ * dirs, the same files. Path arithmetic only — it does not look at the disk,
+ * since a git path may be deleted — so a symlink inside an input dir counts,
+ * though the hash reads regular files only there.
  */
 export function isWebInput({ root, dirs, files }: WebInputs, rel: string): boolean {
   const abs = path.join(root, ...rel.split('/'));
@@ -104,6 +106,11 @@ export function isWebInput({ root, dirs, files }: WebInputs, rel: string): boole
     if (!r || r.startsWith('..') || path.isAbsolute(r)) return false;
     return !r.split(path.sep).slice(0, -1).some(skipDir);
   });
+}
+
+/** The inputs as git pathspecs relative to `root` (POSIX): every dir and file the hash reads under. */
+export function inputPaths({ root, dirs, files }: WebInputs): string[] {
+  return [...dirs, ...files].map((p) => path.relative(root, p).split(path.sep).join('/'));
 }
 
 export function webSourceHash(inputs: WebInputs = DEFAULT_INPUTS): string {
@@ -210,17 +217,38 @@ function removeAside(dir: string, log: Pick<Console, 'error'>): void {
 }
 
 // Build into `<dir>.tmp-<pid>`, stamp it, then swap it in as `dir`. The tmp is
-// removed on failure.
-async function buildInto(dir: string, hash: string, build: WebBuilder, onChunk: ((text: string) => void) | undefined, log: Pick<Console, 'error'>): Promise<void> {
+// removed on failure — including a refusal by `guard`, which runs between the
+// finished build and the swap.
+async function buildInto(
+  dir: string, hash: string, build: WebBuilder, onChunk: ((text: string) => void) | undefined, log: Pick<Console, 'error'>,
+  guard?: SwapGuard,
+): Promise<void> {
   const tmp = `${dir}.tmp-${process.pid}`;
   try {
     await build(tmp, { onChunk });
     fs.writeFileSync(path.join(tmp, STAMP), hash + '\n');
+    await checkGuard(guard, hash);
     swapIn(tmp, dir, log);
   } catch (e) {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort: the failure is what gets reported */ }
     throw e;
   }
+}
+
+/**
+ * Asked just before a build stamped `stamp` is swapped in as `<dist>`: null to
+ * swap, or why the sources it was built from are no longer the ones it may
+ * serve (src/swapGuard.ts). A build is made from the mutable working tree, so a
+ * merge or an edit landing while it ran would otherwise go live unexamined.
+ */
+export type SwapGuard = (stamp: string) => Promise<string | null>;
+
+/** A swap refused by its SwapGuard: nothing was swapped, and the refused build is gone. */
+export class SourcesMovedError extends Error {}
+
+async function checkGuard(guard: SwapGuard | undefined, stamp: string): Promise<void> {
+  const moved = guard ? await guard(stamp) : null;
+  if (moved) throw new SourcesMovedError(moved);
 }
 
 // How many web builds THIS process has running: boot's ensureWebBuild and a
@@ -272,22 +300,29 @@ export type RefreshOutcome = 'up-to-date' | 'adopted-staged' | 'built';
  * Make `<dist>` hold a build of the current sources: already current, adopt
  * `<dist>.next` when its stamp matches, else build. Then removes `<dist>.next`
  * if it is stale (stamped with another hash). Throws on a failed build or swap,
- * leaving the previous `<dist>` in place (see swapIn).
+ * leaving the previous `<dist>` in place (see swapIn). Every swap — the
+ * adoption and the fresh build alike — first asks `guard`; a refusal throws
+ * SourcesMovedError with `<dist>` untouched, an adopted stage left where it
+ * was and a fresh build discarded.
  */
 export async function refreshWebDist(
-  { distDir = WEB_DIST, inputs = DEFAULT_INPUTS, build = runViteBuild, onChunk, log = console }:
-  { distDir?: string; inputs?: WebInputs; build?: WebBuilder; onChunk?: (text: string) => void; log?: Pick<Console, 'log' | 'error'> } = {},
+  { distDir = WEB_DIST, inputs = DEFAULT_INPUTS, build = runViteBuild, onChunk, log = console, guard }:
+  {
+    distDir?: string; inputs?: WebInputs; build?: WebBuilder; onChunk?: (text: string) => void;
+    log?: Pick<Console, 'log' | 'error'>; guard?: SwapGuard;
+  } = {},
 ): Promise<RefreshOutcome> {
   const staged = stagedDirOf(distDir);
   const hash = webSourceHash(inputs);
   let outcome: RefreshOutcome;
   if (builtHash(distDir) === hash) outcome = 'up-to-date';
   else if (builtHash(staged) === hash) {
+    await checkGuard(guard, hash);
     swapIn(staged, distDir, log);
     outcome = 'adopted-staged';
   } else {
     log.log('web: frontend sources changed — building web/dist …');
-    await buildInto(distDir, hash, build, onChunk, log);
+    await buildInto(distDir, hash, build, onChunk, log, guard);
     outcome = 'built';
   }
   if (fs.existsSync(staged) && builtHash(staged) !== hash) removeAside(staged, log);
@@ -302,9 +337,14 @@ const failureText = (e: unknown): string => {
   return typeof tail === 'string' && tail ? `${errText(e)}\n${tail}` : errText(e);
 };
 
+// `guard` is asked before the boot build's swap only while a previous build is
+// in place: with none, a build of moved sources still beats no UI at all.
 export async function ensureWebBuild(
-  { log = console, distDir = WEB_DIST, build = runViteBuild, drift = () => dependencyDrift(repoRoot) }:
-  { log?: Pick<Console, 'log' | 'error'>; distDir?: string; build?: WebBuilder; drift?: () => { reason: string } | null } = {},
+  { log = console, distDir = WEB_DIST, inputs = DEFAULT_INPUTS, build = runViteBuild, drift = () => dependencyDrift(repoRoot), guard }:
+  {
+    log?: Pick<Console, 'log' | 'error'>; distDir?: string; inputs?: WebInputs; build?: WebBuilder;
+    drift?: () => { reason: string } | null; guard?: SwapGuard;
+  } = {},
 ): Promise<WebState> {
   const started = Date.now();
   // Counted from the first statement: start() calls this synchronously after
@@ -316,12 +356,20 @@ export async function ensureWebBuild(
     sweepLeftovers(distDir, log);
     state.phase = 'building';
     let output = '';
-    const outcome = await refreshWebDist({ distDir, build, log, onChunk: (t) => { output += t; } });
+    const hasPrevious = () => fs.existsSync(path.join(distDir, 'index.html'));
+    const bootGuard: SwapGuard | undefined = guard && (async (stamp) => (hasPrevious() ? guard(stamp) : null));
+    const outcome = await refreshWebDist({ distDir, inputs, build, log, guard: bootGuard, onChunk: (t) => { output += t; } });
     if (output.trim()) log.log(output.trimEnd());
     Object.assign(state, { phase: 'ready', error: null });
     if (outcome === 'adopted-staged') log.log('web: adopted the build staged before restart');
     if (outcome === 'built') log.log(`web: built in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } catch (e) {
+    if (e instanceof SourcesMovedError) {
+      // Only reachable with a previous build in place, which keeps serving.
+      Object.assign(state, { phase: 'ready', error: null });
+      log.log(`web: kept the previous build — the sources moved during the boot build (${e.message}); the next start builds them`);
+      return { ...state };
+    }
     let error = failureText(e);
     let d: { reason: string } | null = null;
     try { d = drift(); } catch { /* the hint is best effort */ }

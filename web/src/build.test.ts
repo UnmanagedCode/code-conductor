@@ -230,8 +230,10 @@ describe('the default inputs (webInputs) over a fixture checkout', () => {
 
 // cc's post-merge step decides "did the UI build's inputs change" with
 // isWebInput on git paths; the hash covers webInputFiles. They must name the
-// same files, or a merge is judged by a different set than the build hashes.
-describe('isWebInput names exactly the files the hash covers', () => {
+// same regular files, or a merge is judged by a different set than the build
+// hashes. isWebInput is path-only (a git path may be deleted), so it cannot
+// see that a path inside an input dir is a symlink, which the hash skips.
+describe('isWebInput names exactly the regular files the hash covers', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webagree-'));
   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
   const tree = [
@@ -255,6 +257,16 @@ describe('isWebInput names exactly the files the hash covers', () => {
     // Premise: the fixture exercises both sides of every rule.
     expect(hashed.has('web/src/App.tsx') && hashed.has('shared/http.ts') && hashed.has('tsconfig.json') && hashed.has('package.json')).toBe(true);
     expect(hashed.has('web/e2e/a.spec.ts') || hashed.has('web/dist/index.html') || hashed.has('src/server.ts') || hashed.has('webx/a.ts')).toBe(false);
+  });
+
+  it('a symlink inside an input dir is not hashed, but isWebInput counts it: the one direction they differ, toward relevant', () => {
+    const inputs = webInputs(root);
+    fs.symlinkSync(path.join(root, 'web', 'main.ts'), path.join(root, 'web', 'link.ts'));
+    try {
+      const hashed = webInputFiles(inputs).map((f) => path.relative(root, f).split(path.sep).join('/'));
+      expect(hashed).not.toContain('web/link.ts');
+      expect(isWebInput(inputs, 'web/link.ts')).toBe(true);
+    } finally { fs.rmSync(path.join(root, 'web', 'link.ts')); }
   });
 });
 

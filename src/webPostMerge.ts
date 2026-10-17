@@ -9,14 +9,18 @@
 // (src/bootCommit.ts). A new UI is swapped in only when everything that changed
 // since boot is under web/, so the backend serving it is the one it was built
 // against. Anything else the UI build reads (isWebInput, src/webBuild.ts), or
-// no boot commit, stages instead.
+// no boot commit, stages instead. The swap itself is guarded: the decision is
+// about POST, the build reads the working tree, and a later merge can land in
+// between — so unless the tree is still exactly POST's (src/swapGuard.ts) when
+// the build is done, nothing is swapped and the later merge's hook decides.
 
 import path from 'node:path';
 import { runGit } from './worktrees.ts';
 import { localSystem } from './systems/registry.ts';
 import type { BootCommit } from './bootCommit.ts';
+import { sourcesUnmovedGuard } from './swapGuard.ts';
 import {
-  isWebInput, refreshWebDist, runViteBuild, stageWebBuild, webInputs,
+  SourcesMovedError, inputPaths, isWebInput, refreshWebDist, runViteBuild, stageWebBuild, webInputs,
   type RefreshOutcome, type WebBuilder, type WebInputs,
 } from './webBuild.ts';
 
@@ -86,12 +90,13 @@ async function gitFacts(root: string, pre: string, post: string, boot: BootCommi
  * Decide and act for a merge PRE..POST that landed in the checkout at `root`,
  * given what the serving server booted from. Prints one line naming the
  * action, the reason and the boot commit. Throws on a failed build, swap or
- * git read, so the hook reports the failure.
+ * git read, so the hook reports the failure. A swap refused because the tree
+ * moved is not a failure: it prints why and returns outcome 'skipped'.
  */
 export async function runWebPostMerge(
   { root, pre, post, boot, build, log = console }:
   { root: string; pre: string; post: string; boot: BootCommit; build?: WebBuilder; log?: Pick<Console, 'log' | 'error'> },
-): Promise<WebPostMergeDecision & { outcome?: RefreshOutcome | 'staged' | 'already-current' }> {
+): Promise<WebPostMergeDecision & { outcome?: RefreshOutcome | 'staged' | 'already-current' | 'skipped' }> {
   const inputs = webInputs(root);
   const decision = decideWebPostMerge({ inputs, boot, ...(await gitFacts(root, pre, post, boot)) });
   const bootName = 'sha' in boot ? boot.sha.slice(0, 12) : 'unknown';
@@ -104,9 +109,17 @@ export async function runWebPostMerge(
     log,
   };
   if (decision.action === 'swap') {
-    const outcome = await refreshWebDist(opts);
-    log.log(`[post-worktree-merge] web: ${outcome} — live on the next page load`);
-    return { ...decision, outcome };
+    // Every input clean against POST itself: the decision was about POST alone.
+    const guard = sourcesUnmovedGuard({ root, inputs, head: post, cleanPaths: inputPaths(inputs) });
+    try {
+      const outcome = await refreshWebDist({ ...opts, guard });
+      log.log(`[post-worktree-merge] web: ${outcome} — live on the next page load`);
+      return { ...decision, outcome };
+    } catch (e) {
+      if (!(e instanceof SourcesMovedError)) throw e;
+      log.log(`[post-worktree-merge] web: swap skipped — the tree moved since this merge (${e.message}); web/dist is unchanged, and a later merge's hook decides afresh`);
+      return { ...decision, outcome: 'skipped' };
+    }
   }
   const { staged } = await stageWebBuild(opts);
   log.log(`[post-worktree-merge] web: ${staged ? 'staged in web/dist.next — the next start adopts it' : 'web/dist is already current'}`);

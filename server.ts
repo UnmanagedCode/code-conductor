@@ -34,7 +34,7 @@ import { setPluginPlaybooksProvider } from './src/playbooks.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 import { warnIfNodeUnsupported } from './src/nodeEngines.ts';
 import { WEB_ROOT, ensureWebBuild, webBuildRunning, webHandler } from './src/webBuild.ts';
-import { bootCommitHookVars, measureBootCommit, type BootCommit } from './src/bootCommit.ts';
+import { bootCommitHookVars, bootSwapGuard, measureBootCommit, type BootCommit } from './src/bootCommit.ts';
 import { setMergeHookVarsProvider } from './src/worktrees.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
@@ -221,7 +221,7 @@ export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host:
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 export async function start({
-  port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild = ensureWebBuild,
+  port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild,
   recordBootCommit = false, checkoutRoot = SERVER_ROOT,
 }: {
   port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown>;
@@ -345,7 +345,9 @@ export async function start({
   if (instances) instances._usageMonitor.start();
   // Build the web UI if its sources changed. Fire-and-forget: the API is
   // already answering, and / serves a "building" page until a build exists.
-  if (buildWeb) void webBuild();
+  // Guarded against the boot commit: a merge landing while it builds must not
+  // put its sources live in front of this backend (bootSwapGuard).
+  if (buildWeb) void (webBuild ?? (() => ensureWebBuild({ guard: bootCommit && bootSwapGuard(checkoutRoot, bootCommit) })))();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can
   // connect while sessions re-spawn + get their resume notifications, staggered.

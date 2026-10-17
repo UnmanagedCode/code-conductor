@@ -11,7 +11,8 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootCommitFromEnv, decideWebPostMerge, runWebPostMerge } from '../src/webPostMerge.ts';
-import { refreshWebDist, stageWebBuild, webInputs, webSourceHash } from '../src/webBuild.ts';
+import { ensureWebBuild, refreshWebDist, stageWebBuild, webInputs, webSourceHash } from '../src/webBuild.ts';
+import { bootSwapGuard } from '../src/bootCommit.ts';
 
 const ENTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'webPostMergeMain.ts');
 
@@ -263,6 +264,143 @@ test('a linked worktree target is a no-op', async () => {
   } finally {
     await git(root, 'worktree', 'remove', '--force', wt);
   }
+});
+
+// ── The swap guard: the tree must still be the decided-at one ─────────────
+//
+// The decision is about POST, the build reads the working tree, and merges are
+// not serialised, so another merge can land before the swap. Each case below
+// moves the tree in a way only one of the guard's checks sees.
+
+// Everything under the dist's parent that a swap could have touched, by bytes.
+async function distState(root) {
+  const web = path.join(root, 'web');
+  const out = {};
+  for (const name of (await fs.readdir(web)).filter((n) => n.startsWith('dist')).sort()) {
+    const dir = path.join(web, name);
+    for (const f of (await fs.readdir(dir)).sort()) out[`${name}/${f}`] = readFileSync(path.join(dir, f), 'utf8');
+  }
+  return out;
+}
+const lines = () => {
+  const out = [];
+  return { out, log: { log: (m) => out.push(m), error: (m) => out.push(m) } };
+};
+// A builder that runs `during` while it builds, then writes its output.
+const movingBuilder = (during) => Object.assign(async (outDir) => {
+  await during();
+  await fs.mkdir(outDir, { recursive: true });
+  await fs.writeFile(path.join(outDir, 'index.html'), '<p>built from a moved tree</p>');
+}, {});
+
+async function swapScenario() {
+  const root = await fixture();
+  const boot = await bootedAt(root);
+  stamped(path.join(root, 'web', 'dist'), 'serving', 'boot-hash');
+  const [pre, post] = await land(root, ['web/app.tsx']);
+  return { root, boot, pre, post, before: await distState(root) };
+}
+
+test('guard (a): a non-web merge committed while the swap\'s build runs — no swap, web/dist and dist.next unchanged, one "tree moved" line, no failure', async () => {
+  const { root, boot, pre, post, before } = await swapScenario();
+  const { out, log } = lines();
+  const r = await runWebPostMerge({ root, pre, post, boot, log, build: movingBuilder(() => land(root, ['src/server.ts'])) });
+  assert.equal(r.action, 'swap', 'premise: POST alone was web-only');
+  assert.equal(r.outcome, 'skipped');
+  assert.deepEqual(await distState(root), before, 'web/dist byte-unchanged, no dist.next, no leftover tmp');
+  const skipped = out.filter((l) => /swap skipped — the tree moved/.test(l));
+  assert.equal(skipped.length, 1, out.join('\n'));
+  assert.match(skipped[0], /HEAD moved/);
+});
+
+test('guard (a): a merge (web + src) committed BEFORE the hook hashes — the build is self-consistent and still not swapped', async () => {
+  const { root, boot, pre, post, before } = await swapScenario();
+  await land(root, ['web/app.tsx', 'src/server.ts']);
+  const { out, log } = lines();
+  const r = await runWebPostMerge({ root, pre, post, boot, log, build: builder('M2') });
+  assert.equal(r.outcome, 'skipped');
+  assert.deepEqual(await distState(root), before);
+  assert.match(out.join('\n'), /swap skipped — the tree moved .*HEAD moved/);
+});
+
+test('guard (b): an untracked input appearing while the build runs (HEAD and git diff both unmoved) — no swap', async () => {
+  const { root, boot, pre, post, before } = await swapScenario();
+  const extra = path.join(root, 'web', 'new.ts');
+  const { out, log } = lines();
+  const r = await runWebPostMerge({ root, pre, post, boot, log, build: movingBuilder(() => fs.writeFile(extra, 'export {};\n')) });
+  assert.equal(r.outcome, 'skipped');
+  await fs.rm(extra);
+  assert.deepEqual(await distState(root), before);
+  assert.match(out.join('\n'), /inputs changed while it was building/);
+});
+
+test('guard (c): an uncommitted input edit made before the hook hashes (HEAD unmoved, hash self-consistent) — no swap', async () => {
+  const { root, boot, pre, post, before } = await swapScenario();
+  await fs.writeFile(path.join(root, 'web', 'app.tsx'), 'uncommitted\n');
+  const { out, log } = lines();
+  const r = await runWebPostMerge({ root, pre, post, boot, log, build: builder('dirty') });
+  assert.equal(r.outcome, 'skipped');
+  assert.deepEqual(await distState(root), before);
+  assert.match(out.join('\n'), /uncommitted changes under web/);
+});
+
+test('guard: the adopted-staged branch is guarded too — a stage of the current sources is not swapped in once HEAD moved', async () => {
+  const { root, boot, pre, post } = await swapScenario();
+  await land(root, ['src/server.ts']);
+  const dist = path.join(root, 'web', 'dist');
+  stamped(`${dist}.next`, 'staged', webSourceHash(webInputs(root)));
+  const before = await distState(root);
+  const r = await runWebPostMerge({ root, pre, post, boot, log: quiet(), build: throwing });
+  assert.equal(r.outcome, 'skipped');
+  assert.deepEqual(await distState(root), before, 'web/dist untouched, and the stage left where it was');
+});
+
+// ── The boot build's guard (bootSwapGuard + ensureWebBuild) ─────────────────
+
+async function bootScenario({ previous }) {
+  const root = await fixture();
+  const boot = await bootedAt(root);
+  const dist = path.join(root, 'web', 'dist');
+  if (previous) stamped(dist, 'previous', 'older-hash');
+  await fs.writeFile(path.join(root, 'web', 'app.tsx'), 'v2\n'); // uncommitted: the boot build has work to do
+  return { root, boot, dist };
+}
+const bootBuild = ({ root, boot, dist }, build, log = quiet()) =>
+  ensureWebBuild({ distDir: dist, inputs: webInputs(root), build, log, guard: bootSwapGuard(root, boot), drift: () => null });
+
+test('boot guard: a merge committed during the boot build, with a previous build in place, is not swapped in; the previous build keeps serving', async () => {
+  const s = await bootScenario({ previous: true });
+  const before = await distState(s.root);
+  const { out, log } = lines();
+  const state = await bootBuild(s, movingBuilder(() => land(s.root, ['src/server.ts'])), log);
+  assert.deepEqual(state, { phase: 'ready', error: null });
+  assert.deepEqual(await distState(s.root), before);
+  assert.match(out.join('\n'), /kept the previous build — the sources moved during the boot build \(HEAD moved/);
+});
+
+test('boot guard: with no previous build, the boot build swaps in anyway — an old-but-present UI beats none', async () => {
+  const s = await bootScenario({ previous: false });
+  const state = await bootBuild(s, movingBuilder(() => land(s.root, ['src/server.ts'])));
+  assert.deepEqual(state, { phase: 'ready', error: null });
+  assert.match(readFileSync(path.join(s.dist, 'index.html'), 'utf8'), /built from a moved tree/);
+});
+
+test('boot guard: uncommitted web/ edits at boot still swap (the capture allows them); an uncommitted shared/ edit does not', async () => {
+  const s = await bootScenario({ previous: true });
+  assert.deepEqual(await bootBuild(s, builder('dirty web')), { phase: 'ready', error: null });
+  assert.match(readFileSync(path.join(s.dist, 'index.html'), 'utf8'), /dirty web/, 'web/ dirty at boot is the build to serve');
+
+  const t = await bootScenario({ previous: true });
+  await fs.writeFile(path.join(t.root, 'shared', 'http.ts'), 'uncommitted\n');
+  const before = await distState(t.root);
+  const { out, log } = lines();
+  await bootBuild(t, builder('dirty shared'), log);
+  assert.deepEqual(await distState(t.root), before);
+  assert.match(out.join('\n'), /uncommitted changes under shared/);
+});
+
+test('boot guard: an unknown boot commit has nothing to measure against, so no guard', () => {
+  assert.equal(bootSwapGuard('/anywhere', { unknown: 'HEAD is unborn or unreadable' }), undefined);
 });
 
 // ── The entry the hook script execs ────────────────────────────────────────

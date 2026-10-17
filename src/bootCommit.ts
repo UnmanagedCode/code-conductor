@@ -16,6 +16,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { runGit } from './worktrees.ts';
 import { localSystem } from './systems/registry.ts';
+import { sourcesUnmovedGuard } from './swapGuard.ts';
+import { inputPaths, webInputs, type SwapGuard } from './webBuild.ts';
 
 export type BootCommit = { sha: string } | { unknown: string };
 
@@ -39,6 +41,19 @@ export async function measureBootCommit(root: string): Promise<BootCommit> {
   } catch (e) {
     return { unknown: `could not read the checkout: ${errText(e)}` };
   }
+}
+
+/**
+ * The guard the boot build asks before it swaps (ensureWebBuild): HEAD still
+ * the boot commit, the hash still the build's stamp, and the inputs outside
+ * web/ still clean — the capture's own rule, which lets web/ be dirty at boot.
+ * None for an unknown boot commit: there is nothing to measure against.
+ */
+export function bootSwapGuard(checkoutRoot: string, boot: BootCommit): SwapGuard | undefined {
+  if (!('sha' in boot)) return undefined;
+  const inputs = webInputs(checkoutRoot);
+  const cleanPaths = inputPaths(inputs).filter((p) => p !== 'web' && !p.startsWith('web/'));
+  return sourcesUnmovedGuard({ root: checkoutRoot, inputs, head: boot.sha, cleanPaths });
 }
 
 const realpathOr = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
