@@ -212,6 +212,21 @@ test("proxy: a plugin's own framing policy passes through unchanged", async (t) 
       const r = await hit({ 'x-frame-options': 'DENY' });
       assert.equal(r.headers.get('x-frame-options'), 'DENY');
     });
+    // Invariant: a framing policy counts only when a browser enforces it, so an unusable
+    // X-Frame-Options is replaced by the SAMEORIGIN default rather than trusted.
+    await t.test('a blank X-Frame-Options is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': '' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    await t.test('a legacy ALLOW-FROM X-Frame-Options is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': 'ALLOW-FROM http://evil.test' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    // Invariant: recognition of an enforcing value is case-insensitive and passes through byte-identical.
+    await t.test('a lowercase deny passes through unchanged', async () => {
+      const r = await hit({ 'x-frame-options': 'deny' });
+      assert.equal(r.headers.get('x-frame-options'), 'deny');
+    });
     await t.test('a CSP without frame-ancestors still gets the framing default', async () => {
       const csp = "default-src 'none'";
       const r = await hit({ 'content-security-policy': csp });
