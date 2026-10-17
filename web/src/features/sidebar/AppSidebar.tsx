@@ -73,6 +73,7 @@ function FilterRow({ m }: { m: ReturnType<typeof useSidebarModel> }) {
 export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
   const m = useSidebarModel();
   const lens = useStore(uiStore, (s) => s.lens);
+  const rootRef = React.useRef<HTMLElement>(null);
   // Each lens keeps its own scroll offset, across switches and remounts (the phone drawer re-opening).
   const bodyRef = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
@@ -80,7 +81,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
   }, [lens]);
   // Mounting with a selection (the phone drawer re-opening) opens onto its row.
   React.useLayoutEffect(() => {
-    if (bodyRef.current) scrollActiveIntoView(bodyRef.current);
+    if (rootRef.current) scrollActiveIntoView(rootRef.current);
   }, []);
   const starting = useStore(conductStore, (s) => s.starting);
   const active = useStore(appStore, activeInstance);
@@ -98,6 +99,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
 
   return (
     <aside
+      ref={rootRef}
       className={cn('relative flex h-full flex-col bg-sidebar text-sidebar-foreground', !mobile && 'border-r border-sidebar-border')}
       style={mobile ? undefined : { width: live ?? width }}
       data-sidebar
@@ -128,34 +130,34 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
         </Hint>
       </div>
 
-      <div ref={bodyRef} onScroll={(e) => setLensScroll(lens, e.currentTarget.scrollTop)} className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3" data-sidebar-body>
-        <Strip m={m} />
+      <Strip m={m} />
 
-        <div className="mt-3 flex items-center gap-1.5 px-3">
-          <Tabs value={lens} onValueChange={(v) => setLens(v as 'conductors' | 'projects')} className="flex-1">
-            <TabsList className="w-full">
-              <TabsTrigger value="conductors">Conductors</TabsTrigger>
-              <TabsTrigger value="projects">Projects</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <DropdownMenu modal={false}>
-            <Hint label="Project actions">
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" aria-label="Project actions" className="text-muted-foreground"><MenuIcon /></Button>
-              </DropdownMenuTrigger>
-            </Hint>
-            <DropdownMenuContent align="end" className="w-56" onCloseAutoFocus={(e) => e.preventDefault()}>
-              <DropdownMenuItem onSelect={go(openNewProjectDialog)}><FolderPlusIcon /> New project</DropdownMenuItem>
-              <DropdownMenuItem onSelect={go(openAdoptProjectDialog)}><FolderInputIcon /> Add existing directory</DropdownMenuItem>
-              <DropdownMenuItem onSelect={go(() => openWorkspaceDialog(null))}><LayersIcon /> New workspace</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={go(openCosts)}><BarChart3Icon /> Costs</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+      <div className="mt-3 flex items-center gap-1.5 px-3">
+        <Tabs value={lens} onValueChange={(v) => setLens(v as 'conductors' | 'projects')} className="flex-1">
+          <TabsList className="w-full">
+            <TabsTrigger value="conductors">Conductors</TabsTrigger>
+            <TabsTrigger value="projects">Projects</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <DropdownMenu modal={false}>
+          <Hint label="Project actions">
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" aria-label="Project actions" className="text-muted-foreground"><MenuIcon /></Button>
+            </DropdownMenuTrigger>
+          </Hint>
+          <DropdownMenuContent align="end" className="w-56" onCloseAutoFocus={(e) => e.preventDefault()}>
+            <DropdownMenuItem onSelect={go(openNewProjectDialog)}><FolderPlusIcon /> New project</DropdownMenuItem>
+            <DropdownMenuItem onSelect={go(openAdoptProjectDialog)}><FolderInputIcon /> Add existing directory</DropdownMenuItem>
+            <DropdownMenuItem onSelect={go(() => openWorkspaceDialog(null))}><LayersIcon /> New workspace</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={go(openCosts)}><BarChart3Icon /> Costs</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
 
-        {lens === 'projects' && <FilterRow m={m} />}
+      {lens === 'projects' && <FilterRow m={m} />}
 
+      <div ref={bodyRef} onScroll={(e) => setLensScroll(lens, e.currentTarget.scrollTop)} className="min-h-24 flex-1 overflow-y-auto overscroll-contain pb-3" data-sidebar-body>
         <div className="mt-2 px-2">
           {lens === 'conductors' ? <ConductorsList m={m} /> : <ProjectsList m={m} />}
         </div>
