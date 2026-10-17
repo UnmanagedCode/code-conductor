@@ -331,8 +331,8 @@ test('the lock persists in worktree.json, unlocks to an absent key, and is read 
 });
 
 // Invariant: deleting a worktree takes its lock with it — a worktree
-// re-created under the same name starts unlocked and merges.
-test('a worktree re-created under a deleted locked one\'s name is not locked', async () => {
+// re-created under the same name without `lock` starts unlocked and merges.
+test('a worktree re-created under a deleted locked one\'s name is not locked (created without lock)', async () => {
   await makeRealRepo('demo');
   const first = await createWorktree('demo', { name: 'reuse' });
   await lock(first.worktreeName);
