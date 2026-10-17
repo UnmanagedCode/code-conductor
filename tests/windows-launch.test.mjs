@@ -1,11 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { launch, stop, probe, status, LaunchError, detectClaude, findOnPath, launcherEnv } from '../bin/windows-launch.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 // Git Bash and claude detection are injected into launch(); detectClaude,
 // findOnPath and launcherEnv have their own cases at the end.
@@ -27,7 +27,7 @@ const detect = {
   mkdir: (dir) => made.push(dir), gitBash: () => 'C:\\Git\\bin\\bash.exe', exists: existsIn('C:\\Git\\cmd\\git.exe'), detectClaude: () => null,
 };
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-'));
+  const root = mkdtempSync('cc-launch-');
   const installDir = path.join(root, 'inst');
   fs.mkdirSync(path.join(installDir, 'app'), { recursive: true });
   return { root, installDir, env: { Path: 'C:\\Windows', USERPROFILE: root }, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };

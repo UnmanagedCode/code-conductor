@@ -3,7 +3,7 @@
 // registration, wherever the tree lives.
 //
 // Every assertion about the target path compares against `await
-// fs.realpath(target)`, never the literal string — mkdtemp can hand back a path
+// fs.realpath(target)`, never the literal string — a temp dir can come back as a path
 // containing symlinks (it does on macOS), and a literal comparison would then
 // pass or fail for reasons unrelated to the code under test.
 

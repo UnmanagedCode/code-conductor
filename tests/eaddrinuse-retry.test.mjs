@@ -16,8 +16,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import { waitForBanner } from './serverBanner.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -38,7 +38,7 @@ function spawnServer(port, tmpHome) {
 
 
 test('EADDRINUSE: server retries and recovers when the blocking port is released', async (t) => {
-  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-eaddrinuse-'));
+  const tmpHome = await mkdtemp('orch-eaddrinuse-');
   await fs.mkdir(path.join(tmpHome, 'project'), { recursive: true });
   await fs.mkdir(path.join(tmpHome, '.claude', 'projects'), { recursive: true });
 

@@ -19,6 +19,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../src/groupedCommand.ts';
 import { posixPlatform } from '../src/platform/index.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -54,7 +55,7 @@ const GRANDCHILD_SLEEP_S = 600;
 const RESOLVE_BUDGET_MS = 5_000;
 
 test('a timeout yields code 124 AND kills the whole process group', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-group-'));
+  const dir = await mkdtemp('cc-group-');
   const pidFile = path.join(dir, 'grandchild.pid');
   let grandchildPid = null;
   t.after(async () => {

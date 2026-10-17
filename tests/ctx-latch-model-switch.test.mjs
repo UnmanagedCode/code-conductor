@@ -20,13 +20,13 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { Instance } from '../src/instances.ts';
 import { UsageTracker } from '../shared/usage.ts';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setTierBackend } from '../src/appSettings.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -75,7 +75,7 @@ const resultLine = () => JSON.stringify({
 });
 
 async function makeInstance({ model = M1, backend, contextWindowTokens } = {}) {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-switch-'));
+  const cwd = await mkdtemp('cc-ctx-switch-');
   const inst = new Instance({
     id: 'inst-1', project: 'demo', cwd, mode: 'bypassPermissions',
     effort: 'medium', thinking: 'medium', model,

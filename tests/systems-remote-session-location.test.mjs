@@ -27,7 +27,7 @@
 // remote place's tree path can name a LOCAL project's real cwd (T5).
 //
 // SAME-MACHINE TRAP. The reference provider IS this machine, so a project tree
-// always lives under an `mkdtemp` prefix OUTSIDE `PROJECTS_ROOT`: any code that
+// always lives under a temp-dir prefix OUTSIDE `PROJECTS_ROOT`: any code that
 // composes a path from `projectsRoot()` lands where the tree is not, and an
 // assertion fails instead of accidentally succeeding. On top of that, T1–T4
 // resolve the expected location from `sessionRootPath` INDEPENDENTLY of the

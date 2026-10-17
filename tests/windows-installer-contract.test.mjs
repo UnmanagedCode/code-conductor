@@ -16,6 +16,7 @@ import { defaultInstallDir, detectClaude, launcherEnv } from '../bin/windows-lau
 import { resolveGitBash, gitRootOfBash } from '../src/platform/win32.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from '../src/selfUpdate.ts';
 import { bootServer } from './helpers.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LAUNCHER = 'bin/windows-launch.mjs';
@@ -70,7 +71,7 @@ test("C3: cc's root package.json defines no install lifecycle script", () => {
 });
 
 test('C3 control: npm --ignore-scripts records a scripted package as hasInstallScript, and the check flags it', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-contract-npm-'));
+  const dir = mkdtempSync('cc-contract-npm-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const pkg = path.join(dir, 'pkg');
   const consumer = path.join(dir, 'consumer');
@@ -90,7 +91,7 @@ test('C3 control: npm --ignore-scripts records a scripted package as hasInstallS
 // of every platform's entries sees one. Needs the registry: opt-in.
 const realNpm = process.env.RUN_REAL_NPM === '1' ? test : test.skip.bind(test);
 realNpm('C3: a fresh resolution of package.json has no package that installs on Windows with an install script (RUN_REAL_NPM=1)', { timeout: 300_000 }, (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-contract-resolve-'));
+  const dir = mkdtempSync('cc-contract-resolve-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.copyFileSync(path.join(repo, 'package.json'), path.join(dir, 'package.json'));
   npm(dir, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund');
@@ -117,7 +118,7 @@ test('C4: the launcher is bin/windows-launch.mjs and its install dir is the chec
 // a link: node runs a linked entry from its real path. `src` is linked whole,
 // so whatever the launcher imports from it resolves as in a real checkout.
 function installLayout() {
-  const inst = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-contract-'));
+  const inst = mkdtempSync('cc-contract-');
   const app = path.join(inst, 'app');
   fs.mkdirSync(path.join(app, path.dirname(LAUNCHER)), { recursive: true });
   fs.copyFileSync(path.join(repo, LAUNCHER), path.join(app, LAUNCHER));
@@ -201,7 +202,7 @@ test('C8: every Git layout the installer accepts (git.exe in cmd or bin, quoted 
 const git = (cwd, args, env = process.env) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env }).trim();
 
 test('C9: the installer\'s checkout recipe yields a clean LF checkout that self-update drives unchanged', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-contract-checkout-'));
+  const root = mkdtempSync('cc-contract-checkout-');
   try {
     const seed = path.join(root, 'seed');
     const origin = path.join(root, 'origin.git');

@@ -20,12 +20,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { Instance } from '../src/instances.ts';
 import { UsageTracker } from '../shared/usage.ts';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = 'deepseek-v4-flash';
@@ -64,7 +64,7 @@ function resultLine({ usage = { input_tokens: 0, output_tokens: 0 } } = {}) {
 }
 
 async function makeInstance() {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-delta-'));
+  const cwd = await mkdtemp('cc-ctx-delta-');
   const inst = new Instance({
     id: 'inst-1', project: 'demo', cwd, mode: 'bypassPermissions',
     effort: 'medium', thinking: 'medium', model: MODEL,

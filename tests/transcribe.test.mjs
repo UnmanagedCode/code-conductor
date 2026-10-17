@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // Fake whisper-cli: parses `-of <prefix>` and writes "<prefix>.txt".
 // CJS so the shebang-exec path works without an .mjs extension.
@@ -43,7 +43,7 @@ async function writeFakeBin(dir, name, body) {
 }
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-transcribe-test-'));
+  return mkdtemp('cc-transcribe-test-');
 }
 
 async function withEnv(overrides, fn) {

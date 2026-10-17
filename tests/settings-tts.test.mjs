@@ -2,13 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import {
   setTranscribeModel, getTranscribeModel,
   setTtsVoice, getTtsVoice, getTtsEnabled, getTtsRate,
 } from '../src/appSettings.ts';
 import * as ttsInstall from '../src/ttsInstall.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // A bash stand-in for bin/install-piper.sh: touches the venv python3 + the
 // requested voice's .onnx/.onnx.json under INSTALL_ROOT, exactly where tts.ts
@@ -25,7 +25,7 @@ echo "==> fake piper install done"
 `;
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-settings-tts-'));
+  return mkdtemp('cc-settings-tts-');
 }
 
 async function withEnv(overrides, fn) {

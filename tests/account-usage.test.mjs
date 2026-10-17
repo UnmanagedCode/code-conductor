@@ -5,9 +5,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // Dynamic import so we can reload with a fresh module cache per test would
 // require workers; instead we use the exported invalidateAccountUsage() between tests.
@@ -17,7 +17,7 @@ import { getAccountUsage, invalidateAccountUsage } from '../src/accountUsage.ts'
 
 let tmpHome;
 async function makeTmpHome(credentials) {
-  tmpHome = await mkdtemp(path.join(tmpdir(), 'cc-test-'));
+  tmpHome = await mkdtemp('cc-test-');
   const claudeDir = path.join(tmpHome, '.claude');
   const { mkdir } = await import('node:fs/promises');
   await mkdir(claudeDir, { recursive: true });

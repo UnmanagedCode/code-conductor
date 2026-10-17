@@ -9,13 +9,14 @@ import { whisperRoot } from '../src/transcribe.ts';
 import { piperRoot } from '../src/tts.ts';
 import * as whisperInstall from '../src/whisperInstall.ts';
 import * as ttsInstall from '../src/ttsInstall.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // These tests pin down the install-location change: the AV assets default to
 // the orchestrator store (<projectsRoot>/.code-conductor), NOT $HOME/.code-conductor,
 // and the install drivers pin INSTALL_ROOT so the script can't drift from the server.
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-install-root-test-'));
+  return mkdtemp('cc-install-root-test-');
 }
 
 async function withEnv(overrides, fn) {

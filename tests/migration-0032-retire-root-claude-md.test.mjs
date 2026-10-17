@@ -15,7 +15,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { runMigrations } from '../migrations/index.mjs';
 import * as m0032 from '../migrations/0032-retire-root-claude-md.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -25,7 +24,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 process.env.HOME = await mkdtemp('cc-mig32-home-');
 
 async function mkTempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'orch-m0032-'));
+  return mkdtemp('orch-m0032-');
 }
 
 async function exists(p) {

@@ -123,7 +123,7 @@ export function descendants(pid, snap = snapshot()) {
 //     about. Without it an inner runner's sweep matches an OUTER runner's marker
 //     and SIGKILLs the outer run's processes — measured with an 8-char marker:
 //     the outer file died at 3.8s having reported 5 of 16 cases. Nothing here
-//     depends on mkdtemp's fixed-width suffix, which is a fact of
+//     depends on the temp-dir mint's fixed-width suffix, which is a fact of
 //     tests/safeStoreRoot.mjs and not of this predicate.
 // Both written as escapes, never literal NUL bytes: a literal renders every diff
 // of this file binary. No `g` flag, so `exec` is stateless and the constant is
@@ -155,7 +155,7 @@ function markerIn(env) {
 // descendant of this runner at any depth, however it was spawned.
 //
 // This is an EXACT IDENTITY, not a heuristic. tests/run.mjs exports a
-// run-unique CC_TEST_RUN_ID (minted by mkdtemp) into the environment before any
+// run-unique CC_TEST_RUN_ID (minted as a temp dir) into the environment before any
 // child forks, so every descendant inherits it, and /proc/<pid>/environ reflects
 // the environment as of exec — which means:
 //   * it survives `setsid`/`detached: true`, which escapes the process group
@@ -348,7 +348,7 @@ export function reapResidual(residual, { kill = killPids } = {}) {
 // /proc/<pid>/environ, so it survives `setsid`/reparenting for the same reason
 // processesWithMarker does — and, unlike a box-wide count, a CONCURRENT run of
 // this suite on the same box cannot inflate it. A NESTED tests/run.mjs mints its
-// own marker (tests/run.mjs's RUN_MARKER, via mkdtemp), so its descendants are
+// own marker (tests/run.mjs's RUN_MARKER, as a temp dir), so its descendants are
 // counted against ITS budget and not the outer run's.
 //
 // hasMarker FAILS CLOSED — a vanished pid or an unreadable environ answers false —

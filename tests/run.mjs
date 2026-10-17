@@ -21,7 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // PROJECTS_ROOT, falling back to the REAL production store when unset. Every
 // child process inherits this env, so a test with no root of its own — and any
 // out-of-window fire-and-forget write — lands in the temp dir, never the live
-// store. Individual files still mkdtemp their own per-test roots under it.
+// store. Individual files still mint their own per-test roots under it.
 const safeRoot = createSafeRoot();
 process.env.PROJECTS_ROOT = safeRoot.projectsRoot;
 process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
@@ -42,7 +42,7 @@ process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-si
 // run root. The ONLY other writer is markRun() in tests/safeStoreRoot.mjs, and
 // it uses `??=` — it mints a marker for a STANDALONE file run and never replaces
 // the one exported here, so a value seen by a child is always its own run's.
-const RUN_MARKER = path.basename(safeRoot.root); // mkdtemp'd, so unique per run
+const RUN_MARKER = path.basename(safeRoot.root); // a fresh temp dir, so unique per run
 process.env.CC_TEST_RUN_ID = RUN_MARKER;
 
 // Pin git's global config at a run-scoped file, HERE — before any test file
@@ -85,7 +85,7 @@ try {
 
 // Each test file runs in its own child process (node:test `isolation: 'process'`
 // default), and the suite is already isolated: bootServer binds an ephemeral
-// port (listen(0)) and mkdtemp's a unique home per server, so files don't
+// port (listen(0)) and mints a unique home per server, so files don't
 // contend over ports or paths. That lets us run multiple files concurrently.
 // Half the cores, capped at 8. Override with TEST_CONCURRENCY (1 restores the
 // old fully-serial behavior).

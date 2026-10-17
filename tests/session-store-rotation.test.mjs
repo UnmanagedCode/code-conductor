@@ -10,7 +10,6 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +18,7 @@ import { rotate } from './segmentChain.mjs';
 import { localPlace, listSessionsForCwdWithCounts, orchStoreRoot } from '../src/projects.ts';
 import { recordRotation, revertRotation, resolveBacking, dropSegment } from '../src/sessionLineage.ts';
 import { getTitle, setTitle, isTemp, loadSessions, getTurnMarks } from '../src/sessionStore.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -118,7 +118,7 @@ test('a typed /clear keeps a substitution backend and exact model on resume', as
   ]);
   await instances.remove(inst.id);
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'typed-clear-backend-'));
+  const tmp = await mkdtemp('typed-clear-backend-');
   const argvDump = path.join(tmp, 'argv.txt');
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
   try {

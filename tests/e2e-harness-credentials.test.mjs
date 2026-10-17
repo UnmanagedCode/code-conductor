@@ -1,6 +1,6 @@
 // The e2e harness's live-mode credential handling (web/e2e/harness/credentials.ts):
 // an access-token-only 0600 copy of a credentials file, and the one-field global
-// config seed. Every path here is a fixture under this file's own mkdtemp — the
+// config seed. Every path here is a fixture under this file's own temp dir — the
 // functions take both paths explicitly, so nothing below can reach the live
 // ~/.claude. The ~/.claude.json refusal is checked by path only; nothing writes it.
 import test from 'node:test';
@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { prepareLiveCredentials, seedLiveGlobalConfig, liveBudgetMs } from '../web/e2e/harness/credentials.ts';
 import { redact } from '../web/e2e/harness/redact.ts';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const ACCESS = 'ACCESS-SENTINEL-7f3a';
 const REFRESH = 'REFRESH-SENTINEL-91bc';
@@ -18,7 +19,7 @@ const HOUR = 3_600_000;
 const NOW = 1_800_000_000_000;
 
 function fixture(t, oauth = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-e2e-cred-test-'));
+  const root = mkdtempSync('cc-e2e-cred-test-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const live = path.join(root, 'live');
   fs.mkdirSync(live);

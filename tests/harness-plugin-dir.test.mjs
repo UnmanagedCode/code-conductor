@@ -9,9 +9,9 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fsp, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import { resolvePluginDir } from '../harness/pluginDir.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 function git(cwd, ...args) {
   const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' });
@@ -25,7 +25,7 @@ function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 // <root>/.plugins/foo exists; <other>/.plugins/foo is the env-precedence target.
 let base, root, other, proj, wt;
 before(async () => {
-  base = realpathSync(await fsp.mkdtemp(path.join(os.tmpdir(), 'cc-plugin-dir-')));
+  base = realpathSync(await mkdtemp('cc-plugin-dir-'));
   root = path.join(base, 'root');
   other = path.join(base, 'other');
   proj = path.join(root, 'proj');

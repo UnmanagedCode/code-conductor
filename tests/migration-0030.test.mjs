@@ -10,11 +10,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0030 from '../migrations/0030-backfill-mid-turn-steering.mjs';
 import { ALL } from '../migrations/index.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
-const mkTmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig30-'));
+const mkTmp = () => mkdtemp('cc-mig30-');
 const settingsFile = (root) => path.join(root, '.code-conductor', 'settings.json');
 
 async function writeJson(file, obj) {

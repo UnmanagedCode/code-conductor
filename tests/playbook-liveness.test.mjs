@@ -20,12 +20,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createPlaybookGate } from '../src/mcp/playbookGate.ts';
 import { createPlaybookLedger, readEvents } from '../src/playbookLedger.ts';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { GATELAB } from './playbook-fixtures.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // The gate loads real definitions, so the graph these cases drive has to exist
 // on disk. It is installed into a per-FILE user-overlay store rather than read
@@ -34,7 +34,7 @@ import { GATELAB } from './playbook-fixtures.mjs';
 // PROJECTS_ROOT is read live by orchStoreRoot(), and node:test runs each file in
 // its own process, so this is scoped to this file alone. The user overlay is read
 // per call (docs/protocol.md → Playbooks), so no cache has to be primed.
-process.env.PROJECTS_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbliveness-root-'));
+process.env.PROJECTS_ROOT = await mkdtemp('cc-pbliveness-root-');
 {
   const dir = path.join(orchStoreRoot(), 'playbooks');
   await fs.mkdir(dir, { recursive: true });
@@ -42,7 +42,7 @@ process.env.PROJECTS_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pblivene
 }
 
 async function tmpLedgerFile() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbliveness-'));
+  const dir = await mkdtemp('cc-pbliveness-');
   return { dir, file: path.join(dir, 'playbook-ledger.jsonl') };
 }
 

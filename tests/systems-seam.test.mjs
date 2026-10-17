@@ -36,9 +36,9 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createRequire } from 'node:module';
 import { rmrf } from './rmrf.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const require = createRequire(import.meta.url);
 const childProcess = require('node:child_process');
@@ -153,7 +153,7 @@ before(async () => {
   spyOnSystem(mods.localSystem.LocalSystem);
   spyOnSystem(mods.providerSystem.ProviderSystem);
 
-  home = await fsp.mkdtemp(path.join(os.tmpdir(), 'cc-systems-seam-'));
+  home = await mkdtemp('cc-systems-seam-');
   projectsRoot = path.join(home, 'projects');
   await fsp.mkdir(projectsRoot, { recursive: true });
   process.env.PROJECTS_ROOT = projectsRoot;

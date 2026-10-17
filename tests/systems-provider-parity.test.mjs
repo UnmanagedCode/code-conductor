@@ -13,12 +13,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import { msFromNanos } from '../src/systems/system.ts';
 import { CAPABILITY_CONFIGS, makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // Fields that cannot match by construction: wall-clock duration, and the roots
 // the two runs were given.
@@ -43,7 +43,7 @@ async function both(setup, scenario) {
   const provider = makeProviderSystem([]);
   try {
     for (const sys of [local, provider]) {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-parity-'));
+      const dir = await mkdtemp('cc-parity-');
       const root = await fs.realpath(dir);
       try {
         await setup?.(root);
@@ -261,7 +261,7 @@ test('every capability configuration is observationally equal to the local syste
     };
   };
   const run = async (sys) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-parity-caps-'));
+    const dir = await mkdtemp('cc-parity-caps-');
     const root = await fs.realpath(dir);
     try { return await scenario(sys, root); } finally { await rmrf(dir); }
   };

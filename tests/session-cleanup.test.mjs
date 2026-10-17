@@ -5,10 +5,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-session-cleanup-'));
+const tmp = await mkdtemp('cc-session-cleanup-');
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 process.env.CLAUDE_PROJECTS_ROOT = path.join(tmp, 'claude-projects');
 

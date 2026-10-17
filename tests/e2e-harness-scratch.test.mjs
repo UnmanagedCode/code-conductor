@@ -1,22 +1,22 @@
 // The e2e harness's isolation primitives (web/e2e/harness/): the allowlisted env
 // a booted cc gets (env.ts), scratch roots that go on every exit path and the
 // sweep for the ones a SIGKILL left (scratch.ts), and log redaction (redact.ts).
-// Every root here lives under this file's own mkdtemp, via TMPDIR for children.
+// Every root here lives under this file's own temp dir, via TMPDIR for children.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isolatedEnv, scratchLayout } from '../web/e2e/harness/env.ts';
 import { sweepStaleRoots, SCRATCH_PREFIX } from '../web/e2e/harness/scratch.ts';
 import { redact, registerSecret } from '../web/e2e/harness/redact.ts';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const SCRATCH_URL = pathToFileURL(path.resolve(import.meta.dirname, '../web/e2e/harness/scratch.ts')).href;
 
 function tmp(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-e2e-scratch-test-'));
+  const dir = mkdtempSync('cc-e2e-scratch-test-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }

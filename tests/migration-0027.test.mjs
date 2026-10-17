@@ -11,10 +11,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0027 from '../migrations/0027-rename-default-playbook-ids.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
-const mkTmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig27-'));
+const mkTmp = () => mkdtemp('cc-mig27-');
 const conductorFile = (root) => path.join(root, '.code-conductor', 'conventions', 'conductor.json');
 
 async function writeJson(file, obj) {

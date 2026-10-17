@@ -15,7 +15,6 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import dc from 'node:diagnostics_channel';
 import { execFile as execFileCb } from 'node:child_process';
 import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject } from './helpers.mjs';
@@ -26,6 +25,7 @@ import {
 } from '../src/projects.ts';
 import { runGit } from '../src/worktrees.ts';
 import { localSystem } from '../src/systems/registry.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const git = (cwd, ...args) => new Promise((resolve, reject) => {
   execFileCb('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout, stderr) => {
@@ -255,7 +255,7 @@ test('the visited-directory cap truncates and says so', async () => {
 // over one would take the affordance away entirely.
 test('an unreadable directory is counted and the scan continues', async (t) => {
   // As root, chmod 000 is still readable — the test would assert nothing.
-  const probe = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-perm-probe-'));
+  const probe = await mkdtemp('cc-perm-probe-');
   await fs.chmod(probe, 0o000);
   let enforced = false;
   try { await fs.readdir(probe); } catch { enforced = true; }

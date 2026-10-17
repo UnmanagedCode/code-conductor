@@ -6,11 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0004 from '../migrations/0004-relocate-av-installs.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-relocate-av-'));
+  return mkdtemp('cc-relocate-av-');
 }
 
 async function exists(p) {

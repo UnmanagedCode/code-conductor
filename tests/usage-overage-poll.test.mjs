@@ -16,11 +16,11 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -78,7 +78,7 @@ function pollScenario() {
 }
 
 async function writeScenario(obj) {
-  const p = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-usagepoll-')), 'scenario.json');
+  const p = path.join(await mkdtemp('cc-usagepoll-'), 'scenario.json');
   await fs.writeFile(p, JSON.stringify(obj));
   return p;
 }

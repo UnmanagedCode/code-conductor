@@ -11,7 +11,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { renderSessions, renderSession } from '../src/mcp/readRenderers.ts';
@@ -21,12 +20,13 @@ import { readablePrompt } from '../shared/promptPreview.ts';
 import { backgroundJobsNote } from '../src/backgroundJobs.ts';
 import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../shared/forwardFrame.ts';
 import { buildRenewSeed } from '../shared/renewSeed.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const SID = '3f2a8c11-77b2-4c1e-9a2f-5d6e7f801234';
 const WORKER = '7c0e5a2d-41b8-4f3a-9d26-b1e8f0c43a17';
 
 let dir;
-before(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-first-prompt-render-')); });
+before(async () => { dir = await mkdtemp('cc-first-prompt-render-'); });
 after(async () => { await fs.rm(dir, { recursive: true, force: true }); });
 
 // The CLI's user record for a prompt cc sent, content as text blocks.

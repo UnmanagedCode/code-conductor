@@ -19,13 +19,13 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { Instance } from '../src/instances.ts';
 import { canonicalizeModel, familyOf, claudeContextWindowTokens, CLAUDE_BACKEND_ID } from '../src/modelVersions.ts';
 import { addCustomModel, removeCustomModel, addBackend, resolveContextWindowTokens } from '../src/appSettings.ts';
 import { encodeCwd } from '../src/projects.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -43,7 +43,7 @@ beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 async function spawnAndDump(model, { backend, project = 'p' } = {}) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
+  const tmp = await mkdtemp('ctxwin-');
   const argvDump = path.join(tmp, 'argv.txt');
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
@@ -446,7 +446,7 @@ test('a respawn after the custom-model row is DELETED still injects the resolved
   await api(baseUrl, 'DELETE', `/api/instances/${id}`);
   await waitFor(() => !instances.get(id) || !instances.get(id).proc);
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
+  const tmp = await mkdtemp('ctxwin-');
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {

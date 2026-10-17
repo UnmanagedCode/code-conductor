@@ -123,11 +123,11 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { killDescendants } from './procTree.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER = path.join(__dirname, 'run.mjs');
@@ -140,9 +140,9 @@ const fixture = name => path.join(__dirname, 'fixtures', 'attribution', `${name}
 // teardown) need no overlap. Test 1's chain needs one slot per chained fixture and
 // overrides it — see its call site.
 async function runFixtures(names, extraEnv = {}) {
-  // Per-call sync dir for the chain's markers. mkdtemp, not a fixed path: two
+  // Per-call sync dir for the chain's markers. a fresh temp dir, not a fixed path: two
   // concurrent suite runs on one box must not see each other's markers.
-  const syncDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-attr-'));
+  const syncDir = mkdtempSync('cc-attr-');
   let result;
   try {
     result = await new Promise((resolve, reject) => {

@@ -12,7 +12,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { canaryFor, parsePlaywrightReport } from '../harness/mutation/playwright.ts';
 
@@ -55,6 +54,7 @@ test('a spec test', async ({ cc }) => { if (!cc.url) throw new Error('no cc'); }
     file: 'web/e2e/legacy/plain.spec.ts',
     source: `import { test } from '@playwright/test';
 import { log } from '../harness/fixtures.ts';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 test.beforeAll(async ({}, info) => { log('beforeAll', info.workerIndex); });
 test('a spec test', async () => {});
@@ -92,7 +92,7 @@ function playwright(root, file, logFile) {
 test('the Playwright canary loads and fails by name in every spec form', async (t) => {
   for (const form of FORMS) {
     await t.test(form.name, { timeout: RUN_MS + 5_000 }, async () => {
-      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-canary-')));
+      const root = fs.realpathSync(mkdtempSync('cc-canary-'));
       try {
         fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(root, 'node_modules'));
         fs.mkdirSync(path.join(root, 'web', 'e2e', 'harness'), { recursive: true });

@@ -21,7 +21,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0018b from '../migrations/0018b-backend-registry.mjs';
 import { runMigrations, ALL } from '../migrations/index.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -37,7 +36,7 @@ async function runChainThrough(lastName, { root }) {
   for (const m of ALL.slice(0, end + 1)) await m.run({ root, log: () => {} });
 }
 
-async function mkTmp() { return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig18b-')); }
+async function mkTmp() { return mkdtemp('cc-mig18b-'); }
 function settingsFile(root) { return path.join(root, '.code-conductor', 'settings.json'); }
 function sidecarFile(root) { return path.join(root, '.code-conductor', 'session-backends.json'); }
 async function writeJson(file, obj) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(obj, null, 2)); }

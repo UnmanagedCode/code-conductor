@@ -9,17 +9,17 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(__dirname, '..', 'src');
 
 // Isolate within-process tests under a single tmp PROJECTS_ROOT. The module
 // is cached after the first import, so PROJECTS_ROOT must be set first.
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-arc-conc-'));
+const tmp = await mkdtemp('cc-arc-conc-');
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 
 const { setSegmentArchived } = await import('../src/sessionStore.ts');
@@ -100,7 +100,7 @@ test('un-archiving under concurrent writes does not clobber other entries', asyn
 // ── Test 3: two concurrent child processes — the actual hot-restart race ─────
 
 test('two concurrent child processes both archiving → all entries preserved', { timeout: 30000 }, async () => {
-  const xTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-arc-xproc-'));
+  const xTmp = await mkdtemp('cc-arc-xproc-');
   const xRoot = path.join(xTmp, 'projects');
 
   // Worker script: sets PROJECTS_ROOT from env, imports sessionStore.ts

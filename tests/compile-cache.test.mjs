@@ -13,15 +13,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { enableCompileCache, COMPILE_CACHE_DIR_NAME, COMPILE_CACHE_MAX_BYTES } from './compileCache.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-cache-'));
+const tmp = () => mkdtempSync('cc-cache-');
 const fill = (dir, bytes) => {
   fs.mkdirSync(path.join(dir, 'v24-x64-abc'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'v24-x64-abc', 'entry'), Buffer.alloc(bytes, 1));

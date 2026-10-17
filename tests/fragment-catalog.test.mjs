@@ -6,11 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createFragmentCatalog } from '../src/fragmentCatalog.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function mkFixture() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fragcat-'));
+  const dir = await mkdtemp('cc-fragcat-');
   const seedDir = path.join(dir, 'seeds');
   await fs.mkdir(seedDir, { recursive: true });
   await fs.writeFile(path.join(seedDir, 'foo.md'), '## Foo\n- foo body\n');

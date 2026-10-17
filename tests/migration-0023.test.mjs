@@ -6,11 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0023 from '../migrations/0023-clamp-compact-window-floor.mjs';
 import { getConductorCompactWindow } from '../src/appSettings.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
-async function mkTmp() { return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig23-')); }
+async function mkTmp() { return mkdtemp('cc-mig23-'); }
 function settingsFile(root) { return path.join(root, '.code-conductor', 'settings.json'); }
 async function writeJson(file, obj) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(obj, null, 2)); }
 async function readJson(file) { return JSON.parse(await fs.readFile(file, 'utf8')); }

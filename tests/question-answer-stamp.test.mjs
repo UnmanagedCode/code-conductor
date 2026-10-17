@@ -10,11 +10,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { QuestionAnswerCorrelator } from '../src/questionAnswerStamp.ts';
 import { Instance } from '../src/instances.ts';
 import { formatUserQuestionAnswers } from '../shared/userQuestionAnswers.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const ONE = [{ question: 'Pick a fruit', header: 'Fruit', multiSelect: false,
   options: [{ label: 'Apple' }, { label: 'Banana' }] }];
@@ -151,7 +150,7 @@ test('an already-stamped echo consumes the slot without restamping', () => {
 });
 
 async function makeInstance() {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-qa-stamp-'));
+  const cwd = await mkdtemp('cc-qa-stamp-');
   const inst = new Instance({
     id: 'inst-qa', project: 'demo', cwd, mode: 'bypassPermissions',
     effort: 'medium', thinking: 'medium', model: 'claude-haiku-4-5',

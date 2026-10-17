@@ -33,6 +33,7 @@ const BOUND = conformanceRemoteId() === null ? {} : { remoteId: conformanceRemot
 const FLAG_TARGET = conformanceRemoteId() === null ? '' : `${conformanceRemoteId()}=`;
 import { rmrf } from './rmrf.mjs';
 import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // Every taxonomy code this file provokes for real. The last test checks the
 // union against the exported lists, so a new code cannot be added to the
@@ -57,7 +58,7 @@ const CC_SIDE_ONLY = IS_REFERENCE_PROVIDER
   : 'cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does';
 
 async function withSystem(flags, fn) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-conformance-'));
+  const dir = await mkdtemp('cc-conformance-');
   const root = await fs.realpath(dir);
   const sys = makeProviderSystem(flags);
   try {
@@ -205,7 +206,7 @@ for (const config of CAPABILITY_CONFIGS) {
   //   * KILL NOTHING — the survivor is alive in BOTH capability configurations,
   //     including the one where `close` reaps it through the process group.
   test(`${tag} detach ends the operation and kills nothing; close kills as far as it reaches`, async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-detach-'));
+    const dir = await mkdtemp('cc-detach-');
     const root = await fs.realpath(dir);
     const conn = new ProviderConnection({ launch: { argv: providerArgv(config.flags) } });
     const started = [];
@@ -649,7 +650,7 @@ test('a provider refuses a corrupted write payload — it never lands a partial 
   // would answer `writeFileResult ok` having written a TRUNCATED file: a
   // success report for a wrong answer, which is the one outcome the taxonomy
   // exists to prevent.
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-badb64-'));
+  const dir = await mkdtemp('cc-badb64-');
   const target = path.join(await fs.realpath(dir), 'must-not-exist');
   const conn = new ProviderConnection({ launch: { argv: providerArgv() } });
   try {
@@ -685,7 +686,7 @@ test('a provider refuses a corrupted write payload — it never lands a partial 
 // here binds the target it wants, and one of them asserts what an UNBOUND
 // request gets on a provider that has no default.
 async function withRemotes(fn) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-remotes-'));
+  const dir = await mkdtemp('cc-remotes-');
   const root = await fs.realpath(dir);
   const rootA = path.join(root, 'a');
   const rootB = path.join(root, 'b');
@@ -765,7 +766,7 @@ test('a request that names NO remote is refused, never answered from a default',
 });
 
 test('a provider that does not advertise remotes is never handed a remoteId', { skip: CC_SIDE_ONLY }, async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-noremotes-'));
+  const dir = await mkdtemp('cc-noremotes-');
   const root = await fs.realpath(dir);
   const sys = makeProviderSystem([]);
   try {
@@ -886,7 +887,7 @@ test('parseFindLines refuses a malformed entry rather than skipping it', () => {
 // NOT CLAIMING: that every provider implements it. It is a bucket-2 capability
 // and its absent-behaviour is the row below.
 test('describeRemote round-trips the mirror root and the exclude list', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-mirror-conf-'));
+  const dir = await mkdtemp('cc-mirror-conf-');
   const root = await fs.realpath(dir);
   const sys = makeProviderSystem(
     ['--mirror', `${FLAG_TARGET}${root}`, '--exclude', `${FLAG_TARGET}/proc`, '--exclude', `${FLAG_TARGET}/dev`]);
@@ -918,7 +919,7 @@ test('a provider without the capability advertises no mirror', { skip: CC_SIDE_O
 // NOT CLAIMING: that a second remote's operation is in flight at that instant;
 // tests/systems-mirror-advertisement.test.mjs asserts the surviving connection.
 test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-mirror-conf-'));
+  const dir = await mkdtemp('cc-mirror-conf-');
   const root = await fs.realpath(dir);
   const sys = makeProviderSystem(['--remote', `a=${root}`, '--mirror', `a=${root}`]);
   try {
@@ -941,7 +942,7 @@ test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async 
 test('an unrecognised field on a remoteDescriptor is ignored, not an error', async () => {
   const fixture = path.join(
     path.dirname(new URL(import.meta.url).pathname), 'fixtures', 'mirrorFixtureProvider.mjs');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-extrafield-'));
+  const dir = await mkdtemp('cc-extrafield-');
   const frameLog = path.join(dir, 'frames.jsonl');
   const sys = new (await import('../src/systems/providerSystem.ts')).ProviderSystem({
     id: 'extra',

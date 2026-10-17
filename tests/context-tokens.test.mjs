@@ -23,11 +23,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { Instance } from '../src/instances.ts';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-context-calls.json');
@@ -153,7 +153,7 @@ test('live: a run without the subagent envelopes ends on the same reading', asyn
   const stripped = structuredClone(FIXTURE);
   stripped.turns[0].emit = EMIT.filter(l => !l.parent_tool_use_id);
   assert.ok(stripped.turns[0].emit.length < EMIT.length, 'premise: something was stripped');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-nosub-'));
+  const dir = await mkdtemp('cc-ctx-nosub-');
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'scenario.json');
   await fs.writeFile(file, JSON.stringify(stripped));
@@ -176,7 +176,7 @@ const msgStartLine = (id, usage, model) => JSON.stringify({
 });
 
 async function makeInstance(t, { model = 'claude-haiku-4-5' } = {}) {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-tokens-'));
+  const cwd = await mkdtemp('cc-ctx-tokens-');
   t.after(() => fs.rm(cwd, { recursive: true, force: true }));
   const inst = new Instance({
     id: 'inst-ctx', project: 'demo', cwd, mode: 'bypassPermissions',
@@ -277,7 +277,7 @@ test('live: only the foreground Agent\'s tool_result carries the subagent totals
 test('unchanged: the cache-miss stamps on turn_end do not depend on call_usage', async (t) => {
   const noDelta = structuredClone(FIXTURE);
   for (const l of noDelta.turns[0].emit) if (l.type === 'stream_event' && l.event.type === 'message_delta') delete l.event.usage;
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-nodelta-'));
+  const dir = await mkdtemp('cc-ctx-nodelta-');
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'scenario.json');
   await fs.writeFile(file, JSON.stringify(noDelta));
@@ -363,7 +363,7 @@ test('growth: a same-session init clears no baseline', async (t) => {
 
 test('replay: a resumed session emits no call_usage and stamps no Agent totals, though its jsonl has them', async (t) => {
   const { sessionFilePath, localPlace } = await import('../src/projects.ts');
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-replay-'));
+  const cwd = await mkdtemp('cc-ctx-replay-');
   t.after(() => fs.rm(cwd, { recursive: true, force: true }));
   const place = localPlace(cwd);
   const agentUseId = AGENT_RESULT.message.content[0].tool_use_id;

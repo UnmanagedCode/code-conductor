@@ -10,11 +10,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0009 from '../migrations/0009-seed-legacy-shell-installer-baseline.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-seed-legacy-baseline-'));
+  return mkdtemp('cc-seed-legacy-baseline-');
 }
 
 async function withEnv(overrides, fn) {

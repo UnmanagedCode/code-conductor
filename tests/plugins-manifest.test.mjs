@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { validateManifest, readManifest, claudePluginPaths } from '../src/plugins/manifest.ts';
 import { readFixtureManifest } from './plugin-helpers.mjs';
 import { localSystem } from '../src/systems/registry.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // readManifest reads a plugin's checkout THROUGH the project's System — a
 // manifest is a file in a project tree. These fixtures are on cc's own machine,
@@ -153,7 +153,7 @@ test("scaffolds: the retired top-level 'scaffolds' key is now unknown", () => {
 });
 
 test('readManifest: missing convention fragment / scaffold file → invalid', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-frag-'));
+  const dir = await mkdtemp('manif-frag-');
   try {
     const manifest = base({
       conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project', scaffold: { file: 'scaffold/g.md' } }],
@@ -268,7 +268,7 @@ test('inputSchema subset: full validateArgs vocabulary accepted', () => {
 });
 
 test('readManifest: absent → null, bad JSON → errors, invalid keeps id for display', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-'));
+  const dir = await mkdtemp('manif-');
   try {
     assert.equal(await readManifest(sys(), dir), null);
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), '{nope');
@@ -409,7 +409,7 @@ test('playbooks: invalid shapes rejected', () => {
 });
 
 test('readManifest: a missing playbook file → invalid naming slug + file; a present one → body attached verbatim', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-pb-'));
+  const dir = await mkdtemp('manif-pb-');
   try {
     const manifest = base({ playbooks: [{ slug: 'release', file: 'playbooks/release.json' }] });
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));

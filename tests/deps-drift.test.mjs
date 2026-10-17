@@ -4,15 +4,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dependencyDrift, isSupportedRange } from '../src/depsDrift.ts';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function tmp(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-deps-drift-'));
+  const dir = mkdtempSync('cc-deps-drift-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }

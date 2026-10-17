@@ -4,14 +4,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import {
   createPlaybookLedger, ledgerFile, foldProjection, readEvents,
   runMembers, runRootOf, sameRun, liveSessionsInStage, hasEverBeen,
 } from '../src/playbookLedger.ts';
 
 async function tmpLedger() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbledger-'));
+  const dir = await mkdtemp('cc-pbledger-');
   const file = path.join(dir, 'nested', 'playbook-ledger.jsonl');
   return { dir, file, ledger: createPlaybookLedger({ file: () => file }) };
 }
@@ -237,7 +237,7 @@ test('state survives a restart: a fresh ledger folds the same projection from di
 });
 
 test('a missing ledger file folds to an empty projection', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbledger-'));
+  const dir = await mkdtemp('cc-pbledger-');
   try {
     const p = await createPlaybookLedger({ file: () => path.join(dir, 'absent.jsonl') }).load();
     assert.equal(p.bySession.size, 0);
@@ -246,7 +246,7 @@ test('a missing ledger file folds to an empty projection', async () => {
 });
 
 test('a torn or malformed line is skipped, not thrown — one bad line must not hide every worker', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbledger-'));
+  const dir = await mkdtemp('cc-pbledger-');
   const file = path.join(dir, 'ledger.jsonl');
   try {
     await fs.writeFile(file,

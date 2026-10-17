@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { runMigrations } from '../migrations/index.mjs';
 import * as m0001 from '../migrations/0001-centralize-orchestrator-state.mjs';
 import * as m0002 from '../migrations/0002-rename-group-to-workspace.mjs';
@@ -19,7 +18,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 process.env.HOME = await mkdtemp('cc-mig-home-');
 
 async function mkTempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'orch-migration-'));
+  return mkdtemp('orch-migration-');
 }
 
 async function exists(p) {

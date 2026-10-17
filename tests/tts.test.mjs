@@ -2,18 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer } from './helpers.mjs';
 import { ttsPaths, voicePathForName } from '../src/tts.ts';
 import { setTtsVoice } from '../src/appSettings.ts';
 import { DEFAULT_VOICE } from '../src/ttsModels.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_SYNTH = path.join(__dirname, 'fake-piper-synth.mjs');
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-tts-test-'));
+  return mkdtemp('cc-tts-test-');
 }
 
 async function withEnv(overrides, fn) {
