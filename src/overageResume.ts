@@ -53,8 +53,8 @@ function baseFor(kind: ResumeKind): string {
 // anything was stopped: the conductor does nothing differently for that, and it
 // cannot be stated truthfully for a mixed set.
 const DROPPED_CALLBACKS_CLAUSE =
-  'Your pending idle callbacks were dropped — re-check the sessions you were waiting ' +
-  'on directly with `mcp__code-conductor__list_sessions` and ' +
+  'Pending idle callbacks in your tree were dropped — re-check the sessions you or your ' +
+  'workers were waiting on directly with `mcp__code-conductor__list_sessions` and ' +
   '`mcp__code-conductor__get_recent_messages` instead of waiting to be woken.';
 const UNARMED_WORKERS_CLAUSE =
   'Any worker of yours that was stopped is un-armed — it will NOT resume itself, so ' +

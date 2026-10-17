@@ -6846,18 +6846,23 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _armSeveredCaller(caller: Instance): void {
     if (!this._overageActive || !this._overageResumeMode) return; // plain Stop, or released
     if (!caller.proc || !this._inUsageWindowFlow(caller)) return;  // dead, or root-exempt
-    // Already armed — or marked by a stop and arming at its idle transition (a routed
-    // session's own sever: `_directOverageStop` sets the flag before severing). The
+    // Already armed — or marked by a stop and arming at its idle transition. The
     // `autoResumeAt` / timer terms are defensive: every arming sets the flag first.
     const armed = (i: Instance) =>
       i.autoStoppedForOverage || i.autoResumeAt != null || this._autoResumeTimers.has(i.id);
+    // An armed CALLER carries the clause on its own resume (the sever loop has marked
+    // it), so no driver is resolved and its owner is untouched. This is what keeps a
+    // routed session's own sever — `_directOverageStop` sets the flag before severing —
+    // and a queued-only session's later sever from arming a second driver above it.
+    if (armed(caller)) return;
     const owner = caller.conducted ? this._ownerConductor(caller) : null;
     const driver = owner?.proc ? owner : caller;
     driver._overageDroppedCallbacks = true;
     if (armed(driver)) return;
-    // A session Pass 3 stopped un-armed stays un-armed — its own conductor drives it:
-    // the `_armResumeNow` backstop fires only after the selectors below were written,
-    // and the mid-turn branch bypasses it entirely.
+    // A worker Pass 3 stopped un-armed stays un-armed even once its owner is gone
+    // (the driver is then the worker itself): the `_armResumeNow` backstop fires only
+    // after the selectors below were written, and the mid-turn branch bypasses it
+    // entirely.
     if (driver._overageStoppedUnarmed) return;
     driver._overageWasStopped = false;
     driver._overageWasIdleParked = true;

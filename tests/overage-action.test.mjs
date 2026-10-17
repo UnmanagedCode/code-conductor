@@ -584,7 +584,7 @@ test('the stopped-workers flag is cleared by the resume, so a later trip gets th
   // It gets the CONDUCTOR text here — the paired positive that makes the clear
   // assertion below non-vacuous.
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo'
-    && /idle callbacks were dropped/.test(e.text ?? '')), { timeout: 10000 });
+    && /idle callbacks in your tree were dropped/.test(e.text ?? '')), { timeout: 10000 });
   assert.equal(conductor._overageDroppedCallbacks, false, 'the resume cleared the flag');
 
   // A second trip, this time with nothing subscribed, must deliver the PLAIN text —
@@ -642,7 +642,7 @@ test('a conductor whose workers are stopped un-armed gets the un-armed clause', 
   // because a mid-turn owned worker always has an armed wake for its conductor.
   const unarmedOnly = buildConductorResumePreamble({ unarmedWorkers: true });
   assert.match(unarmedOnly, /will NOT resume itself/, 'the un-armed clause stands alone');
-  assert.ok(!/idle callbacks were dropped/.test(unarmedOnly),
+  assert.ok(!/idle callbacks in your tree were dropped/.test(unarmedOnly),
     'and claims no severed callback when none was severed');
 });
 
@@ -897,7 +897,7 @@ test('a queued-only conductor still gets its dropped-callbacks clause', async ()
   assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'resume fired');
   const echo = await waitFor(() => cEvs.find(e => e.kind === 'user_echo'
     && /Delivering the messages you queued/.test(e.text || '')), { timeout: 10000 });
-  assert.match(echo.text, /idle callbacks were dropped/,
+  assert.match(echo.text, /idle callbacks in your tree were dropped/,
     'the softened preamble still carries the conductor clause');
   assert.match(echo.text, /and do this next/, 'alongside the queued message');
 });
@@ -1434,7 +1434,7 @@ test('routing stop-resume: an idle+subscribed conductor arms its resume with NO 
     { timeout: 10000 });
   assert.match(expected, /were idle when the overage stop fired/, 'the idle-parked base');
   assert.ok(!/continue where you left off/.test(expected), 'not the mid-work base');
-  assert.match(expected, /idle callbacks were dropped/, 'names the dropped callbacks');
+  assert.match(expected, /idle callbacks in your tree were dropped/, 'names the dropped callbacks');
   assert.match(expected, /will NOT resume itself/, 'and that the stopped workers are un-armed');
   assert.equal(conductor.proc != null, true, 'conductor never killed');
 });
@@ -1791,12 +1791,12 @@ test('D5 the three resume kinds each get their own base, and both clauses ride a
 
   // Both clauses ride every branch — they are facts the conductor must act on.
   for (const [name, text] of [['stopped', stopped], ['idle-parked', parked]]) {
-    assert.match(text, /idle callbacks were dropped/, `${name} carries the dropped-callbacks clause`);
+    assert.match(text, /idle callbacks in your tree were dropped/, `${name} carries the dropped-callbacks clause`);
     assert.match(text, /will NOT resume itself/, `${name} carries the un-armed-workers clause`);
   }
   // …and each clause is still independently gated.
   const onlyDropped = buildConductorResumePreamble({ kind: 'idle-parked', droppedCallbacks: true });
-  assert.match(onlyDropped, /idle callbacks were dropped/);
+  assert.match(onlyDropped, /idle callbacks in your tree were dropped/);
   assert.ok(!/will NOT resume itself/.test(onlyDropped), 'un-armed clause not asserted falsely');
   assert.equal(buildConductorResumePreamble({ kind: 'idle-parked' }), IDLE_PARKED_RESUME_TEXT,
     'no clauses ⇒ the bare base');
@@ -2485,4 +2485,59 @@ test('ARM-T9 a severed sub-conductor arms its owner, one hop up', async () => {
   assert.equal(instances._fireAutoResumeNow(top.id), true, 'the top conductor\'s resume fired');
   const expected = buildConductorResumePreamble({ kind: 'idle-parked', droppedCallbacks: true });
   await waitFor(() => topEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
+});
+
+// REGRESSION — Invariant: a caller that is ALREADY ARMED when it lands in a sever's
+// lost set is only marked; driver resolution never runs for it, so its owner is
+// untouched. Here the sub-conductor C is an idle caller at the trip (its wake on the
+// mid-turn W), so Pass 2 arms C — and C's own stop sever then lists C. One deadline,
+// C's; the top conductor O gains no mark, no selector and no deadline.
+test('ARM-T10 REGRESSION: a routed sub-conductor\'s own sever does not arm its owner', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { top, sub: c, worker } = await chainTree();
+  worker.prompt('STAY');
+  await waitFor(() => worker.status === 'turn');
+  assert.equal(instances.isIdleCaller(c.id), true, 'precondition: the sub-conductor holds a wake on W');
+  assertIdleNoWake(top);
+
+  const arms = spyArms();
+  try {
+    trip();
+    assert.equal(c._overageDroppedCallbacks, true, 'precondition: C\'s own stop severed its wake');
+    await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+    assert.equal(arms.count(c.id), 1, 'the sub-conductor is armed exactly once');
+    assertUnarmedUnmarked(top, 'the top conductor');
+    assert.equal(top._overageDroppedCallbacks, false, 'the top conductor is not marked');
+    assert.equal(arms.count(top.id), 0, 'the top conductor never reached arm()');
+    assert.equal(instances._overageResume.timers.size, 1, 'exactly one deadline');
+  } finally { arms.restore(); }
+});
+
+// REGRESSION — Invariant: the same holds for a caller armed QUEUED-ONLY: a sub-conductor
+// whose human typed into it during the lockout (`overage_queued` → `_armResumeNow`)
+// and that later loses a wake to the guard's sever is only marked — its owner is not
+// armed, and its own resume carries the clause alongside the queued message.
+test('ARM-T11 REGRESSION: a queued-only sub-conductor that loses a wake does not arm its owner', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { top, sub: c } = await chainTree();
+  const other = await createInst({});
+  instances.noteDispatch(c.sessionId, other.sessionId);
+
+  const arms = spyArms();
+  try {
+    trip();
+    await c.prompt('and do this next');
+    assert.equal(c._overageQueue.length, 1, 'precondition: queued');
+    assert.equal(instances._autoResumeTimers.has(c.id), true, 'precondition: armed queued-only');
+
+    injectMessageStart(other);
+    assert.equal(instances.hasArmedWake(other.id), false, 'precondition: the guard severed the wake');
+    assert.equal(c._overageDroppedCallbacks, true, 'the sub-conductor is marked');
+    assert.equal(arms.count(c.id), 1, 'and armed exactly once');
+    assertUnarmedUnmarked(top, 'the top conductor');
+    assert.equal(top._overageDroppedCallbacks, false, 'the top conductor is not marked');
+    assert.equal(arms.count(top.id), 0, 'the top conductor never reached arm()');
+    assert.equal(instances._overageResume.timers.size, 1, 'exactly one deadline');
+  } finally { arms.restore(); }
+  await waitFor(() => other.status === 'idle', { timeout: 10000 });
 });
