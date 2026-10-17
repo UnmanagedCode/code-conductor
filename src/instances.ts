@@ -6795,8 +6795,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Sever the idle-wake graph around a session, and MARK every caller that loses a
   // wait — marked, not notified: the mark only reaches a caller that has a resume
   // prompt of its own to carry it, which an un-armed or plain-`stop` caller does
-  // not. So each marked caller's sole driver — the caller, or its live conductor — is
-  // also ARMED when nothing else will arm it (`_armSeveredCaller`): an idle conductor
+  // not. So each marked caller's sole driver — its immediate live conductor, else the
+  // caller itself — is also ARMED when nothing else will arm it (`_armSeveredCaller`): an idle conductor
   // whose wake is cut has no stop and no turn→idle transition, and would otherwise
   // wait out the window with no resume.
   // The purge is bidirectional, so a third session waiting ON this one loses its
@@ -6827,14 +6827,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Arm the SOLE DRIVER of a caller that just lost a wake to the overage sever,
   // idle-parked: the sever interrupted none of its own work.
   //
-  // The driver is the caller itself, or — for a conducted caller — the nearest live
-  // owner up the spawn chain that is already armed, else the topmost live one. A
-  // conducted worker with a live owner is therefore NEVER armed here, whatever order
+  // The driver resolves as routing's does (Pass 1/2): a conducted caller's IMMEDIATE
+  // live owner (`_ownerConductor`, one hop — never further), else the caller itself.
+  // A conducted caller with a live owner is therefore NEVER armed here, whatever order
   // the severs come in: arming it too would have its conductor's re-drive land
-  // mid-turn on a worker that just self-resumed. The driver is marked
+  // mid-turn on a session that just self-resumed. That holds a level up as well — a
+  // severed sub-conductor arms its own owner, not itself. The driver is marked
   // `_overageDroppedCallbacks` so its resume tells it to re-check, rather than wait
-  // on a wake nothing will send. The climb stays inside the caller's root tree, so
-  // the flow check below holds for the driver too.
+  // on a wake nothing will send. The owner shares the caller's root tree, so the
+  // flow check below holds for the driver too.
   //
   // Gated on the lockout's mode flags plus tree membership, NOT `_overageGate().active`:
   // the gate's future-`resetsAt` rail would make this a no-op on a trip with no reset
@@ -6850,19 +6851,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // `autoResumeAt` / timer terms are defensive: every arming sets the flag first.
     const armed = (i: Instance) =>
       i.autoStoppedForOverage || i.autoResumeAt != null || this._autoResumeTimers.has(i.id);
-    let driver = caller;
-    const seen = new Set<string>([caller.id]);
-    while (!armed(driver) && driver.conducted) {
-      const owner = this._ownerConductor(driver);
-      if (!owner?.proc || seen.has(owner.id)) break;
-      seen.add(owner.id);
-      driver = owner;
-    }
+    const owner = caller.conducted ? this._ownerConductor(caller) : null;
+    const driver = owner?.proc ? owner : caller;
     driver._overageDroppedCallbacks = true;
     if (armed(driver)) return;
-    // A worker Pass 3 stopped un-armed whose owner is gone stays un-armed: the
-    // `_armResumeNow` backstop fires only after the selectors below were written, and
-    // the mid-turn branch bypasses it entirely.
+    // A session Pass 3 stopped un-armed stays un-armed — its own conductor drives it:
+    // the `_armResumeNow` backstop fires only after the selectors below were written,
+    // and the mid-turn branch bypasses it entirely.
     if (driver._overageStoppedUnarmed) return;
     driver._overageWasStopped = false;
     driver._overageWasIdleParked = true;
