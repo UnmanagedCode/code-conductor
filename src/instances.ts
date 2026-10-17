@@ -3047,7 +3047,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // over-report-running polarity as TERMINAL_TASK_STATUSES). A completed
       // Bash task that owes a re-invocation turn is still deferred correctly
       // by _taskNotificationPending, which is task-type-agnostic on purpose.
-      // Background Bash jobs are tracked display-only in _backgroundJobs, from
+      // Background Bash jobs are tracked in _backgroundJobs, from
       // the `background_tasks_changed` snapshot below, not from these frames.
       if (ev.kind === 'system' && ev.subtype === 'background_tasks_changed') {
         const next = reconcileBackgroundJobs(this._backgroundJobs, evData(ev)?.tasks, Date.now());
@@ -6795,9 +6795,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Sever the idle-wake graph around a session, and MARK every caller that loses a
   // wait — marked, not notified: the mark only reaches a caller that has a resume
   // prompt of its own to carry it, which an un-armed or plain-`stop` caller does
-  // not. So each marked caller is also ARMED when nothing else will arm it
-  // (`_armSeveredCaller`): an idle conductor whose wake is cut has no stop and no
-  // turn→idle transition, and would otherwise wait out the window with no resume.
+  // not. So each marked caller's sole driver — the caller, or its live conductor — is
+  // also ARMED when nothing else will arm it (`_armSeveredCaller`): an idle conductor
+  // whose wake is cut has no stop and no turn→idle transition, and would otherwise
+  // wait out the window with no resume.
   // The purge is bidirectional, so a third session waiting ON this one loses its
   // wait too and is marked as well.
   //
@@ -6823,42 +6824,52 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  // Arm a caller that just lost a wake to the overage sever, idle-parked: the sever
-  // interrupted none of its own work. Every check runs BEFORE any flag is written —
-  // a stray `autoStoppedForOverage` with no deadline holds `_maybeReleaseOverageLock`
-  // forever.
+  // Arm the SOLE DRIVER of a caller that just lost a wake to the overage sever,
+  // idle-parked: the sever interrupted none of its own work.
+  //
+  // The driver is the caller itself, or — for a conducted caller — the nearest live
+  // owner up the spawn chain that is already armed, else the topmost live one. A
+  // conducted worker with a live owner is therefore NEVER armed here, whatever order
+  // the severs come in: arming it too would have its conductor's re-drive land
+  // mid-turn on a worker that just self-resumed. The driver is marked
+  // `_overageDroppedCallbacks` so its resume tells it to re-check, rather than wait
+  // on a wake nothing will send. The climb stays inside the caller's root tree, so
+  // the flow check below holds for the driver too.
   //
   // Gated on the lockout's mode flags plus tree membership, NOT `_overageGate().active`:
   // the gate's future-`resetsAt` rail would make this a no-op on a trip with no reset
   // time, where routing still arms (and arm() rechecks soon).
   //
-  // A PROTECTED worker is skipped and its conductor marked instead — the conductor is
-  // the sole driver on resume, and must be told a callback is gone or it resumes in
-  // front of a worker waiting on a wake nothing will send. Order-safe without a sort:
-  // severForOverageStop lists a target's callers before the target itself, so when
-  // the guard severs a worker that holds its own waits, its owner is armed first and
-  // the worker then reads as protected.
+  // Every check runs BEFORE the arming writes — a stray `autoStoppedForOverage` with
+  // no deadline holds `_maybeReleaseOverageLock` forever.
   _armSeveredCaller(caller: Instance): void {
     if (!this._overageActive || !this._overageResumeMode) return; // plain Stop, or released
     if (!caller.proc || !this._inUsageWindowFlow(caller)) return;  // dead, or root-exempt
-    // Already armed — or marked by a stop and arming at its idle transition. Covers a
-    // routed session's own sever: `_directOverageStop` sets the flag before severing.
-    if (caller.autoStoppedForOverage || caller.autoResumeAt != null ||
-        this._autoResumeTimers.has(caller.id)) return;
-    const owner = caller.conducted ? this._ownerConductor(caller) : null;
-    // `_overageStoppedUnarmed` stays load-bearing after its owner is gone: the
-    // `_armResumeNow` backstop fires only after the selectors below were written,
-    // and the mid-turn branch bypasses it entirely.
-    if (caller._overageStoppedUnarmed || (owner?.proc && owner.autoStoppedForOverage)) {
-      if (owner) owner._overageDroppedCallbacks = true;
-      return;
+    // Already armed — or marked by a stop and arming at its idle transition (a routed
+    // session's own sever: `_directOverageStop` sets the flag before severing). The
+    // `autoResumeAt` / timer terms are defensive: every arming sets the flag first.
+    const armed = (i: Instance) =>
+      i.autoStoppedForOverage || i.autoResumeAt != null || this._autoResumeTimers.has(i.id);
+    let driver = caller;
+    const seen = new Set<string>([caller.id]);
+    while (!armed(driver) && driver.conducted) {
+      const owner = this._ownerConductor(driver);
+      if (!owner?.proc || seen.has(owner.id)) break;
+      seen.add(owner.id);
+      driver = owner;
     }
-    caller._overageWasStopped = false;
-    caller._overageWasIdleParked = true;
-    caller._overageResetsAt = this._overageResetsAt;
+    driver._overageDroppedCallbacks = true;
+    if (armed(driver)) return;
+    // A worker Pass 3 stopped un-armed whose owner is gone stays un-armed: the
+    // `_armResumeNow` backstop fires only after the selectors below were written, and
+    // the mid-turn branch bypasses it entirely.
+    if (driver._overageStoppedUnarmed) return;
+    driver._overageWasStopped = false;
+    driver._overageWasIdleParked = true;
+    driver._overageResetsAt = this._overageResetsAt;
     // Mid-turn: the status handler arms it at idle, as for a routed mid-turn stop.
-    if (caller.status === 'turn') caller.autoStoppedForOverage = true;
-    else this._armResumeNow(caller, this._overageResetsAt);
+    if (driver.status === 'turn') driver.autoStoppedForOverage = true;
+    else this._armResumeNow(driver, this._overageResetsAt);
   }
 
   // Turn-start lockout guard. A turn that begins during an overage

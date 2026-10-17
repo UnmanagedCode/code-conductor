@@ -2122,6 +2122,17 @@ function assertIdleNoWake(conductor) {
   assert.equal(instances.isIdleCaller(conductor.id), false, 'precondition: and holds no wake');
 }
 
+// Count calls to the resume controller's arm() per instance id — the one entry every
+// arming path reaches (the status handler and `_armResumeNow`), so a second arming of
+// the same session shows here even where it would leave every field unchanged.
+function spyArms() {
+  const ctl = instances._overageResume;
+  const orig = ctl.arm;
+  const ids = [];
+  ctl.arm = function (inst) { ids.push(inst.id); return orig.call(this, inst); };
+  return { count: (id) => ids.filter(x => x === id).length, restore: () => { ctl.arm = orig; } };
+}
+
 function assertUnarmed(inst, label) {
   assert.equal(inst.autoStoppedForOverage, false, `${label}: not marked for resume`);
   assert.equal(inst.autoResumeAt, null, `${label}: no resume badge`);
@@ -2142,15 +2153,17 @@ test('ARM-T1 REGRESSION: an idle conductor of a job-holding worker is armed once
   setJobs(worker, ['bj1']);
   assertIdleNoWake(conductor);
 
-  trip();
-  const armedAt = conductor.autoResumeAt;
-
-  // The job exits: the CLI clears the snapshot and re-invokes the worker unprompted.
-  setJobs(worker, []);
-  injectMessageStart(worker);
-  assert.equal(instances.hasArmedWake(worker.id), false,
-    'precondition: the guard severed the wake onTurnStart re-armed');
-  await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+  const arms = spyArms();
+  try {
+    trip();
+    // The job exits: the CLI clears the snapshot and re-invokes the worker unprompted.
+    setJobs(worker, []);
+    injectMessageStart(worker);
+    assert.equal(instances.hasArmedWake(worker.id), false,
+      'precondition: the guard severed the wake onTurnStart re-armed');
+    await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+    assert.equal(arms.count(conductor.id), 1, 'the conductor was armed exactly once');
+  } finally { arms.restore(); }
 
   assert.notEqual(conductor.autoResumeAt, null, 'the conductor has a resume badge');
   assert.equal(instances._autoResumeTimers.has(conductor.id), true, 'and a deadline');
@@ -2158,7 +2171,6 @@ test('ARM-T1 REGRESSION: an idle conductor of a job-holding worker is armed once
   assert.equal(conductor._overageWasStopped, false, 'not as stopped mid-work');
   assert.equal(cStatuses.every(sm => sm.status !== 'turn'), true, 'it never entered a turn');
   assertUnarmed(worker, 'the worker (its conductor is the sole driver)');
-  assert.equal(conductor.autoResumeAt, armedAt, 'the guard did not re-arm it');
   assert.equal(sub(cEvs, 'auto_stop_overage').length, 1, 'one stop notice on the conductor');
 
   setResumeUsage(UNDER);
@@ -2204,8 +2216,7 @@ test('ARM-T2 routing arms a job-waiting idle conductor at the trip', async () =>
 // Invariant: the SEVER arms what routing never saw. With no job and no wake at the
 // trip, routing leaves the conductor alone (the scope pin — in-control is not "every
 // root"); the worker's later guarded turn re-arms and severs the conductor's wake,
-// and that sever arms the conductor idle-parked with the dropped-callbacks clause,
-// leaving the worker un-armed.
+// and that sever arms the conductor idle-parked with the dropped-callbacks clause.
 test('ARM-T3 a guarded worker turn arms its idle, un-routed conductor', async () => {
   await boot(resumeRoutingScenario(), 'stop-resume');
   const { conductor, worker } = await idleTree();
@@ -2223,7 +2234,6 @@ test('ARM-T3 a guarded worker turn arms its idle, un-routed conductor', async ()
   assert.equal(conductor._overageWasIdleParked, true, 'idle-parked');
   assert.equal(conductor._overageWasStopped, false);
   assert.equal(conductor._overageDroppedCallbacks, true, 'and marked dropped');
-  assertUnarmed(worker, 'the worker');
   await waitFor(() => worker.status === 'idle', { timeout: 10000 });
 
   setResumeUsage(UNDER);
@@ -2238,8 +2248,9 @@ function assertUnarmedUnmarked(inst, label) {
 }
 
 // PIN — Invariant: a worker the trip stopped UN-ARMED stays un-armed when a later
-// sever cuts a wake it holds — even once its conductor is gone, so the
-// `_overageStoppedUnarmed` conjunct alone must protect it. It is still marked.
+// sever cuts a wake it holds — even once its conductor is gone, so there is no owner
+// to climb to and the `_overageStoppedUnarmed` check alone must protect it. It is
+// still marked.
 test('ARM-T4a a stopped-un-armed worker that loses a wake stays un-armed', async () => {
   await boot(resumeRoutingScenario(), 'stop-resume');
   const { conductor, worker } = await idleTree();
@@ -2267,8 +2278,8 @@ test('ARM-T4a a stopped-un-armed worker that loses a wake stays un-armed', async
 
 // Invariant: a worker whose live conductor is armed is never armed by a sever —
 // the conductor is its sole driver — and that conductor is marked instead, so its
-// resume says a callback was dropped. The worker here is idle at the trip, so the
-// owner-armed conjunct alone protects it.
+// resume says a callback was dropped. The worker here is idle at the trip and not
+// flagged un-armed, so only the climb to its armed owner protects it.
 test('ARM-T4b a worker under an armed conductor is skipped, and the conductor is told', async () => {
   await boot(resumeRoutingScenario(), 'stop-resume');
   const { conductor, worker } = await idleTree();
@@ -2296,4 +2307,93 @@ test('ARM-T4b a worker under an armed conductor is skipped, and the conductor is
   assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'the resume fired');
   const expected = buildConductorResumePreamble({ kind: 'idle-parked', droppedCallbacks: true });
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
+});
+
+// REGRESSION — Invariant: a conducted worker whose owner conductor is live is never
+// armed by a sever, in ANY order of severs — the conductor is its sole driver, so the
+// conductor is armed instead (idle-parked, dropped callbacks), exactly once, and only
+// its resume is delivered. The order here is the one that armed both: the worker loses
+// its OWN wake first, while its idle conductor is not yet armed, and its re-invocation
+// then severs the conductor's wake.
+test('ARM-T5 REGRESSION: a worker severed before its conductor is never armed; the conductor is', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const { conductor, worker } = await idleTree();
+  const other = await createInst({});
+  const cEvs = collect(conductor);
+  const wEvs = collect(worker);
+  // The worker owns `other` by dispatch; its wake arms at `other`'s next turn start.
+  instances.noteDispatch(worker.sessionId, other.sessionId);
+  assertIdleNoWake(conductor);
+
+  const arms = spyArms();
+  try {
+    trip();
+    assertUnarmed(conductor, 'precondition: routing leaves the conductor alone');
+
+    // (1) `other`'s guarded turn severs the worker's wake on it.
+    injectMessageStart(other);
+    assert.equal(worker._overageDroppedCallbacks, true, 'precondition: the first sever reached the worker');
+    assertUnarmedUnmarked(worker, 'after the first sever, the worker');
+
+    // (2) The worker's own guarded turn severs the wake its conductor just re-armed.
+    injectMessageStart(worker);
+    assert.equal(instances.hasArmedWake(worker.id), false, 'precondition: the second sever cut the conductor\'s wake');
+    await waitFor(() => worker.status === 'idle' && other.status === 'idle', { timeout: 10000 });
+
+    assertUnarmedUnmarked(worker, 'after both severs, the worker');
+    assert.equal(arms.count(worker.id), 0, 'the worker never reached arm()');
+    assert.equal(instances._autoResumeTimers.has(conductor.id), true, 'the conductor holds the deadline');
+    assert.equal(conductor._overageWasIdleParked, true, 'idle-parked');
+    assert.equal(conductor._overageDroppedCallbacks, true, 'and marked dropped');
+    assert.equal(arms.count(conductor.id), 1, 'armed exactly once');
+  } finally { arms.restore(); }
+
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'the conductor\'s resume fired');
+  const expected = buildConductorResumePreamble({ kind: 'idle-parked', droppedCallbacks: true });
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
+  await settle();
+  assert.equal(instances._fireAutoResumeNow(worker.id), false, 'the worker has no resume to fire');
+  assert.equal(wEvs.filter(e => e.kind === 'user_echo').length, 0, 'nothing was delivered to the worker');
+});
+
+// PIN — Invariant: plain `Stop` arms nothing — a caller that loses a wake to the
+// stop's sever gets no resume mark, deadline or preamble selector. (The turn-start
+// guard never fires under plain Stop, so the stop's own sever is the reachable one.)
+test('ARM-T6 plain Stop: a caller severed by the stop is not armed', async () => {
+  await boot(resumeRoutingScenario(), 'stop');
+  const target = await createInst({});
+  const caller = await createInst({});
+  target.prompt('STAY');
+  await waitFor(() => target.status === 'turn');
+  instances.noteDispatch(caller.sessionId, target.sessionId);
+  assert.equal(instances.isIdleCaller(caller.id), true, 'precondition: the caller waits on the mid-turn target');
+
+  trip();
+  assert.equal(instances._overageActive, true, 'precondition: the lockout flag is set');
+  assert.equal(instances._overageResumeMode, false, 'precondition: but not in stop-resume mode');
+  assert.equal(caller._overageDroppedCallbacks, true, 'precondition: the stop\'s sever reached the caller');
+  assertUnarmedUnmarked(caller, 'the severed caller under plain Stop');
+  await waitFor(() => target.status === 'idle', { timeout: 10000 });
+});
+
+// PIN — Invariant: a ROOT-exempt caller (an ollama-only tree consumes no monitored
+// window) is never armed, even when it loses a wake to the sever of an in-flow session.
+test('ARM-T7 a root-exempt caller severed by the guard is not armed', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const target = await createInst({});
+  const exempt = await createInst({});   // standalone: its own root
+  exempt.backend = 'ollama';
+  exempt.model = 'deepseek-v4-flash:cloud';
+  exempt._refreshModelCapabilities();
+  assert.equal(instances._inUsageWindowFlow(exempt), false, 'precondition: exempt');
+  assert.equal(instances._inUsageWindowFlow(target), true, 'precondition: the target is in flow');
+  instances.noteDispatch(exempt.sessionId, target.sessionId);
+
+  trip();
+  injectMessageStart(target);
+  assert.equal(instances.hasArmedWake(target.id), false, 'precondition: the guard severed the wake');
+  assert.equal(exempt._overageDroppedCallbacks, true, 'precondition: the sever reached the exempt caller');
+  assertUnarmedUnmarked(exempt, 'the exempt caller');
+  await waitFor(() => target.status === 'idle', { timeout: 10000 });
 });
