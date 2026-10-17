@@ -77,3 +77,28 @@ test('a console.error / console.warn fails the test or file it lands in; a spy o
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a throwing file afterEach skips the guard afterEach: its spy is still restored and its logs still fail the file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-console-guard-'));
+  const outputFile = path.join(dir, 'report.json');
+  try {
+    const r = spawnSync(process.execPath, [
+      vitestBin, 'run', '--config', 'web/vitest.config.ts', 'src/test/consoleGuard.skipped.proof.test.ts',
+      '--reporter=json', `--outputFile=${outputFile}`,
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, CC_CONSOLE_GUARD_PROOF: '1' } });
+    assert.ok(fs.existsSync(outputFile), `a report was written:\n${r.stdout}${r.stderr}`);
+    const file = JSON.parse(fs.readFileSync(outputFile, 'utf8')).testResults[0];
+    const [first, second, third] = file.assertionResults;
+    assert.equal(file.assertionResults.length, 4, 'premise: every test ran');
+    assert.equal(first.status, 'failed', 'premise: the file afterEach failed the first test');
+    assert.match(first.failureMessages.join('\n'), /file-afterEach-threw/);
+    assert.equal(second.status, 'failed', 'the spy did not outlive the test whose guard afterEach was skipped');
+    assert.match(second.failureMessages.join('\n'), /after-skipped-marker/);
+    assert.equal(third.status, 'passed');
+    assert.equal(file.status, 'failed', 'the skipped test\'s logs fail the file');
+    assert.match(file.message, /skipped-test-marker/);
+    assert.match(file.message, /last-test-marker/, 'the last test has no next beforeEach, and its logs still fail the file');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

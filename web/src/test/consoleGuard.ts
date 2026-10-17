@@ -41,7 +41,9 @@ const LEVELS = ['error', 'warn'] as const;
 // open when it fires, and its failure carries the log call's stack. A log after
 // the file's last hook is printed, not raised.
 // An opt-out is `vi.spyOn(console, level).mockImplementation(...)` plus an
-// assertion on it; a spy left installed is restored after its test.
+// assertion on it; a spy left installed is restored after its test, or before
+// the next one when an earlier afterEach threw and cut the guard's short. That
+// test's logs then fail the file.
 export function installConsoleGuard() {
   let inTest = false;
   const inTestLogs: string[] = [];
@@ -57,11 +59,7 @@ export function installConsoleGuard() {
     };
     console[level] = own[level];
   }
-  beforeEach(() => { inTest = true; });
-  afterEach(async () => {
-    // node:timers' own setImmediate: a test that left fake timers installed cannot stall it.
-    await new Promise((r) => realSetImmediate(r));
-    inTest = false;
+  const restoreSpies = () => {
     for (const level of LEVELS) {
       while ((console[level] as unknown) !== own[level]) {
         const current: unknown = console[level];
@@ -70,9 +68,27 @@ export function installConsoleGuard() {
         if ((console[level] as unknown) === current) throw new Error(`console.${level}: mockRestore did not restore it`);
       }
     }
+  };
+  // Logs of a test whose guard afterEach never ran (an earlier afterEach threw).
+  const skippedLogs: string[] = [];
+  beforeEach(() => {
+    // The guard's afterEach runs last, so a throwing one upstream skips it:
+    // restore any leftover spy here, and keep that test's logs for afterAll.
+    skippedLogs.push(...inTestLogs.splice(0));
+    restoreSpies();
+    inTest = true;
+  });
+  afterEach(async () => {
+    // node:timers' own setImmediate: a test that left fake timers installed cannot stall it.
+    await new Promise((r) => realSetImmediate(r));
+    inTest = false;
+    restoreSpies();
     if (inTestLogs.length) throw new Error(`unexpected console output in this test:\n${inTestLogs.splice(0).join('\n')}`);
   });
   afterAll(() => {
+    // The last test has no next beforeEach to collect its stranded logs.
+    const skipped = [...skippedLogs.splice(0), ...inTestLogs.splice(0)];
+    if (skipped.length) throw new Error(`unexpected console output in a test whose afterEach hooks were cut short:\n${skipped.join('\n')}`);
     if (outsideLogs.length) throw new Error(`unexpected console output outside any test:\n${outsideLogs.splice(0).join('\n')}`);
   });
 }
