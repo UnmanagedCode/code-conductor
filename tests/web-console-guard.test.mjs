@@ -2,7 +2,7 @@
 // (web/src/test/consoleGuard.ts) and nothing else. The proof fixture
 // web/src/test/consoleGuard.proof.test.ts is run through Vitest and its
 // output read back. The guard that fails a web test on console.error /
-// console.warn (installConsoleGuard) is proved through the two
+// console.warn (installConsoleGuard) is proved through the
 // consoleGuard.*.proof.test.ts fixtures (the files beside it with that name)
 // and Vitest's JSON report.
 import { test } from 'node:test';
