@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { setConductorCompactWindow, addCustomModel } from '../src/appSettings.ts';
 import { runMigrations } from '../migrations/index.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -166,7 +167,15 @@ test('a stale pre-migration sub-100k persisted value is bumped to 100k before it
       models: { conductorCompactWindowEnabled: true, conductorCompactWindowK: 50 },
     }));
 
-    await runMigrations({ root: ctx.projectsRoot, log: () => {} });
+    // Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} into the
+    // migrated root; pin HOME to a registry dir for just this call.
+    const realHome = process.env.HOME;
+    process.env.HOME = await mkdtemp('cwspawn-home-');
+    try {
+      await runMigrations({ root: ctx.projectsRoot, log: () => {} });
+    } finally {
+      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    }
 
     await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
     const env = await spawnAndGetEnv({ ctx, project: '.conduct' });

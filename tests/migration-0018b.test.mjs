@@ -24,6 +24,11 @@ import path from 'node:path';
 import os from 'node:os';
 import * as m0018b from '../migrations/0018b-backend-registry.mjs';
 import { runMigrations, ALL } from '../migrations/index.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+
+// Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} into the migrated root;
+// this file runs the whole chain, so HOME is a registry dir it owns, never the real one.
+process.env.HOME = await mkdtemp('cc-mig18b-home-');
 
 // Replay the real registered chain up to and including `lastName`, in order.
 async function runChainThrough(lastName, { root }) {
