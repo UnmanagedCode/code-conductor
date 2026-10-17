@@ -44,7 +44,9 @@ function baseFor(kind: ResumeKind): string {
   return kind === 'idle-parked' ? IDLE_PARKED_RESUME_TEXT : AUTO_RESUME_TEXT;
 }
 
-// The two facts a stopped CONDUCTOR must ACT on, appended to AUTO_RESUME_TEXT.
+// The two facts a resumed session must ACT on, appended to AUTO_RESUME_TEXT — a
+// stopped conductor's, and the dropped-callbacks one also any session the overage
+// sever arms idle-parked, a plain session with no workers included.
 // Each is gated on its OWN flag because either can hold without the other — a
 // callback can be severed with no un-armed worker (the conductor was waiting on a
 // session it does not own), and a worker can be stopped un-armed while the

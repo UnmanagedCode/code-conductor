@@ -6470,7 +6470,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //     active but was never stopped mid-work): it may already be idle;
   //   - an IDLE-PARKED conductor (`_directOverageStop` with midTurn false): it is
   //     never prompted and never interrupted, so it never transitions at all;
-  //   - an idle caller whose wake the overage sever cut (`_armSeveredCaller`): no
+  //   - the idle DRIVER of a caller whose wake the overage sever cut
+  //     (`_armSeveredCaller`) — the caller, or its immediate live conductor: no
   //     stop reached it, so nothing else arms it.
   // Deliberately touches NO preamble selector — `_overageWasStopped` /
   // `_overageWasIdleParked` are the caller's to set (queued-only leaves both false).
