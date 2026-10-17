@@ -296,7 +296,7 @@ export interface Ui {
   filterOptions(page: Page): Promise<string[]>;
   /** Selects the Projects lens and reads what `project`'s entry holds below its row. */
   projectParts(page: Page, project: string): Promise<ProjectParts>;
-  /** Selects the Projects lens and reads whether the Sessions list of `project`'s `worktree` shows the conducted separator. */
+  /** Selects the Projects lens and reads whether the Sessions list of `project`'s `worktree` shows the `Conducted · n` group label (`data-session-group="conducted"`). */
   conductedSeparator(page: Page, project: string, worktree: string): Promise<boolean>;
 
   // Settings part 3b (card 2026-0646)
@@ -1044,8 +1044,7 @@ export const next: Ui = {
   },
   async conductedSeparator(page, project, worktree) {
     await next.lens(page, 'projects');
-    return sidebar(page).locator(`ul[data-sessions="${project}:${worktree}"] > li:not([data-session-row])`)
-      .evaluateAll((es) => es.some((e) => e.textContent === 'Conducted'));
+    return (await sidebar(page).locator(`ul[data-sessions="${project}:${worktree}"] > li[data-session-group="conducted"]`).count()) > 0;
   },
 
   // Settings part 3b (card 2026-0646)

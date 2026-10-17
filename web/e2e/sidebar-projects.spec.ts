@@ -18,7 +18,7 @@ const zed = (p: string) => `Zed-${p}`;
 const long = (p: string) => `A${'W'.repeat(38 - p.length)}-${p}`;
 
 const wsSection = (sb: Locator, name: string) => sb.locator(`section[data-workspace="${name}"]`);
-const wsToggle = (sb: Locator, name: string) => wsSection(sb, name).locator('button[aria-expanded]');
+const wsToggle = (sb: Locator, name: string) => sb.locator(`section[data-workspace="${name}"] > [data-workspace-band] > button[aria-expanded]`);
 
 async function setOpen(sb: Locator, name: string, open: boolean) {
   const toggle = wsToggle(sb, name);
