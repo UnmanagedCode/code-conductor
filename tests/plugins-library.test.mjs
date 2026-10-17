@@ -34,45 +34,83 @@ async function dropLibraryEntry(name, entry) {
   await fs.writeFile(path.join(dir, name), JSON.stringify(entry));
 }
 
-test('list(): default code-share entry present with no library dir', async () => {
+// The built-in catalog is DATA the owner edits freely — adding a row or editing
+// one's id/name/description/repo/postClone/postPull must never red this file. So
+// no test below rests on a built-in row's id, name, repo, hooks, count or
+// position. A test that needs a concrete entry drops one it OWNS into the store
+// library dir and selects it by that id — never by index, never by membership of
+// the built-in set. Every built-in fact left in this file is an invariant a
+// well-formed entry cannot trip (see the whole-catalog checks).
+const OWN_ID = 'owned';
+const OWN_REPO = 'https://example.com/org/owned'; // derives OWN_PROJECT below
+const OWN_PROJECT = 'owned'; // == OWN_REPO's last path segment, .git/.bundle stripped
+async function dropOwnEntry(over = {}) {
+  await dropLibraryEntry('owned.json',
+    { id: OWN_ID, name: 'Owned', description: 'a test-owned entry', repo: OWN_REPO, ...over });
+}
+// The row this test owns, out of a list() result. A miss is a broken fixture, not
+// a catalog fact — so it fails here, by name, rather than at the assertion below.
+function ownRow(entries) {
+  const row = entries.find(r => r.id === OWN_ID);
+  assert.ok(row, `the test-owned catalog entry '${OWN_ID}' is in the list`);
+  return row;
+}
+
+test('list(): the built-in catalog serves with no library dir, uninstalled and unredacted', async () => {
   const env = await makePluginRoot();
   try {
     const lib = createPluginLibrary();
-    const { entries: rows } = await lib.list();
-    assert.equal(rows.length, 11);
-    assert.equal(rows[0].id, 'code-share');
-    assert.equal(rows[0].repo, 'https://github.com/UnmanagedCode/code-share');
-    assert.equal(rows[0].installed, false);
-    assert.equal(rows[0].installedAs, null);
-    assert.deepEqual((await lib.list()).skipped, [], 'the store dir\'s absence is silent');
-    assert.equal(rows[0].source, undefined, 'the internal source is not leaked on the wire');
+    const { entries: rows, skipped } = await lib.list();
+    assert.ok(rows.length > 0, 'the built-in catalog serves with no library dir');
+    assert.deepEqual(skipped, [], 'the store dir\'s absence is silent');
+    for (const row of rows) {
+      // Whole-catalog invariants — each is part of the loader's own contract, so
+      // a well-formed add or edit can never trip one.
+      assert.ok(row.id && typeof row.id === 'string', `every entry has a non-empty id: ${JSON.stringify(row)}`);
+      assert.ok(row.name && typeof row.name === 'string', `${row.id} has a non-empty name`);
+      assert.ok(row.repo && typeof row.repo === 'string', `${row.id} has a non-empty repo`);
+      assert.equal(row.installed, false, `${row.id} is uninstalled with no library dir`);
+      assert.equal(row.installedAs, null, `${row.id} names no install`);
+      assert.equal(row.source, undefined, 'the internal source is not leaked on the wire');
+    }
   } finally {
     await env.restore();
   }
 });
 
-test('list(): code-playwright is a built-in entry alongside code-share, with its postClone/postPull command', async () => {
+// Whole-catalog invariants a WELL-FORMED add or edit can never trip — which is
+// why they may stay while per-row content assertions may not. Anything that
+// could fire on a legitimate row is deliberately absent: "a repo's last path
+// segment equals the entry's id" fails on the catalog as it stands (the
+// `code-wiki` entry's repo is `code-karpathy-wiki`), so it is left out entirely.
+test('list(): whole-catalog invariants — unique ids, and postClone/postPull set together', async () => {
   const env = await makePluginRoot();
   try {
-    const lib = createPluginLibrary();
-    const { entries: rows } = await lib.list();
-    const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-live', 'code-mutant', 'code-playbook', 'code-playwright', 'code-review', 'code-share', 'code-system', 'code-wiki']);
-    const cp = rows.find(r => r.id === 'code-playwright');
-    assert.equal(cp.repo, 'https://github.com/UnmanagedCode/code-playwright');
-    assert.equal(cp.postClone, 'bash install.sh');
-    assert.equal(cp.postPull, 'bash install.sh');
-    assert.equal(rows.find(r => r.id === 'code-review').repo, 'https://github.com/UnmanagedCode/code-review');
-    const cs = rows.find(r => r.id === 'code-share');
-    assert.equal(cs.postClone, 'npm install');
-    assert.equal(cs.postPull, 'npm install');
-    for (const id of ['code-wiki', 'code-live', 'code-review']) {
-      const row = rows.find(r => r.id === id);
-      assert.equal(row.postClone, 'npm install', `${id} postClone`);
-      assert.equal(row.postPull, 'npm install', `${id} postPull`);
+    const { entries: rows } = await createPluginLibrary().list();
+    const ids = rows.map(r => r.id);
+    assert.equal(new Set(ids).size, ids.length, `ids are unique across the catalog: ${ids.join(', ')}`);
+    for (const row of rows) {
+      assert.equal(row.postClone === undefined, row.postPull === undefined,
+        `${row.id} sets postClone and postPull together, or neither`);
     }
-    const cm = rows.find(r => r.id === 'code-mutant');
-    assert.equal(cm.postClone, undefined, 'code-mutant has no post-hook by default');
+  } finally {
+    await env.restore();
+  }
+});
+
+test('list(): an entry\'s postClone/postPull reach the wire row; an entry without them omits both', async () => {
+  const env = await makePluginRoot();
+  try {
+    await dropOwnEntry({ postClone: 'npm install', postPull: 'npm install' });
+    await dropLibraryEntry('hookless.json',
+      { id: 'hookless', name: 'Hookless', description: 'no hooks', repo: 'https://example.com/org/hookless' });
+
+    const { entries: rows } = await createPluginLibrary().list();
+    assert.equal(ownRow(rows).postClone, 'npm install');
+    assert.equal(ownRow(rows).postPull, 'npm install');
+    const hookless = rows.find(r => r.id === 'hookless');
+    assert.equal(hookless.postClone, undefined, 'an entry with no hooks omits postClone');
+    assert.equal(hookless.postPull, undefined, 'an entry with no hooks omits postPull');
   } finally {
     await env.restore();
   }
@@ -81,6 +119,8 @@ test('list(): code-playwright is a built-in entry alongside code-share, with its
 test('list(): a dropped file adds an entry; malformed files are skipped, not fatal', async () => {
   const env = await makePluginRoot();
   try {
+    const before = (await createPluginLibrary().list()).entries.map(r => r.id);
+
     await dropLibraryEntry('extra.json', { id: 'extra-plugin', name: 'Extra', description: 'desc', repo: 'https://example.com/org/extra' });
     await fs.mkdir(libraryDir(), { recursive: true });
     await fs.writeFile(path.join(libraryDir(), 'broken.json'), '{ not json'); // truly malformed, not a stringified string
@@ -89,8 +129,10 @@ test('list(): a dropped file adds an entry; malformed files are skipped, not fat
 
     const lib = createPluginLibrary();
     const { entries: rows, skipped } = await lib.list();
-    const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-live', 'code-mutant', 'code-playbook', 'code-playwright', 'code-review', 'code-share', 'code-system', 'code-wiki', 'extra-plugin']);
+    // The catalog is data, so pin the DELTA the drop-in makes, not which rows the
+    // built-in set happens to hold.
+    assert.deepEqual(rows.map(r => r.id).sort(), [...before, 'extra-plugin'].sort(),
+      'the drop-in ADDS to the built-ins; none is displaced');
 
     // A silently-dropped drop-in is indistinguishable from one never written, so
     // both per-file skip reasons are reported by name.
@@ -131,15 +173,23 @@ test('list(): an unreadable library directory stays a silent logged degradation'
   }
 });
 
-test('list(): a dropped file whose id matches the built-in overrides it', async () => {
+test('list(): a dropped file whose id matches a built-in overrides it IN PLACE', async () => {
   const env = await makePluginRoot();
   try {
-    await dropLibraryEntry('code-share.json', { id: 'code-share', name: 'Custom Code Share', repo: 'https://example.com/fork/code-share' });
-    const lib = createPluginLibrary();
-    const { entries: rows } = await lib.list();
-    assert.equal(rows.length, 11);
-    assert.equal(rows[0].name, 'Custom Code Share');
-    assert.equal(rows[0].repo, 'https://example.com/fork/code-share');
+    // Take the id from the live built-in set rather than naming a row: which rows
+    // the catalog holds is the owner's to edit.
+    const builtins = (await createPluginLibrary().list()).entries;
+    assert.ok(builtins.length > 0, 'the built-in catalog serves');
+    const target = builtins[0];
+    await dropLibraryEntry('override.json',
+      { id: target.id, name: 'Custom Row', repo: 'https://example.com/fork/override' });
+
+    const { entries: rows } = await createPluginLibrary().list();
+    assert.equal(rows.length, builtins.length, 'an override REPLACES its row; it does not append one');
+    const idx = rows.findIndex(r => r.id === target.id);
+    assert.equal(idx, 0, 'the overridden row keeps its position');
+    assert.equal(rows[idx].name, 'Custom Row');
+    assert.equal(rows[idx].repo, 'https://example.com/fork/override');
   } finally {
     await env.restore();
   }
@@ -148,17 +198,18 @@ test('list(): a dropped file whose id matches the built-in overrides it', async 
 test('list(): installed flips true once the derived name is REGISTERED', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     // A directory alone is not an install any more: the record is.
-    const dir = path.join(env.root, '.plugins', 'code-share');
+    const dir = path.join(env.root, '.plugins', OWN_PROJECT);
     await fs.mkdir(dir, { recursive: true });
     const lib = createPluginLibrary();
-    assert.equal((await lib.list()).entries[0].installed, false,
+    assert.equal(ownRow((await lib.list()).entries).installed, false,
       'an unregistered checkout is not an install');
 
-    await registerLocalProject('code-share', dir);
+    await registerLocalProject(OWN_PROJECT, dir);
     const { entries: rows } = await lib.list();
-    assert.equal(rows[0].installed, true);
-    assert.equal(rows[0].installedAs, 'code-share');
+    assert.equal(ownRow(rows).installed, true);
+    assert.equal(ownRow(rows).installedAs, OWN_PROJECT);
   } finally {
     await env.restore();
   }
@@ -167,12 +218,14 @@ test('list(): installed flips true once the derived name is REGISTERED', async (
 test('list(): installed but not a git repo -> updateAvailable false, never throws', async () => {
   const env = await makePluginRoot();
   try {
-    await env.addProject('code-share'); // plain dir, not a git repo
+    await dropOwnEntry();
+    await env.addProject(OWN_PROJECT); // plain dir, not a git repo
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
-    assert.equal(rows[0].installed, true);
-    assert.equal(rows[0].updateAvailable, false);
-    assert.equal(rows[0].behind, null);
+    const row = ownRow(rows);
+    assert.equal(row.installed, true);
+    assert.equal(row.updateAvailable, false);
+    assert.equal(row.behind, null);
   } finally {
     await env.restore();
   }
@@ -181,7 +234,8 @@ test('list(): installed but not a git repo -> updateAvailable false, never throw
 test('list(): installed git repo with no remote configured -> updateAvailable false, never throws', async () => {
   const env = await makePluginRoot();
   try {
-    const dir = await env.addProject('code-share');
+    await dropOwnEntry();
+    const dir = await env.addProject(OWN_PROJECT);
     await git(dir, '-c', 'init.defaultBranch=main', 'init', '-q');
     await git(dir, 'config', 'user.email', 'test@test');
     await git(dir, 'config', 'user.name', 'test');
@@ -191,9 +245,10 @@ test('list(): installed git repo with no remote configured -> updateAvailable fa
 
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
-    assert.equal(rows[0].installed, true);
-    assert.equal(rows[0].updateAvailable, false);
-    assert.equal(rows[0].behind, null);
+    const row = ownRow(rows);
+    assert.equal(row.installed, true);
+    assert.equal(row.updateAvailable, false);
+    assert.equal(row.behind, null);
   } finally {
     await env.restore();
   }
@@ -204,6 +259,7 @@ test('list(): installed + up to date with origin -> updateAvailable false, behin
   const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
   const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
   try {
+    await dropOwnEntry();
     await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
     await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
     await git(seedDir, 'config', 'user.email', 'test@test');
@@ -214,14 +270,15 @@ test('list(): installed + up to date with origin -> updateAvailable false, behin
     await git(seedDir, 'remote', 'add', 'origin', remoteDir);
     await git(seedDir, 'push', '-q', 'origin', 'main');
 
-    await git(env.root, 'clone', '-q', remoteDir, 'code-share');
-    await registerLocalProject('code-share', path.join(env.root, 'code-share'));
+    await git(env.root, 'clone', '-q', remoteDir, OWN_PROJECT);
+    await registerLocalProject(OWN_PROJECT, path.join(env.root, OWN_PROJECT));
 
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
-    assert.equal(rows[0].installed, true);
-    assert.equal(rows[0].updateAvailable, false);
-    assert.equal(rows[0].behind, 0);
+    const row = ownRow(rows);
+    assert.equal(row.installed, true);
+    assert.equal(row.updateAvailable, false);
+    assert.equal(row.behind, 0);
   } finally {
     await env.restore();
     await fs.rm(remoteDir, { recursive: true, force: true });
@@ -234,6 +291,7 @@ test('list(): installed + behind origin -> updateAvailable true, behind > 0 (fet
   const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
   const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
   try {
+    await dropOwnEntry();
     await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
     await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
     await git(seedDir, 'config', 'user.email', 'test@test');
@@ -244,8 +302,8 @@ test('list(): installed + behind origin -> updateAvailable true, behind > 0 (fet
     await git(seedDir, 'remote', 'add', 'origin', remoteDir);
     await git(seedDir, 'push', '-q', 'origin', 'main');
 
-    await git(env.root, 'clone', '-q', remoteDir, 'code-share');
-    await registerLocalProject('code-share', path.join(env.root, 'code-share'));
+    await git(env.root, 'clone', '-q', remoteDir, OWN_PROJECT);
+    await registerLocalProject(OWN_PROJECT, path.join(env.root, OWN_PROJECT));
 
     // A new commit lands upstream after the install-time clone — list()
     // must fetch on its own (its comparison-only helper reads cached refs)
@@ -257,9 +315,10 @@ test('list(): installed + behind origin -> updateAvailable true, behind > 0 (fet
 
     const lib = createPluginLibrary();
     const { entries: rows } = await lib.list();
-    assert.equal(rows[0].installed, true);
-    assert.equal(rows[0].updateAvailable, true);
-    assert.equal(rows[0].behind, 1);
+    const row = ownRow(rows);
+    assert.equal(row.installed, true);
+    assert.equal(row.updateAvailable, true);
+    assert.equal(row.behind, 1);
   } finally {
     await env.restore();
     await fs.rm(remoteDir, { recursive: true, force: true });
@@ -297,9 +356,10 @@ test('install(): invalid/disallowed repo URL scheme -> 400', async () => {
 test('install(): already-installed target dir -> 409', async () => {
   const env = await makePluginRoot();
   try {
-    await env.addProject('code-share');
+    await dropOwnEntry();
+    await env.addProject(OWN_PROJECT);
     const lib = createPluginLibrary();
-    await rejectsWithStatus(lib.install('code-share'), 409);
+    await rejectsWithStatus(lib.install(OWN_ID), 409);
   } finally {
     await env.restore();
   }
@@ -314,9 +374,10 @@ test('install(): a name held by an ADOPTED project -> 409 before any clone', asy
   const env = await makePluginRoot();
   const outside = await mkdtemp('adopted-cs-');
   try {
+    await dropOwnEntry();
     await git(outside, 'init', '-q', '-b', 'main');
-    // `code-share`'s repo URL derives the project name `code-share`.
-    const adopted = await adoptProject('code-share', outside);
+    // The owned entry's repo URL derives the project name OWN_PROJECT.
+    const adopted = await adoptProject(OWN_PROJECT, outside);
     assert.equal(adopted.ok, true, JSON.stringify(adopted));
 
     const cloneCalls = [];
@@ -324,7 +385,7 @@ test('install(): a name held by an ADOPTED project -> 409 before any clone', asy
     const lib = createPluginLibrary({
       _cloneImpl: async (url, destDir) => { cloneCalls.push({ url, destDir }); return { code: 0, stdout: '', stderr: '' }; },
     });
-    await rejectsWithStatus(lib.install('code-share', { onValidated: () => { validated++; } }), 409);
+    await rejectsWithStatus(lib.install(OWN_ID, { onValidated: () => { validated++; } }), 409);
 
     // Refused during validation — nothing was cloned and the streaming switch
     // never fired, so no partial dir can be left behind either.
@@ -332,12 +393,12 @@ test('install(): a name held by an ADOPTED project -> 409 before any clone', asy
     assert.equal(validated, 0, 'onValidated never fires on a refused install');
 
     // And exactly ONE record still answers to that name: the adopted one.
-    const rows = (await listProjects()).filter(p => p.name === 'code-share');
+    const rows = (await listProjects()).filter(p => p.name === OWN_PROJECT);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].path, await fs.realpath(outside));
-    assert.deepEqual((await readProjectRecord('code-share')).location,
+    assert.deepEqual((await readProjectRecord(OWN_PROJECT)).location,
       { kind: 'local', path: await fs.realpath(outside) }, 'the adopted record is untouched');
-    await assert.rejects(() => fs.stat(path.join(env.root, '.plugins', 'code-share')),
+    await assert.rejects(() => fs.stat(path.join(env.root, '.plugins', OWN_PROJECT)),
       'no checkout was created for a name already held');
   } finally {
     await rmrf(outside);
@@ -348,11 +409,12 @@ test('install(): a name held by an ADOPTED project -> 409 before any clone', asy
 test('install(): happy path clones (fake impl), rescans, and enables the discovered plugin by default', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     let rescanned = 0;
     const enabled = [];
     const stubHost = {
       rescan: async () => { rescanned++; },
-      list: async () => [{ id: 'code-mutant', project: 'code-mutant', state: 'discovered' }],
+      list: async () => [{ id: OWN_ID, project: OWN_PROJECT, state: 'discovered' }],
       enable: async (id) => { enabled.push(id); },
     };
     const cloneCalls = [];
@@ -365,17 +427,17 @@ test('install(): happy path clones (fake impl), rescans, and enables the discove
         return { code: 0, stdout: 'Cloning...', stderr: '' };
       },
     });
-    const result = await lib.install('code-mutant');
-    assert.equal(result.name, 'code-mutant');
+    const result = await lib.install(OWN_ID);
+    assert.equal(result.name, OWN_PROJECT);
     assert.equal(cloneCalls.length, 1);
-    assert.equal(cloneCalls[0].url, 'https://github.com/UnmanagedCode/code-mutant');
-    assert.ok((await fs.stat(path.join(env.root, '.plugins', 'code-mutant'))).isDirectory());
+    assert.equal(cloneCalls[0].url, OWN_REPO);
+    assert.ok((await fs.stat(path.join(env.root, '.plugins', OWN_PROJECT))).isDirectory());
     assert.equal(rescanned, 1);
-    assert.deepEqual(enabled, ['code-mutant'], 'the freshly discovered plugin is enabled by default');
-    assert.equal(result.postClone, null, 'code-mutant has no postClone configured');
+    assert.deepEqual(enabled, [OWN_PROJECT], 'the freshly discovered plugin is enabled by default');
+    assert.equal(result.postClone, null, 'the owned entry configures no postClone');
 
     const { entries: rows } = await lib.list();
-    assert.equal(rows.find(r => r.id === 'code-mutant').installed, true);
+    assert.equal(ownRow(rows).installed, true);
   } finally {
     await env.restore();
   }
@@ -387,23 +449,24 @@ test('install(): happy path clones (fake impl), rescans, and enables the discove
 test('install(): clones into .plugins/<name> and writes the record', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     const lib = createPluginLibrary({
       _cloneImpl: async (url, destDir) => {
         await fs.mkdir(destDir, { recursive: true });
         await fs.writeFile(path.join(destDir, 'conductor.plugin.json'),
-          JSON.stringify({ id: 'code-mutant', name: 'Code Mutant', version: '1', pluginApi: 1 }));
+          JSON.stringify({ id: OWN_ID, name: 'Owned', version: '1', pluginApi: 1 }));
         return { code: 0, stdout: '', stderr: '' };
       },
     });
-    const result = await lib.install('code-mutant');
-    const target = path.join(env.root, '.plugins', 'code-mutant');
+    const result = await lib.install(OWN_ID);
+    const target = path.join(env.root, '.plugins', OWN_PROJECT);
     assert.equal(result.path, target);
     assert.ok((await fs.stat(target)).isDirectory());
-    await assert.rejects(() => fs.stat(path.join(env.root, 'code-mutant')),
+    await assert.rejects(() => fs.stat(path.join(env.root, OWN_PROJECT)),
       'nothing is created in the projects root');
 
     const { readProjectRecord } = await import('../src/projects.ts');
-    assert.deepEqual((await readProjectRecord('code-mutant')).location,
+    assert.deepEqual((await readProjectRecord(OWN_PROJECT)).location,
       { kind: 'local', path: target });
   } finally {
     await env.restore();
@@ -416,20 +479,23 @@ test('install(): clones into .plugins/<name> and writes the record', async () =>
 test('install(): an installed plugin\'s list_projects row is shape-identical to a non-plugin\'s', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     const lib = createPluginLibrary({
       _cloneImpl: async (url, destDir) => {
         await fs.mkdir(destDir, { recursive: true });
         return { code: 0, stdout: '', stderr: '' };
       },
     });
-    await lib.install('code-mutant');
+    await lib.install(OWN_ID);
     await registerLocalProject('ordinary', path.join(env.root, 'ordinary'));
 
     const { listProjects } = await import('../src/projects.ts');
     const rows = await listProjects();
     const mask = r => ({ ...r, name: '<name>', path: '<path>' });
-    assert.deepEqual(rows.map(r => r.name), ['code-mutant', 'ordinary']);
-    assert.deepEqual(mask(rows[0]), mask(rows[1]));
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map(r => r.name).sort(), ['ordinary', OWN_PROJECT].sort());
+    // Looked up by name, not by index: list_projects' order is not this test's subject.
+    assert.deepEqual(mask(rows.find(r => r.name === OWN_PROJECT)), mask(rows.find(r => r.name === 'ordinary')));
   } finally {
     await env.restore();
   }
@@ -440,9 +506,10 @@ test('install(): an installed plugin\'s list_projects row is shape-identical to 
 test('install(): a registration refused after the clone cleans the checkout up', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     // Hold the transcript directory the install's checkout would take, so
     // registerProject refuses at the write.
-    const target = path.join(env.root, '.plugins', 'code-share');
+    const target = path.join(env.root, '.plugins', OWN_PROJECT);
     const { registerProject } = await import('../src/projects.ts');
     await registerProject('holder', { kind: 'local', path: target });
 
@@ -452,7 +519,7 @@ test('install(): a registration refused after the clone cleans the checkout up',
         return { code: 0, stdout: '', stderr: '' };
       },
     });
-    await assert.rejects(() => lib.install('code-share'));
+    await assert.rejects(() => lib.install(OWN_ID));
     await assert.rejects(() => fs.stat(target), 'the clone was rolled back');
   } finally {
     await env.restore();
@@ -462,10 +529,11 @@ test('install(): a registration refused after the clone cleans the checkout up',
 test('install(): does not enable a plugin whose manifest is invalid/undiscoverable', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     const enabled = [];
     const stubHost = {
       rescan: async () => {},
-      list: async () => [{ id: 'code-mutant', project: 'code-mutant', state: 'invalid' }],
+      list: async () => [{ id: OWN_ID, project: OWN_PROJECT, state: 'invalid' }],
       enable: async (id) => { enabled.push(id); },
     };
     const lib = createPluginLibrary({
@@ -475,7 +543,7 @@ test('install(): does not enable a plugin whose manifest is invalid/undiscoverab
         return { code: 0, stdout: '', stderr: '' };
       },
     });
-    await lib.install('code-mutant');
+    await lib.install(OWN_ID);
     assert.deepEqual(enabled, [], 'a non-discovered (invalid/conflict) plugin is left disabled');
   } finally {
     await env.restore();
@@ -485,6 +553,8 @@ test('install(): does not enable a plugin whose manifest is invalid/undiscoverab
 test('install(): onValidated fires once, before the clone starts; onChunk streams clone + hook output', async () => {
   const env = await makePluginRoot();
   try {
+    // A hook must exist for the hook phase to stream: the owned entry supplies one.
+    await dropOwnEntry({ postClone: 'npm install', postPull: 'npm install' });
     const events = [];
     const lib = createPluginLibrary({
       _cloneImpl: async (url, destDir, { onChunk } = {}) => {
@@ -498,11 +568,11 @@ test('install(): onValidated fires once, before the clone starts; onChunk stream
         return { code: 0, output: 'deps installed' };
       },
     });
-    const result = await lib.install('code-playwright', {
+    const result = await lib.install(OWN_ID, {
       onValidated: () => events.push('validated'),
       onChunk: (phase, text) => events.push(`${phase}:${text.trim()}`),
     });
-    assert.equal(result.name, 'code-playwright');
+    assert.equal(result.name, OWN_PROJECT);
     assert.deepEqual(events, ['validated', 'clone:Cloning...', 'clone:done.', 'hook:deps installed']);
   } finally {
     await env.restore();
@@ -524,15 +594,16 @@ test('install(): onValidated never fires when validation rejects (unknown id)', 
 test('install(): clone failure -> 502 with stderr tail, partial dir cleaned up', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     const lib = createPluginLibrary({
       _cloneImpl: async (url, destDir) => {
         await fs.mkdir(destDir, { recursive: true }); // partial clone leaves a dir behind
         return { code: 128, stdout: '', stderr: 'fatal: could not read from remote repository\nboom' };
       },
     });
-    const e = await rejectsWithStatus(lib.install('code-share'), 502);
+    const e = await rejectsWithStatus(lib.install(OWN_ID), 502);
     assert.match(e.tail, /boom/);
-    await assert.rejects(fs.stat(path.join(env.root, 'code-share')), { code: 'ENOENT' });
+    await assert.rejects(fs.stat(path.join(env.root, OWN_PROJECT)), { code: 'ENOENT' });
   } finally {
     await env.restore();
   }
@@ -541,6 +612,7 @@ test('install(): clone failure -> 502 with stderr tail, partial dir cleaned up',
 test('install(): runs postClone after a successful clone + rescan', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry({ postClone: 'npm install', postPull: 'npm install' });
     let rescanned = 0;
     const stubHost = { rescan: async () => { rescanned++; } };
     const hookCalls = [];
@@ -555,10 +627,10 @@ test('install(): runs postClone after a successful clone + rescan', async () => 
         return { code: 0, output: 'deps installed' };
       },
     });
-    const result = await lib.install('code-playwright');
+    const result = await lib.install(OWN_ID);
     assert.equal(hookCalls.length, 1);
-    assert.equal(hookCalls[0].command, 'bash install.sh');
-    assert.equal(hookCalls[0].cwd, path.join(env.root, '.plugins', 'code-playwright'));
+    assert.equal(hookCalls[0].command, 'npm install');
+    assert.equal(hookCalls[0].cwd, path.join(env.root, '.plugins', OWN_PROJECT));
     assert.deepEqual(result.postClone, { ran: true, ok: true, code: 0, tail: 'deps installed' });
     assert.equal(rescanned, 1, 'rescan happens before postClone, per the documented order');
   } finally {
@@ -569,6 +641,7 @@ test('install(): runs postClone after a successful clone + rescan', async () => 
 test('install(): postClone failure keeps the clone on disk and resolves (not rejects) with ok:false + tail', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry({ postClone: 'npm install', postPull: 'npm install' });
     const lib = createPluginLibrary({
       _cloneImpl: async (url, destDir) => {
         await fs.mkdir(destDir, { recursive: true });
@@ -576,12 +649,12 @@ test('install(): postClone failure keeps the clone on disk and resolves (not rej
       },
       _runHookImpl: async () => ({ code: 1, output: 'npm ERR! network timeout' }),
     });
-    const result = await lib.install('code-playwright');
+    const result = await lib.install(OWN_ID);
     assert.equal(result.postClone.ran, true);
     assert.equal(result.postClone.ok, false);
     assert.equal(result.postClone.code, 1);
     assert.match(result.postClone.tail, /network timeout/);
-    assert.ok((await fs.stat(path.join(env.root, '.plugins', 'code-playwright'))).isDirectory(), 'clone was NOT removed');
+    assert.ok((await fs.stat(path.join(env.root, '.plugins', OWN_PROJECT))).isDirectory(), 'clone was NOT removed');
   } finally {
     await env.restore();
   }
@@ -600,8 +673,9 @@ test('update(): unknown library id -> 404', async () => {
 test('update(): not installed -> 404', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     const lib = createPluginLibrary();
-    await rejectsWithStatus(lib.update('code-share'), 404);
+    await rejectsWithStatus(lib.update(OWN_ID), 404);
   } finally {
     await env.restore();
   }
@@ -610,7 +684,8 @@ test('update(): not installed -> 404', async () => {
 test('update(): onValidated fires once, before the pull starts; onChunk streams pull + hook output', async () => {
   const env = await makePluginRoot();
   try {
-    await env.addProject('code-playwright');
+    await dropOwnEntry({ postClone: 'npm install', postPull: 'npm install' });
+    await env.addProject(OWN_PROJECT);
     const events = [];
     const lib = createPluginLibrary({
       _pullImpl: async (cwd, { onChunk } = {}) => {
@@ -623,11 +698,11 @@ test('update(): onValidated fires once, before the pull starts; onChunk streams 
         return { code: 0, output: 'deps installed' };
       },
     });
-    const result = await lib.update('code-playwright', {
+    const result = await lib.update(OWN_ID, {
       onValidated: () => events.push('validated'),
       onChunk: (phase, text) => events.push(`${phase}:${text.trim()}`),
     });
-    assert.equal(result.name, 'code-playwright');
+    assert.equal(result.name, OWN_PROJECT);
     assert.deepEqual(events, ['validated', 'pull:Updating...', 'pull:Fast-forward', 'hook:deps installed']);
   } finally {
     await env.restore();
@@ -637,9 +712,10 @@ test('update(): onValidated fires once, before the pull starts; onChunk streams 
 test('update(): onValidated never fires when validation rejects (not installed)', async () => {
   const env = await makePluginRoot();
   try {
+    await dropOwnEntry();
     const lib = createPluginLibrary();
     let validated = false;
-    await rejectsWithStatus(lib.update('code-share', { onValidated: () => { validated = true; } }), 404);
+    await rejectsWithStatus(lib.update(OWN_ID, { onValidated: () => { validated = true; } }), 404);
     assert.equal(validated, false);
   } finally {
     await env.restore();
@@ -649,12 +725,13 @@ test('update(): onValidated never fires when validation rejects (not installed)'
 test('update(): pull failure (not a git repo) -> 502 with tail; postPull never runs', async () => {
   const env = await makePluginRoot();
   try {
-    await env.addProject('code-share'); // plain dir, not a git repo
+    await dropOwnEntry({ postClone: 'npm install', postPull: 'npm install' });
+    await env.addProject(OWN_PROJECT); // plain dir, not a git repo
     const hookCalls = [];
     const lib = createPluginLibrary({
       _runHookImpl: async (command, cwd) => { hookCalls.push({ command, cwd }); return { code: 0, output: '' }; },
     });
-    const e = await rejectsWithStatus(lib.update('code-share'), 502);
+    const e = await rejectsWithStatus(lib.update(OWN_ID), 502);
     assert.match(e.tail, /not a git repository/i);
     assert.equal(hookCalls.length, 0);
   } finally {
@@ -1767,6 +1844,16 @@ test('list(): a missing configured dir is reported in skipped with file:null; bu
   const origWarn = console.warn;
   console.warn = () => {};
   try {
+    // The built-in set is DATA, so compare against the same catalog read with no
+    // configured dir rather than against a fixed count. That baseline has to come
+    // from a second root: settings are cached per settings path (loadSync), so a read
+    // taken in this store before seedSettings would answer from the empty cache
+    // afterwards and this seed would never be seen.
+    const plain = await makePluginRoot();
+    let baseline;
+    try { baseline = (await createPluginLibrary().list()).entries.map(r => r.id).sort(); }
+    finally { await plain.restore(); }
+
     const gone = path.join(env.root, 'not-mounted');
     await seedSettings({ plugins: { libraryDirs: [gone] } });
     const { entries, skipped } = await createPluginLibrary().list();
@@ -1774,7 +1861,8 @@ test('list(): a missing configured dir is reported in skipped with file:null; bu
     assert.equal(skipped[0].dir, gone);
     assert.equal(skipped[0].file, null);
     assert.match(skipped[0].reason, /unreadable/);
-    assert.equal(entries.length, 11);
+    assert.deepEqual(entries.map(r => r.id).sort(), baseline,
+      'an unreadable configured dir suppresses none of the built-ins');
   } finally {
     console.warn = origWarn;
     await env.restore();
