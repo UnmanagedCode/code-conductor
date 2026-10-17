@@ -32,10 +32,16 @@ import { ANCHOR, escape, only, open, sha, useViewSwitchHost, VIEWS, viewedPosts,
 useViewSwitchHost();
 
 describe('switching full-page views', () => {
-  it('every full-page view has its pairs file, so every from → to pair runs', () => {
-    const files = fs.readdirSync(path.dirname(fileURLToPath(import.meta.url)));
-    const pairs = files.map((f) => /^viewSwitch\.from-(.+)\.test\.tsx$/.exec(f)?.[1]).filter((v): v is string => v !== undefined);
-    expect(pairs.sort()).toEqual([...VIEWS].sort());
+  it('every full-page view has its pairs file, and each file runs the pairs from the view its name says, so every from → to pair runs', () => {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    const covered = fs.readdirSync(dir).flatMap((f) => {
+      const named = /^viewSwitch\.from-(.+)\.test\.tsx$/.exec(f)?.[1];
+      if (named === undefined) return [];
+      const calls = [...fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/^pairsFrom\('([^']*)'\);$/gm)].map((m) => m[1]);
+      expect(calls, `${f}: exactly one pairsFrom call, for the view in its name`).toEqual([named]);
+      return calls;
+    });
+    expect(covered.sort()).toEqual([...VIEWS].sort());
   });
 
   it('a commit row opens its review over the commit history, and Back returns to that same history', async () => {
