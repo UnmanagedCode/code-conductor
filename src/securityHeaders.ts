@@ -22,10 +22,10 @@ export function hostSecurityHeaders(): express.RequestHandler {
 
 /**
  * A proxied plugin response's headers: removes cc's own policy from `res` (the plugin owns its CSP and
- * its MIME types) and returns a copy of `upstream`, adding X-Frame-Options only when the plugin
- * declared no usable framing policy: an X-Frame-Options of DENY or SAMEORIGIN (trimmed, case-insensitive)
- * or a frame-ancestors directive in its enforcing CSP. Any other X-Frame-Options value (blank, ALLOW-FROM)
- * is ignored by browsers, so it is replaced.
+ * its MIME types) and returns a copy of `upstream`. Only an X-Frame-Options of exactly DENY or SAMEORIGIN
+ * (trimmed, case-insensitive) or a frame-ancestors directive in its enforcing CSP counts as the plugin's own
+ * framing policy; any other X-Frame-Options value (blank, ALLOW-FROM, a list) is replaced, and a page with
+ * no such policy gets X-Frame-Options SAMEORIGIN, so it always has an enforceable same-origin default.
  */
 export function proxiedPluginHeaders(res: http.ServerResponse, upstream: http.IncomingHttpHeaders): http.IncomingHttpHeaders {
   for (const name of Object.keys(HOST_SECURITY_HEADERS)) res.removeHeader(name);
