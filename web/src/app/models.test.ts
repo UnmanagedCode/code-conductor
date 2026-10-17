@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getBackendModels } from '@shared/models';
 import { loadModels, modelsSignal } from './models';

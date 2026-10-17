@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RL_BUCKET_KEYS } from '@shared/usage';
 import { accountChanged, accountUsageStore, refreshAccountUsage } from './accountUsage';

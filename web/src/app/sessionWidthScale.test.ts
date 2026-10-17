@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
   SESSION_WIDTH_DEFAULT, SESSION_WIDTH_GUTTER, SESSION_WIDTH_MIN, SESSION_WIDTH_SNAP_RADIUS, SESSION_WIDTH_SNAPS,
