@@ -68,6 +68,13 @@ test('the absolute run cap fires, fails the run, and still prints the verdict', 
     'the cap dump must carry the held-back output of a file that already passed');
   assert.equal(dumpFor(r.out, 'leaked process swept'), null,
     'the cap path must leave nothing for the run-end sweep\'s dump');
+  // Nor a line claiming the sweep's dump was skipped: the cap path DID dump, so a
+  // `not dumped` line here would be false. Premise: a sweep fired (the cap path
+  // sweeps the wedged child), or its absence would prove nothing.
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\)/,
+    `no sweep fired on the cap path, so the line below is untested:\n${r.out}`);
+  assert.doesNotMatch(r.out, /quiet-reporter: .*not dumped/,
+    `a cap run claimed held-back output was not dumped:\n${r.out}`);
   // The WEDGED file's marker is not asserted inside the cap dump: node relays it
   // to the runner either before the cap (it is then dumped) or only once the kill
   // ends the child (it then arrives with the synthesized file-level test:fail) —

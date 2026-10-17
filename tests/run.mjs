@@ -606,6 +606,12 @@ if (residual.length > 0) {
   failed++;
 }
 const unreported = [...discovered].filter(f => !reported.has(f));
+// The fake-claude guardrail's verdict, decided HERE rather than where it is
+// printed below, because the sweep must count it as a red cause. The sampler
+// stopped at the clearInterval above, so the peak is already final.
+// RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.
+const guardrailFailed = sampledProcs && process.env.RUN_REAL_CLAUDE !== '1' &&
+  peakFakeClaude > FAKE_CLAUDE_BUDGET;
 // The sweep dumps ONLY when it is the run's sole red cause — then the culprit
 // passed, and its held-back output is the only place it shows. When anything
 // else is already red, those files printed their own output, and dumping every
@@ -614,7 +620,7 @@ const unreported = [...discovered].filter(f => !reported.has(f));
 // below. A cap or stall has already dumped at its own site, so it gets no line.
 if (sweptOrphans > 0) {
   const soleCause = failed === 0 && killedFiles.size === 0 && unreported.length === 0 &&
-    !capTripped && !streamStalled;
+    !capTripped && !streamStalled && !guardrailFailed;
   if (soleCause) await printUnshown('leaked process swept');
   else if (quiet && !capTripped && !streamStalled) {
     console.log('\nquiet-reporter: a leaked process was swept, but passing files\' held-back output was ' +
@@ -684,7 +690,6 @@ for (const file of unreported) {
 }
 
 await removeSafeRoot(safeRoot.root);
-let guardrailFailed = false;
 if (sampledProcs) {
   console.log(`\nguardrail: peak concurrent fake-claude subprocesses = ${peakFakeClaude} (budget ${FAKE_CLAUDE_BUDGET})`);
   // Only when the box held more than we own. It is not decoration: it is the one
@@ -710,14 +715,12 @@ if (sampledProcs) {
       'nowhere. A counted figure near zero against a high box-wide one is not a clean run.',
     );
   }
-  // RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.
-  if (process.env.RUN_REAL_CLAUDE !== '1' && peakFakeClaude > FAKE_CLAUDE_BUDGET) {
+  if (guardrailFailed) {
     console.error(
       `guardrail FAILED: peak ${peakFakeClaude} exceeded budget ${FAKE_CLAUDE_BUDGET}. ` +
       'A test likely spawns real fake-claude subprocesses without bootServer({realProcess:true}) ' +
       '— the default must stay in-process.',
     );
-    guardrailFailed = true;
   }
 } else {
   console.log('\nguardrail: /proc unavailable — peak subprocess sampling skipped');
