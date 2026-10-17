@@ -37,10 +37,21 @@ async function dropLibraryEntry(name, entry) {
 // The built-in catalog is DATA the owner edits freely — adding a row or editing
 // one's id/name/description/repo/postClone/postPull must never red this file. So
 // no test below rests on a built-in row's id, name, repo, hooks, count or
-// position. A test that needs a concrete entry drops one it OWNS into the store
+// position. A test needing a concrete entry drops one it OWNS into the store
 // library dir and selects it by that id — never by index, never by membership of
-// the built-in set. Every built-in fact left in this file is an invariant a
-// well-formed entry cannot trip (see the whole-catalog checks).
+// the built-in set. The built-in facts that remain are the per-row invariants in
+// `list(): the built-in catalog serves with no library dir, uninstalled and
+// unredacted` — well-formedness of each row and its uninstalled wire shape, none
+// of which a well-formed entry can trip.
+//
+// Three whole-catalog checks are absent by construction, not oversight. Ids
+// cannot be shown unique: `readLibraryEntries` keys `byId` by id and returns
+// `[...byId.values()]`, and the dedup is pinned behaviourally by the "duplicate
+// ids within one dir" test. `postClone`/`postPull` need not be paired: both are
+// independently optional in the format and `readCatalogDir` sets each on its own,
+// so an unpaired entry is well-formed. And completeness of the built-in set is
+// unguardable from this file, every comparison here being a self-read of the same
+// loader with `DEFAULT_ENTRIES` unexported.
 const OWN_ID = 'owned';
 const OWN_REPO = 'https://example.com/org/owned-project'; // derives OWN_PROJECT below
 const OWN_PROJECT = 'owned-project'; // == OWN_REPO's last path segment, .git/.bundle stripped
@@ -78,17 +89,6 @@ test('list(): the built-in catalog serves with no library dir, uninstalled and u
   }
 });
 
-// Whole-catalog invariants a WELL-FORMED add or edit can never trip — which is
-// why they may stay while per-row content assertions may not. Anything that
-// could fire on a legitimate row is deliberately absent, and that turns out to
-// leave nothing here: `postClone`/`postPull` are independently optional in the
-// format (`LibraryEntry`, and `readCatalogDir` sets each on its own), so an
-// unpaired entry is well-formed; and uniqueness cannot fail at all, since
-// `readLibraryEntries` keys `byId` by id and returns `[...byId.values()]`. The
-// dedup is pinned behaviourally by the "duplicate ids within one dir" test.
-// Completeness itself is unguardable here — every comparison below is a self-read
-// of the same loader, and `DEFAULT_ENTRIES` is not exported — so a partially
-// truncated built-in set is invisible to this file by design.
 test('list(): an entry\'s postClone/postPull reach the wire row; an entry without them omits both', async () => {
   const env = await makePluginRoot();
   try {
