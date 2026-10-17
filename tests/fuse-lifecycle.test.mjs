@@ -1158,7 +1158,7 @@ describe('bootstrap.sh step 0 — the environment files are verified before anyt
 
   let seq = 0;
   // A 0600 file inside a directory of the caller's chosen mode — the fixture
-  // for the directory half of the check. a fresh temp dir is minted 0700, which is why the
+  // for the directory half of the check. A fresh temp dir is minted 0700, which is why the
   // rows above reach the FILE tests at all.
   const inDir = async (dirMode, text) => {
     const sub = path.join(dir, `d${seq++}`);

@@ -41,6 +41,15 @@ test('mkdtempSync registers into the same registry and cleanupAll removes it', a
   assert.equal(_forTesting.registry.has(path.resolve(dir)), false, 'the entry is dropped once removed');
 });
 
+test('mkdtemp and mkdtempSync refuse a missing or empty prefix', async () => {
+  const before = _forTesting.registry.size;
+  assert.throws(() => mkdtempSync(), /non-empty prefix string required/);
+  assert.throws(() => mkdtempSync(''), /non-empty prefix string required/);
+  await assert.rejects(() => mkdtemp(), /non-empty prefix string required/);
+  await assert.rejects(() => mkdtemp(''), /non-empty prefix string required/);
+  assert.equal(_forTesting.registry.size, before, 'a refused mint registers nothing');
+});
+
 // F3: validateForDeletion's direct-child / shape / symlink checks, each
 // isolated so only ONE check fails per case, driven through cleanupAll so we
 // also prove a bad entry never blocks cleanup of a good one alongside it.

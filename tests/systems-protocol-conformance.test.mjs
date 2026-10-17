@@ -26,14 +26,14 @@ import {
   assertNegotiatedCapabilities, conformanceRemoteId, listRemotesRaw, makeProviderSystem, providerArgv,
   remoteListingVerdict,
 } from './referenceProviderHarness.mjs';
+import { rmrf } from './rmrf.mjs';
+import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // The binding for a frame or a flag a fixture builds by hand. Empty — so the
 // default run is byte-identical — unless CC_CONFORMANCE_REMOTE_ID is set.
 const BOUND = conformanceRemoteId() === null ? {} : { remoteId: conformanceRemoteId() };
 const FLAG_TARGET = conformanceRemoteId() === null ? '' : `${conformanceRemoteId()}=`;
-import { rmrf } from './rmrf.mjs';
-import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
-import { mkdtemp } from './tmpRegistry.mjs';
 
 // Every taxonomy code this file provokes for real. The last test checks the
 // union against the exported lists, so a new code cannot be added to the

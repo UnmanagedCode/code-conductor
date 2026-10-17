@@ -397,7 +397,7 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
       // floor-AWARE one.
       const hostDir = await fs.stat(anchorDir);
       // AND THE ON-CHAIN FIXTURE IS `0700`-SHAPED, asserted for the same reason
-      // the off-chain one below is. a fresh temp dir gives `<box>` `0700` today, but it
+      // the off-chain one below is. A fresh temp dir gives `<box>` `0700` today, but it
       // is shared by every arm in this file: an arm that chmodded it
       // world-traversable would turn this equality into a floor-BLIND one that
       // still passes, which is exactly the quiet relaxation this arm rules out.

@@ -7,7 +7,10 @@
 // call), so instead every whole-word `mkdtemp` / `mkdtempSync` is a hit,
 // comments and strings included. Exactly three things exempt an occurrence:
 //   E1  it sits inside `import { … } from '<…>/tmpRegistry.mjs'` as an
-//       UNRENAMED specifier (a renamed one is a hit and binds nothing);
+//       UNRENAMED specifier (a renamed one is a hit and binds nothing). Only
+//       the file's LEADING import block counts — blank lines, comments and
+//       (possibly multi-line) import statements up to the first other line —
+//       so an import spelled inside a string or template binds nothing;
 //   E2  it is a bare use of a name E1 bound in the same file — not preceded by
 //       `.` / `?.`, not followed by `:`, not wrapped in quotes;
 //   E3  its line contains the `match` of an ALLOWED entry for that file.
@@ -54,12 +57,41 @@ const ALLOWED = [
 const WORD = /\b(mkdtemp|mkdtempSync)\b/g;
 const REGISTRY_IMPORT = /import\s*\{([^}]*)\}\s*from\s*(['"])[^'"]*\/tmpRegistry\.mjs\2/g;
 
-// -> [{ line, text, name, why }] for every hit the exemptions don't cover.
+// Offset where the leading block (blank lines, comments, a shebang, import
+// statements) ends; the first other token stops it.
+const LEADING_TOKENS = [
+  /\s+/y,
+  /\/\/[^\n]*/y,
+  /\/\*[\s\S]*?\*\//y,
+  /#![^\n]*/y,
+  /import\b(?:[^'";]*?\bfrom\s*)?(['"])[^'"\n]*\1[ \t]*;?/y,
+];
+function leadingBlockEnd(source) {
+  let pos = 0;
+  for (;;) {
+    let advanced = false;
+    for (const re of LEADING_TOKENS) {
+      re.lastIndex = pos;
+      const m = re.exec(source);
+      if (m && m[0].length > 0) { pos += m[0].length; advanced = true; break; }
+    }
+    if (!advanced) return pos;
+  }
+}
+
+// Allowed entries no hit used.
+export const staleEntries = (allowed, used) => allowed.filter((a) => !used.has(a));
+// Expected files the scan never visited.
+export const unscanned = (expected, scanned) => expected.filter((e) => !scanned.has(e));
+
+// -> [{ line, text, name }] for every hit the exemptions don't cover.
 // `allowed` is the ALLOWED entries for this file; `used` collects the ones that matched.
 export function scan(source, allowed = [], used = new Set()) {
   const bound = new Set();
   const importSpans = [];
+  const leadingEnd = leadingBlockEnd(source);
   for (const m of source.matchAll(REGISTRY_IMPORT)) {
+    if (m.index >= leadingEnd) continue;
     importSpans.push([m.index, m.index + m[0].length]);
     for (const spec of m[1].split(',')) {
       const t = spec.trim();
@@ -130,6 +162,14 @@ test('scanner reports every forbidden occurrence at its line', async (t) => {
     ['local function', 'x;\nfunction mkdtemp() {}', 2],
     ['line comment', 'a;\n// uses fs.mkdtemp( here', 2],
     ['string', "const s = 'fs.mkdtemp(';", 1],
+    ['dotted call beside a registry import', registryMkdtemp + 'await fs.mkdtemp(p);', 2],
+    ['optional-chained call beside a registry import', registryMkdtemp + 'await fs?.mkdtemp(p);', 2],
+    ['registry import spelled in a template, real fs import and call',
+      "const src = `import { mkdtemp } from './tmpRegistry.mjs';`;\nimport { mkdtemp } from 'node:fs/promises';\nawait mkdtemp(p);", 3],
+    ['registry import spelled in a template, destructured from fsp',
+      "const src = `import { mkdtemp } from './tmpRegistry.mjs';`;\nconst { mkdtemp } = fsp;\nawait mkdtemp(p);", 3],
+    ['registry import after other code',
+      "const x = 1;\nimport { mkdtemp } from './tmpRegistry.mjs';\nawait mkdtemp(p);", 2],
     ['comment in a file that binds only the sync name', registrySync + '// the bare mkdtemp word', 2],
   ];
   for (const [title, src, line] of cases) {
@@ -145,6 +185,7 @@ test('scanner accepts registry imports and their bare uses, and only whole words
   const cases = [
     ['single import and call', "import { mkdtemp } from './tmpRegistry.mjs';\nconst d = await mkdtemp('x-');"],
     ['multi-line import with both names', "import {\n  mkdtemp,\n  mkdtempSync,\n} from '../tmpRegistry.mjs';\nawait mkdtemp('a-');\nmkdtempSync('b-');"],
+    ['import after a leading comment block', "// header\n/* block\n   comment */\nimport fs from 'node:fs';\nimport { mkdtemp } from './tmpRegistry.mjs';\nawait mkdtemp('x-');"],
     ['identifiers that merely contain the word', 'mymkdtempHelper();\nfs.mymkdtempHelper();\nmkdtempHelper2();'],
   ];
   for (const [title, src] of cases) {
@@ -188,9 +229,20 @@ test('every exemption still matches, and every *.test.mjs was scanned', async ()
     }
     scan(src, perFile.get(r) ?? [], used);
   }
-  const stale = ALLOWED.filter((a) => !used.has(a));
+  const stale = staleEntries(ALLOWED, used);
   assert.deepEqual(stale.map((a) => `${a.file}: ${a.match}`), [], 'stale ALLOWED entries');
-  for (const e of await fs.readdir(TESTS_DIR)) {
-    if (e.endsWith('.test.mjs')) assert.ok(scanned.has(`tests/${e}`), `${e} was not scanned`);
-  }
+  const expected = (await fs.readdir(TESTS_DIR)).filter((e) => e.endsWith('.test.mjs')).map((e) => `tests/${e}`);
+  assert.deepEqual(unscanned(expected, scanned), [], 'test files the scan never visited');
+});
+
+test('staleEntries names exactly the ALLOWED entries no hit used', () => {
+  const a = { file: 'x', match: 'a', reason: 'r' };
+  const b = { file: 'x', match: 'b', reason: 'r' };
+  assert.deepEqual(staleEntries([a, b], new Set([a])), [b]);
+  assert.deepEqual(staleEntries([a, b], new Set([a, b])), []);
+});
+
+test('unscanned names exactly the expected files the scan never visited', () => {
+  assert.deepEqual(unscanned(['tests/a.test.mjs', 'tests/b.test.mjs'], new Set(['tests/a.test.mjs'])), ['tests/b.test.mjs']);
+  assert.deepEqual(unscanned(['tests/a.test.mjs'], new Set(['tests/a.test.mjs'])), []);
 });

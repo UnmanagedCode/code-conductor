@@ -140,7 +140,7 @@ const fixture = name => path.join(__dirname, 'fixtures', 'attribution', `${name}
 // teardown) need no overlap. Test 1's chain needs one slot per chained fixture and
 // overrides it — see its call site.
 async function runFixtures(names, extraEnv = {}) {
-  // Per-call sync dir for the chain's markers. a fresh temp dir, not a fixed path: two
+  // Per-call sync dir for the chain's markers. It is a fresh temp dir, not a fixed path: two
   // concurrent suite runs on one box must not see each other's markers.
   const syncDir = mkdtempSync('cc-attr-');
   let result;
