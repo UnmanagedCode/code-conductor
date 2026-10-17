@@ -7,7 +7,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { createProject } from './harness/api.ts';
-import { next, nextSidebar } from './flows/ui.ts';
+import { next } from './flows/ui.ts';
 
 type Args = { page: Page; cc: Cc };
 const EPS = 1;
@@ -106,18 +106,9 @@ async function closeWith(dialog: Locator): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
-async function openNewProject(page: Page): Promise<Locator> {
-  await next.openSidebar(page);
-  await nextSidebar(page).getByRole('button', { name: 'Project actions' }).click();
-  await page.getByRole('menuitem', { name: 'New project' }).click();
-  const dialog = page.getByRole('dialog', { name: 'New project' });
-  await expect(dialog).toBeVisible();
-  return dialog;
-}
-
 async function settled(page: Page): Promise<void> {
   // The dialog's zoom-in animation scales its boxes: measure once it has finished.
-  await page.evaluate(() => document.fonts.ready.then(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().endTime !== Infinity).map((a) => a.finished))).then(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))));
+  await page.evaluate(() => document.fonts.ready.then(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().endTime !== Infinity).map((a) => a.finished.catch(() => undefined)))).then(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))));
 }
 
 /** Measures `dialogSel`, whose list is `listSel` (null: the convention checklist), with every violation named. */
@@ -167,7 +158,7 @@ export async function editConventionsFlow({ page, cc }: Args): Promise<void> {
 export async function newProjectFlow({ page }: Args): Promise<void> {
   await routeLongCatalog(page);
   await next.open(page);
-  const dialog = await openNewProject(page);
+  const dialog = await next.openPlacementDialog(page, 'new');
   await expect(dialog.locator(`[data-convention="${PLUGINS[0]}/c0"]`)).toBeAttached();
   const vp = page.viewportSize()!;
   const { found } = await measured(page, `new project @ ${vp.width}x${vp.height}`, '[data-dialog="new-project"]', null, 'Create project');
