@@ -42,10 +42,18 @@ const NARROW = [320, 360, 412, 640, 767];
 const WIDE = [768, 900, 1024, 1140, 1280, 1440, 1920];
 const PHONE = [320, 360, 412];
 
-type Point = { viewport: number; sidebar: number | null };
-const at = (p: Point) => `${p.viewport}px${p.sidebar === null ? '' : `, sidebar ${p.sidebar}`}`;
+// The session width setting (web/src/app/sessionWidth.ts, which e2e cannot import): Settings is the session column.
+const COLUMN_KEY = 'code-conductor:session-column';
+
+type Point = { viewport: number; sidebar: number | null; column?: { width: number } };
+const at = (p: Point) => `${p.viewport}px${p.sidebar === null ? '' : `, sidebar ${p.sidebar}`}${p.column ? `, column ${p.column.width}` : ''}`;
+// The one-line tier form needs a column of about 912px or more (the Models section's @min-[39rem]); Normal never reaches it.
+const WIDE_COLUMN_POINTS: Point[] = [
+  { viewport: 1920, sidebar: 220, column: { width: 1024 } },
+  { viewport: 1440, sidebar: 288, column: { width: 1024 } },
+];
 const points = (): Point[] => test.info().project.name === 'desktop'
-  ? [...NARROW.map((viewport) => ({ viewport, sidebar: null })), ...SIDEBARS.flatMap((sidebar) => WIDE.map((viewport) => ({ viewport, sidebar })))]
+  ? [...NARROW.map((viewport) => ({ viewport, sidebar: null })), ...SIDEBARS.flatMap((sidebar) => WIDE.map((viewport) => ({ viewport, sidebar }))), ...WIDE_COLUMN_POINTS]
   : PHONE.map((viewport) => ({ viewport, sidebar: null }));
 
 // Counted from the seeded payload.
@@ -181,6 +189,11 @@ async function settle(page: Page, p: Point): Promise<void> {
   }
 }
 
+async function seedColumn(page: Page, width: number): Promise<void> {
+  await page.evaluate(([k, v]) => localStorage.setItem(k, v), [COLUMN_KEY, JSON.stringify({ width, full: false })] as const);
+  await page.reload();
+}
+
 async function seedSidebar(page: Page, width: number): Promise<void> {
   await page.evaluate(([k, v]) => localStorage.setItem(k, v), [SIDEBAR_KEY, String(width)] as const);
   await page.reload();
@@ -201,11 +214,16 @@ async function sweep(page: Page, visit: (p: Point) => Promise<void>): Promise<vo
   await routePluginRoles(page);
   await page.goto('/#settings/models');
   let seeded: number | null = null;
+  let seededColumn: number | null = null;
   for (const p of points()) {
     await page.setViewportSize({ width: p.viewport, height });
     if (p.sidebar !== null && p.sidebar !== seeded) {
       await seedSidebar(page, p.sidebar);
       seeded = p.sidebar;
+    }
+    if (p.column && p.column.width !== seededColumn) {
+      await seedColumn(page, p.column.width);
+      seededColumn = p.column.width;
     }
     await settle(page, p);
     await visit(p);
@@ -300,7 +318,7 @@ test.describe('Settings → Models layout', () => {
   // The nav is beside the content at the widest column and above it at the narrowest; every link is hit-testable and navigates.
   test('the Settings nav sits beside the content where the column has room and above it where it has not, and every section link is reachable in both forms', async ({ page }) => {
     const cases: (Point & { form: 'beside' | 'above' })[] = test.info().project.name === 'desktop'
-      ? [{ viewport: 1920, sidebar: 220, form: 'beside' }, { viewport: 768, sidebar: 560, form: 'above' }]
+      ? [{ viewport: 1920, sidebar: 220, form: 'beside' }, { viewport: 768, sidebar: 560, form: 'above' }, { viewport: 1920, sidebar: 220, column: { width: 480 }, form: 'above' }]
       : [{ viewport: 412, sidebar: null, form: 'above' }];
     const height = page.viewportSize()!.height;
     await routePluginRoles(page);
@@ -308,6 +326,7 @@ test.describe('Settings → Models layout', () => {
     for (const c of cases) {
       await page.setViewportSize({ width: c.viewport, height });
       if (c.sidebar !== null) await seedSidebar(page, c.sidebar);
+      if (c.column) await seedColumn(page, c.column.width);
       await settle(page, c);
       const { nav, section } = await page.evaluate(layout, EPS);
       if (c.form === 'beside') expect(nav.right, `${at(c)}: the nav's right edge vs the section's left`).toBeLessThanOrEqual(section.left + EPS);

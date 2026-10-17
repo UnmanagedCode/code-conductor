@@ -8,6 +8,7 @@ import { appStore, activeInstance } from '@/state/app';
 import { closeView, replaceHash, useRoute } from '@/state/route';
 import { uiStore } from '@/app/ui';
 import { loadCapabilities } from '@shared/capabilities';
+import { useSessionColumn } from '@/app/sessionWidth';
 import { cn } from '@/lib/utils';
 import { ModelsSection } from './models/ModelsSection';
 import { loadModelsSettings } from './models/store';
@@ -52,6 +53,7 @@ export function SettingsView() {
   // An unapplied overage edit and its status are dropped before the section renders, so a stale status (a live region) and an enabled Apply never reach the DOM.
   // The write runs during render, so no overageDraftStore subscriber may be mounted yet: Settings must remount on entry, or React warns "Cannot update a component while rendering a different component".
   React.useState(discardOverageDraft);
+  const column = useSessionColumn({ gutter: false });
   const navRef = React.useRef<HTMLElement>(null);
 
   React.useEffect(() => {
@@ -85,7 +87,7 @@ export function SettingsView() {
   const showBody = !current.capability || capsLoaded;
 
   return (
-    <main className="@container flex min-w-0 flex-1 flex-col" data-settings-view>
+    <main className="flex min-w-0 flex-1 flex-col" data-settings-view>
       <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur md:hidden">
         <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}><MenuIcon /></Button>
         <h1 className="flex-1 text-sm font-semibold">Settings</h1>
@@ -93,37 +95,39 @@ export function SettingsView() {
       </header>
       {/* Positioned: an absolutely positioned descendant (Radix's hidden form input) stays in this pane and scrolls with it instead of extending the page. */}
       <div className="relative min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-5 @2xl:flex-row @2xl:gap-8 @2xl:px-8 @2xl:py-10">
-          <div className="@2xl:sticky @2xl:top-10 @2xl:w-48 @2xl:shrink-0 @2xl:self-start">
-            <div className="mb-4 hidden items-center gap-1 md:flex">
-              <Button variant="ghost" size="icon-sm" aria-label="Back" title="Back (Esc)" onClick={() => closeView(activeSid)}><ArrowLeftIcon /></Button>
-              <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+        <div {...column} className="@container mx-auto w-full">
+          <div className="flex flex-col gap-6 px-4 py-5 @2xl:flex-row @2xl:gap-8 @2xl:px-8 @2xl:py-10">
+            <div className="@2xl:sticky @2xl:top-10 @2xl:w-48 @2xl:shrink-0 @2xl:self-start">
+              <div className="mb-4 hidden items-center gap-1 md:flex">
+                <Button variant="ghost" size="icon-sm" aria-label="Back" title="Back (Esc)" onClick={() => closeView(activeSid)}><ArrowLeftIcon /></Button>
+                <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+              </div>
+              <nav
+                ref={navRef}
+                aria-label="Settings sections"
+                className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-1 [scrollbar-width:none] @2xl:mx-0 @2xl:flex-col @2xl:overflow-visible @2xl:px-0"
+              >
+                {sections.map((s) => (
+                  <a
+                    key={s.id}
+                    href={`#settings/${s.id}`}
+                    aria-current={s.id === current.id ? 'page' : undefined}
+                    onClick={(e) => { e.preventDefault(); replaceHash(`#settings/${s.id}`); }}
+                    className={cn(
+                      'flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm whitespace-nowrap transition-colors',
+                      s.id === current.id
+                        ? 'bg-muted font-medium text-foreground'
+                        : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                    )}
+                  >
+                    <s.icon className="size-4" /> {s.label}
+                  </a>
+                ))}
+              </nav>
             </div>
-            <nav
-              ref={navRef}
-              aria-label="Settings sections"
-              className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-1 [scrollbar-width:none] @2xl:mx-0 @2xl:flex-col @2xl:overflow-visible @2xl:px-0"
-            >
-              {sections.map((s) => (
-                <a
-                  key={s.id}
-                  href={`#settings/${s.id}`}
-                  aria-current={s.id === current.id ? 'page' : undefined}
-                  onClick={(e) => { e.preventDefault(); replaceHash(`#settings/${s.id}`); }}
-                  className={cn(
-                    'flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm whitespace-nowrap transition-colors',
-                    s.id === current.id
-                      ? 'bg-muted font-medium text-foreground'
-                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-                  )}
-                >
-                  <s.icon className="size-4" /> {s.label}
-                </a>
-              ))}
-            </nav>
-          </div>
-          <div className="min-w-0 flex-1 pb-10" data-section={current.id}>
-            {showBody && <React.Fragment key={current.id}>{current.render()}</React.Fragment>}
+            <div className="min-w-0 flex-1 pb-10" data-section={current.id}>
+              {showBody && <React.Fragment key={current.id}>{current.render()}</React.Fragment>}
+            </div>
           </div>
         </div>
       </div>

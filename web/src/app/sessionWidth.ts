@@ -42,8 +42,12 @@ export function resetSessionWidth() {
   setSessionWidth(SESSION_WIDTH_DEFAULT);
 }
 
-/** The props every session-column box carries: the e2e hook and the width cap (desktop keeps a gutter clear per side). */
-export function useSessionColumn() {
+/**
+ * The props every width box carries: the e2e hook and the width cap. The session column keeps a gutter clear per side on
+ * desktop, which keeps its edge handles off the dock divider, the sidebar handle and the scrollbar. Full-page views have
+ * no handles and pass `gutter: false` for the plain cap.
+ */
+export function useSessionColumn({ gutter = true }: { gutter?: boolean } = {}) {
   const width = useStore(sessionWidthStore, (s) => s.width);
   const full = useStore(sessionWidthStore, (s) => s.full);
   const live = useStore(sessionWidthDragStore, (s) => s.live);
@@ -52,7 +56,7 @@ export function useSessionColumn() {
     const w = live ?? width;
     return {
       'data-session-width': sessionWidthKey({ width, full }),
-      style: { maxWidth: full ? 'none' : desktop ? `min(${w}px, 100% - ${2 * SESSION_WIDTH_GUTTER}px)` : `${w}px` },
+      style: { maxWidth: full ? 'none' : desktop && gutter ? `min(${w}px, 100% - ${2 * SESSION_WIDTH_GUTTER}px)` : `${w}px` },
     };
-  }, [width, full, live, desktop]);
+  }, [width, full, live, desktop, gutter]);
 }
