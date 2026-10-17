@@ -19,6 +19,22 @@ describe('isHappyDomIframeDisabledNotice', () => {
   });
 });
 
+describe('isHappyDomIframeDisabledNotice exactness', () => {
+  const asNotice = (message: string) => new DOMException(message, 'NotSupportedError');
+
+  it('rejects the notice text with anything before it', () => {
+    expect(isHappyDomIframeDisabledNotice([asNotice(`prefix: ${MESSAGE('http://x/')}`)])).toBe(false);
+  });
+
+  it('rejects the notice text with anything after it', () => {
+    expect(isHappyDomIframeDisabledNotice([asNotice(`${MESSAGE('http://x/')} trailing`)])).toBe(false);
+  });
+
+  it('rejects a message whose quoted URL slot contains a quote', () => {
+    expect(isHappyDomIframeDisabledNotice([asNotice('Failed to load iframe page "a" x "b". Iframe page loading is disabled.')])).toBe(false);
+  });
+});
+
 describe('dropFromError', () => {
   it('drops a matching call and forwards every other call once, untouched', () => {
     const original = vi.fn();
