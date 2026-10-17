@@ -1558,7 +1558,7 @@ test('routing: a mid-turn no-workers Conduct orchestrator is soft-interrupted, n
 
 // PIN — Invariant: the stopped orchestrator arms its resume with the FULL
 // preamble, and — having stopped no workers — gets the plain AUTO_RESUME_TEXT, not
-// the conductor variant. The variant's two claims ("your callbacks were dropped",
+// the conductor variant. The variant's two claims ("callbacks in your tree were dropped",
 // "your workers will not resume themselves") would both be false here, and a
 // resume prompt that lies sends the orchestrator chasing phantom workers.
 test('routing stop-resume: a no-workers orchestrator arms a resume and gets the PLAIN resume text', async () => {
