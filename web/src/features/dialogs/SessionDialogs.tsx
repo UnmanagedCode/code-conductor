@@ -45,6 +45,12 @@ function AskSection({ sessionId }: { sessionId: string }) {
   const [asking, setAsking] = React.useState(false);
   const abortRef = React.useRef<AbortController | null>(null);
   const nextId = React.useRef(0);
+  const listRef = React.useRef<HTMLDivElement>(null);
+
+  // Follow the newest pair: a new question or answer lands at the bottom.
+  React.useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [qa]);
 
   React.useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -75,11 +81,11 @@ function AskSection({ sessionId }: { sessionId: string }) {
   return (
     <section className="grid min-h-0 gap-2" aria-label="Ask about this session">
       {qa.length > 0 && (
-        <div className="grid max-h-[30dvh] gap-3 overflow-y-auto rounded-xl border bg-muted/20 p-3" data-qa-list>
+        <div ref={listRef} aria-live="polite" className="grid max-h-[30dvh] gap-3 overflow-y-auto rounded-xl border bg-muted/20 p-3" data-qa-list>
           {qa.map((x) => (
             <div key={x.id} className="grid gap-1 text-sm" data-qa>
               <p className="font-medium" data-qa-question>{x.question}</p>
-              {x.error != null ? <p className="text-destructive" data-qa-error>Question failed: {x.error}</p>
+              {x.error != null ? <div data-qa-error><FormError>Question failed: {x.error}</FormError></div>
                 : x.answer == null ? <p className="text-muted-foreground" data-qa-pending>Answering…</p>
                 : <div data-qa-answer><Markdown text={x.answer} />{x.costUsd != null && <span className="text-xs text-muted-foreground" data-qa-cost>Cost: {fmtCost(x.costUsd)}</span>}</div>}
             </div>

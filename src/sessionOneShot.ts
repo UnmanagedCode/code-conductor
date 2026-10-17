@@ -2,8 +2,8 @@
 // with the session text as the SYSTEM prompt and the task on stdin. The flag
 // set pins everything that sits before the user message in the CLI's cached
 // request (tool list, system prompt), so two calls over unchanged session text
-// share a cache prefix. No in-process fetch — outbound DNS is broken on this
-// host; the CLI handles all networking.
+// share a cache prefix. No in-process API client: the CLI owns auth, backend
+// resolution and networking.
 
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
@@ -96,6 +96,9 @@ export async function runSessionOneShot(opts: { systemPrompt: string; prompt: st
 
     const startMs = Date.now();
     const parsed = await new Promise<OneShotEnvelope>((resolve, reject) => {
+      // The awaits above are an abort window: a listener added to an already
+      // aborted signal never fires, so re-check synchronously before spawning.
+      if (signal?.aborted) return reject(abortError());
       const child = spawn(command, args, {
         ...hostPlatform.spawnOptions('child'),
         cwd: spawnDir,

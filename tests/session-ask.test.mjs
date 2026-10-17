@@ -11,7 +11,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { buildSessionPrompt, flattenTranscript } from '../src/summarize.ts';
+import { runSessionOneShot } from '../src/sessionOneShot.ts';
 import { orchStoreRoot, localPlace } from '../src/projects.ts';
+import { summarySpawnDir } from '../src/sessionOneShot.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -178,6 +180,8 @@ describe('POST /api/sessions/:sid/ask', () => {
       const c = await callCaptured(dir, 'ask', 'POST', '/api/sessions/sid-c4/ask', { question: 'q' });
       assert.equal(c.r.status, 200);
       assert.ok(c.argv.includes('--no-session-persistence'));
+      const jsonl = path.join(claudeProjectsRoot, summarySpawnDir().replace(/[^A-Za-z0-9-]/g, '-'), `${c.argv[c.argv.indexOf('--session-id') + 1]}.jsonl`);
+      assert.equal(await fs.stat(jsonl).catch(() => null), null, 'no CLI transcript was written');
       const sum = await api(baseUrl, 'GET', '/api/sessions/sid-c4/summary');
       assert.equal(sum.body.data.short, null);
       assert.equal(await fs.stat(c.sys.path).catch(() => null), null, 'the system-prompt file is gone');
@@ -250,6 +254,34 @@ describe('POST /api/sessions/:sid/ask', () => {
       assert.match(JSON.stringify(c.r.body), /fake failure/);
       assert.equal(await fs.stat(c.sys.path).catch(() => null), null);
     });
+  });
+});
+
+describe('runSessionOneShot abort window', () => {
+  // D1 pins: an abort landing after the entry guard but before spawn rejects
+  // AbortError, starts no child, and leaves no temp dir. The signal reports
+  // not-aborted to the entry guard and aborted to every later read, so the
+  // abort lands in the mkdir/mkdtemp/writeFile window deterministically.
+  test('D1: an abort between the entry guard and spawn rejects AbortError, spawns no child, and removes the temp dir', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ask-d1-'));
+    const argvOut = path.join(tmp, 'argv.json');
+    const saved = { TMPDIR: process.env.TMPDIR, CLAUDE_BIN: process.env.CLAUDE_BIN, A: process.env.FAKE_SUMMARIZE_ARGV_FILE };
+    process.env.TMPDIR = tmp;
+    process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+    process.env.FAKE_SUMMARIZE_ARGV_FILE = argvOut;
+    let reads = 0;
+    const signal = { get aborted() { return ++reads > 1; }, addEventListener() {}, removeEventListener() {} };
+    try {
+      await assert.rejects(runSessionOneShot({ systemPrompt: 's', prompt: 'p', signal }), { name: 'AbortError' });
+      await new Promise(r => setTimeout(r, 200));
+      assert.equal(await fs.stat(argvOut).catch(() => null), null, 'no child ran');
+      assert.deepEqual((await fs.readdir(tmp)).filter(n => n.startsWith('cc-oneshot-')), []);
+    } finally {
+      for (const [k, v] of [['TMPDIR', saved.TMPDIR], ['CLAUDE_BIN', saved.CLAUDE_BIN], ['FAKE_SUMMARIZE_ARGV_FILE', saved.A]]) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 });
 

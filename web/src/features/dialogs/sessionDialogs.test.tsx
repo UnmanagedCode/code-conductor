@@ -271,6 +271,27 @@ describe('session summary — ask', () => {
     expect(document.body.textContent).not.toContain('LATE ANSWER');
   });
 
+  it('the Q&A list is pinned to its bottom whenever a pair is appended or answered', async () => {
+    // Invariant: each list change writes scrollTop = scrollHeight, so the newest pair stays in view; the list is a polite live region.
+    const h = held();
+    routeFetch({ ...SUMMARY_GET, 'POST /api/sessions/s1/ask': () => h.answer });
+    const heights = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(777);
+    try {
+      render(<DialogsHost />);
+      await openIt();
+      type('q');
+      fireEvent.click(askButton());
+      await waitFor(() => expect(document.querySelector('[data-qa-pending]')).not.toBeNull());
+      const list = document.querySelector<HTMLElement>('[data-qa-list]')!;
+      expect(list.scrollTop).toBe(777);
+      expect(list.getAttribute('aria-live')).toBe('polite');
+      heights.mockReturnValue(999);
+      h.release({ json: { ok: true, answer: 'A.', costUsd: null, usage: {} } });
+      await waitFor(() => expect(document.querySelector('[data-qa-answer]')).not.toBeNull());
+      expect(list.scrollTop).toBe(999);
+    } finally { heights.mockRestore(); }
+  });
+
   it('a failed question shows its error on that pair and Ask works again', async () => {
     // Invariant: a refused ask shows the server's message on its own pair, keeps the question, and leaves Ask usable for the next draft.
     routeFetch({ ...SUMMARY_GET, 'POST /api/sessions/s1/ask': () => ({ status: 500, json: { error: 'boom' } }) });
@@ -278,7 +299,9 @@ describe('session summary — ask', () => {
     await openIt();
     type('q1');
     fireEvent.click(askButton());
-    await waitFor(() => expect(document.querySelector('[data-qa-error]')?.textContent).toContain('boom'));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('boom');
+    expect(document.querySelector('[data-qa-error]')?.contains(alert)).toBe(true);
     expect(pairs()[0].textContent).toContain('q1');
     expect(askButton().disabled).toBe(true);
     type('q2');

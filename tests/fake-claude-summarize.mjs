@@ -5,8 +5,9 @@
 // Test seams:
 //   FAKE_SUMMARIZE_CWD_OUT  — path to write process.cwd() to (for cwd assertion)
 //   FAKE_SUMMARIZE_WRITE_JSONL=1 — simulate the real CLI by creating a dummy
-//     artifact jsonl at <CLAUDE_PROJECTS_ROOT>/<encodedCwd>/<sessionId>.jsonl
-//     (so the cleanup test can verify it gets deleted).
+//     artifact jsonl at <CLAUDE_PROJECTS_ROOT>/<encodedCwd>/<sessionId>.jsonl,
+//     unless `--no-session-persistence` is in argv (as the real CLI, it then
+//     writes none).
 //   FAKE_SUMMARIZE_ARGV_FILE — path to dump the received argv as JSON (for
 //     asserting the composed command line, e.g. a backend template's prefix).
 //   FAKE_SUMMARIZE_ENV_FILE  — path to dump process.env as JSON (for asserting a
@@ -76,7 +77,7 @@ if (process.env.FAKE_SUMMARIZE_CWD_OUT) {
 }
 
 // Simulate the real CLI artifact jsonl so cleanup can be tested.
-if (process.env.FAKE_SUMMARIZE_WRITE_JSONL === '1' && sessionId) {
+if (process.env.FAKE_SUMMARIZE_WRITE_JSONL === '1' && sessionId && !args.includes('--no-session-persistence')) {
   // RESOLVED THE WAY THE REAL CLI DOES: its projects root is
   // `<CLAUDE_CONFIG_DIR ?? ~/.claude>/projects`, and it knows nothing about
   // CLAUDE_PROJECTS_ROOT — that one is cc's own reader override, honoured here
