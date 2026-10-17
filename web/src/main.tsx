@@ -11,6 +11,7 @@ import { startViewedMarker } from '@/app/viewedMarker';
 import { startNotifications } from '@/features/notifications';
 import { startVoice } from '@/features/voice';
 import { startPluginSessionBridge } from '@/features/views/pluginSession';
+import { startPluginSessionWidth } from '@/features/views/pluginSessionWidth';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -26,3 +27,4 @@ startViewedMarker();
 startNotifications();
 startVoice();
 startPluginSessionBridge();
+startPluginSessionWidth();

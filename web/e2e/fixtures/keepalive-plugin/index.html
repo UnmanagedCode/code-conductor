@@ -7,6 +7,8 @@
 <script>
 // The theme the bridge applied by the time the head was parsed (readTheme, web/e2e/harness/pluginProbe.ts).
 window.__themeAtParse = document.documentElement.getAttribute('data-cc-theme');
+// The session width the bridge applied by then (readWidth).
+window.__widthAtParse = document.documentElement.style.getPropertyValue('--cc-session-width');
 </script>
 <link rel="stylesheet" href="/pluginTheme.css">
 <style>body { background: var(--background); }</style>

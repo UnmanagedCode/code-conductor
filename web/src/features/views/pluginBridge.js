@@ -1,6 +1,6 @@
 // Conductor plugin bridge — served by the conductor at /pluginBridge.js and
 // included by plugin frontends as a blocking `<script src="/pluginBridge.js">`
-// first in `<head>` (no `defer`, so the theme is applied before first paint).
+// first in `<head>` (no `defer`, so the theme and session width are applied before first paint).
 // Standalone (not iframed, or served outside a /plugins/<id>/ mount) it is a
 // no-op, so plugins stay independently runnable (a 404 for this script
 // outside the embed is harmless).
@@ -19,6 +19,12 @@
 // Theme (not a message): the host's resolved theme — `.dark` on the parent's
 // <html> — is mirrored onto this page's <html> as `.dark` plus
 // `data-cc-theme="light|dark"`, when the script runs and on every change.
+//
+// Session width (not a message): cc's committed session-column width is
+// mirrored as `--cc-session-width` on this page's <html> — `<n>px`, or `none`
+// under Full — when the script runs and on every change. It is unset
+// standalone or under an unreadable parent, so `var(--cc-session-width,
+// <fallback>)` applies.
 //
 // History contract: entering a plugin costs exactly ONE joint history entry,
 // so hardware Back always lands on the conductor. The bridge enforces it by
@@ -47,6 +53,13 @@
     };
     syncTheme();
     new MutationObserver(syncTheme).observe(host, { attributes: true, attributeFilter: ['class'] });
+    var syncWidth = function () {
+      var w = host.getAttribute('data-cc-session-width');
+      if (w) root.style.setProperty('--cc-session-width', w);
+      else root.style.removeProperty('--cc-session-width');
+    };
+    syncWidth();
+    new MutationObserver(syncWidth).observe(host, { attributes: true, attributeFilter: ['data-cc-session-width'] });
   }
 
   function currentPath() {
