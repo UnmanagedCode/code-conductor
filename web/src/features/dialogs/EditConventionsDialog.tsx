@@ -61,7 +61,7 @@ function EditConventionsBody({ project }: { project: Project }) {
   }
 
   return (
-    <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+    <form className="flex min-h-0 flex-col gap-4" onSubmit={(e) => { e.preventDefault(); void save(); }}>
       <DialogHeader>
         <DialogTitle className="flex items-center gap-2"><ListChecksIcon className="size-5 text-primary" /> Conventions of {project.name}</DialogTitle>
         <DialogDescription>
@@ -96,7 +96,7 @@ export function EditConventionsDialog() {
   const key = useOpenKey(slot);
   return (
     <Dialog open={!!slot} onOpenChange={(o) => { if (!o) closeDialog('editConventions'); }}>
-      {slot && <DialogContent className="sm:max-w-lg" data-dialog="edit-conventions"><EditConventionsBody key={key} project={slot.project} /></DialogContent>}
+      {slot && <DialogContent className="flex flex-col sm:max-w-lg" data-dialog="edit-conventions"><EditConventionsBody key={key} project={slot.project} /></DialogContent>}
     </Dialog>
   );
 }

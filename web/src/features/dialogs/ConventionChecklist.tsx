@@ -27,7 +27,8 @@ export function ConventionChecklist({ groups, picked, onToggle, idPrefix }: {
 }) {
   if (groups.length === 0) return null;
   return (
-    <div className="grid max-h-64 gap-3 overflow-y-auto rounded-xl border p-3">
+    <div className="relative grid max-h-64 gap-3 overflow-y-auto rounded-xl border p-3">
+      {/* Positioned: Radix's hidden form inputs stay in this list and scroll with it instead of extending the dialog. */}
       {groups.map((g) => (
         <fieldset key={g.label} className="grid gap-2">
           <legend className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{g.label}</legend>

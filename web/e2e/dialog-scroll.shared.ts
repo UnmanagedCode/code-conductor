@@ -117,7 +117,7 @@ async function openNewProject(page: Page): Promise<Locator> {
 
 async function settled(page: Page): Promise<void> {
   // The dialog's zoom-in animation scales its boxes: measure once it has finished.
-  await page.evaluate(() => document.fonts.ready.then(() => Promise.all(document.getAnimations().map((a) => a.finished))).then(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))));
+  await page.evaluate(() => document.fonts.ready.then(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().endTime !== Infinity).map((a) => a.finished))).then(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))));
 }
 
 /** Measures `dialogSel`, whose list is `listSel` (null: the convention checklist), with every violation named. */
@@ -148,6 +148,9 @@ export async function editConventionsFlow({ page, cc }: Args): Promise<void> {
     const at = `edit conventions @ ${vp.width}x${vp.height}`;
     const dialog = await next.openEditConventions(page, project);
     await expect(dialog.locator(`[data-convention="${PLUGINS[0]}/c0"]`)).toBeAttached();
+    // Save stays disabled, and so unreachable by a pointer, until the selection changes.
+    await dialog.locator('[data-convention]').first().click();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
     const r = await measured(page, at, '[data-dialog="edit-conventions"]', null, 'Save', true);
     found.push(...r.found);
     if (vp.height === SHORT_HEIGHT) {

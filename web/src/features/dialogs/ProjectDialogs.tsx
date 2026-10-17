@@ -565,7 +565,8 @@ function WorkspaceBody({ original }: { original: string | null }) {
         {projects.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-empty-hint>No projects yet. Create one first.</p>
         ) : (
-          <ul className="grid max-h-64 gap-0.5 overflow-y-auto rounded-xl border p-1" data-project-list>
+          // Positioned: Radix's hidden form inputs stay in this list and scroll with it instead of extending the dialog.
+          <ul className="relative grid max-h-64 gap-0.5 overflow-y-auto rounded-xl border p-1" data-project-list>
             {projects.map((p) => {
               const current = typeof p.workspace === 'string' && p.workspace.trim() ? p.workspace.trim() : null;
               const id = `gd-p-${p.name}`;
