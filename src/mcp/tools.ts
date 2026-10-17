@@ -620,6 +620,13 @@ export function buildTools(): Tool[] {
               'Omitted ⇒ a random short id. Worth setting for a worktree others will be based on, whose branch ' +
               'is read in git log long after it is created.',
           },
+          lock: {
+            type: 'boolean',
+            description:
+              'true ⇒ create it already locked, exactly as if the user had locked it: merging it and deleting it ' +
+              '(even with force) are refused WORKTREE_LOCKED, and no tool unlocks it — only the user can, from the cc UI. ' +
+              'For a worktree that must never be landed or retired by an agent. Omitted ⇒ unlocked.',
+          },
         },
         required: ['project'],
       },

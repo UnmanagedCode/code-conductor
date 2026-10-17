@@ -1157,7 +1157,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   });
 
   // Set or clear the user's lock on a worktree (see WorktreeMeta.locked). The
-  // only writer of it on any surface: there is no MCP twin, by design.
+  // only writer that clears it, or sets it on an existing worktree: there is no
+  // MCP twin, by design (MCP create_worktree can only set it at creation).
   r.put('/projects/:name/worktrees/:wt/lock', async (req, res, next) => {
     try {
       const locked = jsonBody(req).locked;

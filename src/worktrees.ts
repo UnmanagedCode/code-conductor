@@ -69,8 +69,9 @@ export interface WorktreeMeta {
   // disappear from every listing in the app.
   baseWorktree?: string;
   // The user's lock. Absent means unlocked — the canonical shape: unlocking
-  // deletes the key, never writes `false`. Its one writer is setWorktreeLock,
-  // browser-only by construction. It refuses two things: merging this worktree
+  // deletes the key, never writes `false`. Its writers are setWorktreeLock
+  // (browser-only, set or clear) and createWorktree's `lock` option (set at
+  // creation only); no agent can clear it. It refuses two things: merging this worktree
   // into its base (gate 0 of mergeWorktreeIntoParent, so every merge surface
   // inherits it) and an AGENT deleting it (the MCP deleteWorktree handler, even
   // under force). The human's delete paths and sync never read it. Read it only
@@ -547,6 +548,8 @@ interface CreateWorktreeOptions {
   // Human-readable name, slugified into the branch + directory name in place of
   // the random short id.
   name?: string;
+  // Create the record already carrying the user's lock (see WorktreeMeta.locked).
+  lock?: boolean;
 }
 
 // Create a fresh worktree off the base's current HEAD — the project root by
@@ -554,7 +557,7 @@ interface CreateWorktreeOptions {
 // metadata that was written to disk.
 export async function createWorktree(
   projectName: string,
-  { baseWorktree, name }: CreateWorktreeOptions = {},
+  { baseWorktree, name, lock }: CreateWorktreeOptions = {},
 ): Promise<CreateWorktreeResult> {
   const proj = await getProject(projectName);
   const system = proj.system;
@@ -675,6 +678,9 @@ export async function createWorktree(
     // listDependentWorktrees matches on.
     ...(baseWorktreeName !== undefined ? { baseWorktree: baseWorktreeName } : {}),
     createdAt: new Date().toISOString(),
+    // Last, where setWorktreeLock's spread-then-set puts it, so a record locked at
+    // creation is byte-identical to the same record locked by hand.
+    ...(lock === true ? { locked: true as const } : {}),
   };
   await writeMeta(projectName, id, meta);
   // Run the per-project post-worktree-create hook. Runs AFTER the worktree
@@ -864,7 +870,8 @@ export async function repairWorktreesAfterProjectMove(projectName: string): Prom
 
 // Set or clear the user's lock (see WorktreeMeta.locked). Browser-only by
 // construction: routes.ts is its one importer and no MCP handler reaches it,
-// so no agent can lock or unlock a worktree (pinned by
+// so no agent can unlock a worktree, and an agent can lock one only at
+// creation (createWorktree's `lock`) (pinned by
 // tests/worktree-lock.test.mjs). Returns the stored state, not the requested one.
 export async function setWorktreeLock(
   projectName: string, worktreeName: string, locked: boolean,
