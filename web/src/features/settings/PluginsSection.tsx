@@ -19,6 +19,13 @@ const STATE_VARIANT: Record<string, 'success' | 'warning' | 'destructive' | 'sec
   invalid: 'destructive', incompatible: 'warning', conflict: 'warning',
 };
 
+type PluginAction = 'rescan' | 'enable' | 'start' | 'stop' | 'restart' | 'disable' | 'version';
+type Acting = { id: string | null; action: PluginAction };
+const PENDING_LABEL: Record<PluginAction, string> = {
+  rescan: 'Rescanning…', enable: 'Enabling…', start: 'Starting…', stop: 'Stopping…',
+  restart: 'Restarting…', disable: 'Disabling…', version: 'Switching…',
+};
+
 type Line = { text: string; error?: boolean } | null;
 type ProjectWorktrees = { name: string; worktrees?: { worktreeName?: string }[] };
 type PluginsState = {
@@ -33,14 +40,16 @@ type PluginsState = {
   libNote: Line;
   libTail: string;
   live: Record<string, string>;
-  /** The one-action-at-a-time guard. */
+  /** The one-action-at-a-time guard; while held, every plugin control is disabled. */
   busy: boolean;
+  /** The control whose action holds the guard: a plugin row's (`id`) or Rescan (`id: null`). */
+  acting: Acting | null;
   busyEntry: { id: string; label: string } | null;
   updatingAll: string | null;
 };
 const PLUGINS0: PluginsState = {
   rows: null, worktrees: {}, library: null, loaded: { text: 'Loading…' }, libLoaded: { text: 'Loading…' },
-  note: null, libNote: null, libTail: '', live: {}, busy: false, busyEntry: null, updatingAll: null,
+  note: null, libNote: null, libTail: '', live: {}, busy: false, acting: null, busyEntry: null, updatingAll: null,
 };
 
 // The section's lists, status lines, output and running action live at module
@@ -94,9 +103,9 @@ export function resetPluginNotes() {
 
 const appendLive = (id: string) => (text: string) => pluginsStore.set((s) => ({ live: { ...s.live, [id]: capLog(s.live[id] ?? '', text) } }));
 
-async function act(label: string, fn: () => Promise<unknown>, change?: PluginsChange) {
+async function act(label: string, acting: Acting, fn: () => Promise<unknown>, change?: PluginsChange) {
   if (!claim()) return;
-  pluginsStore.set({ note: { text: `${label}…` } });
+  pluginsStore.set({ note: { text: `${label}…` }, acting });
   try {
     await fn();
     await loadPlugins(true);
@@ -106,7 +115,7 @@ async function act(label: string, fn: () => Promise<unknown>, change?: PluginsCh
   } catch (e) {
     pluginsStore.set({ note: { error: true, text: `${label} failed: ${errText(e)}` } });
   } finally {
-    pluginsStore.set({ busy: false });
+    pluginsStore.set({ busy: false, acting: null });
   }
 }
 
@@ -193,12 +202,15 @@ async function updateAll() {
 }
 
 export function PluginsSection() {
-  const { rows, worktrees, library, loaded, libLoaded, note, libNote, libTail, live, busyEntry, updatingAll } = useStore(pluginsStore, (s) => s);
+  const { rows, worktrees, library, loaded, libLoaded, note, libNote, libTail, live, busy, acting, busyEntry, updatingAll } = useStore(pluginsStore, (s) => s);
   React.useEffect(() => { void loadPlugins(false); }, []);
   const status = note ?? loaded;
   const libStatus = libNote ?? libLoaded;
   const updatable = (library || []).filter((e) => e.installed && e.updateAvailable).length;
-  const locked = !!busyEntry || !!updatingAll;
+  const locked = busy;
+  const isActing = (id: string | null, a: PluginAction) => acting?.id === id && acting.action === a;
+  const label = (id: string | null, a: PluginAction, icon: React.ReactNode, idle: string) =>
+    isActing(id, a) ? <><LoaderCircleIcon className="animate-spin" /> {PENDING_LABEL[a]}</> : <>{icon}{icon ? ' ' : ''}{idle}</>;
 
   return (
     <div className="space-y-6">
@@ -207,7 +219,7 @@ export function PluginsSection() {
       </SectionIntro>
       <SettingsCard
         title="Installed"
-        action={<Button variant="outline" size="sm" disabled={locked} onClick={() => void act('Rescanning', () => post('/api/plugins/rescan'))} title="Re-scan every project for conductor.plugin.json manifests"><RefreshCwIcon /> Rescan</Button>}
+        action={<Button variant="outline" size="sm" disabled={locked} onClick={() => void act('Rescanning', { id: null, action: 'rescan' }, () => post('/api/plugins/rescan'))} title="Re-scan every project for conductor.plugin.json manifests">{label(null, 'rescan', <RefreshCwIcon />, 'Rescan')}</Button>}
       >
         <Status text={status?.text} tone={status?.error ? 'error' : 'muted'} />
         <div className="grid gap-3" data-testid="plugin-list">
@@ -239,20 +251,20 @@ export function PluginsSection() {
                 {isUsable(row) && (
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {!row.enabled ? (
-                      <Button size="sm" disabled={locked} onClick={() => void act(`Enabling ${row.id}`, () => post(`/api/plugins/${row.id}/enable`))}><PowerIcon /> Enable</Button>
+                      <Button size="sm" disabled={locked} onClick={() => void act(`Enabling ${row.id}`, { id: row.id, action: 'enable' }, () => post(`/api/plugins/${row.id}/enable`))}>{label(row.id, 'enable', <PowerIcon />, 'Enable')}</Button>
                     ) : (
                       <>
                         {row.hasBackend && !backendLocalOnly(row) && (
                           <>
                             {row.state === 'ready' || row.state === 'starting' ? (
                               <>
-                                <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Stopping ${row.id}`, () => post(`/api/plugins/${row.id}/stop`))}><SquareIcon /> Stop</Button>
+                                <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Stopping ${row.id}`, { id: row.id, action: 'stop' }, () => post(`/api/plugins/${row.id}/stop`))}>{label(row.id, 'stop', <SquareIcon />, 'Stop')}</Button>
                                 {row.state === 'ready' && row.stale && (
-                                  <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Restarting ${row.id}`, () => post(`/api/plugins/${row.id}/restart`), { action: 'restart', ids: [row.id] })}><RotateCwIcon /> Restart</Button>
+                                  <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Restarting ${row.id}`, { id: row.id, action: 'restart' }, () => post(`/api/plugins/${row.id}/restart`), { action: 'restart', ids: [row.id] })}>{label(row.id, 'restart', <RotateCwIcon />, 'Restart')}</Button>
                                 )}
                               </>
                             ) : (
-                              <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Starting ${row.id}`, () => post(`/api/plugins/${row.id}/start`))}><PlayIcon /> Start</Button>
+                              <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Starting ${row.id}`, { id: row.id, action: 'start' }, () => post(`/api/plugins/${row.id}/start`))}>{label(row.id, 'start', <PlayIcon />, 'Start')}</Button>
                             )}
                             <NativeSelect
                               size="sm"
@@ -263,15 +275,18 @@ export function PluginsSection() {
                               onChange={(e) => {
                                 const v = e.target.value;
                                 const body = v === 'main' ? { type: 'main' } : { type: 'worktree', name: v.slice('worktree:'.length) };
-                                void act(`Switching ${row.id} to ${v}`, () => post(`/api/plugins/${row.id}/version`, body), { action: 'version', ids: [row.id] });
+                                void act(`Switching ${row.id} to ${v}`, { id: row.id, action: 'version' }, () => post(`/api/plugins/${row.id}/version`, body), { action: 'version', ids: [row.id] });
                               }}
                             >
                               <option value="main">main</option>
                               {(worktrees[row.project] || []).map((w) => <option key={w} value={`worktree:${w}`}>worktree {w}</option>)}
                             </NativeSelect>
+                            {isActing(row.id, 'version') && (
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" /> {PENDING_LABEL.version}</span>
+                            )}
                           </>
                         )}
-                        <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={locked} onClick={() => void act(`Disabling ${row.id}`, () => post(`/api/plugins/${row.id}/disable`))}>Disable</Button>
+                        <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={locked} onClick={() => void act(`Disabling ${row.id}`, { id: row.id, action: 'disable' }, () => post(`/api/plugins/${row.id}/disable`))}>{label(row.id, 'disable', null, 'Disable')}</Button>
                       </>
                     )}
                   </div>
