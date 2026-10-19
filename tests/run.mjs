@@ -13,6 +13,7 @@ import { snapshot, censusMatching, liveChildren, descendants, killTree, killDesc
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
 import { enableCompileCache, COMPILE_CACHE_MAX_BYTES } from './compileCache.mjs';
 import { QuietFilter, isVerbose, renderEvents } from './quietReporter.mjs';
+import { acquireTestSlot } from './testSlot.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +23,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // child process inherits this env, so a test with no root of its own — and any
 // out-of-window fire-and-forget write — lands in the temp dir, never the live
 // store. Individual files still mint their own per-test roots under it.
+// Take the box-wide test slot FIRST: waiting holds no temp root, and it must not
+// count against the run cap, which starts later. Children inherit the held marker;
+// the slot is freed when this process exits, however it exits (tests/testSlot.mjs).
+Object.assign(process.env, (await acquireTestSlot({ label: 'node suite' })).env);
 const safeRoot = createSafeRoot();
 process.env.PROJECTS_ROOT = safeRoot.projectsRoot;
 process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
