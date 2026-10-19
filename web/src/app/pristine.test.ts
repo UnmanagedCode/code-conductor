@@ -52,6 +52,7 @@ async function boot() {
   return {
     c, appStore, views, calls, flush,
     open: () => frame('open'),
+    close: () => frame('close'),
     hint: () => frame('instances'),
     status: (detail: Record<string, unknown>) => frame('status', detail),
     /** Every presence frame sent, in order. */
@@ -148,6 +149,19 @@ describe('the pristine slot', () => {
     await b.status(pFrame({ status: 'crashed', modelSwitch: null }));
     expect(b.appStore.get().pristine).toBeNull();
     expect(b.active()).toBeNull();
+  });
+
+  it('(i) a reconnect after the switch settled unseen takes the server\'s current state into the slot', async () => {
+    const b = await shownWithEmptyBox();
+    await b.status(pFrame({ status: 'idle', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'crashed', modelSwitch: MS }));
+    await b.close();
+    // The settling frame is sent while the socket is down; the lookup answers what the server holds now.
+    lookup = { 's-p': { ...P, status: 'idle', model: 'm-new', backend: 'ollama', modelSwitch: null } as Inst };
+    await b.open();
+    expect(b.active()).toBe('iP');
+    expect(b.appStore.get().pristine).toMatchObject({ id: 'iP', sessionId: 's-p', status: 'idle', modelSwitch: null, model: 'm-new', backend: 'ollama' });
+    expect(b.presence().filter(([t]) => t === 'pristine_leave'), 'never left').toEqual([]);
   });
 
   it('(f) a reconnect re-validates the slot: a 404 clears it and the active session it was', async () => {
