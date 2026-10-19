@@ -59,11 +59,11 @@ function newStream(): Response {
 }
 
 /** A JSON answer the test holds: its body arrives only on `release`. */
-function heldJson(): Held {
+function heldJson(status = 200): Held {
   const enc = new TextEncoder();
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   let done = false;
-  const response = new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }), { headers: { 'content-type': 'application/json' } });
+  const response = new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }), { status, headers: { 'content-type': 'application/json' } });
   const held: Held = { response, release: (json) => { if (done) return; done = true; controller.enqueue(enc.encode(JSON.stringify(json))); controller.close(); } };
   helds.push(held);
   return held;
@@ -607,13 +607,16 @@ describe('Plugins → state across remounts', () => {
     await switchTo('archived');
     await switchTo('plugins');
     await waitFor(() => expect(gets('/api/plugins')).toBe(2));
-    const start = await screen.findByRole('button', { name: 'Start' });
+    const start = (await screen.findByRole('button', { name: 'Start' })) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    expect(button('Rescanning…').disabled).toBe(true);
     fireEvent.click(start);
     expect(posts('/api/plugins/pl/start').length).toBe(0);
     expect(pluginsLine()).toMatch(/^Rescanning/);
 
     await act(async () => h.release({ ok: true }));
     await waitFor(() => expect(pluginsLine()).toMatch(/^1\b/));
+    await waitFor(() => expect(button('Start').disabled).toBe(false));
     fireEvent.click(button('Start'));
     expect(posts('/api/plugins/pl/start').length).toBe(1);
     await waitFor(() => expect(pluginsLine()).toMatch(/^1\b/));
@@ -913,7 +916,7 @@ describe('Plugins → Update all', () => {
     expect(updateAllButton().textContent).toMatch(/^Update all\D*$/);
   });
 
-  // Update all starts nothing while another action holds the guard: during a single Update it is disabled; during a plugin action it stays enabled, but its click starts no update; once the action ends it runs.
+  // Update all starts nothing while another action holds the guard: during a single Update it is disabled; during a plugin action it is disabled, and its click starts no update; once the action ends it runs.
   it('Update all starts no update while another plugin action is in flight', async () => {
     rows = [PL];
     library = [INSTALLED, BEHIND];
@@ -934,7 +937,7 @@ describe('Plugins → Update all', () => {
 
     fireEvent.click(button('Rescan'));
     await waitFor(() => expect(pluginsLine()).toMatch(/^Rescanning/));
-    expect(updateAllButton().disabled).toBe(false);
+    expect(updateAllButton().disabled).toBe(true);
     fireEvent.click(updateAllButton());
     await act(async () => {});
     expect(posts('/api/plugins/library/behind/update').length).toBe(0);
@@ -1078,6 +1081,183 @@ describe('Plugins → Update all', () => {
     fireEvent.click(button('Rescan'));
     expect(posts('/api/plugins/rescan').length).toBe(2);
     await waitFor(() => expect(pluginsLine()).toMatch(/^1\b/));
+  });
+});
+
+const rowBtn = (id: string, name: string) => within(plugin(id)).getByRole('button', { name }) as HTMLButtonElement;
+const kaSelect = () => screen.getByLabelText('Active version of KA') as HTMLSelectElement;
+
+describe('Plugins → action in flight', () => {
+  // The clicked control alone is relabelled; every plugin control is disabled until the request and the reload after it land.
+  it('a row action shows its pending label on the clicked button only, disables every plugin control, and clears once the action and its reload land', async () => {
+    rows = [KA, PL, OFF];
+    library = [INSTALLED, OTHER];
+    projects = [{ name: 'kaproj', worktrees: [{ worktreeName: 'wt' }] }];
+    const h = heldJson();
+    const reload = heldJson();
+    let pluginGets = 0;
+    serve({
+      'POST /api/plugins/ka/restart': () => h.response,
+      'GET /api/plugins': () => (++pluginGets === 2 ? reload.response : { rows, notices: [] }),
+      'POST /api/plugins/pl/start': () => ({ ok: true }),
+    });
+    wrap();
+    await waitFor(() => expect(libLine()).toMatch(/^2\b/));
+
+    fireEvent.click(rowBtn('ka', 'Restart'));
+    await waitFor(() => expect(rowBtn('ka', 'Restarting…').disabled).toBe(true));
+    expect(rowBtn('ka', 'Stop').disabled).toBe(true);
+    expect(kaSelect().disabled).toBe(true);
+    expect(rowBtn('ka', 'Disable').disabled).toBe(true);
+    expect(pluginButtons('pl')).toEqual(['Start', 'Disable']);
+    expect(rowBtn('pl', 'Start').disabled).toBe(true);
+    expect(rowBtn('pl', 'Disable').disabled).toBe(true);
+    expect(rowBtn('off', 'Enable').disabled).toBe(true);
+    expect(button('Rescan').disabled).toBe(true);
+    expect(entryButton('code-share', 'Update').disabled).toBe(true);
+    expect(entryButton('other', 'Install').disabled).toBe(true);
+    expect(updateAllButton().disabled).toBe(true);
+    expect(pluginsLine()).toMatch(/^Restarting ka/);
+
+    fireEvent.click(rowBtn('ka', 'Restarting…'));
+    fireEvent.click(rowBtn('pl', 'Start'));
+    expect(posts('/api/plugins/ka/restart').length).toBe(1);
+    expect(posts('/api/plugins/pl/start').length).toBe(0);
+
+    await act(async () => h.release({}));
+    await waitFor(() => expect(gets('/api/plugins')).toBe(2));
+    expect(rowBtn('ka', 'Restarting…').disabled).toBe(true);
+    expect(rowBtn('pl', 'Start').disabled).toBe(true);
+
+    await act(async () => reload.release({ rows, notices: [] }));
+    await waitFor(() => expect(rowBtn('ka', 'Restart').disabled).toBe(false));
+    expect(rowBtn('ka', 'Stop').disabled).toBe(false);
+    expect(kaSelect().disabled).toBe(false);
+    expect(rowBtn('ka', 'Disable').disabled).toBe(false);
+    expect(rowBtn('pl', 'Start').disabled).toBe(false);
+    expect(rowBtn('off', 'Enable').disabled).toBe(false);
+    expect(button('Rescan').disabled).toBe(false);
+    expect(entryButton('code-share', 'Update').disabled).toBe(false);
+    expect(entryButton('other', 'Install').disabled).toBe(false);
+    expect(updateAllButton().disabled).toBe(false);
+    await waitFor(() => expect(pluginsLine()).toMatch(/^3\b/));
+    expect(pluginsTone()).toBe('muted');
+
+    fireEvent.click(rowBtn('pl', 'Start'));
+    expect(posts('/api/plugins/pl/start').length).toBe(1);
+    await waitFor(() => expect(pluginsLine()).toMatch(/^3\b/));
+  });
+
+  // One subtest per control, so no row can hide behind another.
+  it.each([
+    { rows: [OFF], scope: 'off', click: 'Enable', pending: 'Enabling…', url: '/api/plugins/off/enable' },
+    { rows: [PL], scope: 'pl', click: 'Start', pending: 'Starting…', url: '/api/plugins/pl/start' },
+    { rows: [KA], scope: 'ka', click: 'Stop', pending: 'Stopping…', url: '/api/plugins/ka/stop' },
+    { rows: [KA], scope: 'ka', click: 'Restart', pending: 'Restarting…', url: '/api/plugins/ka/restart' },
+    { rows: [PL], scope: 'pl', click: 'Disable', pending: 'Disabling…', url: '/api/plugins/pl/disable' },
+  ])('$click shows $pending on itself while its request is held', async ({ rows: r, scope, click, pending, url }) => {
+    rows = r;
+    const h = heldJson();
+    serve({ [`POST ${url}`]: () => h.response });
+    wrap();
+    await waitFor(() => expect(pluginsLine()).toMatch(/^1\b/));
+    fireEvent.click(rowBtn(scope, click));
+    await waitFor(() => expect(rowBtn(scope, pending).disabled).toBe(true));
+    expect(within(plugin(scope)).queryByRole('button', { name: click })).toBeNull();
+
+    await act(async () => h.release({}));
+    if (click === 'Enable' || click === 'Disable') {
+      await waitFor(() => expect(within(plugin(scope)).queryByRole('button', { name: pending })).toBeNull());
+      expect(posts(url).length).toBe(1);
+    } else {
+      await waitFor(() => expect(rowBtn(scope, click).disabled).toBe(false));
+    }
+  });
+
+  // The pending label follows the plugin id, not the action: a second row offering the same action keeps its idle name.
+  it('an action held on one row leaves another row offering the same action disabled but not relabelled', async () => {
+    const PL2: PluginRow = { ...PL, id: 'pl2', name: 'Pl2', project: 'pl2' };
+    rows = [PL, PL2];
+    projects = [{ name: 'pl', worktrees: [{ worktreeName: 'wt' }] }, { name: 'pl2', worktrees: [{ worktreeName: 'wt' }] }];
+    const h = heldJson();
+    const v = heldJson();
+    serve({ 'POST /api/plugins/pl/start': () => h.response, 'POST /api/plugins/pl2/version': () => v.response });
+    wrap();
+    await waitFor(() => expect(pluginsLine()).toMatch(/^2\b/));
+
+    fireEvent.click(rowBtn('pl', 'Start'));
+    await waitFor(() => expect(rowBtn('pl', 'Starting…').disabled).toBe(true));
+    expect(pluginButtons('pl2')).toEqual(['Start', 'Disable']);
+    expect(rowBtn('pl2', 'Start').disabled).toBe(true);
+    await act(async () => h.release({ ok: true }));
+    await waitFor(() => expect(rowBtn('pl', 'Start').disabled).toBe(false));
+
+    const sel = within(plugin('pl2')).getByLabelText('Active version of Pl2') as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(sel.options).map((o) => o.value)).toEqual(['main', 'worktree:wt']));
+    fireEvent.change(sel, { target: { value: 'worktree:wt' } });
+    await waitFor(() => expect(plugin('pl2').textContent).toContain('Switching…'));
+    expect(plugin('pl').textContent).not.toContain('Switching…');
+    await act(async () => v.release({ ok: true }));
+    await waitFor(() => expect(plugin('pl2').textContent).not.toContain('Switching…'));
+  });
+
+  it('Rescan shows Rescanning… on itself and disables every row\'s controls until it settles', async () => {
+    rows = [PL];
+    const h = heldJson();
+    serve({ 'POST /api/plugins/rescan': () => h.response });
+    wrap();
+    await waitFor(() => expect(pluginButtons('pl')).toEqual(['Start', 'Disable']));
+    fireEvent.click(button('Rescan'));
+    await waitFor(() => expect(button('Rescanning…').disabled).toBe(true));
+    expect(pluginButtons('pl')).toEqual(['Start', 'Disable']);
+    expect(rowBtn('pl', 'Start').disabled).toBe(true);
+    expect(rowBtn('pl', 'Disable').disabled).toBe(true);
+
+    await act(async () => h.release({ ok: true }));
+    await waitFor(() => expect(button('Rescan').disabled).toBe(false));
+    expect(rowBtn('pl', 'Start').disabled).toBe(false);
+  });
+
+  it('a version switch shows Switching… beside the select and disables it until it settles', async () => {
+    rows = [{ ...KA, activeVersion: { type: 'main' } }];
+    projects = [{ name: 'kaproj', worktrees: [{ worktreeName: 'wt' }] }];
+    const h = heldJson();
+    serve({ 'POST /api/plugins/ka/version': () => h.response });
+    wrap();
+    const sel = (await screen.findByLabelText('Active version of KA')) as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(sel.options).map((o) => o.value)).toEqual(['main', 'worktree:wt']));
+    expect(plugin('ka').textContent).not.toContain('Switching…');
+
+    fireEvent.change(sel, { target: { value: 'worktree:wt' } });
+    await waitFor(() => expect(plugin('ka').textContent).toContain('Switching…'));
+    expect(sel.disabled).toBe(true);
+    expect(rowBtn('ka', 'Stop').disabled).toBe(true);
+
+    rows = [{ ...KA, activeVersion: { type: 'worktree', name: 'wt' } }];
+    await act(async () => h.release({ ok: true }));
+    await waitFor(() => expect(plugin('ka').textContent).not.toContain('Switching…'));
+    expect(sel.disabled).toBe(false);
+  });
+
+  it("a failed action surfaces the server's error on the status line and clears pending, re-enabling every control", async () => {
+    rows = [KA, PL];
+    const h = heldJson(502);
+    serve({ 'POST /api/plugins/ka/restart': () => h.response, 'POST /api/plugins/pl/start': () => ({ ok: true }) });
+    wrap();
+    await waitFor(() => expect(pluginsLine()).toMatch(/^2\b/));
+    fireEvent.click(rowBtn('ka', 'Restart'));
+    await waitFor(() => expect(rowBtn('ka', 'Restarting…').disabled).toBe(true));
+
+    await act(async () => h.release({ error: "plugin 'ka' failed to start", tail: 'boom' }));
+    await waitFor(() => expect(pluginsLine()).toMatch(/Restarting ka failed: plugin 'ka' failed to start/));
+    expect(pluginsTone()).toBe('error');
+    expect(rowBtn('ka', 'Restart').disabled).toBe(false);
+    expect(rowBtn('ka', 'Stop').disabled).toBe(false);
+    expect(rowBtn('pl', 'Start').disabled).toBe(false);
+
+    fireEvent.click(rowBtn('pl', 'Start'));
+    expect(posts('/api/plugins/pl/start').length).toBe(1);
+    await waitFor(() => expect(pluginsLine()).toMatch(/^2\b/));
   });
 });
 

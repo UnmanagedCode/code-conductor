@@ -986,6 +986,7 @@ describe('Plugins', () => {
     wrap(<PluginsSection />);
     fireEvent.click(await screen.findByRole('button', { name: 'Restart' }));
     await waitFor(() => expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'restart', ids: ['pl'] }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
     await waitFor(() => expect(pluginsChangedSignal.version()).toBe(before + 2));
     expect(pluginsChangeStore.get().lastChange).toBeUndefined();
