@@ -6,10 +6,10 @@
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { buildSessionPrompt, flattenTranscript } from '../src/summarize.ts';
 import { orchStoreRoot, localPlace } from '../src/projects.ts';
 import { runSessionOneShot, summarySpawnDir } from '../src/sessionOneShot.ts';
@@ -48,7 +48,7 @@ async function newSession(name, sid, lines = TURNS) {
 // Run `fn(files)` with CLAUDE_BIN pointed at the fake and per-call capture
 // files in a fresh temp dir; extra FAKE_* env goes in `env`.
 async function withFake(env, fn) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ask-test-'));
+  const dir = await mkdtemp('cc-ask-test-');
   const saved = {};
   const set = { CLAUDE_BIN: `${process.execPath} ${FAKE_SUMMARIZE}`, ...env };
   for (const [k, v] of Object.entries(set)) { saved[k] = process.env[k]; process.env[k] = v; }
@@ -260,7 +260,7 @@ describe('runSessionOneShot abort window', () => {
   // Runs `fn(tmp, argvOut)` with TMPDIR on a private dir, the fake as CLAUDE_BIN
   // and its argv capture file (written only if a child actually starts).
   async function inPrivateTmp(fn) {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ask-abort-'));
+    const tmp = await mkdtemp('cc-ask-abort-');
     const argvOut = path.join(tmp, 'argv.json');
     const keys = ['TMPDIR', 'CLAUDE_BIN', 'FAKE_SUMMARIZE_ARGV_FILE'];
     const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
