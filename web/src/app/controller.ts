@@ -179,7 +179,10 @@ function patchInstance(id: string, patch: Partial<Instance>) {
   const { instances, pristine } = appStore.get();
   if (pristine?.id === id) {
     const next = { ...pristine, ...patch };
-    appStore.set({ pristine: next.status === 'exited' || next.status === 'crashed' ? null : next });
+    // A restart model switch's own kill reports exited/crashed while `modelSwitch`
+    // is set; only a dead status outside a switch ends the conductor.
+    const ended = (next.status === 'exited' || next.status === 'crashed') && !next.modelSwitch;
+    appStore.set({ pristine: ended ? null : next });
   }
   const i = instances.findIndex((x) => x.id === id);
   if (i < 0) return;

@@ -106,6 +106,50 @@ describe('the pristine slot', () => {
     expect(b.appStore.get().pristine).toBeNull();
   });
 
+  /** A restart model switch's `modelSwitch`, as every status frame inside it carries. */
+  const MS = { from: 'm-old', to: 'm-new', fromBackend: 'claude', toBackend: 'ollama' };
+  /** A status frame for P, as the server sends it. */
+  const pFrame = (extra: Record<string, unknown>) => ({ id: 'iP', mode: 'bypassPermissions', sessionId: 's-p', model: 'm-old', ...extra });
+
+  /** P adopted and shown, with the composer's box empty. */
+  async function shownWithEmptyBox() {
+    const b = await boot();
+    await b.open();
+    const { setPristineDraftSource } = await import('./pristine');
+    setPristineDraftSource(() => ({ sessionId: 's-p', text: '' }));
+    b.c.adoptInstance({ ...P, model: 'm-old', backend: 'claude', modelSwitch: null } as any);
+    b.c.selectInstance('iP', { userGesture: true });
+    return b;
+  }
+
+  it('(i) a restart model switch keeps the pristine conductor shown: same instance, same session, no leave', async () => {
+    const b = await shownWithEmptyBox();
+    const stillShown = (when: string) => {
+      expect(b.active(), when).toBe('iP');
+      expect(b.appStore.get().pristine?.id, when).toBe('iP');
+      expect(b.appStore.get().pristine?.sessionId, when).toBe('s-p');
+      expect(location.hash, when).toBe('#session=s-p');
+      expect(b.presence(), when).toEqual([['pristine_view', { id: 'iP' }]]);
+    };
+    await b.status(pFrame({ status: 'idle', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'crashed', modelSwitch: MS }));
+    stillShown('after the switch\'s kill');
+    await b.status(pFrame({ status: 'spawning', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'idle', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'idle', modelSwitch: null, model: 'm-new', backend: 'ollama' }));
+    stillShown('after the switch settles');
+    expect(b.c.getActiveInstance()).toMatchObject({ status: 'idle', pristine: true, model: 'm-new', backend: 'ollama' });
+    expect(b.listedIds()).not.toContain('iP');
+  });
+
+  it('(i) a switch that leaves the conductor stopped still clears the slot', async () => {
+    const b = await shownWithEmptyBox();
+    await b.status(pFrame({ status: 'crashed', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'crashed', modelSwitch: null }));
+    expect(b.appStore.get().pristine).toBeNull();
+    expect(b.active()).toBeNull();
+  });
+
   it('(f) a reconnect re-validates the slot: a 404 clears it and the active session it was', async () => {
     const b = await boot();
     await b.open();

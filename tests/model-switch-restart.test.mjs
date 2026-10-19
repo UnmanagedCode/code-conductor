@@ -20,7 +20,7 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { SwitchLauncher } from './switchLauncher.mjs';
 import { addCustomModel, setTierBackend, setTierEffort, addBackend, setConductorCompactWindow } from '../src/appSettings.ts';
-import { getSessionBackend, getModelSwitchesForSegment, isTemp, isArchived, isConducted, settleSessionWrites, sessionsFile } from '../src/sessionStore.ts';
+import { getSessionBackend, getModelSwitchesForSegment, isTemp, isArchived, isConducted, settleSessionWrites, sessionsFile, loadSessions } from '../src/sessionStore.ts';
 import { withLock } from '../src/storeLock.ts';
 import { loadPersistedTranscript, readLastSessionModel } from '../src/transcript.ts';
 import { costsPath } from '../src/costTracking.ts';
@@ -554,6 +554,52 @@ test('a temp conducted worker survives a switch as itself', async () => {
     assert.deepEqual(exits, [], 'the owner is not woken by the restart');
     assert.equal(instances.exitCauseFor(worker.sessionId), null, 'no exit cause recorded');
   } finally { hub.onTargetExit = realOnTargetExit; }
+});
+
+test('a pristine conductor survives a restart switch as itself: same instance and session, still pristine and hidden, resolvable throughout', async () => {
+  await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  const inst = await spawnSub({ project: '.conduct', temp: true, pristine: true });
+  assert.equal(inst.pristine, true, 'fixture check: a pristine conductor');
+  const { sessionId: sid, backingSessionId: backing } = inst;
+  const firstProc = inst.proc;
+  let firstExited = false;
+  firstProc.once('exit', () => { firstExited = true; });
+  // Who GET /api/sessions/:sid/pristine would name while the switch's kill reports a dead status.
+  const gap = [];
+  const onStatus = (s) => { if (s.status === 'exited' || s.status === 'crashed') gap.push(instances.pristineFor(sid)?.id ?? null); };
+  inst.on('status', onStatus);
+  const c = await wsClient(wsUrl);
+  try {
+    c.send({ t: 'pristine_view', id: inst.id });
+    const ack = await modelFrame(c, inst, B, 'ollama', 'pm1');
+    assert.equal(ack.ok, true, ack.error);
+    await settled(inst);
+    assert.ok(gap.length >= 1, 'fixture check: the kill reported a dead status');
+    assert.deepEqual(gap, gap.map(() => inst.id), 'resolvable as itself through the kill gap');
+    assert.equal(instances.get(inst.id), inst);
+    assert.deepEqual(instances.idsForSession(sid), [inst.id], 'no twin');
+    assert.equal(inst.sessionId, sid);
+    assert.equal(inst.backingSessionId, backing);
+    assert.equal(inst.pristine, true);
+    assert.equal(inst.backend, 'ollama');
+    assert.equal(inst.model, B);
+    assert.equal(inst.status, 'idle');
+    assert.ok(inst.proc && inst.proc !== firstProc, 'running on a new process');
+    assert.equal(firstExited, true, 'the old process exited');
+    const list = await api(baseUrl, 'GET', '/api/instances');
+    assert.ok(!list.body.some(r => r.id === inst.id), 'still hidden from the list');
+    const lookup = await api(baseUrl, 'GET', `/api/sessions/${sid}/pristine`);
+    assert.equal(lookup.status, 200, JSON.stringify(lookup.body));
+    assert.equal(lookup.body.id, inst.id);
+    assert.equal(lookup.body.model, B);
+    // A blank leave still discards it fully.
+    c.send({ t: 'pristine_leave', id: inst.id, text: '' });
+    await waitFor(() => instances.get(inst.id) === undefined, { timeout: 3000 }).catch(() => {});
+    assert.equal(instances.get(inst.id), undefined, 'removed by the blank leave');
+    await waitFor(async () => !(await loadSessions()).byPublic.has(sid), { timeout: 3000 }).catch(() => {});
+    assert.equal((await loadSessions()).byPublic.has(sid), false, 'no store record is left');
+    assert.equal(inst.proc, null, 'no process is left');
+  } finally { inst.off('status', onStatus); await c.close(); }
 });
 
 test('a session with no turns relaunches under --session-id and its divider leads the replay', async () => {

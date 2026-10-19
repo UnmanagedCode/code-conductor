@@ -5281,10 +5281,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this.emit('list_changed');
   }
 
-  // The live pristine conductor `sessionId` names, hidden or listed, or null.
+  // The live pristine conductor `sessionId` names, hidden or listed, or null; one in its relaunch window counts as live.
   pristineFor(sessionId: string): Instance | null {
     for (const inst of this.byId.values()) {
-      if (inst.pristine && inst.sessionId === sessionId && !isDeadStatus(inst.status)) return inst;
+      if (inst.pristine && inst.sessionId === sessionId && (!isDeadStatus(inst.status) || inst.relaunching)) return inst;
     }
     return null;
   }
