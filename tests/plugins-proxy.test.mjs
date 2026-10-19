@@ -179,3 +179,110 @@ test('proxy: killed child → 503 with crash status, then lazy restart serves ag
     await boot.close();
   }
 });
+
+// Invariant: the proxy owns no plugin policy. A page that declares no framing
+// policy is made same-origin-framable only, and cc's own CSP/nosniff never
+// land on a plugin response.
+test('proxy: a plugin page that declares no framing policy gets X-Frame-Options SAMEORIGIN and none of cc\'s CSP or nosniff', async () => {
+  const boot = await setup();
+  try {
+    const r = await fetch(`${boot.baseUrl}/plugins/fake-plugin/`);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    assert.equal(r.headers.get('content-security-policy'), null);
+    assert.equal(r.headers.get('x-content-type-options'), null);
+  } finally {
+    await boot.close();
+  }
+});
+
+// Invariant: a plugin's own CSP / X-Frame-Options / nosniff pass through
+// byte-identical; X-Frame-Options is added only when no framing policy exists.
+test("proxy: a plugin's own framing policy passes through unchanged", async (t) => {
+  const boot = await setup();
+  try {
+    const hit = (query) => fetch(`${boot.baseUrl}/plugins/fake-plugin/headers?${new URLSearchParams(query)}`);
+    await t.test('frame-ancestors in the CSP: CSP unchanged, no X-Frame-Options added', async () => {
+      const csp = "default-src 'none'; frame-ancestors 'self'";
+      const r = await hit({ 'content-security-policy': csp });
+      assert.equal(r.headers.get('content-security-policy'), csp);
+      assert.equal(r.headers.get('x-frame-options'), null);
+    });
+    await t.test("the plugin's own X-Frame-Options wins", async () => {
+      const r = await hit({ 'x-frame-options': 'DENY' });
+      assert.equal(r.headers.get('x-frame-options'), 'DENY');
+    });
+    // Invariant: a framing policy counts only when a browser enforces it, so an unusable
+    // X-Frame-Options is replaced by the SAMEORIGIN default rather than trusted.
+    await t.test('a blank X-Frame-Options is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': '' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    await t.test('a legacy ALLOW-FROM X-Frame-Options is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': 'ALLOW-FROM http://evil.test' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    // Invariant: recognition of an enforcing value is case-insensitive and passes through byte-identical.
+    await t.test('a lowercase deny passes through unchanged', async () => {
+      const r = await hit({ 'x-frame-options': 'deny' });
+      assert.equal(r.headers.get('x-frame-options'), 'deny');
+    });
+    // Invariant: an X-Frame-Options counts only when it is exactly DENY or SAMEORIGIN, so a value
+    // that merely contains one of those words is replaced by SAMEORIGIN, never passed through.
+    await t.test('an X-Frame-Options that only contains deny is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': 'ALLOW-FROM https://x.test/deny' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    await t.test('a list X-Frame-Options (DENY,SAMEORIGIN) is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': 'DENY,SAMEORIGIN' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    // Invariant: only an actual frame-ancestors directive in the CSP counts, not the word anywhere in it.
+    await t.test('a CSP that only mentions frame-ancestors in a host name still gets the framing default', async () => {
+      const csp = 'default-src https://frame-ancestors.example';
+      const r = await hit({ 'content-security-policy': csp });
+      assert.equal(r.headers.get('content-security-policy'), csp);
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    // Invariant: the CSP directive name matches case-insensitively, so FRAME-ANCESTORS counts as declared.
+    await t.test('an upper-case FRAME-ANCESTORS directive counts as a declared policy', async () => {
+      const csp = "FRAME-ANCESTORS 'self'";
+      const r = await hit({ 'content-security-policy': csp });
+      assert.equal(r.headers.get('content-security-policy'), csp);
+      assert.equal(r.headers.get('x-frame-options'), null);
+    });
+    await t.test('a CSP without frame-ancestors still gets the framing default', async () => {
+      const csp = "default-src 'none'";
+      const r = await hit({ 'content-security-policy': csp });
+      assert.equal(r.headers.get('content-security-policy'), csp);
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    await t.test("the plugin's own nosniff passes through", async () => {
+      const r = await hit({ 'x-content-type-options': 'nosniff' });
+      assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+    });
+  } finally {
+    await boot.close();
+  }
+});
+
+// Invariant: responses cc itself makes inside the /plugins mount carry cc's full policy.
+test("proxy: cc-made proxy responses carry cc's policy", async (t) => {
+  const boot = await setup();
+  try {
+    for (const [name, url, status] of [
+      ['unknown plugin 404', '/plugins/nope/', 404],
+      ['bare-id 301', '/plugins/fake-plugin', 301],
+    ]) {
+      await t.test(name, async () => {
+        const r = await fetch(boot.baseUrl + url, { redirect: 'manual' });
+        assert.equal(r.status, status);
+        assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+        assert.equal(r.headers.get('content-security-policy'), "frame-ancestors 'self'");
+        assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+      });
+    }
+  } finally {
+    await boot.close();
+  }
+});

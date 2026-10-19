@@ -1,7 +1,8 @@
 // Dependency-free fake plugin backend (node:http only) — the conductor
 // plugin epic's acceptance fixture. Exercises every proxy/MCP surface:
 // health, relative-asset HTML, streaming echo, redirect (Location rewrite),
-// a 500 route (transport-failure mapping), a hand-rolled WS echo, an env
+// a 500 route (transport-failure mapping), a /headers route that sets each
+// query param as a response header, a hand-rolled WS echo, an env
 // dump, and the pinned child-MCP contract (HTTP 200 for every well-formed
 // tool invocation with {result} or {error}; non-200 = transport failure).
 import http from 'node:http';
@@ -33,6 +34,11 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/asset.svg') {
     res.writeHead(200, { 'content-type': 'image/svg+xml' });
     res.end('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
+    return;
+  }
+  if (url.pathname === '/headers') {
+    res.writeHead(200, { 'content-type': 'text/html', ...Object.fromEntries(url.searchParams) });
+    res.end('<!doctype html><html><body><h1>headers</h1></body></html>');
     return;
   }
   if (url.pathname === '/env') {

@@ -149,6 +149,8 @@ On `phone` and `android`, `phoneFlow` seeds a remembered split in `localStorage`
 - A small box appended straight to the shell at `top: 200vh`, outside every pane, leaves the document unscrolled: the shell's own `relative` is the backstop clip.
 - `mouse.wheel` over Settings → Models, to the pane's end and past it, scrolls only the pane. The sidebar, the Settings nav and the shell (desktop) or the Settings top bar (phone) stay in place, and the document's `scrollTop` stays 0.
 
+`web/e2e/frame-ancestors.spec.ts` (`desktop`, `phone`; default `ccOptions`) frames cc from a second local HTTP server on another port, beside a control frame on that embedder's own origin. The control frame loads and cc's frame does not.
+
 ## Flows
 
 User-level flows through the web UI's own controls, one spec file per area under `flows/`, on all three projects.
