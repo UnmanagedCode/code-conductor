@@ -2,7 +2,7 @@
 // entries from GET /api/plugins/library).
 
 export type PluginRow = {
-  id: string; name: string; project: string; state: string; enabled?: boolean; version?: string;
+  id: string; name: string; project: string; state: string; enabled?: boolean; autoStart?: boolean; version?: string;
   activeVersion?: { type: 'main' } | { type: 'worktree'; name: string }; gitHead?: string; stale?: boolean; port?: number;
   manifestSource?: { type: string; name?: string }; conventions?: { name: string; description: string; hasScaffold?: boolean }[];
   roles?: unknown[]; playbooks?: unknown[]; errors?: string[]; crashTail?: string; hasBackend?: boolean;

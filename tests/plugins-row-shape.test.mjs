@@ -18,6 +18,7 @@ import { makePluginRoot, readFixtureManifest } from './plugin-helpers.mjs';
 // pass against any shape.
 const ROW_FIELDS = [
   'activeVersion',
+  'autoStart',
   'conventions',
   'crashTail',
   'enabled',

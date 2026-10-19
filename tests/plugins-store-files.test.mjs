@@ -11,7 +11,7 @@ import { makePluginRoot } from './plugin-helpers.mjs';
 // Characterization pin for the ON-DISK envelopes of the two persisted files
 // the plugin host owns:
 //
-//   <orchStoreRoot()>/plugins/registry.json  {plugins: {<id>: {project, enabled, activeVersion}}}
+//   <orchStoreRoot()>/plugins/registry.json  {plugins: {<id>: {project, enabled, activeVersion, autoStart}}}
 //   <orchStoreRoot()>/plugins/runtime.json   {<id>: {pid, pgid, port, startedAt, gitHead}}
 //
 // Existing coverage only round-trips this state through the same code that
@@ -37,16 +37,16 @@ test('registry.json envelope: enable + setActiveVersion, then disable retains pr
 
     assert.deepEqual(await readJson(registryFile()), {
       plugins: {
-        'fake-plugin': { project: 'aplug', enabled: true, activeVersion: { type: 'main' } },
+        'fake-plugin': { project: 'aplug', enabled: true, activeVersion: { type: 'main' }, autoStart: false },
       },
-    }, 'the registry.json envelope is {plugins:{<id>:{project, enabled, activeVersion}}}');
+    }, 'the registry.json envelope is {plugins:{<id>:{project, enabled, activeVersion, autoStart}}}');
 
     // disable is a flag flip, not a record reset — losing `activeVersion` here
     // would silently unpin a worktree-pinned plugin on the next enable.
     await host.disable('fake-plugin');
     assert.deepEqual(await readJson(registryFile()), {
       plugins: {
-        'fake-plugin': { project: 'aplug', enabled: false, activeVersion: { type: 'main' } },
+        'fake-plugin': { project: 'aplug', enabled: false, activeVersion: { type: 'main' }, autoStart: false },
       },
     });
   } finally {

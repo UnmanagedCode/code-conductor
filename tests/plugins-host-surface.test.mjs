@@ -15,6 +15,7 @@ import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from '../src/plugins/registry
 // at runtime (Object.keys compared against Object.keys) passes against any
 // surface and pins nothing.
 const PUBLIC_MEMBERS = [
+  'autoStartAll',
   'claudePluginDirs',
   'conventions',
   'disable',
@@ -30,6 +31,7 @@ const PUBLIC_MEMBERS = [
   'roles',
   'runtimeInfo',
   'setActiveVersion',
+  'setAutoStart',
   'setServerPort',
   'start',
   'status',

@@ -468,6 +468,9 @@ export function createPluginHost(opts: {
       project: entry.project,
       enabled: true,
       activeVersion: prev?.activeVersion ?? defaultVersion,
+      // Carried over: a re-enable (or a Library install's enable) must not
+      // reset the flag a disable deliberately kept.
+      autoStart: prev?.autoStart ?? false,
     });
     // A fragment edited while this plugin was disabled must not keep serving
     // its pre-edit body now that enable makes it contribute again.
@@ -563,6 +566,50 @@ export function createPluginHost(opts: {
     })();
     s.startPromise.finally(() => { s.startPromise = null; }).catch(() => {});
     return s.startPromise;
+  }
+
+  // Persists the boot-time auto-start flag and nothing else: it starts and
+  // stops nothing now. Refused for anything autoStartAll() could never start —
+  // a plugin that is not enabled, has no backend, or lives on another system.
+  async function setAutoStart(id: string, value: unknown): Promise<PluginRow | null> {
+    await ensureInit();
+    if (typeof value !== 'boolean') throw httpError(400, "'autoStart' must be a boolean");
+    const entry = requireEnabled(id);
+    if (!entry.manifest?.backend) throw httpError(400, `plugin '${id}' has no backend to start`);
+    if (entry.system !== LOCAL_SYSTEM_ID) {
+      throw httpError(
+        501,
+        `PLUGIN_BACKEND_LOCAL_ONLY: plugin '${id}' lives in project '${entry.project}' on system `
+        + `'${entry.system}', and a plugin backend runs only on the machine cc runs on`,
+      );
+    }
+    await store.setAutoStart(id, value);
+    return describe(id);
+  }
+
+  // The boot pass: start every enabled plugin whose auto-start flag is on and
+  // whose backend is neither running nor starting. Runs after ensureInit, so a
+  // child adopted from runtime.json is already `ready` and is left alone, and a
+  // lazy start that got there first is `starting`. Each start goes through
+  // start(), the Start button's path; one failure blocks no other and never
+  // rejects this call — doStart already records the crash on the row.
+  async function autoStartAll(): Promise<{ started: string[]; failed: Array<{ id: string; error: string }> }> {
+    await ensureInit();
+    const targets = store.entries()
+      .map(([id]) => id)
+      .filter(id => store.autoStart(id) && store.isEnabled(id)
+        && runtimeState(id).status !== 'ready' && runtimeState(id).status !== 'starting');
+    const results = await Promise.allSettled(targets.map(id => start(id)));
+    const started: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    results.forEach((r, i) => {
+      const id = targets[i];
+      if (r.status === 'fulfilled') { started.push(id); return; }
+      const error = errMsg(r.reason);
+      console.warn(`plugins: auto-start of '${id}' failed: ${error}`);
+      failed.push({ id, error });
+    });
+    return { started, failed };
   }
 
   // Poll the supervisor runtime until readiness settles one way or the other.
@@ -866,7 +913,7 @@ export function createPluginHost(opts: {
   return {
     init: ensureInit,
     list, rescan, enable, disable, start, stop, restart, status,
-    ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
+    ensureStarted, setActiveVersion, setAutoStart, autoStartAll, toolsFor, runtimeInfo,
     conventions: contributions.conventions,
     roles: contributions.roles,
     playbooks: contributions.playbooks,
