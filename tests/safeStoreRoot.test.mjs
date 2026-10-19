@@ -105,7 +105,7 @@ test('ensureSafeStoreEnv marks an inherited PROJECTS_ROOT branch too', async () 
   // The OTHER branch. A standalone file whose PROJECTS_ROOT already resolves
   // under a valid run root takes the early return, so marking only the
   // freshly-minted branch would leave that path blind. The root must come from
-  // createSafeRoot() rather than tmpRegistry's mkdtemp: assertSafeTestRunRoot
+  // createSafeRoot() rather than a tmpRegistry mint: assertSafeTestRunRoot
   // requires a DIRECT child of the real tmpdir named exactly cc-testrun-XXXXXX,
   // and tmpRegistry roots are neither.
   const outer = createSafeRoot();

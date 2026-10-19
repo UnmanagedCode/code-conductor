@@ -7,16 +7,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { withLock } from '../src/storeLock.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function tmpDir() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'store-lock-'));
+  return mkdtemp('store-lock-');
 }
 
 function sleep(ms) {

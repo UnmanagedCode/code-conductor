@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import { registerLocalProject } from './helpers.mjs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -247,8 +246,8 @@ test('list(): installed git repo with no remote configured -> updateAvailable fa
 
 test('list(): installed + up to date with origin -> updateAvailable false, behind 0', async () => {
   const env = await makePluginRoot();
-  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
-  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  const remoteDir = await mkdtemp('lib-remote-');
+  const seedDir = await mkdtemp('lib-seed-');
   try {
     await dropOwnEntry();
     await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
@@ -279,8 +278,8 @@ test('list(): installed + up to date with origin -> updateAvailable false, behin
 
 test('list(): installed + behind origin -> updateAvailable true, behind > 0 (fetches before comparing)', async () => {
   const env = await makePluginRoot();
-  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
-  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  const remoteDir = await mkdtemp('lib-remote-');
+  const seedDir = await mkdtemp('lib-seed-');
   try {
     await dropOwnEntry();
     await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
@@ -743,8 +742,8 @@ test('update(): pull failure (not a git repo) -> 502 with tail; postPull never r
 
 test('update(): pulls new commits, runs postPull, and triggers a rescan', async () => {
   const env = await makePluginRoot();
-  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
-  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  const remoteDir = await mkdtemp('lib-remote-');
+  const seedDir = await mkdtemp('lib-seed-');
   try {
     await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
     await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');

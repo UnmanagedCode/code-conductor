@@ -21,15 +21,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(__dirname, '..', 'src');
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-store-lu-'));
+const tmp = await mkdtemp('cc-store-lu-');
 after(async () => { await fs.rm(tmp, { recursive: true, force: true }); });
 
 const HOLD_MS = 1_200;

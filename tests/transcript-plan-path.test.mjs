@@ -8,16 +8,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { loadPersistedTranscript } from '../src/transcript.ts';
 import { encodeCwd, localPlace} from '../src/projects.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const SID = 'aaaaaaaa-1111-2222-3333-555555555555';
 
 // Seed a session jsonl in a fresh temp claude-projects root and replay it.
 // Returns the replayed plan_request events.
 async function replay(lines, planFileContent) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'tplan-'));
+  const tmp = await mkdtemp('tplan-');
   const prevRoot = process.env.CLAUDE_PROJECTS_ROOT;
   process.env.CLAUDE_PROJECTS_ROOT = path.join(tmp, 'claude-projects');
   const planFile = path.join(tmp, '.claude', 'plans', 'the-plan.md');

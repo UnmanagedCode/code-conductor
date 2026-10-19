@@ -5,10 +5,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0018 from '../migrations/0018-session-backends-carry-model.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
-async function mkTmp() { return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig18-')); }
+async function mkTmp() { return mkdtemp('cc-mig18-'); }
 function sidecarFile(root) { return path.join(root, '.code-conductor', 'session-backends.json'); }
 async function writeJson(file, obj) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(obj, null, 2)); }
 async function readJson(file) { return JSON.parse(await fs.readFile(file, 'utf8')); }

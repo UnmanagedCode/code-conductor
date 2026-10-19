@@ -5,10 +5,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import v8 from 'node:v8';
 import { planSuites, runSuites, gateExit } from './gate.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const fake = (name, src) => ({ name, cmd: process.execPath, args: ['-e', src] });
 
@@ -41,7 +41,7 @@ test('npm test gate', async (t) => {
   });
 
   await t.test('a red first suite still runs the second', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gate-'));
+    const dir = mkdtempSync('cc-gate-');
     try {
       const marker = path.join(dir, 'ran');
       const suites = [fake('node', 'process.exit(1)'), fake('web', `require('fs').writeFileSync(${JSON.stringify(marker)}, '')`)];
@@ -62,7 +62,7 @@ test('npm test gate', async (t) => {
   });
 
   await t.test('a suite ended by a signal starts no further suite and exits 128 + signo', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gate-'));
+    const dir = mkdtempSync('cc-gate-');
     try {
       const marker = path.join(dir, 'ran');
       const suites = [fake('node', "process.kill(process.pid, 'SIGTERM')"),
@@ -85,7 +85,7 @@ test('npm test gate', async (t) => {
   // own unless something signals it.
   const interrupt = async (signal) => {
     const gate = await import(`./gate.mjs?${signal}`);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gate-'));
+    const dir = mkdtempSync('cc-gate-');
     try {
       const marker = path.join(dir, 'ran');
       const suites = [fake('node', ''), fake('web', `require('fs').writeFileSync(${JSON.stringify(marker)}, '')`)];

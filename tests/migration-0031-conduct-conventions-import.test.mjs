@@ -12,12 +12,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { runMigrations } from '../migrations/index.mjs';
 import * as m0031 from '../migrations/0031-conduct-conventions-import.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+
+// Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} into the migrated root;
+// this file runs the whole chain, so HOME is a registry dir it owns, never the real one.
+process.env.HOME = await mkdtemp('cc-mig31-home-');
 
 async function mkTempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'orch-m0031-'));
+  return mkdtemp('orch-m0031-');
 }
 
 async function exists(p) {

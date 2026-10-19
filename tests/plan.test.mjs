@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plan.json');
@@ -27,7 +27,7 @@ function wsClient(url) {
 
 test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file content; turn ends cleanly without auto-interrupt', async () => {
   // Seed the plan file at the path the scenario references via $PLANFILE.
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-'));
+  const tmpDir = await mkdtemp('plan-');
   const planDir = path.join(tmpDir, '.claude', 'plans');
   await fs.mkdir(planDir, { recursive: true });
   const planFile = path.join(planDir, 'test-plan.md');
@@ -92,7 +92,7 @@ test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file c
 // and present the sub-agent's scratch file's contents as the plan being
 // approved.
 test('plan mode: a sub-agent Write to a plan file does not enrich the outer ExitPlanMode', async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-sub-'));
+  const tmpDir = await mkdtemp('plan-sub-');
   const planDir = path.join(tmpDir, '.claude', 'plans');
   await fs.mkdir(planDir, { recursive: true });
   const planFile = path.join(planDir, 'sub-plan.md');

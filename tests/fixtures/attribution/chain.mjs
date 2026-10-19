@@ -49,7 +49,7 @@ import path from 'node:path';
 // of processes that are by then DEAD, so every successor reads a stale pid, gets an
 // instant ESRCH and starts its increment before this run's predecessor even exists.
 // Reproduced: sharing one dir collapses medium-fast to 656 and slow-medium to 251.
-// tests/summary-attribution.test.mjs mints one per runFixtures() call with mkdtemp;
+// tests/summary-attribution.test.mjs mints one per runFixtures() call as a fresh temp dir;
 // any ad-hoc probe loop must do the same, per iteration.
 const DIR = process.env.CC_ATTR_SYNC_DIR;
 const WAIT_CAP_MS = 10_000;   // < the 30s inner run cap and the 30s outer bail: a broken

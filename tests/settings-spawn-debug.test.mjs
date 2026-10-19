@@ -1,13 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
 import { getDebugByDefault, setDebugByDefault, getTranscribeModel, setTranscribeModel } from '../src/appSettings.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-settings-spawn-'));
+  return mkdtemp('cc-settings-spawn-');
 }
 
 test('GET /api/settings/spawn defaults debugByDefault to false', async () => {

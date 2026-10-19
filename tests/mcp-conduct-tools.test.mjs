@@ -7,10 +7,10 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines, driveTurn, registerLocalProject} from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -77,7 +77,7 @@ async function makeRealRepo(name) {
 }
 
 async function seedPlanFile() {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-plan-'));
+  const tmpDir = await mkdtemp('mcp-plan-');
   const planDir = path.join(tmpDir, '.claude', 'plans');
   await fs.mkdir(planDir, { recursive: true });
   const planFile = path.join(planDir, 'plan.md');

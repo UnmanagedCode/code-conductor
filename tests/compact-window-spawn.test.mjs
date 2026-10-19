@@ -10,11 +10,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { setConductorCompactWindow, addCustomModel } from '../src/appSettings.ts';
 import { runMigrations } from '../migrations/index.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -26,7 +26,7 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const CONDUCT_WINDOW_MODEL = 'cc-test-conduct-256k:cloud';
 
 async function spawnAndGetEnv({ ctx, project, conductedWorker = false, model = 'claude-haiku-4-5', backend }) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cwspawn-'));
+  const tmp = await mkdtemp('cwspawn-');
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
@@ -166,7 +166,15 @@ test('a stale pre-migration sub-100k persisted value is bumped to 100k before it
       models: { conductorCompactWindowEnabled: true, conductorCompactWindowK: 50 },
     }));
 
-    await runMigrations({ root: ctx.projectsRoot, log: () => {} });
+    // Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} into the
+    // migrated root; pin HOME to a registry dir for just this call.
+    const realHome = process.env.HOME;
+    process.env.HOME = await mkdtemp('cwspawn-home-');
+    try {
+      await runMigrations({ root: ctx.projectsRoot, log: () => {} });
+    } finally {
+      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    }
 
     await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
     const env = await spawnAndGetEnv({ ctx, project: '.conduct' });

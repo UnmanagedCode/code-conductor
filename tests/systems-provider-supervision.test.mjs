@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_OP_TIMEOUT_MS, ProviderSystem } from '../src/systems/providerSystem.ts';
 import { providerArgv } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(__dirname, 'fake-provider.mjs');
@@ -29,7 +30,7 @@ function fakeSystem(mode, { countFile, code, pidFile, ...opts } = {}) {
 }
 
 async function tmp(fn) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-supervision-'));
+  const dir = await mkdtemp('cc-supervision-');
   try { return await fn(dir); } finally { await rmrf(dir); }
 }
 

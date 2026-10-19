@@ -7,10 +7,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROBE = path.resolve(__dirname, '..', 'docker', 'deps-complete.mjs');
@@ -22,7 +22,7 @@ const DRIFT = path.resolve(__dirname, '..', 'src', 'depsDrift.ts');
 // are copied in at their repo-relative paths, as the entrypoint runs them.
 const PACKAGE = { name: 'x', dependencies: { a: '^1.0.0', b: '^2.0.0' }, devDependencies: { d: '^1.0.0' } };
 function checkout(installed) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-deps-complete-'));
+  const dir = mkdtempSync('cc-deps-complete-');
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(PACKAGE));
   for (const [d, version] of Object.entries(installed)) {
     fs.mkdirSync(path.join(dir, 'node_modules', d), { recursive: true });
@@ -84,7 +84,7 @@ test("the entrypoint runs the probe from the checkout and, only when it fails, r
   assert.ok(start !== -1 && end > start, 'fixture check: the deps block is found');
   const block = script.slice(start, end);
 
-  const stubs = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-deps-npm-'));
+  const stubs = mkdtempSync('cc-deps-npm-');
   const npmLog = path.join(stubs, 'npm.log');
   fs.writeFileSync(path.join(stubs, 'npm'), `#!/bin/sh\necho "$*" >> "${npmLog}"\n`, { mode: 0o755 });
   const partial = checkout({ a: '1.0.0' });

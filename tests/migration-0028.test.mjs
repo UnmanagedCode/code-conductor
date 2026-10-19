@@ -11,12 +11,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0028 from '../migrations/0028-tri-state-default-playbook.mjs';
 import * as m0027 from '../migrations/0027-rename-default-playbook-ids.mjs';
 import { ALL } from '../migrations/index.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
-const mkTmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig28-'));
+const mkTmp = () => mkdtemp('cc-mig28-');
 const conductorFile = (root) => path.join(root, '.code-conductor', 'conventions', 'conductor.json');
 
 async function writeJson(file, obj) {

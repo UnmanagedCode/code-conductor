@@ -10,10 +10,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import * as m0026 from '../migrations/0026-drop-sonnet-window-state.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
-const mkTmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig26-'));
+const mkTmp = () => mkdtemp('cc-mig26-');
 const store = (root) => path.join(root, '.code-conductor');
 const settingsFile = (root) => path.join(store(root), 'settings.json');
 const sidecarFile = (root) => path.join(store(root), 'session-backends.json');

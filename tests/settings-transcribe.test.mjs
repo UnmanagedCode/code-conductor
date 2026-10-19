@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { whisperPaths, modelPathForName } from '../src/transcribe.ts';
 import { setTranscribeModel } from '../src/appSettings.ts';
 import * as whisperInstall from '../src/whisperInstall.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // A bash stand-in for bin/install-whisper.sh: emits a couple of progress
 // lines and `touch`es the whisper-cli binary + the requested model under
@@ -44,7 +44,7 @@ echo "==> fake install done"
 `;
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-settings-test-'));
+  return mkdtemp('cc-settings-test-');
 }
 
 async function withEnv(overrides, fn) {

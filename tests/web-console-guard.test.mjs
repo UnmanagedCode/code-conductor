@@ -8,11 +8,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const vitestBin = path.join(path.dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs');
@@ -29,7 +29,7 @@ test('the happy-dom iframe-disabled notice is not printed; an unrelated raw-cons
 });
 
 test('a console.error / console.warn fails the test or file it lands in; a spy opt-out is scoped to its test', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-console-guard-'));
+  const dir = mkdtempSync('cc-console-guard-');
   const outputFile = path.join(dir, 'report.json');
   try {
     const r = spawnSync(process.execPath, [
@@ -80,7 +80,7 @@ test('a console.error / console.warn fails the test or file it lands in; a spy o
 });
 
 test('a throwing file afterEach skips the guard afterEach: its spy is still restored and its logs still fail the file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-console-guard-'));
+  const dir = mkdtempSync('cc-console-guard-');
   const outputFile = path.join(dir, 'report.json');
   try {
     const r = spawnSync(process.execPath, [
@@ -105,7 +105,7 @@ test('a throwing file afterEach skips the guard afterEach: its spy is still rest
 });
 
 test('a next-turn log from a test whose guard afterEach was skipped still fails the file, together with an outside-test log', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-console-guard-'));
+  const dir = mkdtempSync('cc-console-guard-');
   const outputFile = path.join(dir, 'report.json');
   try {
     const r = spawnSync(process.execPath, [

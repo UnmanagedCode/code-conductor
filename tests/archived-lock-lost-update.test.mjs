@@ -21,16 +21,16 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(__dirname, '..', 'src');
 const storeLockMod = JSON.stringify('file://' + path.join(srcDir, 'storeLock.ts'));
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-lock-lu-'));
+const tmp = await mkdtemp('cc-lock-lu-');
 after(async () => { await fs.rm(tmp, { recursive: true, force: true }); });
 
 // HOLDER: manually plant a lock carrying THIS live process's pid but an aged

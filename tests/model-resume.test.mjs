@@ -14,13 +14,14 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { encodeCwd, localPlace} from '../src/projects.ts';
 import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
 
 // Helper: create a temp dir with a fake CLAUDE_PROJECTS_ROOT and clean up after.
 async function withTmpClaudeRoot(fn) {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'model-resume-'));
+  const tmpDir = await mkdtemp('model-resume-');
   const claudeProjects = path.join(tmpDir, '.claude', 'projects');
   const prev = process.env.CLAUDE_PROJECTS_ROOT;
   process.env.CLAUDE_PROJECTS_ROOT = claudeProjects;

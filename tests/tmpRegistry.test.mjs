@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fsp, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, cleanupAll, _forTesting } from './tmpRegistry.mjs';
+import { mkdtemp, mkdtempSync, cleanupAll, _forTesting } from './tmpRegistry.mjs';
 import { _forTesting as storeRootTesting, ensureSafeStoreEnv } from './safeStoreRoot.mjs';
 
 const REAL_TMP = realpathSync(os.tmpdir());
@@ -32,31 +32,53 @@ test('cleanupAll refuses to delete anything when the safe-root invariant is not 
   assert.equal(await exists(dir), false, 'cleanupAll must resume deleting once verified again');
 });
 
+test('mkdtempSync registers into the same registry and cleanupAll removes it', async () => {
+  const dir = mkdtempSync('cc-sync-reg-');
+  assert.equal(_forTesting.registry.has(path.resolve(dir)), true, 'the sync mint must be tracked');
+  assert.equal(await exists(dir), true);
+  await cleanupAll();
+  assert.equal(await exists(dir), false, 'cleanupAll must remove a sync-minted dir');
+  assert.equal(_forTesting.registry.has(path.resolve(dir)), false, 'the entry is dropped once removed');
+});
+
+test('mkdtemp and mkdtempSync refuse a missing or empty prefix', async () => {
+  const before = _forTesting.registry.size;
+  assert.throws(() => mkdtempSync(), /non-empty prefix string required/);
+  assert.throws(() => mkdtempSync(''), /non-empty prefix string required/);
+  await assert.rejects(() => mkdtemp(), /non-empty prefix string required/);
+  await assert.rejects(() => mkdtemp(''), /non-empty prefix string required/);
+  assert.equal(_forTesting.registry.size, before, 'a refused mint registers nothing');
+});
+
 // F3: validateForDeletion's direct-child / shape / symlink checks, each
 // isolated so only ONE check fails per case, driven through cleanupAll so we
 // also prove a bad entry never blocks cleanup of a good one alongside it.
 test('validateForDeletion refuses a symlink, a non-direct-child, and a wrong-shape entry — each survives — while a good entry alongside them is still removed', async () => {
   const symlinkTarget = await mkdtemp('cc-f3-symlink-target-');
   const symlinkPath = path.join(REAL_TMP, 'cc-f3-link-AbC123');
-  await fsp.symlink(symlinkTarget, symlinkPath, 'dir');
-
-  // NOT via mkdtemp(): the outer dir must stay unregistered, or cleanupAll's
-  // own legitimate (recursive) removal of it would wipe the nested entry
-  // out from under this test before the nested entry's own turn comes up.
-  const nestOuter = await fsp.mkdtemp(path.join(REAL_TMP, 'cc-f3-nest-outer-'));
-  const nestedPath = path.join(nestOuter, 'cc-f3-nested-AbCdEf');
-  await fsp.mkdir(nestedPath);
-
   const shapePath = path.join(REAL_TMP, 'cc-f3-shape-TOOLONGSUFFIX');
-  await fsp.mkdir(shapePath);
-
-  const goodDir = await mkdtemp('cc-f3-good-');
-
-  _forTesting.registry.set(symlinkPath, 'cc-f3-link-');
-  _forTesting.registry.set(nestedPath, 'cc-f3-nested-');
-  _forTesting.registry.set(shapePath, 'cc-f3-shape-');
+  let nestOuter;
+  let nestedPath;
+  let goodDir;
 
   try {
+    await fsp.symlink(symlinkTarget, symlinkPath, 'dir');
+
+    // NOT via mkdtemp(): the outer dir must stay unregistered, or cleanupAll's
+    // own legitimate (recursive) removal of it would wipe the nested entry
+    // out from under this test before the nested entry's own turn comes up.
+    nestOuter = await fsp.mkdtemp(path.join(REAL_TMP, 'cc-f3-nest-outer-'));
+    nestedPath = path.join(nestOuter, 'cc-f3-nested-AbCdEf');
+    await fsp.mkdir(nestedPath);
+
+    await fsp.mkdir(shapePath);
+
+    goodDir = await mkdtemp('cc-f3-good-');
+
+    _forTesting.registry.set(symlinkPath, 'cc-f3-link-');
+    _forTesting.registry.set(nestedPath, 'cc-f3-nested-');
+    _forTesting.registry.set(shapePath, 'cc-f3-shape-');
+
     await assert.rejects(() => cleanupAll(), (err) => {
       assert.ok(err instanceof AggregateError, `expected an AggregateError, got ${err}`);
       assert.equal(err.errors.length, 3);
@@ -75,11 +97,11 @@ test('validateForDeletion refuses a symlink, a non-direct-child, and a wrong-sha
     // can still retry them — this test owns removing both the malformed
     // artifacts it created directly AND their now-stale registry entries.
     _forTesting.registry.delete(symlinkPath);
-    _forTesting.registry.delete(nestedPath);
+    if (nestedPath) _forTesting.registry.delete(nestedPath);
     _forTesting.registry.delete(shapePath);
     await fsp.rm(symlinkPath, { force: true });
     await fsp.rm(symlinkTarget, { recursive: true, force: true });
-    await fsp.rm(nestOuter, { recursive: true, force: true });
+    if (nestOuter) await fsp.rm(nestOuter, { recursive: true, force: true });
     await fsp.rm(shapePath, { recursive: true, force: true });
   }
 });
@@ -123,16 +145,19 @@ test('an rmrf failure leaves its entry registered for the backstop, without bloc
 test('validateForDeletion throws a specific, distinguishable reason per malformed entry', async () => {
   const symlinkTarget = await mkdtemp('cc-f3b-symlink-target-');
   const symlinkPath = path.join(REAL_TMP, 'cc-f3b-link-Zz9Yy8');
-  await fsp.symlink(symlinkTarget, symlinkPath, 'dir');
-
-  const nestOuter = await fsp.mkdtemp(path.join(REAL_TMP, 'cc-f3b-nest-outer-')); // unregistered — see note above
-  const nestedPath = path.join(nestOuter, 'cc-f3b-nested-Zz9Yy8');
-  await fsp.mkdir(nestedPath);
-
   const shapePath = path.join(REAL_TMP, 'cc-f3b-shape-TOOLONGSUFFIX');
-  await fsp.mkdir(shapePath);
+  let nestOuter;
+  let nestedPath;
 
   try {
+    await fsp.symlink(symlinkTarget, symlinkPath, 'dir');
+
+    nestOuter = await fsp.mkdtemp(path.join(REAL_TMP, 'cc-f3b-nest-outer-')); // unregistered — see note above
+    nestedPath = path.join(nestOuter, 'cc-f3b-nested-Zz9Yy8');
+    await fsp.mkdir(nestedPath);
+
+    await fsp.mkdir(shapePath);
+
     assert.throws(
       () => _forTesting.validateForDeletion(symlinkPath, 'cc-f3b-link-'),
       /is a symlink/,
@@ -148,7 +173,7 @@ test('validateForDeletion throws a specific, distinguishable reason per malforme
   } finally {
     await fsp.rm(symlinkPath, { force: true });
     await fsp.rm(symlinkTarget, { recursive: true, force: true });
-    await fsp.rm(nestOuter, { recursive: true, force: true });
+    if (nestOuter) await fsp.rm(nestOuter, { recursive: true, force: true });
     await fsp.rm(shapePath, { recursive: true, force: true });
   }
 });

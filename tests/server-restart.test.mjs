@@ -16,9 +16,9 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import { waitForBanner } from './serverBanner.mjs';
 import { flaggedIdsIn } from './sessionFacts.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -52,6 +52,8 @@ function spawnServer(port, tmpHome) {
     cwd: path.dirname(SERVER_TS),
     env: {
       ...process.env,
+      // Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} on boot; keep it off the real HOME.
+      HOME: tmpHome,
       PORT: String(port),
       HOST: '127.0.0.1',
       // Sandbox FS lookups away from the user's real ~/project.
@@ -74,7 +76,7 @@ function tryBind(port) {
 
 test('POST /api/admin/restart respawns the server on the same port with a new pid', async (t) => {
   const port = await getFreePort();
-  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-restart-'));
+  const tmpHome = await mkdtemp('orch-restart-');
   await fs.mkdir(path.join(tmpHome, 'project'), { recursive: true });
   await fs.mkdir(path.join(tmpHome, '.claude', 'projects'), { recursive: true });
 
@@ -188,7 +190,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   // before triggering restart, then assert the sweep outcome after the
   // grandchild comes up.
   const port = await getFreePort();
-  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-restart-sweep-'));
+  const tmpHome = await mkdtemp('orch-restart-sweep-');
   const projectsRoot = path.join(tmpHome, 'project');
   const claudeProjectsRoot = path.join(tmpHome, '.claude', 'projects');
   await fs.mkdir(projectsRoot, { recursive: true });

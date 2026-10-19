@@ -2,7 +2,6 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
 import {
@@ -24,9 +23,10 @@ import {
   getTierEffort, setTierEffort, getRoleEffort, setRoleEffort, resolveSpawnEffort,
 } from '../src/appSettings.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-models-test-'));
+  return mkdtemp('cc-models-test-');
 }
 
 async function withEnv(overrides, fn) {

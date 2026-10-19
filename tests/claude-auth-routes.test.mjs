@@ -4,11 +4,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { invalidateAccountUsage } from '../src/accountUsage.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = `${process.execPath} ${path.join(__dirname, 'fake-claude-auth.mjs')}`;
@@ -26,7 +26,7 @@ const pidGone = (pid) => {
 // A booted server whose CLI is the fake, with its env and a record file.
 async function withServer(env, fn) {
   const ctx = await bootServer();
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-auth-routes-'));
+  const dir = await mkdtemp('cc-auth-routes-');
   const record = path.join(dir, 'rec.jsonl');
   const vars = { FAKE_AUTH_LOGIN_MODE: 'normal', FAKE_AUTH_STATUS: undefined, FAKE_AUTH_STATUS_EXIT: undefined, ...env, FAKE_AUTH_RECORD: record };
   const prev = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]));
@@ -121,7 +121,7 @@ async function reloginSwitchesUsageToken({ setConfigDir }) {
     const who = auth.replace(/^Bearer /, '');
     return Promise.resolve(new Response(JSON.stringify({ who }), { status: 200, headers: { 'content-type': 'application/json' } }));
   };
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-auth-cfg-'));
+  const root = await mkdtemp('cc-auth-cfg-');
   const home = path.join(root, 'home');
   const cfg = setConfigDir ? path.join(root, 'cfg') : path.join(home, '.claude');
   await fs.mkdir(cfg, { recursive: true });

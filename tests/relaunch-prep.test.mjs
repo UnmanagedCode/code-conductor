@@ -6,14 +6,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { ensureDependencies, withMaintenanceLock } from '../src/relaunchPrep.ts';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 // A checkout declaring a@^1.0.0 in package.json, with `installed` (version of a, or null) in
 // `<dir>/node_modules` — or, with `link`, in a sibling dir node_modules links to.
 function checkout(t, { installed = null, link = false } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-relaunch-prep-'));
+  const dir = mkdtempSync('cc-relaunch-prep-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const repo = path.join(dir, 'repo');
   fs.mkdirSync(repo);

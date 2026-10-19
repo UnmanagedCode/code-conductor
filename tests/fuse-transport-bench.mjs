@@ -156,39 +156,43 @@ const frameDelta = (a, b) => (a && b
 async function rig(fn, { log = LOG } = {}) {
   const box = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-bench-'));
   const root = await fs.realpath(box);
-  // `localDirSource` addresses by the path the WORKER sees and joins it under
-  // its root; `systemSource` takes the path as-is. Putting the tree at the SAME
-  // absolute path under both roots is what makes one path string work for both,
-  // so the two arms drive byte-identical frames.
-  // THE DOCKER ARM'S TREE IS ON THE BOX, because there is no shared filesystem
-  // to build it on — which is the whole difference the arm exists to measure.
-  const remote = ARM === 'docker';
-  const src = remote ? path.posix.join(DOCKER_ROOT, path.basename(root)) : path.join(root, 'src');
-  const mirror = path.join(root, 'mirror');
-  if (!remote) await fs.mkdir(src, { recursive: true });
-  await fs.mkdir(mirror, { recursive: true });
-  const arm = await makeArm(ARM, ARM === 'localdir' ? '/' : root, log);
-  // Written through the arm's OWN handle, so one call site serves every arm.
-  const put = async (p, bytes) => (remote
-    ? arm.sys.writeFileBytes(p, bytes, { atomic: true })
-    : fs.writeFile(p, bytes));
-  const mkdirp = async (p) => (remote ? arm.sys.mkdir(p, { recursive: true }) : fs.mkdir(p, { recursive: true }));
-  if (remote) await mkdirp(src);
-  const server = await ControlServer.listen({
-    socketPath: path.join(root, 'control.sock'),
-    mirror,
-    source: arm.source,
-    tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
-  });
-  const sock = await new Promise((res, rej) => {
-    const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
-  });
-  try { return await fn({ root, src, mirror, sock, sys: arm.sys, put, mkdirp }); }
-  finally {
-    sock.destroy();
-    await server.close();
-    if (remote) await arm.sys.removeTree(src).catch(() => {});
-    arm.dispose();
+  // The rm covers every setup step below, not just the post-setup body.
+  try {
+    // `localDirSource` addresses by the path the WORKER sees and joins it under
+    // its root; `systemSource` takes the path as-is. Putting the tree at the SAME
+    // absolute path under both roots is what makes one path string work for both,
+    // so the two arms drive byte-identical frames.
+    // THE DOCKER ARM'S TREE IS ON THE BOX, because there is no shared filesystem
+    // to build it on — which is the whole difference the arm exists to measure.
+    const remote = ARM === 'docker';
+    const src = remote ? path.posix.join(DOCKER_ROOT, path.basename(root)) : path.join(root, 'src');
+    const mirror = path.join(root, 'mirror');
+    if (!remote) await fs.mkdir(src, { recursive: true });
+    await fs.mkdir(mirror, { recursive: true });
+    const arm = await makeArm(ARM, ARM === 'localdir' ? '/' : root, log);
+    // Written through the arm's OWN handle, so one call site serves every arm.
+    const put = async (p, bytes) => (remote
+      ? arm.sys.writeFileBytes(p, bytes, { atomic: true })
+      : fs.writeFile(p, bytes));
+    const mkdirp = async (p) => (remote ? arm.sys.mkdir(p, { recursive: true }) : fs.mkdir(p, { recursive: true }));
+    if (remote) await mkdirp(src);
+    const server = await ControlServer.listen({
+      socketPath: path.join(root, 'control.sock'),
+      mirror,
+      source: arm.source,
+      tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
+    });
+    const sock = await new Promise((res, rej) => {
+      const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
+    });
+    try { return await fn({ root, src, mirror, sock, sys: arm.sys, put, mkdirp }); }
+    finally {
+      sock.destroy();
+      await server.close();
+      if (remote) await arm.sys.removeTree(src).catch(() => {});
+      arm.dispose();
+    }
+  } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
 }

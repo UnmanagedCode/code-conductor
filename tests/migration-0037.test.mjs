@@ -13,9 +13,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { execFile as execFileCb } from 'node:child_process';
 import * as m0037 from '../migrations/0037-project-location-records.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const STORE = '.code-conductor';
 const BACKUP = 'migrated-backup-0037';
@@ -29,7 +29,7 @@ const git = (cwd, ...args) => new Promise((resolve, reject) => {
 });
 
 async function mkRoot() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-0037-'));
+  const dir = await mkdtemp('cc-0037-');
   return fs.realpath(dir);
 }
 
@@ -89,9 +89,7 @@ async function addLegacyWorktree(root, project, repo, slug, { base = null } = {}
 // exercises every source, every refusal and every probe clause together.
 async function buildFixture() {
   const root = await mkRoot();
-  const outside = path.join(root, '..', path.basename(root) + '-outside');
-  await fs.mkdir(outside, { recursive: true });
-  const outsideReal = await fs.realpath(outside);
+  const outsideReal = await fs.realpath(await mkdtemp('cc-0037-out-'));
   const ext = path.join(root, '.external');
   await fs.mkdir(ext, { recursive: true });
 

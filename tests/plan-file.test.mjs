@@ -6,9 +6,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import os from 'node:os';
+import { writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { mkdtempSync } from './tmpRegistry.mjs';
 import { planPathFromInput, planFileFromToolUse, PlanFileTracker } from '../src/planFile.ts';
 
 test('planPathFromInput prefers planFilePath, falls back to planPath', () => {
@@ -44,7 +44,7 @@ test('planFileFromToolUse recognises only a Write under ~/.claude/plans/*.md', (
 
 // A real file, so branch 3's readFileSync is observable on the enriched event.
 function tmpPlan(content) {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'planseed-'));
+  const dir = mkdtempSync('planseed-');
   const file = path.join(dir, 'p.md');
   writeFileSync(file, content);
   return { file, cleanup: () => rmSync(dir, { recursive: true, force: true }) };

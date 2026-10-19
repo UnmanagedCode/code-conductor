@@ -11,6 +11,10 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0029 from '../migrations/0029-enable-playbooks-conductor-convention.mjs';
 import { ALL } from '../migrations/index.mjs';
 
+// Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} into the migrated root;
+// this file runs the whole chain, so HOME is a registry dir it owns, never the real one.
+process.env.HOME = await mkdtemp('cc-mig29-home-');
+
 // Replay the real registered chain up to and including `lastName`, in order —
 // the same shape tests/migration-0018b.test.mjs uses. Deliberately a PREFIX and
 // not the whole chain: 0033 later retires the `enabled` key altogether (the

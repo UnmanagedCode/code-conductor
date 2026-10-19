@@ -11,10 +11,10 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl } from './helpers.mjs';
 import { localPlace } from '../src/projects.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -71,7 +71,7 @@ afterEach(async () => {
 // `content` is null the path is reserved but never created — the "unreadable
 // plan file" case.
 async function seedPlanFile(content) {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'planpath-'));
+  const tmpDir = await mkdtemp('planpath-');
   const planDir = path.join(tmpDir, '.claude', 'plans');
   await fs.mkdir(planDir, { recursive: true });
   const planFile = path.join(planDir, 'the-plan.md');

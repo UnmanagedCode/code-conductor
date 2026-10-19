@@ -5,10 +5,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import * as m0039 from '../migrations/0039-unified-session-store.mjs';
 import { runMigrations } from '../migrations/index.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+
+// Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} into the migrated root;
+// this file runs the whole chain, so HOME is a registry dir it owns, never the real one.
+process.env.HOME = await mkdtemp('cc-mig39-home-');
 
 const PUB = 'a1b2c3d4';
 const SEG1 = 'a1b2c3d4-0000-4000-8000-000000000001';
@@ -16,7 +20,7 @@ const SEG2 = 'e5f6a7b8-0000-4000-8000-000000000002';
 const LONE = 'c0ffee00-0000-4000-8000-000000000003';
 
 async function mkRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-m0039-'));
+  const root = await mkdtemp('cc-m0039-');
   await fs.mkdir(path.join(root, '.code-conductor'), { recursive: true });
   return root;
 }

@@ -13,7 +13,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { rmrf } from './rmrf.mjs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -22,9 +21,10 @@ import {
   LOCAL_PROVIDER_ENV, LOCAL_REMOTE_ENV,
 } from '../src/systems/registry.ts';
 import { REFERENCE_PROVIDER } from './referenceProviderHarness.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 function tmpdir() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-systems-local-'));
+  return mkdtemp('cc-systems-local-');
 }
 
 // VACUOUS UNTIL PHASE 2, AND DELIBERATELY KEPT ANYWAY. In Phase 1 there is no

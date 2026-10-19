@@ -12,6 +12,7 @@ import { createClaudeLoginFlow } from '../src/claudeLogin.ts';
 import { hostPlatform } from '../src/platform/index.ts';
 import { waitFor } from './helpers.mjs';
 import { FAKE_LOGIN_URL } from './fake-claude-auth.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = `${process.execPath} ${path.join(__dirname, 'fake-claude-auth.mjs')}`;
@@ -23,7 +24,7 @@ const pidGone = (pid) => {
 // One fake-CLI login per test: env set for the spawn, a fresh record file, and
 // the flow disposed + env restored however the test ends.
 async function withLogin({ mode = 'normal', bin = FAKE, ...opts } = {}, fn) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-login-flow-'));
+  const dir = await mkdtemp('cc-login-flow-');
   const record = path.join(dir, 'rec.jsonl');
   const vars = { CLAUDE_BIN: bin, FAKE_AUTH_LOGIN_MODE: mode, FAKE_AUTH_RECORD: record };
   const prev = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]));

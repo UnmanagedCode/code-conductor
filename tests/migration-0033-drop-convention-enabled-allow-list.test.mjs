@@ -16,6 +16,10 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0033 from '../migrations/0033-drop-convention-enabled-allow-list.mjs';
 import { runMigrations } from '../migrations/index.mjs';
 
+// Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} into the migrated root;
+// this file runs the whole chain, so HOME is a registry dir it owns, never the real one.
+process.env.HOME = await mkdtemp('cc-mig33-home-');
+
 async function mkTmp() {
   return mkdtemp('cc-drop-allow-list-');
 }

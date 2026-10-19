@@ -14,7 +14,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_COMMAND_TIMEOUT_MS, ProviderShell } from '../src/systems/providerShell.ts';
 import {
@@ -24,6 +23,7 @@ import {
 import { CAPABILITY_CONFIGS, makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 import { waitFor } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // The opening sentinel exactly as the framed script emits it — INCLUDING the
 // injected leading newline, without which the marker glues itself to whatever
@@ -32,7 +32,7 @@ import { waitFor } from './helpers.mjs';
 const B = (n) => `\n${beginFor(n)}\n`;
 
 async function withShell(fn, shellOpts = {}, flags = []) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-shell-'));
+  const dir = await mkdtemp('cc-shell-');
   const cwd = await fs.realpath(dir);
   const sys = makeProviderSystem(flags);
   try {

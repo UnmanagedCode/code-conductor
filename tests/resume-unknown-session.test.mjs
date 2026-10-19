@@ -15,13 +15,14 @@ import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.ts';
 import { listWorktrees, createWorktree } from '../src/worktrees.ts';
 import { localPlace } from '../src/projects.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
 
 // Reuse the model-resume.test.mjs pattern for an isolated CLAUDE_PROJECTS_ROOT.
 async function withTmpClaudeRoot(fn) {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'resume-unknown-'));
+  const tmpDir = await mkdtemp('resume-unknown-');
   const claudeProjects = path.join(tmpDir, '.claude', 'projects');
   const prev = process.env.CLAUDE_PROJECTS_ROOT;
   process.env.CLAUDE_PROJECTS_ROOT = claudeProjects;

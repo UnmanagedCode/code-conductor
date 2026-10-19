@@ -1158,7 +1158,7 @@ describe('bootstrap.sh step 0 — the environment files are verified before anyt
 
   let seq = 0;
   // A 0600 file inside a directory of the caller's chosen mode — the fixture
-  // for the directory half of the check. `mkdtemp` mints 0700, which is why the
+  // for the directory half of the check. A fresh temp dir is minted 0700, which is why the
   // rows above reach the FILE tests at all.
   const inDir = async (dirMode, text) => {
     const sub = path.join(dir, `d${seq++}`);
@@ -1496,7 +1496,7 @@ describe('the tier table', () => {
   // down, and never `/usr` or `/`.
   //
   // PATH STRINGS ARE THE FIXTURE, and they have to be: the defect is that the
-  // common ancestor has exactly two ABSOLUTE components, and any `mkdtemp` root
+  // common ancestor has exactly two ABSOLUTE components, and any temp-dir root
   // is far deeper — so under a temp tree the fallback branch can never fire.
   // T2 below drives the same function from a real symlinked tree and therefore
   // covers only the single-prefix branch; this is the chain branch's one home.
@@ -1555,7 +1555,7 @@ describe('the tier table', () => {
   // so the realpath row is the only pin covering the launcher's actual script,
   // and a `binaryPins` that dropped it left every other assertion green.
   //
-  // THE SINGLE-PREFIX BRANCH BY CONSTRUCTION: a `mkdtemp` root always clears
+  // THE SINGLE-PREFIX BRANCH BY CONSTRUCTION: a temp-dir root always clears
   // the 3-component floor, so the common ancestor here is never rejected and
   // the chain branch is unreachable from this fixture. T1 owns that branch.
   test('binaryPins carries the realpath and the install prefix, from a real symlink', async () => {

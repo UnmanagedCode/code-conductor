@@ -17,17 +17,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createPlaybookGate } from '../src/mcp/playbookGate.ts';
 import { createPlaybookLedger, readEvents, foldProjection } from '../src/playbookLedger.ts';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { GATELAB } from './playbook-fixtures.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // The gate loads real definitions, so the graph has to exist on disk. Per-FILE
 // user-overlay store (node:test forks a process per file), never the shipped
 // playbooks/*.json — those are hand-editable by their owner.
-process.env.PROJECTS_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbcommit-root-'));
+process.env.PROJECTS_ROOT = await mkdtemp('cc-pbcommit-root-');
 {
   const dir = path.join(orchStoreRoot(), 'playbooks');
   await fs.mkdir(dir, { recursive: true });
@@ -50,7 +50,7 @@ function stubManager() {
 }
 
 async function tmpLedger(events) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbcommit-'));
+  const dir = await mkdtemp('cc-pbcommit-');
   const file = path.join(dir, 'playbook-ledger.jsonl');
   await fs.writeFile(file, events.map((e, i) =>
     JSON.stringify({ seq: i + 1, ts: `2026-09-06T00:00:0${i % 10}Z`, ...e })).join('\n') + '\n');
@@ -148,7 +148,7 @@ function stubManagerRecording({ live = [] } = {}) {
 }
 
 async function tmpLedgerRecording(events, { live } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbcommit-'));
+  const dir = await mkdtemp('cc-pbcommit-');
   const file = path.join(dir, 'playbook-ledger.jsonl');
   await fs.writeFile(file, events.map((e, i) =>
     JSON.stringify({ seq: i + 1, ts: `2026-09-06T00:00:0${i % 10}Z`, ...e })).join('\n') + '\n');
@@ -254,7 +254,7 @@ const IN_AMEND = [...RUN,
 const FORWARD_SOURCE = 'planner-1';
 
 async function tmpLedgerAppends(events) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbcommit-'));
+  const dir = await mkdtemp('cc-pbcommit-');
   const file = path.join(dir, 'playbook-ledger.jsonl');
   await fs.writeFile(file, events.map((e, i) =>
     JSON.stringify({ seq: i + 1, ts: `2026-09-06T00:00:0${i % 10}Z`, ...e })).join('\n') + '\n');

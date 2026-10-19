@@ -5,9 +5,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // Dynamic import so we can reload with a fresh module cache per test would
 // require workers; instead we use the exported invalidateAccountUsage() between tests.
@@ -17,7 +17,7 @@ import { getAccountUsage, invalidateAccountUsage } from '../src/accountUsage.ts'
 
 let tmpHome;
 async function makeTmpHome(credentials) {
-  tmpHome = await mkdtemp(path.join(tmpdir(), 'cc-test-'));
+  tmpHome = await mkdtemp('cc-test-');
   const claudeDir = path.join(tmpHome, '.claude');
   const { mkdir } = await import('node:fs/promises');
   await mkdir(claudeDir, { recursive: true });
@@ -147,7 +147,7 @@ test('a network error warns with its backoff, and still returns null', async () 
   try {
     // Fixed clock + fixed jitter: the backoff delay is then deterministic, so
     // this asserts on the reported number without a sleep or a wall-clock read.
-    const opts = { home: tmpHome, _now: () => 1_000_000, _random: () => 0 };
+    const opts = { configDir: path.join(tmpHome, '.claude'), _now: () => 1_000_000, _random: () => 0 };
     const result = await getAccountUsage(opts);
     assert.equal(result, null);
 
@@ -550,13 +550,13 @@ test('allowStale — returns null once the retained data ages past maxStaleMs', 
     const age = tCheck - t0; // 181_000
 
     const withinCap = await getAccountUsage({
-      home: tmpHome, _now: () => tCheck, _random: NO_JITTER,
+      configDir: path.join(tmpHome, '.claude'), _now: () => tCheck, _random: NO_JITTER,
       allowStale: true, maxStaleMs: age + 1,
     });
     assert.deepEqual(withinCap, { data: SAMPLE_USAGE, stale: true, fetchedAt: t0 });
 
     const pastCap = await getAccountUsage({
-      home: tmpHome, _now: () => tCheck, _random: NO_JITTER,
+      configDir: path.join(tmpHome, '.claude'), _now: () => tCheck, _random: NO_JITTER,
       allowStale: true, maxStaleMs: age,
     });
     assert.equal(pastCap, null, 'data whose age has reached maxStaleMs must not be served');

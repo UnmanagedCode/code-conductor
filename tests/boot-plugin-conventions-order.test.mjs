@@ -19,10 +19,10 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
-import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { waitForBanner } from './serverBanner.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -57,7 +57,7 @@ function getFreePort() {
 // finds only this fixture — the real local plugin library is out of scope and
 // nothing touches the network.
 async function makeFixture() {
-  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-bootorder-'));
+  const tmpHome = await mkdtemp('orch-bootorder-');
   const root = path.join(tmpHome, 'project');
   await fs.mkdir(path.join(tmpHome, '.claude', 'projects'), { recursive: true });
 
@@ -95,6 +95,8 @@ test('boot regenerates project CONVENTIONS.md with plugin bodies — the provide
     cwd: path.dirname(SERVER_TS),
     env: {
       ...process.env,
+      // Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} on boot; keep it off the real HOME.
+      HOME: tmpHome,
       PORT: String(port),
       HOST: '127.0.0.1',
       PROJECTS_ROOT: root,

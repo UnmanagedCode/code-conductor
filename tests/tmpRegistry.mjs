@@ -1,6 +1,7 @@
 // Forget-proof temp-dir cleanup. Any test file that imports { mkdtemp } from
 // here gets automatic teardown of every directory it mints, with no per-file
-// afterEach to remember.
+// afterEach to remember. Two mint entry points (async mkdtemp, sync
+// mkdtempSync) share the one registry.
 //
 // Deletion is EXACT-PATH-ONLY: the registry below records only paths this
 // process itself got back from its own fs.mkdtemp() calls. cleanupAll() only
@@ -17,7 +18,7 @@
 // what to delete, only vetoes a registry entry that doesn't look right before
 // removal proceeds.
 
-import { promises as fsp, realpathSync, lstatSync, rmSync } from 'node:fs';
+import { promises as fsp, realpathSync, lstatSync, rmSync, mkdtempSync as fsMkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after } from 'node:test';
@@ -41,6 +42,16 @@ export async function mkdtemp(prefix) {
     throw new Error('mkdtemp: non-empty prefix string required');
   }
   const dir = await fsp.mkdtemp(path.join(REAL_TMP, prefix));
+  registry.set(path.resolve(dir), prefix);
+  return dir;
+}
+
+// Synchronous twin of mkdtemp(): same prefix check, same registry, same cleanup.
+export function mkdtempSync(prefix) {
+  if (!prefix || typeof prefix !== 'string') {
+    throw new Error('mkdtempSync: non-empty prefix string required');
+  }
+  const dir = fsMkdtempSync(path.join(REAL_TMP, prefix));
   registry.set(path.resolve(dir), prefix);
   return dir;
 }

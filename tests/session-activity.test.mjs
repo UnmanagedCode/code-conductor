@@ -10,13 +10,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createLastActivityCache, TAIL_BYTES } from '../src/sessionActivity.ts';
 import { encodeCwd, listSessionsForCwd, summarizeSessions, localPlace} from '../src/projects.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function withTmp(fn) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-activity-'));
+  const dir = await mkdtemp('session-activity-');
   try { await fn(dir); } finally { await fs.rm(dir, { recursive: true, force: true }); }
 }
 

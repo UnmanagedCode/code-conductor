@@ -15,7 +15,6 @@ import { test, describe, before, after, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend, settle } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
@@ -25,6 +24,7 @@ import { getSessionBackend, setSessionBackend, sessionsFile, isTemp, isConducted
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 import { ControllableLauncher } from './controllableLauncher.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -41,7 +41,7 @@ afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 // Spawn on a substitution backend directly (model + backend), capturing the
 // launch argv/env the (fake) CLI received.
 async function spawnOnBackend({ model = 'gemma4:cloud', backend = 'ollama' } = {}) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-'));
+  const tmp = await mkdtemp('backend-spawn-');
   const argvDump = path.join(tmp, 'argv.txt');
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
@@ -139,7 +139,7 @@ describe('substitution-backend spawn command/args', () => {
   // resolves the Settings default tier's binding, so `--model` is always present
   // and carries that tier's model — never absent, never `undefined`.
   test('a fresh claude spawn with no model emits --model from the default spawn tier', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-nomodel-'));
+    const tmp = await mkdtemp('backend-spawn-nomodel-');
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {
@@ -170,7 +170,7 @@ describe('substitution-backend spawn command/args', () => {
   // ACCOUNT default. The rule admits no exceptions, so the REST gate tests the
   // TRIMMED value, matching resolveSpawnModel's falsy check on the MCP side.
   test('a fresh claude spawn with an EMPTY-STRING model still emits --model from the default tier', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-emptymodel-'));
+    const tmp = await mkdtemp('backend-spawn-emptymodel-');
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {
@@ -199,7 +199,7 @@ describe('substitution-backend spawn command/args', () => {
   // who named a backend alone, and _doCreate's BACKEND_MODEL_MISSING guard is
   // `backend !== claude`, so there was nothing to refuse. The row now supplies the model.
   test('a fresh spawn naming backend:claude with no model fills the model from the row', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-claudeonly-'));
+    const tmp = await mkdtemp('backend-spawn-claudeonly-');
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {
@@ -976,7 +976,7 @@ describe('resume recovers the tagged model from the backend store', () => {
   // must prefer it. (This path — a fresh `create({resume})` with no explicit
   // model — is distinct from the live `respawn` covered in model-resume.test.mjs.)
   test('a fresh resume launches with the store\'s `:cloud` tag, not the bare jsonl model', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ollama-resume-'));
+    const tmp = await mkdtemp('ollama-resume-');
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {
@@ -1119,7 +1119,7 @@ describe('MCP resume restores the recorded backend', () => {
   }
 
   test('a bare MCP resume comes back on the recorded backend, not claude', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-resume-backend-'));
+    const tmp = await mkdtemp('mcp-resume-backend-');
     try {
       const argvDump = path.join(tmp, 'argv-resume.txt');
       const { first, sid, resumed } = await spawnThenResume({ argvDump });
@@ -1172,7 +1172,7 @@ describe('MCP resume restores the recorded backend', () => {
     // gemma4:cloud → ollama: resuming with it names backend 'ollama' while the
     // record still says openrouter-test/stealth/ox-alpha.
     await addCustomModel({ label: 'G', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 111_000 });
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-resume-explicit-'));
+    const tmp = await mkdtemp('mcp-resume-explicit-');
     try {
       const argvDump = path.join(tmp, 'argv-explicit.txt');
       const { resumed } = await spawnThenResume({ argvDump, resumeArgs: { model: 'gemma4:cloud' } });
@@ -1254,7 +1254,7 @@ describe('a model id on several backends (MCP spawn)', () => {
   }
 
   async function spawnAndDump(args) {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'multi-backend-'));
+    const tmp = await mkdtemp('multi-backend-');
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {

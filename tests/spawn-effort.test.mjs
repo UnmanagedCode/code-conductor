@@ -12,7 +12,6 @@ import { test, describe, before, after, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, instForSession } from './helpers.mjs';
 import {
@@ -23,6 +22,7 @@ import {
 import { DEFAULT_EFFORT, INHERIT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.ts';
 import { DEFAULT_VERSIONS } from '../src/modelVersions.ts';
 import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -255,7 +255,7 @@ describe('the resolved effort reaches the spawn', () => {
   // Spawns and returns {inst, argv} — argv is what the (fake) CLI received, so
   // `--effort <level>` is asserted on the real launch args, not just on state.
   async function spawnAndCapture(body) {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'spawn-effort-'));
+    const tmp = await mkdtemp('spawn-effort-');
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {
@@ -437,7 +437,7 @@ describe('the resolved effort reaches the spawn', () => {
   test("MCP spawn_instance({model:'<tier>'}) applies that tier's default effort", async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     await setTierEffort('fast', 'low');
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'spawn-effort-mcp-'));
+    const tmp = await mkdtemp('spawn-effort-mcp-');
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {

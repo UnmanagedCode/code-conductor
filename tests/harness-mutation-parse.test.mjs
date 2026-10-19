@@ -6,12 +6,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {
   parsePlaywrightReport, canaryFor, FIRST_ERROR_MAX_BYTES, pwProject, DEFAULT_PW_PROJECT, PW_REPORT_FILE,
 } from '../harness/mutation/playwright.ts';
 import * as binding from '../harness/mutation/parse.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const REPO = path.resolve(import.meta.dirname, '..');
 const FIX = path.join(import.meta.dirname, 'fixtures', 'mutation');
@@ -67,7 +67,7 @@ test('Playwright: a flaky result counts as passed', () => {
 
 // Pins: spec paths are relativised against cwd's realpath too, so a symlinked cwd still resolves.
 test('Playwright: paths resolve when cwd is a symlink to the real root the report names', () => {
-  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-pwparse-')));
+  const tmp = fs.realpathSync(mkdtempSync('cc-pwparse-'));
   try {
     const link = path.join(tmp, 'link');
     fs.mkdirSync(path.join(tmp, 'real', 'web', 'e2e'), { recursive: true });

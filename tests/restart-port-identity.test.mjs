@@ -25,8 +25,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import { bannerFor, waitForBanner } from './serverBanner.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // The port must actually discriminate. Nothing else pins this: `captured.stdout`
 // is a private pipe today, so no foreign banner can enter the buffer — the bug
@@ -84,7 +84,7 @@ async function startDecoy() {
 
 test('banner readiness never mistakes a foreign server on our port for our child', async (t) => {
   const decoy = await startDecoy();
-  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-port-identity-'));
+  const tmpHome = await mkdtemp('orch-port-identity-');
   await fs.mkdir(path.join(tmpHome, 'project'), { recursive: true });
   await fs.mkdir(path.join(tmpHome, '.claude', 'projects'), { recursive: true });
 
@@ -94,6 +94,8 @@ test('banner readiness never mistakes a foreign server on our port for our child
     cwd: path.dirname(SERVER_TS),
     env: {
       ...process.env,
+      // Migration 0004 moves $HOME/.code-conductor/{whisper.cpp,piper} on boot; keep it off the real HOME.
+      HOME: tmpHome,
       PORT: String(decoy.port),
       HOST: '127.0.0.1',
       PROJECTS_ROOT: path.join(tmpHome, 'project'),

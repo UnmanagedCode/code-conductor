@@ -6,13 +6,13 @@
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, freshProjectsRoot, rmrf, registerLocalProject} from './helpers.mjs';
 import { _resetForTest as resetShellEnvCache } from '../src/claudeShellEnv.ts';
 import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -164,7 +164,7 @@ describe('project_bash', () => {
   let fakeBinPath, prevClaudeBin;
 
   before(async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fake-claude-shellenv-'));
+    const dir = await mkdtemp('cc-fake-claude-shellenv-');
     fakeBinPath = path.join(dir, 'fake-claude.js');
     await fs.writeFile(fakeBinPath, FAKE_CLAUDE_SHELL_ENV_SCRIPT, 'utf8');
   });
@@ -344,7 +344,7 @@ describe('project_bash with a zsh-flavored bundle', { skip: !hasZsh() && 'zsh no
   let fakeBinPath, prevClaudeBin;
 
   before(async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fake-claude-shellenv-zsh-'));
+    const dir = await mkdtemp('cc-fake-claude-shellenv-zsh-');
     fakeBinPath = path.join(dir, 'fake-claude.js');
     await fs.writeFile(fakeBinPath, FAKE_CLAUDE_SHELL_ENV_SCRIPT_ZSH, 'utf8');
   });

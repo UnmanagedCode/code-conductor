@@ -11,9 +11,9 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { FAST, fixture, runGuard } from './hangGuardCase.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const QUIET_PASS_MARKERS = [/quiet-pass: stdout marker/, /quiet-pass: stderr marker/];
 const QUIET_FAIL_MARKERS = [
@@ -85,7 +85,7 @@ test('a passing file reached through a symlinked path stays quiet', async (t) =>
   // must treat both as ONE file, or the summary never reaches the entry holding
   // the output and the end of the run prints it all. A symlinked workspace root,
   // macOS's /tmp and a Windows junction all produce this shape.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-quiet-link-'));
+  const tmp = mkdtempSync('cc-quiet-link-');
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const link = path.join(tmp, 'hang');
   try {

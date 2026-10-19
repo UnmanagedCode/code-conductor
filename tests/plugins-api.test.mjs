@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { execFile } from 'node:child_process';
@@ -10,6 +9,7 @@ import { bootServer, api, waitFor, registerLocalProject} from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.ts';
 import { orchStoreRoot } from '../src/projects.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
@@ -298,8 +298,8 @@ test('POST /api/plugins/library/:id/install — streams NDJSON chunks, terminal 
 
 test('POST /api/plugins/library/:id/update — streams NDJSON chunks, terminal ok:true, and actually fast-forwards', async () => {
   const boot = await bootServer();
-  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
-  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  const remoteDir = await mkdtemp('lib-remote-');
+  const seedDir = await mkdtemp('lib-seed-');
   try {
     await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
     await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
@@ -501,8 +501,8 @@ function serveGitDumbHttp(remoteDir, prefix) {
 // from the remote into boot.projectsRoot (mirrors the existing update() NDJSON
 // test above). `manifestExtra` is merged into the fixture's conductor.plugin.json.
 async function seedLibraryGitProject({ projectsRoot, projectName, manifestExtra = {}, withFixtureBackend = false, libraryExtra = {} }) {
-  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
-  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  const remoteDir = await mkdtemp('lib-remote-');
+  const seedDir = await mkdtemp('lib-seed-');
   await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
   if (withFixtureBackend) await fs.cp(FAKE_PLUGIN_DIR, seedDir, { recursive: true });
   await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
@@ -844,8 +844,8 @@ test('POST /api/plugins/:id/version regenerates a referencing project\'s CONVENT
 
 test('POST /api/plugins/library/:id/install regenerates a pre-existing project whose CONVENTIONS.md references the not-yet-installed plugin\'s slug', async () => {
   const boot = await bootServer();
-  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
-  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  const remoteDir = await mkdtemp('lib-remote-');
+  const seedDir = await mkdtemp('lib-seed-');
   let gitServer;
   try {
     await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');

@@ -307,7 +307,7 @@ export async function registerLocalProject(name, dir) {
 
 // A directory under `baseDir` whose absolute path is at least `minBytes` long,
 // created. The length has to come from subdirectories INSIDE `baseDir`:
-// `tmpRegistry.mkdtemp` refuses to register anything but a direct child of the
+// the temp-dir registry (`tmpRegistry`) refuses to register anything but a direct child of the
 // real tmpdir, so a longer PREFIX is not available to a test that wants its
 // fixtures cleaned up. Tests use it to put a store root, and therefore a
 // control-socket path, past Linux's 107-byte `sun_path` budget.

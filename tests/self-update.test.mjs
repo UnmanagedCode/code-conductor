@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import express from 'express';
@@ -16,6 +15,7 @@ import { bindRemoteSystem } from './remoteSystem.mjs';
 import { adoptProject, findSelfProject } from '../src/projects.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { withMaintenanceLock } from '../src/relaunchPrep.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
@@ -25,9 +25,9 @@ async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
 // `version` and `deps` (name → range) seed package.json (readVersion source,
 // and what dependencyDrift reads). `lock` seeds a tracked package-lock.json.
 async function setupRepo({ version = '0.1.0', deps = null, lock = null } = {}) {
-  const remote = await fs.mkdtemp(path.join(os.tmpdir(), 'su-remote-'));
-  const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'su-seed-'));
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'su-clone-'));
+  const remote = await mkdtemp('su-remote-');
+  const seed = await mkdtemp('su-seed-');
+  const parent = await mkdtemp('su-clone-');
   await git(remote, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
   await git(seed, '-c', 'init.defaultBranch=main', 'init', '-q');
   await git(seed, 'config', 'user.email', 'test@test');
@@ -110,7 +110,7 @@ test('getSelfUpdateStatus: behind origin -> updateAvailable true, behind 1 (fetc
 });
 
 test('getSelfUpdateStatus: no upstream (git repo, no remote) -> canCheck false, behind null', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'su-noup-'));
+  const dir = await mkdtemp('su-noup-');
   try {
     await git(dir, '-c', 'init.defaultBranch=main', 'init', '-q');
     await git(dir, 'config', 'user.email', 'test@test');
@@ -256,7 +256,7 @@ test('applySelfUpdate: an install that leaves node_modules out of sync is a fail
 
 test('applySelfUpdate: a linked node_modules out of sync is a failed npm step that never ran, naming DEPS_LINKED\'s reason', async () => {
   const r = await setupRepo({ deps: { a: '^1.0.0' } });
-  const shared = await fs.mkdtemp(path.join(os.tmpdir(), 'su-shared-modules-'));
+  const shared = await mkdtemp('su-shared-modules-');
   try {
     await fs.symlink(shared, path.join(r.clone, 'node_modules'), 'dir');
     await r.pushUpstream('v2 deps', { 'package.json': packageJson('0.1.0', { a: '^2.0.0' }) });

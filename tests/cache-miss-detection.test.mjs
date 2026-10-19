@@ -20,9 +20,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Instance } from '../src/instances.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const MODEL = 'claude-opus-4-8';
 
@@ -61,7 +61,7 @@ async function boundaryLine() {
 }
 
 async function makeInstance() {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-miss-detect-'));
+  const cwd = await mkdtemp('cc-miss-detect-');
   const inst = new Instance({
     id: 'inst-1', project: 'demo', cwd, mode: 'bypassPermissions',
     effort: 'medium', thinking: 'medium', model: MODEL,

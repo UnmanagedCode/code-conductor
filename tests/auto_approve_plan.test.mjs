@@ -2,12 +2,12 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
 import { addCustomModel } from '../src/appSettings.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plan.json');
@@ -42,7 +42,7 @@ function wsClient(url) {
 }
 
 async function seedPlanFile() {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-aa-'));
+  const tmpDir = await mkdtemp('plan-aa-');
   const planDir = path.join(tmpDir, '.claude', 'plans');
   await fs.mkdir(planDir, { recursive: true });
   const planFile = path.join(planDir, 'plan.md');

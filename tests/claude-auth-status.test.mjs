@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseAuthStatus, getClaudeAuthStatus, createClaudeAuthStatusReader } from '../src/claudeAuthStatus.ts';
 import { hostPlatform } from '../src/platform/index.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = `${process.execPath} ${path.join(__dirname, 'fake-claude-auth.mjs')}`;
@@ -98,7 +99,7 @@ test('getClaudeAuthStatus rejects naming the command when CLAUDE_BIN does not ex
 
 test('getClaudeAuthStatus rejects on timeout', async () => {
   // A CLI that never answers.
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-auth-status-'));
+  const dir = await mkdtemp('cc-auth-status-');
   try {
     const wrapper = path.join(dir, 'hang.mjs');
     await fs.writeFile(wrapper, `setInterval(() => {}, 1 << 30);\n`);
@@ -108,7 +109,7 @@ test('getClaudeAuthStatus rejects on timeout', async () => {
 });
 
 test('spawns with CLAUDE_CONFIG_DIR exactly as cc\'s env has it', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-auth-status-'));
+  const dir = await mkdtemp('cc-auth-status-');
   try {
     const record = path.join(dir, 'rec.jsonl');
     const base = { CLAUDE_BIN: FAKE, FAKE_AUTH_STATUS: JSON.stringify(SIGNED_OUT), FAKE_AUTH_STATUS_EXIT: '1', FAKE_AUTH_RECORD: record };

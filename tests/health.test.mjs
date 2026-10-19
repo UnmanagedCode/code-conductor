@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fsp } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { checkClaudeReadiness, formatReadiness } from '../src/health.ts';
 import { posixPlatform } from '../src/platform/index.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function mkTmp(prefix = 'cc-health-') {
-  return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+  return mkdtemp(prefix);
 }
 
 function withEnv(overrides, fn) {
