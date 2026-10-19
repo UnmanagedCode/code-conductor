@@ -5,12 +5,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { acquireTestSlot, HELD_VAR } from './testSlot.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const vitestBin = path.join(path.dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs');
@@ -57,9 +57,7 @@ async function runBlocked(argv, { env: extra = {}, cwd = repo } = {}) {
   };
 }
 
-function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'cc-slot-wiring-'));
-}
+const tmpDir = () => mkdtempSync('cc-slot-wiring-');
 
 test('tests/run.mjs queues before running any file', async () => {
   const dir = tmpDir();
@@ -75,7 +73,6 @@ test('tests/run.mjs queues before running any file', async () => {
     assert.equal(fs.existsSync(marker), true);
   } finally {
     run.kill();
-    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -105,7 +102,6 @@ test('the mutation wrapper queues before the runner starts, and hands it the hel
     assert.match(run.out.stdout, /RUNNER held=\d+/);
   } finally {
     run.kill();
-    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -122,6 +118,5 @@ test('the npm test gate queues before its first step, and its steps inherit the 
     assert.match(run.out.stdout, /STEP held=\d+/);
   } finally {
     run.kill();
-    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
