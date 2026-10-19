@@ -32,10 +32,11 @@ export interface OllamaCloudModel {
 }
 
 export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
-  { model: 'deepseek-v4.1-flash:cloud',  label: 'DeepSeek V4.1 Flash',      contextWindow: 1_000_000 },
-  { model: 'glm-5.3:cloud',              label: 'GLM-5.3',                  contextWindow: 1_000_000 },
-  { model: 'glm-5.3-flash:cloud',        label: 'GLM-5.3 Flash',            contextWindow: 1_000_000 },
-  { model: 'kimi-k3:cloud',              label: 'Kimi K3',                  contextWindow: 1_000_000 },
+  { model: 'deepseek-v4.1-flash:cloud',       label: 'DeepSeek V4.1 Flash',         contextWindow: 1_000_000 },
+  { model: 'deepseek-v4.1-flash:1017-cloud',  label: 'DeepSeek V4.1 Flash (1017)',  contextWindow: 1_000_000 },
+  { model: 'glm-5.3:cloud',                   label: 'GLM-5.3',                     contextWindow: 1_000_000 },
+  { model: 'glm-5.3-flash:cloud',             label: 'GLM-5.3 Flash',               contextWindow: 1_000_000 },
+  { model: 'kimi-k3:cloud',                   label: 'Kimi K3',                     contextWindow: 1_000_000 },
 ];
 
 // Per-tier catalog default, used only as the auto-picked model when a user
