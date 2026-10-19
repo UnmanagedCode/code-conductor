@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 
@@ -54,4 +55,38 @@ export function ConventionChecklist({ groups, picked, onToggle, idPrefix }: {
       ))}
     </div>
   );
+}
+
+/** The deliberate choice of no project conventions. Rendered outside the checklist, so it never scrolls away. */
+export function NoConventionsChoice({ checked, onChange, idPrefix }: {
+  checked: boolean; onChange: (checked: boolean) => void; idPrefix: string;
+}) {
+  const id = `${idPrefix}-no-conventions`;
+  return (
+    <div className="flex items-start gap-3">
+      <Checkbox id={id} checked={checked} data-no-conventions onCheckedChange={(v) => onChange(v === true)} className="mt-0.5" />
+      <div className="grid gap-0.5">
+        <Label htmlFor={id}>This project uses no project conventions</Label>
+        <p className="text-xs text-muted-foreground">Workspace conventions still apply.</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The picks and the none choice, kept mutually exclusive: choosing none clears every pick, and picking a
+ * convention clears none.
+ */
+export function useConventionPicks(initialPicked: Iterable<string>, initialNone: boolean) {
+  const [picked, setPicked] = React.useState<Set<string>>(() => new Set(initialPicked));
+  const [none, setNone] = React.useState(initialNone);
+  const chooseNone = (on: boolean) => {
+    setNone(on);
+    if (on) setPicked(new Set());
+  };
+  const togglePick = (slug: string, on: boolean) => {
+    if (on) setNone(false);
+    setPicked((s) => { const n = new Set(s); if (on) n.add(slug); else n.delete(slug); return n; });
+  };
+  return { picked, none, chooseNone, togglePick };
 }

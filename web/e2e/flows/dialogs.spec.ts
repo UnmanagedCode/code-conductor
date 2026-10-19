@@ -167,7 +167,7 @@ test('Deleting a project on a system names its path, target and system, and Canc
 });
 
 test('A project with no conventions shows a dot on its ⋮; Edit conventions… saves the pick and the dot clears', async ({ page, cc, ui, uniq }) => {
-  // Invariant: the dot flags an empty selection; a save through the dialog records the pick in the project's marker and the row stops flagging it.
+  // Invariant: the dot flags an unset selection; a save through the dialog records the pick in the project's marker and the row stops flagging it.
   const name = uniq('conv');
   await createProject(cc, name);
   await ui.open(page);
@@ -180,8 +180,26 @@ test('A project with no conventions shows a dot on its ⋮; Edit conventions… 
   await expect(d).toBeHidden();
   await ui.lens(page, 'projects');
   await expect((await ui.projectRow(page, name)).locator('[data-conventions-attention]')).toHaveCount(0);
-  const listed = ((await api(cc, 'GET', '/api/projects')).body as { name: string; conventions?: { selected: string[] } }[]).find((p) => p.name === name)!;
-  expect(listed.conventions?.selected).toEqual(['design-guidelines']);
+  const listed = ((await api(cc, 'GET', '/api/projects')).body as { name: string; conventions?: unknown }[]).find((p) => p.name === name)!;
+  expect(listed.conventions).toEqual({ mode: 'selected', slugs: ['design-guidelines'], unresolved: [] });
+});
+
+test('Choosing no project conventions clears the dot and records none', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the explicit choice reaches the marker and stops the flag end to end.
+  const name = uniq('noconv');
+  await createProject(cc, name);
+  await ui.open(page);
+  await ui.lens(page, 'projects');
+  const row = await ui.projectRow(page, name);
+  await expect(row.locator('[data-conventions-attention]')).toBeVisible();
+  const d = await ui.openEditConventions(page, name);
+  await d.locator('[data-no-conventions]').click();
+  await d.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(d).toBeHidden();
+  await ui.lens(page, 'projects');
+  await expect((await ui.projectRow(page, name)).locator('[data-conventions-attention]')).toHaveCount(0);
+  const listed = ((await api(cc, 'GET', '/api/projects')).body as { name: string; conventions?: unknown }[]).find((p) => p.name === name)!;
+  expect(listed.conventions).toEqual({ mode: 'none', unresolved: [] });
 });
 
 test('Change target from the system pill: a refusal shows the server message and keeps the dialog, Cancel sends nothing, a reopen starts clean, and Save PUTs the trimmed target and refreshes the list', async ({ page, ui, uniq }) => {

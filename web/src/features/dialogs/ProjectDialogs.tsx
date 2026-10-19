@@ -21,7 +21,7 @@ import { PathInput } from './PathInput';
 import { PlacementFields, usePlacement } from './placement';
 import { messageFor } from './adoptMessages';
 import { useOpenKey } from './useOpenKey';
-import { ConventionChecklist, groupConventions, type Convention } from './ConventionChecklist';
+import { ConventionChecklist, NoConventionsChoice, groupConventions, useConventionPicks, type Convention } from './ConventionChecklist';
 
 const NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
@@ -51,7 +51,7 @@ function NewProjectBody() {
   const [name, setName] = React.useState('');
   const [systemPath, setSystemPath] = React.useState('');
   const [conventions, setConventions] = React.useState<Convention[]>([]);
-  const [picked, setPicked] = React.useState<Set<string>>(new Set());
+  const { picked, none, chooseNone, togglePick } = useConventionPicks([], false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [created, setCreated] = React.useState<{ scaffold?: string; gitSkipped?: string } | null>(null);
@@ -83,7 +83,9 @@ function NewProjectBody() {
     setError('');
     try {
       const body: Record<string, unknown> = { name: n };
-      if (picked.size) body.conventions = [...picked];
+      // Nothing ticked and no explicit none sends neither, which records unset.
+      if (none) body.noProjectConventions = true;
+      else if (picked.size) body.conventions = [...picked];
       if (system) {
         body.system = system;
         body.systemPath = sp;
@@ -137,10 +139,11 @@ function NewProjectBody() {
         </Field>
       )}
       <p className="text-xs text-muted-foreground">Creates <code className="rounded bg-muted px-1 py-0.5 font-mono" data-preview>{preview}</code></p>
+      <NoConventionsChoice checked={none} onChange={chooseNone} idPrefix="np" />
       <ConventionChecklist
         groups={groups}
         picked={picked}
-        onToggle={(slug, on) => setPicked((s) => { const n = new Set(s); if (on) n.add(slug); else n.delete(slug); return n; })}
+        onToggle={togglePick}
         idPrefix="np"
       />
       <FormError>{error}</FormError>

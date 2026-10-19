@@ -67,7 +67,7 @@ import {
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemHandleGeneration } from '../src/systems/registry.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
-import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
+import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath, slugSelection } from '../src/projectClaudeMd.ts';
 
 const RECORDER = path.join(import.meta.dirname, 'fixtures', 'recordingProvider.mjs');
 const GATED = path.join(import.meta.dirname, 'fixtures', 'gatedProvider.mjs');
@@ -311,7 +311,7 @@ describe('a plugin fragment follows its project, live', () => {
     assert.equal(bodyOf(await host.conventions(), 'ghost-plug/frag'), 'GHOST CONTENT');
 
     setPluginConventionsProvider(async () => (await host.conventions()).project);
-    const doc = await composeProjectConventionsDoc(['ghost-plug/frag', 'design-guidelines']);
+    const doc = await composeProjectConventionsDoc(slugSelection(['ghost-plug/frag', 'design-guidelines']));
     await createProject('referencer', { conventionsDoc: doc });
     const target = conventionsTargetPath(path.join(root, 'referencer'));
 
@@ -404,7 +404,7 @@ describe('a plugin fragment follows its project, live', () => {
       'premise: bodies come from the WORKTREE checkout, not the main one');
 
     setPluginConventionsProvider(async () => (await host.conventions()).project);
-    const doc = await composeProjectConventionsDoc(['wt-plug/frag', 'design-guidelines']);
+    const doc = await composeProjectConventionsDoc(slugSelection(['wt-plug/frag', 'design-guidelines']));
     await createProject('wtreferencer', { conventionsDoc: doc });
     const target = conventionsTargetPath(path.join(root, 'wtreferencer'));
 

@@ -33,12 +33,15 @@ const CATALOG = [
   { slug: 'plug/other', name: 'Other', description: 'also with one', plugin: 'plug', builtin: false, scaffold: 'Do another' },
 ];
 const INITIAL = ['plug/other', 'gone', 'design-guidelines'];
+const selected = (slugs: string[]) => ({ mode: 'selected', slugs });
 const PROJECT = {
   name: 'api', path: '/p/api', workspace: null, system: 'local', remoteId: null, worktrees: [],
-  conventions: { selected: INITIAL, unresolved: ['gone'] },
+  conventions: { mode: 'selected', slugs: INITIAL, unresolved: ['gone'] },
 } as unknown as Project;
+const NONE_PROJECT = { ...PROJECT, conventions: { mode: 'none', unresolved: [] } } as unknown as Project;
+const UNSET_PROJECT = { ...PROJECT, conventions: { mode: 'unset', unresolved: [] } } as unknown as Project;
 const URL = '/api/projects/api/conventions';
-const SAVED = { json: { ok: true, path: '/p/api/CONVENTIONS.md', selected: [], unresolved: [] } };
+const SAVED = { json: { ok: true, path: '/p/api/CONVENTIONS.md', selection: { mode: 'unset' }, unresolved: [] } };
 
 function stub(extra: Record<string, Route> = {}) {
   return routeFetch({
@@ -50,14 +53,18 @@ function stub(extra: Record<string, Route> = {}) {
 const box = (slug: string) => document.querySelector(`[data-convention="${slug}"]`) as HTMLElement;
 const checked = (slug: string) => box(slug).getAttribute('data-state') === 'checked';
 const toggle = (slug: string) => fireEvent.click(box(slug));
+const noneBox = () => document.querySelector('[data-no-conventions]') as HTMLElement;
+const noneChecked = () => noneBox().getAttribute('data-state') === 'checked';
+const toggleNone = () => fireEvent.click(noneBox());
+const anyConventionChecked = () => [...document.querySelectorAll('[data-convention]')].some((b) => b.getAttribute('data-state') === 'checked');
 const saveButton = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 const save = () => fireEvent.click(saveButton());
 const puts = (calls: RoutedCall[]) => calls.filter((c) => c.method === 'PUT' && c.url === URL);
 const scaffoldNotes = () => [...document.querySelectorAll('[data-scaffold-note]')].map((n) => n.textContent);
 const alertText = () => screen.queryByRole('alert')?.textContent ?? null;
 
-async function open() {
-  act(() => openEditConventionsDialog(PROJECT));
+async function open(project = PROJECT) {
+  act(() => openEditConventionsDialog(project));
   await waitFor(() => expect(box('design-guidelines')).toBeTruthy());
 }
 
@@ -84,7 +91,7 @@ describe('Edit conventions dialog', () => {
   });
 
   it('a save sends the kept selection in marker order then the new picks in display order, closes and refreshes once', async () => {
-    // Invariant: the PUT body is {slugs: initial kept + added in display order, expected: initial}; success closes and re-reads the list.
+    // Invariant: the PUT body is {selection: initial kept + added in display order, expected: the recorded selection}; success closes and re-reads the list.
     const calls = stub({ [`PUT ${URL}`]: () => SAVED });
     render(<DialogsHost />);
     await open();
@@ -93,8 +100,8 @@ describe('Edit conventions dialog', () => {
     save();
     await waitFor(() => expect(dialogStore.get().editConventions).toBeNull());
     expect(puts(calls).map((c) => c.body)).toEqual([{
-      slugs: ['plug/other', 'gone', 'design-guidelines', 'testing-guidelines', 'plug/setup'],
-      expected: INITIAL,
+      selection: selected(['plug/other', 'gone', 'design-guidelines', 'testing-guidelines', 'plug/setup']),
+      expected: selected(INITIAL),
     }]);
     expect(refreshProjects).toHaveBeenCalledTimes(1);
   });
@@ -107,7 +114,7 @@ describe('Edit conventions dialog', () => {
     toggle('gone');
     save();
     await waitFor(() => expect(puts(calls)).toHaveLength(1));
-    expect(puts(calls)[0].body).toEqual({ slugs: ['plug/other', 'design-guidelines'], expected: INITIAL });
+    expect(puts(calls)[0].body).toEqual({ selection: selected(['plug/other', 'design-guidelines']), expected: selected(INITIAL) });
   });
 
   it('a newly checked convention with a setup step shows the scaffold note; one already selected does not', async () => {
@@ -180,18 +187,18 @@ describe('Edit conventions dialog', () => {
   }
 
   it('a selection recording a slug twice opens unchanged, and a save sends it once', async () => {
-    // Invariant: a repeated marker slug counts once — Save starts disabled and the PUT's slugs never repeat one; expected stays the recorded marker so the server's guard matches it.
+    // Invariant: a repeated marker slug counts once — Save starts disabled and the PUT's selection never repeats one; expected stays the recorded marker so the server's guard matches it.
     const RECORDED = ['design-guidelines', 'design-guidelines'];
     const calls = stub({ [`PUT ${URL}`]: () => SAVED });
     render(<DialogsHost />);
-    act(() => openEditConventionsDialog({ ...PROJECT, conventions: { selected: RECORDED, unresolved: [] } } as unknown as Project));
+    act(() => openEditConventionsDialog({ ...PROJECT, conventions: { mode: 'selected', slugs: RECORDED, unresolved: [] } } as unknown as Project));
     await waitFor(() => expect(box('design-guidelines')).toBeTruthy());
     expect(checked('design-guidelines')).toBe(true);
     expect(saveButton().disabled).toBe(true);
     toggle('testing-guidelines');
     save();
     await waitFor(() => expect(puts(calls)).toHaveLength(1));
-    expect(puts(calls)[0].body).toEqual({ slugs: ['design-guidelines', 'testing-guidelines'], expected: RECORDED });
+    expect(puts(calls)[0].body).toEqual({ selection: selected(['design-guidelines', 'testing-guidelines']), expected: selected(RECORDED) });
   });
 
   it('reopening resets the picks, the alert and the scaffold note, and the next save carries only the new toggle', async () => {
@@ -216,11 +223,111 @@ describe('Edit conventions dialog', () => {
     toggle('documentation-guidelines');
     save();
     await waitFor(() => expect(puts(calls)).toHaveLength(2));
-    expect(puts(calls)[1].body).toEqual({ slugs: [...INITIAL, 'documentation-guidelines'], expected: INITIAL });
+    expect(puts(calls)[1].body).toEqual({ selection: selected([...INITIAL, 'documentation-guidelines']), expected: selected(INITIAL) });
   });
 
-  it('the conventions list is the dialog\'s only scroller and a positioned box holding every hidden checkbox input; the header and footer sit outside it, and the dialog → form → list chain lets the list shrink', async () => {
-    // Invariant: only the list scrolls; Radix's absolutely positioned hidden inputs stay inside it (it is `relative`), so they cannot lengthen the dialog; the flex chain lets the list shrink below its cap.
+  it('choosing no project conventions unticks every convention, a convention untick it, and saving it drops the kept slugs', async () => {
+    // Invariant: none and any convention are mutually exclusive, and saving none sends {mode: 'none'} against the recorded selection.
+    const calls = stub({ [`PUT ${URL}`]: () => SAVED });
+    render(<DialogsHost />);
+    await open();
+    expect(noneBox()).toBeTruthy();
+    expect(noneChecked()).toBe(false);
+    toggleNone();
+    expect(noneChecked()).toBe(true);
+    expect(anyConventionChecked()).toBe(false);
+    expect(checked('gone')).toBe(false);
+    expect(saveButton().disabled).toBe(false);
+    toggle('testing-guidelines');
+    expect(noneChecked()).toBe(false);
+    expect(checked('testing-guidelines')).toBe(true);
+    toggleNone();
+    save();
+    await waitFor(() => expect(puts(calls)).toHaveLength(1));
+    expect(puts(calls)[0].body).toEqual({ selection: { mode: 'none' }, expected: selected(INITIAL) });
+  });
+
+  it('a project that chose none opens with none ticked, and unticking it saves unset', async () => {
+    // Invariant: the dialog opens on the recorded state and sends it as `expected`; nothing ticked without none is unset.
+    const calls = stub({ [`PUT ${URL}`]: () => SAVED });
+    render(<DialogsHost />);
+    await open(NONE_PROJECT);
+    expect(noneBox()).toBeTruthy();
+    expect(noneChecked()).toBe(true);
+    expect(anyConventionChecked()).toBe(false);
+    expect(saveButton().disabled).toBe(true);
+    toggleNone();
+    expect(saveButton().disabled).toBe(false);
+    save();
+    await waitFor(() => expect(puts(calls)).toHaveLength(1));
+    expect(puts(calls)[0].body).toEqual({ selection: { mode: 'unset' }, expected: { mode: 'none' } });
+  });
+
+  it('an unset project opens with nothing chosen, and choosing none from there saves none', async () => {
+    // Invariant: an unset project opens with neither none nor any convention ticked and nothing to save; ticking none writes none against unset.
+    const calls = stub({ [`PUT ${URL}`]: () => SAVED });
+    render(<DialogsHost />);
+    await open(UNSET_PROJECT);
+    expect(noneBox()).toBeTruthy();
+    expect(noneChecked()).toBe(false);
+    expect(anyConventionChecked()).toBe(false);
+    expect(saveButton().disabled).toBe(true);
+    toggleNone();
+    expect(saveButton().disabled).toBe(false);
+    save();
+    await waitFor(() => expect(puts(calls)).toHaveLength(1));
+    expect(puts(calls)[0].body).toEqual({ selection: { mode: 'none' }, expected: { mode: 'unset' } });
+  });
+
+  it('reopening after a refused none save starts from the recorded selection, and the next save carries only the new toggle', async () => {
+    // Invariant: a reopen leaves no none tick behind; its save body is built from the reset.
+    const answers: Route[] = [() => ({ status: 409, json: { error: 'changed since they were read' } }), () => SAVED];
+    const calls = stub({ [`PUT ${URL}`]: (b, u) => answers.shift()!(b, u) });
+    render(<DialogsHost />);
+    await open();
+    expect(noneBox()).toBeTruthy();
+    toggleNone();
+    save();
+    await waitFor(() => expect(alertText()).toContain('changed since they were read'));
+    act(() => closeDialog('editConventions'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await open();
+    expect(noneChecked()).toBe(false);
+    expect(['design-guidelines', 'testing-guidelines', 'plug/setup', 'plug/other', 'gone'].map(checked))
+      .toEqual([true, false, false, true, true]);
+    expect(alertText()).toBeNull();
+    expect(scaffoldNotes()).toEqual([]);
+    expect(saveButton().disabled).toBe(true);
+    toggle('documentation-guidelines');
+    save();
+    await waitFor(() => expect(puts(calls)).toHaveLength(2));
+    expect(puts(calls)[1].body).toEqual({ selection: selected([...INITIAL, 'documentation-guidelines']), expected: selected(INITIAL) });
+  });
+
+  it('reopening a project that chose none ticks none again and drops the unsaved picks', async () => {
+    // Invariant: a reopen restores the recorded none; a save then sends the new pick against it.
+    const calls = stub({ [`PUT ${URL}`]: () => SAVED });
+    render(<DialogsHost />);
+    await open(NONE_PROJECT);
+    expect(noneBox()).toBeTruthy();
+    toggleNone();
+    toggle('design-guidelines');
+    act(() => closeDialog('editConventions'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await open(NONE_PROJECT);
+    expect(noneChecked()).toBe(true);
+    expect(anyConventionChecked()).toBe(false);
+    toggleNone();
+    toggle('testing-guidelines');
+    save();
+    await waitFor(() => expect(puts(calls)).toHaveLength(1));
+    expect(puts(calls)[0].body).toEqual({ selection: selected(['testing-guidelines']), expected: { mode: 'none' } });
+  });
+
+  it('the conventions list is the dialog\'s only scroller and a positioned box holding every hidden convention input; the header, footer and no-conventions choice sit outside it, and the dialog → form → list chain lets the list shrink', async () => {
+    // Invariant: only the list scrolls; Radix's absolutely positioned hidden inputs of the conventions stay inside it (it is `relative`), so they cannot lengthen the dialog; the none choice is never scrolled away; the flex chain lets the list shrink below its cap.
     stub();
     render(<DialogsHost />);
     await open();
@@ -229,12 +336,14 @@ describe('Edit conventions dialog', () => {
     expect(scrollers).toHaveLength(1);
     const list = scrollers[0];
     expect(list.classList.contains('relative')).toBe(true);
-    const inputs = bubbleInputs(dialog);
+    const inputs = bubbleInputs(dialog, '[data-convention]');
     expect(inputs.length).toBeGreaterThan(0);
     expect(inputs).toHaveLength(document.querySelectorAll('[data-convention]').length);
     for (const i of inputs) expect(list.contains(i)).toBe(true);
     expect(list.contains(dialog.querySelector('[data-slot="dialog-header"]'))).toBe(false);
     expect(list.contains(dialog.querySelector('[data-slot="dialog-footer"]'))).toBe(false);
+    expect(noneBox()).toBeTruthy();
+    expect(list.contains(noneBox())).toBe(false);
     expect(dialog.classList.contains('flex')).toBe(true);
     expect(dialog.classList.contains('flex-col')).toBe(true);
     expect(dialog.classList.contains('grid')).toBe(false);

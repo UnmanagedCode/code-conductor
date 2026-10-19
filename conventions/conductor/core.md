@@ -99,7 +99,7 @@ Call every `mcp__code-conductor__*` tool this document names as `mcp__code-condu
 
 ## Project conventions on project creation
 
-Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. None if nothing fits or the user declines. (Enabled plugins may contribute conventions too — they appear in the same list with `<plugin-id>/<slug>` slugs.)
+Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. If nothing fits or the user declines them all, pass `noProjectConventions: true` instead. (Enabled plugins may contribute conventions too — they appear in the same list with `<plugin-id>/<slug>` slugs.)
 
 Some conventions are flagged **`hasScaffold: true`** — picking one also triggers a **one-time setup directive** for the project's first worker (e.g. scaffold a test harness) in addition to (or instead of) its CLAUDE.md fragment. Surface that when confirming ("this one also sets up X in the project — include it?"). When any picked convention carries a scaffold, `create_project`'s result carries a composed `scaffold` directive string: **fold it into your FIRST `send_prompt` to the project's first worker** (combine it with your own scoping). It is never auto-sent — driving that turn stays yours, so the wake fires normally.
 

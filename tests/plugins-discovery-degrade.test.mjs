@@ -44,7 +44,7 @@ import { createProject, deleteProject, projectStoreDir, tryResolveProject } from
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
-import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
+import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath, slugSelection } from '../src/projectClaudeMd.ts';
 
 const GATED = path.join(import.meta.dirname, 'fixtures', 'gatedProvider.mjs');
 const FRAGMENT_REL = path.join('conventions', 'sample.md');
@@ -133,7 +133,7 @@ describe('a discovery scan that could not reach a project says so', () => {
   // bytes it was written with — the thing a rewrite would change.
   async function referencer(name, slugs) {
     setPluginConventionsProvider(async () => (await host.conventions()).project);
-    const doc = await composeProjectConventionsDoc(slugs);
+    const doc = await composeProjectConventionsDoc(slugSelection(slugs));
     await createProject(name, { conventionsDoc: doc });
     const target = conventionsTargetPath(path.join(process.env.PROJECTS_ROOT, name));
     assert.equal(await fs.readFile(target, 'utf8'), doc, 'the referencing file starts out as composed');

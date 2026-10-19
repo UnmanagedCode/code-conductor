@@ -3,26 +3,27 @@ import { ListChecksIcon, LoaderCircleIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useStore } from '@/state/createStore';
-import type { Project } from '@/state/types';
+import type { Project, ProjectConventionSelection } from '@/state/types';
 import { apiFetch } from '@shared/http';
 import { refreshProjects } from '@/app/controller';
 import { closeDialog, dialogStore } from './api';
-import { ConventionChecklist, groupConventions, type Convention } from './ConventionChecklist';
+import { ConventionChecklist, NoConventionsChoice, groupConventions, useConventionPicks, type Convention } from './ConventionChecklist';
 import { FormError } from './FormError';
 import { useOpenKey } from './useOpenKey';
 
 const UNAVAILABLE_NOTE = 'Not available on this install. Kept selected; its text returns when it is available again.';
 
 function EditConventionsBody({ project }: { project: Project }) {
-  // `recorded` is the marker verbatim, sent back as `expected`; `initial` counts a
-  // slug the marker repeats once, keeping the first occurrence and the order.
-  const recorded = React.useMemo(
-    () => (project.conventions && 'selected' in project.conventions ? project.conventions.selected : []),
-    [project],
-  );
-  const initial = React.useMemo(() => [...new Set(recorded)], [recorded]);
+  // `recorded` is the marker's selection verbatim, sent back as `expected`; `initial`
+  // counts a slug the marker repeats once, keeping the first occurrence and the order.
+  const recorded = React.useMemo((): ProjectConventionSelection => {
+    const c = project.conventions;
+    if (!c || 'error' in c) return { mode: 'unset' };
+    return c.mode === 'selected' ? { mode: 'selected', slugs: c.slugs } : { mode: c.mode };
+  }, [project]);
+  const initial = React.useMemo(() => [...new Set(recorded.mode === 'selected' ? recorded.slugs : [])], [recorded]);
   const [catalog, setCatalog] = React.useState<Convention[] | null>(null);
-  const [picked, setPicked] = React.useState<Set<string>>(() => new Set(initial));
+  const { picked, none, chooseNone, togglePick } = useConventionPicks(initial, recorded.mode === 'none');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
 
@@ -40,15 +41,18 @@ function EditConventionsBody({ project }: { project: Project }) {
   }
   const shown = groups.flatMap((g) => g.items);
   const added = shown.filter((c) => picked.has(c.slug) && !initial.includes(c.slug));
-  const changed = picked.size !== initial.length || initial.some((s) => !picked.has(s));
+  const changed = none !== (recorded.mode === 'none') || picked.size !== initial.length || initial.some((s) => !picked.has(s));
 
   async function save() {
     setBusy(true);
     setError('');
-    const slugs = [...initial.filter((s) => picked.has(s)), ...added.map((c) => c.slug)];
+    // Nothing ticked without the none choice is unset, not a choice of none.
+    const selection: ProjectConventionSelection = none ? { mode: 'none' }
+      : picked.size ? { mode: 'selected', slugs: [...initial.filter((s) => picked.has(s)), ...added.map((c) => c.slug)] }
+      : { mode: 'unset' };
     try {
       await apiFetch(`/api/projects/${encodeURIComponent(project.name)}/conventions`, {
-        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slugs, expected: recorded }),
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ selection, expected: recorded }),
       });
     } catch (e: any) {
       setBusy(false);
@@ -68,11 +72,12 @@ function EditConventionsBody({ project }: { project: Project }) {
           Saving rewrites <code className="font-mono">CONVENTIONS.md</code> in this project's tree and leaves it as an uncommitted change.
         </DialogDescription>
       </DialogHeader>
+      <NoConventionsChoice checked={none} onChange={chooseNone} idPrefix="ec" />
       {!catalog && !error && <p className="text-sm text-muted-foreground">Loading conventions…</p>}
       <ConventionChecklist
         groups={groups}
         picked={picked}
-        onToggle={(slug, on) => setPicked((s) => { const n = new Set(s); if (on) n.add(slug); else n.delete(slug); return n; })}
+        onToggle={togglePick}
         idPrefix="ec"
       />
       {added.filter((c) => !!c.scaffold).map((c) => (

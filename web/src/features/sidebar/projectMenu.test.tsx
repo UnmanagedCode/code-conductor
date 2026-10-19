@@ -14,7 +14,7 @@ import { ProjectRow, REVEAL } from './rows';
 
 const project = (over: Partial<Project> = {}) => ({
   name: 'api', path: '/p/api', workspace: null, system: 'local', remoteId: null, systemUnreachable: null,
-  isGitRepo: true, worktrees: [], conventions: { selected: ['design-guidelines'], unresolved: [] }, ...over,
+  isGitRepo: true, worktrees: [], conventions: { mode: 'selected', slugs: ['design-guidelines'], unresolved: [] }, ...over,
 }) as Project;
 
 function renderRow(p: Project, instanceCount = 0) {
@@ -91,10 +91,10 @@ describe('the project row ⋮ menu', () => {
 
 describe('the conventions dot on the ⋮', () => {
   it('shows for a project with no selection, saying so, and highlights Edit conventions…', async () => {
-    // Invariant: an empty selection flags the trigger, describes why, and marks the Edit item.
-    const row = renderRow(project({ conventions: { selected: [], unresolved: [] } }));
+    // Invariant: an unset selection flags the trigger, describes why, and marks the Edit item.
+    const row = renderRow(project({ conventions: { mode: 'unset', unresolved: [] } }));
     expect(dot(row)).toBeTruthy();
-    expect(notice(row)).toBe('No project conventions selected.');
+    expect(notice(row)).toBe('No project conventions chosen yet.');
     const menu = await openProjectMenu(row);
     expect(item(menu, 'Edit conventions…').hasAttribute('data-attention')).toBe(true);
     await closeProjectMenu();
@@ -102,7 +102,7 @@ describe('the conventions dot on the ⋮', () => {
 
   it('shows for a selection with an unresolved slug, naming it', async () => {
     // Invariant: an unresolved slug flags the trigger, and the description names the slug.
-    const row = renderRow(project({ conventions: { selected: ['design-guidelines', 'gone'], unresolved: ['gone'] } }));
+    const row = renderRow(project({ conventions: { mode: 'selected', slugs: ['design-guidelines', 'gone'], unresolved: ['gone'] } }));
     expect(dot(row)).toBeTruthy();
     expect(notice(row)).toContain('gone');
     expect(notice(row)).not.toContain('design-guidelines');
@@ -113,10 +113,21 @@ describe('the conventions dot on the ⋮', () => {
 
   it('with a notice the ⋮ is always visible; without one it is hover-revealed', () => {
     // Invariant: a project needing attention shows its ⋮ (and dot) without a hover; a healthy one keeps the reveal.
-    const flagged = renderRow(project({ name: 'flagged', conventions: { selected: [], unresolved: [] } }));
+    const flagged = renderRow(project({ name: 'flagged', conventions: { mode: 'unset', unresolved: [] } }));
     const healthy = renderRow(project({ name: 'healthy' }));
     expect(hasAnyReveal(flagged)).toBe(false);
     expect(revealed(healthy)).toBe(true);
+  });
+
+  it('does not show for a project that chose no conventions', async () => {
+    // Invariant: a deliberate choice of none raises nothing, and its ⋮ stays hover-revealed.
+    const row = renderRow(project({ conventions: { mode: 'none', unresolved: [] } }));
+    expect(dot(row)).toBeNull();
+    expect(notice(row)).toBeNull();
+    expect(revealed(row)).toBe(true);
+    const menu = await openProjectMenu(row);
+    expect(item(menu, 'Edit conventions…').hasAttribute('data-attention')).toBe(false);
+    await closeProjectMenu();
   });
 
   it('does not show for a healthy selection', async () => {

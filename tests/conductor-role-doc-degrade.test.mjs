@@ -48,7 +48,7 @@ import {
   SEED_CONVENTIONS, setPluginConductorConventionsProvider, setSelection, getSelection,
   composeCurrentConduct,
 } from '../src/conductorConventions.ts';
-import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
+import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath, slugSelection } from '../src/projectClaudeMd.ts';
 import { conductConventionsPath, materializeCurrentConduct } from '../src/conduct.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -160,7 +160,7 @@ describe('the conductor role doc composed over a degraded convention catalog', (
   // A local project whose committed CONVENTIONS.md carries `slugs`, plus the
   // exact bytes it was written with — the thing a rewrite would change.
   async function referencer(name, slugs) {
-    const doc = await composeProjectConventionsDoc(slugs);
+    const doc = await composeProjectConventionsDoc(slugSelection(slugs));
     await createProject(name, { conventionsDoc: doc });
     const target = conventionsTargetPath(path.join(projectsRoot(), name));
     assert.equal(await fs.readFile(target, 'utf8'), doc, 'the referencing file starts out as composed');

@@ -1,7 +1,9 @@
 // Editing a project's convention selection after creation (src/projectClaudeMd.ts
 // `setProjectConventions`, REST `PUT /api/projects/:name/conventions`), and the
 // `conventions` field `GET /api/projects` reports per row so the sidebar can
-// flag a project with no selection or with a slug that no longer resolves.
+// flag a project whose selection is unset or names a slug that no longer
+// resolves. The selection is tri-state: unset, none (chosen deliberately) and
+// selected.
 //
 // The edit goes through the same writer as the regeneration sweep, so a file it
 // writes is exactly what a sweep would write for that marker. It keeps an
@@ -44,15 +46,25 @@ const conventionsPath = (name) => path.join(projectsRoot, name, 'CONVENTIONS.md'
 const put = (name, body) => api(baseUrl, 'PUT', `/api/projects/${name}/conventions`, body);
 const marker = async (name) => (await fs.readFile(conventionsPath(name), 'utf8')).split('\n', 1)[0];
 const row = async (name) => (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === name);
+const selected = (...slugs) => ({ mode: 'selected', slugs });
+const UNSET = { mode: 'unset' };
+const NONE = { mode: 'none' };
 
-async function projectWith(name, slugs) {
-  await createProject(name, { conventionsDoc: await composeProjectConventionsDoc(slugs) });
+// A project whose CONVENTIONS.md records `selection` in its line-1 marker,
+// regenerated to the canonical document for it.
+const markerLine = (sel) => sel.mode === 'unset' ? '<!-- cc:conventions -->'
+  : sel.mode === 'none' ? '<!-- cc:conventions :none -->'
+  : `<!-- cc:conventions ${sel.slugs.join(',')} -->`;
+async function projectWith(name, selection) {
+  await createProject(name);
+  await fs.writeFile(conventionsPath(name), `${markerLine(selection)}\n`);
+  await ensureProjectConventionsMd(name);
 }
 
 // A project whose marker keeps `doomed`, a custom convention since deleted.
 async function projectWithDeleted(name, others = ['design-guidelines']) {
   await addCustomConvention({ slug: 'doomed', name: 'Doomed', description: 'x', body: '## Doomed\n- rule' });
-  await projectWith(name, ['doomed', ...others]);
+  await projectWith(name, selected('doomed', ...others));
   await deleteCustomConvention('doomed');
 }
 
@@ -60,26 +72,52 @@ describe('PUT /api/projects/:name/conventions', () => {
   // PINS: the edit writes exactly what a sweep would for the new marker, so
   // the next sweep is a no-op, and answers the documented body.
   test('replaces the selection with the composed document', async () => {
-    await projectWith('p', ['design-guidelines']);
-    const r = await put('p', { slugs: ['testing-guidelines', 'documentation-guidelines'], expected: ['design-guidelines'] });
+    await projectWith('p', selected('design-guidelines'));
+    const r = await put('p', { selection: selected('testing-guidelines', 'documentation-guidelines'), expected: selected('design-guidelines') });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.deepEqual(r.body, {
       ok: true, path: conventionsPath('p'),
-      selected: ['testing-guidelines', 'documentation-guidelines'], unresolved: [],
+      selection: selected('testing-guidelines', 'documentation-guidelines'), unresolved: [],
     });
-    const want = await composeProjectConventionsDoc(['testing-guidelines', 'documentation-guidelines']);
+    const want = await composeProjectConventionsDoc(selected('testing-guidelines', 'documentation-guidelines'));
     assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), want);
     await ensureProjectConventionsMd('p');
     assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), want, 'a sweep afterwards changes nothing');
+  });
+
+  // T4a — PINS: the edit writes exactly what a sweep writes for each state:
+  // selected → none → selected → none → unset.
+  test('writes none and unset as the sweep composes them, and leaves none for a selection', async () => {
+    await projectWith('p', selected('design-guidelines'));
+    let r = await put('p', { selection: NONE, expected: selected('design-guidelines') });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.selection, NONE);
+    assert.equal(await marker('p'), '<!-- cc:conventions :none -->');
+    assert.deepEqual((await row('p')).conventions, { mode: 'none', unresolved: [] });
+    const noneDoc = await composeProjectConventionsDoc(NONE);
+    assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), noneDoc);
+
+    r = await put('p', { selection: selected('testing-guidelines'), expected: NONE });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), await composeProjectConventionsDoc(selected('testing-guidelines')));
+
+    r = await put('p', { selection: NONE, expected: selected('testing-guidelines') });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    r = await put('p', { selection: UNSET, expected: NONE });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.selection, UNSET);
+    assert.equal(await marker('p'), '<!-- cc:conventions -->');
+    assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), await composeProjectConventionsDoc(UNSET));
+    assert.deepEqual((await row('p')).conventions, { mode: 'unset', unresolved: [] });
   });
 
   // PINS: a slug the catalog lacks but the marker already names is kept, in
   // request order, and the body names it as unavailable.
   test('keeps an unresolvable slug the file already names', async () => {
     await projectWithDeleted('p');
-    const r = await put('p', { slugs: ['testing-guidelines', 'doomed'], expected: ['doomed', 'design-guidelines'] });
+    const r = await put('p', { selection: selected('testing-guidelines', 'doomed'), expected: selected('doomed', 'design-guidelines') });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.deepEqual(r.body.selected, ['testing-guidelines', 'doomed']);
+    assert.deepEqual(r.body.selection, selected('testing-guidelines', 'doomed'));
     assert.deepEqual(r.body.unresolved, ['doomed']);
     const content = await fs.readFile(conventionsPath('p'), 'utf8');
     assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions testing-guidelines,doomed -->');
@@ -88,9 +126,9 @@ describe('PUT /api/projects/:name/conventions', () => {
 
   // PINS: an unresolvable slug can only be kept, never introduced.
   test('refuses a slug in neither the catalog nor the current marker, and writes nothing', async () => {
-    await projectWith('p', ['design-guidelines']);
+    await projectWith('p', selected('design-guidelines'));
     const before = await fs.readFile(conventionsPath('p'), 'utf8');
-    const r = await put('p', { slugs: ['design-guidelines', 'no-such-slug'], expected: ['design-guidelines'] });
+    const r = await put('p', { selection: selected('design-guidelines', 'no-such-slug'), expected: selected('design-guidelines') });
     assert.equal(r.status, 400, JSON.stringify(r.body));
     assert.match(r.body.error, /no-such-slug/);
     assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before);
@@ -98,9 +136,9 @@ describe('PUT /api/projects/:name/conventions', () => {
 
   // PINS: the lost-update guard — `expected` must equal the file's marker.
   test('refuses a stale expected with 409 and writes nothing', async () => {
-    await projectWith('p', ['design-guidelines', 'testing-guidelines']);
+    await projectWith('p', selected('design-guidelines', 'testing-guidelines'));
     const before = await fs.readFile(conventionsPath('p'), 'utf8');
-    const r = await put('p', { slugs: ['documentation-guidelines'], expected: ['design-guidelines'] });
+    const r = await put('p', { selection: selected('documentation-guidelines'), expected: selected('design-guidelines') });
     assert.equal(r.status, 409, JSON.stringify(r.body));
     assert.match(r.body.error, /design-guidelines,testing-guidelines|design-guidelines, testing-guidelines/);
     assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before);
@@ -109,17 +147,31 @@ describe('PUT /api/projects/:name/conventions', () => {
   // PINS: the guard compares length, content and order — a longer expected
   // with the marker as its prefix is stale too.
   test('refuses an expected with different slugs, a different order or an extra trailing slug with 409 and writes nothing', async () => {
-    await projectWith('p', ['design-guidelines', 'testing-guidelines']);
+    await projectWith('p', selected('design-guidelines', 'testing-guidelines'));
     const before = await fs.readFile(conventionsPath('p'), 'utf8');
     for (const expected of [
-      ['design-guidelines', 'documentation-guidelines'],
-      ['testing-guidelines', 'design-guidelines'],
-      ['design-guidelines', 'testing-guidelines', 'documentation-guidelines'],
+      selected('design-guidelines', 'documentation-guidelines'),
+      selected('testing-guidelines', 'design-guidelines'),
+      selected('design-guidelines', 'testing-guidelines', 'documentation-guidelines'),
     ]) {
-      const r = await put('p', { slugs: ['documentation-guidelines'], expected });
+      const r = await put('p', { selection: selected('documentation-guidelines'), expected });
       assert.equal(r.status, 409, `${JSON.stringify(expected)} → ${JSON.stringify(r.body)}`);
       assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before, `${JSON.stringify(expected)}: file unchanged`);
     }
+  });
+
+  // T4b — PINS: the stale guard tells unset from none, in both directions.
+  test('refuses an expected of unset against a none file, and of none against an unset file, with 409', async () => {
+    await projectWith('chose', NONE);
+    await projectWith('never', UNSET);
+    const beforeChose = await fs.readFile(conventionsPath('chose'), 'utf8');
+    const beforeNever = await fs.readFile(conventionsPath('never'), 'utf8');
+    const a = await put('chose', { selection: selected('design-guidelines'), expected: UNSET });
+    assert.equal(a.status, 409, JSON.stringify(a.body));
+    assert.equal(await fs.readFile(conventionsPath('chose'), 'utf8'), beforeChose);
+    const b = await put('never', { selection: selected('design-guidelines'), expected: NONE });
+    assert.equal(b.status, 409, JSON.stringify(b.body));
+    assert.equal(await fs.readFile(conventionsPath('never'), 'utf8'), beforeNever);
   });
 
   // PINS: the freeze rule holds for the edit — degraded + an unresolvable kept
@@ -129,15 +181,25 @@ describe('PUT /api/projects/:name/conventions', () => {
     await projectWithDeleted('p');
     const before = await fs.readFile(conventionsPath('p'), 'utf8');
     setPluginConventionsProvider(async () => { throw new Error('transient plugin host failure'); });
-    const refused = await put('p', { slugs: ['doomed', 'testing-guidelines'], expected: ['doomed', 'design-guidelines'] });
+    const refused = await put('p', { selection: selected('doomed', 'testing-guidelines'), expected: selected('doomed', 'design-guidelines') });
     assert.equal(refused.status, 503, JSON.stringify(refused.body));
     assert.equal(refused.body.code, 'CONVENTIONS_CATALOG_DEGRADED');
     assert.match(refused.body.error, /doomed/);
     assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before, 'the file is left as it is');
 
-    const allowed = await put('p', { slugs: ['testing-guidelines'], expected: ['doomed', 'design-guidelines'] });
+    const allowed = await put('p', { selection: selected('testing-guidelines'), expected: selected('doomed', 'design-guidelines') });
     assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
     assert.equal(await marker('p'), '<!-- cc:conventions testing-guidelines -->');
+  });
+
+  // T4e — PINS: the 503 freeze only protects a write that keeps an
+  // unresolvable slug; none is always writable.
+  test('a degraded catalog lets a file keeping an unresolvable slug choose none', async () => {
+    await projectWithDeleted('p');
+    setPluginConventionsProvider(async () => { throw new Error('transient plugin host failure'); });
+    const r = await put('p', { selection: NONE, expected: selected('doomed', 'design-guidelines') });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(await marker('p'), '<!-- cc:conventions :none -->');
   });
 
   // PINS: the edit writes through the project's System, keeping the System
@@ -147,7 +209,7 @@ describe('PUT /api/projects/:name/conventions', () => {
     const tree = path.join(remote.root, 'app');
     await createProject('app', { system: remote.id, systemPath: tree });
     await ensureProjectConventionsMd('app');
-    const r = await put('app', { slugs: ['design-guidelines'], expected: [] });
+    const r = await put('app', { selection: selected('design-guidelines'), expected: UNSET });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     const content = await fs.readFile(path.join(tree, 'CONVENTIONS.md'), 'utf8');
     assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions design-guidelines -->');
@@ -155,49 +217,83 @@ describe('PUT /api/projects/:name/conventions', () => {
     assert.match(content, /## Design guidelines/);
   });
 
-  // PINS: the request body's shape is checked before anything is read.
-  test('refuses a malformed body with 400', async () => {
-    await projectWith('p', []);
+  // T4c — PINS: none and slugs are never combined.
+  test('refuses none or unset carrying slugs with 400 CONVENTIONS_NONE_WITH_SLUGS, and writes nothing', async () => {
+    await projectWith('p', selected('design-guidelines'));
+    const before = await fs.readFile(conventionsPath('p'), 'utf8');
+    for (const selection of [{ mode: 'none', slugs: ['design-guidelines'] }, { mode: 'unset', slugs: [] }]) {
+      const r = await put('p', { selection, expected: selected('design-guidelines') });
+      assert.equal(r.status, 400, `${JSON.stringify(selection)} → ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.code, 'CONVENTIONS_NONE_WITH_SLUGS');
+      assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before);
+    }
+  });
+
+  // T4d — PINS: the request body is unambiguous and checked before anything
+  // is read; `expected` mirrors the marker, so only `selection` refuses a repeat.
+  test('refuses a malformed body with 400 and writes nothing', async () => {
+    await projectWith('p', UNSET);
+    const before = await fs.readFile(conventionsPath('p'), 'utf8');
     for (const body of [
-      { expected: [] },
-      { slugs: 'design-guidelines', expected: [] },
-      { slugs: ['design-guidelines'] },
-      { slugs: ['design-guidelines'], expected: 'x' },
-      { slugs: [1], expected: [] },
-      { slugs: ['design-guidelines'], expected: [null] },
-      { slugs: ['design-guidelines', 'design-guidelines'], expected: [] },
+      { expected: UNSET },
+      { selection: selected('design-guidelines') },
+      { selection: ['design-guidelines'], expected: UNSET },
+      { selection: selected('design-guidelines'), expected: [] },
+      { selection: { mode: 'some' }, expected: UNSET },
+      { selection: selected(), expected: UNSET },
+      { selection: { mode: 'selected' }, expected: UNSET },
+      { selection: selected(1), expected: UNSET },
+      { selection: selected('design-guidelines'), expected: selected(null) },
+      { selection: selected('design-guidelines', 'design-guidelines'), expected: UNSET },
     ]) {
       const r = await put('p', body);
       assert.equal(r.status, 400, `${JSON.stringify(body)} → ${JSON.stringify(r.body)}`);
+      assert.equal(await fs.readFile(conventionsPath('p'), 'utf8'), before, `${JSON.stringify(body)}: file unchanged`);
     }
+  });
+
+  // PINS: `expected` is the marker verbatim, so a repeated slug there is a
+  // legitimate expectation, not a malformed body.
+  test('accepts an expected that repeats a slug the marker repeats', async () => {
+    await projectWith('p', selected('design-guidelines', 'design-guidelines'));
+    const r = await put('p', { selection: selected('testing-guidelines'), expected: selected('design-guidelines', 'design-guidelines') });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(await marker('p'), '<!-- cc:conventions testing-guidelines -->');
   });
 
   // PINS: an unknown project is 404, not a write somewhere.
   test('answers 404 for an unknown project', async () => {
-    const r = await put('nope', { slugs: [], expected: [] });
+    const r = await put('nope', { selection: UNSET, expected: UNSET });
     assert.equal(r.status, 404, JSON.stringify(r.body));
   });
 });
 
+// T3 — PINS: the payload carries all three states distinctly.
 describe('GET /api/projects conventions field', () => {
-  // PINS: an absent file reads as no selection.
-  test('no CONVENTIONS.md → selected []', async () => {
+  // PINS: an absent file reads as unset.
+  test('no CONVENTIONS.md → unset', async () => {
     await createProject('p');
     await fs.rm(conventionsPath('p'), { force: true });
-    assert.deepEqual((await row('p')).conventions, { selected: [], unresolved: [] });
+    assert.deepEqual((await row('p')).conventions, { mode: 'unset', unresolved: [] });
   });
 
-  // PINS: a first line that is not a marker reads as no selection.
-  test('a non-marker first line → selected []', async () => {
+  // PINS: a first line that is not a marker reads as unset.
+  test('a non-marker first line → unset', async () => {
     await createProject('p');
     await fs.writeFile(conventionsPath('p'), '# My own conventions\n');
-    assert.deepEqual((await row('p')).conventions, { selected: [], unresolved: [] });
+    assert.deepEqual((await row('p')).conventions, { mode: 'unset', unresolved: [] });
   });
 
-  // PINS: a zero-slug marker reads as no selection.
-  test('a zero-slug marker → selected []', async () => {
-    await projectWith('p', []);
-    assert.deepEqual((await row('p')).conventions, { selected: [], unresolved: [] });
+  // PINS: a zero-slug marker reads as unset.
+  test('a zero-slug marker → unset', async () => {
+    await projectWith('p', UNSET);
+    assert.deepEqual((await row('p')).conventions, { mode: 'unset', unresolved: [] });
+  });
+
+  // PINS: the reserved none marker reads as none.
+  test('a none marker → none', async () => {
+    await projectWith('p', NONE);
+    assert.deepEqual((await row('p')).conventions, { mode: 'none', unresolved: [] });
   });
 
   // PINS: marker order is kept, and `unresolved` names exactly the slugs the
@@ -205,14 +301,14 @@ describe('GET /api/projects conventions field', () => {
   test('marker slugs in order, unresolved naming the deleted custom one', async () => {
     await projectWithDeleted('p', ['testing-guidelines', 'design-guidelines']);
     assert.deepEqual((await row('p')).conventions, {
-      selected: ['doomed', 'testing-guidelines', 'design-guidelines'], unresolved: ['doomed'],
+      mode: 'selected', slugs: ['doomed', 'testing-guidelines', 'design-guidelines'], unresolved: ['doomed'],
     });
   });
 
   // PINS: a read that fails other than ENOENT is reported as {error} on that
   // row, and the listing still answers for every project.
   test('an unreadable CONVENTIONS.md → {error}, and the rest of the list still answers', async () => {
-    await projectWith('healthy', ['design-guidelines']);
+    await projectWith('healthy', selected('design-guidelines'));
     await createProject('broken');
     await fs.rm(conventionsPath('broken'), { force: true });
     await fs.mkdir(conventionsPath('broken'));
@@ -222,7 +318,7 @@ describe('GET /api/projects conventions field', () => {
     assert.deepEqual(Object.keys(broken.conventions), ['error']);
     assert.equal(typeof broken.conventions.error, 'string');
     assert.ok(broken.conventions.error.length > 0);
-    assert.deepEqual(r.body.find(p => p.name === 'healthy').conventions, { selected: ['design-guidelines'], unresolved: [] });
+    assert.deepEqual(r.body.find(p => p.name === 'healthy').conventions, { mode: 'selected', slugs: ['design-guidelines'], unresolved: [] });
   });
 
   // PINS: an unresolvable project carries no `conventions` key at all.
@@ -241,14 +337,14 @@ describe('GET /api/projects conventions field', () => {
 // started while a sweep is mid-flight lands after it, so the sweep cannot write
 // the old marker back over the edit.
 test('a sweep in flight cannot write the old marker back over an edit', async () => {
-  await projectWith('p', ['design-guidelines']);
+  await projectWith('p', selected('design-guidelines'));
   const pending = [];
   setPluginConventionsProvider(() => new Promise((resolve) => { pending.push(() => resolve([])); }));
   let settled = 0;
   const sweep = ensureProjectConventionsMd('p').finally(() => { settled++; });
   // The sweep has read the old marker and is held at its catalog read.
   await waitFor(() => pending.length === 1);
-  const edit = setProjectConventions('p', ['testing-guidelines'], ['design-guidelines']).finally(() => { settled++; });
+  const edit = setProjectConventions('p', selected('testing-guidelines'), selected('design-guidelines')).finally(() => { settled++; });
   // Wait until no new provider call has arrived for a quiet window, then release
   // the newest one. Without serialization both are pending at once and the
   // edit's is released first, so it lands first and the sweep lands last.

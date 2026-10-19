@@ -8,7 +8,7 @@ import { createPluginHost } from '../src/plugins/registry.ts';
 import { pidAlive } from '../src/plugins/ports.ts';
 import { readProjectRecord, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir, createProject, orchStoreRoot } from '../src/projects.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
-import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
+import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath, slugSelection } from '../src/projectClaudeMd.ts';
 import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 
 const run = promisify(execFile);
@@ -606,7 +606,7 @@ test('conventions(): a placement-resolution failure degrades every scope array, 
     assert.ok(!healthy.project.degraded);
 
     setPluginConventionsProvider(async () => (await host.conventions()).project);
-    const doc = await composeProjectConventionsDoc(['cwdfail/vis', 'design-guidelines']);
+    const doc = await composeProjectConventionsDoc(slugSelection(['cwdfail/vis', 'design-guidelines']));
     await createProject('referencer', { conventionsDoc: doc });
     const target = conventionsTargetPath(path.join(env.root, 'referencer'));
 

@@ -27,6 +27,10 @@ import { bubbleInputs, scrollersBetween } from '@/test/scrollRegion';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listed, listedAnswer, pathNote, system, typePath } from '@/test/placementDriver';
 
 const CREATED = { name: 'demo', path: '/x', system: 'local' };
+const CONVENTIONS = [
+  { slug: 'design-guidelines', name: 'Design guidelines', description: 'core', builtin: true },
+  { slug: 'testing-guidelines', name: 'Testing guidelines', description: 'core', builtin: true },
+];
 const created = (extra: Record<string, unknown> = {}) => ({ status: 201, json: { ...CREATED, ...extra } });
 const dirs = (entries: string[], extra: Record<string, unknown> = {}) => ({ json: { ok: true, entries, links: [], truncated: false, max: 1000, ...extra } });
 
@@ -448,7 +452,7 @@ describe('New project dialog', () => {
     await renderNew();
     await waitFor(() => expect(document.querySelectorAll('legend')).toHaveLength(2));
     expect([...document.querySelectorAll('legend')].map((l) => l.textContent)).toEqual(['Project conventions', 'playwright-harness']);
-    expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+    expect(screen.getAllByRole('checkbox').filter((b) => !b.hasAttribute('data-no-conventions'))).toHaveLength(3);
     expect(document.querySelector('fieldset')!.parentElement!.textContent).not.toMatch(/sets up/);
     const box = (slug: string) => document.querySelector(`[data-convention="${slug}"]`) as HTMLElement;
     fireEvent.click(box('playwright-harness/vis-check'));
@@ -496,6 +500,70 @@ describe('New project dialog', () => {
     expect(dialogStore.get().newProject).toBe(false);
   });
 
+  // Only the explicit choice sends the flag, never beside slugs, and nothing ticked records unset.
+  it('choosing no project conventions posts noProjectConventions alone; a convention clears it; nothing ticked posts neither', async () => {
+    const calls = stub({
+      'GET /api/settings/conventions/project': () => ({ json: { conventions: CONVENTIONS } }),
+      'POST /api/projects': () => created(),
+    });
+    const noneBox = () => document.querySelector('[data-no-conventions]') as HTMLElement;
+    const box = (slug: string) => document.querySelector(`[data-convention="${slug}"]`) as HTMLElement;
+    const arms: [string, () => void, Record<string, unknown>][] = [
+      ['none', () => fireEvent.click(noneBox()), { name: 'demo', noProjectConventions: true }],
+      ['none, then a convention', () => {
+        fireEvent.click(noneBox());
+        fireEvent.click(box('design-guidelines'));
+        expect(noneBox().getAttribute('aria-checked')).toBe('false');
+      }, { name: 'demo', conventions: ['design-guidelines'] }],
+      ['a convention, then none', () => {
+        fireEvent.click(box('design-guidelines'));
+        fireEvent.click(noneBox());
+        expect(box('design-guidelines').getAttribute('aria-checked')).toBe('false');
+      }, { name: 'demo', noProjectConventions: true }],
+      ['nothing', () => {}, { name: 'demo' }],
+    ];
+    render(<DialogsHost />);
+    for (const [i, [label, pick, body]] of arms.entries()) {
+      await openNew();
+      await waitFor(() => expect(box('design-guidelines')).toBeTruthy());
+      expect(noneBox()).toBeTruthy();
+      pick();
+      typeName('demo');
+      create();
+      await waitFor(() => expect(posts(calls)).toHaveLength(i + 1));
+      expect(posts(calls)[i].body, label).toEqual(body);
+      await waitFor(() => expect(dialogStore.get().newProject).toBe(false));
+    }
+  });
+
+  // The none choice is in the reopen reset family: a reopen starts with it off, so the next create records unset.
+  it('reopening after a refused create resets the none choice and the picks, and the next create posts the name alone', async () => {
+    let n = 0;
+    const calls = stub({
+      'GET /api/settings/conventions/project': () => ({ json: { conventions: CONVENTIONS } }),
+      'POST /api/projects': () => (++n === 1 ? { status: 500, json: { error: 'disk full' } } : created()),
+    });
+    const noneBox = () => document.querySelector('[data-no-conventions]') as HTMLElement;
+    await renderNew();
+    await waitFor(() => expect(document.querySelector('[data-convention="design-guidelines"]')).toBeTruthy());
+    expect(noneBox()).toBeTruthy();
+    fireEvent.click(noneBox());
+    typeName('x');
+    create();
+    await waitFor(() => expect(alertText()).toContain('disk full'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(dialogStore.get().newProject).toBe(false));
+    await openNew();
+    await waitFor(() => expect(document.querySelector('[data-convention="design-guidelines"]')).toBeTruthy());
+    expect(noneBox().getAttribute('aria-checked')).toBe('false');
+    expect([...document.querySelectorAll('[data-convention]')].map((b) => b.getAttribute('aria-checked'))).toEqual(['false', 'false']);
+    expect(alertText()).toBeNull();
+    typeName('demo');
+    create();
+    await waitFor(() => expect(posts(calls)).toHaveLength(2));
+    expect(posts(calls)[1].body).toEqual({ name: 'demo' });
+  });
+
   it('the conventions checklist is one positioned scroller holding every hidden convention input', async () => {
     // Invariant: the New project checklist is the only scroller above its checkboxes and is `relative`, so Radix's hidden inputs scroll with it instead of lengthening the dialog.
     stub({
@@ -511,7 +579,7 @@ describe('New project dialog', () => {
     expect(scrollers).toHaveLength(1);
     const list = scrollers[0];
     expect(list.classList.contains('relative')).toBe(true);
-    const inputs = bubbleInputs(dialog);
+    const inputs = bubbleInputs(dialog, '[data-convention]');
     expect(inputs).toHaveLength(2);
     for (const i of inputs) expect(list.contains(i)).toBe(true);
   });

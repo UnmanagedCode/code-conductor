@@ -25,7 +25,7 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { createProject } from '../src/projects.ts';
 import { composeCurrentWorkspace } from '../src/workspaceConventions.ts';
 import { composeCurrentConduct } from '../src/conductorConventions.ts';
-import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
+import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath, slugSelection } from '../src/projectClaudeMd.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fragment = (...parts) => path.join(REPO, 'conventions', ...parts);
@@ -85,7 +85,7 @@ test('a conductor core/footer edit appears in the next composeCurrentConduct()',
 // pre-edit text back over a correct committed CONVENTIONS.md.
 test('regeneration in the same process writes the CURRENT fragment text', async (t) => {
   const SENTINEL = 'cc-0415-regen';
-  await createProject('regen', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
+  await createProject('regen', { conventionsDoc: await composeProjectConventionsDoc(slugSelection(['design-guidelines'])) });
   await ensureProjectConventionsMd('regen');            // warms every cache in the path
   const target = conventionsTargetPath(path.join(projectsRoot, 'regen'));
   const first = await fsp.readFile(target, 'utf8');

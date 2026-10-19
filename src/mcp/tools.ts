@@ -871,6 +871,10 @@ export function buildTools(): Tool[] {
             items: { type: 'string' },
             description: 'Slugs of project conventions to attach — call list_project_conventions to discover available slugs. Each appends its CLAUDE.md fragment (if any) and, when hasScaffold:true, contributes to the returned `scaffold` directive.',
           },
+          noProjectConventions: {
+            type: 'boolean',
+            description: 'true records that this project deliberately uses no project conventions (refused together with a non-empty `conventions`). Omitting both leaves the choice unrecorded.',
+          },
           system: { type: 'string', description: 'Create the project on this registered system instead of under the projects root. Requires systemPath.' },
           remoteId: { type: 'string', description: 'Which TARGET of `system` to place it on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`. Refused SYSTEM_NO_REMOTES if the provider does not serve named targets, REMOTE_NOT_FOUND if it does not serve this one.' },
           systemPath: { type: 'string', description: 'Absolute path on `system` to create the project at. Required with `system`, refused without it.' },

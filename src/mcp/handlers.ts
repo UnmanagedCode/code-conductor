@@ -51,7 +51,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../../shared/planApproval
 // submit — one canonical function, no fork. See shared/userQuestionAnswers.ts.
 import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../shared/userQuestionAnswers.ts';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
-import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
+import { composeProjectConventionsDocWithMeta, creationSelection, placementDisclosure, slugsOf } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendsForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
@@ -2173,19 +2173,20 @@ export async function setProjectRemote(
 
 // ---------- create / introspect ----------
 
-// The placement triple is typed `unknown`, matching `fsCreateProject` and
-// `placementDisclosure`: both surfaces take these straight off a request body
-// (`POST /api/projects` delegates here) and `validatePlacementInput` is what
-// narrows them — a `string | undefined` here would be a claim neither caller
-// can make.
-export async function createProject({ name, conventions = [], system, remoteId, systemPath }: {
-  name: string; conventions?: string[]; system?: unknown; remoteId?: unknown; systemPath?: unknown;
+// The placement triple and the two convention fields are typed `unknown`,
+// matching `fsCreateProject` and `placementDisclosure`: both surfaces take
+// these straight off a request body (`POST /api/projects` delegates here), and
+// `validatePlacementInput` and `creationSelection` are what narrow them — a
+// `string | undefined` here would be a claim neither caller can make.
+export async function createProject({ name, conventions, noProjectConventions, system, remoteId, systemPath }: {
+  name: string; conventions?: unknown; noProjectConventions?: unknown; system?: unknown; remoteId?: unknown; systemPath?: unknown;
 }, { capabilities = hostPlatform.capabilities }: { capabilities?: PlatformCapabilities } = {}) {
+  const selection = creationSelection({ conventions, noProjectConventions });
   if (remotePlacementRefused(capabilities, system)) throw capabilityRefusal('remoteSystems');
-  const { text: conventionsDoc, degraded } = await composeProjectConventionsDocWithMeta(conventions, {
+  const { text: conventionsDoc, degraded } = await composeProjectConventionsDocWithMeta(selection, {
     system: placementDisclosure(system, systemPath),
   });
-  const scaffold = await composeProjectScaffold(name, conventions);
+  const scaffold = await composeProjectScaffold(name, slugsOf(selection));
   const created = await fsCreateProject(name, { conventionsDoc, system, remoteId, systemPath });
   // ONE line per creation, outside every loop, on the single flag — a per-entry
   // line would be N lines per event, which is the class card 2026-0281 landed.
