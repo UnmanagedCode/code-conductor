@@ -45,7 +45,7 @@ test('classifyChanged: the rows', async (t) => {
   });
 
   await t.test('a file in both closures selects both', () => {
-    assert.deepEqual(suitesOf('src/c.ts', reachOf({ files: ['src/c.ts'] }, { files: ['src/c.ts'] })), ['node', 'web']);
+    assert.deepEqual(classify('src/c.ts', reachOf({ files: ['src/c.ts'] }, { files: ['src/c.ts'] })), { path: 'src/c.ts', suites: ['node', 'web'], rows: [3] });
   });
 
   await t.test('a basename named in a closure\'s text selects that suite', () => {
@@ -91,6 +91,7 @@ test('classifyChanged: the typecheck halves', async (t) => {
 
   await t.test('a web path that also selects node adds the node half', () => {
     const r = reachOf({ text: "path.join('web', 'src', 'index.css')" }, { files: ['web/src/index.css'] });
+    assert.deepEqual(classify('web/src/index.css', r).rows, [3, 4], 'premise: selected by the closure and the name, not unclassified');
     assert.deepEqual(halves(['web/src/index.css'], r), ['node', 'web']);
   });
 
@@ -262,7 +263,8 @@ test('buildReach over a fixture tree', async (t) => {
     assert.deepEqual(buildReach(before, { reviewed }).stale, []);
     const r = buildReach(after, { reviewed });
     assert.deepEqual(r.stale, ['tests/r.mjs']);
-    assert.deepEqual(suitesOf('web/src/d2/b.ts', r), ['node', 'web']);
+    assert.ok(r.node.walked.has('web/src/d2'));
+    assert.deepEqual(classify('web/src/d2/b.ts', r).rows, [3, 5]);
   });
 
   await t.test('a reviewed entry for a missing file is stale', () => {
@@ -341,11 +343,20 @@ test('buildReach: a closureOf reviewed entry reaches an import closure', async (
 
   await t.test('files in the closure select node, through an .html module entry and through imports', () => {
     assert.deepEqual(reach.stale, []);
-    for (const p of ['web/src/main.tsx', 'web/src/lib.ts', 'web/plugin.ts']) assert.deepEqual(suitesOf(p, reach), ['node', 'web'], p);
+    for (const p of ['web/src/main.tsx', 'web/src/lib.ts', 'web/plugin.ts']) {
+      assert.ok(reach.node.walked.has(p), `${p} must be in the closureOf reach`);
+      const { rows } = classify(p, reach);
+      assert.ok(rows.includes(5) && !rows.includes(6), `${p}: rows ${rows}`);
+    }
   });
 
   await t.test('a CSS file reached only through @import from a closure file selects node', () => {
-    for (const p of ['web/src/tokens.css', 'web/src/more.css']) assert.deepEqual(suitesOf(p, reach), ['node', 'web'], p);
+    // tokens.css is a plain @import, more.css the url() form.
+    for (const p of ['web/src/tokens.css', 'web/src/more.css']) {
+      assert.ok(reach.node.walked.has(p), `${p} must be in the closureOf reach`);
+      assert.ok(reach.web.files.has(p), `${p} must be in the web closure`);
+      assert.deepEqual(classify(p, reach).rows, [3, 5], p);
+    }
   });
 
   await t.test('a test-side file outside the closure does not select node', () => {
@@ -353,7 +364,9 @@ test('buildReach: a closureOf reviewed entry reaches an import closure', async (
   });
 
   await t.test('without the entry, the read rule reaches all of web/', () => {
-    assert.deepEqual(suitesOf('web/src/lib.test.ts', buildReach(root, { reviewed: {} })), ['node', 'web']);
+    const unreviewed = buildReach(root, { reviewed: {} });
+    assert.ok(unreviewed.node.walked.has('web'));
+    assert.deepEqual(classify('web/src/lib.test.ts', unreviewed).rows, [3, 5]);
   });
 
   await t.test('a closureOf root that is gone makes the entry stale', () => {
@@ -416,7 +429,9 @@ test('the real tree', async (t) => {
   await t.test('a Vitest proof file selects node by its basename alone (row 4: tests/web-console-guard.test.mjs runs it)', () => {
     const p = 'web/src/test/' + 'consoleGuard.proof.test.ts';
     assert.ok(!reach.node.files.has(p) && !underAny(p, reach.node.walked), 'premise: no node closure or walk reaches it');
-    assert.ok(suitesOf(p, reach).includes('node'));
+    const { suites, rows } = classify(p, reach);
+    assert.deepEqual(suites, ['node', 'web']);
+    assert.ok(rows.includes(4) && !rows.includes(6), `rows ${rows}`);
   });
 
   await t.test('web/src/themeTokens.css joins the web closure through index.css\'s @import', () => {
@@ -428,13 +443,16 @@ test('the real tree', async (t) => {
   });
 
   await t.test('src/webBuild.ts selects web (web/src/build.test.ts imports it)', () => {
+    assert.ok(reach.web.files.has('src/' + 'webBuild.ts'));
     assert.ok(suitesOf('src/webBuild.ts', reach).includes('web'));
   });
 
   await t.test('web/e2e/harness/redact.ts reaches web through a walked root alone (row 5)', () => {
     const p = 'web/e2e/harness/redact.ts';
     assert.ok(!reach.web.files.has(p) && !namedIn(reach.web.text, p), 'premise: no web import or name reaches it');
+    assert.ok(underAny(p, reach.web.walked));
     assert.deepEqual(suitesOf(p, reach), ['node', 'web']);
+    assert.ok(classify(p, reach).rows.includes(5) && !classify(p, reach).rows.includes(6));
   });
 
   await t.test('web/src/e2eProjects.test.ts\'s recursive walk makes web/e2e a web walked root', () => {
@@ -444,6 +462,7 @@ test('the real tree', async (t) => {
   await t.test('fixtures Vitest reads through testkit\'s computed paths select web', () => {
     const subagents = fs.readdirSync(path.join(REPO, 'tests', 'fixtures', 'bg-agents-reinvoke.subagents'));
     for (const p of ['tests/fixtures/narration/deepseek-plain.transcript.jsonl', `tests/fixtures/bg-agents-reinvoke.subagents/${subagents[0]}`]) {
+      assert.ok(underAny(p, reach.web.walked), `${p} must be under a web reached root`);
       assert.ok(suitesOf(p, reach).includes('web'), p);
     }
   });
