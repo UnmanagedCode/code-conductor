@@ -68,7 +68,8 @@ test('npm test gate', async (t) => {
     refused(['web/e2e/x.spec.ts'], /npm run test:e2e/);
     refused(['web/playwright.config.ts'], /npm run test:e2e/);
     refused(['src/x.ts'], /tests\/ or web\/src\/.*--changed/);
-    refused(['tests/a.test.mjs', '-t'], /npm run test:node -- .*npm run test:web -- /);
+    refused(['tests/a.test.mjs', '-t'], /npm run test:web -- -t .*npm run test:node takes test files only/);
+    assert.throws(() => parseGateArgs(['-t']), (e) => !/test:node -- /.test(e.message), 'tests/run.mjs takes no flags');
     refused(['--changed', 'tests/a.test.mjs'], /--changed/);
     assert.deepEqual(parseGateArgs(['--changed']), { mode: 'changed' });
   });

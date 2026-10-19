@@ -9,8 +9,8 @@
 //   npm test -- --changed             the suites and halves the diff against
 //                                     main selects (tests/changedScope.mjs)
 //
-// A red typecheck step starts no later step. npm's `pretest` never sees the
-// arguments, which is why the gate runs the halves itself.
+// A red typecheck step starts no later step. The gate runs the halves itself
+// because npm passes `-- <args>` to the script only, never to a lifecycle hook.
 //
 // The suites run one after the other, never in parallel: peak memory is the larger
 // suite's, not the sum, and tests/run.mjs already near-saturates its slots with
@@ -52,7 +52,7 @@ export function parseGateArgs(argv, root = repoRoot) {
   const web = [];
   for (const arg of argv) {
     if (arg.startsWith('-')) {
-      throw new UsageError(`${arg}: runner flags go to one suite — npm run test:node -- ${arg} … or npm run test:web -- ${arg} …`);
+      throw new UsageError(`${arg}: runner flags go to Vitest — npm run test:web -- ${arg} …; npm run test:node takes test files only`);
     }
     const rel = path.relative(root, path.resolve(root, arg)).split(path.sep).join('/');
     if (rel.startsWith('tests/')) node.push(rel);

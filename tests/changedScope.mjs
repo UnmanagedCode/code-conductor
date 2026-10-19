@@ -4,45 +4,83 @@
 // A suite "reaches" a path when its import closure contains it (roots plus every
 // import and every code file it spawns by path), when its closure's source names
 // the path's basename (a file read by name), or when a closure file walks a
-// directory holding it. The rules fail safe: anything nothing reaches runs both
-// suites. Pinned by tests/changed-scope.test.mjs.
+// directory holding it or reads under one on the other suite's side. The rules
+// fail safe: anything nothing reaches runs both suites. Pinned by
+// tests/changed-scope.test.mjs.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// A call that enumerates a directory: its file's named dirs are walked.
-export const WALK_CALL = /\b(?:readdirSync|readdir|opendirSync|opendir|globSync|fs\.glob|glob)\s*\(|import\.meta\.glob|\bcpSync\s*\(|\bfs\.cp\s*\(|\bcp\s*\(|ls-files|\[\s*['"](?:rg|grep|find)['"]|['"]git['"]\s*,\s*\[\s*['"]grep['"]/g;
+// A call that enumerates a directory: every dir its file names is reached.
+// `fs.cp(`, `fs.glob(` and `'git', ['grep'` match through `cp(`, `glob(` and `['grep'`.
+export const WALK_CALL = /\b(?:readdirSync|readdir|opendirSync|opendir|globSync|glob)\s*\(|import\.meta\.glob|\bcpSync\s*\(|\bcp\s*\(|ls-files|\[\s*['"](?:rg|grep|find)['"]/g;
 
-// Walks whose real reach is narrower than the dirs their file names. For each
-// suite an entry names, its dirs replace the inferred ones. `calls` is the file's
-// WALK_CALL count; when the live count differs the entry is stale, ignored, and
-// reported, so a new walk over-selects until it is re-reviewed.
+// A call that reads a file. A file making one reaches every dir it names on the
+// other suite's side (a fixture dir read through a computed path); a helper
+// wrapping it counts too, because the match is per file.
+export const READ_CALL = /\b(?:readFileSync|readFile|createReadStream|copyFileSync|copyFile)\s*\(/g;
+const OTHER_SIDE = {
+  node: (d) => d === 'web' || d.startsWith('web/'),
+  web: (d) => d !== 'web' && !d.startsWith('web/'),
+};
+
+// A file's walk and read call sites: a short hash of each match's trimmed
+// source line (comments stripped), in source order.
+export function sitesOf(source) {
+  const text = stripComments(source);
+  const lines = text.split('\n');
+  const lineOf = (index) => lines[text.slice(0, index).split('\n').length - 1].trim();
+  return [...text.matchAll(WALK_CALL), ...text.matchAll(READ_CALL)]
+    .sort((a, b) => a.index - b.index)
+    .map((m) => createHash('sha1').update(lineOf(m.index)).digest('hex').slice(0, 8))
+    .join(' ');
+}
+
+const FULL_GATE = 'classifies the tree rather than tests it, and its dir literals would otherwise make whole trees node-reached; an unrelated change that breaks a real-tree pin is caught by the full npm test gate, not by --changed';
+const TEMP_ONLY = (what) => `${what}; its repo-dir literals are fixture paths or names`;
+
+// Walks and reads whose real reach is narrower than the dirs their file names.
+// For each suite an entry names, its value replaces the inferred dirs: a list of
+// dirs, or `{ closureOf: [roots] }` for a file that follows imports itself (an
+// .html root contributes its module <script> srcs). `sites` is sitesOf(the
+// file); when it differs, or a closureOf root is gone, the entry is stale:
+// ignored and reported, so a changed call over-selects until it is re-reviewed.
 export const WALKS_REVIEWED = {
   'src/webBuild.ts': {
-    calls: 2, node: [], web: ['web', 'shared'],
+    sites: '6e3cf71c ad17a209 a75cbeb1 a2e63040', node: [], web: ['web', 'shared'],
     why: 'listFiles walks the real web/ and shared/, but on node it only hashes them and tests compare hashes from one run; Vitest\'s build.test.ts runs real builds. The leftover sweep reads a temp distDir\'s parent',
   },
   'web/src/build.test.ts': {
-    calls: 4, node: [], web: ['web', 'shared'],
-    why: 'its own walks read a temp distDir; src/bin/docs appear only as isWebInput fixture paths. The node closure holds it only because this file names it, and node never runs it',
+    sites: 'f1486e07 8d9b0700 4a355031 6fb40c69 f1ae0f8d c4818124 5bdf6397 c2a40c80 3d3eb0f7 451ff969 bfc0415d 670355af 2bc56ac9 30d3d1ae bbd0c016', node: [], web: ['web', 'shared'],
+    why: 'its own walks read a temp distDir; src/bin/docs appear only as isWebInput fixture paths. The node closure holds it only because tests/changedScope.mjs names it, and node never runs it',
   },
-  'tests/web-post-merge.test.mjs': { calls: 2, node: [], why: 'walks a temp fixture tree; its web/ paths are fixture literals' },
-  'tests/boot-commit.test.mjs': { calls: 3, node: [], why: 'walks a temp repo\'s dirs' },
-  'tests/plugin-theme.test.mjs': { calls: 1, node: [], why: 'walks a temp decoy npm prefix' },
-  'tests/e2e-harness-credentials.test.mjs': { calls: 2, node: [], why: 'walks a temp credentials dir' },
-  'tests/changedScope.mjs': {
-    calls: 3, node: [],
-    why: 'classifies the tree rather than tests it: an unrelated change that breaks a real-tree pin is caught by the full npm test gate, not by --changed',
+  'tests/web-post-merge.test.mjs': { sites: 'd69e23d6 b9c60af3 84c422d9 f3b78fed 2394566a b2b3efec 0d75ce36 cffbf990 cffbf990 f7fc612e b8f329e6 caf50f03', node: [], why: TEMP_ONLY('walks and reads a temp fixture tree') },
+  'tests/boot-commit.test.mjs': { sites: '022d904e aaef09c1 2b5291a8', node: [], why: TEMP_ONLY('walks a temp repo') },
+  'tests/plugin-theme.test.mjs': { sites: '968c0fa0 c0c8f1fa 58aa9cb6 c0c8f1fa 694e31cf d69fbcaa 45782442', node: [], why: TEMP_ONLY('walks a temp decoy npm prefix') },
+  'tests/e2e-harness-credentials.test.mjs': { sites: 'd9f3ee8f ef07bcd0 c47911ee 5141e561 fc4789d4 5141e561', node: [], why: TEMP_ONLY('walks a temp credentials dir') },
+  'tests/web-routes.test.mjs': { sites: '7762d58e', node: [], why: 'reads pluginBridge.js by its full path, which the closure already follows' },
+  'tests/web-console-guard.test.mjs': { sites: 'c3cac5bc 57bf6791 57bf6791', node: [], why: 'reads Vitest\'s report from a temp file; web files it names are named in full' },
+  'tests/project-location-records.test.mjs': { sites: '664db8b3', node: [], why: TEMP_ONLY('reads a temp store; \'web\' is a project name') },
+  'tests/harness-mutation-parse.test.mjs': { sites: '3163bb1f 99687694 60a807b0', node: [], why: TEMP_ONLY('reads fixtures under tests/ and package.json; web/ names are route globs and temp dirs') },
+  'tests/harness-mutation-canary.test.mjs': { sites: 'd3f6f2f7 30e83ada', node: [], why: TEMP_ONLY('reads a temp tree it writes') },
+  'tests/gate.test.mjs': { sites: '60a807b0', node: [], why: TEMP_ONLY('reads package.json; web/ paths are argument fixtures') },
+  'tests/web-build-deps.test.mjs': {
+    sites: '57096d31 baeef358 2f5ef4cd', node: { closureOf: ['web/index.html', 'web/vite.config.ts'] },
+    why: 'follows the web build\'s runtime import graph from index.html\'s entry and the Vite config',
   },
-  'tests/changed-scope.test.mjs': {
-    calls: 2, node: [],
-    why: 'classifies the tree rather than tests it: an unrelated change that breaks a real-tree pin is caught by the full npm test gate, not by --changed',
-  },
+  'web/e2e/harness/boot.ts': { sites: 'aa0206d3', node: ['web/e2e/fixtures'], why: 'FIXTURES names web/e2e/fixtures; its own read is a temp log' },
+  'web/src/conversation/testkit.ts': { sites: '33814713', web: ['tests/fixtures'], why: 'FIXTURES is tests/fixtures, read through computed names' },
+  'tests/changedScope.mjs': { sites: 'b04d40e7 e1618153 1384b122 35c10387 d1573673', node: [], why: FULL_GATE },
+  'tests/changed-scope.test.mjs': { sites: 'f95d83a4 0e146f58 9d784053 12467dd7 55034659 821cbd72 87b80e20 1f8fea67 d6788adc 081e659c 081e659c 0ce509c9 c77e1775 7c2dcb60 71fdd1b7 12f6b5d8 291d57a9 af882457 d6495aa7 9a7a8887 0dc907a7 45e55e8c ff7912b4 48609e11 98c6d0d8 1a35a52c 2cd0aece c162c661 c9a22610 74710671 a4ab583c 002a278d b8eeebc4 99033093 d4ec334f e551c451', node: [], why: FULL_GATE },
 };
 
+const SUITES = ['node', 'web'];
 const SKIP_NAMES = new Set(['node_modules', '.git', '.mutation', '.conduct', '.compile-cache']);
 const CODE = /\.(?:ts|tsx|mts|mjs|js|cjs)$/;
 const DIRNAME = /__dirname|import\.meta\.dirname|import\.meta\.url/;
+// A module entry in an .html file: `<script type="module" src="/src/main.tsx">`.
+const MODULE_SCRIPT = /<script\b[^>]*\btype="module"[^>]*\bsrc="\/?([^"]+)"/g;
 const SPECIFIER = /(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|^\s*import\s*['"]([^'"]+)['"]/gm;
 // A string literal opening at a quote; every quote is tried as an opener, so a
 // stray quote earlier on a line cannot hide a path.
@@ -50,7 +88,9 @@ const LITERAL_AT = /(['"`])((?:(?!\1)[^\\\n]|\\.)*)\1/y;
 const SEGMENT_NEXT = /\s*,\s*(['"])((?:(?!\1)[^\\\n]|\\.)*)\1/y;
 const AFTER_SEGMENT = /['"]\s*,\s*$/;
 
-const stripComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+function stripComments(t) {
+  return t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+}
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const under = (p, dirs) => [...dirs].some((d) => p === d || p.startsWith(`${d}/`));
 
@@ -136,6 +176,11 @@ export function buildReach(root, { reviewed = WALKS_REVIEWED } = {}) {
       const f = stack.pop();
       if (seen.has(f)) continue;
       seen.add(f);
+      if (f.endsWith('.html') && fileSet.has(f)) {
+        for (const m of fs.readFileSync(path.join(root, f), 'utf8').matchAll(MODULE_SCRIPT)) {
+          stack.push(path.posix.join(path.posix.dirname(f), m[1]));
+        }
+      }
       const text = read(f);
       if (text === null) continue;
       for (const m of text.matchAll(SPECIFIER)) {
@@ -155,21 +200,27 @@ export function buildReach(root, { reviewed = WALKS_REVIEWED } = {}) {
     web: closure([...codeUnder('web/src'), 'web/vitest.config.ts', 'web/vite.config.ts'].filter((f) => fileSet.has(f))),
   };
 
-  const callCount = (f) => (stripped(f) ?? '').match(WALK_CALL)?.length ?? 0;
-  const stale = Object.entries(reviewed).filter(([f, entry]) => callCount(f) !== entry.calls).map(([f]) => f);
+  const matches = (f, re) => [...(stripped(f) ?? '').matchAll(re)];
+  const stale = Object.entries(reviewed)
+    .filter(([f, entry]) => !fileSet.has(f) || sitesOf(read(f)) !== entry.sites
+      || SUITES.some((s) => entry[s]?.closureOf?.some((r) => !fileSet.has(r))))
+    .map(([f]) => f);
 
   const reach = { stale };
   for (const [suite, members] of Object.entries(closures)) {
     const walked = new Set();
     for (const f of members) {
-      const entry = reviewed[f];
-      if (entry?.[suite] && !stale.includes(f)) {
-        for (const d of entry[suite]) walked.add(d);
+      const narrowed = reviewed[f]?.[suite];
+      if (narrowed && !stale.includes(f)) {
+        for (const d of narrowed.closureOf ? closure(narrowed.closureOf) : narrowed) walked.add(d);
         continue;
       }
-      if (!callCount(f)) continue;
-      for (const named of namedPaths(stripped(f), { ancestors: true })) if (dirs.has(named)) walked.add(named);
-      if (DIRNAME.test(stripped(f))) walked.add(path.posix.dirname(f));
+      const walks = matches(f, WALK_CALL).length > 0;
+      if (!walks && matches(f, READ_CALL).length === 0) continue;
+      for (const named of namedPaths(stripped(f), { ancestors: true })) {
+        if (dirs.has(named) && (walks || OTHER_SIDE[suite](named))) walked.add(named);
+      }
+      if (walks && DIRNAME.test(stripped(f))) walked.add(path.posix.dirname(f));
     }
     const text = [...members].map((f) => read(f) ?? '').join('\n');
     reach[suite] = { files: members, text, walked };
@@ -178,7 +229,6 @@ export function buildReach(root, { reviewed = WALKS_REVIEWED } = {}) {
 }
 
 const TOOLCHAIN = (p) => p === 'package.json' || p === 'package-lock.json' || /^tsconfig.*\.json$/.test(path.posix.basename(p));
-const SUITES = ['node', 'web'];
 
 // The suites and typecheck halves `paths` select, and per path the suites and
 // the rows (1 toolchain, 2 shared/, 3 closure, 4 basename, 5 walked,

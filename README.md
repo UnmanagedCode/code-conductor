@@ -27,12 +27,12 @@ git clone <repo-url> code-conductor
 cd code-conductor
 npm install            # express, ws, typescript + @types/node (dev)
 npm start              # http://127.0.0.1:8787  (process title: code-conductor)
-npm run typecheck      # strict tsc, both halves: typecheck:node (server, shared/) + typecheck:web (web/, bridge, web/e2e)
+npm run typecheck      # strict tsc, both halves: typecheck:node (the root program: server, harness; + shared/) + typecheck:web (web/, bridge, web/e2e)
 npm test               # both typecheck halves, node:test suite, then the web Vitest suite — the gate
 npm test -- <files>    # tests/ files to node, web/src/ files to Vitest, each after its typecheck half
-npm test -- --changed  # only the suites the diff against main reaches; anything unclassifiable runs everything
+npm test -- --changed  # only the suites the diff against main reaches; unclassifiable runs everything. A pre-merge shortcut, not a substitute for the full gate
 RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
-npm run test:node      # node:test suite only, after typecheck:node (-- <files> or runner flags)
+npm run test:node      # node:test suite only, after typecheck:node (-- <files>; no flags)
 npm run test:web       # web UI suite only (Vitest, web/), after typecheck:web (-- <file> or -t name)
 npm run test:e2e       # web UI end-to-end (Playwright; first: npx playwright install chromium)
 npm run dev:web        # Vite dev server for web/, proxying the API to a running cc (CC_DEV_SERVER)
