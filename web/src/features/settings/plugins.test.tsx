@@ -1174,6 +1174,33 @@ describe('Plugins → action in flight', () => {
     }
   });
 
+  // The pending label follows the plugin id, not the action: a second row offering the same action keeps its idle name.
+  it('an action held on one row leaves another row offering the same action disabled but not relabelled', async () => {
+    const PL2: PluginRow = { ...PL, id: 'pl2', name: 'Pl2', project: 'pl2' };
+    rows = [PL, PL2];
+    projects = [{ name: 'pl', worktrees: [{ worktreeName: 'wt' }] }, { name: 'pl2', worktrees: [{ worktreeName: 'wt' }] }];
+    const h = heldJson();
+    const v = heldJson();
+    serve({ 'POST /api/plugins/pl/start': () => h.response, 'POST /api/plugins/pl2/version': () => v.response });
+    wrap();
+    await waitFor(() => expect(pluginsLine()).toMatch(/^2\b/));
+
+    fireEvent.click(rowBtn('pl', 'Start'));
+    await waitFor(() => expect(rowBtn('pl', 'Starting…').disabled).toBe(true));
+    expect(pluginButtons('pl2')).toEqual(['Start', 'Disable']);
+    expect(rowBtn('pl2', 'Start').disabled).toBe(true);
+    await act(async () => h.release({ ok: true }));
+    await waitFor(() => expect(rowBtn('pl', 'Start').disabled).toBe(false));
+
+    const sel = within(plugin('pl2')).getByLabelText('Active version of Pl2') as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(sel.options).map((o) => o.value)).toEqual(['main', 'worktree:wt']));
+    fireEvent.change(sel, { target: { value: 'worktree:wt' } });
+    await waitFor(() => expect(plugin('pl2').textContent).toContain('Switching…'));
+    expect(plugin('pl').textContent).not.toContain('Switching…');
+    await act(async () => v.release({ ok: true }));
+    await waitFor(() => expect(plugin('pl2').textContent).not.toContain('Switching…'));
+  });
+
   it('Rescan shows Rescanning… on itself and disables every row\'s controls until it settles', async () => {
     rows = [PL];
     const h = heldJson();
