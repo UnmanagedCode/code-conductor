@@ -227,6 +227,30 @@ test("proxy: a plugin's own framing policy passes through unchanged", async (t) 
       const r = await hit({ 'x-frame-options': 'deny' });
       assert.equal(r.headers.get('x-frame-options'), 'deny');
     });
+    // Invariant: an X-Frame-Options counts only when it is exactly DENY or SAMEORIGIN, so a value
+    // that merely contains one of those words is replaced by SAMEORIGIN, never passed through.
+    await t.test('an X-Frame-Options that only contains deny is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': 'ALLOW-FROM https://x.test/deny' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    await t.test('a list X-Frame-Options (DENY,SAMEORIGIN) is replaced by SAMEORIGIN', async () => {
+      const r = await hit({ 'x-frame-options': 'DENY,SAMEORIGIN' });
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    // Invariant: only an actual frame-ancestors directive in the CSP counts, not the word anywhere in it.
+    await t.test('a CSP that only mentions frame-ancestors in a host name still gets the framing default', async () => {
+      const csp = 'default-src https://frame-ancestors.example';
+      const r = await hit({ 'content-security-policy': csp });
+      assert.equal(r.headers.get('content-security-policy'), csp);
+      assert.equal(r.headers.get('x-frame-options'), 'SAMEORIGIN');
+    });
+    // Invariant: the CSP directive name matches case-insensitively, so FRAME-ANCESTORS counts as declared.
+    await t.test('an upper-case FRAME-ANCESTORS directive counts as a declared policy', async () => {
+      const csp = "FRAME-ANCESTORS 'self'";
+      const r = await hit({ 'content-security-policy': csp });
+      assert.equal(r.headers.get('content-security-policy'), csp);
+      assert.equal(r.headers.get('x-frame-options'), null);
+    });
     await t.test('a CSP without frame-ancestors still gets the framing default', async () => {
       const csp = "default-src 'none'";
       const r = await hit({ 'content-security-policy': csp });
