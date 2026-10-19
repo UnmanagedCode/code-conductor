@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildReach, changedPaths, classifyChanged, sitesOf, WALKS_REVIEWED } from './changedScope.mjs';
+import { buildReach, changedPaths, classifyChanged, WALKS_REVIEWED } from './changedScope.mjs';
 import { mkdtempSync } from './tmpRegistry.mjs';
 
 const REPO = path.resolve(import.meta.dirname, '..');
@@ -16,6 +16,8 @@ const side = ({ files = [], text = '', walked = [] } = {}) => ({ files: new Set(
 const reachOf = (node, web) => ({ node: side(node), web: side(web), stale: [] });
 const classify = (p, reach) => classifyChanged([p], reach).why[0];
 const suitesOf = (p, reach) => classify(p, reach).suites;
+// A reviewed file's live `sites` in the tree at `root`.
+const liveSites = (root, file) => buildReach(root, { reviewed: { [file]: { sites: '', node: [], why: 'probe' } } }).sites[file];
 
 test('classifyChanged: the rows', async (t) => {
   const empty = reachOf();
@@ -146,7 +148,7 @@ test('buildReach over a fixture tree', async (t) => {
     'tests/.conduct/c.test.mjs': SKIPPED, 'tests/.compile-cache/k.test.mjs': SKIPPED,
     'node_modules/pkg/index.js': SKIPPED,
     'web/dist/d.js': SKIPPED, 'web/dist.next/n.js': SKIPPED,
-    'src/side.ts': '', 'src/reexp.ts': '', 'src/q.ts': '', 'src/dyn.ts': '', 'src/unreached.ts': '',
+    'src/side.ts': "import 'pkg';", 'src/pkg.ts': '', 'src/reexp.ts': '', 'src/q.ts': '', 'src/dyn.ts': '', 'src/unreached.ts': '',
     'bin/x.mjs': "import './y.mjs';\nconst sib = path.join(import.meta.dirname, 'z.mjs');",
     'bin/y.mjs': '', 'bin/z.mjs': '', 'bin/lit.mjs': '', 'bin/commented.mjs': '', 'bin/blocked.mjs': '',
     'shared/walk.ts': walkSource,
@@ -165,7 +167,8 @@ test('buildReach over a fixture tree', async (t) => {
       assert.ok(node.files.has(f), `${f} must be node-reached`);
     }
     // bin/x.mjs names 'z.mjs' only relative to its own dir: names are read repo-relative.
-    for (const f of ['src/unreached.ts', 'bin/z.mjs', 'bin/commented.mjs', 'bin/blocked.mjs', 'web/src/comp.tsx', 'node_modules/pkg/index.js']) {
+    // src/pkg.ts sits where a bare 'pkg' from src/side.ts would land if read as relative.
+    for (const f of ['src/unreached.ts', 'src/pkg.ts', 'bin/z.mjs', 'bin/commented.mjs', 'bin/blocked.mjs', 'web/src/comp.tsx']) {
       assert.ok(!node.files.has(f), `${f} must not be node-reached`);
     }
     assert.ok(node.text.includes("path.join(ROOT, 'bin', 'x.mjs')"), 'text carries the closure\'s source');
@@ -205,7 +208,7 @@ test('buildReach over a fixture tree', async (t) => {
     assert.ok(!reach.web.walked.has('web/own'), 'a web file reading under web/ is a same-side read');
   });
 
-  const sites = sitesOf(walkSource);
+  const sites = liveSites(root, 'shared/walk.ts');
 
   await t.test('a fresh reviewed entry replaces the inferred roots for the suite it names only', () => {
     const r = buildReach(root, { reviewed: { 'shared/walk.ts': { sites, node: ['docs'], why: 'fixture' } } });
@@ -228,22 +231,50 @@ test('buildReach over a fixture tree', async (t) => {
     assert.ok(!r.node.walked.has('docs'));
   });
 
-  await t.test('a same-arity swap of a walk call makes its entry stale', () => {
-    const swapped = fixtureTree({
+  await t.test('a same-arity change to a walk call line makes its entry stale', () => {
+    const tree = (call) => fixtureTree({
       'tests/a.test.mjs': "import '../shared/walk.ts';",
-      'shared/walk.ts': "export const w = fs.readdirSync(path.join(ROOT, 'web', 'other'));",
-      'web/other/o.ts': '', 'docs/d.md': '',
+      'shared/walk.ts': `export const w = fs.${call}(path.join(ROOT, 'web', 'lint'));`,
+      'web/lint/rule.ts': '', 'docs/d.md': '',
     });
-    const reviewed = { 'shared/walk.ts': { sites, node: ['docs'], why: 'fixture' } };
-    assert.equal(sitesOf("export const w = fs.readdirSync(path.join(ROOT, 'web', 'other'));").split(' ').length, sites.split(' ').length, 'premise: same arity');
-    const r = buildReach(swapped, { reviewed });
+    const before = tree('readdirSync');
+    const after = tree('opendirSync');
+    const reviewed = { 'shared/walk.ts': { sites: liveSites(before, 'shared/walk.ts'), node: ['docs'], why: 'fixture' } };
+    const [was, now] = [liveSites(before, 'shared/walk.ts'), liveSites(after, 'shared/walk.ts')].map((s) => s.split(' '));
+    assert.equal(now.length, was.length, 'premise: same arity');
+    assert.equal(now.at(-1), was.at(-1), 'premise: same named paths');
+    assert.deepEqual(buildReach(before, { reviewed }).stale, []);
+    const r = buildReach(after, { reviewed });
     assert.deepEqual(r.stale, ['shared/walk.ts']);
-    assert.ok(r.node.walked.has('web/other'));
+    assert.ok(r.node.walked.has('web/lint'));
+  });
+
+  await t.test('moving the constant a narrowing comes from, on a non-call line, makes its entry stale', () => {
+    const tree = (dir) => fixtureTree({
+      'tests/r.mjs': `const FIX = path.join(ROOT, 'web', 'src', '${dir}');\nconst read = (n) => fs.readFileSync(path.join(FIX, n));`,
+      'web/src/d1/a.ts': '', 'web/src/d2/b.ts': '',
+    });
+    const before = tree('d1');
+    const after = tree('d2');
+    const reviewed = { 'tests/r.mjs': { sites: liveSites(before, 'tests/r.mjs'), node: ['web/src/d1'], why: 'fixture' } };
+    const [was, now] = [liveSites(before, 'tests/r.mjs'), liveSites(after, 'tests/r.mjs')].map((s) => s.split(' '));
+    assert.deepEqual(now.slice(0, -1), was.slice(0, -1), 'premise: the call sites are unchanged');
+    assert.deepEqual(buildReach(before, { reviewed }).stale, []);
+    const r = buildReach(after, { reviewed });
+    assert.deepEqual(r.stale, ['tests/r.mjs']);
+    assert.deepEqual(suitesOf('web/src/d2/b.ts', r), ['node', 'web']);
   });
 
   await t.test('a reviewed entry for a missing file is stale', () => {
     assert.deepEqual(buildReach(root, { reviewed: { 'src/gone.ts': { sites: '', node: [], why: 'fixture' } } }).stale, ['src/gone.ts']);
   });
+});
+
+test('buildReach: a read naming exactly web/ is other-side for node only', () => {
+  const read = "const at = (n) => readFileSync(path.join(ROOT, 'web', n));";
+  const reach = buildReach(fixtureTree({ 'tests/r.test.mjs': read, 'web/src/r.test.ts': read, 'web/x.json': '' }), { reviewed: {} });
+  assert.ok(reach.node.walked.has('web'));
+  assert.ok(!reach.web.walked.has('web'));
 });
 
 test('buildReach: each walk and read call form', async (t) => {
@@ -297,18 +328,24 @@ test('buildReach: a closureOf reviewed entry reaches an import closure', async (
   const root = fixtureTree({
     'tests/deps.test.mjs': depsSource,
     'web/index.html': '<script type="module" src="/src/main.tsx"></script>',
-    'web/src/main.tsx': "import './lib';",
+    'web/src/main.tsx': "import './lib';\nimport './main.css';",
+    'web/src/main.css': "@import 'tailwindcss';\n@import './tokens.css';\n@import url(\"./more.css\");",
+    'web/src/tokens.css': '', 'web/src/more.css': '',
     'web/src/lib.ts': '',
     'web/src/lib.test.ts': "import './lib';",
     'web/vite.config.ts': "import './plugin.ts';",
     'web/plugin.ts': '',
   });
-  const entry = (closureOf) => ({ 'tests/deps.test.mjs': { sites: sitesOf(depsSource), node: { closureOf }, why: 'fixture' } });
+  const entry = (closureOf) => ({ 'tests/deps.test.mjs': { sites: liveSites(root, 'tests/deps.test.mjs'), node: { closureOf }, why: 'fixture' } });
   const reach = buildReach(root, { reviewed: entry(['web/index.html', 'web/vite.config.ts']) });
 
   await t.test('files in the closure select node, through an .html module entry and through imports', () => {
     assert.deepEqual(reach.stale, []);
     for (const p of ['web/src/main.tsx', 'web/src/lib.ts', 'web/plugin.ts']) assert.deepEqual(suitesOf(p, reach), ['node', 'web'], p);
+  });
+
+  await t.test('a CSS file reached only through @import from a closure file selects node', () => {
+    for (const p of ['web/src/tokens.css', 'web/src/more.css']) assert.deepEqual(suitesOf(p, reach), ['node', 'web'], p);
   });
 
   await t.test('a test-side file outside the closure does not select node', () => {
@@ -369,19 +406,25 @@ test('changedPaths against a temp git repo', async (t) => {
   });
 });
 
+// A real code path this file pins is spelled as a concatenation: a whole-path
+// literal here would be an entry edge into the node closure and satisfy the pin.
 test('the real tree', async (t) => {
   const reach = buildReach(REPO);
   const namedIn = (text, p) => new RegExp(`(?<![\\w.-])${path.posix.basename(p).replace(/[.]/g, '\\.')}(?![\\w-])`).test(text);
   const underAny = (p, roots) => [...roots].some((d) => p === d || p.startsWith(`${d}/`));
 
-  await t.test('web/src/themeTokens.css selects node by its basename alone (row 4: src/pluginTheme.ts reads it)', () => {
-    const p = 'web/src/themeTokens.css';
+  await t.test('a Vitest proof file selects node by its basename alone (row 4: tests/web-console-guard.test.mjs runs it)', () => {
+    const p = 'web/src/test/' + 'consoleGuard.proof.test.ts';
     assert.ok(!reach.node.files.has(p) && !underAny(p, reach.node.walked), 'premise: no node closure or walk reaches it');
     assert.ok(suitesOf(p, reach).includes('node'));
   });
 
+  await t.test('web/src/themeTokens.css joins the web closure through index.css\'s @import', () => {
+    assert.ok(reach.web.files.has('web/src/themeTokens.css'));
+  });
+
   await t.test('a web file a node test names by full path joins the node closure (pluginBridge.js)', () => {
-    assert.ok(reach.node.files.has('web/src/features/views/pluginBridge.js'));
+    assert.ok(reach.node.files.has('web/src/features/views/' + 'pluginBridge.js'));
   });
 
   await t.test('src/webBuild.ts selects web (web/src/build.test.ts imports it)', () => {
@@ -411,7 +454,7 @@ test('the real tree', async (t) => {
   });
 
   await t.test('every WALKS_REVIEWED entry is fresh (re-review a named file when this reds)', () => {
-    const live = reach.stale.map((f) => `${f}: sites '${fs.existsSync(path.join(REPO, f)) ? sitesOf(fs.readFileSync(path.join(REPO, f), 'utf8')) : '(missing)'}'`);
+    const live = reach.stale.map((f) => `${f}: sites '${reach.sites[f] ?? '(missing)'}'`);
     assert.deepEqual(reach.stale, [], live.join('\n'));
     for (const [file, entry] of Object.entries(WALKS_REVIEWED)) assert.ok(entry.why, `${file} needs a why`);
   });
