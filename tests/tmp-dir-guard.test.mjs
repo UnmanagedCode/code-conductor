@@ -10,7 +10,8 @@
 //       UNRENAMED specifier (a renamed one is a hit and binds nothing). Only
 //       the file's LEADING import block counts — blank lines, comments and
 //       (possibly multi-line) import statements up to the first other line —
-//       so an import spelled inside a string or template binds nothing;
+//       and only the import statements themselves, so an import spelled
+//       inside a string, template or comment binds nothing;
 //   E2  it is a bare use of a name E1 bound in the same file — not preceded by
 //       `.` / `?.`, not followed by `:`, not wrapped in quotes;
 //   E3  its line contains the `match` of an ALLOWED entry for that file.
@@ -55,27 +56,30 @@ const ALLOWED = [
 ];
 
 const WORD = /\b(mkdtemp|mkdtempSync)\b/g;
-const REGISTRY_IMPORT = /import\s*\{([^}]*)\}\s*from\s*(['"])[^'"]*\/tmpRegistry\.mjs\2/g;
+const REGISTRY_IMPORT = /import\s*\{([^}]*)\}\s*(?:\/\*[\s\S]*?\*\/\s*)*from\s*(['"])[^'"]*\/tmpRegistry\.mjs\2/g;
 
-// Offset where the leading block (blank lines, comments, a shebang, import
-// statements) ends; the first other token stops it.
-const LEADING_TOKENS = [
-  /\s+/y,
-  /\/\/[^\n]*/y,
-  /\/\*[\s\S]*?\*\//y,
-  /#![^\n]*/y,
-  /import\b(?:[^'";]*?\bfrom\s*)?(['"])[^'"\n]*\1[ \t]*;?/y,
-];
-function leadingBlockEnd(source) {
+// Walks the leading block (blank lines, comments, a shebang, import statements)
+// until the first other token; returns the [start, end) spans of the IMPORT
+// tokens it consumed. Comment text is consumed but never a span, so an import
+// spelled inside a leading comment binds nothing.
+const IMPORT_TOKEN = /import\b(?:[^'";]*?\bfrom\s*)?(['"])[^'"\n]*\1[ \t]*;?/y;
+const SKIP_TOKENS = [/\s+/y, /\/\/[^\n]*/y, /\/\*[\s\S]*?\*\//y, /#![^\n]*/y];
+function leadingImportSpans(source) {
+  const spans = [];
   let pos = 0;
   for (;;) {
     let advanced = false;
-    for (const re of LEADING_TOKENS) {
+    for (const re of SKIP_TOKENS) {
       re.lastIndex = pos;
       const m = re.exec(source);
       if (m && m[0].length > 0) { pos += m[0].length; advanced = true; break; }
     }
-    if (!advanced) return pos;
+    if (advanced) continue;
+    IMPORT_TOKEN.lastIndex = pos;
+    const m = IMPORT_TOKEN.exec(source);
+    if (!m || m[0].length === 0) return spans;
+    spans.push([pos, pos + m[0].length]);
+    pos += m[0].length;
   }
 }
 
@@ -89,9 +93,9 @@ export const unscanned = (expected, scanned) => expected.filter((e) => !scanned.
 export function scan(source, allowed = [], used = new Set()) {
   const bound = new Set();
   const importSpans = [];
-  const leadingEnd = leadingBlockEnd(source);
+  const leadingImports = leadingImportSpans(source);
   for (const m of source.matchAll(REGISTRY_IMPORT)) {
-    if (m.index >= leadingEnd) continue;
+    if (!leadingImports.some(([a, b]) => m.index >= a && m.index < b)) continue;
     importSpans.push([m.index, m.index + m[0].length]);
     for (const spec of m[1].split(',')) {
       const t = spec.trim();
@@ -168,6 +172,10 @@ test('scanner reports every forbidden occurrence at its line', async (t) => {
       "const src = `import { mkdtemp } from './tmpRegistry.mjs';`;\nimport { mkdtemp } from 'node:fs/promises';\nawait mkdtemp(p);", 3],
     ['registry import spelled in a template, destructured from fsp',
       "const src = `import { mkdtemp } from './tmpRegistry.mjs';`;\nconst { mkdtemp } = fsp;\nawait mkdtemp(p);", 3],
+    ['registry import spelled in a leading block comment',
+      "/*\n * Fixtures that do\n *   import { mkdtemp } from './tmpRegistry.mjs';\n * get cleanup.\n */\nimport { promises as fsp } from 'node:fs';\nconst { mkdtemp } = fsp;\nawait mkdtemp('/tmp/nope-');", 7],
+    ['registry import spelled in a leading line comment',
+      "// Fixtures that do\n//   import { mkdtemp } from './tmpRegistry.mjs';\n// get cleanup.\nimport { promises as fsp } from 'node:fs';\nconst { mkdtemp } = fsp;\nawait mkdtemp('/tmp/nope-');", 6],
     ['registry import after other code',
       "const x = 1;\nimport { mkdtemp } from './tmpRegistry.mjs';\nawait mkdtemp(p);", 2],
     ['comment in a file that binds only the sync name', registrySync + '// the bare mkdtemp word', 2],
@@ -186,6 +194,8 @@ test('scanner accepts registry imports and their bare uses, and only whole words
     ['single import and call', "import { mkdtemp } from './tmpRegistry.mjs';\nconst d = await mkdtemp('x-');"],
     ['multi-line import with both names', "import {\n  mkdtemp,\n  mkdtempSync,\n} from '../tmpRegistry.mjs';\nawait mkdtemp('a-');\nmkdtempSync('b-');"],
     ['import after a leading comment block', "// header\n/* block\n   comment */\nimport fs from 'node:fs';\nimport { mkdtemp } from './tmpRegistry.mjs';\nawait mkdtemp('x-');"],
+    ['multi-line import with a comment before from', "import {\n  mkdtemp, // the async mint\n} /* source */ from './tmpRegistry.mjs';\nawait mkdtemp('x-');"],
+    ['shebang then import', "#!/usr/bin/env node\nimport { mkdtemp } from './tmpRegistry.mjs';\nawait mkdtemp('x-');"],
     ['identifiers that merely contain the word', 'mymkdtempHelper();\nfs.mymkdtempHelper();\nmkdtempHelper2();'],
   ];
   for (const [title, src] of cases) {

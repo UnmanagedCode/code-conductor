@@ -147,7 +147,7 @@ test('a network error warns with its backoff, and still returns null', async () 
   try {
     // Fixed clock + fixed jitter: the backoff delay is then deterministic, so
     // this asserts on the reported number without a sleep or a wall-clock read.
-    const opts = { home: tmpHome, _now: () => 1_000_000, _random: () => 0 };
+    const opts = { configDir: path.join(tmpHome, '.claude'), _now: () => 1_000_000, _random: () => 0 };
     const result = await getAccountUsage(opts);
     assert.equal(result, null);
 
@@ -550,13 +550,13 @@ test('allowStale — returns null once the retained data ages past maxStaleMs', 
     const age = tCheck - t0; // 181_000
 
     const withinCap = await getAccountUsage({
-      home: tmpHome, _now: () => tCheck, _random: NO_JITTER,
+      configDir: path.join(tmpHome, '.claude'), _now: () => tCheck, _random: NO_JITTER,
       allowStale: true, maxStaleMs: age + 1,
     });
     assert.deepEqual(withinCap, { data: SAMPLE_USAGE, stale: true, fetchedAt: t0 });
 
     const pastCap = await getAccountUsage({
-      home: tmpHome, _now: () => tCheck, _random: NO_JITTER,
+      configDir: path.join(tmpHome, '.claude'), _now: () => tCheck, _random: NO_JITTER,
       allowStale: true, maxStaleMs: age,
     });
     assert.equal(pastCap, null, 'data whose age has reached maxStaleMs must not be served');
