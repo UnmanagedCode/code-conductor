@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import {
-  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
+  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator,
   DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from './dropdown-menu';
 
@@ -44,6 +44,7 @@ function Menu({ aDisabled = false }: { aDisabled?: boolean }) {
         <DropdownMenuItem>One</DropdownMenuItem>
         <DropdownMenuItem>Two</DropdownMenuItem>
         <DropdownMenuCheckboxItem checked>Check</DropdownMenuCheckboxItem>
+        <DropdownMenuRadioGroup value="r"><DropdownMenuRadioItem value="r">Radio</DropdownMenuRadioItem></DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={aDisabled}>Sub A</DropdownMenuSubTrigger>
@@ -78,7 +79,7 @@ async function openMenu() {
 }
 const names = () => screen.getAllByRole('menu').flatMap((m) => [...m.querySelectorAll('[role^="menuitem"]')]).map((i) => i.textContent!.trim());
 const item = (name: string) => screen.getByRole('menuitem', { name });
-const ALL = ['One', 'Two', 'Check', 'Sub A', 'Sub B', 'Last'];
+const ALL = ['One', 'Two', 'Check', 'Radio', 'Sub A', 'Sub B', 'Last'];
 
 describe('narrow: a submenu drills in', () => {
   beforeEach(() => { wide = false; });
@@ -99,6 +100,7 @@ describe('narrow: a submenu drills in', () => {
     expect(screen.queryByRole('separator')).toBeNull();
     expect(screen.queryByText('Top label')).toBeNull();
     expect(screen.queryByRole('menuitemcheckbox')).toBeNull();
+    expect(screen.queryByRole('menuitemradio')).toBeNull();
     if (how === 'Enter') expect(document.activeElement === item('Sub A')).toBe(true);
   });
 
@@ -114,6 +116,7 @@ describe('narrow: a submenu drills in', () => {
     expect(item('Sub A') === trigger).toBe(true);
     expect(document.activeElement === trigger).toBe(true);
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('menuitemradio', { name: 'Radio' })).toBeTruthy();
   });
 
   it('picking a submenu item fires its onSelect once and closes the menu; a reopened menu is undrilled', async () => {

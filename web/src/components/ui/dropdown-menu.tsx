@@ -23,7 +23,8 @@ function useDrillHidden(): boolean {
   return !!drill?.narrow && drill.drilled !== null && sub?.id !== drill.drilled;
 }
 
-function DropdownMenuSub({ defaultOpen = false, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
+// No controlled `open`/`onOpenChange`: the wrapper owns `open` so that narrowing can close it.
+function DropdownMenuSub({ defaultOpen = false, ...props }: Omit<React.ComponentProps<typeof DropdownMenuPrimitive.Sub>, 'open' | 'onOpenChange'>) {
   const id = React.useId();
   const narrow = !!React.useContext(DrillContext)?.narrow;
   const [open, setOpen] = React.useState(defaultOpen);
@@ -31,7 +32,7 @@ function DropdownMenuSub({ defaultOpen = false, ...props }: React.ComponentProps
   React.useEffect(() => { if (narrow) setOpen(false); }, [narrow]);
   return (
     <SubContext.Provider value={React.useMemo(() => ({ id }), [id])}>
-      <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} open={open && !narrow} onOpenChange={setOpen} />
+      <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} open={open} onOpenChange={setOpen} />
     </SubContext.Provider>
   );
 }
