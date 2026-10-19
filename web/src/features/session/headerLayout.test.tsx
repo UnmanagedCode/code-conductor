@@ -19,12 +19,13 @@ vi.mock('@/app/sessionActions', async (orig) => ({
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { formatAutoResumeTime } from '@shared/usage';
+import { applyModelsPayload } from '@shared/models';
 import { CONDUCTOR_LABEL } from '@shared/conductors';
 import { respawnActive, syncWorktree } from '@/app/sessionActions';
 import { stickyPrompt } from '@/app/controller';
 import { SWIPE_MIN_PX } from '@/conversation/stickyPrompt';
 import type { Instance, InstanceWorktree } from '@/state/types';
-import { SessionHeader } from './SessionHeader';
+import { RESTART_BUSY_TITLE, SessionHeader } from './SessionHeader';
 
 // ── fake viewport width ─────────────────────────────────────────────────────
 
@@ -446,5 +447,60 @@ describe('Resume', () => {
       expect(screen.queryByRole('button', { name: 'Resume' }), name).toBeNull();
       r.unmount();
     }
+  });
+});
+
+describe('narrow ⋮ submenus', () => {
+  beforeEach(() => {
+    applyModelsPayload({
+      tiers: [{ tier: 'fast', label: 'Fast' }, { tier: 'powerful', label: 'Powerful' }, { tier: 'local', label: 'Local' }],
+      backends: [{ id: 'claude', label: 'Claude' }, { id: 'ollama', label: 'Ollama' }],
+      tierBackend: { fast: { backend: 'claude', model: 'claude-haiku-5-5' }, powerful: { backend: 'claude', model: 'claude-opus-5-5' }, local: { backend: 'ollama', model: 'qwen3:8b' } },
+      enabledTiers: { fast: true, powerful: true, local: true },
+      efforts: ['low', 'medium', 'high', 'max'],
+      backendModels: { ollama: [{ model: 'qwen3:8b', label: 'Qwen 8B' }] },
+    });
+    setWide(false);
+  });
+  const row = (menu: HTMLElement, name: RegExp) => within(menu).getByRole('menuitem', { name });
+
+  it('Change model drills in place: the menu holds the model entries and none of the session actions; a restart pick sends {id, tier} and closes the menu', async () => {
+    // Invariant: below md Change model's entries and footnote replace ⋮'s own items in the one menu, and a pick sends its frame and closes everything.
+    render(tree(base()));
+    const menu = await openMenu();
+    await act(async () => { fireEvent.click(row(menu, /Change model/)); });
+    expect(menus()).toHaveLength(1);
+    const names = itemNames(menu);
+    expect(names).toEqual(expect.arrayContaining(['Change model', 'Fast', 'Powerful', 'Local', 'Qwen 8B']));
+    expect(names).not.toContain('Rename');
+    expect(names).not.toContain('Terminate');
+    expect(menu.textContent).toContain('restarts the session');
+    await act(async () => { fireEvent.click(row(menu, /^Local/)); });
+    expect(sent).toEqual([['model', { id: 'inst-1', tier: 'local' }, { ack: true }]]);
+    expect(menus()).toEqual([]);
+  });
+
+  it('Change effort drills the same way and a level pick sends the effort frame', async () => {
+    // Invariant: Change effort's levels replace the parent items below md, and picking one sends exactly the effort frame.
+    render(tree(base()));
+    const menu = await openMenu();
+    await act(async () => { fireEvent.click(row(menu, /Change effort/)); });
+    expect(itemNames(menu)).toEqual(['Change effort', 'low', 'medium', 'high', 'max']);
+    await act(async () => { fireEvent.click(row(menu, /^max/)); });
+    expect(sent).toEqual([['effort', { id: 'inst-1', effort: 'max' }, { ack: true }]]);
+    expect(menus()).toEqual([]);
+  });
+
+  it('a turn starting inside the drilled model list disables the restart entries with the busy title and leaves the back row enabled', async () => {
+    // Invariant: session data still flows into a drilled list, and the way back stays usable whatever the turn does.
+    const h = mountHeader(base());
+    const menu = await openMenu();
+    await act(async () => { fireEvent.click(row(menu, /Change model/)); });
+    h.update(base({ status: 'turn', displayStatus: 'turn' }));
+    for (const name of [/^Local/, /^Qwen 8B/]) {
+      expect(row(menu, name).hasAttribute('data-disabled'), String(name)).toBe(true);
+      expect(row(menu, name).title, String(name)).toBe(RESTART_BUSY_TITLE);
+    }
+    expect(row(menu, /Change model/).hasAttribute('data-disabled')).toBe(false);
   });
 });
