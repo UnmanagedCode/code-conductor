@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildReach, changedPaths, classifyChanged, WALKS_REVIEWED } from './changedScope.mjs';
+import { buildReach, changedPaths, classifyChanged, namedPaths, stripComments, WALKS_REVIEWED } from './changedScope.mjs';
 import { mkdtempSync } from './tmpRegistry.mjs';
 
 const REPO = path.resolve(import.meta.dirname, '..');
@@ -272,6 +272,22 @@ test('buildReach over a fixture tree', async (t) => {
   });
 });
 
+test('buildReach: comments are stripped outside strings only', () => {
+  const lines = {
+    lineCommentWithBlockOpener: "// transform of shared/*.ts\nrun('bin/one.mjs');",
+    stringWithSlashes: "const u = 'https://example.com'; run('bin/two.mjs');",
+    blockComment: "/* run('bin/three.mjs'); */ run('bin/four.mjs');",
+    regexWithSlashes: "const re = /\\/\\//; run('bin/five.mjs');",
+    nestedTemplate: "const s = `${a ? `x//y` : 1}`; run('bin/six.mjs');",
+    division: "const q = a / b; // c\nrun('bin/seven.mjs');",
+  };
+  const files = { 'tests/c.test.mjs': Object.values(lines).join('\n') };
+  for (const n of ['one', 'two', 'three', 'four', 'five', 'six', 'seven']) files[`bin/${n}.mjs`] = '';
+  const { node } = buildReach(fixtureTree(files), { reviewed: {} });
+  for (const n of ['one', 'two', 'four', 'five', 'six', 'seven']) assert.ok(node.files.has(`bin/${n}.mjs`), `bin/${n}.mjs must survive stripping`);
+  assert.ok(!node.files.has('bin/three.mjs'), 'a real block comment is stripped');
+});
+
 test('buildReach: a read naming exactly web/ is other-side for node only', () => {
   const read = "const at = (n) => readFileSync(path.join(ROOT, 'web', n));";
   const reach = buildReach(fixtureTree({ 'tests/r.test.mjs': read, 'web/src/r.test.ts': read, 'web/x.json': '' }), { reviewed: {} });
@@ -419,15 +435,16 @@ test('changedPaths against a temp git repo', async (t) => {
   });
 });
 
-// A real code path this file pins is spelled as a concatenation: a whole-path
-// literal here would be an entry edge into the node closure and satisfy the pin.
+// Every real path this block pins is spelled as a concatenation that splits its
+// basename: this file is in the node closure, so a whole path literal would be
+// an entry edge and a whole basename would satisfy the basename row.
 test('the real tree', async (t) => {
   const reach = buildReach(REPO);
   const namedIn = (text, p) => new RegExp(`(?<![\\w.-])${path.posix.basename(p).replace(/[.]/g, '\\.')}(?![\\w-])`).test(text);
   const underAny = (p, roots) => [...roots].some((d) => p === d || p.startsWith(`${d}/`));
 
   await t.test('a Vitest proof file selects node by its basename alone (row 4: tests/web-console-guard.test.mjs runs it)', () => {
-    const p = 'web/src/test/' + 'consoleGuard.proof.test.ts';
+    const p = 'web/src/test/' + 'consoleGuard.proof.' + 'test.ts';
     assert.ok(!reach.node.files.has(p) && !underAny(p, reach.node.walked), 'premise: no node closure or walk reaches it');
     const { suites, rows } = classify(p, reach);
     assert.deepEqual(suites, ['node', 'web']);
@@ -435,24 +452,32 @@ test('the real tree', async (t) => {
   });
 
   await t.test('web/src/themeTokens.css joins the web closure through index.css\'s @import', () => {
-    assert.ok(reach.web.files.has('web/src/themeTokens.css'));
+    assert.ok(reach.web.files.has('web/src/' + 'themeTokens' + '.css'));
   });
 
   await t.test('a web file a node test names by full path joins the node closure (pluginBridge.js)', () => {
-    assert.ok(reach.node.files.has('web/src/features/views/' + 'pluginBridge.js'));
+    assert.ok(reach.node.files.has('web/src/features/views/' + 'pluginBridge' + '.js'));
   });
 
   await t.test('src/webBuild.ts selects web (web/src/build.test.ts imports it)', () => {
-    assert.ok(reach.web.files.has('src/' + 'webBuild.ts'));
-    assert.ok(suitesOf('src/webBuild.ts', reach).includes('web'));
+    const p = 'src/' + 'webBuild' + '.ts';
+    assert.ok(reach.web.files.has(p));
+    assert.ok(suitesOf(p, reach).includes('web'));
   });
 
   await t.test('web/e2e/harness/redact.ts reaches web through a walked root alone (row 5)', () => {
-    const p = 'web/e2e/harness/redact.ts';
+    const p = 'web/e2e/harness/' + 'redact' + '.ts';
     assert.ok(!reach.web.files.has(p) && !namedIn(reach.web.text, p), 'premise: no web import or name reaches it');
     assert.ok(underAny(p, reach.web.walked));
     assert.deepEqual(suitesOf(p, reach), ['node', 'web']);
     assert.ok(classify(p, reach).rows.includes(5) && !classify(p, reach).rows.includes(6));
+  });
+
+  await t.test('src/webBuild.ts\'s input dirs are read from its code, past a comment containing /*', () => {
+    const text = stripComments(fs.readFileSync(path.join(REPO, 'src', 'webBuild' + '.ts'), 'utf8'));
+    assert.match(text, /export const webInputs\b/);
+    const names = namedPaths(text, { ancestors: false });
+    for (const d of ['web', 'shared']) assert.ok(names.has(d), d);
   });
 
   await t.test('web/src/e2eProjects.test.ts\'s recursive walk makes web/e2e a web walked root', () => {
@@ -461,15 +486,15 @@ test('the real tree', async (t) => {
 
   await t.test('fixtures Vitest reads through testkit\'s computed paths select web', () => {
     const subagents = fs.readdirSync(path.join(REPO, 'tests', 'fixtures', 'bg-agents-reinvoke.subagents'));
-    for (const p of ['tests/fixtures/narration/deepseek-plain.transcript.jsonl', `tests/fixtures/bg-agents-reinvoke.subagents/${subagents[0]}`]) {
+    for (const p of ['tests/fixtures/narration/' + 'deepseek-plain' + '.transcript.jsonl', `tests/fixtures/bg-agents-reinvoke.subagents/${subagents[0]}`]) {
       assert.ok(underAny(p, reach.web.walked), `${p} must be under a web reached root`);
       assert.ok(suitesOf(p, reach).includes('web'), p);
     }
   });
 
   await t.test('web-build-deps reaches the web runtime import closure, not test-side files', () => {
-    for (const p of ['web/src/main.tsx', 'web/src/App.tsx']) assert.ok(reach.node.walked.has(p), p);
-    assert.ok(!reach.node.walked.has('web/src/conversation/testkit.ts'));
+    for (const p of ['web/src/' + 'main' + '.tsx', 'web/src/' + 'App' + '.tsx']) assert.ok(reach.node.walked.has(p), p);
+    assert.ok(!reach.node.walked.has('web/src/conversation/' + 'testkit' + '.ts'));
   });
 
   await t.test('every WALKS_REVIEWED entry is fresh (re-review a named file when this reds)', () => {

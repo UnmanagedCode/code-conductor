@@ -39,7 +39,7 @@ export function sitesOf(source, isRepoPath) {
   return [...calls.map((m) => hash(lineOf(m.index))), hash(named.join('\n'))].join(' ');
 }
 
-const FULL_GATE = 'classifies the tree rather than tests it, and its dir literals would otherwise make whole trees node-reached roots. The real-tree pins live in the node suite, so a web/-only diff does not run them: the full npm test gate catches what --changed skips';
+const FULL_GATE = 'classifies the tree rather than tests it, and its dir literals would otherwise make whole trees node-reached roots. The real-tree pins live in the node suite, so a `web/`-only diff does not run them: the full npm test gate catches what --changed skips';
 const TEMP_ONLY = (what) => `${what}; its repo-dir literals are fixture paths or names`;
 
 // Walks and reads whose real reach is narrower than the dirs their file names.
@@ -51,7 +51,7 @@ const TEMP_ONLY = (what) => `${what}; its repo-dir literals are fixture paths or
 // ignored and reported, so a changed call over-selects until it is re-reviewed.
 export const WALKS_REVIEWED = {
   'src/webBuild.ts': {
-    sites: '6e3cf71c ad17a209 a75cbeb1 a2e63040 80b1e54b', node: [], web: ['web', 'shared'],
+    sites: '6e3cf71c ad17a209 a75cbeb1 a2e63040 c6098721', node: [], web: ['web', 'shared'],
     why: 'listFiles walks the real web/ and shared/, but on node it only hashes them and tests compare hashes from one run; Vitest\'s build.test.ts runs real builds. The leftover sweep reads a temp distDir\'s parent',
   },
   'web/src/build.test.ts': {
@@ -75,7 +75,7 @@ export const WALKS_REVIEWED = {
   'web/e2e/harness/boot.ts': { sites: 'aa0206d3 61a09ac6', node: ['web/e2e/fixtures'], why: 'FIXTURES names web/e2e/fixtures; its own read is a temp log' },
   'web/src/conversation/testkit.ts': { sites: '33814713 4e89ed51', web: ['tests/fixtures'], why: 'FIXTURES is tests/fixtures, read through computed names' },
   'tests/changedScope.mjs': { sites: 'b04d40e7 e1618153 1384b122 35c10387 6be9e464 d1573673 164f8337', node: [], why: FULL_GATE },
-  'tests/changed-scope.test.mjs': { sites: 'f95d83a4 0e146f58 9d784053 12467dd7 55034659 821cbd72 87b80e20 1f8fea67 d6788adc 081e659c 081e659c 0017fecc b23cfe1b 7c2dcb60 71fdd1b7 12f6b5d8 291d57a9 af882457 d6495aa7 9a7a8887 0dc907a7 45e55e8c ff7912b4 48609e11 98c6d0d8 1a35a52c 2cd0aece c162c661 c9a22610 74710671 a4ab583c 002a278d b8eeebc4 99033093 d4ec334f 0c1d6d20', node: [], why: FULL_GATE },
+  'tests/changed-scope.test.mjs': { sites: 'f95d83a4 0e146f58 9d784053 e7c5322d 12467dd7 55034659 821cbd72 87b80e20 1f8fea67 d6788adc 081e659c 081e659c 0017fecc b23cfe1b 7c2dcb60 71fdd1b7 12f6b5d8 291d57a9 af882457 d6495aa7 9a7a8887 0dc907a7 45e55e8c ff7912b4 48609e11 98c6d0d8 1a35a52c 2cd0aece c162c661 c9a22610 74710671 a4ab583c 002a278d b8eeebc4 99033093 da492361 d4ec334f a2b29e83', node: [], why: FULL_GATE },
 };
 
 const SUITES = ['node', 'web'];
@@ -93,8 +93,89 @@ const LITERAL_AT = /(['"`])((?:(?!\1)[^\\\n]|\\.)*)\1/y;
 const SEGMENT_NEXT = /\s*,\s*(['"])((?:(?!\1)[^\\\n]|\\.)*)\1/y;
 const AFTER_SEGMENT = /['"]\s*,\s*$/;
 
-function stripComments(t) {
-  return t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+// Drop `//` and `/* */` comments outside strings, in one left-to-right pass.
+// A block comment keeps its newlines, so line boundaries survive. Strings are
+// kept whole: `'…'`/`"…"` end at their quote or the line's end, and a template
+// literal's `${…}` is scanned as code to its matching brace, so a nested
+// template inside it nests. A `/` is a regex literal when the last significant
+// code char is one of REGEX_AFTER (or none); the regex runs to its unescaped
+// closing `/` outside a `[…]` class, on one line. That is the usual heuristic:
+// a regex after a keyword such as `return` reads as division.
+const REGEX_AFTER = new Set([...'(,=:[!&|?{};+-*%<>~^']);
+export function stripComments(src) {
+  let out = '';
+  let i = 0;
+  let last = '';
+  const quoted = (q) => {
+    const start = i++;
+    while (i < src.length && src[i] !== q && src[i] !== '\n') i += src[i] === '\\' ? 2 : 1;
+    if (src[i] === q) i++;
+    out += src.slice(start, i);
+  };
+  const regex = () => {
+    const start = i++;
+    let inClass = false;
+    while (i < src.length && src[i] !== '\n') {
+      const c = src[i];
+      if (c === '\\') { i += 2; continue; }
+      if (c === '[') inClass = true;
+      else if (c === ']') inClass = false;
+      else if (c === '/' && !inClass) { i++; break; }
+      i++;
+    }
+    while (i < src.length && /\w/.test(src[i])) i++;
+    out += src.slice(start, i);
+  };
+  const template = () => {
+    out += src[i++];
+    while (i < src.length && src[i] !== '`') {
+      if (src[i] === '\\') {
+        out += src.slice(i, i + 2);
+        i += 2;
+      } else if (src[i] === '$' && src[i + 1] === '{') {
+        out += '${';
+        i += 2;
+        code(true);
+        if (i < src.length) out += src[i++];
+      } else {
+        out += src[i++];
+      }
+    }
+    if (i < src.length) out += src[i++];
+  };
+  // Code until the end, or (`inTemplate`) until the `}` closing a `${`.
+  function code(inTemplate) {
+    let depth = 0;
+    while (i < src.length) {
+      const c = src[i];
+      const n = src[i + 1];
+      if (c === '/' && n === '/') {
+        while (i < src.length && src[i] !== '\n') i++;
+      } else if (c === '/' && n === '*') {
+        const end = src.indexOf('*/', i + 2);
+        const stop = end === -1 ? src.length : end + 2;
+        out += src.slice(i, stop).replace(/[^\n]/g, '');
+        i = stop;
+      } else if (c === '\'' || c === '"') {
+        quoted(c);
+        last = c;
+      } else if (c === '`') {
+        template();
+        last = c;
+      } else if (c === '/' && (last === '' || REGEX_AFTER.has(last))) {
+        regex();
+        last = '/';
+      } else {
+        if (inTemplate && c === '{') depth++;
+        if (inTemplate && c === '}' && depth-- === 0) return;
+        out += c;
+        i++;
+        if (!/\s/.test(c)) last = c;
+      }
+    }
+  }
+  code(false);
+  return out;
 }
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const under = (p, dirs) => [...dirs].some((d) => p === d || p.startsWith(`${d}/`));
@@ -104,7 +185,7 @@ const under = (p, dirs) => [...dirs].some((d) => p === d || p.startsWith(`${d}/`
 // repo-relative after dropping leading `./`/`../`. A sibling named by its bare
 // basename is the basename row's to catch. `ancestors` adds each name's leading
 // dirs (`'web/src/a.ts'` names `web`).
-function namedPaths(text, { ancestors }) {
+export function namedPaths(text, { ancestors }) {
   const names = new Set();
   const add = (p) => {
     if (!p) return;
