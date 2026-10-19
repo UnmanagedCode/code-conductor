@@ -5,7 +5,7 @@
 // First: the anchor writes must not resync the route through a hashchange a browser never fires.
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { routeFetch } from '@/test/routeFetch';
+import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -25,6 +25,8 @@ const R = conductor('iR', 's-r');
 let listed: Inst[];
 /** What GET /api/sessions/<sid>/pristine answers per session; a miss is a 404. */
 let lookup: Record<string, Inst>;
+/** Held answers the next pristine lookups take, in order, ahead of `lookup`. */
+let holds: Promise<RouteAnswer>[];
 let stop: (() => void) | null = null;
 
 async function boot() {
@@ -36,6 +38,7 @@ async function boot() {
     'GET /api/instances': () => ({ json: listed }),
     'GET /api/sessions/': (_body, url) => {
       const [, , , sid, tail] = url.split('/');
+      if (tail === 'pristine' && holds.length) return holds.shift()!;
       const hit = tail === 'pristine' ? lookup[decodeURIComponent(sid)] : undefined;
       return hit ? { json: hit } : { status: 404, json: { error: 'not found' } };
     },
@@ -67,6 +70,7 @@ beforeEach(() => {
   history.replaceState(null, '', '/');
   listed = [];
   lookup = {};
+  holds = [];
 });
 afterEach(() => { stop?.(); stop = null; vi.restoreAllMocks(); });
 
@@ -162,6 +166,35 @@ describe('the pristine slot', () => {
     expect(b.active()).toBe('iP');
     expect(b.appStore.get().pristine).toMatchObject({ id: 'iP', sessionId: 's-p', status: 'idle', modelSwitch: null, model: 'm-new', backend: 'ollama' });
     expect(b.presence().filter(([t]) => t === 'pristine_leave'), 'never left').toEqual([]);
+  });
+
+  it('(j) a re-validation overtaken by a newer open applies nothing: the slot holds the newer answer', async () => {
+    const b = await shownWithEmptyBox();
+    const first = held<RouteAnswer>();
+    holds.push(first.answer);
+    await b.open();
+    expect(b.calls.filter((x) => x.url === '/api/sessions/s-p/pristine'), 'fixture check: the first lookup is in flight').toHaveLength(1);
+    lookup = { 's-p': { ...P, status: 'idle', model: 'm-new', backend: 'ollama', modelSwitch: null } as Inst };
+    await b.open();
+    expect(b.appStore.get().pristine, 'fixture check: the newer open applied its answer').toMatchObject({ model: 'm-new', status: 'idle' });
+    first.release({ json: { ...P, status: 'crashed', model: 'm-stale', backend: 'claude', modelSwitch: MS } });
+    await b.flush();
+    expect(b.appStore.get().pristine).toMatchObject({ id: 'iP', status: 'idle', model: 'm-new', backend: 'ollama', modelSwitch: null });
+    expect(b.active()).toBe('iP');
+  });
+
+  it('(j) a re-validation\'s 200 never resurrects a conductor the slot stopped holding while it was in flight', async () => {
+    const b = await shownWithEmptyBox();
+    const pending = held<RouteAnswer>();
+    holds.push(pending.answer);
+    await b.open();
+    await b.status(pFrame({ status: 'exited', modelSwitch: null }));
+    expect(b.appStore.get().pristine, 'fixture check: its exit cleared the slot').toBeNull();
+    expect(b.active(), 'fixture check: and the active session').toBeNull();
+    pending.release({ json: { ...P, status: 'idle', model: 'm-old', backend: 'claude', modelSwitch: null } });
+    await b.flush();
+    expect(b.appStore.get().pristine).toBeNull();
+    expect(b.active()).toBeNull();
   });
 
   it('(f) a reconnect re-validates the slot: a 404 clears it and the active session it was', async () => {
