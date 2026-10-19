@@ -195,7 +195,7 @@ function run(argv, env, tag = null) {
   });
 }
 
-// The gated typecheck `npm test` runs via `pretest`, done once rather than per
+// The gated typecheck (both halves, as bare `npm test` runs them), done once rather than per
 // configuration: it does not depend on which provider the suite talks to.
 console.log('\n=== typecheck ===');
 const typecheck = await run(['npm', 'run', 'typecheck'], {});

@@ -6,7 +6,7 @@
         "tests/*.test.mjs"
       ],
       "runner": "node-test",
-      "baselineCommand": "npm run typecheck >&2 && node tests/run.mjs",
+      "baselineCommand": "npm run typecheck:node >&2 && node tests/run.mjs",
       "testCommand": "node tests/run.mjs {tests}"
     },
     {
@@ -16,7 +16,7 @@
         "web/src/**/*.test.tsx"
       ],
       "runner": "vitest",
-      "baselineCommand": "NO_COLOR=1 npx vitest run --config web/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\"",
+      "baselineCommand": "npm run typecheck:web >&2 && NO_COLOR=1 npx vitest run --config web/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\"",
       "testCommand": "NO_COLOR=1 npx vitest run --config web/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\" {tests}"
     },
     {

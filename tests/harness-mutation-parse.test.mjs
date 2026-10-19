@@ -250,10 +250,22 @@ test('config.json: routes, the typecheck placement and the single opt-in custom 
   await t.test('no route\'s testCommand typechecks or runs the npm test gate', () => {
     for (const r of config.routes) assert.doesNotMatch(r.testCommand, /typecheck|\btsc\b|npm test/, r.name);
   });
-  await t.test('the node baselineCommand typechecks before the node suite', () => {
+  await t.test('the node baselineCommand typechecks the node half before the node suite', () => {
     const cmd = route('node').baselineCommand;
-    assert.ok(cmd.includes('npm run typecheck'));
-    assert.ok(cmd.indexOf('npm run typecheck') < cmd.indexOf('node tests/run.mjs'));
+    assert.ok(cmd.startsWith('npm run typecheck:node >&2 && '), cmd);
+    assert.ok(cmd.indexOf('npm run typecheck:node') < cmd.indexOf('node tests/run.mjs'));
+  });
+  await t.test('the vitest baselineCommand typechecks the web half before vitest', () => {
+    const cmd = route('vitest').baselineCommand;
+    assert.ok(cmd.startsWith('npm run typecheck:web >&2 && '), cmd);
+    assert.ok(cmd.indexOf('npm run typecheck:web') < cmd.indexOf('vitest run'));
+  });
+  await t.test('the baselines\' typecheck halves are distinct and together are npm run typecheck', () => {
+    const half = (name) => route(name).baselineCommand.match(/^npm run (typecheck:\w+) /)[1];
+    const halves = [half('node'), half('vitest')];
+    assert.notEqual(halves[0], halves[1]);
+    const { scripts } = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
+    assert.equal(scripts.typecheck, halves.map((h) => `npm run ${h}`).join(' && '));
   });
   await t.test('both vitest commands write the report into the report dir', () => {
     for (const cmd of [route('vitest').baselineCommand, route('vitest').testCommand]) {

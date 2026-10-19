@@ -66,9 +66,9 @@ Injecting a fixture at the network boundary still exercises the real module.
 
 | Command | Runs |
 |---|---|
-| `npm run test:web` | Vitest over `web/src/**/*.test.{ts,tsx}` (config: `web/vitest.config.ts`, environment `happy-dom`, setup `web/src/test/setup.ts`). Also the last step of `npm test` |
+| `npm run test:web` | `typecheck:web`, then Vitest over `web/src/**/*.test.{ts,tsx}` (config: `web/vitest.config.ts`, environment `happy-dom`, setup `web/src/test/setup.ts`). Also the last step of `npm test`; `npm test -- web/src/<file>` runs one file after `typecheck:web` |
 | `npm run test:e2e` | Playwright over `web/e2e/**/*.spec.ts` (config: `web/playwright.config.ts`), projects `desktop`, `phone` and `android` (`web/e2e/README.md` → Projects). Not gated |
-| `npm run typecheck` | `tsc --noEmit` (server, `harness/**/*.ts`), `tsc -p web` (UI, strict) and `tsc -p web/e2e` (the Playwright suite and harness); `pretest` runs it |
+| `npm run typecheck` | `typecheck:node` (`tsc --noEmit`: server, `harness/**/*.ts`; `tsc -p shared`) and `typecheck:web` (`tsc -p web`: UI, strict; the plugin bridge; `tsc -p web/e2e`: the Playwright suite and harness). `npm test` runs the halves its scope needs |
 
 First e2e run on a machine: `npx playwright install chromium` (the browser revision `@playwright/test` pins).
 
