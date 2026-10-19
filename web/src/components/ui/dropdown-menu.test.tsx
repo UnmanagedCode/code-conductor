@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
+  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
   DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from './dropdown-menu';
 
@@ -40,8 +40,10 @@ function Menu({ aDisabled = false }: { aDisabled?: boolean }) {
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger>Open</DropdownMenuTrigger>
       <DropdownMenuContent>
+        <DropdownMenuLabel>Top label</DropdownMenuLabel>
         <DropdownMenuItem>One</DropdownMenuItem>
         <DropdownMenuItem>Two</DropdownMenuItem>
+        <DropdownMenuCheckboxItem checked>Check</DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={aDisabled}>Sub A</DropdownMenuSubTrigger>
@@ -76,7 +78,7 @@ async function openMenu() {
 }
 const names = () => screen.getAllByRole('menu').flatMap((m) => [...m.querySelectorAll('[role^="menuitem"]')]).map((i) => i.textContent!.trim());
 const item = (name: string) => screen.getByRole('menuitem', { name });
-const ALL = ['One', 'Two', 'Sub A', 'Sub B', 'Last'];
+const ALL = ['One', 'Two', 'Check', 'Sub A', 'Sub B', 'Last'];
 
 describe('narrow: a submenu drills in', () => {
   beforeEach(() => { wide = false; });
@@ -95,6 +97,8 @@ describe('narrow: a submenu drills in', () => {
     expect(screen.getByText('A note')).toBeTruthy();
     expect(screen.getByText('Group')).toBeTruthy();
     expect(screen.queryByRole('separator')).toBeNull();
+    expect(screen.queryByText('Top label')).toBeNull();
+    expect(screen.queryByRole('menuitemcheckbox')).toBeNull();
     if (how === 'Enter') expect(document.activeElement === item('Sub A')).toBe(true);
   });
 
@@ -151,6 +155,18 @@ describe('narrow: a submenu drills in', () => {
 });
 
 describe('wide: the cascade is unchanged', () => {
+  it('a floating submenu left open across a narrowing does not reappear open when the width returns', async () => {
+    // Invariant: narrowing closes a wide-open submenu, so widening again shows one menu and a trigger that is not data-state=open.
+    render(<Menu />);
+    await openMenu();
+    await act(async () => { fireEvent.keyDown(item('Sub A'), { key: 'ArrowRight' }); });
+    expect(screen.getAllByRole('menu')).toHaveLength(2);
+    setWide(false);
+    setWide(true);
+    expect(screen.getAllByRole('menu')).toHaveLength(1);
+    expect(item('Sub A').getAttribute('data-state')).not.toBe('open');
+  });
+
   it('ArrowRight on a submenu trigger opens a second menu beside the parent, whose items stay', async () => {
     // Invariant: from md up a sub trigger opens a second role=menu holding the sub items while the parent keeps its own.
     render(<Menu />);

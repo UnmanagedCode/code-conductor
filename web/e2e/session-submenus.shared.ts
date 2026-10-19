@@ -125,6 +125,13 @@ export function submenusFlow(which: Which) {
     }
     const bad = await violations(page);
     expect(bad, bad.join('\n')).toEqual([]);
+    if (which === 'Change model') {
+      // The violations pass ended on the last row. A user can scroll the list only if its overflow is auto/scroll
+      // (scrollIntoView also moves an overflow:hidden box), and the last row was reached by scrolling.
+      const { overflowY, scrollTop } = await menus(page).last().evaluate((m) => ({ overflowY: getComputedStyle(m).overflowY, scrollTop: m.scrollTop }));
+      expect(['auto', 'scroll'], 'the capped model list is user-scrollable').toContain(overflowY);
+      expect(scrollTop, 'reaching the last row scrolled the list').toBeGreaterThan(0);
+    }
     if (!isDesktop()) {
       await trigger.click();
       await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible();

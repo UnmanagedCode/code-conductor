@@ -471,9 +471,7 @@ describe('narrow ⋮ submenus', () => {
     await act(async () => { fireEvent.click(row(menu, /Change model/)); });
     expect(menus()).toHaveLength(1);
     const names = itemNames(menu);
-    expect(names).toEqual(expect.arrayContaining(['Change model', 'Fast', 'Powerful', 'Local', 'Qwen 8B']));
-    expect(names).not.toContain('Rename');
-    expect(names).not.toContain('Terminate');
+    expect(names).toEqual(['Change model', 'Fast', 'Powerful', 'Local', 'Qwen 8B']);
     expect(menu.textContent).toContain('restarts the session');
     await act(async () => { fireEvent.click(row(menu, /^Local/)); });
     expect(sent).toEqual([['model', { id: 'inst-1', tier: 'local' }, { ack: true }]]);
