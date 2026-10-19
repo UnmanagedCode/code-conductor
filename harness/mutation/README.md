@@ -76,12 +76,13 @@ is fine: each route gets its own files and the counts are summed.
 | Vitest | `<file>::<describe> > … > <test>` | `web/src/conversation/cards.test.tsx::cards > plan card > renders markdown` |
 | Playwright | `<file>::<project> > <describe> > … > <test>` | `web/e2e/session.spec.ts::desktop > a prompt streams a reply with tool calls, prose and a turn footer` |
 
-**Mutant commands never typecheck; the baseline does.** The `node` route's `baselineCommand` is
-`npm run typecheck >&2 && node tests/run.mjs`; no `testCommand` typechecks. A red typecheck stops the
-node suite, so the baseline reads `route "node": the command ran ZERO tests` — run
+**Mutant commands never typecheck; the baseline does.** Each non-opt-in route's `baselineCommand`
+typechecks its own half: `node` is `npm run typecheck:node >&2 && node tests/run.mjs`, `vitest` is
+`npm run typecheck:web >&2 && …vitest run …`; no `testCommand` typechecks. A red half stops its
+route's suite, so the baseline reads `route "<name>": the command ran ZERO tests` — run
 `npm run typecheck` to see why. A mutant's command never typechecks, so a mutant that only breaks a
 type gets a behavioural verdict from the tests it names — an `x && false`-style mutant never reads
-`ERROR (scope-empty)` through a pretest red.
+`ERROR (scope-empty)` through a typecheck red.
 
 **Playwright rows rebuild the bundle.** The suite's globalSetup runs the server's hash-gated
 `ensureWebBuild()`: a mutant under `web/` or `shared/` changes the source hash, so the scored run
@@ -163,7 +164,7 @@ shared by several projects would fail the canary, and a real kill, once per proj
    all-skipped file reports a *green* narrow baseline and the mutant reads `SURVIVED`, not
    `ERROR (scope-empty)`. RATIONALE.md §5 lists today's gates and how to re-derive them.
 
-4. **A build step the node suite needs belongs in `tests/run.mjs`, never in `pretest` or the `npm test`
+4. **A build step the node suite needs belongs in `tests/run.mjs`, never in a `typecheck` script or the `npm test`
    gate (`tests/gate.mjs`).** A mutant's node row calls `tests/run.mjs` directly, so a step anywhere
    else would leave mutants judged against stale output.
 
@@ -202,8 +203,8 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
 ## What to expect
 
 - `baseline` is **three composite passes**: the baseline, then one canary per non-opt-in route
-  (`node`, `vitest`); `playwright` is `SKIPPED`. The baseline runs the typecheck, the node suite and
-  the Vitest suite. RATIONALE §1 has the measured wall; a low-core host (Termux) is a multiple of
+  (`node`, `vitest`); `playwright` is `SKIPPED`. The baseline runs `typecheck:node` and the node suite,
+  then `typecheck:web` and the Vitest suite. RATIONALE §1 has the measured wall; a low-core host (Termux) is a multiple of
   it. It is not hung — `timeoutMs` in `config.json` is sized for the slow case.
 - `--learn` with no refs falls back to the non-opt-in routes and never runs Playwright (a result
   where nothing failed reads `ERROR` `opt-in-not-run`); a Playwright spec enters only through a ref.
