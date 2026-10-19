@@ -15,9 +15,10 @@ export default mergeConfig(viteConfig, defineConfig({
     setupFiles: [path.join(here, 'src/test/setup.ts')],
     // One box-wide test slot per run (tests/testSlot.mjs), taken before any worker.
     globalSetup: [path.join(here, '../tests/vitestSlotSetup.mjs')],
-    // The slot bound still lets two suites share the box; a test near the 5s
-    // default when alone (web/src/parity/ledger.test.ts) cannot absorb that.
-    // A real hang still fails, at this deadline.
+    // The slot bound still lets two suites share the box, and
+    // web/src/parity/ledger.test.ts takes ~4.0s inside a quiet full suite (~1.8s
+    // standalone), too close to the 5s default to absorb a slowdown. A real hang
+    // still fails, at this deadline.
     testTimeout: 15_000,
   },
 }));

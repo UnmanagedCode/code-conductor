@@ -21,8 +21,8 @@ unchanged. Install the plugin from Settings → Plugin Library if the wrapper re
 **The wrapper holds one box-wide test slot per invocation** (every subcommand, `validate` and
 `candidates` included), taking it before the runner starts so a queue wait never counts against
 `timeoutMs` or the hang deadlines; the route commands inherit `CC_TEST_SLOT_HELD` and take none.
-Always go through the wrapper: calling `mutate.mjs` directly skips the lease, and each route command
-then queues inside its own deadline. Slot rules: `docs/architecture.md` → Box-wide test slots.
+Always go through the wrapper: calling `mutate.mjs` directly skips the lease, and the node and Vitest
+route commands (Playwright takes none) then each queue inside their own deadline. Slot rules: `docs/architecture.md` → Box-wide test slots.
 
 **Never pass `--copy`: this project runs `in-place`, and a copy cannot be trusted here.**
 

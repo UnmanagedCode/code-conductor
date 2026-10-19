@@ -76,14 +76,20 @@ test('tests/run.mjs queues before running any file', async () => {
   }
 });
 
-test('Vitest starts no worker before its slot is held', async () => {
-  const run = await runBlocked([vitestBin, 'run', '--config', 'web/vitest.config.ts', 'web/src/app/closeSidebarOnMobile.test.ts'], { env: { NO_COLOR: '1' } });
+test('Vitest starts no worker before its slot is held, and the workers inherit the held marker', async () => {
+  const dir = tmpDir();
+  const marker = path.join(dir, 'worker-ran');
+  const run = await runBlocked([vitestBin, 'run', '--config', 'web/vitest.config.ts', 'web/src/test/slotHeld.test.ts'],
+    { env: { NO_COLOR: '1', SLOT_MARKER: marker } });
   try {
     await run.until(/test slot: waiting/);
-    assert.doesNotMatch(run.out.stdout, /✓|Test Files|passed/);
+    // Long enough that ungated workers would have started and run the test.
+    await new Promise((resolve) => setTimeout(resolve, 6000));
+    assert.equal(fs.existsSync(marker), false);
     await run.free();
+    // The worker's own assertion on the held marker is what turns this exit non-zero.
     assert.equal(await run.exited, 0, run.out.stdout + run.out.stderr);
-    assert.match(run.out.stdout, /Test Files\s+1 passed/);
+    assert.equal(fs.existsSync(marker), true);
   } finally {
     run.kill();
   }

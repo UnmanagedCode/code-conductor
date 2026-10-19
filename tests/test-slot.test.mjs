@@ -145,3 +145,49 @@ test('a waiter names the holder it waits for', async () => {
   await holder.release();
   await (await waiter).release();
 });
+
+test('a stopped holder makes the caller wait and is named as unresponsive, not refused as foreign', async () => {
+  const base = await freePair();
+  const env = envFor(base, 1);
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    `import { acquireTestSlot } from ${JSON.stringify(slotModule)};
+     await acquireTestSlot({ label: 'frozen' }); console.log('held'); setInterval(() => {}, 1000);`,
+  ], { env, stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((resolve, reject) => {
+      child.once('exit', () => reject(new Error('holder exited before holding')));
+      child.stdout.on('data', (d) => { if (String(d).includes('held')) resolve(); });
+    });
+    child.kill('SIGSTOP');
+    const sink = logSink();
+    const waiter = acquireTestSlot({ label: 'waiter', env, log: sink.log });
+    const outcome = waiter.then(() => 'acquired', (err) => `rejected: ${err.message}`);
+    const line = await Promise.race([sink.until(/waiting/), outcome]);
+    assert.match(line, /waiting/);
+    assert.match(line, new RegExp(`port ${base} unresponsive`));
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill('SIGKILL');
+    await exited;
+    await (await waiter).release();
+  } finally {
+    child.kill('SIGKILL');
+  }
+});
+
+test('a holder reports how long it has held the slot, not how long it queued', async () => {
+  const base = await freePair();
+  const env = envFor(base, 1);
+  const first = await acquireTestSlot({ label: 'first', env, log() {} });
+  const sink = logSink();
+  const second = acquireTestSlot({ label: 'queued-first', env, log: sink.log });
+  await sink.until(/waiting/);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await first.release();
+  const queued = await second;
+  const behind = logSink();
+  const third = acquireTestSlot({ label: 'third', env, log: behind.log });
+  const line = await behind.until(/waiting/);
+  assert.match(line, /queued-first .* for 0s/);
+  await queued.release();
+  await (await third).release();
+});

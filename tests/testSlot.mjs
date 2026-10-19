@@ -1,12 +1,25 @@
 // Box-wide test slots: at most CC_TEST_SLOTS leased suites run at once across
 // the whole machine, so concurrent runs queue instead of oversubscribing the CPU.
 //
-// Every suite sizes itself to the core count (Vitest: one worker per core;
-// tests/run.mjs: resolveConcurrency) and none knows about the others, so demand
-// grows linearly with the number of concurrent runs and deadline-bound tests
-// (Vitest's 5s default among them) time out under load. One suite does not fill a
-// 16-core box; two roughly do; three or more oversubscribe it. The default of 2
-// is that bound, each suite keeping its own per-core sizing.
+// Every suite sizes itself to the machine and none knows about the others
+// (Vitest: availableParallelism() - 1 workers; tests/run.mjs: resolveConcurrency),
+// so demand grows linearly with the number of concurrent runs and deadline-bound
+// tests time out under load.
+//
+// WHY DEFAULT_SLOTS IS 2. Measured on a 16-core box (`nproc` 16), whole suites
+// through `npm run test:web` / `npm run test:node` / `npm test`, started at load
+// <= 20 with no other test process on the box:
+//   * a single quiet web suite peaks at 1-minute load ~9.6; the node suite uses
+//     ~5.8 cores (resolveConcurrency owns that measurement);
+//   * 2 concurrent web suites each take ~53s against ~26.5s alone, so one web suite
+//     alone roughly saturates the box and 2 slots are about as fast as running
+//     serially (4 web suites: 106-112s at 2 slots, 102s at 1 slot);
+//   * without slots, 2 web suites went red in 1 of 2 runs and 4 web suites, 3 web +
+//     3 node, and 4 full gates were all red (peak load 68-93: Vitest 5s timeouts);
+//     with 2 slots every repeat was green (peak load 31-42).
+// It is not 1 because a long run (a mutation campaign) holds its slot for its whole
+// duration, and at 1 every other run on the box would queue behind it. Each suite
+// keeps its own sizing.
 //
 // A slot is a loopback TCP port: slot i is `base + i`, and holding it means
 // listening on it. The kernel frees the port when the holder dies, SIGKILL
@@ -67,14 +80,16 @@ function tryListen(port, info) {
   });
 }
 
-// Who owns `port`: { holder } for one of ours, { foreign: true } for anything
-// else, { gone: true } when nothing listens any more.
+// Who owns `port`: { holder } for one of ours, { foreign: true } for a listener
+// that answered without the magic, { gone: true } when nothing listens any more,
+// { silent: true } when nothing answered in time. Silence proves nothing: a real
+// holder whose event loop is stalled or stopped is silent too.
 function probe(port) {
   return new Promise((resolve) => {
     let data = '';
     const socket = net.connect({ port, host: HOST });
     const done = (result) => { socket.destroy(); resolve(result); };
-    socket.setTimeout(PROBE_MS, () => done({ foreign: true }));
+    socket.setTimeout(PROBE_MS, () => done({ silent: true }));
     socket.on('data', (chunk) => { data += chunk; });
     socket.on('error', (err) => done(err.code === 'ECONNREFUSED' ? { gone: true } : { foreign: true }));
     socket.on('close', () => {
@@ -95,18 +110,20 @@ const NO_LEASE = { release: () => Promise.resolve(), env: {} };
 export async function acquireTestSlot({ label, env = process.env, log = (line) => console.error(line), ...limits } = {}) {
   if (env[HELD_VAR]) return NO_LEASE;
   const { slots, base } = { ...resolveSlots(env), ...limits };
-  const info = { magic: MAGIC, pid: process.pid, cwd: process.cwd(), label, since: Date.now() };
+  const info = { magic: MAGIC, pid: process.pid, cwd: process.cwd(), label, since: 0 };
   const foreignLogged = new Set();
   const started = Date.now();
   let lastReport = -Infinity;
   for (;;) {
     const holders = [];
+    const silent = [];
     let foreign = 0;
     for (let i = 0; i < slots; i++) {
       const port = base + i;
       for (;;) {
         const server = await tryListen(port, info);
         if (server) {
+          info.since = Date.now();
           const waited = Math.round((Date.now() - started) / 1000);
           if (lastReport > -Infinity) log(`test slot: acquired after ${waited}s`);
           return {
@@ -117,6 +134,7 @@ export async function acquireTestSlot({ label, env = process.env, log = (line) =
         const seen = await probe(port);
         if (seen.gone) continue;
         if (seen.holder) holders.push(seen.holder);
+        else if (seen.silent) silent.push(port);
         else {
           foreign++;
           if (!foreignLogged.has(port)) {
@@ -135,7 +153,8 @@ export async function acquireTestSlot({ label, env = process.env, log = (line) =
     if (now - lastReport >= REPORT_MS) {
       lastReport = now;
       const who = holders.map((h) => `${h.label ?? 'unlabelled'} ${h.cwd} pid ${h.pid} for ${Math.round((now - h.since) / 1000)}s`);
-      log(`test slot: waiting — held by ${who.join('; ')}`);
+      const quiet = silent.length > 0 ? `${who.length > 0 ? '; ' : ''}port ${silent.join(', ')} unresponsive (a stopped or stalled holder?)` : '';
+      log(`test slot: waiting — held by ${who.join('; ')}${quiet}`);
     }
     await sleep(POLL_MS + Math.floor(Math.random() * POLL_MS / 2));
   }
