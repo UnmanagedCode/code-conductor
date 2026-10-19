@@ -64,14 +64,21 @@ test('tests/run.mjs queues before running any file', async () => {
   const dir = tmpDir();
   const marker = path.join(dir, 'ran');
   const fixture = path.join(dir, 'marker.test.mjs');
-  fs.writeFileSync(fixture, `import { test } from 'node:test';\nimport fs from 'node:fs';\ntest('x', () => fs.writeFileSync(${JSON.stringify(marker)}, 'ran'));\n`);
+  // The marker's name carries the held marker the fixture sees, so the test reads no file.
+  fs.writeFileSync(fixture, `import { test } from 'node:test';\nimport fs from 'node:fs';\ntest('x', () => fs.writeFileSync(${JSON.stringify(marker)} + '.' + process.env.CC_TEST_SLOT_HELD, 'ran'));\n`);
   const run = await runBlocked(['tests/run.mjs', fixture]);
   try {
     await run.until(/test slot: waiting/);
-    assert.equal(fs.existsSync(marker), false);
+    // Long enough that an ungated run would have started and run the fixture.
+    for (let i = 0; i < 20; i++) {
+      // Named by the held marker the fixture saw: the runner's pid, or none if ungated.
+      assert.equal(fs.existsSync(`${marker}.${run.pid}`) || fs.existsSync(`${marker}.undefined`), false);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     await run.free();
     assert.equal(await run.exited, 0, run.out.stdout + run.out.stderr);
-    assert.equal(fs.existsSync(marker), true);
+    // The fixture ran under the runner's own lease: its marker is the runner's pid.
+    assert.equal(fs.existsSync(`${marker}.${run.pid}`), true);
   } finally {
     run.kill();
   }

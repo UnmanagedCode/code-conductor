@@ -12,8 +12,8 @@ import { acquireTestSlot, resolveSlots, HELD_VAR } from './testSlot.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const slotModule = pathToFileURL(path.join(here, 'testSlot.mjs')).href;
 
-const listen = (port) => new Promise((resolve, reject) => {
-  const server = net.createServer((s) => s.end('not a slot\n'));
+const listen = (port, answer = 'not a slot\n') => new Promise((resolve, reject) => {
+  const server = net.createServer((s) => s.end(answer));
   server.once('error', reject);
   server.listen({ port, host: '127.0.0.1' }, () => resolve(server));
 });
@@ -107,29 +107,38 @@ test('a run that already holds a lease never waits and binds nothing', async () 
   await close(await listen(base));
 });
 
-test('a foreign listener is skipped, and every slot foreign is a loud refusal', async () => {
-  const base = await freePair();
-  const env = envFor(base, 2);
-  const first = await listen(base);
-  const sink = logSink();
-  const lease = await acquireTestSlot({ label: 'x', env, log: sink.log });
-  assert.ok(sink.lines.some((l) => l.includes(String(base))), 'the foreign port is logged');
-  const second = await listen(base + 1).catch(() => null);
-  assert.equal(second, null, 'the lease took the free slot');
-  await lease.release();
-  const other = await listen(base + 1);
-  await assert.rejects(
-    acquireTestSlot({ label: 'y', env, log() {} }),
-    (err) => err.message.includes(String(base)) && err.message.includes(String(base + 1)) && err.message.includes('CC_TEST_SLOT_PORT'),
-  );
-  await Promise.all([close(first), close(other)]);
-});
+// Foreign listeners that complete an answer: not JSON, JSON without the magic, and
+// JSON carrying another magic.
+for (const [name, answer] of [['non-JSON', 'not a slot\n'], ['JSON without the magic', '{"pid":1,"label":"x"}\n'],
+  ['JSON with the wrong magic', '{"magic":"some-other-service/1","pid":1}\n']]) {
+  test(`a foreign listener answering ${name} is skipped, and every slot foreign is a loud refusal`, async () => {
+    const base = await freePair();
+    const env = envFor(base, 2);
+    const first = await listen(base, answer);
+    const sink = logSink();
+    const lease = await acquireTestSlot({ label: 'x', env, log: sink.log });
+    assert.ok(sink.lines.some((l) => l.includes(String(base))), 'the foreign port is logged');
+    const second = await listen(base + 1).catch(() => null);
+    assert.equal(second, null, 'the lease took the free slot');
+    await lease.release();
+    const other = await listen(base + 1, answer);
+    await assert.rejects(
+      acquireTestSlot({ label: 'y', env, log() {} }),
+      (err) => err.message.includes(String(base)) && err.message.includes(String(base + 1)) && err.message.includes('CC_TEST_SLOT_PORT'),
+    );
+    await Promise.all([close(first), close(other)]);
+  });
+}
 
 test('a bad knob is refused, an unset one defaults', () => {
   for (const [name, value] of [['CC_TEST_SLOTS', '0'], ['CC_TEST_SLOTS', 'abc'], ['CC_TEST_SLOTS', '1.5'],
     ['CC_TEST_SLOT_PORT', '0'], ['CC_TEST_SLOT_PORT', 'x']]) {
     assert.throws(() => resolveSlots({ [name]: value }), new RegExp(name), `${name}=${value}`);
   }
+  // A range that runs past the last port is refused; one that ends on it is not.
+  assert.throws(() => resolveSlots({ CC_TEST_SLOT_PORT: '65535', CC_TEST_SLOTS: '2' }), /65535/);
+  assert.deepEqual(resolveSlots({ CC_TEST_SLOT_PORT: '65535', CC_TEST_SLOTS: '1' }), { slots: 1, base: 65535 });
+  assert.deepEqual(resolveSlots({ CC_TEST_SLOT_PORT: '65534', CC_TEST_SLOTS: '2' }), { slots: 2, base: 65534 });
   assert.equal(resolveSlots({}).slots, 2);
 });
 
