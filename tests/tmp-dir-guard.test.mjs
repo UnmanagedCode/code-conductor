@@ -95,7 +95,7 @@ export function scan(source, allowed = [], used = new Set()) {
   const importSpans = [];
   const leadingImports = leadingImportSpans(source);
   for (const m of source.matchAll(REGISTRY_IMPORT)) {
-    if (!leadingImports.some(([a, b]) => m.index >= a && m.index < b)) continue;
+    if (!leadingImports.some(([a]) => m.index === a)) continue;
     importSpans.push([m.index, m.index + m[0].length]);
     for (const spec of m[1].split(',')) {
       const t = spec.trim();
@@ -176,6 +176,8 @@ test('scanner reports every forbidden occurrence at its line', async (t) => {
       "/*\n * Fixtures that do\n *   import { mkdtemp } from './tmpRegistry.mjs';\n * get cleanup.\n */\nimport { promises as fsp } from 'node:fs';\nconst { mkdtemp } = fsp;\nawait mkdtemp('/tmp/nope-');", 7],
     ['registry import spelled in a leading line comment',
       "// Fixtures that do\n//   import { mkdtemp } from './tmpRegistry.mjs';\n// get cleanup.\nimport { promises as fsp } from 'node:fs';\nconst { mkdtemp } = fsp;\nawait mkdtemp('/tmp/nope-');", 6],
+    ['registry import spelled in a comment between } and from',
+      "import { x } /* the fixture says import { mkdtemp } from './tmpRegistry.mjs' */ from './other.mjs';\nimport { mkdtemp } from 'node:fs/promises';\nawait mkdtemp('/tmp/leak-');", 1],
     ['registry import after other code',
       "const x = 1;\nimport { mkdtemp } from './tmpRegistry.mjs';\nawait mkdtemp(p);", 2],
     ['comment in a file that binds only the sync name', registrySync + '// the bare mkdtemp word', 2],
