@@ -4,8 +4,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createPluginHost } from '../src/plugins/registry.ts';
 import { pidAlive } from '../src/plugins/ports.ts';
-import { orchStoreRoot } from '../src/projects.ts';
-import { makePluginRoot } from './plugin-helpers.mjs';
+import { orchStoreRoot, adoptProject } from '../src/projects.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { makePluginRoot, waitFor } from './plugin-helpers.mjs';
+import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
+import { rmrf } from './rmrf.mjs';
 
 // Per-plugin auto-start: a persisted flag on the registry record that
 // setAutoStart() writes and only autoStartAll() — the boot pass — acts on.
@@ -17,6 +20,8 @@ const readRegistry = async () => JSON.parse(await fs.readFile(registryFile(), 'u
 const rowOf = async (host, id) => (await host.list()).find(r => r.id === id);
 
 const CRASHER = { id: 'crasher', name: 'Crasher', version: '1', pluginApi: 1, backend: { start: 'node crash.mjs' } };
+// Binds its port only after a delay, so a start stays `starting` long enough to observe.
+const SLOW = { id: 'slowplug', name: 'Slow', version: '1', pluginApi: 1, backend: { start: 'SLOW_READY_MS=2000 node slow-ready.mjs' } };
 const CONVENTIONS_ONLY = {
   id: 'convonly', name: 'Conventions only', version: '1', pluginApi: 1,
   conventions: [{ slug: 'vis', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project' }],
@@ -93,6 +98,35 @@ test('setAutoStart refuses a non-boolean (400), an unknown id (404), a plugin no
   }
 });
 
+// The remote refusal: a backend runs only on cc's machine, so the flag is
+// refused on a remote project rather than stored for a boot that would refuse it.
+test('setAutoStart refuses a backend plugin on a remote system 501 PLUGIN_BACKEND_LOCAL_ONLY, writing nothing', async () => {
+  const env = await makePluginRoot();
+  const remote = await bindRemoteSystem();
+  const host = createPluginHost();
+  try {
+    const tree = await seedRepo(path.join(remote.root, 'remoteplug'));
+    await fs.writeFile(path.join(tree, 'conductor.plugin.json'), JSON.stringify({
+      id: 'remoteplug', name: 'Remote Plug', version: '1.0.0', pluginApi: 1,
+      backend: { start: 'echo should-never-run' },
+    }));
+    const adopted = await adoptProject('remoteplug', tree, { system: remote.id });
+    assert.equal(adopted.ok, true, JSON.stringify(adopted));
+    const row = await host.enable('remoteplug');
+    assert.equal(row.system, remote.id, 'fixture: the plugin is discovered on the remote system');
+    const before = await fs.readFile(registryFile(), 'utf8');
+
+    const e = await rejectsWithStatus(host.setAutoStart('remoteplug', true), 501);
+    assert.match(e.message, /PLUGIN_BACKEND_LOCAL_ONLY/);
+    assert.equal(await fs.readFile(registryFile(), 'utf8'), before, 'the refusal writes nothing');
+  } finally {
+    await host.stopAll();
+    disposeSystemHandles();
+    await rmrf(remote.root);
+    await env.restore();
+  }
+});
+
 test('setting the flag starts nothing now', async () => {
   const env = await makePluginRoot();
   const host = createPluginHost();
@@ -146,6 +180,36 @@ test('boot: a backend adopted from the previous process is left running, not res
     assert.equal(row.startedAt, running.startedAt, 'not restarted');
   } finally {
     await hostA.stopAll();
+    await env.restore();
+  }
+});
+
+// A start already in flight (a lazy start that got there first) is skipped:
+// not re-entered, not reported as started, and no second process results.
+test('boot: a backend already starting is skipped — not reported started, and still one process', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    await env.addPluginProject('slowplug', { manifest: SLOW });
+    await host.enable('slowplug');
+    await host.setAutoStart('slowplug', true);
+
+    const lazy = host.ensureStarted('slowplug');
+    const starting = await waitFor(async () => {
+      const r = await rowOf(host, 'slowplug');
+      return r.state === 'starting' && r.pid != null ? r : null;
+    });
+
+    assert.deepEqual(await host.autoStartAll(), { started: [], failed: [] });
+    assert.equal((await rowOf(host, 'slowplug')).state, 'starting', 'autoStartAll did not wait on the in-flight start');
+
+    await lazy;
+    const ready = await rowOf(host, 'slowplug');
+    assert.equal(ready.state, 'ready');
+    assert.equal(ready.pid, starting.pid, 'the same process');
+    assert.equal(ready.startedAt, starting.startedAt, 'started once');
+  } finally {
+    await host.stopAll();
     await env.restore();
   }
 });
