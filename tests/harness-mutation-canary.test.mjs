@@ -1,4 +1,4 @@
-// The mutation harness's Playwright canary (canaryFor, harness/mutation/scoring.ts)
+// The mutation harness's Playwright canary (canaryFor, harness/mutation/playwright.ts)
 // run through real Playwright: it must load and fail by name in every shape a
 // web/e2e spec takes. Playwright validates a test's ancestor hooks against that
 // test's OWN fixture pool and keys workers by the pool's worker fixtures, so the
@@ -14,14 +14,11 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { canaryFor, reducePlaywrightReport } from '../harness/mutation/scoring.ts';
+import { canaryFor, parsePlaywrightReport } from '../harness/mutation/playwright.ts';
 
 const REPO = path.resolve(import.meta.dirname, '..');
 const CLI = path.join(REPO, 'node_modules', '@playwright', 'test', 'cli.js');
 const RUN_MS = 25_000;
-
-const unused = { canary: () => { throw new Error('not a Playwright file'); } };
-const DEPS = { nodeTest: unused, vitest: unused, label: 'code_mutant_canary', message: 'code-mutant canary', project: 'desktop' };
 
 const CONFIG = `export default { testDir: './e2e', workers: 1, fullyParallel: false, projects: [{ name: 'desktop' }] };\n`;
 
@@ -102,7 +99,7 @@ test('the Playwright canary loads and fails by name in every spec form', async (
         fs.mkdirSync(path.join(root, path.dirname(form.file)), { recursive: true });
         fs.writeFileSync(path.join(root, 'web', 'playwright.config.ts'), CONFIG);
         fs.writeFileSync(path.join(root, 'web', 'e2e', 'harness', 'fixtures.ts'), FIXTURES);
-        const canary = canaryFor(form.file, form.source, DEPS);
+        const canary = canaryFor(form.file, form.source, { project: 'desktop' });
         fs.writeFileSync(path.join(root, form.file), canary.content);
         const logFile = path.join(root, 'events.log');
         fs.writeFileSync(logFile, '');
@@ -110,13 +107,13 @@ test('the Playwright canary loads and fails by name in every spec form', async (
         const run = await playwright(root, form.file, logFile);
         const reportFile = path.join(root, 'report.json');
         assert.ok(fs.existsSync(reportFile), `no report (exit ${run.code}): ${run.stderr.slice(-2000)}`);
-        const reduced = reducePlaywrightReport(JSON.parse(fs.readFileSync(reportFile, 'utf8')), root, [form.file], 'desktop');
+        const parsed = parsePlaywrightReport(fs.readFileSync(reportFile, 'utf8'), { cwd: root, project: 'desktop', exitCode: run.code });
 
-        assert.equal(reduced.errors, 0, reduced.firstError ?? '');
-        assert.deepEqual(reduced.tests, [
-          { id: `${form.file}::desktop > a spec test`, status: 'expected' },
-          { id: canary.testId, status: 'unexpected' },
-        ]);
+        assert.equal(parsed.compileError, false, String(parsed.counts.firstError ?? parsed.diagnostic ?? ''));
+        assert.deepEqual(parsed.failedTests.map((f) => f.id), [canary.testId]);
+        assert.equal(parsed.passed, 1);
+        assert.equal(parsed.ran, 2);
+        assert.deepEqual(parsed.files, [form.file]);
         assert.equal(canary.matches({ name: canary.testId.slice(form.file.length + 2) }), true);
         form.log(fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((line) => {
           const [event, worker] = line.split(' ');

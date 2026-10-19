@@ -49,21 +49,24 @@ node harness/mutation/run.mjs probe \
 `baseline` needs a **clean tree** (`git status --porcelain` empty) — mutation runs against committed
 state.
 
-## Three suites
+## Three routes
 
-`config.json` runs `runner: "custom"`: `parse.mjs` binds `scoring.ts` (routing, commands, report
-reduction) to code-mutant's shipped node-test and vitest adapters, and `suite.ts` is the test
-command. A mutant is routed by the **test file** its refs name, never by the source it mutates:
+`config.json` declares `routes` (code-mutant's routing): each names the test files it owns, its
+runner and its commands. A mutant is routed by the **test file** its refs name, never by the source it
+mutates, to the first route whose `tests` globs match. Commands run from the repo root.
 
-| test file | runner | command `suite.ts` runs (cwd = repo root) |
-|---|---|---|
-| `tests/<name>.test.mjs` (top level only, as `tests/run.mjs` discovers) | node | `node tests/run.mjs <files>` |
-| `web/src/**/*.test.ts(x)` (`web/vitest.config.ts` `include`) | Vitest | `npx vitest run --config web/vitest.config.ts --reporter=json …` |
-| `web/e2e/**/*.spec.ts` | Playwright | `npx playwright test --config web/playwright.config.ts --project=<P> --reporter=json …` |
+| route | `tests` | runner | `testCommand` (`{tests}` = the scope's files) |
+|---|---|---|---|
+| `node` | `tests/*.test.mjs` (top level only, as `tests/run.mjs` discovers) | `node-test` | `node tests/run.mjs {tests}` |
+| `vitest` | `web/src/**/*.test.ts`, `web/src/**/*.test.tsx` (`web/vitest.config.ts` `include`) | `vitest` | `npx vitest run --config web/vitest.config.ts --reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json" {tests}` |
+| `playwright` (`optIn`) | `web/e2e/**/*.spec.ts` | `custom` (`parse.mjs`) | `npx playwright test --config web/playwright.config.ts --project="${CC_MUTATION_PW_PROJECT:-desktop}" --reporter=json {tests}`, report to `$CODE_MUTANT_REPORT_DIR/playwright.json` |
 
-Any other file is refused (exit 2, nothing on stdout), and so is a requested file its runner did not
-run — both read `ERROR` with a narrow baseline that "ran ZERO tests", never a verdict. Mixing suites
-in one mutant's refs is fine: each runner gets its own files and the counts are summed.
+A ref no route owns is refused: the mutant reads `ERROR` (`plan-failed`) naming every route's
+patterns. A scope file its route's runner did not report is refused too: when the runner reported other
+files, the narrow baseline is non-green and the mutant reads `ERROR` (`scope-non-green`); when it
+reported none, the narrow baseline "ran ZERO tests" and the mutant reads `ERROR` (`scope-empty`)
+with the parser's diagnostic when the route's adapter supplies one (Vitest's missing-report diagnostic, Playwright's project-selection one). Never a verdict. Mixing routes in one mutant's refs
+is fine: each route gets its own files and the counts are summed.
 
 **Test ids**, all repo-relative — take them from a `--learn` pass, never hand-construct one:
 
@@ -73,22 +76,24 @@ in one mutant's refs is fine: each runner gets its own files and the counts are 
 | Vitest | `<file>::<describe> > … > <test>` | `web/src/conversation/cards.test.tsx::cards > plan card > renders markdown` |
 | Playwright | `<file>::<project> > <describe> > … > <test>` | `web/e2e/session.spec.ts::desktop > a prompt streams a reply with tool calls, prose and a turn footer` |
 
-**Mutant commands never typecheck; the baseline does.** `baselineCommand` (`suite.ts --all`) runs
-`npm run typecheck`, then the whole node suite, then the whole Vitest suite, and a typecheck failure
-reads as a build break. A mutant's narrow command never runs the typecheck (its node row calls `tests/run.mjs` directly), so a mutant
-that only breaks a type gets a behavioural verdict from the tests it names — an `x && false`-style
-mutant never reads `ERROR (scope-empty)` through a pretest red.
+**Mutant commands never typecheck; the baseline does.** The `node` route's `baselineCommand` is
+`npm run typecheck >&2 && node tests/run.mjs`; no `testCommand` typechecks. A red typecheck stops the
+node suite, so the baseline reads `route "node": the command ran ZERO tests` — run
+`npm run typecheck` to see why. A mutant's command never typechecks, so a mutant that only breaks a
+type gets a behavioural verdict from the tests it names — an `x && false`-style mutant never reads
+`ERROR (scope-empty)` through a pretest red.
 
 **Playwright rows rebuild the bundle.** The suite's globalSetup runs the server's hash-gated
 `ensureWebBuild()`: a mutant under `web/` or `shared/` changes the source hash, so the scored run
 rebuilds `web/dist`, and the restore makes the next run rebuild again. A mutant that breaks the build
 fails globalSetup and reads `IMPRECISE (compile-error)`. Specs and fixtures are not build inputs, so
 the canary injected into a spec costs no rebuild. Playwright rows need the browser revision
-`@playwright/test` pins (`web/e2e/README.md`). `--all` runs no Playwright: a spec scores a mutant
-only when a ref names it.
+`@playwright/test` pins (`web/e2e/README.md`). The `playwright` route is opt-in: the baseline and the
+baseline-scope canary report it under `skippedRoutes` (`SKIPPED`), and a spec scores a mutant only
+when a ref names it. Such a mutant gets its own narrow canary in its own spec.
 
 **The Playwright canary is a test of `web/e2e/harness/fixtures.ts`'s `test`** (`canaryFor` in
-`scoring.ts`), appended to the spec as `<project> > code_mutant_canary_fires`. Playwright checks a
+`playwright.ts`), appended to the spec as `<project> > code_mutant_canary_fires`. Playwright checks a
 file's root hooks against each test's own fixtures and gives each test type its own worker, so a
 root `test.beforeAll(async ({ cc }) => …)` loads, and in a spec built on those fixtures the canary
 runs last in the spec's worker — the root `beforeAll` runs once. Two consequences:
@@ -100,18 +105,21 @@ runs last in the spec's worker — the root `beforeAll` runs once. Two consequen
   artifacts fixture reaches it through `baseURL`).
 
 **Playwright rows: one project per run.** Every Playwright row of an invocation runs under
-`CC_MUTATION_PW_PROJECT` (default `desktop`; an unknown name is refused). Without the pin a spec
+`CC_MUTATION_PW_PROJECT` (default `desktop`; Playwright refuses an unknown name and writes no report, which reads `ran: 0` with a diagnostic). Without the pin a spec
 shared by several projects would fail the canary, and a real kill, once per project. So:
 
 - A spec the project does not run (`*.android.spec.ts` under `desktop` or `phone`; `live.spec.ts`
-  under `phone` or `android`) is refused; `suite.ts` names the projects that run it.
+  under `phone` or `android`) is refused: Playwright reports "No tests found", which the parser does not read as a compile break,
+  so the mutant reads `ERROR` (`scope-empty`) with the detail `route "playwright": the command ran
+  ZERO tests … Playwright found no test to run: a spec outside project <P>'s testMatch/testIgnore in
+  web/playwright.config.ts is not selected; set CC_MUTATION_PW_PROJECT to a project that runs it`.
+  (A spec beside others the project does run reads `scope-non-green` instead.)
 - A test that skips itself outside its project reads *skipped* under the default, so a mutant
   touching only phone- or android-only behaviour reads `SURVIVED`. The honest reading is **"scored
   under desktop only"**, not "uncovered": re-run the whole invocation with
   `CC_MUTATION_PW_PROJECT=phone` (or `android`) to score it.
-- The project is a measuring condition code-mutant's journal cannot see (`suite.ts` prints it in the
-  stored output's `playwright project=<P>` header). **Never `--resume` across a change of
-  `CC_MUTATION_PW_PROJECT`**; start a fresh run.
+- The project is a measuring condition code-mutant's journal cannot see. **Never `--resume` across a
+  change of `CC_MUTATION_PW_PROJECT`**; start a fresh run.
 
 ## Four project-specific rules
 
@@ -137,10 +145,14 @@ shared by several projects would fail the canary, and a real kill, once per proj
    re-run `--learn` for the inherited mutants before reading a verdict**, and re-anchor from the
    observed set rather than editing the mutant.
 
-2. **Omit `narrowTo` from every mutant.** `narrowTo: "names"` does not work against this suite and
-   `validate` will not warn you. It degrades safely — `IMPRECISE` or `ERROR`, never a false `KILLED`
-   or `SURVIVED` — but it burns a review round on a non-finding. File granularity is the policy
-   default; leave it there.
+2. **No `narrowCommand`; `narrowTo: "names"` is downgraded to file granularity.** `config.json`
+   has an opt-in route, and the custom `playwright` route cannot filter by test name, so the routed
+   adapter cannot either: `narrowTo: "names"` is downgraded to file granularity for every mutant
+   (node and Vitest included), and `validate` warns `narrow-downgraded`. Nothing is refused. A
+   per-mutant `narrowCommand` is refused for every mutant, because a baseline-scope canary cannot
+   attest a command a config with an opt-in route narrows by hand: the mutant reads `ERROR`
+   (`canary-not-established`) and `validate` reports `opt-in-unattested`. Omit both; file
+   granularity is the default.
 
 3. **Env-gated opt-in tests are outside mutation proof.** Any test the suite skips because an opt-in
    env flag is unset is invisible to every run here — `baselineCommand` sets no opt-in flag. Mutate
@@ -189,10 +201,12 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
 
 ## What to expect
 
-- `baseline` is **two full passes** (baseline + canary) of `suite.ts --all`: typecheck, node suite,
-  Vitest suite. On a 16-core host one pass is ~1.5 min (RATIONALE §1), so budget ~3 min; a low-core
-  host (Termux) is a multiple of that. It is not hung —
-  `timeoutMs` in `config.json` is sized for the slow case.
+- `baseline` is **three composite passes**: the baseline, then one canary per non-opt-in route
+  (`node`, `vitest`); `playwright` is `SKIPPED`. The baseline runs the typecheck, the node suite and
+  the Vitest suite. RATIONALE §1 has the measured wall; a low-core host (Termux) is a multiple of
+  it. It is not hung — `timeoutMs` in `config.json` is sized for the slow case.
+- `--learn` with no refs falls back to the non-opt-in routes and never runs Playwright (a result
+  where nothing failed reads `ERROR` `opt-in-not-run`); a Playwright spec enters only through a ref.
 - A file-narrowed mutant is seconds, not minutes. **Always give every mutant an `expectFail`**: that
   is what buys the narrowing. Before the first `--learn`, the claimed killer's **file** alone
   (`tests/<file>.test.mjs`, no `::`) is a sufficient seed — it is read only as scope. Replace it
@@ -202,9 +216,11 @@ measured green once and red once (`R14L`, the same starvation shape), so it carr
   A mutant that breaks an awaited event can take tens of seconds to fail — that is not a hang.
   `TIMEOUT` means the run outlived the deadline in force: a real hang, or a correctly failing
   mutant whose chain of `waitFor` expiries is longer than that deadline. RATIONALE.md §7.1 lists
-  the shapes; re-measure the second at whole-suite scope (`narrowCommand: "node harness/mutation/suite.ts --all"`;
-  framed output, so it is counted — `npm test`'s is not — and a type-breaking mutant reads as a build
-  break there).
+  the shapes; re-measure the second at whole-suite scope with `expectPass` listing every bare test file:
+  `git ls-files ':(glob)tests/*.test.mjs' ':(glob)web/src/**/*.test.ts' ':(glob)web/src/**/*.test.tsx'`
+  (the `:(glob)` magic keeps top-level `web/src/*.test.ts` files in). That scope runs
+  the node and Vitest suites and no typecheck, and a survivor confirmed there is a survivor of the
+  whole suite.
 
 ## Artifacts
 

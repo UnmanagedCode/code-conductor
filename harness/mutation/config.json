@@ -1,9 +1,39 @@
 {
-  "baselineCommand": "node harness/mutation/suite.ts --all",
-  "testCommand": "node harness/mutation/suite.ts {tests}",
-  "runner": "custom",
+  "routes": [
+    {
+      "name": "node",
+      "tests": [
+        "tests/*.test.mjs"
+      ],
+      "runner": "node-test",
+      "baselineCommand": "npm run typecheck >&2 && node tests/run.mjs",
+      "testCommand": "node tests/run.mjs {tests}"
+    },
+    {
+      "name": "vitest",
+      "tests": [
+        "web/src/**/*.test.ts",
+        "web/src/**/*.test.tsx"
+      ],
+      "runner": "vitest",
+      "baselineCommand": "NO_COLOR=1 npx vitest run --config web/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\"",
+      "testCommand": "NO_COLOR=1 npx vitest run --config web/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\" {tests}"
+    },
+    {
+      "name": "playwright",
+      "tests": [
+        "web/e2e/**/*.spec.ts"
+      ],
+      "runner": "custom",
+      "optIn": true,
+      "testCommand": "NO_COLOR=1 PLAYWRIGHT_JSON_OUTPUT_FILE=\"$CODE_MUTANT_REPORT_DIR/playwright.json\" npx playwright test --config web/playwright.config.ts --project=\"${CC_MUTATION_PW_PROJECT:-desktop}\" --reporter=json {tests}"
+    }
+  ],
   "isolation": "in-place",
   "timeoutMs": 300000,
-  "hang": { "factor": 10, "floorMs": 50000 },
+  "hang": {
+    "factor": 10,
+    "floorMs": 50000
+  },
   "baseBranch": "main"
 }
