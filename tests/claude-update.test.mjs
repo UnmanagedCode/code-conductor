@@ -5,7 +5,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs, existsSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +13,7 @@ import { applyClaudeUpdate } from '../src/claudeUpdate.ts';
 import { withMaintenanceLock } from '../src/relaunchPrep.ts';
 import { buildRoutes } from '../src/routes.ts';
 import { hostPlatform } from '../src/platform/index.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = `${process.execPath} ${path.join(__dirname, 'fake-claude-update.mjs')}`;
@@ -29,7 +29,7 @@ async function withEnv(vars, fn) {
 // A fresh dir for one test's record, version and gate files, and the env that
 // points the fake at them.
 async function withFake(vars, fn) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-claude-update-'));
+  const dir = await mkdtemp('cc-claude-update-');
   const files = { record: path.join(dir, 'record.json'), version: path.join(dir, 'version'), gate: path.join(dir, 'gate') };
   try {
     return await withEnv({
