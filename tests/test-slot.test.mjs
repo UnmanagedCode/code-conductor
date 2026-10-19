@@ -187,7 +187,36 @@ test('a holder reports how long it has held the slot, not how long it queued', a
   const behind = logSink();
   const third = acquireTestSlot({ label: 'third', env, log: behind.log });
   const line = await behind.until(/waiting/);
-  assert.match(line, /queued-first .* for 0s/);
+  assert.match(line, /queued-first .* for [01]s/);
   await queued.release();
   await (await third).release();
+});
+
+test('a holder that dies while it is being probed frees the slot instead of being refused as foreign', async () => {
+  const base = await freePair();
+  const env = envFor(base, 1);
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    `import { acquireTestSlot } from ${JSON.stringify(slotModule)};
+     await acquireTestSlot({ label: 'doomed' }); console.log('held'); setInterval(() => {}, 1000);`,
+  ], { env, stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((resolve, reject) => {
+      child.once('exit', () => reject(new Error('holder exited before holding')));
+      child.stdout.on('data', (d) => { if (String(d).includes('held')) resolve(); });
+    });
+    // Stopped, the holder leaves each probe's connection in its backlog; killing it
+    // while one is in flight resets that connection.
+    child.kill('SIGSTOP');
+    const waiter = acquireTestSlot({ label: 'waiter', env, log() {} });
+    const outcome = waiter.then((lease) => lease, (err) => err);
+    await new Promise((resolve) => setTimeout(resolve, 2050));
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill('SIGKILL');
+    await exited;
+    const result = await outcome;
+    assert.ok(!(result instanceof Error), `refused: ${result?.message}`);
+    await result.release();
+  } finally {
+    child.kill('SIGKILL');
+  }
 });

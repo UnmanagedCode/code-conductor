@@ -81,9 +81,11 @@ function tryListen(port, info) {
 }
 
 // Who owns `port`: { holder } for one of ours, { foreign: true } for a listener
-// that answered without the magic, { gone: true } when nothing listens any more,
-// { silent: true } when nothing answered in time. Silence proves nothing: a real
-// holder whose event loop is stalled or stopped is silent too.
+// that completed an answer without the magic, { gone: true } when nothing listens
+// any more, { silent: true } for everything else — no answer in time, a socket
+// error, a close with nothing sent. Only a completed wrong answer proves a port
+// foreign: a real holder that is stalled, stopped or dying mid-probe looks like
+// every one of the others.
 function probe(port) {
   return new Promise((resolve) => {
     let data = '';
@@ -91,8 +93,9 @@ function probe(port) {
     const done = (result) => { socket.destroy(); resolve(result); };
     socket.setTimeout(PROBE_MS, () => done({ silent: true }));
     socket.on('data', (chunk) => { data += chunk; });
-    socket.on('error', (err) => done(err.code === 'ECONNREFUSED' ? { gone: true } : { foreign: true }));
+    socket.on('error', (err) => done(err.code === 'ECONNREFUSED' ? { gone: true } : { silent: true }));
     socket.on('close', () => {
+      if (data === '') return done({ silent: true });
       try {
         const info = JSON.parse(data);
         done(info?.magic === MAGIC ? { holder: info } : { foreign: true });
@@ -153,7 +156,7 @@ export async function acquireTestSlot({ label, env = process.env, log = (line) =
     if (now - lastReport >= REPORT_MS) {
       lastReport = now;
       const who = holders.map((h) => `${h.label ?? 'unlabelled'} ${h.cwd} pid ${h.pid} for ${Math.round((now - h.since) / 1000)}s`);
-      const quiet = silent.length > 0 ? `${who.length > 0 ? '; ' : ''}port ${silent.join(', ')} unresponsive (a stopped or stalled holder?)` : '';
+      const quiet = silent.length > 0 ? `${who.length > 0 ? '; ' : ''}port ${silent.join(', ')} unresponsive (a stopped holder, or a listener that never answers)` : '';
       log(`test slot: waiting — held by ${who.join('; ')}${quiet}`);
     }
     await sleep(POLL_MS + Math.floor(Math.random() * POLL_MS / 2));

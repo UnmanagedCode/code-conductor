@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { acquireTestSlot, HELD_VAR } from './testSlot.mjs';
 import { mkdtempSync } from './tmpRegistry.mjs';
+import { snapshot, descendants } from './procTree.mjs';
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const vitestBin = path.join(path.dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs');
@@ -50,7 +51,7 @@ async function runBlocked(argv, { env: extra = {}, cwd = repo } = {}) {
   child.stderr.on('data', pump('stderr'));
   const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)));
   return {
-    out, exited,
+    out, exited, pid: child.pid,
     until: (re) => (re.test(out.stdout + out.stderr) ? Promise.resolve() : new Promise((resolve) => waiters.push({ re, resolve }))),
     free: () => Promise.all(held.map((l) => l.release())),
     kill: () => child.kill('SIGKILL'),
@@ -83,8 +84,14 @@ test('Vitest starts no worker before its slot is held, and the workers inherit t
     { env: { NO_COLOR: '1', SLOT_MARKER: marker } });
   try {
     await run.until(/test slot: waiting/);
-    // Long enough that ungated workers would have started and run the test.
-    await new Promise((resolve) => setTimeout(resolve, 6000));
+    // Nothing may be running under the Vitest process while the slot is held: its
+    // workers are its children.
+    for (let i = 0; i < 20; i++) {
+      const snap = snapshot();
+      assert.equal(snap.available, true, '/proc must be readable');
+      assert.deepEqual(descendants(run.pid, snap).map((pid) => snap.byPid.get(pid)?.argv.join(' ')), []);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     assert.equal(fs.existsSync(marker), false);
     await run.free();
     // The worker's own assertion on the held marker is what turns this exit non-zero.
