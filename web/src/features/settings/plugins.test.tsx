@@ -1295,3 +1295,79 @@ describe('Plugins → local-only', () => {
     expect(localOnlyNote('off-there')).toBeNull();
   });
 });
+
+describe('Plugins → auto-start', () => {
+  const autoStartSwitch = (id: string) => within(plugin(id)).queryByRole('switch') as HTMLButtonElement | null;
+  /** Answers an auto-start save the way the server does: the flag lands on the row the reload reads. */
+  const saveAutoStart = (id: string) => (call: Call) => {
+    rows = rows.map((r) => (r.id === id ? { ...r, autoStart: call.body.autoStart } : r));
+    return rows.find((r) => r.id === id);
+  };
+
+  // The switch posts the toggled value and then shows the server's value, not its own.
+  it('the switch posts {autoStart} for its plugin, shows Saving… while held, and reads the reloaded row', async () => {
+    rows = [{ ...PL, autoStart: false }];
+    const h = heldJson();
+    const save = saveAutoStart('pl');
+    serve({ 'POST /api/plugins/pl/autostart': (call) => { save(call); return h.response; } });
+    wrap();
+    await waitFor(() => expect(autoStartSwitch('pl')).not.toBeNull());
+    const sw = screen.getByRole('switch', { name: 'Auto-start Pl' });
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(sw);
+    await waitFor(() => expect(plugin('pl').textContent).toContain('Saving…'));
+    expect(posts('/api/plugins/pl/autostart').map((c) => c.body)).toEqual([{ autoStart: true }]);
+    await act(async () => h.release(rows[0]));
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Auto-start Pl' }).getAttribute('aria-checked')).toBe('true'));
+    expect(plugin('pl').textContent).not.toContain('Saving…');
+
+    serve({ 'POST /api/plugins/pl/autostart': saveAutoStart('pl') });
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-start Pl' }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Auto-start Pl' }).getAttribute('aria-checked')).toBe('false'));
+    expect(posts('/api/plugins/pl/autostart').map((c) => c.body)).toEqual([{ autoStart: false }]);
+  });
+
+  // Auto-start applies only to a plugin cc could start: enabled, with a backend, on this machine.
+  it('only an enabled local plugin with a backend offers the switch', async () => {
+    const NO_BACKEND: PluginRow = { ...PL, id: 'nb', name: 'Nb', project: 'nb', hasBackend: false };
+    rows = [PL, OFF, NO_BACKEND, BOTH];
+    wrap();
+    await waitFor(() => expect(pluginsLine()).toMatch(/^4\b/));
+    expect(autoStartSwitch('pl')).not.toBeNull();
+    expect(autoStartSwitch('off')).toBeNull();
+    expect(autoStartSwitch('nb')).toBeNull();
+    expect(autoStartSwitch('both')).toBeNull();
+  });
+
+  // A refused save reports the server's error and leaves the switch at the server's value.
+  it("a refused save shows the server's error on the status line and the switch stays off", async () => {
+    rows = [{ ...PL, autoStart: false }];
+    serve({ 'POST /api/plugins/pl/autostart': () => ({ status: 409, json: { error: "plugin 'pl' is not enabled" } }) });
+    wrap();
+    await waitFor(() => expect(autoStartSwitch('pl')).not.toBeNull());
+    fireEvent.click(autoStartSwitch('pl')!);
+    await waitFor(() => expect(pluginsLine()).toMatch(/Turning auto-start on for pl failed: plugin 'pl' is not enabled/));
+    expect(pluginsTone()).toBe('error');
+    expect(autoStartSwitch('pl')!.getAttribute('aria-checked')).toBe('false');
+  });
+
+  // The switch joins the one-action-at-a-time guard: another row's action in flight disables it.
+  it('the switch is disabled while another plugin action is in flight, and re-enabled once it lands', async () => {
+    const PL2: PluginRow = { ...PL, id: 'pl2', name: 'Pl2', project: 'pl2' };
+    rows = [PL, PL2];
+    const h = heldJson();
+    serve({ 'POST /api/plugins/pl/start': () => h.response });
+    wrap();
+    await waitFor(() => expect(autoStartSwitch('pl2')).not.toBeNull());
+    expect(autoStartSwitch('pl2')!.disabled).toBe(false);
+
+    fireEvent.click(rowBtn('pl', 'Start'));
+    await waitFor(() => expect(autoStartSwitch('pl2')!.disabled).toBe(true));
+    fireEvent.click(autoStartSwitch('pl2')!);
+    expect(posts('/api/plugins/pl2/autostart').length).toBe(0);
+
+    await act(async () => h.release({ ok: true }));
+    await waitFor(() => expect(autoStartSwitch('pl2')!.disabled).toBe(false));
+  });
+});

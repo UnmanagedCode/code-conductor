@@ -336,10 +336,14 @@ export async function start({
   if (instances) instances.setServerPort(addr.port);
   // Plugin children get CONDUCTOR_URL from the bound port; init() runs the
   // adopt-don't-drain reconciliation of children that survived a restart.
-  // Fire-and-forget like the resume restore — boot must not gate on it.
+  // Auto-start runs after it, so an adopted child is already `ready` and is
+  // left alone. Fire-and-forget like the resume restore — boot must not gate
+  // on it.
   if (pluginHost) {
     pluginHost.setServerPort(addr.port);
-    pluginHost.init().catch((e) => console.warn('plugin registry init failed:', errText(e)));
+    pluginHost.init()
+      .then(() => pluginHost.autoStartAll())
+      .catch((e) => console.warn('plugin registry init failed:', errText(e)));
   }
   // Start the server-side usage poller (overage auto-stop's second trigger
   // source). Its timer lifecycle tracks the server's, like the bound port; the

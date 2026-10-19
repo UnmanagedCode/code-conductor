@@ -154,6 +154,33 @@ test('error shapes: unknown 404, invalid manifest 409, disabled start 409', asyn
   } finally { await boot.close(); }
 });
 
+// POST /api/plugins/:id/autostart is the Settings switch's wire: it persists the
+// flag the next GET /api/plugins reports, starts nothing, and carries the
+// registry's refusals as their HTTP statuses.
+test('POST /api/plugins/:id/autostart persists the flag on the row, starts nothing; non-boolean 400, not enabled 409', async () => {
+  const boot = await setup();
+  try {
+    const before = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/autostart', { autoStart: true });
+    assert.equal(before.status, 409, 'a plugin that is not enabled cannot take the flag');
+
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
+    const on = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/autostart', { autoStart: true });
+    assert.equal(on.status, 200);
+    assert.equal(on.body.autoStart, true);
+    assert.equal(on.body.state, 'stopped', 'saving the flag starts nothing');
+
+    const listed = await api(boot.baseUrl, 'GET', '/api/plugins');
+    assert.equal(listed.body.rows.find(p => p.id === 'fake-plugin').autoStart, true);
+
+    const bad = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/autostart', { autoStart: 'yes' });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /'autoStart' must be a boolean/);
+
+    const off = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/autostart', { autoStart: false });
+    assert.equal(off.body.autoStart, false);
+  } finally { await boot.close(); }
+});
+
 // The wire half of the corrupt-registry surfacing: a notices() accessor nobody
 // wires into the route would leave the user just as uninformed as the old
 // console.warn did.

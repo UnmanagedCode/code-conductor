@@ -21,6 +21,7 @@ export interface PluginHostApiLike {
   restart(id: string): Promise<unknown>;
   status(id: string): Promise<unknown>;
   setActiveVersion(id: string, input: unknown): Promise<unknown>;
+  setAutoStart(id: string, value: unknown): Promise<unknown>;
   // Non-ENOENT load failures from the last init pass — see registry.ts loadJson.
   notices(): Array<{ file: string; reason: string; backup: string | null }>;
 }
@@ -130,6 +131,12 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
 
   r.post('/:id/stop', async (req, res, next) => {
     try { res.json(await host.stop(req.params.id)); } catch (e) { next(e); }
+  });
+
+  // {autoStart: boolean} — persists the boot-time flag only; starts and stops
+  // nothing, and changes no contribution, so no conventions refresh.
+  r.post('/:id/autostart', async (req, res, next) => {
+    try { res.json(await host.setAutoStart(req.params.id, req.body?.autoStart)); } catch (e) { next(e); }
   });
 
   // Stop + start the running child in place — the pick-up path for a plugin

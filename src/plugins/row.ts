@@ -27,6 +27,7 @@ export interface PluginRow {
   version: string | null;
   state: string;
   enabled: boolean;
+  autoStart: boolean;
   activeVersion: ManifestSource;
   manifestSource: ManifestSource;
   hasBackend: boolean;
@@ -62,7 +63,7 @@ export interface PluginRowInput {
   };
   // The persisted record, the in-memory runtime state and the runtime record —
   // null when the id is unknown to that owner (or absent entirely).
-  reg: { enabled: boolean } | null;
+  reg: { enabled: boolean; autoStart: boolean } | null;
   runtime: { status: string; tail: string | null } | null;
   record: { port: number; pid: number; startedAt: string; gitHead: string | null } | null;
   // Resolved (and, where needed, self-healed) by the caller.
@@ -109,6 +110,7 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
     version: entry.manifest?.version ?? null,
     state,
     enabled: reg?.enabled === true,
+    autoStart: reg?.autoStart === true,
     activeVersion,
     manifestSource: entry.manifestSource ?? { type: 'main' },
     hasBackend,

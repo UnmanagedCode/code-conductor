@@ -3,6 +3,8 @@ import { DownloadIcon, LoaderCircleIcon, PlayIcon, PlugIcon, PowerIcon, RefreshC
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { NativeSelect } from '@/components/ui/native-select';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { SectionIntro, SettingsCard, Status, LogBox } from './ui';
 import { ApiError } from '@shared/http';
@@ -19,11 +21,11 @@ const STATE_VARIANT: Record<string, 'success' | 'warning' | 'destructive' | 'sec
   invalid: 'destructive', incompatible: 'warning', conflict: 'warning',
 };
 
-type PluginAction = 'rescan' | 'enable' | 'start' | 'stop' | 'restart' | 'disable' | 'version';
+type PluginAction = 'rescan' | 'enable' | 'start' | 'stop' | 'restart' | 'disable' | 'version' | 'autostart';
 type Acting = { id: string | null; action: PluginAction };
 const PENDING_LABEL: Record<PluginAction, string> = {
   rescan: 'Rescanning…', enable: 'Enabling…', start: 'Starting…', stop: 'Stopping…',
-  restart: 'Restarting…', disable: 'Disabling…', version: 'Switching…',
+  restart: 'Restarting…', disable: 'Disabling…', version: 'Switching…', autostart: 'Saving…',
 };
 
 type Line = { text: string; error?: boolean } | null;
@@ -283,6 +285,18 @@ export function PluginsSection() {
                             </NativeSelect>
                             {isActing(row.id, 'version') && (
                               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" /> {PENDING_LABEL.version}</span>
+                            )}
+                            <Label className="text-xs font-normal text-muted-foreground" title="Start this plugin's backend when code-conductor starts, unless it is already running">
+                              <Switch
+                                checked={row.autoStart === true}
+                                disabled={locked}
+                                aria-label={`Auto-start ${row.name}`}
+                                onCheckedChange={(v) => void act(`Turning auto-start ${v ? 'on' : 'off'} for ${row.id}`, { id: row.id, action: 'autostart' }, () => post(`/api/plugins/${row.id}/autostart`, { autoStart: v }))}
+                              />
+                              Auto-start
+                            </Label>
+                            {isActing(row.id, 'autostart') && (
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircleIcon className="size-3.5 animate-spin" /> {PENDING_LABEL.autostart}</span>
                             )}
                           </>
                         )}

@@ -8,7 +8,7 @@ import type { ManifestSource } from './manifest.ts';
 // load notices that policy produces, and the adopt pass that prunes stale
 // runtime records.
 //
-//   registry.json  {plugins: {<id>: {project, enabled, activeVersion}}}
+//   registry.json  {plugins: {<id>: {project, enabled, activeVersion, autoStart}}}
 //   runtime.json   {<id>: {pid, pgid, port, startedAt, gitHead}}
 //
 // Reads hand out SHALLOW COPIES and every mutator writes. That is the point of
@@ -25,6 +25,8 @@ export interface PersistedPluginRecord {
   project: string;
   enabled: boolean;
   activeVersion?: ManifestSource;
+  // Start the backend at boot when it is not already running.
+  autoStart: boolean;
 }
 
 export interface RuntimeRecord {
@@ -106,6 +108,8 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
 
   function isEnabled(id: string): boolean { return persisted.plugins[id]?.enabled === true; }
 
+  function autoStart(id: string): boolean { return persisted.plugins[id]?.autoStart === true; }
+
   function entries(): Array<[string, PersistedPluginRecord]> {
     return Object.entries(persisted.plugins).map(([id, rec]) => [id, { ...rec }]);
   }
@@ -119,6 +123,13 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     const rec = persisted.plugins[id];
     if (!rec) return;
     rec.enabled = enabled;
+    await saveRegistry();
+  }
+
+  async function setAutoStart(id: string, on: boolean): Promise<void> {
+    const rec = persisted.plugins[id];
+    if (!rec) return;
+    rec.autoStart = on;
     await saveRegistry();
   }
 
@@ -180,7 +191,7 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
 
   return {
     load,
-    get, has, isEnabled, entries, upsert, setEnabled, setActiveVersion,
+    get, has, isEnabled, autoStart, entries, upsert, setEnabled, setAutoStart, setActiveVersion,
     runtimeRecord, runtimeIds, recordStart, clearRuntime, clearRuntimeDetached, adopt,
     notices,
   };
