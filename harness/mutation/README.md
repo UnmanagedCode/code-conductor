@@ -65,7 +65,7 @@ A ref no route owns is refused: the mutant reads `ERROR` (`plan-failed`) naming 
 patterns. A scope file its route's runner did not report is refused too: when the runner reported other
 files, the narrow baseline is non-green and the mutant reads `ERROR` (`scope-non-green`); when it
 reported none, the narrow baseline "ran ZERO tests" and the mutant reads `ERROR` (`scope-empty`)
-with the parser's diagnostic. Never a verdict. Mixing routes in one mutant's refs
+with the parser's diagnostic when the route's adapter supplies one (Vitest's missing-report diagnostic, Playwright's project-selection one). Never a verdict. Mixing routes in one mutant's refs
 is fine: each route gets its own files and the counts are summed.
 
 **Test ids**, all repo-relative — take them from a `--learn` pass, never hand-construct one:
