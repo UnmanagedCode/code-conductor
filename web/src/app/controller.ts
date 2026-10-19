@@ -179,7 +179,10 @@ function patchInstance(id: string, patch: Partial<Instance>) {
   const { instances, pristine } = appStore.get();
   if (pristine?.id === id) {
     const next = { ...pristine, ...patch };
-    appStore.set({ pristine: next.status === 'exited' || next.status === 'crashed' ? null : next });
+    // A restart model switch's own kill reports exited/crashed while `modelSwitch`
+    // is set; only a dead status outside a switch ends the conductor.
+    const ended = (next.status === 'exited' || next.status === 'crashed') && !next.modelSwitch;
+    appStore.set({ pristine: ended ? null : next });
   }
   const i = instances.findIndex((x) => x.id === id);
   if (i < 0) return;
@@ -459,15 +462,16 @@ export function startController() {
     }
     // A newer open owns the socket now, and re-subscribes the active session itself.
     if (gen !== opens) return;
-    // The slot's conductor may have been reaped while this socket was down.
+    // The slot's conductor may have been reaped, or have changed status, while this socket was down.
     const slot = appStore.get().pristine;
     if (slot?.sessionId) {
-      const gone = await apiFetch(`/api/sessions/${encodeURIComponent(slot.sessionId)}/pristine`)
-        .then(() => false, (e) => e instanceof ApiError);
+      const found = await apiFetch<Instance>(`/api/sessions/${encodeURIComponent(slot.sessionId)}/pristine`)
+        .then((inst) => inst, (e) => (e instanceof ApiError ? 'gone' as const : null));
       if (gen !== opens) return;
       const s = appStore.get();
-      if (gone && s.pristine?.id === slot.id) {
-        appStore.set({ pristine: null, ...(s.activeId === slot.id ? { activeId: null } : {}) });
+      if (found && s.pristine?.id === slot.id) {
+        if (found === 'gone') appStore.set({ pristine: null, ...(s.activeId === slot.id ? { activeId: null } : {}) });
+        else appStore.set({ pristine: found });
       }
     }
     const { activeId } = appStore.get();

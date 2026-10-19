@@ -5,7 +5,7 @@
 // First: the anchor writes must not resync the route through a hashchange a browser never fires.
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { routeFetch } from '@/test/routeFetch';
+import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -25,6 +25,8 @@ const R = conductor('iR', 's-r');
 let listed: Inst[];
 /** What GET /api/sessions/<sid>/pristine answers per session; a miss is a 404. */
 let lookup: Record<string, Inst>;
+/** Held answers the next pristine lookups take, in order, ahead of `lookup`. */
+let holds: Promise<RouteAnswer>[];
 let stop: (() => void) | null = null;
 
 async function boot() {
@@ -36,6 +38,7 @@ async function boot() {
     'GET /api/instances': () => ({ json: listed }),
     'GET /api/sessions/': (_body, url) => {
       const [, , , sid, tail] = url.split('/');
+      if (tail === 'pristine' && holds.length) return holds.shift()!;
       const hit = tail === 'pristine' ? lookup[decodeURIComponent(sid)] : undefined;
       return hit ? { json: hit } : { status: 404, json: { error: 'not found' } };
     },
@@ -52,6 +55,7 @@ async function boot() {
   return {
     c, appStore, views, calls, flush,
     open: () => frame('open'),
+    close: () => frame('close'),
     hint: () => frame('instances'),
     status: (detail: Record<string, unknown>) => frame('status', detail),
     /** Every presence frame sent, in order. */
@@ -66,6 +70,7 @@ beforeEach(() => {
   history.replaceState(null, '', '/');
   listed = [];
   lookup = {};
+  holds = [];
 });
 afterEach(() => { stop?.(); stop = null; vi.restoreAllMocks(); });
 
@@ -104,6 +109,92 @@ describe('the pristine slot', () => {
     b.c.selectInstance('iP', { userGesture: true });
     await b.status({ id: 'iP', status: 'exited', mode: 'bypassPermissions', sessionId: 's-p' });
     expect(b.appStore.get().pristine).toBeNull();
+  });
+
+  /** A restart model switch's `modelSwitch`, as every status frame inside it carries. */
+  const MS = { from: 'm-old', to: 'm-new', fromBackend: 'claude', toBackend: 'ollama' };
+  /** A status frame for P, as the server sends it. */
+  const pFrame = (extra: Record<string, unknown>) => ({ id: 'iP', mode: 'bypassPermissions', sessionId: 's-p', model: 'm-old', ...extra });
+
+  /** P adopted and shown, with the composer's box empty. */
+  async function shownWithEmptyBox() {
+    const b = await boot();
+    await b.open();
+    const { setPristineDraftSource } = await import('./pristine');
+    setPristineDraftSource(() => ({ sessionId: 's-p', text: '' }));
+    b.c.adoptInstance({ ...P, model: 'm-old', backend: 'claude', modelSwitch: null } as any);
+    b.c.selectInstance('iP', { userGesture: true });
+    return b;
+  }
+
+  it('(i) a restart model switch keeps the pristine conductor shown: same instance, same session, no leave', async () => {
+    const b = await shownWithEmptyBox();
+    const stillShown = (when: string) => {
+      expect(b.active(), when).toBe('iP');
+      expect(b.appStore.get().pristine?.id, when).toBe('iP');
+      expect(b.appStore.get().pristine?.sessionId, when).toBe('s-p');
+      expect(location.hash, when).toBe('#session=s-p');
+      expect(b.presence(), when).toEqual([['pristine_view', { id: 'iP' }]]);
+    };
+    await b.status(pFrame({ status: 'idle', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'crashed', modelSwitch: MS }));
+    stillShown('after the switch\'s kill');
+    await b.status(pFrame({ status: 'spawning', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'idle', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'idle', modelSwitch: null, model: 'm-new', backend: 'ollama' }));
+    stillShown('after the switch settles');
+    expect(b.c.getActiveInstance()).toMatchObject({ status: 'idle', pristine: true, model: 'm-new', backend: 'ollama' });
+    expect(b.listedIds()).not.toContain('iP');
+  });
+
+  it('(i) a switch that leaves the conductor stopped still clears the slot', async () => {
+    const b = await shownWithEmptyBox();
+    await b.status(pFrame({ status: 'crashed', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'crashed', modelSwitch: null }));
+    expect(b.appStore.get().pristine).toBeNull();
+    expect(b.active()).toBeNull();
+  });
+
+  it('(i) a reconnect after the switch settled unseen takes the server\'s current state into the slot', async () => {
+    const b = await shownWithEmptyBox();
+    await b.status(pFrame({ status: 'idle', modelSwitch: MS }));
+    await b.status(pFrame({ status: 'crashed', modelSwitch: MS }));
+    await b.close();
+    // The settling frame is sent while the socket is down; the lookup answers what the server holds now.
+    lookup = { 's-p': { ...P, status: 'idle', model: 'm-new', backend: 'ollama', modelSwitch: null } as Inst };
+    await b.open();
+    expect(b.active()).toBe('iP');
+    expect(b.appStore.get().pristine).toMatchObject({ id: 'iP', sessionId: 's-p', status: 'idle', modelSwitch: null, model: 'm-new', backend: 'ollama' });
+    expect(b.presence().filter(([t]) => t === 'pristine_leave'), 'never left').toEqual([]);
+  });
+
+  it('(j) a re-validation overtaken by a newer open applies nothing: the slot holds the newer answer', async () => {
+    const b = await shownWithEmptyBox();
+    const first = held<RouteAnswer>();
+    holds.push(first.answer);
+    await b.open();
+    expect(b.calls.filter((x) => x.url === '/api/sessions/s-p/pristine'), 'fixture check: the first lookup is in flight').toHaveLength(1);
+    lookup = { 's-p': { ...P, status: 'idle', model: 'm-new', backend: 'ollama', modelSwitch: null } as Inst };
+    await b.open();
+    expect(b.appStore.get().pristine, 'fixture check: the newer open applied its answer').toMatchObject({ model: 'm-new', status: 'idle' });
+    first.release({ json: { ...P, status: 'crashed', model: 'm-stale', backend: 'claude', modelSwitch: MS } });
+    await b.flush();
+    expect(b.appStore.get().pristine).toMatchObject({ id: 'iP', status: 'idle', model: 'm-new', backend: 'ollama', modelSwitch: null });
+    expect(b.active()).toBe('iP');
+  });
+
+  it('(j) a re-validation\'s 200 never resurrects a conductor the slot stopped holding while it was in flight', async () => {
+    const b = await shownWithEmptyBox();
+    const pending = held<RouteAnswer>();
+    holds.push(pending.answer);
+    await b.open();
+    await b.status(pFrame({ status: 'exited', modelSwitch: null }));
+    expect(b.appStore.get().pristine, 'fixture check: its exit cleared the slot').toBeNull();
+    expect(b.active(), 'fixture check: and the active session').toBeNull();
+    pending.release({ json: { ...P, status: 'idle', model: 'm-old', backend: 'claude', modelSwitch: null } });
+    await b.flush();
+    expect(b.appStore.get().pristine).toBeNull();
+    expect(b.active()).toBeNull();
   });
 
   it('(f) a reconnect re-validates the slot: a 404 clears it and the active session it was', async () => {

@@ -162,6 +162,20 @@ describe('pristine conductors', () => {
     assert.equal(p.body.pristine, true);
   });
 
+  test('N3b: a dead pristine conductor outside any relaunch window does not resolve', async () => {
+    const P = await conductor();
+    const promoted = await api(baseUrl, 'POST', `/api/instances/${P.id}/promote`);
+    assert.equal(promoted.status, 200, JSON.stringify(promoted.body));
+    await P.inst.kill();
+    await waitFor(() => P.inst.status === 'exited' || P.inst.status === 'crashed');
+    assert.equal(instances.get(P.id), P.inst, 'fixture check: the promoted instance stays in the manager');
+    assert.equal(P.inst.pristine, true, 'fixture check: still pristine');
+    assert.equal(P.inst.relaunching, false, 'fixture check: not relaunching');
+    const p = await api(baseUrl, 'GET', `/api/sessions/${P.sid}/pristine`);
+    assert.equal(p.status, 404, JSON.stringify(p.body));
+    assert.equal(p.body.code, 'NOT_PRISTINE');
+  });
+
   test('N4: a blank leave reaps the conductor fully', async () => {
     const P = await conductor();
     const A = await socket();
