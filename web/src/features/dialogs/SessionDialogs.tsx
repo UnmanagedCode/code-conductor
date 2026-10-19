@@ -36,6 +36,70 @@ export function pickTier(data: SummaryData, prefer: Tier | null, current: Tier):
   return SUMMARY_TIERS.find((l) => data[l]) ?? 'medium';
 }
 
+type QA = { id: number; question: string; answer?: string; error?: string; costUsd?: number };
+
+/** In-memory Q&A about the session: nothing here survives the dialog, and each question is sent alone. */
+function AskSection({ sessionId }: { sessionId: string }) {
+  const [qa, setQa] = React.useState<QA[]>([]);
+  const [draft, setDraft] = React.useState('');
+  const [asking, setAsking] = React.useState(false);
+  const abortRef = React.useRef<AbortController | null>(null);
+  const nextId = React.useRef(0);
+  const listRef = React.useRef<HTMLDivElement>(null);
+
+  // Follow the newest pair: a new question or answer lands at the bottom.
+  React.useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [qa]);
+
+  React.useEffect(() => () => abortRef.current?.abort(), []);
+
+  async function ask(e: React.FormEvent) {
+    e.preventDefault();
+    const question = draft.trim();
+    if (!question || asking) return;
+    const id = nextId.current++;
+    const abort = new AbortController();
+    abortRef.current = abort;
+    setQa((l) => [...l, { id, question }]);
+    setDraft('');
+    setAsking(true);
+    const patch = (p: Partial<QA>) => setQa((l) => l.map((x) => (x.id === id ? { ...x, ...p } : x)));
+    try {
+      const body = await apiFetch<any>(`/api/sessions/${encodeURIComponent(sessionId)}/ask`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question }), signal: abort.signal,
+      });
+      patch({ answer: String(body?.answer ?? ''), costUsd: typeof body?.costUsd === 'number' ? body.costUsd : undefined });
+    } catch (err: any) {
+      if (abort.signal.aborted) return;
+      patch({ error: err.message });
+    } finally {
+      if (!abort.signal.aborted) setAsking(false);
+    }
+  }
+
+  return (
+    <section className="grid min-h-0 gap-2" aria-label="Ask about this session">
+      {qa.length > 0 && (
+        <div ref={listRef} aria-live="polite" className="grid max-h-[30dvh] gap-3 overflow-y-auto rounded-xl border bg-muted/20 p-3" data-qa-list>
+          {qa.map((x) => (
+            <div key={x.id} className="grid gap-1 text-sm" data-qa>
+              <p className="font-medium" data-qa-question>{x.question}</p>
+              {x.error != null ? <div data-qa-error><FormError>Question failed: {x.error}</FormError></div>
+                : x.answer == null ? <p className="text-muted-foreground" data-qa-pending>Answering…</p>
+                : <div data-qa-answer><Markdown text={x.answer} />{x.costUsd != null && <span className="text-xs text-muted-foreground" data-qa-cost>Cost: {fmtCost(x.costUsd)}</span>}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      <form className="flex gap-2" onSubmit={(e) => void ask(e)}>
+        <Input aria-label="Question about this session" placeholder="Ask about this session…" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="outline" disabled={!draft.trim() || asking}>Ask</Button>
+      </form>
+    </section>
+  );
+}
+
 function SummaryBody({ sessionId }: { sessionId: string }) {
   const [data, setData] = React.useState<SummaryData | null>(null);
   const [tier, setTier] = React.useState<Tier>('medium');
@@ -129,6 +193,7 @@ function SummaryBody({ sessionId }: { sessionId: string }) {
           <p className="text-sm text-muted-foreground">No {tier} summary yet. Generate one; it runs a short model pass on this session's transcript.</p>
         )}
       </div>
+      <AskSection sessionId={sessionId} />
       <FormError>{error}</FormError>
       <DialogFooter>
         {tier === 'title' && current && (

@@ -14,7 +14,7 @@ single place a template is consumed — it whitespace-splits the template,
 substitutes `{model}` **inside each token** (so `--model={model}` works as well as
 `--model {model}`), takes token 0 as the command and the rest as the argv prefix,
 then the caller appends the SAME claude args uniformly. Three callers share it:
-`Instance.spawn()`, `generateSummary()` (`src/summarize.ts`), `generateBundle()`
+`Instance.spawn()`, `runSessionOneShot()` (`src/sessionOneShot.ts`, behind `generateSummary()` and `askSession()` in `src/summarize.ts`), `generateBundle()`
 (`src/claudeShellEnv.ts`).
 
 **A template that passes host paths must share our filesystem view.** One of the
@@ -93,7 +93,7 @@ The consequences of being a substitution backend:
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS` are set to the model's native window on every
   **session** spawn (`Instance.spawn`), **never** for plain `claude`, and never
   exposed in the Backends UI. Applied *after* the row's `env`, so they win over a
-  same-named pair. Scoped to sessions: the one-shot spawners (`summarize.ts`,
+  same-named pair. Scoped to sessions: the one-shot spawners (`sessionOneShot.ts`,
   `claudeShellEnv.ts`) set neither — they run a single short prompt with no
   conversation to compact. See [protocol.md](protocol.md#subprocess-protocol) for why
   both are needed.

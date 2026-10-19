@@ -1,30 +1,13 @@
-// One-shot session summarization via `claude -p --output-format=json`.
-// No in-process fetch — outbound DNS is broken on this host; the CLI
-// handles all networking.
+// One-shot session summarization, titling and free-form questions. The prompt
+// shape (session text in the system prompt, task last) and the subprocess live
+// in sessionOneShot.ts; this module owns the transcript flattening and the
+// task wording.
 
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { cliEnvBase } from './cliEnv.ts';
-import { sessionFilePath, orchStoreRoot, findSessionLocation, type TranscriptPlacement } from './projects.ts'; // sessionFilePath used by countMessages/flattenTranscript
-import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
-import { hostPlatform } from './platform/index.ts';
-import { getTierBackend, getBackend } from './appSettings.ts';
-import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
+import { sessionFilePath, findSessionLocation, type TranscriptPlacement } from './projects.ts';
+import { runSessionOneShot, type OneShotUsage } from './sessionOneShot.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { httpError } from './httpError.ts';
-
-// Dedicated cwd for one-shot summary subprocesses: a subdirectory inside
-// the .code-conductor metadata dir. It is NOT under PROJECTS_ROOT as a
-// named project, so the CLI's session jsonl for the one-shot call lands
-// in an isolated encoded dir that never appears in the conductor sidebar.
-// We do NOT delete those jsonls — they are harmless litter in an opaque
-// metadata dir, and reaching into ~/.claude/projects/ to delete them is
-// fragile. Exported so tests can introspect the expected spawn cwd.
-export function summarySpawnDir(): string {
-  return path.join(orchStoreRoot(), 'summaries');
-}
 
 const LENGTH_INSTRUCTIONS: Record<'short' | 'medium' | 'long', { depth: string; budget: string; structure: string }> = {
   short: {
@@ -47,16 +30,6 @@ const LENGTH_INSTRUCTIONS: Record<'short' | 'medium' | 'long', { depth: string; 
 const INPUT_CAP = 80_000;
 const INPUT_HEAD = 20_000;
 const INPUT_TAIL = 60_000;
-
-// Generation cap. Not unbounded: this one-shot spawn isn't tracked by
-// instances.ts's registry, so nothing kills it on server shutdown or a
-// disconnected client — a wedged child would otherwise hang forever.
-// The REAL governing bound on this path is Node's http.Server default
-// requestTimeout (300_000ms — server.ts sets no override), which ends the
-// whole request-response cycle regardless of this timer. Staying under it
-// means our own timer always fires first, so a summary can never persist
-// after the client has already seen the request fail.
-const GENERATION_TIMEOUT_MS = 290_000;
 
 // A persisted session line narrowed to the fields flattenTranscript/countMessages read.
 interface TranscriptLine {
@@ -144,16 +117,10 @@ export async function countMessages(sessionId: string, place: TranscriptPlacemen
   return count;
 }
 
-// The `claude -p --output-format=json` result envelope (loose — CLI-owned).
-interface SummaryOutput {
-  result?: unknown;
-  total_cost_usd?: unknown;
-  cost_usd?: unknown;
-}
-
-// The existing tier-summary template, verbatim.
-function summaryPrompt(tier: { depth: string; budget: string; structure: string }, conversationText: string): string {
-  return `Summarize the following Claude Code session.
+// The task for a tier summary: the user message, sent after the cached
+// session-text system prompt.
+function summaryTask(tier: { depth: string; budget: string; structure: string }): string {
+  return `Summarize the Claude Code session in the conversation.
 
 Coverage: ${tier.depth}
 Word budget: ${tier.budget} of CONTENT words.
@@ -164,9 +131,6 @@ ${tier.structure}
 
 Critical word-count rule: the word budget counts CONTENT words only — the actual words of information you write. Markdown scaffolding (#, ##, |, -, *, ** markers, table pipes and dashes) does NOT count toward the budget. Judge your length by the informational words, not the formatting. A compact table with 30 content words is not "over budget" because of its pipes. This means: use markdown structure freely to improve scannability; only the substance counts.
 
-CONVERSATION:
-${conversationText}
----
 Provide the summary only, no preamble:`;
 }
 
@@ -181,8 +145,8 @@ Provide the summary only, no preamble:`;
 // given (see projectNameHint), is passed as a fallback the model may use
 // only when the conversation itself is ambiguous — it never overrides what
 // the conversation says.
-function titlePrompt(conversationText: string, projectHint: string | null): string {
-  return `Name the CURRENT end goal of the following Claude Code session.
+function titleTask(projectHint: string | null): string {
+  return `Name the CURRENT end goal of the Claude Code session in the conversation.
 
 This is not a recap. Work that is already finished matters only as context: say what the session is trying to achieve RIGHT NOW — the objective the most recent turns are working toward. If the goal changed mid-session, the latest one wins. If the latest turns are verifying or fixing up earlier work, that clean-up IS the current goal.
 
@@ -193,9 +157,6 @@ If you could not identify any project: output just the title on its own, at most
 
 Either way, the title itself: plain text only, no markdown, no surrounding quotes, no trailing period, no "Session:" or "Title:" prefix, no explanation before or after. Sentence case. Prefer a concrete noun phrase naming the thing being built, fixed, or investigated, never a vague category ("Code improvements").
 
-CONVERSATION:
-${conversationText}
----
 Provide the title line only, no preamble:`;
 }
 
@@ -212,6 +173,29 @@ async function projectNameHint(sessionId: string): Promise<string | null> {
   return hit && hit.project !== '.conduct' ? hit.project : null;
 }
 
+// A free-form question about the session. Nothing follows the question, so
+// the user message's tail is exactly what the asker typed.
+function questionTask(question: string): string {
+  return `Answer the question below about the Claude Code session in the conversation. Answer from the conversation only; if it does not contain the answer, say so. Markdown is fine.
+
+QUESTION:
+${question.trim()}`;
+}
+
+// The session text lives in the SYSTEM prompt and the task in the user message,
+// so every task over unchanged session text shares one byte-stable cache
+// prefix. The prefix holds no dynamic value (date, cwd, project hint, ids).
+export function buildSessionPrompt(conversationText: string, task: string): { system: string; user: string } {
+  return {
+    system: `The text turns of a Claude Code session follow, in order; tool calls are omitted. The request is in the user message.
+
+<conversation>
+${conversationText}
+</conversation>`,
+    user: task,
+  };
+}
+
 // Generate a summary (or title) of a session by running `claude -p` as a
 // one-shot subprocess. Returns { summary, messageCount, durationMs, costUsd }.
 export async function generateSummary(sessionId: string, place: TranscriptPlacement, length: SummaryLength = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
@@ -220,104 +204,23 @@ export async function generateSummary(sessionId: string, place: TranscriptPlacem
   }
 
   const { conversationText, messageCount } = await flattenTranscript(sessionId, place);
-  const prompt = length === 'title'
-    ? titlePrompt(conversationText, await projectNameHint(sessionId))
-    : summaryPrompt(LENGTH_INSTRUCTIONS[length], conversationText);
+  const task = length === 'title'
+    ? titleTask(await projectNameHint(sessionId))
+    : summaryTask(LENGTH_INSTRUCTIONS[length]);
+  const { system, user } = buildSessionPrompt(conversationText, task);
+  const { result, durationMs, costUsd } = await runSessionOneShot({ systemPrompt: system, prompt: user });
+  return { summary: result, messageCount, durationMs, costUsd };
+}
 
-  // Honor the fast tier's bound backend unconditionally — same reasoning as
-  // claudeShellEnv.ts's generateBundle(): no Anthropic fallback, since a host
-  // with no Claude access wouldn't have that model. A substitution backend
-  // re-execs the SAME claude binary (only the endpoint/auth differ), so
-  // --output-format=json's result envelope is unaffected; a missing cost there
-  // already falls through the `?? null` below.
-  const fastBackend = getTierBackend('fast');
-  const { command, prefixArgs, env: backendEnvVars } =
-    resolveBackendLaunch(getBackend(fastBackend.backend), fastBackend.model, resolveClaudeBin(hostPlatform), hostPlatform);
-  // Throwaway session-id so each generation is independent (no accidental
-  // resume of a prior one-shot call).
-  const scratchId = randomUUID();
-  const args = [
-    ...prefixArgs,
-    '-p',
-    '--output-format=json',
-    '--model', fastBackend.model,
-    '--session-id', scratchId,
-  ];
-
-  // Use a subdir inside the .code-conductor metadata dir as the spawn cwd.
-  // That path is not listed as a project under PROJECTS_ROOT, so the CLI's
-  // session jsonl never surfaces in the conductor sidebar.
-  const spawnDir = summarySpawnDir();
-  await fs.mkdir(spawnDir, { recursive: true });
-
-  const startMs = Date.now();
-
-  const parsed = await new Promise<SummaryOutput>((resolve, reject) => {
-    const child = spawn(command, args, {
-      ...hostPlatform.spawnOptions('child'),
-      cwd: spawnDir,
-      env: { ...cliEnvBase(hostPlatform), ...backendEnvVars },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    child.stdout.on('data', chunk => stdoutChunks.push(chunk));
-    child.stderr.on('data', chunk => stderrChunks.push(chunk));
-
-    const timer = setTimeout(() => {
-      hostPlatform.killProcess(child, 'SIGTERM');
-      reject(new Error(`summary generation timed out after ${GENERATION_TIMEOUT_MS / 1000}s`));
-    }, GENERATION_TIMEOUT_MS);
-
-    // A spawn that never starts (ENOENT/EACCES — e.g. a backend template naming a
-    // command that isn't installed) emits 'error', never 'close'. Without this
-    // listener the EventEmitter default rethrows it as an uncaught exception and
-    // takes the whole server down with every live session. Mirrors the same guard
-    // in claudeShellEnv.ts's two spawns and instances.ts's.
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(new Error(`summary generation failed to spawn ${command}: ${err.message}`));
-    });
-
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        const stderr = Buffer.concat(stderrChunks).toString().trim();
-        return reject(new Error(`claude exited with code ${code}: ${stderr.slice(0, 500)}`));
-      }
-      const stdout = Buffer.concat(stdoutChunks).toString().trim();
-      let out: SummaryOutput;
-      try { out = JSON.parse(stdout) as SummaryOutput; }
-      catch (e) { return reject(new Error(`failed to parse claude output: ${stdout.slice(0, 200)}`)); }
-      resolve(out);
-    });
-
-    // Guarded: on a failed spawn the streams are already destroyed, and an
-    // unhandled EPIPE here would escape the same way 'error' used to.
-    child.stdin.on('error', () => { /* surfaced via the 'error'/'close' paths above */ });
-    try {
-      child.stdin.write(prompt);
-      child.stdin.end();
-    } catch { /* ditto */ }
-  });
-
-  const durationMs = Date.now() - startMs;
-  const summary = parsed.result;
-  if (typeof summary !== 'string' || !summary.trim()) {
-    throw new Error(`unexpected claude output shape: ${JSON.stringify(parsed).slice(0, 200)}`);
+// Answer one free-form question about a session. Stores nothing.
+export async function askSession(sessionId: string, place: TranscriptPlacement, question: unknown, signal?: AbortSignal): Promise<{ answer: string; costUsd: number | null; usage: OneShotUsage }> {
+  if (typeof question !== 'string' || !question.trim()) {
+    throw httpError(400, 'question must be a non-empty string');
   }
-
-  return {
-    summary: summary.trim(),
-    messageCount,
-    durationMs,
-    // The CLI's total_cost_usd is Anthropic list pricing — meaningless for a
-    // substitution backend (src/costTracking.ts:130-132, docs/models.md).
-    costUsd: fastBackend.backend === CLAUDE_BACKEND_ID
-      ? ((parsed.total_cost_usd ?? parsed.cost_usd ?? null) as number | null)
-      : null,
-  };
+  const { conversationText } = await flattenTranscript(sessionId, place);
+  const { system, user } = buildSessionPrompt(conversationText, questionTask(question));
+  const { result, costUsd, usage } = await runSessionOneShot({ systemPrompt: system, prompt: user, signal });
+  return { answer: result, costUsd, usage };
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
