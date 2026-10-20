@@ -17,7 +17,7 @@ export type StreamName = ExecStream;
 
 // The accounting subset of ExecOptions. Taking the whole ExecOptions would drag
 // cwd/env/timeout in, which are the SPAWN half and belong to the caller.
-export type ExecAccounting = Pick<ExecOptions, 'cap' | 'headCapBytes' | 'maxBufferBytes' | 'onChunk'>;
+export type ExecAccounting = Pick<ExecOptions, 'cap' | 'headCapBytes' | 'maxBufferBytes' | 'onChunk' | 'encoding'>;
 
 export class ExecOutputCollector {
   #stdout = '';
@@ -36,12 +36,22 @@ export class ExecOutputCollector {
   #seenBytes = 0;
   #overflowed = false;
   readonly #decoders = { out: new StringDecoder('utf8'), err: new StringDecoder('utf8') };
+  // BYTE MODE (`encoding: 'buffer'`): the retained chunks, per stream, with no
+  // decoder in the way. Null in the default UTF-8 mode.
+  readonly #bytes: { out: Buffer[]; err: Buffer[] } | null;
   readonly #opts: ExecAccounting;
   readonly #onOverflow: () => void;
 
   constructor(opts: ExecAccounting, onOverflow: () => void) {
+    if (opts.encoding === 'buffer' && (opts.cap !== undefined || opts.onChunk !== undefined)) {
+      // A character tail and a decoded-chunk hook have no meaning over raw
+      // bytes. Reaching here is cc's own bug, so it throws rather than picking
+      // one of the two readings silently.
+      throw new Error(`exec: encoding 'buffer' cannot be combined with ${opts.cap !== undefined ? 'cap' : 'onChunk'}`);
+    }
     this.#opts = opts;
     this.#onOverflow = onOverflow;
+    this.#bytes = opts.encoding === 'buffer' ? { out: [], err: [] } : null;
   }
 
   get overflowed(): boolean { return this.#overflowed; }
@@ -73,6 +83,12 @@ export class ExecOutputCollector {
       if (this.#headBytes >= headCapBytes) { this.#truncated = true; return; }
       this.#headBytes += d.length;
       if (this.#headBytes >= headCapBytes) this.#truncated = true;
+    }
+    if (this.#bytes) {
+      // Byte mode stops here: the fence and the head cap above have had their
+      // say, and there is no decoder, tail cap or hook to feed.
+      if (d.length > 0) this.#bytes[which].push(d);
+      return;
     }
     const s = this.#decoders[which].write(d);
     if (!s) return;
@@ -124,6 +140,7 @@ export class ExecOutputCollector {
       ...(descendantsMaySurvive ? { descendantsMaySurvive: true as const } : {}),
       ...(abandonedAfterMs === undefined ? {} : { abandonedAfterMs }),
       ...(this.#overflowed ? { outputOverflowed: true as const } : {}),
+      ...(this.#bytes ? { stdoutBytes: Buffer.concat(this.#bytes.out), stderrBytes: Buffer.concat(this.#bytes.err) } : {}),
     };
   }
 }

@@ -860,7 +860,8 @@ export async function requireWorktree(
   const all = await listWorktrees(projectName);
   const hit = all.find(w => w.worktreeName === worktreeName);
   if (hit) return hit;
-  throw httpError(404, unknownWorktreeMessage(projectName, worktreeName, all.map(w => w.worktreeName), what));
+  throw httpError(404, unknownWorktreeMessage(projectName, worktreeName, all.map(w => w.worktreeName), what),
+    { code: 'WORKTREE_UNKNOWN' });
 }
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a

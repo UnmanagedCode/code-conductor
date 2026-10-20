@@ -1380,7 +1380,7 @@ export interface ResolvedProject {
 export async function getProject(name: string): Promise<ResolvedProject> {
   validateName(name);
   const resolved = await resolveProjectDir(name);
-  if (!resolved) throw httpError(404, `project '${name}' not found`);
+  if (!resolved) throw httpError(404, `project '${name}' not found`, { code: 'PROJECT_UNKNOWN' });
   return { name, path: resolved.path, system: resolved.system };
 }
 

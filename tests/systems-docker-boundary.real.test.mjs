@@ -261,6 +261,38 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.equal(built.stdout.trim(), 'target-toolchain-ok');
   });
 
+  // PINS: POST /api/exec crosses the real boundary with every option it adds:
+  // the command runs in the container (its hostname), reads the caller's
+  // stdin, sees the overlay ON TOP of the container's own environment ($HOME
+  // stays the container's), returns raw bytes as base64, leaves no staged
+  // stdin file behind, and a timeout is 504 EXEC_TIMEOUT.
+  test('POST /api/exec runs in the container with stdin, an env overlay, base64 output and a timeout', async () => {
+    const exec = (body) => api(baseUrl, 'POST', '/api/exec', body);
+    const ctrHost = (await inCtr('hostname')).trim();
+    const ctrHome = (await inCtr('echo $HOME')).trim();
+
+    const argv = await exec({
+      project: 'app', argv: ['sh', '-c', 'hostname; printf "%s|%s|" "$CC_EXEC_PROBE" "$HOME"; cat'],
+      env: { CC_EXEC_PROBE: 'overlay' }, stdin: 'from-stdin',
+    });
+    assert.equal(argv.status, 200, JSON.stringify(argv.body));
+    assert.equal(argv.body.stdout, `${ctrHost}\noverlay|${ctrHome}|from-stdin`);
+    assert.notEqual(ctrHost, ccHostname.trim());
+
+    const shell = await exec({ project: 'app', shell: 'printf "%s" "$CC_EXEC_PROBE"; cat', env: { CC_EXEC_PROBE: 'shell' }, stdin: 'x' });
+    assert.equal(shell.body.stdout, 'shellx');
+
+    const bytes = await exec({ system: 'ctrbox', cwd: '/app', argv: ['printf', '\\377\\000'], encoding: 'base64' });
+    assert.deepEqual(Buffer.from(bytes.body.stdout, 'base64'), Buffer.from([0xff, 0x00]));
+
+    assert.equal((await inCtr('ls /tmp | grep -c "^cc-stdin-" || true')).trim(), '0', 'no staged stdin file left in the container');
+
+    const slow = await exec({ project: 'app', argv: ['sh', '-c', 'echo started; exec sleep 30'], stdin: 'x', timeoutMs: 500 });
+    assert.equal(slow.status, 504, JSON.stringify(slow.body));
+    assert.equal(slow.body.code, 'EXEC_TIMEOUT');
+    assert.equal(slow.body.stdout, 'started\n');
+  });
+
   // PINS STREAMING ACROSS THE MACHINE BOUNDARY: output produced inside the
   // container reaches the worker while the command is still running, not at
   // exit. Two independent witnesses, because either alone can be satisfied by

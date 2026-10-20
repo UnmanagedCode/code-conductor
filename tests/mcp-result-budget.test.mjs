@@ -128,7 +128,7 @@ test('boundary, thrown error: an error echoing a huge argument is cut to the bud
       assert.equal(read.structured.code, 'ENAMETOOLONG');
 
       const diff = await call('project_diff', { project: 'errp', worktree: 'w'.repeat(HUGE) });
-      assert.equal(diff.structured.code, 'NOT_FOUND');
+      assert.equal(diff.structured.code, 'WORKTREE_UNKNOWN');
       assert.equal(diff.structured.statusCode, 404);
       assert.match(diff.prose, /\(HTTP 404\)$/);
     });

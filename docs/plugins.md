@@ -181,13 +181,73 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 
 **Security.** `openSession` / `sendPrompt` let any plugin page, hidden keep-alive frames included, drive any session. That adds no reach: a plugin page is same-origin with cc and can already call cc's unauthenticated API and socket. It is why the content-rendering rules in [plugin-ui.md](plugin-ui.md) Part 2 matter.
 
-**REST metadata a plugin backend reads** alongside these messages (full shapes in [protocol.md](protocol.md)): `GET /api/projects/:name/worktrees` per worktree — `worktreePath`, `branch`, `baseBranch`, `baseSha`, `baseWorktree` (the parent worktree's `worktreeName`; absent = forked from the main checkout), `parentPath` (the main checkout); `GET /api/projects` row `path` (the main checkout when a project has no worktrees); `GET /api/instances` — `{sessionId, project, status, cwd, worktree: {worktreeName, branch, baseBranch, baseSha} | null}` per instance, `worktree: null` = the main checkout. **Live = `status` not `exited`/`crashed`**: the `sessionIds` lists on the worktrees and projects rows are *not* liveness-filtered (they include retained exited non-temp instances), so use `GET /api/instances` for "live".
+**REST metadata a plugin backend reads** alongside these messages (full shapes in [protocol.md](protocol.md)): `GET /api/projects/:name/worktrees` per worktree — `worktreePath`, `branch`, `baseBranch`, `baseSha`, `baseWorktree` (the parent worktree's `worktreeName`; absent = forked from the main checkout), `parentPath` (the main checkout); `GET /api/projects` row `path` (the main checkout when a project has no worktrees); `GET /api/instances` — `{sessionId, project, status, cwd, worktree: {worktreeName, branch, baseBranch, baseSha} | null}` per instance, `worktree: null` = the main checkout. **Live = `status` not `exited`/`crashed`**: the `sessionIds` lists on the worktrees and projects rows are *not* liveness-filtered (they include retained exited non-temp instances), so use `GET /api/instances` for "live". To run a command on a project's System (git, a temp file, anything with stdin or env), use [`POST /api/exec`](#host-exec--post-apiexec).
 
 Inside the iframe the bridge patches `history.pushState` → `replaceState`, so a plugin visit adds exactly one joint-history entry (hardware Back exits to the conductor). Multi-page plugins bypass this and pollute history.
 
 **Theme sync** (not a message): the bridge reads the parent's `<html>` directly and mirrors cc's resolved theme onto the page's own `<html>` — the `dark` class, plus `data-cc-theme="light"|"dark"`, which is present only while cc owns the theme. It applies it synchronously when the script executes and again on every change through a `MutationObserver` on the parent `<html>`'s `class`, hidden frames included. cc's `<html>` carries `.dark` exactly when its resolved theme is dark (`web/index.html`'s pre-paint script, then `web/src/app/theme.ts`, which also follows `prefers-color-scheme` under "system"). A parent whose `document` cannot be read (cross-origin: `SecurityError`) leaves the page's theme alone; standalone or outside a `/plugins/<id>/` mount the bridge does nothing at all.
 
 **Session width sync** (not a message): the bridge mirrors cc's committed session-column width onto the page's own `<html>` as the custom property `--cc-session-width`: `<n>px` while Full is off, `none` while it is on (`sessionWidthCss`, `web/src/app/sessionWidthScale.ts`). cc publishes it as `data-cc-session-width` on its own `<html>` (`startPluginSessionWidth`, `web/src/features/views/pluginSessionWidth.ts`, started from `main.tsx`); the bridge copies the attribute when the script executes and again on every change through a `MutationObserver`, hidden frames included. Only the committed setting is published: a handle drag updates plugins on release, not during it. Unset under an unreadable parent, standalone, or outside a `/plugins/<id>/` mount, and while the attribute is absent. Use it as `max-width: var(--cc-session-width, <fallback>)`. A plugin never reads cc's storage.
+
+### Host exec — `POST /api/exec`
+
+A plugin backend runs a command on a project's System, or on a System addressed directly, with `fetch("$CONDUCTOR_URL/api/exec", {method: 'POST', body: JSON})`. No helper library and no MCP tool. Implemented in `src/hostExec.ts`, mounted in `buildRoutes` (`src/routes.ts`). There is no allow-list, path scoping or caller check — same trust model as the rest of cc's API.
+
+**Target — exactly one form:**
+
+| Form | Fields | Resolution |
+|---|---|---|
+| A | `project`, `worktree?` | `resolveProjectCwd` (`src/worktrees.ts`): cwd = the project's tree, or the worktree's; system = the project's |
+| B | `system`, `remoteId?`, `cwd` | `systemById` (`src/systems/registry.ts`). `cwd` required and absolute. `remoteId` `''`/absent/`null` = the provider's default target. `system: 'local'` allowed; `remoteId` with `local` is refused |
+
+**Request fields** (JSON; an unknown key is refused, so a typo like `input` for `stdin` fails loudly):
+
+| Field | Rule |
+|---|---|
+| `argv` *or* `shell` | exactly one. `argv`: non-empty array of strings, no NUL, `argv[0]` non-empty — run directly. `shell`: non-empty string, no NUL — run through the target's login shell (`bash -lc`) |
+| `env?` | object; names match `ENV_NAME_RE` (`src/systems/execWrap.ts`), values strings without NUL. **Overlays** the target's default environment (`{...defaultEnv, ...env}`); never replaces it. In shell form it is applied after the login profile, so a profile cannot override it |
+| `stdin?` / `stdinB64?` | at most one. `stdin`: UTF-8 text. `stdinB64`: strict base64 bytes. Absent = a closed stdin (EOF) |
+| `encoding?` | `'utf8'` (default) or `'base64'` — `stdout`/`stderr` returned base64 of the raw bytes |
+| `timeoutMs?` | positive integer ≤ `EXEC_MAX_TIMEOUT_MS`; default `EXEC_DEFAULT_TIMEOUT_MS` (both in `src/hostExec.ts`) |
+| `maxOutputBytes?` | positive integer ≤ `EXEC_MAX_OUTPUT_BYTES`; default `EXEC_DEFAULT_OUTPUT_BYTES`. Total across both streams |
+
+Request body limit: `EXEC_BODY_LIMIT` (route-local parser, ahead of the router-wide 1mb one); over it is express's own 413 `{error}` with no code.
+
+**Response 200** — the command ran, whatever its exit code: `{exitCode, stdout, stderr, encoding, durationMs, system, remoteId, cwd, descendantsMaySurvive?: true}`. `system`/`remoteId`/`cwd` echo the resolved target (`remoteId` is always `null` for `local`).
+
+**Refusals** — every body is `{error, code, …}`:
+
+| Status | `code` | When | Extra fields |
+|---|---|---|---|
+| 400 | `INVALID_ARGUMENT` | any shape rule above, both or neither target form, both `argv` and `shell` | |
+| 400 | `CWD_NOT_ABSOLUTE` | form B with a relative `cwd` | |
+| 404 | `PROJECT_UNKNOWN` | unknown project | |
+| 404 | `WORKTREE_UNKNOWN` | unknown worktree of that project | |
+| 501 | `SYSTEMS_UNAVAILABLE` | a non-local system on a platform with `remoteSystems` off — form B is refused before any provider launches | |
+| 501 | `SYSTEM_NOT_REGISTERED` / `SYSTEM_NO_PROVIDER` / `SYSTEM_NO_REMOTES` | from resolution | |
+| 502 | `SYSTEM_UNREACHABLE` / `REMOTE_NOT_FOUND` | from resolution, or **during** the command (provider died, staging write unanswered; an unknown remote) | |
+| 422 | `EXEC_SPAWN_FAILED` | the command never started: missing binary, bad cwd, `EACCES`, unopenable staged stdin (`ESTDIN`) | `errno` (or `null`) |
+| 422 | `EXEC_OUTPUT_TOO_LARGE` | output passed `maxOutputBytes`; the command was killed | `limitBytes` |
+| 504 | `EXEC_TIMEOUT` | `timeoutMs` passed; the command was killed | partial `stdout`/`stderr` (in `encoding`), `encoding`, `durationMs`, `descendantsMaySurvive?`, `abandonedAfterMs?` (cc gave up on a provider that never reported the exit) |
+
+**Output is buffered whole, behind a fence.** No streaming, no paging: re-running a command for page two is neither idempotent nor free, and stream framing would tax every small call. Past `maxOutputBytes` the command is killed and the answer is `EXEC_OUTPUT_TOO_LARGE` — never a clipped 200.
+
+**Kill semantics.** `timeoutMs` bounds the command only. Locally the whole process group is SIGTERMed, then SIGKILLed after the kill grace. On a provider the provider enforces it — group-wide when it advertises `processGroupSignal`, otherwise only the direct child, flagged `descendantsMaySurvive` — and cc abandons at `timeoutMs + EXEC_TIMEOUT_SLACK_MS` (`src/systems/providerSystem.ts`). A client that disconnects before the response kills the command the same way.
+
+**How stdin and `env` reach a provider System** (no wire change; detail in [systems-protocol.md](systems-protocol.md) §7): stdin is written to `/tmp/cc-stdin-<32 hex>` on the target (`writeFile`, exclusive, mode 0600), and a `/bin/sh` wrapper opens it onto fd 0 and deletes it **before** the command starts; `env` rides as `env(1)` assignments (argv form) or `export` lines (shell form), never as a frame `env`. Locally stdin is a pipe and `env` a merge (argv) or the same `export` lines (shell).
+
+**Target-side temp files** — there is no utimes or temp-dir primitive; run them through this route (e.g. the code-review plugin's private index):
+
+```bash
+d=$(mktemp -d)                         # shell: create; read the path from stdout
+cp .git/index "$d/index"               # argv ['cp', …] or shell
+touch -m -d @1700000000 "$d/index"     # set an mtime (seconds since the epoch)
+rm -rf -- "$d"                         # clean up
+```
+
+**Known limitations.**
+- A staged stdin file leaks when the provider dies between the staging write and the wrapper's `rm`. cc then tries to remove it (best-effort, not awaited) and logs `exec: could not remove staged stdin <path> on system <id>: …` when that fails; the file stays under `/tmp/cc-stdin-*` on the target.
+- On a provider System, a call with stdin or `env` reports a missing or non-executable `argv[0]` through the wrapper's pre-check (a PATH walk for a bare name; existence, directory and execute bit for a path). It agrees with a local spawn for `ENOENT` and `EACCES` only.
 
 ### Theme stylesheet — `/pluginTheme.css`
 

@@ -19,13 +19,20 @@
 // it REPLACES the environment, exactly as node's spawn does, because the local
 // and wire implementations of one primitive cannot differ on what an option
 // means.
+//
+// A caller's `envOverlay` IS THAT SAME MECHANISM, never a frame `env`: it rides
+// as `env(1)` assignments in front of an argv command or as `export` lines in
+// front of a shell string (src/systems/execWrap.ts), so it adds to the
+// target's environment exactly as the derivations' `LC_ALL=C` does.
 
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   readRemoteList, type AnyFrame, type Capabilities, type ClientFrame, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
+import { argvWrapper, assertEnvOverlay, shellWithPrelude, unwrapResult } from './execWrap.ts';
 import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } from './mirror.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
 import { ProviderShell, type ShellExecOptions, type ShellHost } from './providerShell.ts';
@@ -274,9 +281,68 @@ export class ProviderSystem implements System, ShellHost {
   // paths on cc's machine, so sending it makes the target's own PATH, HOME and
   // toolchain unreachable from the far side, and hands everything cc holds —
   // a live session token among it — to every process the target runs.
+  //
+  // A BUFFER `stdin` OR AN `envOverlay` WRAPS THE COMMAND (src/systems/execWrap.ts),
+  // here and not in #exec, so cc's own derivations and the redirected shell —
+  // which reach #exec directly — are never touched by it. Absent both, this is
+  // the plain path, byte-identical on the wire to before the options existed.
   async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
     requireAbsolute('exec', 'cwd', opts.cwd);
-    return this.#exec(spec, opts, opts.env ?? null);
+    const overlay = opts.envOverlay && Object.keys(opts.envOverlay).length > 0 ? opts.envOverlay : undefined;
+    if (overlay) assertEnvOverlay(overlay);
+    // An EMPTY Buffer is EOF, which is what 'ignore' already gives — and it
+    // saves the staging round trip.
+    const input = Buffer.isBuffer(opts.stdin) && opts.stdin.length > 0 ? opts.stdin : null;
+    const stdin = Buffer.isBuffer(opts.stdin) ? 'ignore' as const : opts.stdin;
+    if (!input && !overlay) return this.#exec(spec, { ...opts, stdin }, opts.env ?? null);
+
+    const started = Date.now();
+    let stdinPath: string | undefined;
+    if (input) {
+      // Exclusive and 0600 under a random name: nothing else can already be
+      // there, and nobody else can read the caller's bytes while they wait.
+      const staged = `/tmp/cc-stdin-${randomBytes(16).toString('hex')}`;
+      try { await this.writeFileBytes(staged, input, { exclusive: true, mode: 0o600 }); }
+      catch (e) {
+        const code = e instanceof SystemError ? e.code : undefined;
+        // A partial write may have left the file; EEXIST would mean it is not
+        // ours, so that one is never removed.
+        if (code !== 'EEXIST') this.#removeStaged(staged);
+        // `exec` never rejects: a staging failure is a command that never
+        // started, and a dead transport is flagged as one.
+        return new ExecOutputCollector({ encoding: opts.encoding }, () => {}).result(1, {
+          timedOut: false,
+          spawnError: `exec: could not stage stdin at ${staged} on system '${this.id}': ${e instanceof Error ? e.message : String(e)}`,
+          ...(code === 'ETRANSPORT' ? { transportFailure: true as const } : code ? { spawnErrorCode: code } : {}),
+          durationMs: Date.now() - started,
+        });
+      }
+      stdinPath = staged;
+    }
+    const nonce = randomBytes(16).toString('hex');
+    const wrapped: ExecSpec = 'shell' in spec
+      ? { shell: shellWithPrelude(spec.shell, { envOverlay: overlay, stdinPath, nonce }) }
+      : { argv: argvWrapper(spec.argv, { envOverlay: overlay, stdinPath, nonce }) };
+    const r = unwrapResult(
+      await this.#exec(wrapped, { ...opts, stdin: input ? 'ignore' : stdin, envOverlay: undefined }, opts.env ?? null),
+      nonce, 'shell' in spec ? 'sh' : spec.argv[0],
+    );
+    // The wrapper unlinks the file before the command starts, so a clean exit
+    // needs nothing. Any other outcome may have stopped short of that `rm`.
+    if (stdinPath && (r.code !== 0 || r.spawnError || r.timedOut || r.transportFailure)) {
+      this.#removeStaged(stdinPath);
+    }
+    return r;
+  }
+
+  // BEST-EFFORT AND NOT AWAITED: a dead provider would otherwise add an op
+  // timeout to the caller's answer for a file that is only litter. What still
+  // leaks — a provider dying between the write and the wrapper's `rm` — is a
+  // documented known limitation (docs/plugins.md → Host exec).
+  #removeStaged(p: string): void {
+    this.removeEntry(p).catch((e: unknown) => {
+      console.warn(`exec: could not remove staged stdin ${p} on system ${this.id}: ${e instanceof Error ? e.message : String(e)}`);
+    });
   }
 
   async #exec(spec: ExecSpec, opts: ShellExecOptions, env: NodeJS.ProcessEnv | null): Promise<ExecResult> {
@@ -288,7 +354,7 @@ export class ProviderSystem implements System, ShellHost {
       // TRANSPORT: cc never reached the far side. Flagged as such rather than
       // left to be classified from `msg`, which embeds the provider's own
       // dying stderr and may name any errno at all.
-      return new ExecOutputCollector({}, () => {}).result(1, {
+      return new ExecOutputCollector({ encoding: opts.encoding }, () => {}).result(1, {
         timedOut: false, spawnError: msg, transportFailure: true, durationMs: Date.now() - started,
       });
     }
@@ -298,7 +364,7 @@ export class ProviderSystem implements System, ShellHost {
     // if a handle is bound some other way. Reported as a command that never
     // started rather than thrown, because `exec` never rejects.
     if (this.remoteId !== null && !hs.capabilities.remotes) {
-      return new ExecOutputCollector({}, () => {}).result(1, {
+      return new ExecOutputCollector({ encoding: opts.encoding }, () => {}).result(1, {
         timedOut: false,
         spawnError: `system '${this.id}' is served by ${hs.provider}, which does not support named remotes`,
         spawnErrorCode: 'EUNSUPPORTED',

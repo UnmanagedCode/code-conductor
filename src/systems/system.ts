@@ -112,7 +112,27 @@ export interface ExecOptions {
   // EOF instead of hanging until the timeout. Load-bearing for project_bash and
   // for the redirected Bash framing, which runs each command group under
   // `< /dev/null` for the same reason.
-  stdin?: 'ignore';
+  //
+  // A Buffer hands the command exactly those bytes, then EOF. The two
+  // implementations deliver it differently and the command cannot tell:
+  // locally it is a pipe; on the wire, which has no frame carrying bytes INTO
+  // an exec, ProviderSystem stages them in an exclusive temp file on the
+  // target and a wrapper redirects from it (src/systems/execWrap.ts). An empty
+  // Buffer is the same as 'ignore'.
+  stdin?: 'ignore' | Buffer;
+  // Variables ADDED to the command's environment — over the target's own
+  // default, or over `env` when that is given — never a replacement. On the
+  // wire it travels as `env(1)` in argv or `export` lines in a shell string,
+  // so no frame `env` is sent (providerSystem.ts's header). Shell-form
+  // commands get the `export` lines locally too, after the login profile, so a
+  // profile cannot override them on either side. Names must match
+  // ENV_NAME_RE and values carry no NUL; a violation is cc's bug and throws.
+  envOverlay?: Record<string, string>;
+  // 'buffer' retains raw bytes in `ExecResult.stdoutBytes`/`stderrBytes`
+  // instead of decoding UTF-8; `stdout`/`stderr`/`output` are then ''. Opt-in
+  // per call: absent is 'utf8', today's behaviour. Incompatible with `cap`
+  // and `onChunk`, which are character-level — combining them throws.
+  encoding?: 'utf8' | 'buffer';
 }
 
 export interface ExecResult {
@@ -181,6 +201,12 @@ export interface ExecResult {
   // served. `timedOut` alone cannot say it: the same flag also carries a timeout
   // the PROVIDER reported, which fired at the caller's own deadline instead.
   abandonedAfterMs?: number;
+  // The retained output as raw bytes — present exactly when the caller asked
+  // for `encoding: 'buffer'` (empty Buffers on a command that never started),
+  // absent otherwise. The same caps and fence apply as to the strings. A
+  // spawn-error message still lands in `stderr`, never in these.
+  stdoutBytes?: Buffer;
+  stderrBytes?: Buffer;
 }
 
 export type SystemEntryKind = 'file' | 'dir' | 'symlink' | 'other';

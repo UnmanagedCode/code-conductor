@@ -479,7 +479,7 @@ cc  →  {"type":"exec","id":"e7","remoteId":"ctr-a","cwd":"/app","argv":["git",
 | `env` | **REPLACES** the environment, exactly as `posix_spawn` does — not an overlay. Absent means the provider's own environment. |
 | `timeoutMs` | The **provider** enforces it: SIGTERM the command (its whole group where the capability allows), SIGKILL after `killGraceMs`, then report `{"code":124,"timedOut":true}`. 124 is `timeout(1)`'s convention. |
 | `killGraceMs` | SIGTERM → SIGKILL delay. Default 100 ms. |
-| `stdin` | `"ignore"` gives the command a **closed stdin**, so an interactive one sees EOF instead of blocking until the timeout. Default `"pipe"`. |
+| `stdin` | `"ignore"` gives the command a **closed stdin**, so an interactive one sees EOF instead of blocking until the timeout. Default `"pipe"`. No frame carries bytes into an exec: cc delivers a caller's stdin as a staged file the command is redirected from (§7), so a provider needs nothing beyond `writeFile` for it. |
 
 Rules:
 
@@ -752,6 +752,21 @@ asked to run, and so the POSIX assumption is concrete.
 That is the whole list — it is what `System`'s derived members compile to, and a
 provider's `exec` is asked to run nothing else on cc's behalf.
 
+**A caller's command with stdin or an env overlay** (`ExecOptions.stdin` as
+bytes, `ExecOptions.envOverlay`; `POST /api/exec` is the surface that sets them)
+is the one caller command cc rewrites, and it needs nothing new from a provider —
+only `writeFile` and `exec`:
+
+| Step | What crosses the wire |
+|---|---|
+| stage stdin (non-empty only) | one `writeFile` of `/tmp/cc-stdin-<32 hex>`, `exclusive: true`, `mode: 0o600`. A provider that fences paths (a remote root that excludes `/tmp`) refuses it, and the caller's command is reported as never started with that code |
+| argv form | `exec` of `env NAME=VALUE… /bin/sh -c <script> sh <nonce> <staged path or ''> <argv…>`, `stdin: "ignore"`. The script opens the staged file onto fd 0 and `rm -f`s it, pre-checks `argv[0]` (missing → `ENOENT`, directory or not executable → `EACCES`, reported as one `<nonce> <ERRNO>` stderr line, exit 127), then `exec "$@"` — so the process a `signal` or a timeout reaches is the caller's command |
+| shell form | `exec` of the shell string prefixed with `export NAME='value'` lines and, with stdin, `if [ -r F ] && exec <F; then rm -f -- F; else …ESTDIN…; exit 125; fi` |
+| cleanup | after a result that is not a clean exit, a `removeEntry` (`rm -d`) of the staged path, not awaited |
+
+The staged file is unlinked before the command runs, so it outlives the call only
+when the provider dies between the `writeFile` and the wrapper's `rm`.
+
 **`find -printf '%m'` is permission bits alone**, so `lstat` and `readDir`
 reconstruct the file-type bits from `%y` and report the SAME full `mode` that
 `stat`'s `%f` carries. A kind cc cannot name (`b`, `c`, `p`, `s` → `other`) has
@@ -765,7 +780,9 @@ environment**, which is what §5's `env` row says an absent field means: the far
 side's PATH and toolchain, not cc's. The derived ones additionally get `LC_ALL=C` from
 `env(1)`, which ADDS a variable to that environment where a frame `env` would
 replace it, so the `strerror()` text stays untranslated for §8's classifier. A
-caller needing a variable on the far side ships it the same way, in argv.
+caller needing a variable on the far side ships it the same way, in argv — which is
+exactly what `envOverlay` does: `env(1)` assignments in argv, or `export` lines in a
+shell string (the table above), never a frame `env`.
 
 ### Every derivation is sent with `cwd: "/"`, and a provider MUST accept it
 

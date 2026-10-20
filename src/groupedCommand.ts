@@ -23,6 +23,7 @@
 import { spawn } from 'node:child_process';
 import type { Platform } from './platform/index.ts';
 import { ExecOutputCollector } from './systems/execCollector.ts';
+import { assertEnvOverlay, shellWithPrelude } from './systems/execWrap.ts';
 import type { ExecOptions, ExecResult, ExecSpec } from './systems/system.ts';
 
 // Tail of a command's output kept in memory. Chatty scripts (npm ci, a browser
@@ -69,9 +70,23 @@ export type GroupedCommandSpec = ExecSpec;
 
 export function runGroupedCommand(
   spec: GroupedCommandSpec,
-  { cwd, env = process.env, timeoutMs, cap, headCapBytes, maxBufferBytes, onChunk, killGraceMs, stdin, signal }: GroupedCommandOptions,
+  { cwd, env = process.env, timeoutMs, cap, headCapBytes, maxBufferBytes, onChunk, killGraceMs, stdin, signal, envOverlay, encoding }: GroupedCommandOptions,
   platform: Platform,
 ): Promise<GroupedCommandResult> {
+  // The overlay ADDS to the environment. An argv command takes it as a merge;
+  // a shell command takes it as `export` lines after the login profile, so the
+  // profile cannot override it — the same prelude the wire path uses
+  // (src/systems/execWrap.ts), which keeps the two indistinguishable.
+  let runSpec = spec;
+  let runEnv = env;
+  if (envOverlay && Object.keys(envOverlay).length > 0) {
+    assertEnvOverlay(envOverlay);
+    if ('shell' in spec) runSpec = { shell: shellWithPrelude(spec.shell, { envOverlay }) };
+    else runEnv = { ...env, ...envOverlay };
+  }
+  // A non-empty Buffer goes down a pipe; an empty one is EOF, i.e. 'ignore'.
+  const input = Buffer.isBuffer(stdin) && stdin.length > 0 ? stdin : null;
+  const closedStdin = stdin === 'ignore' || (Buffer.isBuffer(stdin) && stdin.length === 0);
   return new Promise((resolve) => {
     const start = Date.now();
     let proc: ReturnType<typeof spawn>;
@@ -79,16 +94,16 @@ export function runGroupedCommand(
     // the wire `exec` must be indistinguishable from this one, so both read the
     // caps, the fence and the decoders out of the same object.
     const collector = new ExecOutputCollector(
-      { cap, headCapBytes, maxBufferBytes, onChunk },
+      { cap, headCapBytes, maxBufferBytes, onChunk, encoding },
       () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig), platform }),
     );
     try {
-      const { command: cmd, args } = platform.commandFor(spec);
+      const { command: cmd, args } = platform.commandFor(runSpec);
       proc = spawn(cmd, args, {
-        cwd, env, ...platform.spawnOptions('group'),
+        cwd, env: runEnv, ...platform.spawnOptions('group'),
         // 'ignore' gives the command a closed stdin so an interactive one sees
         // EOF instead of blocking on a pipe nobody writes to.
-        ...(stdin === 'ignore' ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : {}),
+        ...(closedStdin ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : {}),
       });
     } catch (e) {
       // spawn throws SYNCHRONOUSLY for an invalid argument — a NUL byte in an
@@ -99,6 +114,13 @@ export function runGroupedCommand(
       const msg = e instanceof Error ? e.message : String(e);
       resolve(collector.result(1, { timedOut: false, spawnError: msg, durationMs: Date.now() - start }));
       return;
+    }
+
+    if (input) {
+      // EPIPE when the command exits without reading all of it — the command's
+      // own choice, reported through its exit, not a failure of the runner.
+      proc.stdin?.on('error', () => {});
+      proc.stdin?.end(input);
     }
 
     proc.stdout?.on('data', (chunk: Buffer) => collector.push('out', chunk));
