@@ -247,7 +247,7 @@ rm -rf -- "$d"                         # clean up
 
 **Known limitations.**
 - A staged stdin file leaks when the provider dies between the staging write and the wrapper's `rm`. cc then tries to remove it (best-effort, not awaited) and logs `exec: could not remove staged stdin <path> on system <id>: …` when that fails; the file stays under `/tmp/cc-stdin-*` on the target.
-- On a provider System, a call with stdin or `env` reports a missing or non-executable `argv[0]` through the wrapper's pre-check (a PATH walk for a bare name; existence, directory and execute bit for a path). It agrees with a local spawn for `ENOENT` and `EACCES` only.
+- On a provider System, a call with stdin or `env` reports a missing or non-executable `argv[0]` through the wrapper's pre-check, which follows execvp as local spawn does: a bare name runs the first executable regular file on PATH, is `EACCES` when PATH holds only non-executable entries of that name (a file without the execute bit, a directory), and `ENOENT` when it holds none; a path is `ENOENT` when absent and `EACCES` when a directory or not executable. It agrees with a local spawn for `ENOENT` and `EACCES` only — any other reason a binary cannot start surfaces as the command's own failure.
 
 ### Theme stylesheet — `/pluginTheme.css`
 

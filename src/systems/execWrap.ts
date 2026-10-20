@@ -82,7 +82,10 @@ export function shellWithPrelude(cmd: string, { envOverlay, stdinPath, nonce }: 
 //
 // The bare-name check walks PATH itself rather than asking `command -v`, which
 // answers a shell BUILTIN's name (`echo`, `true`, `printf`) — spawn never runs
-// a builtin, it finds the binary.
+// a builtin, it finds the binary. It mirrors execvp, as local spawn does
+// (measured): the first executable regular file wins wherever it sits on PATH;
+// failing that, any entry of that name seen — a non-executable file, a
+// directory — is EACCES; nothing at all is ENOENT.
 const ARGV_SCRIPT = [
   'n=$1; f=$2; shift 2',
   'if [ -n "$f" ]; then',
@@ -99,6 +102,7 @@ const ARGV_SCRIPT = [
   '    for d in $PATH; do',
   '      [ -n "$d" ] || d=.',
   '      if [ -f "$d/$c" ] && [ -x "$d/$c" ]; then e=; break; fi',
+  '      if [ -e "$d/$c" ]; then e=EACCES; fi',
   '    done',
   '    IFS=$o; set +f ;;',
   'esac',

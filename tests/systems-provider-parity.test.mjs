@@ -225,6 +225,34 @@ test('exec: a missing argv[0] with stdin or an overlay is the same spawn failure
   }
 });
 
+// PINS: a bare argv[0] whose only PATH candidate is a NON-EXECUTABLE file is the
+// same EACCES spawn failure on both (an overlay PATH puts the provider on its
+// wrapped path), and an executable candidate later on PATH runs on both.
+test('exec: a bare name with only non-executable PATH candidates is EACCES on both', async () => {
+  const name = 'cc-pathprobe';
+  const [a, b] = await both(
+    async (root) => {
+      await fs.mkdir(path.join(root, 'nonexec'));
+      await fs.mkdir(path.join(root, 'exec'));
+      await fs.writeFile(path.join(root, 'nonexec', name), '#!/bin/sh\necho nonexec-ran\n', { mode: 0o644 });
+      await fs.writeFile(path.join(root, 'exec', name), '#!/bin/sh\necho exec-ran\n', { mode: 0o755 });
+    },
+    async (sys, root) => ({
+      nonexec: normalise(await sys.exec({ argv: [name] }, {
+        cwd: root, envOverlay: { PATH: path.join(root, 'nonexec') },
+      }), root),
+      later: normalise(await sys.exec({ argv: [name] }, {
+        cwd: root, envOverlay: { PATH: `${path.join(root, 'nonexec')}:${path.join(root, 'exec')}` },
+      }), root),
+    }),
+  );
+  assert.deepEqual(a, b);
+  assert.equal(a.nonexec.spawnError, `spawn ${name} EACCES`);
+  assert.equal(a.nonexec.stdout, '');
+  assert.equal(a.later.spawnError, null);
+  assert.equal(a.later.stdout, 'exec-ran\n');
+});
+
 // PINS: a timeout with a Buffer stdin is 124 + timedOut on both — the staging
 // and the wrapper do not change what a deadline means.
 test('exec: a timeout with stdin is 124 + timedOut on both', async () => {

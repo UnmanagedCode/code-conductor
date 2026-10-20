@@ -119,6 +119,23 @@ describe('POST /api/exec on a provider system', () => {
     }
   });
 
+  // PINS: a provider that answers the COMMAND ITSELF `ENOREMOTE` — the remote
+  // withdrawn after resolution's probe accepted it — is 502 REMOTE_NOT_FOUND.
+  // Resolution passing is the premise, shown by an unmarked command on the same
+  // target answering 200; only the marked exec frame is refused.
+  test('ENOREMOTE answered to the exec itself is 502 REMOTE_NOT_FOUND', async () => {
+    await addSystem({
+      id: 'withdrawn', label: 'withdrawn',
+      launch: flakyLaunch({ errorFrame: 'cc-enoremote-marker', errorCode: 'ENOREMOTE', flags: ['--remote', 't1=/'] }),
+    });
+    const ok = await exec({ system: 'withdrawn', remoteId: 't1', cwd: root, argv: ['true'] });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const r = await exec({ system: 'withdrawn', remoteId: 't1', cwd: root, argv: ['sh', '-c', 'true # cc-enoremote-marker'] });
+    assert.equal(r.status, 502, JSON.stringify(r.body));
+    assert.equal(r.body.code, 'REMOTE_NOT_FOUND');
+    assert.match(r.body.error, /^exec on system 'withdrawn': refused: ENOREMOTE/);
+  });
+
   // PINS: a system that cannot be reached is 502 SYSTEM_UNREACHABLE on both
   // target forms.
   test('an unreachable system is 502 SYSTEM_UNREACHABLE on both forms', async () => {

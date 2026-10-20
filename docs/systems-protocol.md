@@ -760,7 +760,7 @@ only `writeFile` and `exec`:
 | Step | What crosses the wire |
 |---|---|
 | stage stdin (non-empty only) | one `writeFile` of `/tmp/cc-stdin-<32 hex>`, `exclusive: true`, `mode: 0o600`. A provider that fences paths (a remote root that excludes `/tmp`) refuses it, and the caller's command is reported as never started with that code |
-| argv form | `exec` of `env NAME=VALUE… /bin/sh -c <script> sh <nonce> <staged path or ''> <argv…>`, `stdin: "ignore"`. The script opens the staged file onto fd 0 and `rm -f`s it, pre-checks `argv[0]` (missing → `ENOENT`, directory or not executable → `EACCES`, reported as one `<nonce> <ERRNO>` stderr line, exit 127), then `exec "$@"` — so the process a `signal` or a timeout reaches is the caller's command |
+| argv form | `exec` of `env NAME=VALUE… /bin/sh -c <script> sh <nonce> <staged path or ''> <argv…>`, `stdin: "ignore"`. The script opens the staged file onto fd 0 and `rm -f`s it, pre-checks `argv[0]` the way execvp resolves it (missing → `ENOENT`; a directory or a non-executable file — for a bare name, when PATH holds no executable regular file of that name — → `EACCES`; reported as one `<nonce> <ERRNO>` stderr line, exit 127), then `exec "$@"` — so the process a `signal` or a timeout reaches is the caller's command |
 | shell form | `exec` of the shell string prefixed with `export NAME='value'` lines and, with stdin, `if [ -r F ] && exec <F; then rm -f -- F; else …ESTDIN…; exit 125; fi` |
 | cleanup | after a result that is not a clean exit, a `removeEntry` (`rm -d`) of the staged path, not awaited |
 

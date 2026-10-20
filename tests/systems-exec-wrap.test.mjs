@@ -113,6 +113,39 @@ test('argvWrapper pre-check agrees with local spawn on argv[0]', async () => {
   });
 });
 
+// PINS: a bare name resolves through PATH the way local spawn's execvp does,
+// measured against an unwrapped local spawn on the same PATH: only
+// non-executable candidates (a 0644 file, a directory) are EACCES — never a
+// run, never ENOENT — while an executable candidate anywhere on PATH runs,
+// whichever side of a non-executable one it sits.
+test('argvWrapper pre-check: non-executable PATH candidates agree with local spawn', async () => {
+  await withDir(async (dir) => {
+    const name = 'cc-pathprobe';
+    const nonexec = path.join(dir, 'nonexec');
+    const exec = path.join(dir, 'exec');
+    const dirhit = path.join(dir, 'dirhit');
+    await fs.mkdir(nonexec); await fs.mkdir(exec); await fs.mkdir(path.join(dirhit, name), { recursive: true });
+    await fs.writeFile(path.join(nonexec, name), '#!/bin/sh\necho nonexec-ran\n', { mode: 0o644 });
+    await fs.writeFile(path.join(exec, name), '#!/bin/sh\necho exec-ran\n', { mode: 0o755 });
+    const local = (PATH) => sys.exec({ argv: [name] }, { cwd: dir, stdin: 'ignore', env: { ...process.env, PATH } });
+    const wrapped = async (PATH) => unwrapResult(
+      await run({ argv: argvWrapper([name], { envOverlay: { PATH }, nonce: NONCE }) }, dir), NONCE, name);
+    for (const PATH of [nonexec, dirhit, `${nonexec}:${dirhit}`]) {
+      assert.match((await local(PATH)).spawnError ?? '', /\bEACCES\b/, `local spawn, PATH=${PATH}`);
+      const r = await wrapped(PATH);
+      assert.equal(r.spawnError, `spawn ${name} EACCES`, `PATH=${PATH}`);
+      assert.equal(r.spawnErrorCode, 'EACCES');
+      assert.equal(r.stdout, '', 'the non-executable candidate never ran');
+    }
+    for (const PATH of [`${nonexec}:${exec}`, `${exec}:${nonexec}`]) {
+      assert.equal((await local(PATH)).stdout, 'exec-ran\n', `local spawn, PATH=${PATH}`);
+      const r = await wrapped(PATH);
+      assert.equal(r.spawnError, null, `PATH=${PATH}`);
+      assert.equal(r.stdout, 'exec-ran\n', `PATH=${PATH}`);
+    }
+  });
+});
+
 // PINS: the wrapper replaces itself with the command, so a command's own exit
 // code — including 127 from a command that prints its own stderr — passes
 // through as the command's.
