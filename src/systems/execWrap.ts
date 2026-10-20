@@ -85,7 +85,10 @@ export function shellWithPrelude(cmd: string, { envOverlay, stdinPath, nonce }: 
 // a builtin, it finds the binary. It mirrors execvp, as local spawn does
 // (measured): the first executable regular file wins wherever it sits on PATH;
 // failing that, any entry of that name seen — a non-executable file, a
-// directory — is EACCES; nothing at all is ENOENT.
+// directory — is EACCES; nothing at all is ENOENT. ONE KNOWN DIVERGENCE: a PATH
+// directory the caller may not search (mode 0000, another user's home) hides
+// its entries from `[ -e ]`, so it reads as nothing there — ENOENT — where
+// execvp, and so local spawn, reports EACCES.
 const ARGV_SCRIPT = [
   'n=$1; f=$2; shift 2',
   'if [ -n "$f" ]; then',
