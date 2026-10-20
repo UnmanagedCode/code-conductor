@@ -23,7 +23,7 @@ function readFolded(): Group[] {
   }
 }
 
-/** Live top-level sessions that want attention: Waiting → Running (conductors) → Finished.
+/** Live top-level sessions that want attention: Waiting → Running → Finished.
  *  A group header folds its group (remembered per browser), for long Finished lists. */
 export function Strip({ m }: { m: SidebarModel }) {
   const g = deriveStrip({ conductors: m.conductors.live, instances: m.instances });

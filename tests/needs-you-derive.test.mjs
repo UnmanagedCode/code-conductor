@@ -72,17 +72,34 @@ test('a disk-only conductor is never listed, even when its disk row reports awai
   assert.ok(N.isStripEmpty(g));
 });
 
-test('hand-spawned sessions appear in waiting and finished but never in running', () => {
+test('a busy hand-spawned session is Running, not Finished; idle is Finished; an ask is Waiting', () => {
   const g = strip([
     handInst('hw', { awaitingUser: 'question', awaitingUserSource: 'text' }),
     handInst('hf'),
     handInst('ht', { status: 'turn' }),
     handInst('hs', { status: 'spawning' }),
     handInst('hd', { status: 'idle', displayStatus: 'running' }),
+    handInst('hj', { status: 'idle', waitingOnJob: true }),
+    handInst('ha', { status: 'idle', awaitingWake: true }),
   ]);
+  assert.deepEqual(sids(g.running), ['ht', 'hs', 'hd', 'hj', 'ha']);
   assert.deepEqual(sids(g.waiting), ['hw']);
   assert.deepEqual(sids(g.finished), ['hf']);
-  assert.deepEqual(sids(g.running), []);
+  for (const sid of ['ht', 'hs', 'hd', 'hj', 'ha']) assert.deepEqual(groupOf(g, sid), ['running'], sid);
+});
+
+test('Running: conductors first, then busy hand-spawned sessions newest first; a busy conducted worker is never listed', () => {
+  const g = strip([
+    cond('C', { status: 'turn' }),
+    handInst('hOld', { status: 'turn', createdAt: 100 }),
+    handInst('hNew', { status: 'turn', createdAt: 50, lastResponseAt: 9000 }),
+    workerInst('w', 'C', { status: 'turn' }),
+    workerInst('wh', 'hNew', { status: 'turn' }),
+  ]);
+  assert.deepEqual(sids(g.running), ['C', 'hNew', 'hOld']);
+  assert.deepEqual(groupOf(g, 'w'), [], 'a conductor\'s busy worker');
+  assert.deepEqual(groupOf(g, 'wh'), [], 'a hand-spawned session\'s busy worker');
+  assert.deepEqual(sids(g.finished), []);
 });
 
 test('conducted workers never appear in any status, even with awaitingUser forced on', () => {
@@ -104,8 +121,10 @@ test('a .conduct temp instance counts as a conductor; a hand-spawned session tha
     workerInst('w', 'h'),
     handInst('h2'),
   ]);
-  assert.deepEqual(sids(g.running), ['T'], 'the temp conductor is running; the hand-spawned owner is not');
+  assert.deepEqual(sids(g.running), ['T', 'h'], 'conductors first, then the hand-spawned owner');
   assert.equal(g.running[0].conductor, true);
+  assert.equal(g.running[1].conductor, false);
+  assert.deepEqual(groupOf(g, 'w'), []);
   assert.deepEqual(sids(g.finished), ['h2']);
   assert.equal(g.finished[0].conductor, false);
 });
@@ -196,12 +215,10 @@ test('no playbook assumption: rows differing only in playbook and stage group an
   for (const v of variants.slice(1)) assert.deepEqual(shape(v), base, JSON.stringify(v));
 });
 
-test('isStripEmpty holds for no instances, and for only conducted workers plus running hand-spawned sessions', () => {
+test('isStripEmpty holds for no instances and for conducted workers only; a busy hand-spawned session makes it non-empty', () => {
   assert.ok(N.isStripEmpty(strip([])));
-  assert.ok(N.isStripEmpty(strip([
-    workerInst('w1', 'X'), workerInst('w2', 'X', { status: 'turn' }),
-    handInst('h1', { status: 'turn' }), handInst('h2', { status: 'idle', awaitingWake: true }),
-  ])));
+  assert.ok(N.isStripEmpty(strip([workerInst('w1', 'X'), workerInst('w2', 'X', { status: 'turn' })])));
+  assert.equal(N.isStripEmpty(strip([handInst('h1', { status: 'turn' })])), false);
   assert.equal(N.isStripEmpty(strip([handInst('h')])), false);
 });
 
@@ -222,11 +239,11 @@ test('entries carry projectName, worktreeName, temp and synthetic for the strip 
   assert.deepEqual(facts(entry('T')), { projectName: 'p', worktreeName: null, temp: true, synthetic: true }, 'a temp hand-spawned session is synthetic');
 });
 
-test('topLevelEntries includes a running hand session that deriveStrip omits', () => {
+test('topLevelEntries and deriveStrip agree on a running hand session: it is listed under Running', () => {
   const instances = [handInst('H', { status: 'turn' })];
   const conductors = deriveConductors({ instances }).live;
   assert.deepEqual(sids(N.topLevelEntries({ conductors, instances })), ['H']);
-  assert.deepEqual(groupOf(N.deriveStrip({ conductors, instances }), 'H'), []);
+  assert.deepEqual(groupOf(N.deriveStrip({ conductors, instances }), 'H'), ['running']);
 });
 
 test('topLevelEntries excludes conducted workers and dead sessions, and lists conductors before hand sessions', () => {
@@ -269,8 +286,9 @@ test('an idle conductor waiting on a job is running, not finished, and reads "on
 
 test('a hand-spawned idle session waiting on a job is not finished', () => {
   const g = strip([handInst('h', { status: 'idle', waitingOnJob: true }), handInst('f', { status: 'idle' })]);
-  assert.deepEqual(groupOf(g, 'h'), [], 'running lists conductors only, and it is not finished');
+  assert.deepEqual(groupOf(g, 'h'), ['running'], 'a job keeps it out of Finished');
   assert.deepEqual(groupOf(g, 'f'), ['finished']);
+  assert.equal(N.entryReason(g.running.find(e => e.sessionId === 'h'), 'running'), 'on a job');
 });
 
 test('a non-idle session with waitingOnJob never reads "on a job"', () => {

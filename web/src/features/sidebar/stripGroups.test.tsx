@@ -62,8 +62,8 @@ beforeEach(() => {
 });
 
 describe('which sessions the strip lists', () => {
-  it('the strip shows for an idle top-level session and renders nothing for no session, conducted workers only, or running hand-spawned sessions only', async () => {
-    // Invariant: the strip exists exactly while a live top-level session sits in a group; a conducted worker, even one asking, and a hand-spawned session in a turn or spawning are no such session.
+  it('the strip shows for an idle or a busy top-level session and renders nothing for no session or conducted workers only', async () => {
+    // Invariant: the strip exists while any live top-level session (a conductor or a hand-spawned one, in any state) sits in a group; a conducted worker, even one asking, never does.
     seed({ projects: [proj('p')], instances: [hand('h0', 'p')] });
     renderSidebar();
     await settle();
@@ -73,7 +73,12 @@ describe('which sessions the strip lists', () => {
     reseed({ projects: [proj('p')], instances: [worker('w1', 'X', 'p'), worker('w2', 'X', 'p', null, { status: 'turn', ...ask('question', 'tool') })] });
     expect(strip()).toBeNull();
     reseed({ projects: [proj('p')], instances: [hand('h1', 'p', null, { status: 'turn' }), hand('h2', 'p', null, { status: 'spawning' })] });
-    expect(strip()).toBeNull();
+    expect(strip()).not.toBeNull();
+    expect(stripGroups()).toEqual(['running']);
+    expect([...stripSids('running')].sort()).toEqual(['h1', 'h2']);
+    expect(groupsOf('h1')).toEqual(['running']);
+    reseed({ projects: [proj('p')], instances: [worker('w', 'X', 'p', null, { status: 'turn' }), hand('h3', 'p', null, { status: 'turn' })] });
+    expect(stripSids('running')).toEqual(['h3']);
   });
 
   it('groups render Waiting → Running → Finished with their counts, each entry in exactly one group, and a group that empties is omitted', async () => {
@@ -211,6 +216,20 @@ describe('what an entry says', () => {
     expect(new Set(['RA', 'RJ', 'F'].map((s) => dotOf(s).title)).size).toBe(3);
     expect(stripEntryOf('RA').getAttribute('aria-label')).toContain(entryReason({ status: 'idle', awaitingWake: true }, 'running'));
     expect(stripEntryOf('RJ').getAttribute('aria-label')).toContain(entryReason({ status: 'idle', waitingOnJob: true }, 'running'));
+  });
+
+  it('a hand-spawned session in a turn is a Running entry like a conductor\'s, without the needs-you mark and without the owner bar', async () => {
+    // Invariant: a busy hand-spawned session renders in Running with its turn dot and the Running reason, and only the conductor entry carries the owner colour.
+    seed({ projects: [proj('p')], instances: [conductor('CT', { status: 'turn' }), hand('HT', 'p', null, { status: 'turn' })] });
+    renderSidebar();
+    await settle();
+    expect(stripSids('running')).toEqual(['CT', 'HT']);
+    expect(groupsOf('HT')).toEqual(['running']);
+    expect(dotOf('HT').getAttribute('data-dot')).toBe('turn');
+    expect(dotOf('HT').hasAttribute('data-needs-you')).toBe(false);
+    expect(stripEntryOf('HT').getAttribute('aria-label')).toContain(entryReason({ status: 'turn' }, 'running'));
+    expect(stripEntryOf('CT').style.getPropertyValue('--owner-color')).not.toBe('');
+    expect(stripEntryOf('HT').style.getPropertyValue('--owner-color')).toBe('');
   });
 });
 
