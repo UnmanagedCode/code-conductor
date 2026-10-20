@@ -12,6 +12,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { resolvePluginDir } from '../pluginDir.mjs';
+import { acquireTestSlot } from '../../tests/testSlot.mjs';
 
 let runner;
 try {
@@ -21,7 +22,12 @@ try {
   process.exit(1);
 }
 
-const child = spawn(process.execPath, [runner, ...process.argv.slice(2)], { stdio: 'inherit' });
+// One test slot for the whole campaign, taken before the runner starts so the wait
+// never counts against its `timeoutMs` or hang deadlines; every route command
+// inherits the held marker and takes none of its own. Calling the runner directly
+// bypasses this.
+const lease = await acquireTestSlot({ label: 'mutation harness' });
+const child = spawn(process.execPath, [runner, ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, ...lease.env } });
 
 // A tty's SIGINT already reaches the child through the process group; staying
 // alive lets the runner restore the tree and report its own exit. SIGTERM and

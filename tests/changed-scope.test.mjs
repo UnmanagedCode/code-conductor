@@ -451,6 +451,12 @@ test('the real tree', async (t) => {
     assert.ok(rows.includes(4) && !rows.includes(6), `rows ${rows}`);
   });
 
+  await t.test('the slot semaphore and the Vitest globalSetup that takes it select both suites', () => {
+    for (const p of ['tests/' + 'testSlot' + '.mjs', 'tests/' + 'vitestSlotSetup' + '.mjs']) {
+      assert.deepEqual(suitesOf(p, reach), ['node', 'web'], p);
+    }
+  });
+
   await t.test('web/src/themeTokens.css joins the web closure through index.css\'s @import', () => {
     assert.ok(reach.web.files.has('web/src/' + 'themeTokens' + '.css'));
   });

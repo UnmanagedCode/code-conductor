@@ -27,6 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildReach, changedPaths, classifyChanged } from './changedScope.mjs';
+import { acquireTestSlot } from './testSlot.mjs';
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Spawned with process.execPath rather than through node_modules/.bin: no PATH
@@ -159,7 +160,6 @@ export function onSignal(signal) {
 }
 
 async function main() {
-  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => onSignal(signal));
   let steps;
   try {
     const parsed = parseGateArgs(process.argv.slice(2));
@@ -178,6 +178,12 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  // One slot for the whole gate, so the web suite does not queue again after the
+  // node suite; both typecheck halves and both suites inherit the held marker. The
+  // slot is freed when the gate exits. The signal handlers come after the wait, so a
+  // signal while queued takes the default exit.
+  Object.assign(process.env, (await acquireTestSlot({ label: 'npm test' })).env);
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => onSignal(signal));
   const { code, summary } = gateExit(steps, await runSuites(steps));
   (code === 0 ? console.log : console.error)(`\n${summary}`);
   process.exitCode = code;
