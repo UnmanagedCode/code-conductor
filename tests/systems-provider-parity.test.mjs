@@ -157,6 +157,124 @@ test('exec: a timeout is 124 + timedOut on both, and stdin:ignore closes stdin o
   assert.equal(a.ignored.timedOut, false);
 });
 
+// PINS: a Buffer stdin reaches the command byte-exact on both — NUL and
+// non-UTF-8 bytes through `cat` in byte mode — and an empty Buffer is EOF on
+// both rather than a hang.
+test('exec: Buffer stdin arrives byte-exact on both, and an empty one is EOF', async () => {
+  const nasty = Buffer.from([0x00, 0xff, 0xfe, 0x0a, 0xc3, 0x28, 0x00, 0x41]);
+  const [a, b] = await both(null, async (sys, root) => {
+    const cat = await sys.exec({ argv: ['cat'] }, { cwd: root, stdin: nasty, encoding: 'buffer', timeoutMs: 10_000 });
+    const empty = await sys.exec({ argv: ['cat'] }, { cwd: root, stdin: Buffer.alloc(0), timeoutMs: 10_000 });
+    const shell = await sys.exec({ shell: 'wc -c' }, { cwd: root, stdin: nasty, timeoutMs: 10_000 });
+    return {
+      cat: { code: cat.code, out: cat.stdoutBytes.toString('hex'), err: cat.stderrBytes.length, spawnError: cat.spawnError },
+      empty: normalise(empty, root),
+      shell: { code: shell.code, out: shell.stdout.trim() },
+    };
+  });
+  assert.deepEqual(a, b);
+  assert.equal(a.cat.out, nasty.toString('hex'));
+  assert.equal(a.cat.code, 0);
+  assert.equal(a.empty.stdout, '');
+  assert.equal(a.empty.timedOut, false);
+  assert.equal(a.shell.out, String(nasty.length));
+});
+
+// PINS: an envOverlay ADDS to the default environment on both, in argv AND
+// shell form: a new name appears, an inherited name is overridden, PATH stays.
+test('exec: envOverlay adds and overrides on both, in argv and shell form, keeping PATH', async () => {
+  const overlay = { CC_PARITY_NEW: `v 'q' $x`, HOME: '/overlay-home' };
+  const probe = 'printf "%s|%s|%s" "$CC_PARITY_NEW" "$HOME" "${PATH:+path}"';
+  const [a, b] = await both(null, async (sys, root) => ({
+    argv: normalise(await sys.exec({ argv: ['sh', '-c', probe] }, { cwd: root, envOverlay: overlay }), root),
+    shell: normalise(await sys.exec({ shell: probe }, { cwd: root, envOverlay: overlay }), root),
+  }));
+  assert.deepEqual(a, b);
+  assert.equal(a.argv.stdout, `${overlay.CC_PARITY_NEW}|/overlay-home|path`);
+  assert.equal(a.shell.stdout, `${overlay.CC_PARITY_NEW}|/overlay-home|path`);
+});
+
+// PINS: in shell form the overlay is applied AFTER the login profile on both,
+// so a profile that exports the same name cannot override the caller's value.
+test('exec: a shell-form overlay beats the login profile on both', async () => {
+  const [a, b] = await both(
+    async (root) => {
+      await fs.mkdir(path.join(root, 'home'));
+      await fs.writeFile(path.join(root, 'home', '.bash_profile'), 'export CC_PARITY_P=from-profile\nexport CC_PARITY_Q=profile-only\n');
+    },
+    async (sys, root) => normalise(await sys.exec({ shell: 'printf "%s|%s" "$CC_PARITY_P" "$CC_PARITY_Q"' }, {
+      cwd: root, env: { ...process.env, HOME: path.join(root, 'home') }, envOverlay: { CC_PARITY_P: 'from-overlay' },
+    }), root),
+  );
+  assert.deepEqual(a, b);
+  assert.equal(a.stdout, 'from-overlay|profile-only');
+});
+
+// PINS: a missing argv[0] is the SAME never-started failure on both when the
+// call carries stdin or an overlay — the provider's wrapped path must not turn
+// it into an exit 127 from a shell that started.
+test('exec: a missing argv[0] with stdin or an overlay is the same spawn failure on both', async () => {
+  const [a, b] = await both(null, async (sys, root) => ({
+    stdin: normalise(await sys.exec({ argv: ['cc-definitely-not-a-binary'] }, { cwd: root, stdin: Buffer.from('x') }), root),
+    overlay: normalise(await sys.exec({ argv: ['cc-definitely-not-a-binary'] }, { cwd: root, envOverlay: { A: 'b' } }), root),
+  }));
+  assert.deepEqual(a, b);
+  for (const key of ['stdin', 'overlay']) {
+    assert.equal(a[key].spawnError, 'spawn cc-definitely-not-a-binary ENOENT', key);
+    assert.equal(a[key].code, 1, key);
+  }
+});
+
+// PINS: a bare argv[0] whose only PATH candidate is a NON-EXECUTABLE file is the
+// same EACCES spawn failure on both (an overlay PATH puts the provider on its
+// wrapped path), and an executable candidate later on PATH runs on both.
+test('exec: a bare name with only non-executable PATH candidates is EACCES on both', async () => {
+  const name = 'cc-pathprobe';
+  const [a, b] = await both(
+    async (root) => {
+      await fs.mkdir(path.join(root, 'nonexec'));
+      await fs.mkdir(path.join(root, 'exec'));
+      await fs.writeFile(path.join(root, 'nonexec', name), '#!/bin/sh\necho nonexec-ran\n', { mode: 0o644 });
+      await fs.writeFile(path.join(root, 'exec', name), '#!/bin/sh\necho exec-ran\n', { mode: 0o755 });
+    },
+    async (sys, root) => ({
+      nonexec: normalise(await sys.exec({ argv: [name] }, {
+        cwd: root, envOverlay: { PATH: path.join(root, 'nonexec') },
+      }), root),
+      later: normalise(await sys.exec({ argv: [name] }, {
+        cwd: root, envOverlay: { PATH: `${path.join(root, 'nonexec')}:${path.join(root, 'exec')}` },
+      }), root),
+    }),
+  );
+  assert.deepEqual(a, b);
+  assert.equal(a.nonexec.spawnError, `spawn ${name} EACCES`);
+  assert.equal(a.nonexec.stdout, '');
+  assert.equal(a.later.spawnError, null);
+  assert.equal(a.later.stdout, 'exec-ran\n');
+});
+
+// PINS: a timeout with a Buffer stdin is 124 + timedOut on both — the staging
+// and the wrapper do not change what a deadline means.
+test('exec: a timeout with stdin is 124 + timedOut on both', async () => {
+  const [a, b] = await both(null, async (sys, root) => normalise(
+    await sys.exec({ argv: ['sleep', '10'] }, { cwd: root, stdin: Buffer.from('in'), timeoutMs: 250 }), root,
+  ));
+  assert.deepEqual(a, b);
+  assert.equal(a.code, 124);
+  assert.equal(a.timedOut, true);
+});
+
+// PINS: byte mode carries a command's raw output — bytes no UTF-8 decoder
+// round-trips — identically on both, with the string fields empty.
+test('exec: byte mode returns raw output identically on both', async () => {
+  const [a, b] = await both(null, async (sys, root) => {
+    const r = await sys.exec({ argv: ['printf', '\\377\\000'] }, { cwd: root, encoding: 'buffer' });
+    return { code: r.code, out: r.stdoutBytes.toString('hex'), stdout: r.stdout, output: r.output };
+  });
+  assert.deepEqual(a, b);
+  assert.deepEqual(a, { code: 0, out: 'ff00', stdout: '', output: '' });
+});
+
 test('the file operations agree on results AND on error codes', async () => {
   const [a, b] = await both(
     async (root) => {

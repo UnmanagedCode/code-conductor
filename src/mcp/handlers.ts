@@ -41,6 +41,7 @@ import {
 } from '../worktrees.ts';
 import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
+import { shQuote } from '../systems/execWrap.ts';
 import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
 import { withinPosix } from '../systems/mirror.ts';
 import { transferFile } from '../systems/transfer.ts';
@@ -2910,16 +2911,11 @@ export function clampBashTimeoutMs(timeout: unknown): number {
   return Math.min(timeout, BASH_MAX_TIMEOUT_MS);
 }
 
-// Single-quote-escape for safe interpolation inside a single-quoted bash
-// string — orchStoreRoot() derives from user-configurable PROJECTS_ROOT.
-function shQuote(p: string): string {
-  return `'${p.replace(/'/g, `'\\''`)}'`;
-}
-
 // The command wrapped in claude's own restored shell environment, sourced with
 // the same shell that produced the bundle (bundleShellKind).
 async function claudeShellSpec(command: string): Promise<ExecSpec> {
   const bundlePath = await getShellEnvBundlePath();
+  // Quoted: orchStoreRoot() derives from the user-configurable PROJECTS_ROOT.
   const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
   return bundleShellKind(bundlePath) === 'zsh'
     ? { argv: ['zsh', '--no-rcs', '-c', wrapped] }

@@ -121,6 +121,7 @@ import {
 import { listPlaybooks, createProject } from './mcp/handlers.ts';
 import { requireCapability, remotePlacementRefused, capabilitySoftRefusal } from './capabilities.ts';
 import { listDirectories } from './dirListing.ts';
+import { EXEC_BODY_LIMIT, runHostExec } from './hostExec.ts';
 import { hostPlatform, type PlatformCapabilities } from './platform/index.ts';
 import {
   CORE_META as WORKSPACE_CORE_META,
@@ -356,6 +357,20 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // to queue on. First, so even a body-parse refusal carries it; a route that
   // sets its own Cache-Control later overrides this.
   r.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  // Plugin-facing command execution (src/hostExec.ts). Mounted AHEAD of the
+  // router-wide 1mb parser, which would otherwise refuse a large stdin 413
+  // first, and outside the remoteSystems gate: `local` works on every platform,
+  // and hostExec refuses a non-local system itself.
+  r.post('/exec', express.json({ limit: EXEC_BODY_LIMIT }), async (req, res, next) => {
+    // A caller that goes away KILLS the command rather than leaving it to run
+    // to its deadline with nobody to read the answer.
+    const ac = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+    try {
+      const { status, body } = await runHostExec(req.body, { capabilities, signal: ac.signal });
+      if (!ac.signal.aborted) res.status(status).json(body);
+    } catch (e) { next(e); }
+  });
   r.use(express.json({ limit: '1mb' }));
   // Features the host platform turns off are refused here, before their handlers.
   r.use(['/settings/systems', '/systems', '/projects/:name/remote'], requireCapability(capabilities, 'remoteSystems'));
