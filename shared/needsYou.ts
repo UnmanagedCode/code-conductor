@@ -157,12 +157,12 @@ export function topLevelEntries({ conductors = [], instances = [] }: { conductor
   return [...conductors.map(conductorEntry), ...hand];
 }
 
-// The strip's groups. Running lists conductors only.
+// The strip's groups.
 export function deriveStrip({ conductors = [], instances = [] }: { conductors?: readonly LiveConductorRow[]; instances?: readonly InstanceFields[] } = {}): StripGroups {
   const groups: StripGroups = { waiting: [], running: [], finished: [] };
   for (const e of topLevelEntries({ conductors, instances })) {
     const g = stripGroupOf(e);
-    if (!g || (g === 'running' && !e.conductor)) continue;
+    if (!g) continue;
     groups[g].push(e);
   }
   return groups;

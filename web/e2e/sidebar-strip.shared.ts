@@ -47,7 +47,7 @@ const entryIn = (s: Strip | null, group: string, sid: string) => s?.[group]?.fin
 const reasonOf = (e: Entry) => e.name.slice(e.text.length);
 
 // Invariant: real sessions land in exactly one group as they run (a conductor's turn and its wait on a worker are Running,
-// a hand-spawned turn is in no group, idle is Finished); a text ask, and a resume onto a plan or question transcript, put a
+// a hand-spawned turn is Running too, idle is Finished); a text ask, and a resume onto a plan or question transcript, put a
 // session in Waiting, marked as needing you; a waiting conductor stays Waiting while on a worker and through the wake turn
 // its worker's callback starts; opening it from the strip and replying from the composer clears the ask; the three asks
 // read distinctly and no entry shows state text; the Projects lens shows the same strip; conducted workers are never listed.
@@ -83,15 +83,19 @@ export async function askFlow({ page, cc }: Ctx): Promise<void> {
   });
 
   let working = '';
-  await test.step('a conductor in a turn is Running; a hand-spawned session in a turn is in no group', async () => {
+  await test.step('a conductor in a turn is Running; a hand-spawned session in a turn is Running too', async () => {
     await mcpCall(cc, 'send_prompt', { sessionId: D.sessionId, text: 'SLOW' });
     await mcpCall(cc, 'send_prompt', { sessionId: H.sessionId, text: 'SLOW' });
     await until(cc, D.id, 'D in a turn', (i) => i.status === 'turn');
     await until(cc, H.id, 'H in a turn', (i) => i.status === 'turn');
-    const s = await sample('D Running, H in no group', (x) => only(x, D.sessionId, 'running') && groupsOf(x, H.sessionId).length === 0);
+    const s = await sample('D and H Running', (x) => only(x, D.sessionId, 'running') && only(x, H.sessionId, 'running'));
     const d = entryIn(s, 'running', D.sessionId)!;
+    const h = entryIn(s, 'running', H.sessionId)!;
     expect(d.dot).toBe('turn');
+    expect(h.dot).toBe('turn');
+    expect(h.needsYou).toBe(false);
     working = reasonOf(d);
+    expect(reasonOf(h), 'a hand-spawned turn reads the same Running reason as a conductor\'s').toBe(working);
     await until(cc, D.id, 'D idle', (i) => i.status === 'idle');
     await until(cc, H.id, 'H idle', (i) => i.status === 'idle');
   });
