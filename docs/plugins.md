@@ -204,7 +204,7 @@ A plugin backend runs a command on a project's System, or on a System addressed 
 
 | Field | Rule |
 |---|---|
-| `argv` *or* `shell` | exactly one. `argv`: non-empty array of strings, no NUL, `argv[0]` non-empty — run directly. `shell`: non-empty string, no NUL — run through the target's login shell (`bash -lc`) |
+| `argv` *or* `shell` | exactly one. `argv`: non-empty array of strings, no NUL, `argv[0]` non-empty — run directly. `shell`: non-empty string, no NUL — run through the target's shell — `bash -lc` locally and in the reference provider; a provider may use `sh -c` ([systems-protocol.md](systems-protocol.md) §5, `shell`), so write POSIX sh |
 | `env?` | object; names match `ENV_NAME_RE` (`src/systems/execWrap.ts`), values strings without NUL. **Overlays** the target's default environment (`{...defaultEnv, ...env}`); never replaces it. In shell form it is applied after the login profile, so a profile cannot override it |
 | `stdin?` / `stdinB64?` | at most one. `stdin`: UTF-8 text. `stdinB64`: strict base64 bytes. Absent = a closed stdin (EOF) |
 | `encoding?` | `'utf8'` (default) or `'base64'` — `stdout`/`stderr` returned base64 of the raw bytes |
