@@ -1,7 +1,9 @@
-// src/webPostMerge.ts: cc's own post-merge step. A web-only change since the
-// running server booted is swapped into web/dist at once; anything else the UI
-// build reads, or a boot commit that cannot be vouched for, stages the build
-// in web/dist.next for the next start; nothing relevant is a no-op.
+// src/webPostMerge.ts: cc's own post-merge step. When nothing changed since the
+// running server booted is code that server loads — web/, docs/, tests/, and
+// shared/ modules its imports (src/serverImports.ts) do not reach — the new UI
+// is swapped into web/dist at once; any other change the UI build reads, or a
+// boot commit that cannot be vouched for, stages the build in web/dist.next for
+// the next start; nothing relevant is a no-op.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,15 +21,15 @@ const ENTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src
 // ── The decision table ─────────────────────────────────────────────────────
 
 const BOOT = { sha: 'a'.repeat(40) };
-const decide = (o) => decideWebPostMerge({
-  inputs: webInputs('/checkout'), isMainCheckout: true, boot: BOOT, bootIsAncestor: true, changedSinceBoot: [], changedThisMerge: [], ...o,
-}).action;
+const decision = (o) => decideWebPostMerge({
+  inputs: webInputs('/checkout'), isMainCheckout: true, boot: BOOT, bootIsAncestor: true, changedSinceBoot: [], changedThisMerge: [],
+  serverImports: { chains: new Map() }, ...o,
+});
+const decide = (o) => decision(o).action;
 
 test('decision: a known boot commit that is an ancestor decides on everything changed since boot', () => {
   assert.equal(decide({ changedSinceBoot: ['web/src/App.tsx', 'web/index.html'] }), 'swap', 'web-only since boot');
   assert.equal(decide({ changedSinceBoot: ['web/src/App.tsx', 'src/routes.ts'] }), 'stage', 'web + src');
-  assert.equal(decide({ changedSinceBoot: ['web/src/App.tsx', 'shared/http.ts'] }), 'stage', 'web + shared');
-  assert.equal(decide({ changedSinceBoot: ['shared/http.ts'] }), 'stage', 'shared alone is read by the UI build');
   assert.equal(decide({ changedSinceBoot: ['package.json'] }), 'stage', 'package.json is read by the UI build');
   assert.equal(decide({ changedSinceBoot: ['tsconfig.json'] }), 'stage', 'the root tsconfig.json is read by the UI build');
   assert.equal(decide({ changedSinceBoot: ['src/routes.ts', 'docs/x.md'] }), 'noop', 'nothing the UI build reads');
@@ -40,6 +42,57 @@ test('decision: a known boot commit that is an ancestor decides on everything ch
   assert.equal(decide({ changedSinceBoot: ['web/a.tsx'], changedThisMerge: ['src/b.ts'] }), 'swap');
 });
 
+const reached = (...chains) => ({ chains: new Map(chains.map((c) => [c.at(-1), c])) });
+
+test('decision: with a known boot commit, a path stages only if the running server may load it', async (t) => {
+  for (const [row, o, action, mentions = [], absent = []] of [
+    ['docs/ swaps', { changedSinceBoot: ['docs/features.md', 'web/a.tsx'] }, 'swap'],
+    ['tests/ swaps', { changedSinceBoot: ['tests/x.test.mjs', 'web/a.tsx'] }, 'swap'],
+    ['a shared/ module the server does not reach swaps',
+      { changedSinceBoot: ['shared/q.ts', 'web/a.tsx'], serverImports: reached(['src/a.ts', 'shared/p.ts']) }, 'swap'],
+    ['a shared/ module the server reaches stages, naming it and its importer',
+      { changedSinceBoot: ['shared/p.ts', 'web/a.tsx'], serverImports: reached(['src/a.ts', 'shared/p.ts']) }, 'stage', ['shared/p.ts', 'src/a.ts']],
+    ['a transitively reached shared/ module stages, naming the chain',
+      { changedSinceBoot: ['shared/r.ts'], serverImports: reached(['src/a.ts', 'shared/p.ts', 'shared/r.ts']) }, 'stage', ['src/a.ts → shared/p.ts → shared/r.ts']],
+    ['a tests/ file the server reaches stages',
+      { changedSinceBoot: ['tests/helper.mjs', 'web/a.tsx'], serverImports: reached(['src/a.ts', 'tests/helper.mjs']) }, 'stage', ['tests/helper.mjs']],
+    ['a web/ file the server reaches stages, naming the chain',
+      { changedSinceBoot: ['web/x.ts'], serverImports: reached(['src/a.ts', 'web/x.ts']) }, 'stage', ['src/a.ts → web/x.ts']],
+    ['src/ stages', { changedSinceBoot: ['src/routes.ts', 'web/a.tsx'] }, 'stage', ['src/routes.ts']],
+    ['server.ts stages', { changedSinceBoot: ['server.ts', 'web/a.tsx'] }, 'stage', ['server.ts']],
+    ['package.json stages', { changedSinceBoot: ['package.json'] }, 'stage', ['package.json']],
+    ['an unknown walk stages a gated path, naming it and the site',
+      { changedSinceBoot: ['docs/a.md', 'web/a.tsx'], serverImports: { unknown: 'src/x.ts: import(name)' } }, 'stage', ['docs/a.md', 'import(name)']],
+    ['an unknown walk leaves a web-only change alone',
+      { changedSinceBoot: ['web/a.tsx'], serverImports: { unknown: 'src/x.ts: import(name)' } }, 'swap'],
+    ['the first path the server may load decides',
+      { changedSinceBoot: ['shared/diffSplit.ts', 'src/server.ts', 'web/a.tsx'] }, 'stage', ['src/server.ts'], ['shared/diffSplit.ts']],
+    ['of several paths that force a stage, the first is named',
+      { changedSinceBoot: ['src/a.ts', 'src/b.ts', 'web/a.tsx'] }, 'stage', ['src/a.ts'], ['src/b.ts']],
+  ]) {
+    await t.test(row, () => {
+      const r = decision(o);
+      assert.equal(r.action, action, r.reason);
+      for (const m of mentions) assert.ok(r.reason.includes(m), `${JSON.stringify(r.reason)} names ${m}`);
+      for (const m of absent) assert.ok(!r.reason.includes(m), `${JSON.stringify(r.reason)} does not name ${m}`);
+    });
+  }
+});
+
+test('decision: any path outside web/, docs/, tests/ and shared/ stages, naming it', async (t) => {
+  for (const p of [
+    '.code-conductor/post-worktree-merge.sh', 'bin/x.sh', 'migrations/0099-x.mjs', 'playbooks/x.md',
+    'conventions/conductor/core.md', 'scripts/x.sh', 'README.md', 'docsite/a.md', 'testsuite/a.mjs',
+    'shared-thing.ts', 'sharedx/a.ts', 'webhook.ts', 'website/x.ts',
+  ]) {
+    await t.test(p, () => {
+      const r = decision({ changedSinceBoot: [p, 'web/a.tsx'] });
+      assert.equal(r.action, 'stage', r.reason);
+      assert.ok(r.reason.includes(p), `${JSON.stringify(r.reason)} names ${p}`);
+    });
+  }
+});
+
 test('decision: a boot commit that cannot be vouched for stages when this merge is relevant, else no-ops', () => {
   for (const [why, o] of [
     ['unknown boot', { boot: { unknown: 'HEAD is unborn or unreadable' } }],
@@ -49,9 +102,7 @@ test('decision: a boot commit that cannot be vouched for stages when this merge 
     assert.equal(decide({ ...o, changedThisMerge: ['web/a.tsx'] }), 'stage', why);
     assert.equal(decide({ ...o, changedThisMerge: ['src/a.ts'] }), 'noop', why);
   }
-  const r = decideWebPostMerge({
-    inputs: webInputs('/checkout'), isMainCheckout: true, boot: { unknown: 'its own web build is running' }, bootIsAncestor: false, changedSinceBoot: null, changedThisMerge: ['web/a.tsx'],
-  });
+  const r = decision({ boot: { unknown: 'its own web build is running' }, bootIsAncestor: false, changedSinceBoot: null, changedThisMerge: ['web/a.tsx'] });
   assert.match(r.reason, /its own web build is running/, 'the reason names why the boot commit is unknown');
 });
 
@@ -77,13 +128,25 @@ async function fixture() {
   await git(root, 'config', 'commit.gpgsign', 'false');
   await fs.writeFile(path.join(root, '.gitignore'), 'web/dist*\n');
   await fs.writeFile(path.join(root, 'package.json'), '{}\n');
-  for (const f of ['web/app.tsx', 'shared/http.ts', 'src/server.ts']) {
+  // The server reaches shared/http.ts and, through it, shared/wire.ts; only
+  // the UI imports shared/diffSplit.ts.
+  await commitFiles(root, {
+    'src/server.ts': "import { apiFetch } from '../shared/http.ts';\n",
+    'shared/http.ts': "import { WIRE } from './wire.ts';\nexport const apiFetch = WIRE;\n",
+    'shared/wire.ts': 'export const WIRE = 1;\n',
+    'shared/diffSplit.ts': 'export const split = 1;\n',
+    'web/app.tsx': "import { split } from '../shared/diffSplit.ts';\n",
+  });
+  return root;
+}
+
+async function commitFiles(root, files) {
+  for (const [f, text] of Object.entries(files)) {
     await fs.mkdir(path.join(root, path.dirname(f)), { recursive: true });
-    await fs.writeFile(path.join(root, f), 'v1\n');
+    await fs.writeFile(path.join(root, f), text);
   }
   await git(root, 'add', '-A');
-  await git(root, 'commit', '-q', '-m', 'initial');
-  return root;
+  await git(root, 'commit', '-q', '-m', `write ${Object.keys(files).join(' ')}`);
 }
 
 // Commit edits, returning [pre, post].
@@ -181,8 +244,39 @@ test('stage: a shared/ change since boot stages even though this merge touched o
   const boot = await bootedAt(root);
   await land(root, ['shared/http.ts']);
   const [pre, post] = await land(root, ['web/app.tsx']);
+  const { out, log } = lines();
+  const r = await runWebPostMerge({ root, pre, post, boot, build: builder('next'), log });
+  assert.equal(r.action, 'stage', r.reason);
+  assert.match(r.reason, /src\/server\.ts → shared\/http\.ts/);
+  assert.match(out[0], /web: stage — .*shared\/http\.ts/, 'the hook line names the path that forced the stage');
+});
+
+test('swap: the diff-split merge shape — docs/, tests/ and a shared/ module only web/ imports', async () => {
+  const root = await fixture();
+  const boot = await bootedAt(root);
+  const [pre, post] = await land(root, ['docs/features.md', 'shared/diffSplit.ts', 'tests/diff-split.test.mjs', 'web/app.tsx']);
+  const r = await runWebPostMerge({ root, pre, post, boot, build: builder('swapped'), log: quiet() });
+  assert.equal(r.action, 'swap', r.reason);
+  assert.equal(r.outcome, 'built');
+});
+
+test('stage: a shared/ module the server reaches only through another shared/ module', async () => {
+  const root = await fixture();
+  const boot = await bootedAt(root);
+  const [pre, post] = await land(root, ['shared/wire.ts', 'web/app.tsx']);
   const r = await runWebPostMerge({ root, pre, post, boot, build: builder('next'), log: quiet() });
   assert.equal(r.action, 'stage', r.reason);
+  assert.ok(r.reason.includes('src/server.ts → shared/http.ts → shared/wire.ts'), r.reason);
+});
+
+test('stage: an import the walker cannot resolve in the boot commit stages a docs/ change', async () => {
+  const root = await fixture();
+  await commitFiles(root, { 'src/server.ts': 'const m = await import(process.env.X);\n' });
+  const boot = await bootedAt(root);
+  const [pre, post] = await land(root, ['docs/a.md', 'web/app.tsx']);
+  const r = await runWebPostMerge({ root, pre, post, boot, build: builder('next'), log: quiet() });
+  assert.equal(r.action, 'stage', r.reason);
+  assert.match(r.reason, /src\/server\.ts/);
 });
 
 test('noop: nothing the UI build reads changed — the builder is never called', async () => {

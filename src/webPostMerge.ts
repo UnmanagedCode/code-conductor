@@ -1,24 +1,27 @@
 // cc's own post-merge step (`.code-conductor/post-worktree-merge.sh`): after a
-// merge lands in cc's main checkout, make a web-only change live at once when
-// that is safe, and otherwise stage the build so the next start adopts it
-// without building.
+// merge lands in cc's main checkout, make a UI change live at once when that is
+// safe, and otherwise stage the build so the next start adopts it without
+// building.
 //
 // "Safe" is measured against the commit the serving server booted from, which
 // only that server can say: it passes `CC_SERVER_BOOT_SHA` to a hook merging
 // into its own checkout while none of its own web builds runs
-// (src/bootCommit.ts). A new UI is swapped in only when everything that changed
-// since boot is under web/, so the backend serving it is the one it was built
-// against. Anything else the UI build reads (isWebInput, src/webBuild.ts), or
-// no boot commit, stages instead. The swap itself is guarded: the decision is
-// about POST, the build reads the working tree, and a later merge can land in
-// between — so unless the tree is still exactly POST's (src/swapGuard.ts) when
-// the build is done, nothing is swapped and the later merge's hook decides.
+// (src/bootCommit.ts). A new UI is swapped in only when nothing changed since
+// boot is code the running server loads, so the backend serving it is the one
+// it was built against: web/, docs/ and tests/ paths, and shared/ modules, pass
+// unless the boot commit's server import graph (src/serverImports.ts) reaches
+// them; any other path stages, as does no boot commit. The swap itself is
+// guarded: the decision is about POST, the build reads the working tree, and a
+// later merge can land in between — so unless the tree is still exactly POST's
+// (src/swapGuard.ts) when the build is done, nothing is swapped and the later
+// merge's hook decides.
 
 import path from 'node:path';
 import { runGit } from './worktrees.ts';
 import { localSystem } from './systems/registry.ts';
 import type { BootCommit } from './bootCommit.ts';
 import { sourcesUnmovedGuard } from './swapGuard.ts';
+import { serverImportsAt, type ServerImports } from './serverImports.ts';
 import {
   SourcesMovedError, inputPaths, isWebInput, refreshWebDist, runViteBuild, stageWebBuild, webInputs,
   type RefreshOutcome, type WebBuilder, type WebInputs,
@@ -33,7 +36,24 @@ export function bootCommitFromEnv(env: NodeJS.ProcessEnv): BootCommit {
   return { unknown: env.CC_SERVER_BOOT_UNKNOWN || 'CC_SERVER_BOOT_SHA is unset: the merge target is not the running server\'s own checkout' };
 }
 
-export function decideWebPostMerge({ inputs, isMainCheckout, boot, bootIsAncestor, changedSinceBoot, changedThisMerge }: {
+// Directories the running server does not read except through its imports.
+const IMPORT_GATED = ['docs/', 'tests/', 'shared/'];
+
+// Why the running server may load `p`, or null when it provably does not. A
+// web/ path is cleared unless the walk reaches it; a gated one also needs a
+// walk that could be completed.
+function serverMayLoad(p: string, imports: ServerImports): string | null {
+  const web = p.startsWith('web/');
+  if (!web && !IMPORT_GATED.some((d) => p.startsWith(d))) {
+    return `changes since the server booted reach ${p}, which the running server may load, so a new UI may not match it`;
+  }
+  const chain = 'chains' in imports ? imports.chains.get(p) : undefined;
+  if (chain) return `${p} is loaded by the running server (${chain.join(' → ')}), so a new UI may not match it`;
+  if (!web && 'unknown' in imports) return `${p} may be loaded by the running server — ${imports.unknown} — so a new UI may not match it`;
+  return null;
+}
+
+export function decideWebPostMerge({ inputs, isMainCheckout, boot, bootIsAncestor, changedSinceBoot, changedThisMerge, serverImports }: {
   // The UI build's inputs: a changed path counts only if the build reads it.
   inputs: WebInputs;
   isMainCheckout: boolean;
@@ -44,14 +64,19 @@ export function decideWebPostMerge({ inputs, isMainCheckout, boot, bootIsAncesto
   bootIsAncestor: boolean;
   changedSinceBoot: string[] | null;
   changedThisMerge: string[];
+  // What the boot commit's server code imports (serverImportsAt); read only
+  // with changedSinceBoot.
+  serverImports: ServerImports;
 }): WebPostMergeDecision {
   const relevant = (p: string) => isWebInput(inputs, p);
   if (!isMainCheckout) return { action: 'noop', reason: 'the merge target is a linked worktree, not the main checkout' };
   if ('sha' in boot && bootIsAncestor && changedSinceBoot) {
     if (!changedSinceBoot.some(relevant)) return { action: 'noop', reason: 'nothing the UI build reads changed since the server booted' };
-    const outside = changedSinceBoot.find((p) => !p.startsWith('web/'));
-    if (outside === undefined) return { action: 'swap', reason: 'every change since the server booted is under web/' };
-    return { action: 'stage', reason: `changes since the server booted reach outside web/ (${outside}), so a new UI may not match the running server` };
+    for (const p of changedSinceBoot) {
+      const why = serverMayLoad(p, serverImports);
+      if (why !== null) return { action: 'stage', reason: why };
+    }
+    return { action: 'swap', reason: 'nothing changed since the server booted is code the running server loads (web/, docs/, tests/, and shared/ modules its imports do not reach)' };
   }
   const why = !('sha' in boot) ? boot.unknown
     : !bootIsAncestor ? `the boot commit ${boot.sha.slice(0, 12)} is not an ancestor of the merge`
@@ -74,16 +99,30 @@ async function gitFacts(root: string, pre: string, post: string, boot: BootCommi
   if (merge.code !== 0) throw new Error(`git diff ${pre} ${post} failed: ${merge.stderr.trim()}`);
   let bootIsAncestor = false;
   let changedSinceBoot: string[] | null = null;
+  let serverImports: ServerImports = { unknown: 'the boot commit was not walked' };
   if ('sha' in boot) {
     // Exit 1 is "not an ancestor"; anything else is a sha that will not verify.
     // Either way it reads as not vouched for.
     bootIsAncestor = (await git(['merge-base', '--is-ancestor', boot.sha, post])).code === 0;
     if (bootIsAncestor) {
       const since = await changed(boot.sha);
-      if (since.code === 0) changedSinceBoot = lines(since.stdout);
+      if (since.code === 0) {
+        changedSinceBoot = lines(since.stdout);
+        // The boot commit's graph is the one the running server loaded, and it
+        // is the only one walked. Walking POST could not change a decision:
+        // resolution is exact, so an unchanged file has the same edges in both
+        // trees, and POST's graph can reach a new or changed file only through
+        // a changed file the boot graph reaches — which already stages (a new
+        // src/ import is itself a src/ change). That premise covers web/ too
+        // only because a changed web/ path the boot graph reaches stages like
+        // any reached path (serverMayLoad); without that check, a server
+        // import of web/ would let its changes swap. No server code imports
+        // web/ today.
+        serverImports = await serverImportsAt(root, boot.sha);
+      }
     }
   }
-  return { isMainCheckout: gitDir === commonDir, bootIsAncestor, changedSinceBoot, changedThisMerge: lines(merge.stdout) };
+  return { isMainCheckout: gitDir === commonDir, bootIsAncestor, changedSinceBoot, changedThisMerge: lines(merge.stdout), serverImports };
 }
 
 /**
