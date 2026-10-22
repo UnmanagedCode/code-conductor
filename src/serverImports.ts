@@ -45,8 +45,11 @@ export function walkServerImports(files: ReadonlySet<string>, text: ReadonlyMap<
       const line = raw.trim();
       if (line.startsWith('//') || line.startsWith('/*') || line.startsWith('*')) continue;
       const unknown = (why: string): ServerImports => ({ unknown: `${file}: ${why}: ${line}` });
-      if (OPAQUE_IMPORT.test(line)) return unknown('an import( of no plain string literal');
-      if (REQUIRE.test(line)) return unknown('a require(');
+      // These reasons are code lines this walk scans in its own source: neither
+      // may contain what OPAQUE_IMPORT or REQUIRE match, or cc's own walk goes
+      // unknown. Only server-imports' real-tree tests would notice.
+      if (OPAQUE_IMPORT.test(line)) return unknown('a dynamic import of no plain string literal');
+      if (REQUIRE.test(line)) return unknown('a CommonJS require call');
       for (const [, , spec] of line.matchAll(SPECIFIER)) {
         if (spec.startsWith('node:')) continue;
         if (spec.startsWith('@shared/')) return unknown(`'${spec}' is a path alias Node cannot resolve`);
@@ -81,15 +84,15 @@ export async function serverImportsAt(root: string, rev: string, system: System 
     '-c', 'grep.lineNumber=false', '-c', 'grep.column=false',
     'grep', '-I', '-z', '--no-color', '-E', 'import|require|from', rev, '--', ...CODE_EXTS.map((e) => '*' + e),
   ]);
-  // git grep says "no line matched" as a silent exit 1. Exit 1 is also what a
-  // command killed at the output fence (GIT_OUTPUT_LIMIT_BYTES) or one that
-  // could not start returns, and both say why on stderr — read as no match,
-  // either would clear every gated path.
-  const noMatch = grep.code === 1 && grep.stderr === '';
-  if (grep.code !== 0 && !noMatch) return { unknown: `git grep ${rev} failed (exit ${grep.code}): ${grep.stderr.trim()}` };
+  // Only exit 0 is read. git grep's "no line matched" exit 1 is also what a
+  // grep killed at the output fence (GIT_OUTPUT_LIMIT_BYTES), killed by a
+  // signal, or unable to start returns, and read as no match any of them
+  // would clear every gated path. A boot commit with no import line at all
+  // proves nothing either, since server.ts always has one.
+  if (grep.code !== 0) return { unknown: `git grep ${rev} failed (exit ${grep.code}): ${grep.stderr.trim()}` };
   const text = new Map<string, string>();
   // Each record is `<rev>:<path>\0<line>\n`.
-  for (const rec of noMatch ? [] : grep.stdout.split('\n')) {
+  for (const rec of grep.stdout.split('\n')) {
     const nul = rec.indexOf('\0');
     if (nul < 0) continue;
     const p = rec.slice(rev.length + 1, nul);

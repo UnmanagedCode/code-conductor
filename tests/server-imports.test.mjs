@@ -177,11 +177,14 @@ test('serverImportsAt keeps every import line of a file, not only its last', asy
   assert.deepEqual(c.get('shared/q.ts'), ['src/a.ts', 'shared/q.ts'], 'the later import');
 });
 
-test('serverImportsAt: a tree with no line git grep matches is a walk with no edges, not a failure', async () => {
+// git grep's no-match exit 1 is indistinguishable from a grep killed by a
+// signal (src/groupedCommand.ts finishes it as 1), and a real boot commit
+// always has import lines, so only exit 0 is read.
+test('serverImportsAt: a tree with no line git grep matches is unknown', async () => {
   const root = await repo();
   const sha = await commit(root, { 'src/a.ts': 'export const a = 1;\n', 'shared/p.ts': 'export const p = 1;\n' });
-  const c = chainsOf(await serverImportsAt(root, sha));
-  assert.equal(c.has('shared/p.ts'), false);
+  const r = await serverImportsAt(root, sha);
+  assert.ok('unknown' in r, `expected unknown, got chains ${JSON.stringify([...(r.chains ?? new Map()).keys()])}`);
 });
 
 test('serverImportsAt: a commit git cannot read makes the walk unknown', async () => {
@@ -219,6 +222,13 @@ test('serverImportsAt: a git grep exit 1 that carries a diagnostic (a spawn erro
   assert.ok('unknown' in r, `expected unknown, got chains ${JSON.stringify([...(r.chains ?? new Map()).keys()])}`);
 });
 
+test('serverImportsAt: a silent git grep exit 1 (what a signal-killed grep returns) makes the walk unknown', async () => {
+  const root = await repo();
+  const sha = await commit(root, { 'src/a.ts': "import { x } from '../shared/x.ts';\n", 'shared/x.ts': 'export const x = 1;\n' });
+  const r = await serverImportsAt(root, sha, withGrep(async () => execResult({ code: 1 })));
+  assert.ok('unknown' in r, `expected unknown, got chains ${JSON.stringify([...(r.chains ?? new Map()).keys()])}`);
+});
+
 test('serverImportsAt: a git grep that times out rejects (runGit\'s GIT_TIMED_OUT) rather than reading as a walk', async () => {
   const root = await repo();
   const sha = await commit(root, { 'src/a.ts': 'export const a = 1;\n' });
@@ -226,6 +236,16 @@ test('serverImportsAt: a git grep that times out rejects (runGit\'s GIT_TIMED_OU
     () => serverImportsAt(root, sha, withGrep(async () => execResult({ code: 124, timedOut: true }))),
     { code: 'GIT_TIMED_OUT' },
   );
+});
+
+// R1 below reads the committed HEAD, so it cannot see an uncommitted edit to
+// the walker's own source; this reads the working tree's copy.
+test('walk: the walker\'s own source, as on disk, has no site the walk cannot resolve', async () => {
+  const src = path.join(REPO, 'src');
+  const files = (await fs.readdir(src, { recursive: true })).map((f) => `src/${f.split(path.sep).join('/')}`);
+  const self = 'src/serverImports.ts';
+  const r = walkServerImports(new Set(files), new Map([[self, await fs.readFile(path.join(REPO, self), 'utf8')]]));
+  assert.ok('chains' in r, `walk is unknown: ${r.unknown}`);
 });
 
 // Depends on this checkout's .git, like plugins-supervisor's HEAD test.
