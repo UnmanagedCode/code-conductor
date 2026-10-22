@@ -236,17 +236,21 @@ The consequences of being a substitution backend:
   — the bug class to check first when a defect looks backend-specific. The interrupt,
   control-request and drain paths (`Instance.interrupt`, `_openDrainWindow`,
   `_closeDrainWindow`) never read `CLAUDE_BACKEND_ID`.
-- **No gateway `stream_event` capture is in `tests/fixtures/`.** The all-zero-start +
-  real-delta fixture `scenario-zero-usage-delta.json` is authored; only its event-level
-  `usage` envelope is modelled on the real capture `scenario-live-skill-load.json`. A
-  gateway framing trait is therefore provably *reachable* from the parser's branches,
-  not attested on the wire. A wrong envelope floors to `ctx —`, never a wrong number.
-  For cross-backend questions about what was persisted, the session jsonls are a corpus,
+- **Real gateway captures are in `tests/fixtures/`** — `nonclaude-*.stdout.jsonl` /
+  `.transcript.jsonl` (provenance and scrub in the header of
+  `tests/nonclaude-usage-captures.test.mjs`). On every one, `result.usage` is that turn's
+  sum of `message_delta.usage`; `message_start.usage` is a placeholder (whole context
+  with output 0, an overestimate, or all zero). Some backends report
+  `cache_read_input_tokens` on the delta; others never send the key and count the
+  whole context as input — `src/cacheEstimate.ts` estimates their cache read.
+  `scenario-zero-usage-delta.json` is an authored all-zero-start fixture. For
+  cross-backend questions about what was persisted, the session jsonls are a corpus,
   attributable per session via the `backend` field of its record in `<store>/sessions.json`.
 - **No `cost_usd`** is persisted for its turns (`src/costTracking.ts`): the CLI's
-  `total_cost_usd` is Anthropic list pricing applied to someone else's model. The
-  *absence* of `cost_usd` is the canonical "tokens not countable" marker the cost
-  dashboard reads.
+  `total_cost_usd` is Anthropic list pricing applied to someone else's model. Its
+  tokens are persisted like a Claude turn's; a turn whose calls reported no cache read
+  persists the estimated split, flagged `cache_estimated` (see protocol.md →
+  `turn_end.cacheEstimate`).
 - **Own usage-window domain** — `usageDomainOfBackend()` maps `claude` to the
   monitored `anthropic` domain and every other backend to `backend:<its id>`. The
   namespace is load-bearing: ids are user-chosen, so an un-namespaced map would let a

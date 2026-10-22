@@ -140,12 +140,11 @@ test('cost-tracking: getCostSummary treats missing cost_usd (ollama rows) as zer
     const ollamaModel = summary.by_model.find(m => m.model === 'llama3:8b');
     assert.ok(ollamaModel, 'ollama model entry should still exist');
     assert.equal(ollamaModel.cost_usd, 0, 'ollama model cost contributes zero, not a bogus figure');
-    // The ollama row here carries a stale `input_tokens: 0`... actually 80, i.e.
-    // a legacy pre-fix row shape (token fields present but no cost_usd). It must
-    // be treated as token-UNKNOWN, not summed — no summable per-turn source
-    // exists for ollama, so surfacing 80 would be fabricated data.
-    assert.equal(ollamaModel.input_tokens, 0, 'ollama row excluded from token sums');
-    assert.equal(ollamaModel.tokens_known, false, 'ollama-only model reports tokens unavailable');
+    // A non-Claude row's tokens are its result.usage sums, the same per-turn
+    // source a Claude row's are: known whenever input_tokens is a number.
+    assert.equal(ollamaModel.input_tokens, 80, 'ollama row tokens summed');
+    assert.equal(ollamaModel.output_tokens, 40);
+    assert.equal(ollamaModel.tokens_known, true, 'ollama-only model reports its tokens');
 
     const claudeModel = summary.by_model.find(m => m.model === 'claude-opus-4-8');
     assert.ok(Math.abs(claudeModel.cost_usd - 0.05) < 1e-9);
@@ -211,10 +210,10 @@ test('cost-tracking: a substitution-backend turn_end (no usage) omits token fiel
     emitter.get = (id) => insts[id];
     initCostTracking(emitter);
 
-    // Realistic substitution-backend turn_end: the CLI `result` frame carries no
-    // usage block, so the parser sets ev.usage = null. Token fields must be OMITTED
-    // (not 0). Run for the built-in ollama row AND a user-defined one — the rule is
-    // keyed on "not the identity backend", not on the id 'ollama'.
+    // A turn_end whose `result` frame carried no usage block (ev.usage = null):
+    // token fields must be OMITTED (not 0). Run for the built-in ollama row AND a
+    // user-defined one — the cost rule is keyed on "not the identity backend",
+    // not on the id 'ollama'.
     emitter.emit('event', { id: 'ollama-1', ev: { kind: 'turn_end', cost: 0.0001, costDelta: 0.0001, usage: null } });
     emitter.emit('event', { id: 'proxy-1', ev: { kind: 'turn_end', cost: 0.0002, costDelta: 0.0002, usage: null } });
     // Anthropic turn_end: full usage block present.
@@ -240,9 +239,6 @@ test('cost-tracking: a substitution-backend turn_end (no usage) omits token fiel
       assert.equal(Object.hasOwn(row, 'cost_usd'), false, `${row.model} row omits cost_usd`);
     }
 
-    // Partition invariant: every written Anthropic row carries cost_usd AND all
-    // token fields; non-Claude rows carry neither. So `'cost_usd' in r` is a sound
-    // token-countability discriminator (the aggregator relies on this).
     assert.equal(Object.hasOwn(claudeRow, 'cost_usd'), true, 'claude row always has cost_usd');
     for (const k of tokenKeys) {
       assert.equal(Object.hasOwn(claudeRow, k), true, `claude row carries ${k}`);
@@ -254,7 +250,108 @@ test('cost-tracking: a substitution-backend turn_end (no usage) omits token fiel
   }
 });
 
-test('cost-tracking: mixed model keeps Anthropic token totals; non-Claude-only reads unknown', async () => {
+// ── Non-Claude tokens: the cache estimate on the write side, tokens_known /
+// tokens_estimated on the read side ─────────────────────────────────────────
+
+async function withStore(fn) {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+  try {
+    return await fn(await import('../src/costTracking.ts'));
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+}
+
+// Emit turn_ends through initCostTracking and return the raw rows written.
+async function writeRows({ initCostTracking, costsPath }, insts, emits) {
+  const emitter = new EventEmitter();
+  emitter.get = (id) => insts[id];
+  initCostTracking(emitter);
+  for (const [id, ev] of emits) emitter.emit('event', { id, ev });
+  await new Promise(r => setTimeout(r, 50));
+  const raw = await fs.readFile(costsPath(), 'utf8').catch(() => '');
+  return raw.split('\n').filter(Boolean);
+}
+
+const NOCACHE_USAGE = { input_tokens: 5000, output_tokens: 70, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+
+test('cost-tracking: a non-Claude turn_end with a cacheEstimate writes the estimated split, flagged', async () => {
+  await withStore(async (mod) => {
+    const [line] = await writeRows(mod, { o: fakeInst({ backend: 'ollama', model: 'glm-5.2:cloud' }) }, [
+      ['o', { ...turnEndEv({ usage: NOCACHE_USAGE }), cacheEstimate: { inputTokens: 1200, cacheReadTokens: 3800 } }],
+    ]);
+    const row = JSON.parse(line);
+    assert.equal(row.input_tokens, 1200);
+    assert.equal(row.cache_read_tokens, 3800);
+    assert.equal(row.output_tokens, 70, 'output stays as reported');
+    assert.equal(row.cache_creation_tokens, 0, 'cache writes are never estimated');
+    assert.equal(row.cache_estimated, true);
+    assert.equal(Object.keys(row).at(-1), 'cache_estimated', 'the flag is additive, after first_req_evicted');
+    assert.equal(Object.keys(row).at(-2), 'first_req_evicted');
+  });
+});
+
+test('cost-tracking: a non-Claude turn_end without a cacheEstimate writes the reported tokens, unflagged', async () => {
+  await withStore(async (mod) => {
+    const lines = await writeRows(mod, { o: fakeInst({ backend: 'ollama', model: 'deepseek-v4.1-flash:cloud' }) }, [
+      ['o', { ...turnEndEv({ usage: { input_tokens: 432, output_tokens: 245, cache_creation_input_tokens: 0, cache_read_input_tokens: 113792 } }), cacheEstimate: null }],
+      ['o', turnEndEv({ usage: NOCACHE_USAGE })],
+    ]);
+    const rows = lines.map(l => JSON.parse(l));
+    assert.deepEqual(rows.map(r => [r.input_tokens, r.cache_read_tokens]), [[432, 113792], [5000, 0]]);
+    for (const r of rows) assert.equal(Object.hasOwn(r, 'cache_estimated'), false);
+  });
+});
+
+test('cost-tracking: a Claude row is byte-identical whatever cacheEstimate the turn_end carries', async (t) => {
+  t.mock.method(Date, 'now', () => 1_700_000_000_000);
+  await withStore(async (mod) => {
+    const [line] = await writeRows(mod, { c: fakeInst() }, [
+      ['c', { ...turnEndEv({ costDelta: 0.0123 }), cacheEstimate: { inputTokens: 1, cacheReadTokens: 299 } }],
+    ]);
+    assert.equal(line, '{"ts":1700000000000,"project":"proj-a","model":"claude-opus-4-8","sessionId":"sess-1",'
+      + '"parentSessionId":null,"duration_ms":null,"duration_api_ms":null,"input_tokens":100,"output_tokens":50,'
+      + '"cache_creation_tokens":20,"cache_read_tokens":200,"cache_miss":false,"first_req_cache_read":0,'
+      + '"first_req_cache_creation":0,"first_req_evicted":0,"cost_usd":0.0123}');
+  });
+});
+
+test('cost-tracking: getCostSummary reports a non-Claude-only group\'s real token sums; tokens_estimated only where a row is flagged', async () => {
+  await withStore(async ({ getCostSummary, costsPath }) => {
+    await fs.mkdir(path.dirname(costsPath()), { recursive: true });
+    const ts = new Date('2026-07-01').getTime();
+    const rows = [
+      { ts, project: 'p', model: 'glm-5.2:cloud', sessionId: 'a', input_tokens: 1200, output_tokens: 70, cache_creation_tokens: 0, cache_read_tokens: 3800, cache_miss: false, cache_estimated: true },
+      { ts, project: 'p', model: 'glm-5.2:cloud', sessionId: 'a', input_tokens: 300, output_tokens: 30, cache_creation_tokens: 0, cache_read_tokens: 0, cache_miss: false },
+      { ts, project: 'q', model: 'deepseek-v4.1-flash:cloud', sessionId: 'b', input_tokens: 432, output_tokens: 245, cache_creation_tokens: 0, cache_read_tokens: 113792, cache_miss: false },
+      { ts, project: 'q', model: 'no-usage', sessionId: 'c', cache_miss: false },
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const s = await getCostSummary();
+    const m = (k) => s.by_model.find(x => x.model === k);
+    const p = (k) => s.by_project.find(x => x.project === k);
+
+    assert.equal(m('glm-5.2:cloud').tokens_known, true);
+    assert.deepEqual([m('glm-5.2:cloud').input_tokens, m('glm-5.2:cloud').cache_read_tokens, m('glm-5.2:cloud').output_tokens], [1500, 3800, 100]);
+    assert.equal(m('deepseek-v4.1-flash:cloud').tokens_known, true);
+    assert.equal(m('deepseek-v4.1-flash:cloud').cache_read_tokens, 113792);
+    assert.equal(m('no-usage').tokens_known, false, 'a row with no input_tokens is still token-unknown');
+
+    assert.equal(m('glm-5.2:cloud').tokens_estimated, true);
+    assert.equal(m('deepseek-v4.1-flash:cloud').tokens_estimated, false);
+    assert.equal(m('no-usage').tokens_estimated, false);
+    assert.equal(p('p').tokens_estimated, true);
+    assert.equal(p('q').tokens_estimated, false);
+    assert.equal(p('p').by_model[0].tokens_estimated, true);
+    assert.equal(p('q').by_model.find(x => x.model === 'deepseek-v4.1-flash:cloud').tokens_estimated, false);
+  });
+});
+
+test('cost-tracking: mixed model keeps Anthropic token totals; a usage-less group reads unknown', async () => {
   const dir = await makeTmpDir();
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = dir;
@@ -268,10 +365,10 @@ test('cost-tracking: mixed model keeps Anthropic token totals; non-Claude-only r
     const ts = new Date('2026-07-01').getTime();
     const rows = [
       // One model key 'shared' with an Anthropic turn (cost_usd + tokens) AND a
-      // new-format ollama turn (no cost_usd, no token fields).
+      // turn whose result carried no usage (no token fields).
       { ts, project: 'p', model: 'shared', sessionId: 'a', input_tokens: 100, output_tokens: 50, cache_creation_tokens: 10, cache_read_tokens: 20, cost_usd: 0.04, cache_miss: false },
       { ts, project: 'p', model: 'shared', sessionId: 'b', cache_miss: false },
-      // A separate ollama-only model.
+      // A separate model whose only turn carried no usage.
       { ts, project: 'p', model: 'ollama-only', sessionId: 'c', cache_miss: false },
     ];
     await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
@@ -280,12 +377,12 @@ test('cost-tracking: mixed model keeps Anthropic token totals; non-Claude-only r
 
     const shared = summary.by_model.find(m => m.model === 'shared');
     assert.equal(shared.tokens_known, true, 'one Anthropic turn makes the mixed model tokens-known');
-    assert.equal(shared.input_tokens, 100, 'token totals come from the Anthropic turn only — the ollama turn never blanks them');
+    assert.equal(shared.input_tokens, 100, 'token totals come from the usage-bearing turn — the usage-less one never blanks them');
     assert.equal(shared.output_tokens, 50);
     assert.equal(shared.turns, 2, 'both turns still counted');
 
     const only = summary.by_model.find(m => m.model === 'ollama-only');
-    assert.equal(only.tokens_known, false, 'ollama-only model reports tokens unavailable');
+    assert.equal(only.tokens_known, false, 'a usage-less-only model reports tokens unavailable');
     assert.equal(only.input_tokens, 0);
 
     // Project has an Anthropic row → project-level tokens are known.

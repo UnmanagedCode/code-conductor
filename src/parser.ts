@@ -128,6 +128,10 @@ export function promptTokenSum(usage: unknown): number {
        + (u.cache_creation_input_tokens ?? 0);
 }
 
+function finiteOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
 // A CLI frame passed through whole as a `system` event. The frame is untyped
 // wire data; SystemData names the fields consumers read off it.
 function cliSystemEvent(subtype: unknown, frame: WireEnvelope): UiEventOf<'system'> {
@@ -463,7 +467,8 @@ export class Parser {
         //     `message_start`, which would feed the delta's cache numbers into
         //     cross-turn cache-miss bookkeeping (Instance._handleMessageStart).
         //   - call_usage: whenever `output_tokens` is a number. No blockIdx, so
-        //     it stays quiescence-neutral; Instance stamps the prompt + growth.
+        //     it stays quiescence-neutral; Instance stamps the prompt + growth
+        //     and feeds the cache estimate from its input-side fields.
         const usage = ev.usage ?? null;
         const out: UiEvent[] = [];
         // Same floor as message_start, for the same reason: a zero renders
@@ -473,13 +478,20 @@ export class Parser {
         if (this._ctxFallbackArmed && usage && promptTokenSum(usage) > 0) {
           out.push({ kind: 'context_usage', msgId: this.currentMsgId, usage });
         }
-        const u = (usage ?? {}) as { output_tokens?: unknown; output_tokens_details?: { thinking_tokens?: unknown } | null };
+        const u = (usage ?? {}) as {
+          output_tokens?: unknown; output_tokens_details?: { thinking_tokens?: unknown } | null;
+          input_tokens?: unknown; cache_read_input_tokens?: unknown; cache_creation_input_tokens?: unknown;
+        };
         if (typeof u.output_tokens === 'number' && Number.isFinite(u.output_tokens)) {
-          const thinking = u.output_tokens_details?.thinking_tokens;
           out.push({
             kind: 'call_usage', msgId: this.currentMsgId,
             outputTokens: u.output_tokens,
-            thinkingTokens: typeof thinking === 'number' && Number.isFinite(thinking) ? thinking : null,
+            thinkingTokens: finiteOrNull(u.output_tokens_details?.thinking_tokens),
+            // The input side, for the cache estimate (src/cacheEstimate.ts): null
+            // is a key this delta did not send, a different fact from a sent 0.
+            inputTokens: finiteOrNull(u.input_tokens),
+            cacheReadTokens: finiteOrNull(u.cache_read_input_tokens),
+            cacheCreationTokens: finiteOrNull(u.cache_creation_input_tokens),
           });
         }
         return out;

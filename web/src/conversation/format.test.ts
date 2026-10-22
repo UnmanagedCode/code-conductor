@@ -142,7 +142,7 @@ describe('turn footer and per-call usage', () => {
     expect(turnEndParts({ ...BASE, contextTokens: 35_000, contextWindowTokens: 200_000, contextGrowthTokens: -1_500 }).context).toBe('-1.5k → ctx 35k / 200k (18%)');
     for (const g of [3_200, -1_500, 0]) {
       const turn = turnEndParts({ ...BARE, contextTokens: 35_000, contextGrowthTokens: g }).context!;
-      const call = callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 35_000, growthTokens: g, outputTokens: 10, thinkingTokens: null });
+      const call = callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 35_000, growthTokens: g, outputTokens: 10, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null });
       expect(turn.slice(0, turn.indexOf('ctx'))).toBe(call.slice(0, call.indexOf('ctx')));
     }
   });
@@ -153,12 +153,12 @@ describe('turn footer and per-call usage', () => {
   });
 
   it('a call line shows growth, context and output with its thinking portion', () => {
-    expect(callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 3_200, outputTokens: 1_500, thinkingTokens: 900 })).toBe('+3.2k → ctx 40k · out 1.5k (900 thinking)');
-    expect(callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: null, outputTokens: 12, thinkingTokens: null })).toBe('ctx 40k · out 12');
+    expect(callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 3_200, outputTokens: 1_500, thinkingTokens: 900, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null })).toBe('+3.2k → ctx 40k · out 1.5k (900 thinking)');
+    expect(callUsageText({ kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: null, outputTokens: 12, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null })).toBe('ctx 40k · out 12');
   });
 
   it('a call line drops its growth with no baseline, its thinking clause when thinking is 0 or unknown, and its context segment when the prompt is unknown; negative growth keeps its sign', () => {
-    const call: UiEvent = { kind: 'call_usage', msgId: 'm1', outputTokens: 460, thinkingTokens: 73, promptTokens: 84_000, growthTokens: 3_200 };
+    const call: UiEvent = { kind: 'call_usage', msgId: 'm1', outputTokens: 460, thinkingTokens: 73, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null, promptTokens: 84_000, growthTokens: 3_200 };
     expect(callUsageText(call), 'fixture check: the full line').toBe('+3.2k → ctx 84k · out 460 (73 thinking)');
     expect(callUsageText({ ...call, growthTokens: null }), 'no baseline').toBe('ctx 84k · out 460 (73 thinking)');
     expect(callUsageText({ ...call, thinkingTokens: 0 }), 'thinking 0').toBe('+3.2k → ctx 84k · out 460');

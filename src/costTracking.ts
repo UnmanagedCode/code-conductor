@@ -54,6 +54,7 @@ interface CostRow {
   first_req_cache_read: number;
   first_req_cache_creation: number;
   first_req_evicted: number;
+  cache_estimated?: true;
   cost_usd?: number;
 }
 
@@ -73,24 +74,31 @@ function numOrNull(v: unknown): number | null {
 // they had become by the time the queue drained.
 function appendCostRow(inst: InstanceLike, ev: UiEventOf<'turn_end'>, parentSessionId: string | null): void {
   // Per-turn token totals come ONLY from the SDK `result.usage` (a genuine
-  // per-turn sum). A substitution backend (e.g. the built-in `ollama` row) omits
-  // `usage` from its `result` frames, so ev.usage is null there — we OMIT the four
-  // token fields rather than persist fabricated 0s. (The only other token
-  // signal, message_start.usage, is a last-value-wins context-size snapshot,
-  // not a summable per-turn total — summing it would double-count.) Mirrors the
-  // client UsageTracker guard in shared/usage.ts. The conditional spread keeps
-  // the fields in-position so Anthropic rows (usage always present) serialize
-  // byte-identically. Read side treats a non-Claude row (no cost_usd) as
-  // token-unknown, so the omission drives an honest `—` in the #costs dashboard.
+  // per-turn sum, on every backend). A turn_end without one (ev.usage null)
+  // OMITS the four token fields rather than persist fabricated 0s, and the read
+  // side reads such a row as token-unknown. (message_start.usage is a
+  // last-value-wins context-size snapshot, not a summable per-turn total —
+  // summing it would double-count.) Mirrors the client UsageTracker guard in
+  // shared/usage.ts. The conditional spread keeps the fields in-position so
+  // rows serialize in one key order.
+  //
+  // A non-Claude turn whose calls reported no cache read carries the cache
+  // estimate's re-split of its input (src/cacheEstimate.ts): input_tokens and
+  // cache_read_tokens take it, their sum still equals the reported input, and
+  // the row is flagged `cache_estimated`. Claude rows never read it.
+  const rawEstimate = inst.backend !== CLAUDE_BACKEND_ID ? ev.cacheEstimate ?? null : null;
+  const estInput = numOrNull(rawEstimate?.inputTokens);
+  const estRead = numOrNull(rawEstimate?.cacheReadTokens);
+  const estimate = estInput !== null && estRead !== null ? { input: estInput, read: estRead } : null;
   const rawUsage = ev.usage;
   const usage = rawUsage != null && typeof rawUsage === 'object' && !Array.isArray(rawUsage)
     ? rawUsage as { input_tokens?: unknown; output_tokens?: unknown; cache_creation_input_tokens?: unknown; cache_read_input_tokens?: unknown }
     : null;
   const tokenFields = usage ? {
-    input_tokens: numOrNull(usage.input_tokens) ?? 0,
+    input_tokens: estimate ? estimate.input : numOrNull(usage.input_tokens) ?? 0,
     output_tokens: numOrNull(usage.output_tokens) ?? 0,
     cache_creation_tokens: numOrNull(usage.cache_creation_input_tokens) ?? 0,
-    cache_read_tokens: numOrNull(usage.cache_read_input_tokens) ?? 0,
+    cache_read_tokens: estimate ? estimate.read : numOrNull(usage.cache_read_input_tokens) ?? 0,
   } : {};
   const row: CostRow = {
     ts: Date.now(),
@@ -123,6 +131,8 @@ function appendCostRow(inst: InstanceLike, ev: UiEventOf<'turn_end'>, parentSess
     first_req_cache_read: numOrNull(ev.firstReqCacheRead) ?? 0,
     first_req_cache_creation: numOrNull(ev.firstReqCacheCreation) ?? 0,
     first_req_evicted: numOrNull(ev.firstReqEvicted) ?? 0,
+    // Additive, present only on an estimated row.
+    ...(usage && estimate ? { cache_estimated: true as const } : {}),
   };
   // A substitution backend's total_cost_usd is Anthropic list pricing applied to
   // someone else's model — meaningless, so omit the field rather than persist a
@@ -180,6 +190,7 @@ interface ModelAccumulator {
   turns: number;
   cache_misses: number;
   _hasTokens: boolean;
+  _estimated: boolean;
   _sessionSet: Set<string>;
 }
 
@@ -191,6 +202,7 @@ interface ProjectAccumulator {
   turns: number;
   cache_misses: number;
   _hasTokens: boolean;
+  _estimated: boolean;
   _sessionSet: Set<string>;
   _modelMap: Map<string, ModelAccumulator>;
 }
@@ -208,6 +220,7 @@ interface ModelSummary {
   cache_misses: number;
   sessions: number;
   tokens_known: boolean;
+  tokens_estimated: boolean;
 }
 
 interface CostSummary {
@@ -222,6 +235,7 @@ interface CostSummary {
     cache_misses: number;
     sessions: number;
     tokens_known: boolean;
+    tokens_estimated: boolean;
     by_model: ModelSummary[];
   }>;
   by_model: ModelSummary[];
@@ -231,15 +245,23 @@ interface CostSummary {
 function newModelAccumulator(key: string): ModelAccumulator {
   return {
     model: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, input_tokens: 0, output_tokens: 0,
-    cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _hasTokens: false, _sessionSet: new Set(),
+    cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _hasTokens: false, _estimated: false, _sessionSet: new Set(),
   };
+}
+
+// A row's tokens are known exactly when it carries them: appendCostRow writes
+// all four fields from the turn's result.usage, on every backend, and omits them
+// all when the turn had none.
+function tokensKnown(r: Row): boolean {
+  return typeof r.input_tokens === 'number';
 }
 
 function accumulateModel(m: ModelAccumulator, r: Row): void {
   m.cost_usd += rowNum(r, 'cost_usd');
   m.duration_ms += rowNum(r, 'duration_ms');
   m.duration_api_ms += rowNum(r, 'duration_api_ms');
-  if ('cost_usd' in r) {
+  if (r.cache_estimated === true) m._estimated = true;
+  if (tokensKnown(r)) {
     m._hasTokens = true;
     m.input_tokens += rowNum(r, 'input_tokens');
     m.output_tokens += rowNum(r, 'output_tokens');
@@ -252,8 +274,8 @@ function accumulateModel(m: ModelAccumulator, r: Row): void {
 }
 
 function modelSummary(m: ModelAccumulator): ModelSummary {
-  const { _sessionSet, _hasTokens, ...rest } = m;
-  return { ...rest, sessions: _sessionSet.size, tokens_known: _hasTokens };
+  const { _sessionSet, _hasTokens, _estimated, ...rest } = m;
+  return { ...rest, sessions: _sessionSet.size, tokens_known: _hasTokens, tokens_estimated: _estimated };
 }
 
 export async function getCostSummary(): Promise<CostSummary> {
@@ -278,19 +300,15 @@ export async function getCostSummary(): Promise<CostSummary> {
   // By project (with nested per-model breakdown)
   const projectMap = new Map<string, ProjectAccumulator>();
   for (const r of rows) {
-    // A row's token counts are trustworthy only for Anthropic rows. Non-Claude
-    // rows carry no summable per-turn token total and omit `cost_usd` (see
-    // appendCostRow) — so `'cost_usd' in r` is the canonical current-format
-    // Anthropic marker, and it also correctly classifies legacy non-Claude rows
-    // that carry stale `input_tokens: 0` (they lack cost_usd). Rows without
-    // trustworthy tokens are excluded from the token sums and leave `_hasTokens`
-    // false, so a non-Claude-only group reports tokens_known:false → `—` in the UI,
-    // while a mixed group keeps its real Anthropic token totals.
-    const tokensKnown = 'cost_usd' in r;
+    // Rows without tokens (tokensKnown) are excluded from the token sums and
+    // leave `_hasTokens` false, so a group of only such rows reports
+    // tokens_known:false → `—` in the UI, while a mixed group keeps the real
+    // totals of the rest. Any `cache_estimated` row marks its groups
+    // tokens_estimated.
     const key = rowStr(r, 'project');
     let entry = projectMap.get(key);
     if (!entry) {
-      entry = { project: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, turns: 0, cache_misses: 0, _hasTokens: false, _sessionSet: new Set(), _modelMap: new Map() };
+      entry = { project: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, turns: 0, cache_misses: 0, _hasTokens: false, _estimated: false, _sessionSet: new Set(), _modelMap: new Map() };
       projectMap.set(key, entry);
     }
     entry.cost_usd += rowNum(r, 'cost_usd');
@@ -303,22 +321,21 @@ export async function getCostSummary(): Promise<CostSummary> {
     const mKey = rowStr(r, 'model');
     const mEntry = entry._modelMap.get(mKey) ?? newModelAccumulator(mKey);
     accumulateModel(mEntry, r);
-    if (tokensKnown) entry._hasTokens = true;
+    if (tokensKnown(r)) entry._hasTokens = true;
+    if (r.cache_estimated === true) entry._estimated = true;
     entry._modelMap.set(mKey, mEntry);
   }
   const by_project = [...projectMap.values()].map(e => {
     const by_model = [...e._modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd).map(modelSummary);
-    return { project: e.project, cost_usd: e.cost_usd, duration_ms: e.duration_ms, duration_api_ms: e.duration_api_ms, turns: e.turns, cache_misses: e.cache_misses, sessions: e._sessionSet.size, tokens_known: e._hasTokens, by_model };
+    return { project: e.project, cost_usd: e.cost_usd, duration_ms: e.duration_ms, duration_api_ms: e.duration_api_ms, turns: e.turns, cache_misses: e.cache_misses, sessions: e._sessionSet.size, tokens_known: e._hasTokens, tokens_estimated: e._estimated, by_model };
   }).sort((a, b) => b.cost_usd - a.cost_usd);
 
   // By model
   const modelMap = new Map<string, ModelAccumulator>();
   for (const r of rows) {
-    const tokensKnown = 'cost_usd' in r; // see the by_project loop for rationale
     const key = rowStr(r, 'model');
     const entry = modelMap.get(key) ?? newModelAccumulator(key);
     accumulateModel(entry, r);
-    if (tokensKnown) entry._hasTokens = true;
     modelMap.set(key, entry);
   }
   const by_model = [...modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd).map(modelSummary);

@@ -39,8 +39,8 @@ describe('call usage on a lazily loaded page', () => {
     expect(usageLines(bare)).toHaveLength(0);
     const withUsage = await pageRendered([
       ...base,
-      { kind: 'call_usage', msgId: 'm1', promptTokens: 61_000, growthTokens: 2_000, outputTokens: 310, thinkingTokens: null },
-      { kind: 'call_usage', msgId: 'm2', promptTokens: 63_000, growthTokens: 1_500, outputTokens: 120, thinkingTokens: null },
+      { kind: 'call_usage', msgId: 'm1', promptTokens: 61_000, growthTokens: 2_000, outputTokens: 310, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null },
+      { kind: 'call_usage', msgId: 'm2', promptTokens: 63_000, growthTokens: 1_500, outputTokens: 120, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null },
     ]);
     expect(usageLines(withUsage)).toHaveLength(2);
   });
@@ -49,7 +49,7 @@ describe('call usage on a lazily loaded page', () => {
 // ── A call_usage ahead of its message ────────────────────────────────────
 
 const inst = (id: string): Instance => ({ id, project: 'p', status: 'idle', sessionId: `s-${id}`, mode: 'default' });
-const usage = (msgId: string, seq: number): UiEvent => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null, _seq: seq });
+const usage = (msgId: string, seq: number): UiEvent => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null, _seq: seq });
 const seqd = (evs: UiEvent[], from: number): UiEvent[] => evs.map((e, i) => ({ ...e, _seq: from + i }));
 
 /** m1's turn up to its reply's text_end: seqs 1–3. */

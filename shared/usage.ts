@@ -38,6 +38,9 @@ export type UsageTotals = {
   cost: number;
   turns: number;
   durationMs: number;
+  // Set once any summed turn's input / cache-read split was estimated
+  // (turn_end.cacheEstimate).
+  cacheEstimated: boolean;
 };
 
 export class UsageTracker {
@@ -58,6 +61,7 @@ export class UsageTracker {
       cost: 0,
       turns: 0,
       durationMs: 0,
+      cacheEstimated: false,
     };
   }
 
@@ -133,19 +137,21 @@ export class UsageTracker {
     // So we MUST NOT update lastUsage from turn_end (that's the bug
     // that produced ctx 743% on a 1M window). turn_end only contributes
     // to cum.*, which is genuinely cumulative work over the session.
-    // Turn/duration/cost accumulate on EVERY turn_end — a substitution backend
-    // (e.g. the built-in `ollama` row) emits `result` lines with no `usage` block,
-    // so gating the turn count on `ev.usage` dropped every such turn and the chip
-    // showed a stale count. Token fields stay guarded on `usage`: those backends
-    // have no per-turn token sum to trust (their `message_start` figures are
-    // context-size snapshots, not summable totals), so we don't fabricate them.
+    // Turn/duration/cost accumulate on EVERY turn_end; token fields only on one
+    // that carries `usage` — a turn without it has no per-turn sum to trust
+    // (message_start figures are context-size snapshots, not summable totals),
+    // so we don't fabricate one. A non-Claude turn whose calls reported no cache
+    // read carries the server's re-split of its input (`cacheEstimate`), which
+    // replaces the reported input / cache-read pair.
     if (ev.kind === 'turn_end') {
       const u = ev.usage;
       if (u) {
-        this.cum.inputTokens   += u.input_tokens ?? 0;
+        const est = ev.cacheEstimate;
+        this.cum.inputTokens   += est ? est.inputTokens : u.input_tokens ?? 0;
         this.cum.outputTokens  += u.output_tokens ?? 0;
-        this.cum.cacheRead     += u.cache_read_input_tokens ?? 0;
+        this.cum.cacheRead     += est ? est.cacheReadTokens : u.cache_read_input_tokens ?? 0;
         this.cum.cacheCreation += u.cache_creation_input_tokens ?? 0;
+        if (est) this.cum.cacheEstimated = true;
       }
       // costDelta is the actual cost of this turn; ev.cost is the cumulative
       // session total emitted by the CLI. Use the delta to avoid double-counting.

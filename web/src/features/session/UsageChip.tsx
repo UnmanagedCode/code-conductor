@@ -113,14 +113,16 @@ export function UsageChip({ inst }: { inst: Instance }) {
             {c.turns === 0 ? <div className="text-sm text-muted-foreground">No turns have completed yet.</div> : (() => {
               const totalIn = c.inputTokens + c.cacheRead + c.cacheCreation;
               const hit = totalIn > 0 ? c.cacheRead / totalIn : 0;
+              // An estimated cache split moves both figures it re-splits.
+              const est = (v: string) => (c.cacheEstimated ? `≈ ${v} (est.)` : v);
               return (
                 <>
                   <Row k="Turns" v={String(c.turns)} />
                   <Row k="Duration" v={formatDuration(c.durationMs)} />
                   <Row k="Cost" v={inst.backend && inst.backend !== CLAUDE_BACKEND ? '—' : fmtCost(c.cost)} />
-                  <Row k="Input (uncached)" v={formatTokens(c.inputTokens)} />
+                  <Row k="Input (uncached)" v={est(formatTokens(c.inputTokens))} />
                   <Row k="Output" v={formatTokens(c.outputTokens)} />
-                  <Row k="Cache reads" v={`${formatTokens(c.cacheRead)} (${formatPct(hit)} hit)`} />
+                  <Row k="Cache reads" v={est(`${formatTokens(c.cacheRead)} (${formatPct(hit)} hit)`)} />
                   <Row k="Cache creation" v={formatTokens(c.cacheCreation)} />
                 </>
               );

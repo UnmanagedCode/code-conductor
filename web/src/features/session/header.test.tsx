@@ -819,6 +819,29 @@ describe('context + rate-limit chip', () => {
     accountUsageStore.set({ usage: null, stale: false });
   });
 
+  it('the popover marks the input and cache-read totals estimated exactly when a turn\'s cache split was', async () => {
+    const t = getUsageTracker('c15');
+    t.reset();
+    t.apply(turnEnd({ usage: { input_tokens: 400, output_tokens: 5, cache_read_input_tokens: 600 } }));
+    const rowValue = (pop: HTMLElement, label: string) =>
+      [...pop.querySelectorAll('div')].find((d) => d.firstElementChild?.textContent === label && d.children.length === 2)!.lastElementChild!.textContent;
+    const r = wrap(<UsageChip inst={base({ id: 'c15', backend: 'ollama' })} />);
+    await act(async () => { fireEvent.click(chip()); });
+    expect(rowValue(screen.getByRole('dialog'), 'Cache reads')).not.toContain('est.');
+    expect(rowValue(screen.getByRole('dialog'), 'Input (uncached)')).not.toContain('est.');
+    r.unmount();
+
+    t.apply(turnEnd({ usage: { input_tokens: 5000, output_tokens: 70, cache_read_input_tokens: 0 }, cacheEstimate: { inputTokens: 1200, cacheReadTokens: 3800 } }));
+    wrap(<UsageChip inst={base({ id: 'c15', backend: 'ollama' })} />);
+    await act(async () => { fireEvent.click(chip()); });
+    const pop = screen.getByRole('dialog');
+    expect(rowValue(pop, 'Cache reads')).toContain('4.4k');
+    expect(rowValue(pop, 'Cache reads')).toContain('est.');
+    expect(rowValue(pop, 'Input (uncached)')).toContain('1.6k');
+    expect(rowValue(pop, 'Input (uncached)')).toContain('est.');
+    expect(rowValue(pop, 'Output')).not.toContain('est.');
+  });
+
   it('a window of 1 is a known capacity: the tooltip names 250,000/1 and never "capacity unknown"', () => {
     getUsageTracker('c7').reset();
     getUsageTracker('c7').apply({ kind: 'message_start', msgId: 'm1', usage: { input_tokens: 250_000 } });
