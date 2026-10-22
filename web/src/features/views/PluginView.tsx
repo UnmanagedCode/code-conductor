@@ -143,7 +143,8 @@ export function PluginView() {
               <TooltipContent side="left">Expand plugin dock</TooltipContent>
             </Tooltip>
           </div>
-          <span className="min-h-0 truncate py-2 text-xs font-medium text-muted-foreground [writing-mode:vertical-rl]">{title}</span>
+          {/* pt-2 pb-2, not py-2: py is logical padding-block, which vertical-rl turns into side padding */}
+          <span data-dock-rail-label className="min-h-0 truncate pt-2 pb-2 text-xs font-medium text-muted-foreground [writing-mode:vertical-rl]">{title}</span>
         </div>
       )}
       {/* In the rail the section stays laid out at the split width behind the clip, so its frames never resize or reload. */}
