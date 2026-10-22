@@ -10,6 +10,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { serverImportsAt, walkServerImports } from '../src/serverImports.ts';
+import { localSystem } from '../src/systems/registry.ts';
 
 const REPO = path.resolve(import.meta.dirname, '..');
 
@@ -88,13 +89,25 @@ test('walk: a site it cannot resolve makes the walk unknown, naming the file', a
     ['the @shared alias', "import { x } from '@shared/x.ts';\n"],
     ['a .js specifier for a .ts file', "import { x } from '../shared/x.js';\n"],
     ['a specifier naming no file', "import { x } from '../shared/missing.ts';\n"],
+    ['an absolute path', "import { x } from '/shared/x.ts';\n"],
+    ['a file: URL', "import { x } from 'file:///shared/x.ts';\n"],
+    ['a # subpath import', "import { x } from '#shared/x';\n"],
   ]) {
     await t.test(site, () => {
       const r = walk({ 'src/a.ts': text }, ['shared/x.ts']);
       assert.ok('unknown' in r, `expected unknown, got chains ${JSON.stringify([...(r.chains ?? new Map()).keys()])}`);
       assert.match(r.unknown, /src\/a\.ts/);
+      const line = text.split('\n')[0].trim();
+      assert.ok(r.unknown.includes(line), `${JSON.stringify(r.unknown)} names the line ${JSON.stringify(line)}`);
     });
   }
+});
+
+test('walk: bare package names and node: builtins are not edges and do not make the walk unknown', () => {
+  const c = chainsOf(walk({
+    'src/a.ts': "import fs from 'node:fs';\nimport express from 'express';\nimport { z } from '@scope/pkg/sub';\n",
+  }));
+  assert.deepEqual([...c.keys()], ['src/a.ts']);
 });
 
 test('walk: an unresolvable site in a file the server does not reach is ignored', () => {
@@ -152,6 +165,18 @@ test('serverImportsAt reads the named commit, not the working tree or HEAD', asy
   assert.deepEqual(chainsOf(await serverImportsAt(root, b)).get('shared/q.ts'), ['src/a.ts', 'shared/q.ts']);
 });
 
+test('serverImportsAt keeps every import line of a file, not only its last', async () => {
+  const root = await repo();
+  const sha = await commit(root, {
+    'src/a.ts': "import { p } from '../shared/p.ts';\nexport const a = 1;\nimport { q } from '../shared/q.ts';\n",
+    'shared/p.ts': 'export const p = 1;\n',
+    'shared/q.ts': 'export const q = 1;\n',
+  });
+  const c = chainsOf(await serverImportsAt(root, sha));
+  assert.deepEqual(c.get('shared/p.ts'), ['src/a.ts', 'shared/p.ts'], 'the earlier import');
+  assert.deepEqual(c.get('shared/q.ts'), ['src/a.ts', 'shared/q.ts'], 'the later import');
+});
+
 test('serverImportsAt: a tree with no line git grep matches is a walk with no edges, not a failure', async () => {
   const root = await repo();
   const sha = await commit(root, { 'src/a.ts': 'export const a = 1;\n', 'shared/p.ts': 'export const p = 1;\n' });
@@ -164,6 +189,43 @@ test('serverImportsAt: a commit git cannot read makes the walk unknown', async (
   await commit(root, { 'src/a.ts': 'export const a = 1;\n' });
   const r = await serverImportsAt(root, 'f'.repeat(40));
   assert.ok('unknown' in r);
+});
+
+// The local system, with git grep's exec answered by `grep(cmd, opts, local)`.
+const withGrep = (grep) => {
+  const local = localSystem();
+  return Object.create(local, {
+    exec: { value: (cmd, opts) => (cmd.argv.includes('grep') ? grep(cmd, opts, local) : local.exec(cmd, opts)) },
+  });
+};
+const execResult = (o) => ({ code: 0, stdout: '', stderr: '', output: '', timedOut: false, truncated: false, durationMs: 0, spawnError: null, ...o });
+
+test('serverImportsAt: a git grep killed for overflowing its output fence makes the walk unknown, not edgeless', async () => {
+  const root = await repo();
+  const sha = await commit(root, {
+    'src/a.ts': "import { x } from '../shared/x.ts';\n",
+    'shared/x.ts': 'export const x = 1;\n',
+    'big.ts': "import a from 'pkg';\n".repeat(2000),
+  });
+  assert.ok(chainsOf(await serverImportsAt(root, sha)).has('shared/x.ts'), 'premise: unfenced, the walk reaches shared/x.ts');
+  const r = await serverImportsAt(root, sha, withGrep((cmd, opts, local) => local.exec(cmd, { ...opts, maxBufferBytes: 4096 })));
+  assert.ok('unknown' in r, `expected unknown, got chains ${JSON.stringify([...(r.chains ?? new Map()).keys()])}`);
+});
+
+test('serverImportsAt: a git grep exit 1 that carries a diagnostic (a spawn error) makes the walk unknown', async () => {
+  const root = await repo();
+  const sha = await commit(root, { 'src/a.ts': "import { x } from '../shared/x.ts';\n", 'shared/x.ts': 'export const x = 1;\n' });
+  const r = await serverImportsAt(root, sha, withGrep(async () => execResult({ code: 1, spawnError: 'spawn git ENOENT' })));
+  assert.ok('unknown' in r, `expected unknown, got chains ${JSON.stringify([...(r.chains ?? new Map()).keys()])}`);
+});
+
+test('serverImportsAt: a git grep that times out rejects (runGit\'s GIT_TIMED_OUT) rather than reading as a walk', async () => {
+  const root = await repo();
+  const sha = await commit(root, { 'src/a.ts': 'export const a = 1;\n' });
+  await assert.rejects(
+    () => serverImportsAt(root, sha, withGrep(async () => execResult({ code: 124, timedOut: true }))),
+    { code: 'GIT_TIMED_OUT' },
+  );
 });
 
 // Depends on this checkout's .git, like plugins-supervisor's HEAD test.

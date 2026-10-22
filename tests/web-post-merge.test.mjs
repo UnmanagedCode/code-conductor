@@ -67,6 +67,8 @@ test('decision: with a known boot commit, a path stages only if the running serv
       { changedSinceBoot: ['web/a.tsx'], serverImports: { unknown: 'src/x.ts: import(name)' } }, 'swap'],
     ['the first path the server may load decides',
       { changedSinceBoot: ['shared/diffSplit.ts', 'src/server.ts', 'web/a.tsx'] }, 'stage', ['src/server.ts'], ['shared/diffSplit.ts']],
+    ['of several paths that force a stage, the first is named',
+      { changedSinceBoot: ['src/a.ts', 'src/b.ts', 'web/a.tsx'] }, 'stage', ['src/a.ts'], ['src/b.ts']],
   ]) {
     await t.test(row, () => {
       const r = decision(o);
@@ -81,6 +83,7 @@ test('decision: any path outside web/, docs/, tests/ and shared/ stages, naming 
   for (const p of [
     '.code-conductor/post-worktree-merge.sh', 'bin/x.sh', 'migrations/0099-x.mjs', 'playbooks/x.md',
     'conventions/conductor/core.md', 'scripts/x.sh', 'README.md', 'docsite/a.md', 'testsuite/a.mjs',
+    'shared-thing.ts', 'sharedx/a.ts', 'webhook.ts', 'website/x.ts',
   ]) {
     await t.test(p, () => {
       const r = decision({ changedSinceBoot: [p, 'web/a.tsx'] });
