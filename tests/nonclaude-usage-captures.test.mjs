@@ -4,12 +4,12 @@
 //
 // Fixtures (tests/fixtures/), each a trimmed real capture. The scrub keeps the
 // init frame's model + claude_code_version (session_id rewritten, cwd set to
-// /workspace/project) and every stream_event / assistant / user / result frame;
-// it drops content_block_delta frames, other system frames, signatures, uuids,
-// request ids and timestamps; empties text, thinking and redacted-thinking
-// bodies and tool_use inputs; replaces tool-result bodies and user prompts with
-// a placeholder; and keeps the openrouter `cost` / `is_byok` / `cost_details`
-// keys with their values nulled. Transcript excerpts keep user / assistant
+// /workspace/project), every stream_event frame except content_block_delta, and
+// every assistant / user / result frame; it drops other system frames,
+// signatures, uuids, request ids and timestamps; empties text, thinking and
+// redacted-thinking bodies and tool_use inputs; replaces tool-result bodies and
+// user prompts with a placeholder; and keeps the openrouter `cost` / `is_byok` /
+// `cost_details` keys with their values nulled. Transcript excerpts keep user / assistant
 // lines only, with synthetic uuid / parentUuid chains.
 //   - nonclaude-ollama-v4-nocache.stdout.jsonl: ollama deepseek-v4-flash:cloud,
 //     one call, a backend that never reports a cache read.
@@ -21,9 +21,10 @@
 //     every message_delta's cache_read_input_tokens folded into input_tokens
 //     and the key deleted, and each result.usage's folded in and set to 0 —
 //     the never-reports-cache shape, with the real twin as ground truth.
-//   - nonclaude-ollama-v41.derived-nocache.transcript.jsonl: the same session's
-//     persisted transcript through turn 2, derived the same way per assistant
-//     line.
+//   - nonclaude-ollama-v41.derived-nocache.transcript.jsonl: DERIVED from the
+//     same session's persisted transcript (not from the stdout capture), through
+//     turn 2: on every assistant line, the usage's cache_read_input_tokens folded
+//     into input_tokens and the key deleted. Its line 1 is a `_fixture` note.
 //   - nonclaude-openrouter.stdout.jsonl + nonclaude-openrouter.transcript.jsonl:
 //     an Anthropic-compatible openrouter backend, one turn / two calls, whose
 //     message_start usage is all zero and whose message_delta and persisted
@@ -196,6 +197,54 @@ test('a compaction or a /clear before a turn drops the baseline for its first ca
       assert.equal(est.inputTokens + est.cacheReadTokens, uninterrupted.inputTokens + uninterrupted.cacheReadTokens);
     });
   }
+});
+
+// A turn that died before its result (a respawn, resume, rewind or prune wipes
+// the session mid-turn) contributes nothing to the next turn's estimate.
+test('a turn abandoned before its result adds nothing to the next turn after a wipe', async (t) => {
+  const { before, after } = await turnThree();
+  const firstDelta = after.findIndex(l => { const o = JSON.parse(l); return o.type === 'stream_event' && o.event.type === 'message_delta'; });
+  const abandoned = after.slice(0, firstDelta + 1);
+  assert.ok(abandoned.every(l => JSON.parse(l).type !== 'result'), 'premise: the abandoned prefix reaches no result');
+  const warn = t.mock.method(console, 'warn', () => {});
+  async function run(lines) {
+    const { inst, turnEnds } = await makeInstance(t, { backend: 'ollama', model: 'deepseek-v4.1-flash:cloud' });
+    drive(inst, before);
+    drive(inst, lines);
+    inst._wipeForResume();
+    drive(inst, after);
+    return turnEnds.at(-1).cacheEstimate;
+  }
+  const control = await run([]);
+  const withAbandoned = await run(abandoned);
+  assert.ok(control !== null, 'premise: the resumed turn is estimated');
+  assert.deepEqual(withAbandoned, control);
+  assert.equal(warn.mock.callCount(), 0);
+});
+
+// A {backend, model} change re-learns whether calls report a cache read: a
+// session that saw a reporting call estimates again once the new pair's calls
+// come back keyless.
+test('a backend/model change through _refreshModelCapabilities re-enables the estimate', async (t) => {
+  const real = await fixture('nonclaude-ollama-v41.stdout.jsonl');
+  const derived = await fixture('nonclaude-ollama-v41.derived-nocache.stdout.jsonl');
+  const resultIdx = (ls) => ls.map((l, i) => (JSON.parse(l).type === 'result' ? i : -1)).filter(i => i >= 0);
+  const turn1 = real.slice(0, resultIdx(real)[0] + 1);
+  const turn2 = derived.slice(resultIdx(derived)[0] + 1, resultIdx(derived)[1] + 1);
+  async function run(switchPair) {
+    const { inst, turnEnds } = await makeInstance(t, { backend: 'ollama', model: 'deepseek-v4.1-flash:cloud' });
+    drive(inst, turn1);
+    if (switchPair) {
+      inst.backend = 'my-proxy';
+      inst._refreshModelCapabilities();
+    }
+    drive(inst, turn2);
+    assert.equal(turnEnds.length, 2);
+    return turnEnds[1].cacheEstimate;
+  }
+  assert.equal(await run(false), null, 'premise: without a change the reporting backend is never estimated');
+  const est = await run(true);
+  assert.ok(est !== null && est.cacheReadTokens > 0, `estimated after the change: ${JSON.stringify(est)}`);
 });
 
 // The openrouter capture: an all-zero message_start, a real delta that reports

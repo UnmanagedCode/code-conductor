@@ -249,11 +249,16 @@ function newModelAccumulator(key: string): ModelAccumulator {
   };
 }
 
-// A row's tokens are known exactly when it carries them: appendCostRow writes
-// all four fields from the turn's result.usage, on every backend, and omits them
-// all when the turn had none.
+// A row's tokens are known when it carries them: appendCostRow writes all four
+// fields from the turn's result.usage, on every backend, and omits them all when
+// the turn had none. A non-Claude row (no cost_usd) whose four fields are all 0
+// is a proxy's all-zero report, not a measurement — read as unknown, so a group
+// of only such rows shows `—` rather than a fabricated 0.
+const TOKEN_KEYS = ['input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens'];
 function tokensKnown(r: Row): boolean {
-  return typeof r.input_tokens === 'number';
+  if (typeof r.input_tokens !== 'number') return false;
+  if ('cost_usd' in r) return true;
+  return TOKEN_KEYS.some(k => rowNum(r, k) !== 0);
 }
 
 function accumulateModel(m: ModelAccumulator, r: Row): void {

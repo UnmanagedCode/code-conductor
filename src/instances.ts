@@ -4973,6 +4973,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // must not leak into the replayed session (it would over-report a rewound
     // session's fill until its first live message_start).
     this._dropContextReading();
+    // The turn the wipe cut short never reaches turn_end; its estimated calls
+    // must not count toward the next turn's.
+    this._cacheEstimate.abandonTurn();
     this.parser.reset();
     this._lastLeafUuid = null;
     this._planFiles.reset();

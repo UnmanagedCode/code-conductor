@@ -83,6 +83,58 @@ test('resetCapability() forgets that the backend reports cache reads', () => {
   assert.deepEqual(e.endTurn(turnUsage(1000)), { inputTokens: 1000, cacheReadTokens: 0 });
 });
 
+test('resetCapability() clears an in-flight turn\'s estimated sum', async (t) => {
+  await t.test('a turn with no call after it estimates nothing', () => {
+    const e = new CacheEstimator();
+    e.onCall(call(1000, 10));
+    e.onCall(call(1500, 10));
+    e.resetCapability();
+    assert.equal(e.endTurn(turnUsage(2500)), null);
+  });
+  await t.test('a call after it counts only its own (uncached) share', () => {
+    const e = new CacheEstimator();
+    e.onCall(call(1000, 10));
+    e.onCall(call(1500, 10));
+    e.resetCapability();
+    e.onCall(call(2000, 10));
+    assert.deepEqual(e.endTurn(turnUsage(2000)), { inputTokens: 2000, cacheReadTokens: 0 });
+  });
+});
+
+test('abandonTurn() drops the open turn\'s sum and the baseline, and keeps what the backend reports', async (t) => {
+  await t.test('the abandoned calls add nothing to the next turn', () => {
+    const e = new CacheEstimator();
+    e.onCall(call(1000, 10));
+    e.onCall(call(1500, 10));
+    e.abandonTurn();
+    e.onCall(call(1200, 10));
+    e.onCall(call(1300, 10));
+    assert.deepEqual(e.endTurn(turnUsage(2500)), { inputTokens: 2500 - 1210, cacheReadTokens: 1210 });
+  });
+  await t.test('a turn with no call after it estimates nothing', () => {
+    const e = new CacheEstimator();
+    e.onCall(call(1000, 10));
+    e.abandonTurn();
+    assert.equal(e.endTurn(turnUsage(1000)), null);
+  });
+  await t.test('a backend that reported a cache read is still not estimated', () => {
+    const e = new CacheEstimator();
+    e.onCall(call(10, 10, { cacheReadTokens: 990 }));
+    e.abandonTurn();
+    e.onCall(call(1000, 10));
+    e.onCall(call(1500, 10));
+    assert.equal(e.endTurn(turnUsage(2500)), null);
+  });
+});
+
+test('a call with no reported input leaves the next keyless call uncached', () => {
+  const e = new CacheEstimator();
+  e.onCall(call(1000, 10));
+  e.onCall(call(null, 5));
+  e.onCall(call(1500, 10));
+  assert.deepEqual(e.endTurn(turnUsage(2500)), { inputTokens: 2500, cacheReadTokens: 0 });
+});
+
 test('a call that reports a cache read estimates nothing, and makes later keyless calls genuine misses', async (t) => {
   await t.test('a reported read: endTurn is null', () => {
     const e = new CacheEstimator();

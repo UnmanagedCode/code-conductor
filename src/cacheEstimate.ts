@@ -13,7 +13,8 @@
 //
 // Instance._emitUi feeds it each top-level call's final message_delta figures
 // (the parser's `call_usage`) and the resume seed; Instance._handleStdoutLine
-// reads it at turn_end. Claude sessions never consult it.
+// reads it at turn_end; Instance._wipeForResume abandons the open turn. Claude
+// sessions never consult it.
 
 import { promptTokenSum } from './parser.ts';
 import type { Usage } from '../shared/usage.ts';
@@ -76,13 +77,19 @@ export class CacheEstimator {
     this._prevPrompt = null;
   }
 
+  // The session was wiped mid-turn (respawn, resume, rewind, prune): the open
+  // turn will never reach turn_end, so its calls must not leak into the next.
+  abandonTurn(): void {
+    this.reset();
+    this._turnSum = 0;
+    this._turnEstimated = false;
+  }
+
   // The {backend, model} pair changed: what the old one reported says nothing
   // about the new one.
   resetCapability(): void {
-    this.reset();
+    this.abandonTurn();
     this._reportsCache = false;
-    this._turnSum = 0;
-    this._turnEstimated = false;
   }
 
   // The turn's re-split of `usage.input_tokens`, or null when nothing was

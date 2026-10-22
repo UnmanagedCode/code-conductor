@@ -230,8 +230,9 @@ test('cost-tracking: a substitution-backend turn_end (no usage) omits token fiel
     const claudeRow = rows.find(r => r.sessionId === 'c1');
     const tokenKeys = ['input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens'];
 
-    // Persistence honesty: a non-Claude row omits ALL token fields — no fabricated
-    // 0s — whichever substitution backend it ran on.
+    // Persistence honesty: a turn_end whose `result` carried no `usage` writes a
+    // row that omits ALL token fields — no fabricated 0s — whichever substitution
+    // backend it ran on.
     for (const row of [ollamaRow, proxyRow]) {
       for (const k of tokenKeys) {
         assert.equal(Object.hasOwn(row, k), false, `${row.model} row must omit ${k}`);
@@ -348,6 +349,41 @@ test('cost-tracking: getCostSummary reports a non-Claude-only group\'s real toke
     assert.equal(p('q').tokens_estimated, false);
     assert.equal(p('p').by_model[0].tokens_estimated, true);
     assert.equal(p('q').by_model.find(x => x.model === 'deepseek-v4.1-flash:cloud').tokens_estimated, false);
+  });
+});
+
+// Some proxies report all-zero usage on every turn. A non-Claude row whose four
+// token fields are all 0 carries no measurement, so it must not turn a group's
+// `—` into a fabricated 0; a Claude row (it carries cost_usd) is read as before.
+test('cost-tracking: an all-zero non-Claude row is token-unknown; a Claude all-zero row is not', async () => {
+  await withStore(async ({ getCostSummary, costsPath }) => {
+    await fs.mkdir(path.dirname(costsPath()), { recursive: true });
+    const ts = new Date('2026-07-01').getTime();
+    const zero = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, cache_miss: false };
+    const rows = [
+      { ts, project: 'z', model: 'opencode-go/glm5', sessionId: 'a', ...zero },
+      { ts, project: 'z', model: 'opencode-go/glm5', sessionId: 'a', ...zero },
+      { ts, project: 'm', model: 'mixed', sessionId: 'b', ...zero },
+      { ts, project: 'm', model: 'mixed', sessionId: 'b', input_tokens: 300, output_tokens: 30, cache_creation_tokens: 5, cache_read_tokens: 700, cache_miss: false },
+      { ts, project: 'c', model: 'claude-opus-4-8', sessionId: 'c', ...zero, cost_usd: 0 },
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const s = await getCostSummary();
+    const m = (k) => s.by_model.find(x => x.model === k);
+    const p = (k) => s.by_project.find(x => x.project === k);
+
+    assert.equal(m('opencode-go/glm5').tokens_known, false, 'an all-zero non-Claude-only group reads —');
+    assert.equal(p('z').tokens_known, false);
+    assert.equal(p('z').by_model[0].tokens_known, false);
+
+    assert.equal(m('mixed').tokens_known, true);
+    assert.deepEqual(
+      [m('mixed').input_tokens, m('mixed').output_tokens, m('mixed').cache_creation_tokens, m('mixed').cache_read_tokens],
+      [300, 30, 5, 700], 'the mixed group sums its real row');
+    assert.equal(p('m').tokens_known, true);
+
+    assert.equal(m('claude-opus-4-8').tokens_known, true, 'a Claude row with cost_usd keeps today\'s read');
+    assert.equal(p('c').tokens_known, true);
   });
 });
 
