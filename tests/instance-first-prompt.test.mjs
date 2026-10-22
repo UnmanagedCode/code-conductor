@@ -135,3 +135,23 @@ test('displayLabel of an untitled, unprompted session reads (new session)', asyn
   await waitFor(() => inst.status === 'idle');
   assert.equal(await displayLabelOf(r.body.id), '(new session)');
 });
+
+test('displayLabel of a pristine conductor listed under its draft is the draft; a set title beats it', async () => {
+  // The 60s reap window a pristine create arms must not run for real.
+  const realTimers = instances.pristineTimers;
+  instances.pristineTimers = { setTimeout: () => ({}), clearTimeout: () => {} };
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', role: 'conductor', temp: true, pristine: true });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    // What a drafted pristine_leave does (the manager's PristineTracker `list` hook).
+    instances.listPristine(r.body.id, '  Plan the\nrelease  ');
+    assert.equal(inst.title, null, 'premise: no title of its own, only the draft');
+    assert.equal(await displayLabelOf(r.body.id), 'Plan the release');
+    inst.setTitle('Mine');
+    assert.equal(await displayLabelOf(r.body.id), 'Mine');
+  } finally {
+    instances.pristineTimers = realTimers;
+  }
+});
