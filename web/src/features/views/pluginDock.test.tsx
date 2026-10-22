@@ -92,11 +92,11 @@ describe('the plugin dock', () => {
     expect(viewOpen()).toBe(false);
   });
 
-  it('the column\'s controls are the mode toggle then Close plugin: Expand to full view in split, Dock to side in full, and nothing else', async () => {
-    // Invariant (F1): the switcher picks the plugin; the column carries only the full ⇄ split toggle and Close plugin after it.
+  it('the column\'s controls are Collapse, then the mode toggle, then Close plugin: Expand to full view in split, Dock to side in full, and nothing else', async () => {
+    // Invariant (F1): the switcher picks the plugin; the column carries Collapse (split only), the full ⇄ split toggle and Close plugin after it.
     await mountApp();
     await dockSplit('alpha');
-    expect(columnButtons(), 'split').toEqual(['Expand to full view', 'Close plugin']);
+    expect(columnButtons(), 'split').toEqual(['Collapse plugin dock', 'Expand to full view', 'Close plugin']);
     await pressColumn('Expand to full view');
     expect(location.hash, 'fixture check: expanded').toBe('#plugin/alpha/');
     expect(columnButtons(), 'full').toEqual(['Dock to side', 'Close plugin']);

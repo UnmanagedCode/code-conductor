@@ -7,7 +7,7 @@ const SPLIT_MIN_ROW = DOCK_PANEL_MIN_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH;
 const CATALOG = ['alpha', 'beta'];
 type Input = Parameters<typeof dockLayout>[0];
 const input = (over: Partial<Input> = {}): Input => ({
-  desktop: true, view: 'session', routePluginId: null, catalogIds: CATALOG, dockId: null, available: 1100, ...over,
+  desktop: true, view: 'session', routePluginId: null, catalogIds: CATALOG, dockId: null, available: 1100, collapsed: false, ...over,
 });
 
 describe('dockLayout', () => {
@@ -64,6 +64,28 @@ describe('dockLayout', () => {
   it('a listed plugin route with no room for any split offers no toggle', () => {
     // Invariant (F9): Dock to side is offered only when a split could show.
     expect(dockLayout(input({ view: 'plugin', routePluginId: 'alpha', available: SPLIT_MIN_ROW - 1 })).toggle).toBeNull();
+  });
+});
+
+describe('dockLayout collapsed', () => {
+  it('collapsed beside a session is the rail on the selected plugin with no toggle', () => {
+    // Invariant: a collapsed split is the rail, offering no mode toggle (the bar is behind it).
+    expect(dockLayout(input({ dockId: 'alpha', collapsed: true }))).toEqual({ mode: 'rail', shownId: 'alpha', toggle: null });
+  });
+
+  it('collapsed is the rail even where no split fits', () => {
+    // Invariant: a rail always fits, so a too-narrow window keeps it beside the session instead of the forced-full cover.
+    expect(dockLayout(input({ dockId: 'alpha', collapsed: true, available: SPLIT_MIN_ROW - 1 })).mode).toBe('rail');
+  });
+
+  it('collapsed changes nothing on a plugin route', () => {
+    // Invariant: the full view always shows expanded.
+    expect(dockLayout(input({ view: 'plugin', routePluginId: 'beta', collapsed: true }))).toEqual({ mode: 'full', shownId: 'beta', toggle: 'dock' });
+  });
+
+  it('collapsed below md hides the column beside a session', () => {
+    // Invariant: the phone layout has no rail.
+    expect(dockLayout(input({ desktop: false, dockId: 'alpha', collapsed: true })).mode).toBe('hidden');
   });
 });
 
