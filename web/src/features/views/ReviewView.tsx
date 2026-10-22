@@ -1,17 +1,18 @@
 import * as React from 'react';
-import { ChevronRightIcon, FileDiffIcon, LoaderCircleIcon, RotateCwIcon } from 'lucide-react';
+import { ChevronRightIcon, Columns2Icon, FileDiffIcon, LoaderCircleIcon, RotateCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useStore } from '@/state/createStore';
 import { cn } from '@/lib/utils';
 import { apiFetch } from '@shared/http';
 import { viewStore } from './api';
 import { ViewMessage, ViewShell } from './ViewShell';
+import { DiffHunks, type FileDetail } from './DiffHunks';
+import { diffModeStore, setDiffMode, useDiffMode } from './diffMode';
 
 export type DiffFileSummary = { path: string; oldPath?: string; status?: string; adds?: number; dels?: number; binary?: boolean };
 export type DiffSummary = { files?: DiffFileSummary[]; totalAdds?: number; totalDels?: number; totalFiles?: number; commitMessage?: string };
-type Hunk = { header: string; lines: { type: string; content: string }[] };
-type FileDetail = { hunks: Hunk[]; oversized?: boolean; truncated?: boolean; adds?: number; dels?: number; bytes?: number };
 
 /** The summary URL with `path=<file>` added: one file's hunks, fetched lazily. */
 export function fileDiffUrl(summaryUrl: string, path: string) {
@@ -35,34 +36,17 @@ const STATUS: Record<string, { letter: string; cls: string; label: string }> = {
   modified: { letter: 'M', cls: 'bg-warning/15 text-warning', label: 'Modified' },
 };
 
-function Hunks({ detail }: { detail: FileDetail }) {
-  if (detail.oversized) {
-    return <div className="px-4 py-3 text-sm text-muted-foreground">Diff too large to show inline (+{detail.adds} / −{detail.dels} lines). View this file locally.</div>;
-  }
+function DiffModeToggle() {
+  const split = useStore(diffModeStore, (s) => s.mode) === 'split';
   return (
-    <>
-      <div className="overflow-x-auto font-mono text-xs leading-5">
-        <div className="min-w-max">
-          {detail.hunks.map((h, i) => (
-            <div key={i}>
-              <div className="border-y bg-info/8 px-3 py-1 text-info first:border-t-0" data-hunk-header>{h.header}</div>
-              {h.lines.map((ln, j) => {
-                const type = ln.type === 'add' ? 'add' : ln.type === 'del' ? 'del' : 'ctx';
-                return (
-                  <div key={j} className={cn('flex', type === 'add' && 'bg-success/12', type === 'del' && 'bg-destructive/10')} data-diff-line={type}>
-                    <span className={cn('w-8 shrink-0 pr-2 text-right select-none text-muted-foreground/70', type === 'add' && 'text-success', type === 'del' && 'text-destructive')}>
-                      {type === 'add' ? '+' : type === 'del' ? '−' : ''}
-                    </span>
-                    <span className="pr-4 whitespace-pre">{ln.content}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-      </div>
-      {detail.truncated && <div className="border-t px-4 py-2 text-xs text-muted-foreground">Diff truncated · showing the first part of {detail.bytes} bytes</div>}
-    </>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button size="sm" variant={split ? 'secondary' : 'ghost'} aria-pressed={split} aria-label="Split view" onClick={() => setDiffMode(split ? 'unified' : 'split')} data-diff-mode-toggle>
+          <Columns2Icon /> Split
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{split ? 'Show diffs unified' : 'Show diffs side by side'}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -115,7 +99,7 @@ export function FileCard({ file, summaryUrl }: { file: DiffFileSummary; summaryU
                 <Button size="sm" variant="outline" className="h-7" onClick={() => void load()}><RotateCwIcon /> Retry</Button>
               </div>
             )
-            : <Hunks detail={state.detail!} />}
+            : <DiffHunks detail={state.detail!} />}
         </div>
       )}
     </div>
@@ -127,6 +111,7 @@ export function ReviewView() {
   const params = useStore(viewStore, (s) => s.review);
   const [state, setState] = React.useState<{ phase: 'loading' | 'loaded' | 'error'; data?: DiffSummary; error?: string }>({ phase: 'loading' });
   const url = params?.url ?? null;
+  const { splitAvailable } = useDiffMode();
 
   React.useEffect(() => {
     if (!url) return;
@@ -144,6 +129,7 @@ export function ReviewView() {
       title={params?.title || 'Review changes'}
       subtitle={state.phase === 'loaded' && data ? reviewStats(data) : undefined}
       icon={<FileDiffIcon className="size-4" />}
+      actions={url && splitAvailable ? <DiffModeToggle /> : undefined}
       data-view="review"
     >
       {!url ? <ViewMessage>Nothing to review. Open a diff from a worktree or a commit.</ViewMessage>
