@@ -58,7 +58,7 @@ export const WALKS_REVIEWED = {
     sites: 'f1486e07 8d9b0700 4a355031 6fb40c69 f1ae0f8d c4818124 5bdf6397 c2a40c80 3d3eb0f7 451ff969 bfc0415d 670355af 2bc56ac9 30d3d1ae bbd0c016 18a58c5e', node: [], web: ['web', 'shared'],
     why: 'its own walks read a temp distDir; src/bin/docs appear only as isWebInput fixture paths. The node closure holds it only because tests/changedScope.mjs names it, and node never runs it',
   },
-  'tests/web-post-merge.test.mjs': { sites: 'd69e23d6 b9c60af3 84c422d9 f3b78fed 2394566a b2b3efec 0d75ce36 cffbf990 cffbf990 f7fc612e b8f329e6 caf50f03 2eac1251', node: [], why: TEMP_ONLY('walks and reads a temp fixture tree') },
+  'tests/web-post-merge.test.mjs': { sites: 'd69e23d6 b9c60af3 84c422d9 f3b78fed 2394566a b2b3efec 0d75ce36 cffbf990 cffbf990 f7fc612e b8f329e6 caf50f03 d41c48bd', node: [], why: TEMP_ONLY('walks and reads a temp fixture tree') },
   'tests/boot-commit.test.mjs': { sites: '022d904e aaef09c1 2b5291a8 7142d7c4', node: [], why: TEMP_ONLY('walks a temp repo') },
   'tests/plugin-theme.test.mjs': { sites: '968c0fa0 c0c8f1fa 58aa9cb6 c0c8f1fa 694e31cf d69fbcaa 45782442 a10d7e70', node: [], why: TEMP_ONLY('walks a temp decoy npm prefix') },
   'tests/e2e-harness-credentials.test.mjs': { sites: 'd9f3ee8f ef07bcd0 c47911ee 5141e561 fc4789d4 5141e561 b2474d28', node: [], why: TEMP_ONLY('walks a temp credentials dir') },
