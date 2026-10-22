@@ -387,6 +387,31 @@ test('cost-tracking: an all-zero non-Claude row is token-unknown; a Claude all-z
   });
 });
 
+// Each of the four token fields counts on its own: a non-Claude row that is
+// non-zero in exactly one of them (e.g. a proxy reporting only output_tokens) is
+// a measurement, not an all-zero report.
+test('cost-tracking: a non-Claude row non-zero in any single token field is token-known', async (t) => {
+  const keys = ['input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens'];
+  await withStore(async ({ getCostSummary, costsPath }) => {
+    await fs.mkdir(path.dirname(costsPath()), { recursive: true });
+    const ts = new Date('2026-07-01').getTime();
+    const rows = keys.map((k, i) => ({
+      ts, project: `p-${k}`, model: `only-${k}`, sessionId: `s${i}`,
+      input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, [k]: 42 + i, cache_miss: false,
+    }));
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const s = await getCostSummary();
+    for (const [i, k] of keys.entries()) {
+      await t.test(k, () => {
+        const m = s.by_model.find(x => x.model === `only-${k}`);
+        assert.equal(m.tokens_known, true);
+        assert.deepEqual(keys.map(f => m[f]), keys.map(f => (f === k ? 42 + i : 0)));
+        assert.equal(s.by_project.find(x => x.project === `p-${k}`).tokens_known, true);
+      });
+    }
+  });
+});
+
 test('cost-tracking: mixed model keeps Anthropic token totals; a usage-less group reads unknown', async () => {
   const dir = await makeTmpDir();
   const prevRoot = process.env.PROJECTS_ROOT;
