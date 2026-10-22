@@ -1,7 +1,7 @@
 // The plugin dock in a real browser, with two probe plugins (one keep-alive,
 // one plain): the desktop column right of the session whose width is its mode
-// (hidden, a split beside the transcript, the whole row), the one mode toggle and
-// Close plugin right of it in its header strip, the handle's drag clamps, reset and keys, Back and Escape
+// (hidden, a split beside the transcript, a rail, the whole row), Collapse, the one
+// mode toggle and Close plugin in its header strip, the handle's drag clamps, reset and keys, Back and Escape
 // from the full view, a window too narrow for a split, a reload, a session
 // width (handle drags) beside it, a toast beside the strip, and the phone layout
 // without it. A reload of a probe page makes a new nonce, so every "same page"
@@ -494,7 +494,6 @@ export async function phoneFlow({ page, cc }: Args): Promise<void> {
   await page.addInitScript(([k, v]) => localStorage.setItem(k, v), [COLLAPSED_KEY, 'true'] as const);
   await onSession(page, cc, 'phone');
   await expect(column(page).locator('[data-dock-rail]'), 'no rail below md').toHaveCount(0);
-  await expect(column(page).getByRole('button', { name: 'Expand plugin dock' }), 'no Expand below md').toHaveCount(0);
   await next.openSidebar(page);
   await expect(page.getByRole('button', { name: 'Switch app' }).filter({ visible: true }), 'fixture check: the catalog loaded').toBeVisible();
   await expect(section(page)).toBeHidden();

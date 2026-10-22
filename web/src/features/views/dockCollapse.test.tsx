@@ -223,6 +223,19 @@ describe('the plugin dock collapse', () => {
     expect(mode()).toBe('full');
   });
 
+  it('closing or picking while already expanded writes no collapse flag', async () => {
+    // Invariant: setting the flag to the value it already has persists nothing.
+    await mountApp();
+    await dockSplit('alpha');
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    const flagWrites = () => setItem.mock.calls.filter((c) => c[0] === COLLAPSED_KEY);
+    await pickApp('beta');
+    await pickApp('conductor');
+    await pickApp('alpha');
+    expect(mode(), 'fixture check: split again').toBe('split');
+    expect(flagWrites()).toEqual([]);
+  });
+
   it('Escape in the rail changes nothing', async () => {
     // Invariant: only a full column closes on Escape.
     await mountApp();

@@ -28,7 +28,7 @@ export const dockCollapsedStore = createStore<{ collapsed: boolean }>({ collapse
 dockCollapsedStore.subscribe(() => {
   try { localStorage.setItem(DOCK_COLLAPSED_STORAGE_KEY, String(dockCollapsedStore.get().collapsed)); } catch { /* storage unavailable */ }
 });
-/** Collapse or restore the split; writes nothing when it already is. */
+/** Collapse or restore the split; when the flag already has that value it neither persists nor notifies subscribers. */
 export function setDockCollapsed(collapsed: boolean) {
   if (dockCollapsedStore.get().collapsed !== collapsed) dockCollapsedStore.set({ collapsed });
 }
