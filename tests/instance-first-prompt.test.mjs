@@ -87,3 +87,51 @@ test('a forward frame\'s first prompt is stored as its tail', async () => {
   assert.equal(inst.firstPrompt, firstPromptHead(frame));
   assert.ok(inst.firstPrompt.endsWith('Review it'), inst.firstPrompt);
 });
+
+// `displayLabel` is the sidebar's label for the row (sessionLabel,
+// shared/promptPreview.ts), read here off GET /api/instances.
+
+async function displayLabelOf(id) {
+  const list = await api(baseUrl, 'GET', '/api/instances');
+  return list.body.find(i => i.id === id).displayLabel;
+}
+
+test('displayLabel is the custom title when one is set', async () => {
+  const { baseUrl, instances } = await setupWithProject('label1');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'label1' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  inst.prompt('some prompt');
+  await waitFor(() => inst.firstPrompt !== null);
+  inst.setTitle('My review target');
+  assert.equal(await displayLabelOf(r.body.id), 'My review target');
+});
+
+test('displayLabel of an untitled session is its first prompt, whitespace collapsed', async () => {
+  const { baseUrl, instances } = await setupWithProject('label2');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'label2' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  inst.prompt('fix   the\nbug');
+  await waitFor(() => inst.firstPrompt !== null);
+  assert.equal(await displayLabelOf(r.body.id), 'fix the bug');
+});
+
+test('displayLabel names a forward-frame first prompt by its instruction, not the frame text', async () => {
+  const { baseUrl, instances } = await setupWithProject('label3');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'label3' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  inst.prompt(buildForwardFrame({ messages: ['x'.repeat(5000)], instruction: 'Review it\nmore' }));
+  await waitFor(() => inst.firstPrompt !== null);
+  assert.equal(await displayLabelOf(r.body.id), 'Review it');
+});
+
+test('displayLabel of an untitled, unprompted session reads (new session)', async () => {
+  const { baseUrl, instances } = await setupWithProject('label4');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'label4' });
+  assert.equal(r.body.displayLabel, '(new session)', 'POST response carries it');
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(await displayLabelOf(r.body.id), '(new session)');
+});

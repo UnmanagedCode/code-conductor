@@ -108,7 +108,7 @@ import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune
 import { CallUsageTracker } from './callUsage.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../shared/planApproval.ts';
-import { firstPromptHead } from '../shared/promptPreview.ts';
+import { firstPromptHead, sessionLabel } from '../shared/promptPreview.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope, measureSegmentEchoOffset, type SeqEvent } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
@@ -1342,6 +1342,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // paused state to the client BEFORE the first message is typed on a session
     // that hasn't queued yet. Absent (no manager wiring) ⇒ not paused.
     const gate = this._overageGate ? this._overageGate() : { active: false, resetsAt: null };
+    // A pristine conductor listed under its draft shows the draft; a manual title wins.
+    const title = this.title ?? this.draftTitle;
     return {
       id: this.id,
       project: this.project,
@@ -1392,8 +1394,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
-      // A pristine conductor listed under its draft shows the draft; a manual title wins.
-      title: this.title ?? this.draftTitle,
+      title,
+      // The sidebar's label for this row (shared/promptPreview.ts sessionLabel), as
+      // the synthetic row sessionFromInstance builds.
+      displayLabel: sessionLabel({ sessionId: this.sessionId, title, firstPrompt: this.firstPrompt, synthetic: true }),
       turnEndSeq: this.turnEndSeq,
       viewedSeq: this.viewedSeq,
       liveTurnEnds: this.liveTurnEnds,

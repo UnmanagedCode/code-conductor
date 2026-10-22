@@ -2,10 +2,12 @@
 // the server or the CLI wrote — a wake-callback stub, a `send_prompt({forward})`
 // frame, a `renew_session` seed, a local command's head records — is rendered
 // by name (a forward by its instruction's first line) rather than by its raw
-// marker, frame or tag text; a person's prompt is the text as is. Shared by the
-// server's two first-prompt capture points (`Instance.prompt`,
-// `readFirstPrompt`), the web UI's session labels (sidebar, session panels,
-// Settings → Archived) and the MCP list_sessions / describe_session rows.
+// marker, frame or tag text; a person's prompt is the text as is. Also the
+// session label built on it (sessionLabel). Shared by the server's two
+// first-prompt capture points (`Instance.prompt`, `readFirstPrompt`), the
+// server's `displayLabel` on GET /api/instances, the web UI's session labels
+// (sidebar, session panels, Settings → Archived) and the MCP list_sessions /
+// describe_session rows.
 //
 // DOM-free: the server imports it too.
 
@@ -73,4 +75,13 @@ export function readablePrompt(firstPrompt: unknown): string {
 // whitespace collapsed.
 export function promptPreview(firstPrompt: unknown): string {
   return readablePrompt(firstPrompt).slice(0, 80).replace(/\s+/g, ' ').trim();
+}
+
+// A session's label (the sidebar row's, and GET /api/instances' displayLabel):
+// custom title → promptPreview → '(new session)' for a live row not on disk yet
+// → the sessionId prefix.
+export function sessionLabel(s: { sessionId: string | null; title?: string | null; firstPrompt?: unknown; synthetic?: boolean }): string {
+  const title = (s.title ?? '').trim();
+  const preview = promptPreview(s.firstPrompt);
+  return title || preview || (s.synthetic ? '(new session)' : `${String(s.sessionId).slice(0, 8)}…`);
 }

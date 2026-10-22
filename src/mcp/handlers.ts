@@ -162,7 +162,9 @@ interface DiffFileRow {
 // notification counters — UI-only), `modelSwitch` + `modelSwitchFailure` (a
 // restart switch is UI-started; send_prompt names one in flight as
 // SESSION_SWITCHING_MODEL), `pristine` (the browser's presence state for New
-// conductor — UI-only; no MCP payload carries a hidden one).
+// conductor — UI-only; no MCP payload carries a hidden one), `displayLabel` (the
+// sidebar's label, for plugins; list_sessions / describe_session render their
+// own from `title` and `firstPrompt`).
 export const CONDUCTOR_VIEW_KEYS = [
   'project',
   // Load-bearing for the conductor's self-identification check: it confirms its
