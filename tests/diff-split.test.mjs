@@ -74,12 +74,12 @@ test('"\\ No newline at end of file" from git adds no row and shifts no number',
     return h;
   };
   // marker after the old side's last line
-  let h = hunkOf(['@@ -1,2 +1,2 @@', ' a', '-b', NN, '+b']);
-  assert.deepEqual(pretty(splitRows(h)), ['a1 | a1', 'b2 del | b2 add']);
+  let h = hunkOf(['@@ -1,2 +11,2 @@', ' a', '-b', NN, '+b']);
+  assert.deepEqual(pretty(splitRows(h)), ['a1 | a11', 'b2 del | b12 add']);
   // marker after the new side's last line
-  h = hunkOf(['@@ -1,2 +1,3 @@', ' a', '-b', '+c', '+d', NN]);
-  assert.deepEqual(pretty(splitRows(h)), ['a1 | a1', 'b2 del | c2 add', '∅ | d3 add']);
+  h = hunkOf(['@@ -1,2 +11,3 @@', ' a', '-b', '+c', '+d', NN]);
+  assert.deepEqual(pretty(splitRows(h)), ['a1 | a11', 'b2 del | c12 add', '∅ | d13 add']);
   // marker between the sides inside one run
-  h = hunkOf(['@@ -1,2 +1,1 @@', '-x', '-y', NN, '+z']);
-  assert.deepEqual(pretty(splitRows(h)), ['x1 del | z1 add', 'y2 del | ∅']);
+  h = hunkOf(['@@ -1,2 +11,1 @@', '-x', '-y', NN, '+z']);
+  assert.deepEqual(pretty(splitRows(h)), ['x1 del | z11 add', 'y2 del | ∅']);
 });

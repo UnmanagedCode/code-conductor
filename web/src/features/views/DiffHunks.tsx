@@ -66,7 +66,7 @@ function SplitHunks({ hunks }: { hunks: DiffHunk[] }) {
 function HunkRows({ hunk }: { hunk: DiffHunk }) {
   return (
     <>
-      <div className={cn(HEADER_CLS, 'col-span-4 [overflow-wrap:anywhere]')} data-hunk-header>{hunk.header}</div>
+      <div className={cn(HEADER_CLS, 'col-span-4 border-t-0 [overflow-wrap:anywhere]')} data-hunk-header>{hunk.header}</div>
       {splitRows(hunk).map((r, j) => (
         <div key={j} className="contents" data-split-row>
           <Side side="old" cell={r.left} />
