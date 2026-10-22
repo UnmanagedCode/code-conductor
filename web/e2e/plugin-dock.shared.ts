@@ -14,7 +14,7 @@ import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin
 import { next } from './flows/ui.ts';
 import { dragSessionHandle, dragToLimit, parkPointer, sessionHandle, setWidth } from './session-width.shared.ts';
 import { SESSION_WIDTH_GUTTER, SESSION_WIDTH_SNAPS } from '../src/app/sessionWidthScale.ts';
-import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from '../src/features/views/dockLayout.ts';
+import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from '../src/features/views/dockLayout.ts';
 import { RESIZE_KEY_STEP } from '../src/lib/useResizableWidth.ts';
 import { TOAST_EDGE_GAP } from '../src/ui/toastLayout.ts';
 
@@ -25,6 +25,8 @@ export const KEEP: ProbePlugin = { id: 'dock-keep', name: 'Dock keep', keepAlive
 export const PLAIN: ProbePlugin = { id: 'dock-plain', name: 'Dock plain', keepAlive: false };
 // DOCK_STORAGE_KEY (web/src/features/views/dock.ts).
 const DOCK_KEY = 'code-conductor:plugin-dock';
+// DOCK_COLLAPSED_STORAGE_KEY (web/src/features/views/dock.ts).
+const COLLAPSED_KEY = 'code-conductor:plugin-dock-collapsed';
 const W = 520;
 /** Window widths on the desktop project: the main row (window − the default sidebar) fits no split, a clamped W, and W. */
 const NO_SPLIT = 900;
@@ -133,7 +135,7 @@ async function dockSplitAtW(page: Page, p: ProbePlugin) {
 // ── flows ────────────────────────────────────────────────────────────────
 
 export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F1, F3): the column holds only its mode toggle then Close plugin right of it, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
+  // Invariant (F1, F3): the column holds Collapse (split only), its mode toggle, then Close plugin right of it, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
   desktopOnly();
   await onSession(page, cc, 'geometry');
   const viewport = page.viewportSize()!;
@@ -171,7 +173,9 @@ export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
   expect(sc.x, 'split: Close is right of Expand to full view').toBeGreaterThanOrEqual(right(expand) - 0.5);
   expect(sc.y < bottom(expand) && bottom(sc) > expand.y, 'split: Close is on the toggle\'s row').toBe(true);
   expect(right(sc), 'split: Close is inside the strip').toBeLessThanOrEqual(right(sh) + 0.5);
-  await expect(header(page).getByRole('button'), 'two controls: the toggle and Close').toHaveCount(2);
+  await expect(header(page).getByRole('button'), 'three controls: Collapse, the toggle and Close').toHaveCount(3);
+  const collapseBox = await boxOf(header(page).getByRole('button', { name: 'Collapse plugin dock', exact: true }), 'Collapse plugin dock');
+  expect(right(collapseBox), 'split: Collapse is left of Expand to full view').toBeLessThanOrEqual(expand.x + 0.5);
 
   await next.leavePlugin(page);
   await expectHidden(page, 'Conductor');
@@ -339,6 +343,57 @@ export async function narrowWindowFlow({ page, cc }: Args): Promise<void> {
   await expect(handle(page)).toHaveAttribute('aria-valuenow', String(W));
 }
 
+export async function collapseFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: Collapse parks the split as a rail at the viewport edge and the session widens by the freed width; the plain page behind it stays mounted, live and scrolled, Expand restores the width, and a reload keeps the rail.
+  desktopOnly();
+  await onSession(page, cc, 'collapse');
+  await dockSplitAtW(page, PLAIN);
+  const before = await loaded(page, PLAIN.id, 'docked');
+  const probe = probeFrame(page, PLAIN.id)!;
+  await probe.evaluate(() => { document.body.style.minHeight = '5000px'; scrollTo(0, 1234); });
+  expect(await probe.evaluate(() => scrollY), 'fixture check: scrolled').toBe(1234);
+  const viewport = page.viewportSize()!;
+
+  const collapseBtn = header(page).getByRole('button').first();
+  await expect(collapseBtn).toHaveAccessibleName('Collapse plugin dock');
+  expect(right(await boxOf(collapseBtn, 'Collapse')), 'Collapse is left of the heading').toBeLessThanOrEqual((await boxOf(header(page).locator('h1'), 'the heading')).x + 0.5);
+  const mainBefore = await boxOf(main(page), 'the session');
+  await collapseBtn.click();
+
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'rail');
+  const col = await boxOf(column(page), 'the rail');
+  expect(Math.abs(col.width - DOCK_RAIL_WIDTH), 'the rail width').toBeLessThanOrEqual(0.5);
+  expect(Math.abs(right(col) - viewport.width), 'the rail at the viewport edge').toBeLessThanOrEqual(0.5);
+  const mainAfter = await boxOf(main(page), 'the session collapsed');
+  expect(Math.abs(right(mainAfter) - col.x), 'the session meets the rail').toBeLessThanOrEqual(0.5);
+  expect(Math.abs(mainAfter.width - mainBefore.width - (W - DOCK_RAIL_WIDTH)), 'the session widened by the freed width').toBeLessThanOrEqual(1);
+  await expect(section(page)).toBeHidden();
+  const expandBtn = column(page).getByRole('button', { name: 'Expand plugin dock', exact: true });
+  await expect(expandBtn).toBeVisible();
+  const eb = await boxOf(expandBtn, 'Expand');
+  expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('button')?.getAttribute('aria-label'), [eb.x + eb.width / 2, eb.y + eb.height / 2] as const), 'Expand is what a click at its centre hits').toBe('Expand plugin dock');
+  await expect(column(page).locator('[data-dock-rail]')).toContainText(PLAIN.name);
+  expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= innerWidth), 'the parked page adds no horizontal overflow').toBe(true);
+
+  await expect.poll(async () => { const p = await readProbe(page, PLAIN.id); return !!p && p.ticks > before.ticks && p.ws > before.ws; }, { message: 'the page stays live while collapsed' }).toBe(true);
+  expect((await readProbe(page, PLAIN.id))?.nonce, 'same page load').toBe(before.nonce);
+
+  await expandBtn.click();
+  await expect(handle(page)).toHaveAttribute('aria-valuenow', String(W));
+  expect(Math.abs((await boxOf(section(page), 'the section')).width - W), 'split restored at W').toBeLessThanOrEqual(1);
+  expect(Math.abs(right(await boxOf(main(page), 'the session')) - (await boxOf(column(page), 'the column')).x), 'the session meets the column').toBeLessThanOrEqual(0.5);
+  expect((await readProbe(page, PLAIN.id))?.nonce, 'same page load after Expand').toBe(before.nonce);
+  expect(await probe.evaluate(() => scrollY), 'scroll position kept').toBe(1234);
+
+  await header(page).getByRole('button', { name: 'Collapse plugin dock', exact: true }).click();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'rail');
+  await page.reload();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'rail');
+  await expect(column(page).getByRole('button', { name: 'Expand plugin dock', exact: true })).toBeVisible();
+  await column(page).getByRole('button', { name: 'Expand plugin dock', exact: true }).click();
+  await expect(handle(page)).toHaveAttribute('aria-valuenow', String(W));
+}
+
 export async function persistFlow({ page, cc }: Args): Promise<void> {
   // Invariant (reload): the docked page's own navigation stays off the URL, and a reload restores split on that plugin at its width and its route, checked in the switcher.
   desktopOnly();
@@ -436,7 +491,10 @@ export async function phoneFlow({ page, cc }: Args): Promise<void> {
   // Invariant (F10): below md a remembered split shows nothing beside the session, a pick opens the full-page view with the phone bar, Close and no toggle, and leaving it hides it.
   test.skip(isDesktop(), 'the phone layout has no split');
   await page.addInitScript(([k, v]) => localStorage.setItem(k, v), [DOCK_KEY, JSON.stringify({ id: PLAIN.id, subpath: '/', mode: 'split' })] as const);
+  await page.addInitScript(([k, v]) => localStorage.setItem(k, v), [COLLAPSED_KEY, 'true'] as const);
   await onSession(page, cc, 'phone');
+  await expect(column(page).locator('[data-dock-rail]'), 'no rail below md').toHaveCount(0);
+  await expect(column(page).getByRole('button', { name: 'Expand plugin dock' }), 'no Expand below md').toHaveCount(0);
   await next.openSidebar(page);
   await expect(page.getByRole('button', { name: 'Switch app' }).filter({ visible: true }), 'fixture check: the catalog loaded').toBeVisible();
   await expect(section(page)).toBeHidden();
@@ -448,6 +506,8 @@ export async function phoneFlow({ page, cc }: Args): Promise<void> {
   await expect(toggle(page, 'Dock to side')).toHaveCount(0);
   await expect(toggle(page, 'Expand to full view')).toHaveCount(0);
   await expect(closeBtn(page), 'Close in the phone bar').toBeVisible();
+  await expect(header(page).getByRole('button', { name: 'Collapse plugin dock' }), 'no Collapse in the full view').toHaveCount(0);
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'full');
 
   await next.leavePlugin(page);
   await expect(section(page)).toBeHidden();

@@ -2,6 +2,7 @@
 // which subpath, and the mode a pick from Conductor opens. The full view is the
 // route (`#plugin/<id>/<subpath>`) and split is this store; they never coexist.
 // It is the user's place, not a route: persisted per browser, never in the hash.
+// The collapse flag (split shown as a rail) is its own per-browser key.
 import { createStore } from '@/state/createStore';
 import { routeStore } from '@/state/route';
 import { on } from '@/app/events';
@@ -17,6 +18,20 @@ export type DockState = { id: string | null; subpath: string; mode: DockPref };
 export const DOCK_STORAGE_KEY = 'code-conductor:plugin-dock';
 /** The split panel's width, owned by the resize hook. */
 export const DOCK_WIDTH_STORAGE_KEY = 'code-conductor:plugin-dock-width';
+
+/** Whether the split shows as a rail; per browser like the split's width, cleared whenever the split selection is set or ended. */
+export const DOCK_COLLAPSED_STORAGE_KEY = 'code-conductor:plugin-dock-collapsed';
+export function readDockCollapsed(): boolean {
+  try { return localStorage.getItem(DOCK_COLLAPSED_STORAGE_KEY) === 'true'; } catch { return false; }
+}
+export const dockCollapsedStore = createStore<{ collapsed: boolean }>({ collapsed: readDockCollapsed() });
+dockCollapsedStore.subscribe(() => {
+  try { localStorage.setItem(DOCK_COLLAPSED_STORAGE_KEY, String(dockCollapsedStore.get().collapsed)); } catch { /* storage unavailable */ }
+});
+/** Collapse or restore the split; writes nothing when it already is. */
+export function setDockCollapsed(collapsed: boolean) {
+  if (dockCollapsedStore.get().collapsed !== collapsed) dockCollapsedStore.set({ collapsed });
+}
 
 const NOTHING: DockState = { id: null, subpath: '/', mode: 'full' };
 
@@ -73,11 +88,13 @@ export function selectApp(id: string, desktop: boolean) {
   }
   // The anchor write lands on the session whatever history holds beneath; stepping back could enter a plugin's full view, which ends split and so the pick.
   if (view !== 'session') showActiveSession();
+  setDockCollapsed(false);
   dockStore.set({ id, subpath: '/' });
 }
 
 /** Nothing in split; the remembered mode stays. */
 export function closeDock() {
+  setDockCollapsed(false);
   dockStore.set({ id: null, subpath: '/' });
 }
 

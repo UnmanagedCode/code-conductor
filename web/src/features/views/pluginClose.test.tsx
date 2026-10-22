@@ -54,10 +54,10 @@ afterEach(async () => {
 
 describe('the plugin bar\'s Close plugin', () => {
   it('Close plugin sits right after the mode toggle in split and in full', async () => {
-    // Invariant: the bar's controls are the mode toggle then Close plugin, in that order, in both layouts.
+    // Invariant: the bar's controls are Collapse (split only), the mode toggle, then Close plugin, in that order.
     await mountApp();
     await dockSplit('beta');
-    expect(columnButtons(), 'split').toEqual(['Expand to full view', 'Close plugin']);
+    expect(columnButtons(), 'split').toEqual(['Collapse plugin dock', 'Expand to full view', 'Close plugin']);
     expect(closeBtn(), 'Close is a button named Close plugin').toBeTruthy();
     await pressColumn('Expand to full view');
     expect(location.hash, 'fixture check: expanded').toBe('#plugin/beta/');
