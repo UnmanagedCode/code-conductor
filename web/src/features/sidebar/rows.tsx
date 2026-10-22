@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { conductorColor } from '@shared/conductorColor';
 import { closeActionOf, CLOSE_TITLES } from '@shared/closeAction';
 import { needsYouTitle, runLabel } from '@shared/needsYou';
-import { promptPreview } from '@shared/promptPreview';
+import { promptPreview, sessionLabel } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import type { Project, Worktree } from '@/state/types';
@@ -16,7 +16,7 @@ import { selectInstance } from '@/app/controller';
 import { closeSidebarOnMobile } from '@/app/ui';
 import { openProjectRemoteDialog, openSpawnDialog } from '@/features/dialogs/api';
 import { openCommits, openReview } from '@/features/views/api';
-import { dotState, sessionLabel, type SessionItem } from './derive';
+import { dotState, type SessionItem } from './derive';
 import { useAgoTick } from './state';
 import { ProjectMenu } from './ProjectMenu';
 

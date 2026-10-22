@@ -11,7 +11,7 @@
 // conductorChips (the chips, the Conductors tree, the filter), never
 // ownership.
 
-import { promptPreview } from './promptPreview.ts';
+import { sessionLabel } from './promptPreview.ts';
 
 export const CONDUCT_PROJECT = '.conduct';
 export const CONDUCTOR_LABEL = 'Conductor';
@@ -222,15 +222,11 @@ export function deriveConductors({ conductRows = [], instances = [] }: { conduct
   };
 }
 
-// The label a conductor row shows: its own title, else the first prompt (the
-// same promptPreview as a session row), else the sessionId prefix. `untitled`
+// The label a conductor row shows: its sessionLabel (the row is never
+// synthetic, so an unprompted one reads as its sessionId prefix). `untitled`
 // says the text is a fallback, which the row renders muted italic.
 export function conductorTitle(row: { title?: string | null; firstPrompt?: string | null; sessionId: string | null }): { text: string; untitled: boolean } {
-  const custom = (row.title ?? '').trim();
-  if (custom) return { text: custom, untitled: false };
-  const preview = promptPreview(row.firstPrompt);
-  if (preview) return { text: preview, untitled: true };
-  return { text: `${String(row.sessionId).slice(0, 8)}…`, untitled: true };
+  return { text: sessionLabel(row), untitled: !(row.title ?? '').trim() };
 }
 
 // A conductor's live workers, nested ones included (they carry the same root
@@ -304,11 +300,7 @@ export function ownerLabel(sid: string, { conductors, instances = [] }: {
   const m = conductors && [...(conductors.live ?? []), ...(conductors.inactive ?? [])].find(c => c.sessionId === sid);
   if (m) return conductorTitle(m).text;
   const inst = instances.find(i => i.sessionId === sid);
-  if (inst) {
-    const t = (inst.title ?? '').trim()
-      || promptPreview(inst.firstPrompt);
-    if (t) return t;
-  }
+  if (inst) return sessionLabel({ ...inst, sessionId: sid });
   return `${String(sid).slice(0, 8)}…`;
 }
 

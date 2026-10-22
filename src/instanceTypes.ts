@@ -64,6 +64,8 @@ export interface InstanceSummary {
   interrupting?: boolean;
   // A New-conductor session with no prompt yet (src/pristine.ts).
   pristine?: boolean;
+  // The sidebar's label for the session, never empty (sessionLabel, shared/promptPreview.ts).
+  displayLabel: string;
   // Live ownership + the sticky ask (docs/architecture.md → "Ownership and
   // awaitingUser"). `ownerSessionId` is non-null only on a live conducted row.
   ownerSessionId?: string | null;

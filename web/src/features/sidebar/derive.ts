@@ -3,7 +3,6 @@
 // reveal-on-select target. No React, no DOM.
 import { CONDUCT_PROJECT, conductorChips, hasSessionId, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
 import type { ConductorsSplit, SpawnedProject } from '@shared/conductors';
-import { promptPreview } from '@shared/promptPreview';
 import type { Instance, Project } from '@/state/types';
 
 /** A row of a Sessions subnode: a disk row with any live instance overlaid. */
@@ -57,13 +56,6 @@ export function mergeLive(onDisk: any[] | null | undefined, live: Instance[]): S
     }
   }
   return [...byId.values()].sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
-}
-
-/** The row label: custom title → first-prompt preview (`promptPreview`) → sessionId prefix. */
-export function sessionLabel(s: SessionItem): string {
-  const title = (s.title ?? '').trim();
-  const preview = promptPreview(s.firstPrompt);
-  return title || preview || (s.synthetic ? '(new session)' : `${s.sessionId.slice(0, 8)}…`);
 }
 
 /** Live instances split by place: main checkout per project, and per `project:worktree`. */
