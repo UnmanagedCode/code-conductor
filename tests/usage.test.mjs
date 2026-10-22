@@ -25,7 +25,7 @@ test('UsageTracker: initial state has no current size or totals', async () => {
   assert.equal(t.currentFillPct(), null);
   assert.deepEqual(t.cum, {
     inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0,
-    cost: 0, turns: 0, durationMs: 0,
+    cost: 0, turns: 0, durationMs: 0, cacheEstimated: false,
   });
 });
 
@@ -89,7 +89,7 @@ test('UsageTracker: turn_end accumulates cum but does NOT touch lastUsage', asyn
   assert.deepEqual(t.cum, {
     inputTokens: 100, outputTokens: 50,
     cacheRead: 7_400_000, cacheCreation: 73_000,
-    cost: 0.01, turns: 1, durationMs: 1200,
+    cost: 0.01, turns: 1, durationMs: 1200, cacheEstimated: false,
   });
 
   // A second turn keeps summing into cum, still no effect on lastUsage.
@@ -108,7 +108,7 @@ test('UsageTracker: turn_end accumulates cum but does NOT touch lastUsage', asyn
   assert.deepEqual(t.cum, {
     inputTokens: 300, outputTokens: 120,
     cacheRead: 7_402_000, cacheCreation: 73_100,
-    cost: 0.03, turns: 2, durationMs: 2000,
+    cost: 0.03, turns: 2, durationMs: 2000, cacheEstimated: false,
   });
 });
 
@@ -116,10 +116,10 @@ test('UsageTracker: turn_end WITHOUT usage still counts a turn (Ollama shape)', 
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
   t.apply({ kind: 'system', subtype: 'init', data: { model: 'qwen2.5-coder' } });
-  // The Ollama backend (`ollama launch claude`) emits `result` lines with no
-  // `usage` block (see tests/fixtures/scenario-ollama-bare-model.json). The chip
-  // must still advance turns + duration + cost — gating on usage undercounted
-  // multi-turn sessions down to whatever few turns happened to carry usage.
+  // A `result` line with no `usage` block (the shape
+  // tests/fixtures/scenario-ollama-bare-model.json carries). The chip must still
+  // advance turns + duration + cost — gating on usage undercounted multi-turn
+  // sessions down to whatever few turns happened to carry usage.
   for (let i = 0; i < 3; i++) {
     t.apply({ kind: 'turn_end', durationMs: 10, costDelta: 0.0001 });
   }
@@ -127,7 +127,7 @@ test('UsageTracker: turn_end WITHOUT usage still counts a turn (Ollama shape)', 
   assert.deepEqual(rest, {
     inputTokens: 0, outputTokens: 0,   // no fabrication — no usage was present
     cacheRead: 0, cacheCreation: 0,
-    turns: 3, durationMs: 30,
+    turns: 3, durationMs: 30, cacheEstimated: false,
   });
   assert.ok(Math.abs(cost - 0.0003) < 1e-9, `expected cost ~0.0003, got ${cost}`);
 });
@@ -147,7 +147,7 @@ test('UsageTracker: turn_end WITH usage still accumulates tokens (Anthropic — 
   assert.deepEqual(rest, {
     inputTokens: 300, outputTokens: 120,
     cacheRead: 5000, cacheCreation: 300,
-    turns: 2, durationMs: 1200,
+    turns: 2, durationMs: 1200, cacheEstimated: false,
   });
   assert.ok(Math.abs(cost - 0.03) < 1e-9, `expected cost ~0.03, got ${cost}`);
 });
@@ -162,7 +162,7 @@ test('UsageTracker: mixed usage/no-usage turns — turns count all, tokens only 
   assert.deepEqual(rest, {
     inputTokens: 100, outputTokens: 40,   // only the middle turn carried usage
     cacheRead: 0, cacheCreation: 0,
-    turns: 3, durationMs: 60,
+    turns: 3, durationMs: 60, cacheEstimated: false,
   });
   assert.ok(Math.abs(cost - 0.0102) < 1e-9, `expected cost ~0.0102, got ${cost}`);
 });
@@ -235,6 +235,27 @@ test('UsageTracker: missing usage fields default to 0', async () => {
   assert.equal(t.cum.cacheCreation, 0);
   assert.equal(t.cum.outputTokens, 0);
   assert.equal(t.cum.inputTokens, 50);
+});
+
+// A non-Claude turn whose calls reported no cache read carries the server's
+// re-split of its input (src/cacheEstimate.ts); the totals take it and remember
+// that a figure is estimated.
+test('UsageTracker: turn_end with a cacheEstimate sums the estimated split and marks the totals estimated', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'turn_end', durationMs: 10, usage: { input_tokens: 400, output_tokens: 9, cache_read_input_tokens: 600 } });
+  assert.equal(t.cum.cacheEstimated, false, 'a reported read is not estimated');
+  t.apply({
+    kind: 'turn_end', durationMs: 10,
+    usage: { input_tokens: 5000, output_tokens: 70, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    cacheEstimate: { inputTokens: 1200, cacheReadTokens: 3800 },
+  });
+  assert.deepEqual([t.cum.inputTokens, t.cum.cacheRead, t.cum.outputTokens], [1600, 4400, 79]);
+  assert.equal(t.cum.cacheEstimated, true);
+  t.apply({ kind: 'turn_end', durationMs: 10, usage: { input_tokens: 10, output_tokens: 1 }, cacheEstimate: null });
+  assert.equal(t.cum.cacheEstimated, true, 'sticky: the totals still include an estimated turn');
+  t.reset();
+  assert.equal(t.cum.cacheEstimated, false);
 });
 
 test('UsageTracker: reset clears everything', async () => {

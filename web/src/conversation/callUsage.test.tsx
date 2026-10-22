@@ -4,7 +4,7 @@ import { feed, groupText, text, thinking, tool } from './testkit';
 import { isCallUsageShown, setCallUsageShown, uiStore } from '@/app/ui';
 import type { UiEventOf } from '@shared/uiEvent';
 
-const usage = (msgId: string): UiEventOf<'call_usage'> => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null });
+const usage = (msgId: string): UiEventOf<'call_usage'> => ({ kind: 'call_usage', msgId, promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null });
 
 describe('per-call usage lines', () => {
   it('after a thinking + parallel-tool call the line joins the open group, and the tally ignores it', () => {

@@ -10,7 +10,7 @@ import { ViewMessage, ViewShell } from './ViewShell';
 
 export type ModelRow = {
   model: string; cost_usd: number; input_tokens: number; output_tokens: number; cache_creation_tokens: number; cache_read_tokens: number;
-  tokens_known?: boolean; turns: number; sessions: number; cache_misses: number; duration_api_ms: number; duration_ms: number;
+  tokens_known?: boolean; tokens_estimated?: boolean; turns: number; sessions: number; cache_misses: number; duration_api_ms: number; duration_ms: number;
 };
 export type ProjectRow = {
   project: string; cost_usd: number; turns: number; sessions: number; cache_misses: number; duration_api_ms: number; duration_ms: number; by_model?: ModelRow[];
@@ -25,19 +25,27 @@ export function fmtNum(n: number) {
   return String(n);
 }
 
-/** A substitution backend reports no summable per-turn tokens: show — rather than a made-up 0. */
+/** A group whose turns carried no usage has no token sums: show — rather than a made-up 0. */
 export const tokenCell = (m: ModelRow, key: keyof ModelRow) => (m.tokens_known ? fmtNum(m[key] as number) : '—');
+
+const ESTIMATED_TITLE = "estimated: cache reads interpolated from the previous call's context";
+
+/** An input or cache-read figure the server's cache estimate re-split. */
+function estimatedCell(m: ModelRow, key: 'input_tokens' | 'cache_read_tokens'): React.ReactNode {
+  if (!m.tokens_known || !m.tokens_estimated) return tokenCell(m, key);
+  return <span title={ESTIMATED_TITLE}>≈{fmtNum(m[key])}<span className="sr-only"> (estimated)</span></span>;
+}
 
 const MODEL_HEADERS = ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses', 'LLM time', 'Walltime'];
 
-export function modelCells(m: ModelRow): string[] {
+export function modelCells(m: ModelRow): React.ReactNode[] {
   return [
-    m.model, fmtCost(m.cost_usd), tokenCell(m, 'input_tokens'), tokenCell(m, 'output_tokens'), tokenCell(m, 'cache_creation_tokens'),
-    tokenCell(m, 'cache_read_tokens'), String(m.turns), String(m.sessions), String(m.cache_misses), formatDuration(m.duration_api_ms), formatDuration(m.duration_ms),
+    m.model, fmtCost(m.cost_usd), estimatedCell(m, 'input_tokens'), tokenCell(m, 'output_tokens'), tokenCell(m, 'cache_creation_tokens'),
+    estimatedCell(m, 'cache_read_tokens'), String(m.turns), String(m.sessions), String(m.cache_misses), formatDuration(m.duration_api_ms), formatDuration(m.duration_ms),
   ];
 }
 
-function Table({ headers, rows, className }: { headers: string[]; rows: string[][]; className?: string }) {
+function Table({ headers, rows, className }: { headers: string[]; rows: React.ReactNode[][]; className?: string }) {
   return (
     <div className={cn('overflow-x-auto', className)}>
       <table className="w-full min-w-max text-sm tabular-nums">

@@ -1125,8 +1125,30 @@ test('parser: a real message_delta emits one call_usage with its output and thin
   const p = new Parser();
   p.handleObject(msgStartEv({ usage: REAL_CALL_START, id: 'msg_call1' }));
   const out = p.handleObject(REAL_CALL_DELTA);
-  assert.deepEqual(out, [{ kind: 'call_usage', msgId: 'msg_call1', outputTokens: 460, thinkingTokens: 73, parentToolUseId: null }]);
+  assert.deepEqual(out, [{
+    kind: 'call_usage', msgId: 'msg_call1', outputTokens: 460, thinkingTokens: 73,
+    inputTokens: 2, cacheReadTokens: 12863, cacheCreationTokens: 14627, parentToolUseId: null,
+  }]);
   assert.ok(!('blockIdx' in out[0]), 'no blockIdx — the event must stay quiescence-neutral');
+});
+
+// The input-side fields feed the cache estimator (src/cacheEstimate.ts), which
+// must tell a key the delta did not send (null) from one it sent as 0.
+test('parser: call_usage carries the input-side fields, null for an absent key and 0 for a present 0', async (t) => {
+  const cases = [
+    ['absent cache keys', { input_tokens: 32505, output_tokens: 31 }, [32505, null, null]],
+    ['present zeros', { input_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 3 }, [100, 0, 0]],
+    ['a present null', { input_tokens: 50765, cache_read_input_tokens: 0, cache_creation_input_tokens: null, output_tokens: 95 }, [50765, 0, null]],
+    ['absent input', { output_tokens: 7 }, [null, null, null]],
+  ];
+  for (const [name, usage, want] of cases) {
+    await t.test(name, () => {
+      const p = new Parser();
+      p.handleObject(msgStartEv({ usage: REAL_CALL_START }));
+      const [c] = p.handleObject(msgDeltaEv(usage)).filter(e => e.kind === 'call_usage');
+      assert.deepEqual([c.inputTokens, c.cacheReadTokens, c.cacheCreationTokens], want);
+    });
+  }
 });
 
 test('parser: an armed zero-usage message emits context_usage, then call_usage', () => {

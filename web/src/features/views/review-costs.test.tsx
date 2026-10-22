@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { FileCard, fileDiffUrl, reviewStats } from './ReviewView';
 import { CONDUCTOR_LABEL } from '@shared/conductors';
@@ -67,9 +67,24 @@ const model = (over: Partial<ModelRow>): ModelRow => ({
 });
 
 describe('costs', () => {
-  it('renders — for token cells of a backend without summable usage, numbers otherwise', () => {
+  it('renders — for token cells of a group with no usage-bearing turn, numbers otherwise', () => {
     expect(modelCells(model({ tokens_known: false })).slice(2, 6)).toEqual(['—', '—', '—', '—']);
     expect(modelCells(model({})).slice(2, 6)).toEqual(['1.2k', '300', '0', '5.0k']);
+  });
+
+  it('names a group\'s input and cache-read cells estimated when its cache split is, and no other cell', () => {
+    const data: CostsSummary = {
+      total_usd: 0, row_count: 2, by_project: [],
+      by_model: [model({ model: 'est', cost_usd: 0, tokens_estimated: true }), model({ model: 'real', cost_usd: 0 })],
+      daily_trend: [],
+    };
+    render(<TooltipProvider><CostsBody data={data} /></TooltipProvider>);
+    const row = (name: string) => screen.getAllByRole('row').find((r) => r.querySelector('td')?.textContent === name)!;
+    const estCells = within(row('est')).getAllByRole('cell');
+    const named = within(row('est')).getAllByRole('cell', { name: /estimated/ });
+    expect(named.map((c) => estCells.indexOf(c))).toEqual([2, 5]);
+    expect(named.map((c) => c.textContent)).toEqual([expect.stringContaining('1.2k'), expect.stringContaining('5.0k')]);
+    expect(within(row('real')).queryAllByRole('cell', { name: /estimated/ })).toEqual([]);
   });
 
   it('renders every money figure as $N.NNNN', () => {

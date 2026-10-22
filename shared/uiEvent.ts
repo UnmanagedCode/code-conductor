@@ -128,6 +128,10 @@ interface CallUsageEvent extends UiEventBase {
   msgId: string | null;
   outputTokens: number;
   thinkingTokens: number | null;
+  // The delta's input-side usage; null where the key was absent.
+  inputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
   promptTokens?: number | null;
   growthTokens?: number | null;
 }
@@ -216,6 +220,9 @@ interface TurnEndEvent extends UiEventBase {
   contextTokens?: number | null;
   contextGrowthTokens?: number | null;
   contextWindowTokens?: number | null;
+  // Non-Claude only: the turn's input re-split by the cache estimate
+  // (src/cacheEstimate.ts); null when the turn was not estimated.
+  cacheEstimate?: { inputTokens: number; cacheReadTokens: number } | null;
 }
 /**
  * Replay only: an unprompted turn starts here, delivering a background task's notification. Built

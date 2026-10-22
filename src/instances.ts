@@ -106,6 +106,7 @@ import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.
 import { completeLinesOf, forkSessionAtUserMessage, truncateSessionAtUserMessage, verifyUserPrompt, PROMPT_OUT_OF_RANGE } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
 import { CallUsageTracker } from './callUsage.ts';
+import { CacheEstimator } from './cacheEstimate.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../shared/planApproval.ts';
 import { firstPromptHead, sessionLabel } from '../shared/promptPreview.ts';
@@ -816,6 +817,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _liveThinkingTokens: number | null;
   _lastContextUsage: unknown;
   _callUsage: CallUsageTracker;
+  _cacheEstimate: CacheEstimator;
   _pending: Map<string, PendingRequest>;
   _hooks: HookBroker;
   _readNudge: ConductorReadNudge | null;
@@ -1058,6 +1060,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Per-call prompt + growth for call_usage, baselined on the latch above and
     // reset with it (_dropContextReading).
     this._callUsage = new CallUsageTracker();
+    // The cache-read estimate for a non-Claude backend that reports none:
+    // fed per call from _emitUi, read at turn_end, baseline dropped with the
+    // latch (_dropContextReading).
+    this._cacheEstimate = new CacheEstimator();
     this._pending = new Map<string, PendingRequest>(); // request_id -> { resolve, reject, timer }
     // A conductor's read-nudge run counter (src/conductorReadNudge.ts). In
     // memory only: a resume-after-restart or a fork builds a new Instance and
@@ -1819,6 +1825,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // seed is not a call.
     if (ev.kind === 'message_start' && !ev.replayed) {
       this._callUsage.onMessageStart(ev.msgId, contextReading(this._lastContextUsage), ev.usage);
+    } else if (ev.kind === 'message_start' && ev.usage && this.backend !== CLAUDE_BACKEND_ID) {
+      // The resume seed (loadHistory): the transcript's last call is what the
+      // provider last cached.
+      this._cacheEstimate.seed(ev.usage);
     } else if (ev.kind === 'context_usage') {
       this._callUsage.onContextUsage(ev.msgId, ev.usage);
     }
@@ -1848,7 +1858,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     // The call's prompt and its growth over the previous reading (live only —
     // replay emits no call_usage).
-    if (wrapped.kind === 'call_usage') this._callUsage.stamp(wrapped);
+    if (wrapped.kind === 'call_usage') {
+      this._callUsage.stamp(wrapped);
+      if (!wrapped.parentToolUseId && this.backend !== CLAUDE_BACKEND_ID) this._cacheEstimate.onCall(wrapped);
+    }
     // Every outer user_echo funnels through here (live prompt(), parser
     // queued-prompt echoes, jsonl replay), so within a segment this counter
     // matches the Nth-pure-user-prompt-line semantics sessionEdit.ts truncates
@@ -1995,6 +2008,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _dropContextReading(): void {
     this._lastContextUsage = null;
     this._callUsage.reset();
+    this._cacheEstimate.reset();
   }
 
   // Re-resolve capacity from the current {backend, model}.
@@ -2020,6 +2034,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     const resolved = Number.isFinite(cw) ? cw : null;
     this.contextWindowTokens = resolved ?? (carryKnownWindow ? this.contextWindowTokens : null);
     this.acceptsMidTurnSteering = resolveMidTurnSteering({ backend: this.backend, model: this.model });
+    // Whether calls report a cache read is a property of the pair too.
+    this._cacheEstimate.resetCapability();
   }
 
   async loadHistory(backingId: string): Promise<void> {
@@ -3002,6 +3018,10 @@ export class Instance extends EventEmitter implements InstanceLike {
         ev.contextTokens = contextTokens;
         ev.contextGrowthTokens = this._callUsage.endTurn(contextTokens);
         ev.contextWindowTokens = this.contextWindowTokens;
+        // The turn's input re-split into uncached input + an estimated cache
+        // read, for a backend whose calls report none (src/cacheEstimate.ts).
+        // costTracking writes it and flags the row; Claude turns never carry it.
+        if (this.backend !== CLAUDE_BACKEND_ID) ev.cacheEstimate = this._cacheEstimate.endTurn(ev.usage);
         // Latch this turn's fully-accumulated prefix as P for next turn's
         // cross-turn comparison. A turn with no requests leaves P unchanged.
         if (this._turnLastReqPrefix !== null) this._prevTurnPrefix = this._turnLastReqPrefix;
@@ -4953,6 +4973,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // must not leak into the replayed session (it would over-report a rewound
     // session's fill until its first live message_start).
     this._dropContextReading();
+    // The turn the wipe cut short never reaches turn_end; its estimated calls
+    // must not count toward the next turn's.
+    this._cacheEstimate.abandonTurn();
     this.parser.reset();
     this._lastLeafUuid = null;
     this._planFiles.reset();

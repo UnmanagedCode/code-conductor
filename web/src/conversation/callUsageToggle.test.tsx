@@ -28,9 +28,9 @@ const inst = (id: string, sessionId: string | null, extra: Partial<Instance> = {
 const TURN: UiEvent[] = [
   { kind: 'user_echo', text: 'go', userIndex: 0 },
   ...tool('m1', 0, 'tu1', 'Read'),
-  { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null },
+  { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null },
   ...text('m2', 0, 'reply'),
-  { kind: 'call_usage', msgId: 'm2', promptTokens: 41_000, growthTokens: 1_000, outputTokens: 90, thinkingTokens: null },
+  { kind: 'call_usage', msgId: 'm2', promptTokens: 41_000, growthTokens: 1_000, outputTokens: 90, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null },
 ];
 
 async function frame(type: string, detail: object) {

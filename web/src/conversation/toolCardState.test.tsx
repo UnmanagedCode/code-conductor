@@ -95,7 +95,7 @@ describe('tool card bodies', () => {
 describe('per-call usage and subagent totals', () => {
   it('a per-call usage line explains itself in its tooltip and is no action: no card, not tallied', async () => {
     const m = new ConversationModel();
-    feed(m, [...tool('m1', 0, 'tu1', 'Read'), { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null }]);
+    feed(m, [...tool('m1', 0, 'tu1', 'Read'), { kind: 'call_usage', msgId: 'm1', promptTokens: 40_000, growthTokens: 1_000, outputTokens: 200, thinkingTokens: null, inputTokens: null, cacheReadTokens: null, cacheCreationTokens: null }]);
     const { root } = renderModel(m);
     await flush();
     expect(q(root, '[data-group-trigger]')?.getAttribute('data-state'), 'fixture check: the run is open').toBe('open');
