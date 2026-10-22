@@ -231,8 +231,10 @@ describe('the plugin dock collapse', () => {
     const flagWrites = () => setItem.mock.calls.filter((c) => c[0] === COLLAPSED_KEY);
     await pickApp('beta');
     await pickApp('conductor');
+    expect(mode(), 'fixture check: the Conductor pick closed it').toBe('hidden');
     await pickApp('alpha');
     expect(mode(), 'fixture check: split again').toBe('split');
+    expect(setItem.mock.calls.some((c) => c[0] === 'code-conductor:plugin-dock'), 'control: the spy records writes').toBe(true);
     expect(flagWrites()).toEqual([]);
   });
 
