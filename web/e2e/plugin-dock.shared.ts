@@ -373,6 +373,18 @@ export async function collapseFlow({ page, cc }: Args): Promise<void> {
   const eb = await boxOf(expandBtn, 'Expand');
   expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('button')?.getAttribute('aria-label'), [eb.x + eb.width / 2, eb.y + eb.height / 2] as const), 'Expand is what a click at its centre hits').toBe('Expand plugin dock');
   await expect(column(page).locator('[data-dock-rail]')).toContainText(PLAIN.name);
+  // The label's own box includes its padding, so it touches the divider either way; the text's range rect is what moves.
+  const bar = await boxOf(column(page).locator('[data-dock-rail] > div').first(), 'the rail bar');
+  const ink = await page.evaluate(() => {
+    const label = document.querySelector('[data-dock-rail-label]')!;
+    const r = document.createRange();
+    r.selectNodeContents(label);
+    const b = r.getBoundingClientRect();
+    const spacing = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--spacing')) * parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return { top: b.top, centreX: b.left + b.width / 2, spacing };
+  });
+  expect(Math.abs(ink.centreX - (eb.x + eb.width / 2)), 'the rail name is centred under Expand').toBeLessThanOrEqual(1);
+  expect(ink.top - (bar.y + bar.height), 'the rail name starts a pt-2 below the divider').toBeGreaterThanOrEqual(2 * ink.spacing - 0.5);
   expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= innerWidth), 'the parked page adds no horizontal overflow').toBe(true);
 
   await expect.poll(async () => { const p = await readProbe(page, PLAIN.id); return !!p && p.ticks > before.ticks && p.ws > before.ws; }, { message: 'the page stays live while collapsed' }).toBe(true);
