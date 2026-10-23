@@ -2,7 +2,7 @@
 // keep-alive frames survive and no mode change moves a frame. Its width is its
 // mode (dockLayout.ts): hidden, a split beside the session, a rail, or the whole
 // row — the full view (`#plugin/<id>/<subpath>`), or a split too narrow to fit.
-// Its bar carries Collapse, the plugin's name, the one full ⇄ split toggle and Close plugin
+// Its bar carries Collapse, the one full ⇄ split toggle, the plugin's name and Close plugin
 // (the switcher's Conductor pick, which hides a keep-alive page and stops nothing).
 import * as React from 'react';
 import { LoaderCircleIcon, Maximize2Icon, MenuIcon, PanelRightCloseIcon, PanelRightIcon, PanelRightOpenIcon, PlugIcon, RotateCwIcon, XIcon } from 'lucide-react';
@@ -167,12 +167,6 @@ export function PluginView() {
               <TooltipContent side="bottom">Collapse plugin dock</TooltipContent>
             </Tooltip>
           )}
-          {!desktop && (
-            <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}>
-              <MenuIcon />
-            </Button>
-          )}
-          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</h1>
           {t && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -183,6 +177,12 @@ export function PluginView() {
               <TooltipContent side="bottom">{t.label}</TooltipContent>
             </Tooltip>
           )}
+          {!desktop && (
+            <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}>
+              <MenuIcon />
+            </Button>
+          )}
+          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</h1>
           {shownId && (
             <Tooltip>
               <TooltipTrigger asChild>
