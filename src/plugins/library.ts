@@ -164,6 +164,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-git',
+    name: 'Code Git',
+    description: 'A GitKraken-class git repository manager for cc projects, local and remote-System: every git command runs through cc\'s /api/exec.',
+    repo: 'https://github.com/UnmanagedCode/code-git',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
