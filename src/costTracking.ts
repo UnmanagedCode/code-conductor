@@ -239,7 +239,16 @@ interface CostSummary {
     by_model: ModelSummary[];
   }>;
   by_model: ModelSummary[];
-  daily_trend: Array<{ date: string; cost_usd: number }>;
+  daily_trend: Array<{
+    date: string;
+    cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_tokens: number;
+    cache_read_tokens: number;
+    tokens_known: boolean;
+    tokens_estimated: boolean;
+  }>;
 }
 
 function newModelAccumulator(key: string): ModelAccumulator {
@@ -261,18 +270,32 @@ function tokensKnown(r: Row): boolean {
   return TOKEN_KEYS.some(k => rowNum(r, k) !== 0);
 }
 
+interface TokenAccumulator {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  _hasTokens: boolean;
+  _estimated: boolean;
+}
+
+// The one place a row's tokens are counted (per model and per day): only a
+// tokensKnown row adds, so an all-zero or usage-less row never shows as a 0.
+function accumulateTokens(a: TokenAccumulator, r: Row): void {
+  if (r.cache_estimated === true) a._estimated = true;
+  if (!tokensKnown(r)) return;
+  a._hasTokens = true;
+  a.input_tokens += rowNum(r, 'input_tokens');
+  a.output_tokens += rowNum(r, 'output_tokens');
+  a.cache_creation_tokens += rowNum(r, 'cache_creation_tokens');
+  a.cache_read_tokens += rowNum(r, 'cache_read_tokens');
+}
+
 function accumulateModel(m: ModelAccumulator, r: Row): void {
   m.cost_usd += rowNum(r, 'cost_usd');
   m.duration_ms += rowNum(r, 'duration_ms');
   m.duration_api_ms += rowNum(r, 'duration_api_ms');
-  if (r.cache_estimated === true) m._estimated = true;
-  if (tokensKnown(r)) {
-    m._hasTokens = true;
-    m.input_tokens += rowNum(r, 'input_tokens');
-    m.output_tokens += rowNum(r, 'output_tokens');
-    m.cache_creation_tokens += rowNum(r, 'cache_creation_tokens');
-    m.cache_read_tokens += rowNum(r, 'cache_read_tokens');
-  }
+  accumulateTokens(m, r);
   m.turns += 1;
   if (r.cache_miss === true) m.cache_misses += 1;
   if (typeof r.sessionId === 'string') m._sessionSet.add(r.sessionId);
@@ -346,15 +369,18 @@ export async function getCostSummary(): Promise<CostSummary> {
   const by_model = [...modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd).map(modelSummary);
 
   // Daily trend — all days that have data, sorted chronologically
-  const dayMap = new Map<string, { date: string; cost_usd: number }>();
+  const dayMap = new Map<string, TokenAccumulator & { date: string; cost_usd: number }>();
   for (const r of rows) {
     const ts = r.ts;
     const date = new Date(typeof ts === 'number' ? ts : 0).toISOString().slice(0, 10);
-    const entry = dayMap.get(date) ?? { date, cost_usd: 0 };
+    const entry = dayMap.get(date) ?? { date, cost_usd: 0, input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, _hasTokens: false, _estimated: false };
     entry.cost_usd += rowNum(r, 'cost_usd');
+    accumulateTokens(entry, r);
     dayMap.set(date, entry);
   }
-  const daily_trend = [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+  const daily_trend = [...dayMap.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(({ _hasTokens, _estimated, ...d }) => ({ ...d, tokens_known: _hasTokens, tokens_estimated: _estimated }));
 
   return { total_usd, row_count: rows.length, by_project, by_model, daily_trend };
 }
