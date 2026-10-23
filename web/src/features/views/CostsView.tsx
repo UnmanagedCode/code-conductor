@@ -154,7 +154,8 @@ export function DailyChart<D extends { date: string }>({ days, series, title, fm
   const hv = hover != null ? days[hover] : null;
   const multi = series.length > 1;
   const topDown = [...series].reverse();
-  const dayLabel = (d: D) => (!known(d) ? `${d.date}: no token data` : multi ? `${d.date}: ${topDown.map((s) => `${s.label} ${fmt(s.value(d))}`).join(', ')}` : `${d.date}: ${fmt(total(d))}`);
+  const figure = (s: BarSeries<D>, d: D) => `${s.estimated?.(d) ? '≈' : ''}${fmt(s.value(d))}`;
+  const dayLabel = (d: D) => (!known(d) ? `${d.date}: no token data` : multi ? `${d.date}: ${topDown.map((s) => `${s.label} ${figure(s, d)}`).join(', ')}` : `${d.date}: ${fmt(total(d))}`);
   return (
     <div ref={ref} className="relative w-full" onMouseLeave={() => setHover(null)}>
       {multi && (
@@ -186,7 +187,7 @@ export function DailyChart<D extends { date: string }>({ days, series, title, fm
                 const sh = h * (s.value(d) / sum);
                 const yy = base - sh;
                 base = yy;
-                const common = { fill: s.color, opacity: hover == null || hover === i ? 1 : 0.45, 'data-series': s.label, 'data-value': s.value(d), 'data-height': sh } as const;
+                const common = { fill: s.color, opacity: hover == null || hover === i ? 1 : 0.45, 'data-series': s.label, 'data-value': s.value(d) } as const;
                 if (k === parts.length - 1) {
                   const tr = Math.min(rr, sh);
                   return <path key={s.label} {...common} d={`M${x},${yy + sh} V${yy + tr} Q${x},${yy} ${x + tr},${yy} H${x + barW - tr} Q${x + barW},${yy} ${x + barW},${yy + tr} V${yy + sh} Z`} />;
@@ -212,7 +213,7 @@ export function DailyChart<D extends { date: string }>({ days, series, title, fm
                 <div key={s.label} className="flex items-center gap-1.5 tabular-nums">
                   <span className="inline-block size-2 rounded-sm" style={{ background: s.color }} />
                   <span className="text-muted-foreground">{s.label}</span>
-                  <span className="ml-auto pl-3 font-semibold">{fmt(s.value(hv))}</span>
+                  <span className="ml-auto pl-3 font-semibold">{figure(s, hv)}</span>
                 </div>
               ))}
               <div className="mt-0.5 flex border-t pt-0.5 tabular-nums"><span className="text-muted-foreground">Total</span><span className="ml-auto pl-3 font-semibold">{fmt(total(hv))}</span></div>
@@ -300,7 +301,7 @@ function TokenTiles({ data }: { data: CostsSummary }) {
   const create = sum((d) => d.cache_creation_tokens);
   return (
     <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4" data-costs-total>
-      <Stat label="Total tokens" value={val(sum((d) => d.input_tokens + d.output_tokens + cacheInput(d)))} sub={`across ${data.row_count} turn${data.row_count === 1 ? '' : 's'}`} />
+      <Stat label="Total tokens" value={val(sum((d) => d.input_tokens + d.output_tokens + cacheInput(d)))} sub={known.length ? `across ${known.length} day${known.length === 1 ? '' : 's'} with token data` : undefined} />
       <Stat label="Input" value={val(sum((d) => d.input_tokens), true)} sub="uncached" />
       <Stat label="Output" value={val(sum((d) => d.output_tokens))} />
       <Stat label="Cache input" value={val(read + create, true)} sub={known.length ? `${fmtNum(read)} read · ${fmtNum(create)} create` : undefined} />
@@ -368,7 +369,7 @@ export function CostsView() {
   return (
     <ViewShell
       title="Costs"
-      subtitle="Spend by project, model and day"
+      subtitle={metric === 'tokens' ? 'Token use by project, model and day' : 'Spend by project, model and day'}
       icon={<CoinsIcon className="size-4" />}
       actions={<Button size="sm" variant="ghost" onClick={() => void load()} aria-label="Refresh"><RotateCwIcon /></Button>}
       data-view="costs"
