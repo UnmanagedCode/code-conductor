@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ChevronRightIcon, CoinsIcon, RotateCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { projectLabel } from '@shared/conductors';
 import { apiFetch } from '@shared/http';
 import { formatDuration, fmtCost } from '@shared/usage';
@@ -15,11 +16,19 @@ export type ModelRow = {
 export type ProjectRow = {
   project: string; cost_usd: number; turns: number; sessions: number; cache_misses: number; duration_api_ms: number; duration_ms: number; by_model?: ModelRow[];
 };
-export type CostsSummary = {
-  total_usd: number; row_count: number; by_project: ProjectRow[]; by_model: ModelRow[]; daily_trend: { date: string; cost_usd: number }[];
+export type DayRow = {
+  date: string; cost_usd: number; input_tokens: number; output_tokens: number; cache_creation_tokens: number; cache_read_tokens: number;
+  tokens_known: boolean; tokens_estimated: boolean;
 };
+export type CostsSummary = {
+  total_usd: number; row_count: number; by_project: ProjectRow[]; by_model: ModelRow[]; daily_trend: DayRow[];
+};
+export type CostsMetric = 'cost' | 'tokens';
+
+const cacheInput = (d: Pick<DayRow, 'cache_read_tokens' | 'cache_creation_tokens'>) => d.cache_read_tokens + d.cache_creation_tokens;
 
 export function fmtNum(n: number) {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B';
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
   return String(n);
@@ -78,7 +87,7 @@ function Section({ title, children, description }: { title: string; description?
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Stat({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) {
   return (
     <div className="rounded-xl border bg-card px-4 py-3">
       <div className="text-xs text-muted-foreground">{label}</div>
@@ -104,9 +113,21 @@ const shortDate = (d: string) => {
   return Number.isNaN(t.getTime()) ? d : t.toLocaleDateString([], { month: 'short', day: 'numeric' });
 };
 const tickMoney = (v: number) => (v === 0 ? '$0' : v < 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(v < 10 ? 1 : 0)}`);
+const tickTokens = (v: number) => (v === 0 ? '0' : fmtNum(v).replace(/\.0(?=[kMB]$)/, ''));
 
-/** Daily spend: one series, one hue, bars on a baseline, hover for the exact figure. */
-export function DailyChart({ days }: { days: { date: string; cost_usd: number }[] }) {
+const COST_SERIES: BarSeries<DayRow>[] = [{ label: 'Spend', color: 'var(--primary)', value: (d) => d.cost_usd }];
+const TOKEN_SERIES: BarSeries<DayRow>[] = [
+  { label: 'Output', color: 'var(--primary)', value: (d) => d.output_tokens },
+  { label: 'Input', color: 'var(--info)', value: (d) => d.input_tokens, estimated: (d) => d.tokens_estimated },
+  { label: 'Cache input', color: 'var(--plan)', value: cacheInput, estimated: (d) => d.tokens_estimated },
+];
+
+export type BarSeries<D> = { label: string; color: string; value: (d: D) => number; estimated?: (d: D) => boolean };
+
+/** Daily bars stacked from `series` (bottom→top), bars on a baseline, hover for the exact figures. */
+export function DailyChart<D extends { date: string }>({ days, series, title, fmt, tick, known = () => true }: {
+  days: D[]; series: BarSeries<D>[]; title: string; fmt: (v: number) => string; tick: (v: number) => string; known?: (d: D) => boolean;
+}) {
   const ref = React.useRef<HTMLDivElement>(null);
   const [width, setWidth] = React.useState(640);
   const [hover, setHover] = React.useState<number | null>(null);
@@ -119,7 +140,8 @@ export function DailyChart({ days }: { days: { date: string; cost_usd: number }[
   }, []);
   const H = 200;
   const pad = { l: 44, r: 8, t: 12, b: 24 };
-  const max = Math.max(...days.map((d) => d.cost_usd), 0);
+  const total = (d: D) => (known(d) ? series.reduce((a, s) => a + s.value(d), 0) : 0);
+  const max = Math.max(...days.map(total), 0);
   const ticks = niceTicks(max);
   const top = ticks[ticks.length - 1] || 1;
   const plotW = width - pad.l - pad.r;
@@ -130,31 +152,48 @@ export function DailyChart({ days }: { days: { date: string; cost_usd: number }[
   const labelEvery = Math.max(1, Math.ceil(days.length / Math.max(1, Math.floor(plotW / 56))));
   const r = Math.min(4, barW / 2);
   const hv = hover != null ? days[hover] : null;
+  const multi = series.length > 1;
+  const topDown = [...series].reverse();
+  const figure = (s: BarSeries<D>, d: D) => `${s.estimated?.(d) ? '≈' : ''}${fmt(s.value(d))}`;
+  const dayLabel = (d: D) => (!known(d) ? `${d.date}: no token data` : multi ? `${d.date}: ${topDown.map((s) => `${s.label} ${figure(s, d)}`).join(', ')}` : `${d.date}: ${fmt(total(d))}`);
   return (
     <div ref={ref} className="relative w-full" onMouseLeave={() => setHover(null)}>
-      <svg width={width} height={H} role="img" aria-label={`Daily spend over ${days.length} days, peak ${fmtCost(max)}`} className="block">
+      {multi && (
+        <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" data-chart-legend>
+          {topDown.map((s) => (
+            <span key={s.label} className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-sm" style={{ background: s.color }} />{s.label}</span>
+          ))}
+        </div>
+      )}
+      <svg width={width} height={H} role="img" aria-label={`${title} over ${days.length} days, peak ${fmt(max)}`} className="block">
         {ticks.map((t) => (
           <g key={t}>
             <line x1={pad.l} x2={width - pad.r} y1={y(t)} y2={y(t)} stroke="var(--border)" strokeWidth={1} strokeDasharray={t === 0 ? undefined : '2 4'} />
-            <text x={pad.l - 8} y={y(t)} dy="0.32em" textAnchor="end" fontSize={11} fill="var(--muted-foreground)" className="tabular-nums">{tickMoney(t)}</text>
+            <text x={pad.l - 8} y={y(t)} dy="0.32em" textAnchor="end" fontSize={11} fill="var(--muted-foreground)" className="tabular-nums">{tick(t)}</text>
           </g>
         ))}
         {days.map((d, i) => {
           const cx = pad.l + slot * i + slot / 2;
-          const h = d.cost_usd > 0 ? Math.max(2, plotH * (d.cost_usd / top)) : 0;
+          const sum = total(d);
+          const h = sum > 0 ? Math.max(2, plotH * (sum / top)) : 0;
           const x = cx - barW / 2;
-          const yy = pad.t + plotH - h;
           const rr = Math.min(r, h);
+          const parts = series.filter((s) => known(d) && s.value(d) > 0);
+          let base = pad.t + plotH;
           return (
-            <g key={d.date} onMouseEnter={() => setHover(i)} onFocus={() => setHover(i)} tabIndex={0} aria-label={`${d.date}: ${fmtCost(d.cost_usd)}`}>
+            <g key={d.date} onMouseEnter={() => setHover(i)} onFocus={() => setHover(i)} tabIndex={0} aria-label={dayLabel(d)}>
               <rect x={pad.l + slot * i} y={pad.t} width={slot} height={plotH} fill="transparent" />
-              {h > 0 && (
-                <path
-                  d={`M${x},${yy + h} V${yy + rr} Q${x},${yy} ${x + rr},${yy} H${x + barW - rr} Q${x + barW},${yy} ${x + barW},${yy + rr} V${yy + h} Z`}
-                  fill="var(--primary)"
-                  opacity={hover == null || hover === i ? 1 : 0.45}
-                />
-              )}
+              {parts.map((s, k) => {
+                const sh = h * (s.value(d) / sum);
+                const yy = base - sh;
+                base = yy;
+                const common = { fill: s.color, opacity: hover == null || hover === i ? 1 : 0.45, 'data-series': s.label, 'data-value': s.value(d) } as const;
+                if (k === parts.length - 1) {
+                  const tr = Math.min(rr, sh);
+                  return <path key={s.label} {...common} d={`M${x},${yy + sh} V${yy + tr} Q${x},${yy} ${x + tr},${yy} H${x + barW - tr} Q${x + barW},${yy} ${x + barW},${yy + tr} V${yy + sh} Z`} />;
+                }
+                return <rect key={s.label} {...common} x={x} y={yy} width={barW} height={sh} stroke="var(--card)" strokeWidth={1} />;
+              })}
               {i % labelEvery === 0 && (
                 <text x={cx} y={H - 6} textAnchor="middle" fontSize={11} fill="var(--muted-foreground)">{shortDate(d.date)}</text>
               )}
@@ -165,15 +204,37 @@ export function DailyChart({ days }: { days: { date: string; cost_usd: number }[
       {hv && hover != null && (
         <div
           className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-md border bg-popover px-2.5 py-1.5 text-xs shadow-md"
-          style={{ left: Math.min(width - 60, Math.max(60, pad.l + slot * hover + slot / 2)), top: y(hv.cost_usd) - 6 }}
+          style={{ left: Math.min(width - 60, Math.max(60, pad.l + slot * hover + slot / 2)), top: y(total(hv)) - 6 }}
         >
           <div className="text-muted-foreground">{shortDate(hv.date)}</div>
-          <div className="font-semibold tabular-nums">{fmtCost(hv.cost_usd)}</div>
+          {!known(hv) ? <div className="font-semibold">no token data</div> : multi ? (
+            <>
+              {topDown.map((s) => (
+                <div key={s.label} className="flex items-center gap-1.5 tabular-nums">
+                  <span className="inline-block size-2 rounded-sm" style={{ background: s.color }} />
+                  <span className="text-muted-foreground">{s.label}</span>
+                  <span className="ml-auto pl-3 font-semibold">{figure(s, hv)}</span>
+                </div>
+              ))}
+              <div className="mt-0.5 flex border-t pt-0.5 tabular-nums"><span className="text-muted-foreground">Total</span><span className="ml-auto pl-3 font-semibold">{fmt(total(hv))}</span></div>
+            </>
+          ) : <div className="font-semibold tabular-nums">{fmt(total(hv))}</div>}
         </div>
       )}
       <table className="sr-only">
-        <caption>Daily spend</caption>
-        <tbody>{days.map((d) => <tr key={d.date}><td>{d.date}</td><td>{fmtCost(d.cost_usd)}</td></tr>)}</tbody>
+        <caption>{title}</caption>
+        <tbody>
+          {days.map((d) => (
+            <tr key={d.date}>
+              <td>{d.date}</td>
+              {topDown.map((s) => (
+                <td key={s.label}>
+                  {!known(d) ? '—' : s.estimated?.(d) ? <span title={ESTIMATED_TITLE}>≈{fmt(s.value(d))}<span className="sr-only"> (estimated)</span></span> : fmt(s.value(d))}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
       </table>
     </div>
   );
@@ -228,7 +289,27 @@ function ProjectsTable({ rows }: { rows: ProjectRow[] }) {
   );
 }
 
-export function CostsBody({ data }: { data: CostsSummary }) {
+function TokenTiles({ data }: { data: CostsSummary }) {
+  const known = data.daily_trend.filter((d) => d.tokens_known);
+  const sum = (f: (d: DayRow) => number) => known.reduce((a, d) => a + f(d), 0);
+  const estimated = known.some((d) => d.tokens_estimated);
+  const val = (n: number, est = false): React.ReactNode => {
+    if (known.length === 0) return '—';
+    return est && estimated ? <span title={ESTIMATED_TITLE}>≈{fmtNum(n)}<span className="sr-only"> (estimated)</span></span> : fmtNum(n);
+  };
+  const read = sum((d) => d.cache_read_tokens);
+  const create = sum((d) => d.cache_creation_tokens);
+  return (
+    <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4" data-costs-total>
+      <Stat label="Total tokens" value={val(sum((d) => d.input_tokens + d.output_tokens + cacheInput(d)))} sub={known.length ? `across ${known.length} day${known.length === 1 ? '' : 's'} with token data` : undefined} />
+      <Stat label="Input" value={val(sum((d) => d.input_tokens), true)} sub="uncached" />
+      <Stat label="Output" value={val(sum((d) => d.output_tokens))} />
+      <Stat label="Cache input" value={val(read + create, true)} sub={known.length ? `${fmtNum(read)} read · ${fmtNum(create)} create` : undefined} />
+    </div>
+  );
+}
+
+export function CostsBody({ data, metric, onMetricChange }: { data: CostsSummary; metric: CostsMetric; onMetricChange: (m: CostsMetric) => void }) {
   if (data.row_count === 0) {
     return <ViewMessage>No cost data recorded yet. Cost tracking begins with the next turn.</ViewMessage>;
   }
@@ -237,15 +318,29 @@ export function CostsBody({ data }: { data: CostsSummary }) {
   const peak = data.daily_trend.reduce((a, d) => (d.cost_usd > a.cost_usd ? d : a), data.daily_trend[0] ?? { date: '', cost_usd: 0 });
   return (
     <div className="space-y-8">
-      <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4" data-costs-total>
-        <Stat label="Total spend" value={fmtCost(data.total_usd)} sub={`across ${data.row_count} turn${data.row_count === 1 ? '' : 's'}`} />
-        <Stat label="Sessions" value={String(sessions)} sub={`${data.by_project.length} project${data.by_project.length === 1 ? '' : 's'}`} />
-        <Stat label="LLM time" value={formatDuration(llm)} />
-        <Stat label="Busiest day" value={peak?.date ? fmtCost(peak.cost_usd) : '—'} sub={peak?.date ? shortDate(peak.date) : undefined} />
+      <div className="space-y-3">
+        <Tabs value={metric} onValueChange={(v) => onMetricChange(v as CostsMetric)}>
+          <TabsList aria-label="Dashboard metric">
+            <TabsTrigger value="cost">Cost</TabsTrigger>
+            <TabsTrigger value="tokens">Tokens</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {metric === 'tokens' ? <TokenTiles data={data} /> : (
+          <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4" data-costs-total>
+            <Stat label="Total spend" value={fmtCost(data.total_usd)} sub={`across ${data.row_count} turn${data.row_count === 1 ? '' : 's'}`} />
+            <Stat label="Sessions" value={String(sessions)} sub={`${data.by_project.length} project${data.by_project.length === 1 ? '' : 's'}`} />
+            <Stat label="LLM time" value={formatDuration(llm)} />
+            <Stat label="Busiest day" value={peak?.date ? fmtCost(peak.cost_usd) : '—'} sub={peak?.date ? shortDate(peak.date) : undefined} />
+          </div>
+        )}
       </div>
       {data.daily_trend.length > 0 && (
-        <Section title="Daily spend">
-          <div className="rounded-xl border bg-card p-3"><DailyChart days={data.daily_trend} /></div>
+        <Section title={metric === 'tokens' ? 'Daily tokens' : 'Daily spend'}>
+          <div className="rounded-xl border bg-card p-3">
+            {metric === 'tokens'
+              ? <DailyChart days={data.daily_trend} series={TOKEN_SERIES} title="Daily tokens" fmt={fmtNum} tick={tickTokens} known={(d) => d.tokens_known} />
+              : <DailyChart days={data.daily_trend} series={COST_SERIES} title="Daily spend" fmt={fmtCost} tick={tickMoney} />}
+          </div>
         </Section>
       )}
       <Section title="By project" description="Tap a project for its per-model breakdown.">
@@ -261,6 +356,7 @@ export function CostsBody({ data }: { data: CostsSummary }) {
 /** Spend by project, model and day, from the server's per-turn cost log. */
 export function CostsView() {
   const [state, setState] = React.useState<{ phase: 'loading' | 'loaded' | 'error'; data?: CostsSummary; error?: string }>({ phase: 'loading' });
+  const [metric, setMetric] = React.useState<CostsMetric>('cost');
   const load = React.useCallback(async () => {
     setState({ phase: 'loading' });
     try {
@@ -273,7 +369,7 @@ export function CostsView() {
   return (
     <ViewShell
       title="Costs"
-      subtitle="Spend by project, model and day"
+      subtitle={metric === 'tokens' ? 'Token use by project, model and day' : 'Spend by project, model and day'}
       icon={<CoinsIcon className="size-4" />}
       actions={<Button size="sm" variant="ghost" onClick={() => void load()} aria-label="Refresh"><RotateCwIcon /></Button>}
       data-view="costs"
@@ -284,7 +380,7 @@ export function CostsView() {
           <Skeleton className="h-56 rounded-xl" />
         </div>
       ) : state.phase === 'error' ? <ViewMessage tone="error">Failed to load: {state.error}</ViewMessage>
-        : <CostsBody data={state.data!} />}
+        : <CostsBody data={state.data!} metric={metric} onMetricChange={setMetric} />}
     </ViewShell>
   );
 }

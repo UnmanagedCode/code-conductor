@@ -78,7 +78,7 @@ describe('costs', () => {
       by_model: [model({ model: 'est', cost_usd: 0, tokens_estimated: true }), model({ model: 'real', cost_usd: 0 })],
       daily_trend: [],
     };
-    render(<TooltipProvider><CostsBody data={data} /></TooltipProvider>);
+    render(<TooltipProvider><CostsBody data={data} metric="cost" onMetricChange={() => {}} /></TooltipProvider>);
     const row = (name: string) => screen.getAllByRole('row').find((r) => r.querySelector('td')?.textContent === name)!;
     const estCells = within(row('est')).getAllByRole('cell');
     const named = within(row('est')).getAllByRole('cell', { name: /estimated/ });
@@ -92,9 +92,9 @@ describe('costs', () => {
       total_usd: 1.23456, row_count: 3,
       by_project: [{ project: 'p', cost_usd: 1.2, turns: 3, sessions: 1, cache_misses: 0, duration_api_ms: 10, duration_ms: 20, by_model: [model({})] }],
       by_model: [model({})],
-      daily_trend: [{ date: '2026-10-01', cost_usd: 1.23456 }],
+      daily_trend: [{ date: '2026-10-01', cost_usd: 1.23456, input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, tokens_known: false, tokens_estimated: false }],
     };
-    render(<TooltipProvider><CostsBody data={data} /></TooltipProvider>);
+    render(<TooltipProvider><CostsBody data={data} metric="cost" onMetricChange={() => {}} /></TooltipProvider>);
     const cells = [...document.querySelectorAll('td, [data-costs-total] div')].map((n) => n.textContent ?? '').filter((t) => t.startsWith('$'));
     expect(cells.length).toBeGreaterThan(2);
     for (const c of cells) expect(c).toMatch(/^\$\d+\.\d{4}$/);
@@ -110,14 +110,14 @@ describe('costs', () => {
       by_project: [{ project: '.conduct', cost_usd: 1, turns: 1, sessions: 1, cache_misses: 0, duration_api_ms: 10, duration_ms: 20, by_model: [model({})] }],
       by_model: [model({})], daily_trend: [],
     };
-    render(<TooltipProvider><CostsBody data={data} /></TooltipProvider>);
+    render(<TooltipProvider><CostsBody data={data} metric="cost" onMetricChange={() => {}} /></TooltipProvider>);
     const row = document.querySelector('[data-cost-project=".conduct"]') as HTMLElement;
     expect(row.textContent).toContain(CONDUCTOR_LABEL);
     expect(row.textContent).not.toContain('.conduct');
   });
 
   it('says so when nothing has been recorded', () => {
-    render(<CostsBody data={{ total_usd: 0, row_count: 0, by_project: [], by_model: [], daily_trend: [] }} />);
+    render(<CostsBody data={{ total_usd: 0, row_count: 0, by_project: [], by_model: [], daily_trend: [] }} metric="cost" onMetricChange={() => {}} />);
     expect(screen.getByText(/No cost data recorded yet/)).toBeTruthy();
   });
 

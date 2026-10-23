@@ -533,6 +533,39 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     assert.ok(Math.abs(summary.daily_trend[0].cost_usd - 0.08) < 1e-9);
     assert.equal(summary.daily_trend[1].date, '2026-06-02');
     assert.ok(Math.abs(summary.daily_trend[1].cost_usd - 0.02) < 1e-9);
+    const vec = (d) => [d.input_tokens, d.output_tokens, d.cache_creation_tokens, d.cache_read_tokens];
+    assert.deepEqual(vec(summary.daily_trend[0]), [180, 90, 15, 300]);
+    assert.deepEqual(vec(summary.daily_trend[1]), [200, 80, 20, 300]);
+    assert.deepEqual(summary.daily_trend.map(d => d.tokens_known), [true, true]);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+test('cost-tracking: getCostSummary sums each day\'s tokens across models, counting only token-bearing rows', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+  try {
+    const { getCostSummary, costsPath } = await import('../src/costTracking.ts');
+    await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
+    const d1 = new Date('2026-06-01').getTime(), d2 = new Date('2026-06-02').getTime(), d3 = new Date('2026-06-03').getTime();
+    const claude = (ts, i, o, cc, cr) => ({ ts, project: 'p', model: 'claude-opus-4-8', sessionId: 's', input_tokens: i, output_tokens: o, cache_creation_tokens: cc, cache_read_tokens: cr, cost_usd: 0.01 });
+    const other = (ts, i, o, cc, cr, extra = {}) => ({ ts, project: 'p', model: 'glm-5.2:cloud', sessionId: 's', input_tokens: i, output_tokens: o, cache_creation_tokens: cc, cache_read_tokens: cr, ...extra });
+    const noUsage = (ts) => ({ ts, project: 'p', model: 'glm-5.2:cloud', sessionId: 's' });
+    const rows = [
+      claude(d1, 1200, 300, 7000, 50000), other(d1, 800, 4100, 0, 120000),
+      claude(d2, 10, 20, 30, 40), other(d2, 5, 6, 7, 8, { cache_estimated: true }), other(d2, 0, 0, 0, 0), noUsage(d2),
+      other(d3, 0, 0, 0, 0), noUsage(d3),
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const { daily_trend } = await getCostSummary();
+    const vec = (d) => [d.input_tokens, d.output_tokens, d.cache_creation_tokens, d.cache_read_tokens];
+    assert.deepEqual(daily_trend.map(vec), [[2000, 4400, 7000, 170000], [15, 26, 37, 48], [0, 0, 0, 0]]);
+    assert.deepEqual(daily_trend.map(d => d.tokens_known), [true, true, false]);
+    assert.deepEqual(daily_trend.map(d => d.tokens_estimated), [false, true, false]);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
