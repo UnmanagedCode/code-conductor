@@ -139,6 +139,31 @@ describe('the plugin bar\'s Close plugin', () => {
   });
 });
 
+/** The keys of `els` in document order. */
+const inOrder = (els: Record<string, Element>) =>
+  Object.keys(els).sort((a, b) => (els[a].compareDocumentPosition(els[b]) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+const barButton = (name: string) => within(column()!).getByRole('button', { name });
+const barName = () => within(column()!).getByRole('heading', { name: 'Beta' });
+
+describe('the plugin bar\'s order', () => {
+  it('in split the bar reads Collapse plugin dock, Expand to full view, the plugin\'s name, then Close plugin', async () => {
+    // Invariant: the layout controls sit together at the bar's inner edge, left of the plugin's name; Close ends the bar.
+    await mountApp();
+    await dockSplit('beta');
+    expect(inOrder({
+      Close: barButton('Close plugin'), name: barName(), Expand: barButton('Expand to full view'), Collapse: barButton('Collapse plugin dock'),
+    })).toEqual(['Collapse', 'Expand', 'name', 'Close']);
+  });
+
+  it('in the full view the bar reads Dock to side, the plugin\'s name, then Close plugin', async () => {
+    // Invariant: in full the mode toggle is the bar's first control, left of the plugin's name; Close ends the bar.
+    await mountApp();
+    await pickApp('beta');
+    expect(location.hash, 'fixture check: Beta in the full view').toBe('#plugin/beta/');
+    expect(inOrder({ Close: barButton('Close plugin'), name: barName(), Dock: barButton('Dock to side') })).toEqual(['Dock', 'name', 'Close']);
+  });
+});
+
 describe('below md', () => {
   const happyDOM = () => (window as unknown as { happyDOM: { setViewport(v: { width: number; height: number }): void } }).happyDOM;
   let prev = { width: 0, height: 0 };

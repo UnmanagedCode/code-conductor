@@ -135,7 +135,7 @@ async function dockSplitAtW(page: Page, p: ProbePlugin) {
 // ── flows ────────────────────────────────────────────────────────────────
 
 export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F1, F3): the column holds Collapse (split only), its mode toggle, then Close plugin right of it, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
+  // Invariant (F1, F3): the column holds Collapse (split only) and its mode toggle left of the plugin's name, then Close plugin at the strip's end, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
   desktopOnly();
   await onSession(page, cc, 'geometry');
   const viewport = page.viewportSize()!;
@@ -154,6 +154,9 @@ export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
   expect(c.x, 'full: Close is right of Dock to side').toBeGreaterThanOrEqual(right(dock) - 0.5);
   expect(c.y < bottom(dock) && bottom(c) > dock.y, 'full: Close is on the toggle\'s row').toBe(true);
   expect(right(c), 'full: Close is inside the strip').toBeLessThanOrEqual(right(h) + 0.5);
+  const name = await boxOf(header(page).locator('h1'), 'the heading');
+  expect(right(dock), 'full: Dock to side is left of the name').toBeLessThanOrEqual(name.x + 0.5);
+  expect(right(name), 'full: the name is left of Close').toBeLessThanOrEqual(c.x + 0.5);
   const f = await boxOf(section(page).locator('iframe:visible'), 'the frame');
   expect(f.y, 'the frame starts below the strip').toBeGreaterThanOrEqual(bottom(h) - 0.5);
   expect(Math.abs(bottom(f) - bottom(s)), 'the frame reaches the section\'s bottom').toBeLessThanOrEqual(0.5);
@@ -176,6 +179,9 @@ export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
   await expect(header(page).getByRole('button'), 'three controls: Collapse, the toggle and Close').toHaveCount(3);
   const collapseBox = await boxOf(header(page).getByRole('button', { name: 'Collapse plugin dock', exact: true }), 'Collapse plugin dock');
   expect(right(collapseBox), 'split: Collapse is left of Expand to full view').toBeLessThanOrEqual(expand.x + 0.5);
+  const sname = await boxOf(header(page).locator('h1'), 'the heading in split');
+  expect(right(expand), 'split: Expand to full view is left of the name').toBeLessThanOrEqual(sname.x + 0.5);
+  expect(right(sname), 'split: the name is left of Close').toBeLessThanOrEqual(sc.x + 0.5);
 
   await next.leavePlugin(page);
   await expectHidden(page, 'Conductor');

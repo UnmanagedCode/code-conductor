@@ -8,7 +8,7 @@ import {
 test.use({ ccOptions: { server: 'plugin-dock' } });
 test.beforeAll(async ({ cc }) => { await installProbes(cc); });
 
-test('the column holds its mode toggle and Close right of it in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
+test('the column holds Collapse and its mode toggle left of the plugin\'s name and Close at the strip\'s end in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
 test('Dock to side and Expand to full view never reload a plain plugin\'s page', noReloadFlow(PLAIN));
 test('Dock to side and Expand to full view never reload a keep-alive plugin\'s page', noReloadFlow(KEEP));
 test('Back and Escape from the full view land on Conductor, never on split, and a switch in full costs no entry', fullExitFlow);
