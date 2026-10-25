@@ -42,11 +42,14 @@ describe('ownerSendBlock', () => {
     const f = fleet();
     expect(ownerSendBlock(owned(f.c1))).toBeNull();
     expect(ownerSendBlock(owned({ ...f.c1, status: 'turn' }))).toBeNull();
-    const reasons = [owned(null), owned({ ...f.c1, status: 'spawning' }), owned({ ...f.c1, modelSwitch: { to: 'x' } }), owned({ ...f.c1, overageStoppedUnarmed: true })].map(ownerSendBlock);
+    const reasons = [owned(null), owned({ ...f.c1, status: 'spawning' }), owned({ ...f.c1, modelSwitch: { to: 'x' } }), owned({ ...f.c1, overageStoppedUnarmed: true }), owned({ ...f.c1, status: 'exited' }), owned({ ...f.c1, status: 'crashed' })].map(ownerSendBlock);
     for (const reason of reasons) {
       expect(typeof reason).toBe('string');
       expect(reason).toContain('Alpha');
     }
+    // No instance, exited and crashed all read as not running; spawning, switching and overage each differ.
+    expect(reasons[0]).toBe(reasons[4]);
+    expect(reasons[4]).toBe(reasons[5]);
     expect(new Set(reasons).size).toBe(4);
   });
 });

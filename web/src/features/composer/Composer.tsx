@@ -380,7 +380,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
     <div
       className={cn(
         'rounded-2xl border bg-card shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-[3px]',
-        // One ring colour only: two ring-colour classes would be ordered by the stylesheet, not by this list.
+        // One ring colour, chosen here: cn (tailwind-merge) keeps only the last of two ring-colour classes.
         owner.kind === 'owned' ? 'border-(color:--owner-color) focus-within:ring-(color:--owner-color)/40' : 'focus-within:ring-ring/40',
         dragOver && 'ring-[3px] ring-primary/50',
         !canType && 'opacity-80',

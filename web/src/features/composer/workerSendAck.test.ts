@@ -33,7 +33,6 @@ describe('worker send ack', () => {
     localStorage.setItem(WORKER_SEND_ACK_KEY, '{nope');
     ackWorkerSend('s-repair');
     expect(stored()).toEqual(['s-repair']);
-    vi.resetModules();
     localStorage.setItem(WORKER_SEND_ACK_KEY, JSON.stringify({ 's-repair': true }));
     ackWorkerSend('s-repair2');
     expect(stored()).toEqual(['s-repair2']);
@@ -62,17 +61,38 @@ describe('worker send ack', () => {
     expect(stored().at(-2)).toBe('s-0');
   });
 
-  it('throwing storage falls back to memory', () => {
-    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied'); });
-    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied'); });
+  it('an unreadable storage holds the ack in memory, per session', () => {
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } });
     try {
       expect(isWorkerSendAcked('s-mem')).toBe(false);
       ackWorkerSend('s-mem');
       expect(isWorkerSendAcked('s-mem')).toBe(true);
       expect(isWorkerSendAcked('s-other')).toBe(false);
     } finally {
-      get.mockRestore();
-      set.mockRestore();
+      vi.unstubAllGlobals();
     }
+    expect(localStorage.getItem(WORKER_SEND_ACK_KEY), 'the ack never reached real storage').toBeNull();
+    expect(isWorkerSendAcked('s-mem'), 'and the page still holds it').toBe(true);
+  });
+
+  it('a storage that reads but throws on write (quota) still holds the ack in memory', () => {
+    const data = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: () => { throw new Error('quota'); } });
+    try {
+      ackWorkerSend('s-quota');
+      expect(data.size, 'nothing was stored').toBe(0);
+      expect(isWorkerSendAcked('s-quota')).toBe(true);
+      expect(isWorkerSendAcked('s-quota-other')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a re-ack under the cap leaves one entry for the sid, moved to the end', () => {
+    ackWorkerSend('s-u1');
+    ackWorkerSend('s-u2');
+    ackWorkerSend('s-u3');
+    ackWorkerSend('s-u1');
+    expect(stored()).toEqual(['s-u2', 's-u3', 's-u1']);
   });
 });

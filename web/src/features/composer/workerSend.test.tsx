@@ -175,11 +175,16 @@ describe('first-send check', () => {
     expect(prompts()).toEqual([{ id: f.c1.id, text: 'steer the conductor' }]);
   });
 
-  it('owner not sendable (WI, WA, C1 spawning): the redirect is disabled with a description and nothing is sent', () => {
+  it('owner not sendable (WI, WA, C1 spawning, exited, crashed): the redirect is disabled with a description and nothing is sent', () => {
     const cases: [any, Fleet][] = [[f.wi, f], [f.wa, f]];
     const spawning = fleet();
     spawning.c1.status = 'spawning';
     cases.push([spawning.w1, spawning]);
+    for (const status of ['exited', 'crashed']) {
+      const dead = fleet();
+      dead.c1.status = status;
+      cases.push([dead.w1, dead]);
+    }
     for (const [w, fl] of cases) {
       const m = mount(w, fl);
       typeAndEnter('stay put');
