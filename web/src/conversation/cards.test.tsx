@@ -15,6 +15,8 @@ vi.mock('@shared/ws', () => ({
 import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '@shared/userQuestionAnswers';
 import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { appStore } from '@/state/app';
+import { WORKER_SEND_ACK_KEY } from '@/features/composer/workerSendAck';
+import { fleet as workerFleet, seedWorkerFleet } from '@/test/workerFleet';
 import { ConversationModel, type QuestionNode } from './model';
 import { BUBBLE_BODY_MAX_HEIGHT } from './BubbleBody';
 import { flush, noActions, renderModel } from './renderModel';
@@ -628,5 +630,29 @@ describe('plan card', () => {
     fireEvent.click(within(card).getByRole('button', { name: /Reject/ }));
     await flush();
     expect(sent.map((s) => [s.t, s.payload])).toEqual([['prompt', { id: 'inst-1', text: buildRejectPrompt('smaller steps') }]]);
+  });
+});
+
+// Invariant: a question or plan answer is not a composer send, so an un-acked owned worker's cards are never held by the first-send check.
+describe('cards in an un-acked owned worker', () => {
+  it('a question answer and a plan approval send their prompt frames unchecked and ack nothing', async () => {
+    localStorage.clear();
+    const f = seedWorkerFleet(workerFleet());
+    appStore.set({ activeId: f.w1.id });
+    const q = await show([CARD()]);
+    fireEvent.click(opt(q.card(), 'Apple'));
+    await flush();
+    fireEvent.click(sendBtn(q.card()));
+    await flush();
+    expect(sent.map((x) => [x.t, x.payload.id])).toEqual([['prompt', f.w1.id]]);
+    sent.length = 0;
+    const { root } = await show([{ kind: 'plan_request', toolUseId: 'p9', plan: '# Plan\n\n- step', planPath: '/tmp/plan.md' }]);
+    const card = root.querySelector('[data-item="plan"]') as HTMLElement;
+    fireEvent.click(within(card).getByRole('button', { name: /Approve/ }));
+    await flush();
+    await flush();
+    expect(sent.map((x) => x.t)).toEqual(['mode', 'prompt']);
+    expect(sent[1].payload.id).toBe(f.w1.id);
+    expect(localStorage.getItem(WORKER_SEND_ACK_KEY)).toBeNull();
   });
 });
