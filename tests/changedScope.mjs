@@ -55,7 +55,7 @@ export const WALKS_REVIEWED = {
     why: 'listFiles walks the real web/ and shared/, but on node it only hashes them and tests compare hashes from one run; Vitest\'s build.test.ts runs real builds. The leftover sweep reads a temp distDir\'s parent',
   },
   'web/src/build.test.ts': {
-    sites: 'f1486e07 8d9b0700 4a355031 6fb40c69 f1ae0f8d c4818124 5bdf6397 c2a40c80 3d3eb0f7 451ff969 bfc0415d 670355af 2bc56ac9 30d3d1ae bbd0c016 18a58c5e', node: [], web: ['web', 'shared'],
+    sites: 'f1486e07 8d9b0700 4a355031 4a355031 6fb40c69 f1ae0f8d c4818124 5bdf6397 c2a40c80 3d3eb0f7 451ff969 bfc0415d 670355af 2bc56ac9 30d3d1ae bbd0c016 18a58c5e', node: [], web: ['web', 'shared'],
     why: 'its own walks read a temp distDir; src/bin/docs appear only as isWebInput fixture paths. The node closure holds it only because tests/changedScope.mjs names it, and node never runs it',
   },
   'tests/web-post-merge.test.mjs': { sites: 'd69e23d6 b9c60af3 84c422d9 f3b78fed 2394566a b2b3efec 0d75ce36 cffbf990 cffbf990 f7fc612e b8f329e6 caf50f03 d41c48bd', node: [], why: TEMP_ONLY('walks and reads a temp fixture tree') },
