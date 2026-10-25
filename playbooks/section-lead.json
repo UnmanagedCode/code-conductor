@@ -1,0 +1,18 @@
+{
+  "id": "section-lead",
+  "name": "Section lead — a conductor that leads one section for the lead conductor",
+  "description": "The lead conductor spawns one or more section leads, each conducting its own scope — one level deep.",
+  "entryStages": ["section-lead"],
+
+  "stages": {
+    "section-lead": {
+      "description": "Use only when the user asks for nested conductors; this playbook is the sanctioned way for a conductor to conduct conductors. You are the lead conductor, and each session spawned here is a section lead under you. Spawn one, or several in one turn — one per project or independent effort. Open each brief with that relationship: it is a section lead reporting to you, the lead conductor. Then state: the project(s) it conducts and nothing else; whether it may merge, or hands each worktree back with `READY_TO_LAND <worktree>` for you to land; that it never spawns a conductor itself — this playbook is the lead conductor's, not its; that it drives only sessions it spawned, never another section lead; that its wiki writes stay under its projects' `projects/<name>/`; and that hard calls come back to you via `AskUserQuestion`.",
+      "workers": "many",
+      "tools": {
+        "spawn_instance": { "pin": { "project": ".conduct", "model": "conductor" } }
+      }
+    }
+  },
+
+  "transitions": []
+}
