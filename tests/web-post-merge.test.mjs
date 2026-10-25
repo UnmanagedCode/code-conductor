@@ -1,6 +1,6 @@
 // src/webPostMerge.ts: cc's own post-merge step. When nothing changed since the
-// running server booted is code that server loads — web/, docs/, tests/, and
-// shared/ modules its imports (src/serverImports.ts) do not reach — the new UI
+// running server booted is code that server loads — web/, docs/, tests/, the
+// root README.md, and shared/ modules its imports (src/serverImports.ts) do not reach — the new UI
 // is swapped into web/dist at once; any other change the UI build reads, or a
 // boot commit that cannot be vouched for, stages the build in web/dist.next for
 // the next start; nothing relevant is a no-op.
@@ -47,6 +47,13 @@ const reached = (...chains) => ({ chains: new Map(chains.map((c) => [c.at(-1), c
 test('decision: with a known boot commit, a path stages only if the running server may load it', async (t) => {
   for (const [row, o, action, mentions = [], absent = []] of [
     ['docs/ swaps', { changedSinceBoot: ['docs/features.md', 'web/a.tsx'] }, 'swap'],
+    ['README.md swaps', { changedSinceBoot: ['README.md', 'web/a.tsx'] }, 'swap'],
+    ['the reported merge shape swaps: web/index.html, a web test, README.md, docs/features.md',
+      { changedSinceBoot: ['README.md', 'docs/features.md', 'web/index.html', 'web/src/app.test.tsx'] }, 'swap'],
+    ['a README.md the server reaches stages, naming the chain',
+      { changedSinceBoot: ['README.md', 'web/a.tsx'], serverImports: reached(['src/a.ts', 'README.md']) }, 'stage', ['src/a.ts → README.md']],
+    ['an unknown walk stages README.md, naming it and the site',
+      { changedSinceBoot: ['README.md', 'web/a.tsx'], serverImports: { unknown: 'src/x.ts: import(name)' } }, 'stage', ['README.md', 'import(name)']],
     ['tests/ swaps', { changedSinceBoot: ['tests/x.test.mjs', 'web/a.tsx'] }, 'swap'],
     ['a shared/ module the server does not reach swaps',
       { changedSinceBoot: ['shared/q.ts', 'web/a.tsx'], serverImports: reached(['src/a.ts', 'shared/p.ts']) }, 'swap'],
@@ -79,11 +86,12 @@ test('decision: with a known boot commit, a path stages only if the running serv
   }
 });
 
-test('decision: any path outside web/, docs/, tests/ and shared/ stages, naming it', async (t) => {
+test('decision: any path outside web/, docs/, tests/, shared/ and the root README.md stages, naming it', async (t) => {
   for (const p of [
     '.code-conductor/post-worktree-merge.sh', 'bin/x.sh', 'migrations/0099-x.mjs', 'playbooks/x.md',
-    'conventions/conductor/core.md', 'scripts/x.sh', 'README.md', 'docsite/a.md', 'testsuite/a.mjs',
+    'conventions/conductor/core.md', 'scripts/x.sh', 'docsite/a.md', 'testsuite/a.mjs',
     'shared-thing.ts', 'sharedx/a.ts', 'webhook.ts', 'website/x.ts',
+    'CLAUDE.md', 'CONVENTIONS.md', 'src/README.md', 'conventions/README.md', 'README.md.bak', 'READMEx.md', 'LICENSE',
   ]) {
     await t.test(p, () => {
       const r = decision({ changedSinceBoot: [p, 'web/a.tsx'] });
@@ -255,6 +263,15 @@ test('swap: the diff-split merge shape — docs/, tests/ and a shared/ module on
   const root = await fixture();
   const boot = await bootedAt(root);
   const [pre, post] = await land(root, ['docs/features.md', 'shared/diffSplit.ts', 'tests/diff-split.test.mjs', 'web/app.tsx']);
+  const r = await runWebPostMerge({ root, pre, post, boot, build: builder('swapped'), log: quiet() });
+  assert.equal(r.action, 'swap', r.reason);
+  assert.equal(r.outcome, 'built');
+});
+
+test('swap: the reported merge shape — web/index.html, a web test, README.md and docs/features.md', async () => {
+  const root = await fixture();
+  const boot = await bootedAt(root);
+  const [pre, post] = await land(root, ['README.md', 'docs/features.md', 'web/index.html', 'web/src/app.test.tsx']);
   const r = await runWebPostMerge({ root, pre, post, boot, build: builder('swapped'), log: quiet() });
   assert.equal(r.action, 'swap', r.reason);
   assert.equal(r.outcome, 'built');
