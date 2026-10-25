@@ -188,12 +188,12 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
       added.push(entry);
     }
     // The files belong to the session showing now, wherever the user is when each encode lands.
-    const owner = sidRef.current;
-    attachmentStore.add(owner, added);
+    const ownerSid = sidRef.current;
+    attachmentStore.add(ownerSid, added);
     for (const [entry, file] of entries) {
       let patch: Pick<Pending, 'dataBase64' | 'error'>;
       try { patch = { dataBase64: await fileToBase64(file) }; } catch (e: any) { patch = { error: `read failed: ${e?.message ?? e}` }; }
-      attachmentStore.settle(owner, entry.id, patch);
+      attachmentStore.settle(ownerSid, entry.id, patch);
     }
   }
 
@@ -235,14 +235,14 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   }
 
   function sendHere() {
-    if (!inst?.sessionId) return;
+    if (!inst?.sessionId || !canSend || !buildBody()) return;
     ackWorkerSend(inst.sessionId);
     setChoice(false);
-    if (canSend) deliver(inst);
+    deliver(inst);
   }
 
   function sendToOwner() {
-    if (owner.kind !== 'owned' || !owner.instance || ownerBlock || !canSend) return;
+    if (owner.kind !== 'owned' || !owner.instance || ownerBlock || !canSend || !buildBody()) return;
     deliver(owner.instance);
     setChoice(false);
     openOwner(owner);
@@ -379,8 +379,9 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   return (
     <div
       className={cn(
-        'rounded-2xl border bg-card shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-[3px] focus-within:ring-ring/40',
-        owner.kind === 'owned' && 'border-(color:--owner-color) focus-within:ring-(color:--owner-color)/40',
+        'rounded-2xl border bg-card shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-[3px]',
+        // One ring colour only: two ring-colour classes would be ordered by the stylesheet, not by this list.
+        owner.kind === 'owned' ? 'border-(color:--owner-color) focus-within:ring-(color:--owner-color)/40' : 'focus-within:ring-ring/40',
         dragOver && 'ring-[3px] ring-primary/50',
         !canType && 'opacity-80',
       )}
@@ -480,8 +481,8 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
           onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setChoice(false); taRef.current?.focus(); } }}
         >
           <span className="min-w-0 flex-1 basis-full text-muted-foreground">{inst?.title || (inst && projectLabel(inst.project))} is a worker of {owner.label}.</span>
-          <Button size="sm" onClick={sendHere} disabled={!canSend}>Send to this worker</Button>
-          <Button size="sm" variant="outline" onClick={sendToOwner} disabled={!!ownerBlock || !canSend} aria-describedby={ownerBlock ? blockId : undefined}>
+          <Button size="sm" onClick={sendHere} disabled={!canSend || !hasContent}>Send to this worker</Button>
+          <Button size="sm" variant="outline" onClick={sendToOwner} disabled={!!ownerBlock || !canSend || !hasContent} aria-describedby={ownerBlock ? blockId : undefined}>
             Send to {owner.label} instead
           </Button>
           <Button size="sm" variant="ghost" onClick={() => { setChoice(false); taRef.current?.focus(); }}>Keep editing</Button>

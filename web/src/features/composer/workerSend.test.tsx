@@ -88,6 +88,21 @@ describe('accent', () => {
   });
 });
 
+describe('focus ring', () => {
+  const BASE_RING = 'focus-within:ring-ring/40';
+  it('an owned worker\'s composer has the owner ring class and lacks the base ring colour; conductor, hand and unknown-owner keep the base', () => {
+    let m = mount(f.w1);
+    expect(composer().className).toContain('focus-within:ring-(color:--owner-color)/40');
+    expect(composer().className).not.toContain(BASE_RING);
+    for (const i of [f.c1, f.h, f.wu]) {
+      m.unmount();
+      m = mount(i);
+      expect(composer().className).toContain(BASE_RING);
+      expect(composer().className).not.toContain('--owner-color');
+    }
+  });
+});
+
 describe('first-send check', () => {
   it('the first Enter into W1 sends no prompt frame and shows the choice group', () => {
     mount(f.w1);
@@ -201,6 +216,21 @@ describe('first-send check', () => {
     expect(box().value).toBe('hold more');
     expect(prompts()).toEqual([]);
     expect(isWorkerSendAcked(f.w1.sessionId)).toBe(false);
+  });
+
+  it('with the box emptied, neither option acts: no send, no ack, no navigation', () => {
+    mount(f.w1);
+    typeAndEnter('about to clear');
+    type('');
+    expect(choice()).not.toBeNull();
+    for (const name of [/Send to this worker/, /instead/]) {
+      const btn = need(optionBtn(name));
+      expect(btn.disabled).toBe(true);
+      fireEvent.click(btn);
+    }
+    expect(prompts()).toEqual([]);
+    expect(isWorkerSendAcked(f.w1.sessionId)).toBe(false);
+    expect(vi.mocked(selectInstance)).not.toHaveBeenCalled();
   });
 
   it('Escape on the choice group dismisses it', () => {

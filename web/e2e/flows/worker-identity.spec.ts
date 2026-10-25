@@ -34,6 +34,30 @@ test("a worker's owner chip and composer carry the owner's colour; the first sen
   expect(await page.locator('[data-composer]').evaluate((el) => getComputedStyle(el).borderTopColor)).toBe(colour);
   expect(await ui.drawerOpen(page)).toBe(false);
 
+  // The focused composer's ring layer is the owner's colour at the ring's strength, and not the default ring's. Both are read off probes that share the composer's own variables, as the ring's computed colour is an oklab/oklch value no regex should parse.
+  await box.focus();
+  const readRing = () => page.locator('[data-composer]').evaluate((el) => {
+    const colourOfShadow = (css: string) => {
+      const probe = document.createElement('i');
+      probe.style.boxShadow = `0 0 0 3px ${css}`;
+      el.appendChild(probe);
+      const out = getComputedStyle(probe).boxShadow;
+      probe.remove();
+      return out.slice(0, out.indexOf(' 0px'));
+    };
+    return {
+      shadow: getComputedStyle(el).boxShadow,
+      owner: colourOfShadow('color-mix(in oklab, var(--owner-color) 40%, transparent)'),
+      base: colourOfShadow('color-mix(in oklab, var(--ring) 40%, transparent)'),
+    };
+  });
+  // box-shadow transitions, so the ring arrives a moment after the focus.
+  await expect.poll(async () => { const r = await readRing(); return r.owner !== '' && r.shadow.includes(r.owner); }, { message: "the focus ring is the owner's colour" }).toBe(true);
+  const ring = await readRing();
+  expect(ring.owner, 'the probe resolved a colour').not.toBe('');
+  expect(ring.owner).not.toBe(ring.base);
+  expect(ring.shadow, 'and not the default ring colour').not.toContain(ring.base);
+
   await box.fill('meant for the owner');
   await box.press('Enter');
   const choice = page.locator('[data-send-choice]');

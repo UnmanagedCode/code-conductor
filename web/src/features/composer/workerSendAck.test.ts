@@ -22,13 +22,33 @@ describe('worker send ack', () => {
     expect(isWorkerSendAcked('s-b')).toBe(false);
   });
 
-  it('a garbage or non-array value reads as empty', () => {
+  it('an unparseable or non-array value reads as empty', () => {
     localStorage.setItem(WORKER_SEND_ACK_KEY, '{nope');
     expect(isWorkerSendAcked('s-g')).toBe(false);
     localStorage.setItem(WORKER_SEND_ACK_KEY, JSON.stringify({ 's-g': true }));
     expect(isWorkerSendAcked('s-g')).toBe(false);
-    ackWorkerSend('s-g');
-    expect(stored()).toEqual(['s-g']);
+  });
+
+  it('an ack after an unparseable value rewrites the key as a valid array holding the sid', () => {
+    localStorage.setItem(WORKER_SEND_ACK_KEY, '{nope');
+    ackWorkerSend('s-repair');
+    expect(stored()).toEqual(['s-repair']);
+    vi.resetModules();
+    localStorage.setItem(WORKER_SEND_ACK_KEY, JSON.stringify({ 's-repair': true }));
+    ackWorkerSend('s-repair2');
+    expect(stored()).toEqual(['s-repair2']);
+  });
+
+  it('with storage absent the in-memory set holds the ack for the page', () => {
+    vi.stubGlobal('localStorage', undefined);
+    try {
+      expect(isWorkerSendAcked('s-absent')).toBe(false);
+      ackWorkerSend('s-absent');
+      expect(isWorkerSendAcked('s-absent')).toBe(true);
+      expect(isWorkerSendAcked('s-absent-other')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('over ACK_CAP the oldest is dropped, a re-ack refreshes', () => {
