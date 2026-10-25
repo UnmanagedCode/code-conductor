@@ -288,14 +288,15 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
                 )
               : [];
             // One frame backs THREE human surfaces — the composer, the plan
-            // Approve/Reject card and the AskUserQuestion card — and mid-turn is
+            // Approve/Reject card and the AskUserQuestion card — all three the
+            // human's, so all are authored `human` — and mid-turn is
             // the normal case for all three. On a model that
             // silently drops a mid-turn injection the text is parked behind a
             // block-edge stop instead. `reply(true)` stays in this tick either way:
             // shared/ws.ts rejects a pending ack after 10s and sendCardAnswer's
             // onFail re-opens the card, so waiting on the unbounded stop would make
             // every deferred card answer falsely report failure.
-            await inst.promptOrQueueSteer(String(msg.text ?? ''), atts);
+            await inst.promptOrQueueSteer(String(msg.text ?? ''), atts, { author: 'human' });
             reply(true);
             return;
           }

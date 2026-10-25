@@ -15,7 +15,7 @@
 // implemented with an incompatible type, is a compile error at the class, not
 // a silent drift across per-consumer copies.
 
-import type { UiEvent } from '../shared/uiEvent.ts';
+import type { UiEvent, PromptAuthor } from '../shared/uiEvent.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { TranscriptPlacement } from './projects.ts';
 import type { WorktreeMeta } from './worktrees.ts';
@@ -232,7 +232,7 @@ export interface InstanceLike {
   retryRotationWrite(): void;
   summary(): InstanceSummary;
   _emitUi(ev: UiEvent): void;
-  prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string }): Promise<unknown>;
+  prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor }): Promise<unknown>;
   // False when this session's model cannot take a message injected into a running
   // turn; such a send is routed through queueSteerAfterStop instead (a block-edge
   // stop, then a fresh turn). `steerPending` is true while one is parked — read by
@@ -240,8 +240,8 @@ export interface InstanceLike {
   readonly acceptsMidTurnSteering: boolean;
   readonly steerPending: boolean;
   readonly needsPostStopSteer: boolean;
-  queueSteerAfterStop(text: string, opts?: { attachments?: unknown[] }): Promise<void>;
-  promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
+  queueSteerAfterStop(text: string, opts?: { attachments?: unknown[]; author?: PromptAuthor }): Promise<void>;
+  promptOrQueueSteer(text: string, attachments?: unknown[], opts?: { author?: PromptAuthor }): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   // The WS "Change model" dispatcher: live for Claude→Claude, a restart onto
   // the target backend for every other pair.
@@ -352,6 +352,9 @@ export interface InstanceManagerLike {
   // sessionId), and called synchronously from SessionRenewController's turn_end
   // handling (src/idleSubscriptions.ts documents why synchronously).
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void;
+  // The human prompts the target's next wake will report, quoted — read by the
+  // conductor sends' `humanPrompts` result field.
+  pendingHumanPrompts(instanceId: string): string[];
   // `replayed`: jsonl history (kept out of the wake hubs); `pullOnly`: kept off
   // every socket (wsHub) — see Instance._emitUi.
   on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null; replayed?: boolean; pullOnly?: boolean }) => void): void;

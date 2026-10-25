@@ -89,6 +89,8 @@ export function isPureUserPromptLine(obj: unknown): boolean {
     if (isLocalCommandCaveatLine(line)) return false;
     if (typeof content === 'string') return content.length > 0;
     if (!Array.isArray(content)) return false;
+    // An author marker block (src/promptAuthor.ts) never stands alone: a marked
+    // line also carries the prompt's own text block, so counting either is safe.
     return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
   }
   if (line.type === 'attachment' && line.attachment?.type === 'queued_command') {

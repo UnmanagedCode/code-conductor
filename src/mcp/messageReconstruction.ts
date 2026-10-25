@@ -81,6 +81,8 @@ export interface ReconMessage {
   // The message's narration blocks (src/narration.ts), each trimmed, joined by
   // a blank line. Never in blocks[] and never gated by includeThinking.
   narration?: string;
+  // The latest prompt before the message was the human's (humanPromptedIds).
+  promptedBy?: 'human';
   textSeq?: number;
   planSeq?: number;
   questionsSeq?: number;
@@ -123,7 +125,32 @@ export function reconstructMessages(events: UiEvent[], includeThinking: boolean)
     reverseIds.push(ev.msgId);
   }
   const orderedIds = reverseIds.reverse();
-  return orderedIds.map(msgId => buildMessageFromRing(ring, msgId, includeThinking, planPaths));
+  const humanPrompted = humanPromptedIds(ring);
+  return orderedIds.map(msgId => {
+    const m = buildMessageFromRing(ring, msgId, includeThinking, planPaths);
+    if (humanPrompted.has(msgId)) m.promptedBy = 'human';
+    return m;
+  });
+}
+
+// The top-level msgIds whose first event follows a human-authored outer prompt
+// with no other prompt in between. A CLI-injected echo (a skill load, a
+// compaction summary) is not a prompt and changes nothing; any other echo —
+// conductor-authored, unknown, a wake — resets it.
+function humanPromptedIds(events: ReconEvent[]): Set<string> {
+  const out = new Set<string>();
+  const decided = new Set<string>();
+  let lastHuman = false;
+  for (const ev of events) {
+    if (isOuterUserEcho(ev)) {
+      if (!ev.cliInjected && !ev.skillLoad && !ev.compactSummary) lastHuman = ev.author === 'human';
+      continue;
+    }
+    if (ev.parentToolUseId || !('msgId' in ev) || !ev.msgId || decided.has(ev.msgId)) continue;
+    decided.add(ev.msgId);
+    if (lastHuman) out.add(ev.msgId);
+  }
+  return out;
 }
 
 // Disk-fallback for getRecentMessages: load the on-disk transcript tail and

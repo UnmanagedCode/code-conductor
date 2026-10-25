@@ -66,6 +66,7 @@ import { humanizeDuration } from './duration.ts';
 import { backgroundJobsNote } from './backgroundJobs.ts';
 import { buildWakeStub, markPlainStub } from '../shared/wakeCallback.ts';
 import { askFactsOfEvent } from './awaitingUser.ts';
+import { humanPromptsNote } from './promptAuthor.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';
 
@@ -155,6 +156,11 @@ interface DeliverOpts {
   // The target's still-running background Bash jobs, rendered at build time
   // (backgroundJobsNote). Set by deliver() itself, never by a caller.
   jobsNote?: string | null;
+  // The human's prompts into the target since its owners' last wake, taken at
+  // consume time (_takeHumanPrompts). The heartbeat never carries them.
+  humanPrompts?: string[];
+  // humanPrompts rendered as the stub's leading notice. Set by deliver() itself.
+  humanNote?: string | null;
 }
 
 // The wording for a declined renewal request, prefixed into the wake stub's
@@ -223,6 +229,15 @@ export class IdleSubscriptionHub {
   // _waitsOnWork a held target (recurse into its own waits) from an idle target
   // whose armed wake is still owed for any other reason (owed work).
   _holding: Set<string>;
+  // The text of every human-authored prompt into a target since its owners' last
+  // wake, oldest first (only a conducted worker's echo carries an author —
+  // src/promptAuthor.ts). Same lifetime as `_asked`: it belongs to the wake it
+  // travels with, so a wake held or deferred across turns reports all of them.
+  // TAKEN by every consuming path (_consume, onTargetExit); dropped by purge and
+  // by a turn_end with nobody armed. Never cleared at a turn start: prompt()
+  // emits its echo BEFORE the turn begins, so that clear would lose the prompt
+  // that started the turn. peekHumanPrompts reads it for send-time reporting.
+  _humanPrompts: Map<string, string[]>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
@@ -236,6 +251,7 @@ export class IdleSubscriptionHub {
     this._asked = new Set();
     this._suspended = false;
     this._holding = new Set();
+    this._humanPrompts = new Map();
   }
 
   // Stop every delivery until resume(). Called by the resume-restart drain,
@@ -263,6 +279,11 @@ export class IdleSubscriptionHub {
   // structural signals the settle path uses to avoid firing early.
   onEvent({ id, ev }: { id: string; ev: UiEvent | null }): void {
     if (ev && askFactsOfEvent(ev).some(f => f.t === 'toolAsk')) this._asked.add(id);
+    if (ev?.kind === 'user_echo' && ev.author === 'human' && !ev.parentToolUseId) {
+      const texts = this._humanPrompts.get(id) ?? [];
+      texts.push(ev.text);
+      this._humanPrompts.set(id, texts);
+    }
     if (ev?.kind === 'turn_end') {
       this._onTurnEnd(id);
       // …and, as the RECIPIENT of a held-back wake, this is the boundary that
@@ -324,7 +345,11 @@ export class IdleSubscriptionHub {
     // this cancel is the eager form of that).
     this._cancelSettle(targetInstanceId);
     const subs = this.subscribers.get(targetInstanceId);
-    if (!subs || subs.size === 0) return;
+    if (!subs || subs.size === 0) {
+      // Nobody to report this turn's human prompts to.
+      this._humanPrompts.delete(targetInstanceId);
+      return;
+    }
     // Mark BEFORE the defer check / clearing so _isWaitingOn can still see that
     // the target had a watcher when its turn_end fired — on a deferred
     // intermediate turn_end as well as the final one.
@@ -413,9 +438,11 @@ export class IdleSubscriptionHub {
     this._cancelSettle(targetInstanceId);
     if (announce) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     const abort = this._abortQualifier(this.manager.byId.get(targetInstanceId));
+    const humanPrompts = this._takeHumanPrompts(targetInstanceId);
+    const opts = humanPrompts ? { ...abort, humanPrompts } : abort;
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId);
-      this.deliver(callerInstanceId, targetInstanceId, abort);
+      this.deliver(callerInstanceId, targetInstanceId, opts);
     }
   }
 
@@ -549,9 +576,10 @@ export class IdleSubscriptionHub {
     const subs = this.subscribers.get(targetInstanceId);
     if (!subs || subs.size === 0) return;
     const callers = [...subs.keys()];
+    const humanPrompts = this._takeHumanPrompts(targetInstanceId);
     for (const callerInstanceId of callers) {
       this._dropArmed(targetInstanceId, callerInstanceId);
-      this.deliver(callerInstanceId, targetInstanceId, { exited });
+      this.deliver(callerInstanceId, targetInstanceId, humanPrompts ? { exited, humanPrompts } : { exited });
     }
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
   }
@@ -846,6 +874,7 @@ export class IdleSubscriptionHub {
     if (!instanceId) return;
     const waiters = [...this.subscribers.get(instanceId)?.keys() ?? []];
     this._asked.delete(instanceId);
+    this._humanPrompts.delete(instanceId);
     this._holding.delete(instanceId);
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
     this._owners.delete(instanceId); // as target: every owner edge pointing at it
@@ -1006,9 +1035,10 @@ export class IdleSubscriptionHub {
         // stands in for will list them.
         const jobsNote = opts?.timedOut ? null : backgroundJobsNote(targetSessionId,
           this.manager.byId.get(targetInstanceId)?.backgroundJobs ?? [], Date.now());
+        const humanNote = opts?.humanPrompts?.length ? humanPromptsNote(opts.humanPrompts) : null;
         const stub = fold
-          ? await this._buildFoldedStub(targetSessionId, note, jobsNote)
-          : this._plainStub(targetSessionId, { ...opts, note, jobsNote });
+          ? await this._buildFoldedStub(targetSessionId, note, jobsNote, humanNote)
+          : this._plainStub(targetSessionId, { ...opts, note, jobsNote, humanNote });
         // `internal:true` — this is an orchestrator-injected wake, not a user
         // takeover, so it must NOT cancel a pending overage auto-resume armed on
         // the caller (an overage-stopped conductor still gets woken when its
@@ -1084,7 +1114,9 @@ export class IdleSubscriptionHub {
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to inspect the result.`;
     const prefix = [opts?.note, opts?.stale ? STALE_WAKE_NOTE : null].filter(Boolean).join(' ');
-    const text = prefix ? `${prefix} ${summary}` : summary;
+    const reported = prefix ? `${prefix} ${summary}` : summary;
+    // The human notice opens the whole summary, ahead of any decline or stale note.
+    const text = opts?.humanNote ? `${opts.humanNote}\n${reported}` : reported;
     return markPlainStub(opts?.jobsNote ? `${text}\n${opts.jobsNote}` : text);
   }
 
@@ -1094,10 +1126,11 @@ export class IdleSubscriptionHub {
   // soft-refusal (e.g. the worker went away between turn_end and delivery).
   async _buildFoldedStub(
     targetSessionId: string, note: string | null = null, jobsNote: string | null = null,
+    humanNote: string | null = null,
   ): Promise<string> {
     const r = await buildRecentMessages({ sessionId: targetSessionId }, { instances: this.manager });
-    if ('soft' in r) return this._plainStub(targetSessionId, { note, jobsNote });
-    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies), note, jobsNote });
+    if ('soft' in r) return this._plainStub(targetSessionId, { note, jobsNote, humanNote });
+    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies), note, jobsNote, humanNote });
   }
 
   // Does this target have at least one ARMED wake on it — i.e. is someone due a
@@ -1122,6 +1155,20 @@ export class IdleSubscriptionHub {
   _isWaitingOn(targetInstanceId: string, callerInstanceId: string): boolean {
     return (this.subscribers.get(targetInstanceId)?.has(callerInstanceId) ?? false)
       || (this._justConsumed.get(targetInstanceId)?.has(callerInstanceId) ?? false);
+  }
+
+  // Read AND delete a target's pending human prompts — they belong to the wake
+  // being delivered now. Null when there are none.
+  _takeHumanPrompts(targetInstanceId: string): string[] | null {
+    const texts = this._humanPrompts.get(targetInstanceId) ?? null;
+    this._humanPrompts.delete(targetInstanceId);
+    return texts;
+  }
+
+  // The human prompts the target's NEXT wake will report, without taking them —
+  // for a conductor send that lands before that wake (send_prompt & co.).
+  peekHumanPrompts(targetInstanceId: string): string[] {
+    return [...this._humanPrompts.get(targetInstanceId) ?? []];
   }
 
   // Read AND delete the note for one caller/target pair — a note belongs to exactly

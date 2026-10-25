@@ -3,7 +3,8 @@
 // Source-of-truth for these strings — the plan card's Approve / Reject in
 // web/src/conversation/cards.tsx and the auto-approve fire path in src/instances.ts use the same
 // phrasing so the worker can't tell the difference between a UI click,
-// an auto-approve, or an MCP-driven approval. Lives in shared/ because the
+// an auto-approve, or an MCP-driven approval by the text (a conducted worker's
+// line also records its sender — src/promptAuthor.ts). Lives in shared/ because the
 // browser builds these prompts and recognises them (shared/promptOrigin.ts);
 // DOM-free so the server imports it directly.
 

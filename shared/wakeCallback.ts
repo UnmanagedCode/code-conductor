@@ -23,14 +23,18 @@ export const WAKE_BODY_SEP: string = '\n[[cc:wake-body]]\n';
 // prefixed into the summary, so it lands in the always-visible line rather than
 // the collapsed body. An optional `jobsNote` (the worker's still-running
 // background jobs) is appended to the summary on its own lines, for the same
-// reason.
-export function buildWakeStub({ targetSessionId, payloadText, note = null, jobsNote = null }: {
+// reason. An optional `humanNote` (the human prompted the worker directly —
+// src/promptAuthor.ts humanPromptsNote) opens the summary on its own lines,
+// ahead of everything else; without one the stub is unchanged.
+export function buildWakeStub({ targetSessionId, payloadText, note = null, jobsNote = null, humanNote = null }: {
   targetSessionId: string;
   payloadText: string;
   note?: string | null;
   jobsNote?: string | null;
+  humanNote?: string | null;
 }): string {
   const summary =
+    (humanNote ? `${humanNote}\n` : '') +
     (note ? `${note} ` : '') +
     `Worker \`${targetSessionId}\` finished its turn. ` +
     `Its recent output is folded in below (equivalent to a default ` +

@@ -1244,6 +1244,14 @@ function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleT
   } catch { /* soft: a lost wake must not fail the send */ }
 }
 
+// The conductor sends' `humanPrompts` result field: the human's prompts into the
+// target that its next wake will report — the send joined or follows a turn the
+// human started. Read just before the send, and omitted when there are none.
+function humanPromptsField(instances: McpCtx['instances'], inst: InstanceLike): { humanPrompts?: string[] } {
+  const humanPrompts = instances?.pendingHumanPrompts(inst.id) ?? [];
+  return humanPrompts.length ? { humanPrompts } : {};
+}
+
 // Remap a getInst-style soft refusal about the FORWARD SOURCE session into its
 // FORWARD_-prefixed sibling, carrying `forwardSessionId` and deliberately no
 // `sessionId` — decision 9: distinct codes + a distinct field make a
@@ -1344,8 +1352,9 @@ export async function sendPrompt(
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  await inst.promptOrQueueSteer(composedText);
-  return { sessionId: inst.sessionId, status: inst.status, ...forwardedField };
+  const humanPrompts = humanPromptsField(instances, inst);
+  await inst.promptOrQueueSteer(composedText, [], { author: 'conductor' });
+  return { sessionId: inst.sessionId, status: inst.status, ...forwardedField, ...humanPrompts };
 }
 
 export async function setMode({ sessionId, mode }: { sessionId: string; mode: string }, { instances }: McpCtx) {
@@ -1526,7 +1535,7 @@ export async function renewSession(
     // A normal (non-internal) prompt, like sendPrompt — but the guard above means
     // it can be neither a mid-turn delivery nor an overage-queued one, so this
     // always opens a turn of its own.
-    await inst.prompt(buildRenewRequest({ directive }));
+    await inst.prompt(buildRenewRequest({ directive }), [], { author: 'conductor' });
   } catch (e) {
     instances.dropSessionRenewRequest(inst.id);
     throw e;
@@ -1658,8 +1667,9 @@ export async function approvePlan(
   if (refused) return refused;
   const text = buildApprovePrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  await inst.promptOrQueueSteer(text);
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
+  const humanPrompts = humanPromptsField(instances, inst);
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
@@ -1678,8 +1688,9 @@ export async function rejectPlan(
   if (refused) return refused;
   const text = buildRejectPrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  await inst.promptOrQueueSteer(text);
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
+  const humanPrompts = humanPromptsField(instances, inst);
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
 interface AnswerEntry {
@@ -1692,7 +1703,9 @@ interface AnswerEntry {
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
 // question card's submit (web/src/conversation/cards.tsx → formatUserQuestionAnswers):
 // the consolidated answer goes out as a normal user turn, byte-identical to a UI
-// answer because both call the same shared/userQuestionAnswers.ts formatter.
+// answer because both call the same shared/userQuestionAnswers.ts formatter —
+// except, on a conducted worker, for the trailing author marker block
+// (src/promptAuthor.ts), which records which of the two sent it.
 // The worker is NOT necessarily idle here — the can_use_tool deny only ends the
 // turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
 // so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn,
@@ -1789,8 +1802,9 @@ export async function answerQuestion(
 
   const text = formatUserQuestionAnswers(questions, states);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  await inst.promptOrQueueSteer(text);
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
+  const humanPrompts = humanPromptsField(instances, inst);
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
 // ---------- read-only: worktree diff ----------
@@ -2589,6 +2603,7 @@ function renderRecentMessages(
       textChars,
       textTruncated: capped.truncated,
     };
+    if (m.promptedBy) entry.promptedBy = m.promptedBy;
     if (narration) {
       entry.narrationChars = (m.narration ?? '').length;
       entry.narrationTruncated = narration.truncated;

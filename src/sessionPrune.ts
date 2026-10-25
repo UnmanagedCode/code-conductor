@@ -53,6 +53,7 @@ import { sessionFilePath, subAgentDirPath, writeFileAtomic, type TranscriptPlace
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import { promptTokenSum, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
+import { parseAuthorMarker } from './promptAuthor.ts';
 import { imageDimensions, imageTokenCost, IMAGE_MAX_TOKENS } from './imageCost.ts';
 
 // Stub shape for a pruned Read/Write tool_result. `true` (the default) makes the
@@ -461,7 +462,7 @@ function readTurnPreview(obj: PersistedLine | null | undefined): string {
   const content = obj?.type === 'attachment' ? obj.attachment?.prompt : obj?.message?.content;
   if (typeof content === 'string') return sliceCodePoints(content, 80);
   if (!Array.isArray(content)) return '';
-  const text = (content as WireContentBlock[]).filter(b => b?.type === 'text')
+  const text = (content as WireContentBlock[]).filter(b => b?.type === 'text' && !parseAuthorMarker(b.text))
     .map(b => b.text as string).join(' ');
   return sliceCodePoints(text.replace(/\s+/g, ' ').trim(), 80);
 }
