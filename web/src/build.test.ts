@@ -93,6 +93,13 @@ describe('ensureWebBuild', () => {
     expect(html).toContain('href="/favicon.svg"');
   });
 
+  it('the manifest link requests credentials, so the manifest loads behind an authenticated proxy that gates every request', () => {
+    // Chrome fetches a manifest with credentials omitted unless the link says use-credentials; a cookie- or Basic-gated host then answers 401 and the app is not installable.
+    const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
+    const link = html.match(/<link\b[^>]*\brel="manifest"[^>]*>/)?.[0] ?? '';
+    expect(link).toMatch(/\bcrossorigin="use-credentials"/);
+  });
+
   it('ships a manifest whose start URL and scope resolve to / and that sets no other id, so an app installed from the old UI keeps its identity; it launches navigate-existing with any and maskable icons', () => {
     // Invariant: an install's id is its start URL unless `id` says otherwise, and the old UI's was `/`.
     const manifest = JSON.parse(fs.readFileSync(path.join(distDir, 'manifest.webmanifest'), 'utf8'));
