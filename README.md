@@ -54,7 +54,7 @@ Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=
 
 **Text-to-speech (optional).** Same shape: open **⚙ Settings → Voice → Speech** and Install a voice from the UI (runs `bin/install-piper.sh` server-side, streams the log, sets the voice active), or run that script manually (`PIPER_VOICE_NAME=<name>`; default `en_US-lessac-medium`). The conversation's 🔊 buttons appear once Piper is available. Override paths via `PIPER_PYTHON` / `PIPER_VENV` / `PIPER_VOICE` / `PIPER_SYNTH_SCRIPT` / `INSTALL_ROOT` env vars. Build internals: [docs/architecture.md](docs/architecture.md) → `tts.ts`.
 
-**Install on Android.** Chrome → ⋮ → **Install app** / **Add to home screen**. Uses the Web App Manifest (`web/public/manifest.webmanifest`) + icons + Service Worker (`web/public/sw.js`) for standalone-mode launch.
+**Install on Android.** Chrome → ⋮ → **Install app** / **Add to home screen**. Uses the Web App Manifest (`web/public/manifest.webmanifest`) + icons + Service Worker (`web/public/sw.js`) for standalone-mode launch. Installing also works through an authenticated proxy such as a code-hub share (the manifest link sends credentials); Chrome needs a secure context — HTTPS or loopback.
 
 **Web UI.** `web/` is the React UI, served at `/`. The server builds `web/` into `web/dist/` at start when its sources changed (`src/webBuild.ts`). `shared/` holds the TypeScript modules the UI shares with the server and the node tests, imported in `web/` as `@shared/*`. Detail: [docs/features.md](docs/features.md) → The UI; build, mounts and layout: [docs/architecture.md](docs/architecture.md) → `src/webBuild.ts`, `web/`.
 
