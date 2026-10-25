@@ -1,12 +1,12 @@
 {
   "id": "sub-conductor",
   "name": "Sub-conductor — a conductor that conducts conductors",
-  "description": "Spawn one or more sub-conductors into `.conduct`, each conducting its own scope — one level deep, guarded only by its brief.",
+  "description": "The lead conductor spawns one or more sub-conductors, each conducting its own scope — one level deep.",
   "entryStages": ["sub-conductor"],
 
   "stages": {
     "sub-conductor": {
-      "description": "Use only when the user asks for nested conductors; this is the sole exception to the role doc's ban on spawning into `.conduct`. Spawn one sub-conductor, or several in one turn — one per project or independent effort. Each loads the full conductor role doc, wiki and board, and nothing past the spawn is enforced — your brief is the whole guard. Open each brief with what the session is: a sub-conductor under you, not the conductor. Then state: the project(s) it conducts and nothing else; whether it may merge, or hands each worktree back with `READY_TO_LAND <worktree>` for you to land; that it never spawns a conductor itself — this playbook is yours, not its; that it drives only sessions it spawned, never a sibling; that its wiki writes stay under its projects' `projects/<name>/`; and that hard calls come back to you via `AskUserQuestion`. After a rate-limit reset a sub-conductor may sit on a severed wake — nudge it.",
+      "description": "Use only when the user asks for nested conductors; this playbook is the sanctioned way for a conductor to conduct conductors. You are the lead conductor, and each session spawned here is a sub-conductor under you. Spawn one, or several in one turn — one per project or independent effort. Open each brief with that relationship: it is a sub-conductor reporting to you, the lead conductor. Then state: the project(s) it conducts and nothing else; whether it may merge, or hands each worktree back with `READY_TO_LAND <worktree>` for you to land; that it never spawns a conductor itself — this playbook is the lead conductor's, not its; that it drives only sessions it spawned, never a sibling; that its wiki writes stay under its projects' `projects/<name>/`; and that hard calls come back to you via `AskUserQuestion`.",
       "workers": "many",
       "tools": {
         "spawn_instance": { "pin": { "project": ".conduct", "model": "conductor" } }
