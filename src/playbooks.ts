@@ -38,7 +38,7 @@ export const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta
 // each body owns its own `name`/`description` — restating them here would be a
 // second source that drifts, so the catalog seeds carry the id only and
 // getPlaybooks() reads the metadata from the parsed body.
-export const SEED_PLAYBOOK_IDS = ['solo', 'relay', 'forge', 'freeform'] as const;
+export const SEED_PLAYBOOK_IDS = ['solo', 'relay', 'forge', 'freeform', 'sub-conductor'] as const;
 
 // The playbook an unset Settings selection resolves to (see
 // resolveDefaultPlaybookId in conductorConventions.ts). Typed to the seed union
