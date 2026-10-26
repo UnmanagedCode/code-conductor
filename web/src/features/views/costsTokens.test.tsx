@@ -83,7 +83,7 @@ describe('costs Cost | Tokens switch', () => {
     expect(tileValue('Total tokens')).not.toMatch(/estimated/);
   });
 
-  it('stacks output, input, cache input bottom→top, filling the column to its total', async () => {
+  it('stacks cache input, input, output bottom→top, filling the column to its total', async () => {
     await mount();
     fireEvent.mouseDown(tab('Tokens'));
     const BASE = 176; // svg height 200 less the bottom pad 24
@@ -95,9 +95,10 @@ describe('costs Cost | Tokens switch', () => {
       const d = el.getAttribute('d')!;
       return { top: Number(/Q[\d.-]+,([\d.-]+)/.exec(d)![1]), bottom: Number(/^M[\d.-]+,([\d.-]+)/.exec(d)![1]) };
     };
-    for (const [d, vals] of [[D1, [200, 1000, 4030]], [D2, [100, 500, 970]]] as const) {
+    for (const [d, vals] of [[D1, [4030, 1000, 200]], [D2, [970, 500, 100]]] as const) {
       const segs = [...columnOf(d.date).querySelectorAll('[data-series]')];
-      expect(segs.map((s) => s.getAttribute('data-series'))).toEqual(['Output', 'Input', 'Cache input']);
+      expect(segs.map((s) => s.getAttribute('data-series'))).toEqual(['Cache input', 'Input', 'Output']);
+      expect(segs.map((s) => s.getAttribute('fill'))).toEqual(['var(--plan)', 'var(--info)', 'var(--primary)']);
       expect(segs.map((s) => Number(s.getAttribute('data-value')))).toEqual(vals);
       const e = segs.map(extent);
       expect(e[0].bottom).toBeCloseTo(BASE, 6);
@@ -107,7 +108,7 @@ describe('costs Cost | Tokens switch', () => {
       expect(e[2].top).toBeCloseTo(BASE - PLOT_H * (sum / top), 6);
       for (let i = 1; i < 3; i++) expect((e[i].bottom - e[i].top) / (e[0].bottom - e[0].top)).toBeCloseTo(vals[i] / vals[0], 6);
     }
-    expect(document.querySelector('[data-chart-legend]')!.textContent).toBe('Cache inputInputOutput');
+    expect(document.querySelector('[data-chart-legend]')!.textContent).toBe('OutputInputCache input');
   });
 
   it('only the topmost non-zero segment is the rounded path; lower ones are rects', async () => {
@@ -118,7 +119,7 @@ describe('costs Cost | Tokens switch', () => {
     cleanup();
     render(<CostsBody data={body} metric="tokens" onMetricChange={() => {}} />);
     const segs = [...columnOf('2026-10-05').querySelectorAll('[data-series]')];
-    expect(segs.map((s) => [s.getAttribute('data-series'), s.tagName])).toEqual([['Output', 'rect'], ['Input', 'path']]);
+    expect(segs.map((s) => [s.getAttribute('data-series'), s.tagName])).toEqual([['Input', 'rect'], ['Output', 'path']]);
   });
 
   it('with no known token day the tiles read —, nothing is marked estimated, and no bars draw', () => {
@@ -153,12 +154,12 @@ describe('costs Cost | Tokens switch', () => {
   it('an estimated day marks Input and Cache input ≈ in its aria-label and tooltip, not Output', async () => {
     await mount();
     fireEvent.mouseDown(tab('Tokens'));
-    expect(columnOf(D2.date).getAttribute('aria-label')).toBe('2026-10-02: Cache input ≈970, Input ≈500, Output 100');
-    expect(columnOf(D1.date).getAttribute('aria-label')).toBe('2026-10-01: Cache input 4.0k, Input 1000, Output 200'.replace('1000', '1.0k'));
+    expect(columnOf(D2.date).getAttribute('aria-label')).toBe('2026-10-02: Output 100, Input ≈500, Cache input ≈970');
+    expect(columnOf(D1.date).getAttribute('aria-label')).toBe('2026-10-01: Output 200, Input 1.0k, Cache input 4.0k');
     fireEvent.mouseEnter(columnOf(D2.date));
     const tip = document.querySelector('.pointer-events-none')!;
     const rows = [...tip.querySelectorAll('.flex')].map((r) => r.textContent);
-    expect(rows).toEqual(['Cache input≈970', 'Input≈500', 'Output100', 'Total1.6k']);
+    expect(rows).toEqual(['Output100', 'Input≈500', 'Cache input≈970', 'Total1.6k']);
   });
 
   it('a day without token data renders no bar and reads —, not 0', async () => {
@@ -173,9 +174,9 @@ describe('costs Cost | Tokens switch', () => {
   it('estimated days mark only their input and cache-input cells', async () => {
     await mount();
     fireEvent.mouseDown(tab('Tokens'));
-    // sr-only cells run top→bottom: Cache input, Input, Output
+    // sr-only cells run top→bottom: Output, Input, Cache input
     const est = [...srRow(D2.date).children].slice(1).map((c) => /estimated/.test(c.textContent!));
-    expect(est).toEqual([true, true, false]);
+    expect(est).toEqual([false, true, true]);
     expect([...srRow(D1.date).children].slice(1).some((c) => /estimated/.test(c.textContent!))).toBe(false);
   });
 
