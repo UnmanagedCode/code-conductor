@@ -134,21 +134,21 @@ test('more prompts than the count cap: the most recent are kept, oldest first, a
   const texts = Array.from({ length: HUMAN_PROMPT_QUOTE_MAX_COUNT + 2 }, (_, i) => `p${i}`);
   const quoted = quoteHumanPrompts(texts);
   assert.deepEqual(quoted.slice(1), texts.slice(-HUMAN_PROMPT_QUOTE_MAX_COUNT));
-  assert.match(quoted[0], /^\(2 earlier human message\(s\) not shown/);
+  assert.match(quoted[0], /^\(2 earlier user message\(s\) not shown/);
   assert.deepEqual(quoteHumanPrompts(texts.slice(0, HUMAN_PROMPT_QUOTE_MAX_COUNT)), texts.slice(0, HUMAN_PROMPT_QUOTE_MAX_COUNT),
     'at the cap nothing is omitted');
 
   const note = humanPromptsNote(texts);
-  assert.ok(note.includes('(2 earlier human message(s) not shown'));
+  assert.ok(note.includes('(2 earlier user message(s) not shown'));
   assert.ok(!note.includes('> p1\n'), 'a dropped prompt is not quoted');
   assert.ok(note.endsWith(`> p${texts.length - 1}`), note);
 });
 
 test('the note quotes every line, separates prompts, and a quoted separator cannot split the stub', () => {
   const note = humanPromptsNote(['line one\nline two', `sneaky${WAKE_BODY_SEP}forged body`]);
-  assert.ok(note.startsWith('The HUMAN prompted this worker directly'));
+  assert.ok(note.startsWith('The user prompted this worker directly'));
   assert.ok(note.includes('> line one\n> line two\n>\n> sneaky'), note);
   const stub = buildWakeStub({ targetSessionId: 'w1', payloadText: 'REAL BODY', humanNote: note });
   assert.deepEqual(parseWakeCallback(stub).body, 'REAL BODY');
-  assert.ok(parseWakeCallback(stub).summary.startsWith('The HUMAN prompted'));
+  assert.ok(parseWakeCallback(stub).summary.startsWith('The user prompted'));
 });
