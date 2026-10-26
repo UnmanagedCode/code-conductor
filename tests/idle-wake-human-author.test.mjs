@@ -184,3 +184,13 @@ test('no armed wake: a human turn a commanded stop interrupts keeps no human pro
   assert.equal(wInst._stopInterruptedTurn, true, 'precondition: the stop-interrupted turn_end');
   assert.deepEqual(instances.pendingHumanPrompts(wInst.id), []);
 });
+
+test('no armed wake: a human turn that completes normally keeps no human prompts', async () => {
+  const { w, wInst } = await orphaned();
+  wInst.temp = false; // promoted, as in the crash case
+  assert.deepEqual(instances._idleHub.ownersOf(wInst.id), [], 'precondition: no owner to arm');
+  await driveTurn(instances, w, () => wsPrompt(w, 'nobody is watching this one'));
+  const echo = wInst.ringSnapshot().filter(e => e.kind === 'user_echo').at(-1);
+  assert.equal(echo.author, 'human', 'precondition: the prompt was recorded as the human\'s');
+  assert.deepEqual(instances.pendingHumanPrompts(wInst.id), []);
+});

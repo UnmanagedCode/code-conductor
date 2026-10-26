@@ -12,7 +12,7 @@ import { waitFor, instForSession, driveTurn, seedSessionJsonl } from './helpers.
 import { setupIdleWake, callTool, unwrap } from './idleWakeCase.mjs';
 import { localPlace } from '../src/projects.ts';
 import {
-  createProject, spawnConductor, spawnWorker, wsPrompt, stdinUserLines,
+  HUMAN_MARK, createProject, spawnConductor, spawnWorker, wsPrompt, stdinUserLines,
 } from './promptAuthorCase.mjs';
 
 let instances;
@@ -57,4 +57,28 @@ test('retired, from disk: only the human turn\'s message is promptedBy human', a
   const r = unwrap(await callTool('get_recent_messages', { sessionId: w, count: 3 }));
   assert.equal(r.source, 'disk');
   assert.deepEqual(r.messages.map(m => m.promptedBy ?? null), [null, 'human', null]);
+});
+
+test('a CLI-injected echo between the human prompt and the reply does not reset promptedBy', async () => {
+  await createProject('p');
+  const c = await spawnConductor('p');
+  const w = await spawnWorker('p', c, stdinFile());
+  await driveTurn(instances, w, () => wsPrompt(w, 'the human asks'));
+  const inst = instForSession(instances, w);
+  const text = (t) => ({ type: 'text', text: t });
+  // As the CLI persists it: the human's marked prompt, a line the CLI injected
+  // itself (`isMeta`, e.g. hook feedback), then the reply.
+  await seedSessionJsonl(localPlace(inst.cwd), inst.backingSessionId, [
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: [text('the human asks'), text(HUMAN_MARK)] } },
+    { type: 'user', uuid: 'u1', isMeta: true, message: { role: 'user', content: [text('injected by the CLI')] } },
+    { type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [text('the reply')] } },
+  ]);
+  const killed = unwrap(await callTool('kill_instance', { sessionId: w }, { caller: c }));
+  assert.notEqual(killed.ok, false, JSON.stringify(killed));
+  await waitFor(() => instances.idsForSession(w).length === 0);
+  const tx = unwrap(await callTool('get_transcript', { sessionId: w }));
+  assert.ok(tx.events.some(e => e.kind === 'user_echo' && e.cliInjected), 'precondition: the injected echo replays as cliInjected');
+  const r = unwrap(await callTool('get_recent_messages', { sessionId: w, count: 1 }));
+  assert.equal(r.source, 'disk');
+  assert.equal(r.messages.at(-1).promptedBy, 'human');
 });
