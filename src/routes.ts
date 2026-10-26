@@ -20,7 +20,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits, setWorktreeLock,
 } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
 import { enumerateSystemRemotes } from './systems/remoteEnumeration.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
@@ -814,6 +814,20 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       }
       next(e);
     }
+  });
+
+  // Where a project lives, read off its stored record ALONE: runs nothing on
+  // any system, so a caller that needs only the placement need not pay for the
+  // git facts GET /projects computes for every project.
+  r.get('/projects/:name/location', async (req, res, next) => {
+    try {
+      const name = req.params.name;
+      try { validateName(name); }
+      catch (e) { throw Object.assign(e as Error, { code: 'INVALID_ARGUMENT' }); }
+      const placement = await projectPlacement(name);
+      if (!placement) throw httpError(404, `project '${name}' not found`, { code: 'PROJECT_UNKNOWN' });
+      res.json({ name, ...placement });
+    } catch (e) { next(e); }
   });
 
   // ── Workspace registry endpoints ────────────────────────────────────
