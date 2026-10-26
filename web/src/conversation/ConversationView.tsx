@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { ArrowDownIcon, LoaderCircleIcon, HistoryIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { followViewLink } from '@/components/viewLinks';
 import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { conversation, lazyHistory, stickyPrompt } from '@/app/controller';
@@ -166,7 +167,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
         role={pin.kind === 'pinned' ? 'button' : 'status'}
         tabIndex={pin.kind === 'pinned' ? 0 : undefined}
         title={pin.kind === 'pinned' ? 'Jump to this prompt' : undefined}
-        onClick={() => stickyPrompt.jumpToPinned()}
+        onClick={(e) => { if (!e.defaultPrevented) stickyPrompt.jumpToPinned(); }}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stickyPrompt.jumpToPinned(); } }}
         className={cn('absolute left-0 top-0 z-10 touch-pan-x touch-pinch-zoom', pin.kind === 'pinned' ? 'cursor-pointer' : 'cursor-default')}
         style={{ right: gutter, ...(pin.kind === 'pinned' && pin.shift ? { transform: `translateY(${pin.shift}px)` } : {}) }}
@@ -179,6 +180,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
             <div className={cn('rounded-l-2xl rounded-r-md bg-background/90 shadow-md ring-1 ring-primary/20 backdrop-blur')}>
               <div
                 data-pin-body
+                onClick={followViewLink}
                 className={cn('md max-h-[calc(5lh_+_1.25rem)] overflow-hidden', USER_BUBBLE, USER_TONE_PROMPT, pin.overflowing && '[mask-image:linear-gradient(to_bottom,black_calc(100%_-_1.5lh),transparent)]')}
                 dangerouslySetInnerHTML={{ __html: pin.html }}
               />
