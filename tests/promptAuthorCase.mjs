@@ -34,7 +34,7 @@ export const SCENARIO_CONDUCTOR = path.join(__dirname, 'fixtures', 'scenario-pro
 // The wire literals, written out: they are the protocol, not an import.
 export const HUMAN_MARK = '[[cc:author:human]]';
 export const CONDUCTOR_MARK = '[[cc:author:conductor]]';
-export const HUMAN_NOTICE_LEAD = 'The HUMAN prompted this worker directly';
+export const HUMAN_NOTICE_LEAD = 'The user prompted this worker directly';
 
 async function withEnv(vars, fn) {
   const prev = {};

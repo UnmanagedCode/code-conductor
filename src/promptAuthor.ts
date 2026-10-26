@@ -52,9 +52,9 @@ export function combineAuthors(authors: ReadonlyArray<PromptAuthor | undefined>)
 export const HUMAN_PROMPT_QUOTE_MAX_CHARS = 500;
 export const HUMAN_PROMPT_QUOTE_MAX_COUNT = 3;
 
-const HUMAN_NOTICE = 'The HUMAN prompted this worker directly since your last wake — not your brief. '
-  + 'Treat their words as the human\'s instruction to it; don\'t re-steer over them without checking '
-  + 'with the human. Their message(s), oldest first:';
+const HUMAN_NOTICE = 'The user prompted this worker directly since your last wake — not your brief. '
+  + 'Treat their words as the user\'s instruction to it; don\'t re-steer over them without checking '
+  + 'with the user. Their message(s), oldest first:';
 
 function cutPrompt(text: string): string {
   const cps = Array.from(text);
@@ -71,7 +71,7 @@ function selectPrompts(texts: readonly string[]): { omitted: number; kept: strin
 }
 
 const omissionLine = (n: number): string =>
-  `(${n} earlier human message(s) not shown — get_transcript has them)`;
+  `(${n} earlier user message(s) not shown — get_transcript has them)`;
 
 // The prompts as the send-time `humanPrompts` field carries them: oldest first,
 // each cut, led by an omission entry when older ones were dropped.
