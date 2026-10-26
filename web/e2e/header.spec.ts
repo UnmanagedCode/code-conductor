@@ -3,6 +3,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, createProject, mcpCall, spawnSession } from './harness/api.ts';
+import { colourOf, spawnConductor, spawnWorker } from './flows/fleet.ts';
 
 test.use({ ccOptions: { server: 'header' } });
 
@@ -252,4 +253,54 @@ test('resizing across md moves Sync between the bar and ⋮ and closes a stopped
   await expect(page.getByRole('menu')).toHaveCount(0);
   await expect(trigger(page)).toHaveCount(0);
   await expect(barSync(page)).toBeVisible();
+});
+
+test("a conducted worker's owner chip fits line 2: the header keeps its height, nothing overflows sideways, and the chip and the worktree name both ellipsize", async ({ page, cc }) => {
+  // Invariant: with a long owner label and a long worktree name, line 2 stays one row inside the viewport and a header no taller than a hand-spawned one's; the chip and the worktree clip with an ellipsis, and the chip's bar is the owner's colour.
+  const short = await seed(cc, 'hdr-own-short', 't');
+  await page.goto(`/#session=${short.sessionId}`);
+  const header = sessionHeader(page);
+  await expect(header.getByRole('heading', { level: 1 })).toHaveText('t');
+  const shortHeight = await header.evaluate((h) => h.getBoundingClientRect().height);
+
+  const project = `hdr-own-${test.info().project.name}`;
+  await createProject(cc, project);
+  await api(cc, 'POST', '/api/projects/.conduct/ensure');
+  const conductor = await spawnConductor(cc, true);
+  const title = (await api(cc, 'PUT', `/api/sessions/${conductor.sessionId}/title`, { title: LONG_TITLE })).body.title as string;
+  const created = await mcpCall(cc, 'create_worktree', { project, name: 'wwww-'.repeat(40) });
+  expect(created.isError, JSON.stringify(created.content)).toBeFalsy();
+  const worktreeName = ((await api(cc, 'GET', `/api/projects/${project}/worktrees`)).body as { worktreeName: string }[])[0].worktreeName;
+  const worker = await spawnWorker(cc, conductor.id, { project, worktree: worktreeName });
+  expect((await api(cc, 'PUT', `/api/sessions/${worker.sessionId}/title`, { title: 't' })).status).toBeLessThan(300);
+
+  await page.goto(`/#session=${worker.sessionId}`);
+  const chip = header.getByRole('button', { name: `Back to ${title}` });
+  await expect(chip).toBeVisible();
+  await expect(header).toContainText(worktreeName);
+  const measured = await header.evaluate((h, worktreeName) => {
+    const box = h.getBoundingClientRect();
+    const chipEl = h.querySelector('[data-owner-chip]') as HTMLElement;
+    const wt = [...h.querySelectorAll('span')].filter((s) => s.textContent === worktreeName).at(-1)!;
+    const clip = (el: Element) => {
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, textOverflow: cs.textOverflow, right: r.right };
+    };
+    const label = chipEl.querySelector('span')!;
+    const probe = document.createElement('i');
+    probe.style.color = chipEl.style.getPropertyValue('--owner-color');
+    document.body.appendChild(probe);
+    const bar = getComputedStyle(probe).color;
+    probe.remove();
+    return { height: box.height, scrollWidth: h.scrollWidth, clientWidth: h.clientWidth, headerRight: box.right, label: clip(label), chipRight: chipEl.getBoundingClientRect().right, wt: clip(wt), bar };
+  }, worktreeName);
+  expect(measured.height, 'the chip does not make the header taller').toBe(shortHeight);
+  expect(measured.scrollWidth, 'the header does not overflow sideways').toBeLessThanOrEqual(measured.clientWidth);
+  expect(measured.label.scrollWidth, 'the chip label overflows its box').toBeGreaterThan(measured.label.clientWidth);
+  expect(measured.label.textOverflow).toBe('ellipsis');
+  expect(measured.wt.scrollWidth, 'the worktree name overflows its box').toBeGreaterThan(measured.wt.clientWidth);
+  expect(measured.wt.textOverflow).toBe('ellipsis');
+  expect(measured.chipRight, 'the chip ends inside the header').toBeLessThanOrEqual(measured.headerRight);
+  expect(measured.bar, "the chip carries the owner's colour").toBe(await colourOf(page, conductor.sessionId));
 });

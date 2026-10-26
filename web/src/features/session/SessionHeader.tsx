@@ -2,7 +2,7 @@ import * as React from 'react';
 import {
   BarChart3Icon, BellIcon, BellOffIcon, BrainIcon, BugIcon, CheckIcon, ClockIcon, FileTextIcon,
   GaugeIcon, GitBranchIcon, GitPullRequestArrowIcon, LockIcon, MenuIcon, MoreVerticalIcon, PencilIcon, PlayIcon,
-  PowerIcon, RefreshCwIcon, ScissorsIcon, ShieldAlertIcon, CpuIcon, TriangleAlertIcon,
+  PowerIcon, CornerUpLeftIcon, RefreshCwIcon, ScissorsIcon, ShieldAlertIcon, CpuIcon, TriangleAlertIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -28,7 +28,8 @@ import { respawnActive, syncWorktree } from '@/app/sessionActions';
 import { isSessionMuted, muteSession, mutesSignal } from '@/features/notifications/mutes';
 import { openPruneDialog, openRenameDialog, openStatsDialog, openSummaryDialog } from '@/features/dialogs/api';
 import { confirmDialog, toast } from '@/ui/feedback';
-import { Dot } from '@/features/sidebar/rows';
+import { Dot, Hint, OWNER_BAR, ownerStyle } from '@/features/sidebar/rows';
+import { isBackToOwnerKey, openOwner, useWorkerOwner, type WorkerOwner } from './workerOwner';
 import { cn } from '@/lib/utils';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 
@@ -152,6 +153,39 @@ export function ModeToggle({ inst }: { inst: Instance }) {
   );
 }
 
+/** A conducted worker's owner, in the owner's colour; a button back to it when it can be reached. */
+function OwnerChip({ owner }: { owner: Extract<WorkerOwner, { kind: 'owned' }> }) {
+  const body = (
+    <>
+      <CornerUpLeftIcon className="size-3 shrink-0" />
+      <span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{owner.label}</span>
+    </>
+  );
+  const cls = cn('flex min-w-0 max-w-[50%] shrink items-center gap-1 pl-2', OWNER_BAR);
+  if (!owner.target) {
+    return (
+      <Hint label={`${owner.label} isn't running or listed`}>
+        <span data-owner-chip className={cls} style={ownerStyle(owner.sessionId)}>{body}</span>
+      </Hint>
+    );
+  }
+  return (
+    <Hint label={`Worker of ${owner.label} · Alt+↑`}>
+      <button
+        type="button"
+        data-owner-chip
+        className={cn(cls, 'cursor-pointer hover:text-foreground')}
+        style={ownerStyle(owner.sessionId)}
+        aria-label={`Back to ${owner.label}`}
+        aria-keyshortcuts="Alt+ArrowUp"
+        onClick={() => openOwner(owner)}
+      >
+        {body}
+      </button>
+    </Hint>
+  );
+}
+
 export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => void }) {
   useSignal(modelsSignal);
   useSignal(mutesSignal);
@@ -196,6 +230,20 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
     catch (e: any) { toast.error('Change effort failed', e.message); }
   }
 
+  const owner = useWorkerOwner(inst);
+  const backTarget = owner.kind === 'owned' && owner.target ? owner : null;
+  // Alt+ArrowUp goes up to the owner while this worker is showing.
+  React.useEffect(() => {
+    if (!backTarget) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!isBackToOwnerKey(e)) return;
+      e.preventDefault();
+      openOwner(backTarget);
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [backTarget]);
+
   const headerRef = React.useRef<HTMLElement>(null);
   React.useEffect(() => {
     if (!headerRef.current) return;
@@ -237,8 +285,16 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
               <Badge variant="warning" className="shrink-0"><ClockIcon />{formatAutoResumeTime(inst.overageResetsAt as number) || 'paused'}</Badge>
             ) : null}
           </div>
-          {(inst.title || worktree) && (
+          {(inst.title || worktree || owner.kind !== 'none') && (
             <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              {owner.kind === 'owned' && (
+                <OwnerChip owner={owner} />
+              )}
+              {owner.kind === 'unknown' && (
+                <Hint label="Its owner isn't known: this worker was resumed outside its conductor">
+                  <span data-owner-chip="unknown" className="shrink-0 whitespace-nowrap">Conducted worker</span>
+                </Hint>
+              )}
               {inst.title && <span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{projectName}</span>}
               {worktree && <span className="flex min-w-0 items-center gap-1 font-mono"><GitBranchIcon className="size-3 shrink-0" /><span className="min-w-0 overflow-clip text-ellipsis whitespace-nowrap">{worktree.worktreeName}</span><span className="hidden shrink-0 sm:inline">← {worktree.baseBranch}</span></span>}
             </div>
