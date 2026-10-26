@@ -230,7 +230,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   function submit() {
     if (!inst || !canSend || !buildBody()) return;
     // A conducted worker's first send from here asks whether the text was meant for its owner.
-    if (owner.kind === 'owned' && inst.sessionId && !isWorkerSendAcked(inst.sessionId)) { setChoice(true); return; }
+    if (owner.kind === 'owned' && inst.sessionId && !isWorkerSendAcked(inst.sessionId)) { setChoice(true); taRef.current?.focus(); return; }
     deliver(inst);
   }
 
@@ -377,161 +377,162 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   const resumeClock = overagePaused ? formatAutoResumeTime(resumeAt)?.replace('resumes at ', '') : null;
 
   return (
-    <div
-      className={cn(
-        'rounded-2xl border bg-card shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-[3px]',
-        // One ring colour, chosen here: cn (tailwind-merge) keeps only the last of two ring-colour classes.
-        owner.kind === 'owned' ? 'border-(color:--owner-color) focus-within:ring-(color:--owner-color)/40' : 'focus-within:ring-ring/40',
-        dragOver && 'ring-[3px] ring-primary/50',
-        !canType && 'opacity-80',
-      )}
-      style={owner.kind === 'owned' ? ownerStyle(owner.sessionId) : undefined}
-      data-owner={owner.kind === 'owned' ? owner.sessionId : undefined}
-      onDragOver={(e) => {
-        if (!canType || !Array.from(e.dataTransfer?.types || []).includes('Files')) return;
-        e.preventDefault();
-        setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        setDragOver(false);
-        if (!canType) return;
-        const files = Array.from(e.dataTransfer?.files || []);
-        if (!files.length) return;
-        e.preventDefault();
-        void addFiles(files);
-      }}
-      data-composer
-    >
-      {(overageUnarmed || overagePaused) && (
-        <div className="flex items-center gap-2 rounded-t-2xl border-b bg-warning/10 px-4 py-2 text-xs text-warning">
-          <ClockIcon className="size-3.5" />
-          {overageUnarmed
-            ? "Stopped for account overage. Your conductor resumes this worker; messages can't be queued here."
-            : `Paused${resumeClock ? ` until ${resumeClock}` : ''}. New messages are queued.`}
+    <div className="space-y-2">
+      {choice && owner.kind === 'owned' && (
+        <div
+          role="group"
+          aria-label="Send to worker or conductor"
+          data-send-choice
+          className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs"
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setChoice(false); taRef.current?.focus(); } }}
+        >
+          <span className="min-w-0 flex-1 basis-full text-muted-foreground">{inst?.title || (inst && projectLabel(inst.project))} is a worker of {owner.label}.</span>
+          <Button size="sm" onClick={sendHere} disabled={!canSend || !hasContent}>Send to worker</Button>
+          <Button size="sm" variant="outline" onClick={sendToOwner} disabled={!!ownerBlock || !canSend || !hasContent} aria-describedby={ownerBlock ? blockId : undefined}>
+            Send to conductor
+          </Button>
+          {ownerBlock && <span id={blockId} className="basis-full text-muted-foreground">{ownerBlock}</span>}
         </div>
       )}
-      {pending.length > 0 && (
-        <div className="flex flex-wrap gap-2 px-3 pt-3">
-          {pending.map((a) => (
-            <div key={a.id} className={cn('flex max-w-64 items-center gap-2 rounded-lg border bg-muted/40 py-1 pr-1 pl-1.5 text-xs', a.error && 'border-destructive/40 text-destructive')}>
-              {a.isImage && a.objectUrl ? <img src={a.objectUrl} alt={a.name} className="size-7 rounded object-cover" /> : <FileIcon className="size-4 text-muted-foreground" />}
-              <span className="min-w-0 truncate">{a.error ? `${a.name} · ${a.error}` : `${a.name} · ${fmtSize(a.size)}`}</span>
-              {!a.error && a.dataBase64 === undefined && <LoaderCircleIcon className="size-3 animate-spin" />}
-              <Button variant="ghost" size="icon-sm" className="size-6" aria-label={`Remove ${a.name}`} onClick={() => removeAttachment(a.id)}><XIcon className="size-3" /></Button>
-            </div>
-          ))}
-        </div>
-      )}
-      <textarea
-        ref={taRef}
-        id="composer-input"
-        rows={1}
-        value={text}
-        disabled={!canType}
-        placeholder={placeholder}
-        onChange={(e) => {
-          const v = e.target.value;
-          setText(v);
-          const tr = v.trim() ? transcribed : false;
-          if (!v.trim()) setTranscribed(false);
-          noteChange(v, tr);
+      <div
+        className={cn(
+          'rounded-2xl border bg-card shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-[3px]',
+          // One ring colour, chosen here: cn (tailwind-merge) keeps only the last of two ring-colour classes.
+          owner.kind === 'owned' ? 'border-(color:--owner-color) focus-within:ring-(color:--owner-color)/40' : 'focus-within:ring-ring/40',
+          dragOver && 'ring-[3px] ring-primary/50',
+          !canType && 'opacity-80',
+        )}
+        style={owner.kind === 'owned' ? ownerStyle(owner.sessionId) : undefined}
+        data-owner={owner.kind === 'owned' ? owner.sessionId : undefined}
+        onDragOver={(e) => {
+          if (!canType || !Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+          e.preventDefault();
+          setDragOver(true);
         }}
-        onKeyDown={(e) => {
-          if (choice && e.key === 'Escape') { setChoice(false); return; }
-          // ↓ at the very end reveals the sticky prompt; ↑ at the very start hides it.
-          if (!e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
-            const ta = e.currentTarget;
-            if (ta.selectionStart === ta.selectionEnd) {
-              if (e.key === 'ArrowDown' && ta.selectionEnd === ta.value.length) stickyPrompt.reveal();
-              else if (e.key === 'ArrowUp' && ta.selectionStart === 0) stickyPrompt.conceal();
-            }
-          }
-          // The shortcut toggles dictation whatever the box holds; an auto-repeat does nothing.
-          if (dictateKeys && e.key === 'Enter' && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            if (e.repeat) return;
-            if (dictation.state === 'idle') startDictation();
-            else if (dictation.state === 'recording') dictation.stop();
-            return;
-          }
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            if (choice) return;
-            if (!sendDisabled && mode === 'send') submit();
-          }
-        }}
-        onPaste={(e) => {
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          setDragOver(false);
           if (!canType) return;
-          const files = Array.from(e.clipboardData?.files || []);
+          const files = Array.from(e.dataTransfer?.files || []);
           if (!files.length) return;
           e.preventDefault();
           void addFiles(files);
         }}
-        className="block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
-        aria-label="Message"
-        aria-keyshortcuts={dictateKeys && canType ? DICTATE_SHORTCUT : undefined}
-      />
-      {choice && owner.kind === 'owned' && (
-        <div
-          role="group"
-          aria-label="Send to worker or owner"
-          data-send-choice
-          className="mx-2 mb-1 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs"
-          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setChoice(false); taRef.current?.focus(); } }}
-        >
-          <span className="min-w-0 flex-1 basis-full text-muted-foreground">{inst?.title || (inst && projectLabel(inst.project))} is a worker of {owner.label}.</span>
-          <Button size="sm" onClick={sendHere} disabled={!canSend || !hasContent}>Send to this worker</Button>
-          <Button size="sm" variant="outline" onClick={sendToOwner} disabled={!!ownerBlock || !canSend || !hasContent} aria-describedby={ownerBlock ? blockId : undefined}>
-            Send to {owner.label} instead
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => { setChoice(false); taRef.current?.focus(); }}>Keep editing</Button>
-          {ownerBlock && <span id={blockId} className="basis-full text-muted-foreground">{ownerBlock}</span>}
-        </div>
-      )}
-      <div className="flex items-center gap-1 px-2 pb-2">
-        <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const f = Array.from(e.target.files || []); e.target.value = ''; void addFiles(f); }} />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="Attach files" className="text-muted-foreground" disabled={!canType} onClick={() => fileRef.current?.click()}>
-              <PaperclipIcon />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Attach files (or paste / drop them)</TooltipContent>
-        </Tooltip>
-        {dictation.state === 'recording' && (
-          <span className="ml-1 flex items-center gap-1.5 text-xs text-destructive">
-            <span className="size-2 animate-pulse rounded-full bg-destructive" /> Recording
-            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => dictation.abort()}>Cancel</Button>
-          </span>
+        data-composer
+      >
+        {(overageUnarmed || overagePaused) && (
+          <div className="flex items-center gap-2 rounded-t-2xl border-b bg-warning/10 px-4 py-2 text-xs text-warning">
+            <ClockIcon className="size-3.5" />
+            {overageUnarmed
+              ? "Stopped for account overage. Your conductor resumes this worker; messages can't be queued here."
+              : `Paused${resumeClock ? ` until ${resumeClock}` : ''}. New messages are queued.`}
+          </div>
         )}
-        <div className="ml-auto flex items-center gap-1">
-          {usageSlot}
+        {pending.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3">
+            {pending.map((a) => (
+              <div key={a.id} className={cn('flex max-w-64 items-center gap-2 rounded-lg border bg-muted/40 py-1 pr-1 pl-1.5 text-xs', a.error && 'border-destructive/40 text-destructive')}>
+                {a.isImage && a.objectUrl ? <img src={a.objectUrl} alt={a.name} className="size-7 rounded object-cover" /> : <FileIcon className="size-4 text-muted-foreground" />}
+                <span className="min-w-0 truncate">{a.error ? `${a.name} · ${a.error}` : `${a.name} · ${fmtSize(a.size)}`}</span>
+                {!a.error && a.dataBase64 === undefined && <LoaderCircleIcon className="size-3 animate-spin" />}
+                <Button variant="ghost" size="icon-sm" className="size-6" aria-label={`Remove ${a.name}`} onClick={() => removeAttachment(a.id)}><XIcon className="size-3" /></Button>
+              </div>
+            ))}
+          </div>
+        )}
+        <textarea
+          ref={taRef}
+          id="composer-input"
+          rows={1}
+          value={text}
+          disabled={!canType}
+          placeholder={placeholder}
+          onChange={(e) => {
+            const v = e.target.value;
+            setText(v);
+            const tr = v.trim() ? transcribed : false;
+            if (!v.trim()) setTranscribed(false);
+            noteChange(v, tr);
+          }}
+          onKeyDown={(e) => {
+            if (choice && e.key === 'Escape') { setChoice(false); return; }
+            // ↓ at the very end reveals the sticky prompt; ↑ at the very start hides it.
+            if (!e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
+              const ta = e.currentTarget;
+              if (ta.selectionStart === ta.selectionEnd) {
+                if (e.key === 'ArrowDown' && ta.selectionEnd === ta.value.length) stickyPrompt.reveal();
+                else if (e.key === 'ArrowUp' && ta.selectionStart === 0) stickyPrompt.conceal();
+              }
+            }
+            // The shortcut toggles dictation whatever the box holds; an auto-repeat does nothing.
+            if (dictateKeys && e.key === 'Enter' && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              if (e.repeat) return;
+              if (dictation.state === 'idle') startDictation();
+              else if (dictation.state === 'recording') dictation.stop();
+              return;
+            }
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              if (choice) return;
+              if (!sendDisabled && mode === 'send') submit();
+            }
+          }}
+          onPaste={(e) => {
+            if (!canType) return;
+            const files = Array.from(e.clipboardData?.files || []);
+            if (!files.length) return;
+            e.preventDefault();
+            void addFiles(files);
+          }}
+          className="block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          aria-label="Message"
+          aria-keyshortcuts={dictateKeys && canType ? DICTATE_SHORTCUT : undefined}
+        />
+        <div className="flex items-center gap-1 px-2 pb-2">
+          <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const f = Array.from(e.target.files || []); e.target.value = ''; void addFiles(f); }} />
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                size={queueMode ? 'sm' : 'icon-sm'}
-                variant={mode === 'recording' ? 'destructive' : mode === 'mic' ? 'secondary' : 'default'}
-                className={cn('rounded-full', queueMode && 'px-3')}
-                aria-label={mode === 'mic' ? 'Dictate' : mode === 'recording' ? 'Stop recording' : mode === 'transcribing' ? 'Transcribing' : queueMode ? 'Queue message' : 'Send'}
-                disabled={sendDisabled}
-                onPointerDown={onSendPointerDown}
-                onPointerUp={onSendPointerUp}
-                onPointerCancel={(e) => { cancelHold(e.pointerId); holdDidRecord.current = false; }}
-                onKeyDown={onSendKeyDown}
-                onKeyUp={onSendKeyUp}
-                onBlur={onSendBlur}
-                onClick={onSendClick}
-              >
-                {mode === 'recording' ? <SquareIcon className="fill-current" />
-                  : mode === 'transcribing' ? <LoaderCircleIcon className="animate-spin" />
-                  : mode === 'mic' ? <MicIcon />
-                  : queueMode ? <><ClockIcon /> Queue</>
-                  : <ArrowUpIcon />}
+              <Button variant="ghost" size="icon-sm" aria-label="Attach files" className="text-muted-foreground" disabled={!canType} onClick={() => fileRef.current?.click()}>
+                <PaperclipIcon />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{sendTitle}</TooltipContent>
+            <TooltipContent>Attach files (or paste / drop them)</TooltipContent>
           </Tooltip>
+          {dictation.state === 'recording' && (
+            <span className="ml-1 flex items-center gap-1.5 text-xs text-destructive">
+              <span className="size-2 animate-pulse rounded-full bg-destructive" /> Recording
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => dictation.abort()}>Cancel</Button>
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-1">
+            {usageSlot}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size={queueMode ? 'sm' : 'icon-sm'}
+                  variant={mode === 'recording' ? 'destructive' : mode === 'mic' ? 'secondary' : 'default'}
+                  className={cn('rounded-full', queueMode && 'px-3')}
+                  aria-label={mode === 'mic' ? 'Dictate' : mode === 'recording' ? 'Stop recording' : mode === 'transcribing' ? 'Transcribing' : queueMode ? 'Queue message' : 'Send'}
+                  disabled={sendDisabled}
+                  onPointerDown={onSendPointerDown}
+                  onPointerUp={onSendPointerUp}
+                  onPointerCancel={(e) => { cancelHold(e.pointerId); holdDidRecord.current = false; }}
+                  onKeyDown={onSendKeyDown}
+                  onKeyUp={onSendKeyUp}
+                  onBlur={onSendBlur}
+                  onClick={onSendClick}
+                >
+                  {mode === 'recording' ? <SquareIcon className="fill-current" />
+                    : mode === 'transcribing' ? <LoaderCircleIcon className="animate-spin" />
+                    : mode === 'mic' ? <MicIcon />
+                    : queueMode ? <><ClockIcon /> Queue</>
+                    : <ArrowUpIcon />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{sendTitle}</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
       </div>
     </div>

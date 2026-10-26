@@ -5,8 +5,8 @@ import { colourOf, spawnConductor, spawnWorker } from './fleet.ts';
 
 test.use({ ccOptions: { server: 'worker-identity' } });
 
-test("a worker's owner chip and composer carry the owner's colour; the first send asks, Send to the owner instead lands there, Send to this worker lands here once, and the ack survives a reload", async ({ page, cc, ui, uniq }) => {
-  // Invariant: opening a conducted worker shows `Back to <owner>` and an owner-coloured composer without the sidebar; the first Enter sends nothing and offers the choice; Send to the owner puts the text in the owner's transcript and opens it; Send to this worker delivers it and later sends (and a reload) skip the choice; Alt+ArrowUp from the message box opens the owner (desktop).
+test("a worker's owner chip and composer carry the owner's colour; the first send asks, Send to conductor lands there, Send to worker lands here once, and the ack survives a reload", async ({ page, cc, ui, uniq }) => {
+  // Invariant: opening a conducted worker shows `Back to <owner>` and an owner-coloured composer without the sidebar; the first Enter sends nothing and offers the choice; Send to conductor puts the text in the owner's transcript and opens it; Send to worker delivers it and later sends (and a reload) skip the choice; Alt+ArrowUp from the message box opens the owner (desktop).
   test.setTimeout(180_000);
   const project = uniq('wid');
   await createProject(cc, project);
@@ -64,7 +64,22 @@ test("a worker's owner chip and composer carry the owner's colour; the first sen
   await expect(choice).toBeVisible();
   await expect(ui.userMessages(page)).toHaveCount(0);
 
-  await choice.getByRole('button', { name: /instead/ }).click();
+  const bar = (await choice.boundingBox())!;
+  const card = (await page.locator('[data-composer]').boundingBox())!;
+  expect(bar.y + bar.height, 'the bar sits above the card, not over it').toBeLessThanOrEqual(card.y);
+  expect(card.y - (bar.y + bar.height), 'directly above').toBeLessThan(16);
+  expect(bar.y, 'on screen').toBeGreaterThanOrEqual(0);
+  expect(bar.x, 'aligned with the card column').toBeGreaterThanOrEqual(card.x - 1);
+  expect(bar.x + bar.width).toBeLessThanOrEqual(card.x + card.width + 1);
+  await expect(choice.getByRole('button')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: /^Keep editing$/ })).toHaveCount(0);
+  await box.press('Escape');
+  await expect(choice).toHaveCount(0);
+  await expect(box).toHaveValue('meant for the owner');
+  await box.press('Enter');
+  await expect(choice).toBeVisible();
+
+  await choice.getByRole('button', { name: /^Send to conductor$/ }).click();
   await expect(ui.sessionHeader(page).locator(`[title="session ${conductor.sessionId}"]`)).toBeVisible();
   await expect(ui.lastUserMessage(page)).toContainText('meant for the owner');
 
@@ -74,7 +89,7 @@ test("a worker's owner chip and composer carry the owner's colour; the first sen
   await box.fill('first for the worker');
   await box.press('Enter');
   await expect(choice).toBeVisible();
-  await choice.getByRole('button', { name: 'Send to this worker' }).click();
+  await choice.getByRole('button', { name: /^Send to worker$/ }).click();
   await expect(ui.lastUserMessage(page)).toContainText('first for the worker');
   await expect(ui.turnEnded(page)).toBeVisible();
 

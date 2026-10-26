@@ -1,7 +1,7 @@
 // The worker-identity cues in the composer (placeholder, owner-coloured accent) and the first-send
-// check: what it covers, its three options, and what it leaves alone.
+// check: what it covers, its two options, and what it leaves alone.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const sent: [string, any][] = [];
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: (t: string, p: any) => { sent.push([t, p]); } }));
@@ -120,12 +120,15 @@ describe('first-send check', () => {
     expect(choice()).not.toBeNull();
   });
 
-  it('Send to this worker sends one prompt {id: W1.id, text} and acks; the next Enter sends at once; W2 still asks', () => {
+  it('Send to worker sends one prompt {id: W1.id, text} and acks; the next Enter sends at once; W2 still asks', () => {
     const m = mount(f.w1);
     typeAndEnter('first');
-    fireEvent.click(need(optionBtn(/Send to this worker/)));
+    draftStore.save(f.w1.sessionId, { text: 'first', transcribed: false });
+    expect(draftStore.load(f.w1.sessionId)).toEqual({ text: 'first', transcribed: false });
+    fireEvent.click(need(optionBtn(/^Send to worker$/)));
     expect(prompts()).toEqual([{ id: f.w1.id, text: 'first' }]);
     expect(box().value).toBe('');
+    expect(draftStore.load(f.w1.sessionId)).toBeFalsy();
     expect(choice()).toBeNull();
     expect(isWorkerSendAcked(f.w1.sessionId)).toBe(true);
     typeAndEnter('second');
@@ -140,14 +143,14 @@ describe('first-send check', () => {
   it('after a module reset the W1 ack still holds', async () => {
     mount(f.w1);
     typeAndEnter('persist');
-    fireEvent.click(need(optionBtn(/Send to this worker/)));
+    fireEvent.click(need(optionBtn(/^Send to worker$/)));
     expect(localStorage.getItem(WORKER_SEND_ACK_KEY)).toContain(f.w1.sessionId);
     vi.resetModules();
     const fresh = await import('./workerSendAck');
     expect(fresh.isWorkerSendAcked(f.w1.sessionId)).toBe(true);
   });
 
-  it('Send to C1 instead sends one prompt {id: C1.id, text, attachments}, clears the box and W1\'s draft, selects C1, does not ack', async () => {
+  it('Send to conductor sends one prompt {id: C1.id, text, attachments}, clears the box and W1\'s draft, selects C1, does not ack', async () => {
     mount(f.w1);
     const file = new File(['hi'], 'note.txt', { type: 'text/plain' });
     const input = document.querySelector('input[type=file]') as HTMLInputElement;
@@ -155,7 +158,9 @@ describe('first-send check', () => {
     await waitFor(() => expect(document.querySelector('[aria-label="Remove note.txt"]')).not.toBeNull());
     await new Promise((r) => setTimeout(r, 20));
     typeAndEnter('redirect me');
-    fireEvent.click(need(optionBtn(/Send to .*Alpha.* instead/)));
+    draftStore.save(f.w1.sessionId, { text: 'redirect me', transcribed: false });
+    expect(draftStore.load(f.w1.sessionId)).toEqual({ text: 'redirect me', transcribed: false });
+    fireEvent.click(need(optionBtn(/^Send to conductor$/)));
     expect(prompts()).toEqual([{ id: f.c1.id, text: 'redirect me', attachments: [{ name: 'note.txt', mediaType: 'text/plain', dataBase64: btoa('hi') }] }]);
     expect(box().value).toBe('');
     expect(draftStore.load(f.w1.sessionId)).toBeFalsy();
@@ -169,7 +174,7 @@ describe('first-send check', () => {
     f.c1.status = 'turn';
     mount(f.w1);
     typeAndEnter('steer the conductor');
-    const btn = need(optionBtn(/Send to .*Alpha.* instead/));
+    const btn = need(optionBtn(/^Send to conductor$/));
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(prompts()).toEqual([{ id: f.c1.id, text: 'steer the conductor' }]);
@@ -188,7 +193,7 @@ describe('first-send check', () => {
     for (const [w, fl] of cases) {
       const m = mount(w, fl);
       typeAndEnter('stay put');
-      const btn = need(optionBtn(/instead/));
+      const btn = need(optionBtn(/^Send to conductor$/));
       expect(btn).not.toBeNull();
       expect(btn.disabled).toBe(true);
       const why = document.getElementById(btn.getAttribute('aria-describedby') ?? '')!;
@@ -202,7 +207,7 @@ describe('first-send check', () => {
     }
   });
 
-  it('Enter while the choice is open sends nothing and editing keeps it open; Escape and Keep editing dismiss with the text kept', () => {
+  it('Enter while the choice is open sends nothing and editing keeps it open; Escape in the box dismisses with the text kept', () => {
     mount(f.w1);
     typeAndEnter('hold');
     enter();
@@ -214,16 +219,11 @@ describe('first-send check', () => {
     fireEvent.keyDown(box(), { key: 'Escape' });
     expect(choice()).toBeNull();
     expect(box().value).toBe('hold more');
-    enter();
-    expect(choice()).not.toBeNull();
-    fireEvent.click(need(optionBtn(/Keep editing/)));
-    expect(choice()).toBeNull();
-    expect(box().value).toBe('hold more');
     expect(prompts()).toEqual([]);
     expect(isWorkerSendAcked(f.w1.sessionId)).toBe(false);
   });
 
-  // Invariant: only Escape (or Keep editing) dismisses the open choice; Enter and a character key leave it open and send nothing.
+  // Invariant: only Escape dismisses the open choice; Enter and a character key leave it open and send nothing.
   it.each([['Enter', 'Enter'], ['a plain character', 'a']])('%s leaves the open choice open and sends nothing', (_n, key) => {
     mount(f.w1);
     typeAndEnter('hold');
@@ -238,7 +238,7 @@ describe('first-send check', () => {
     typeAndEnter('about to clear');
     type('');
     expect(choice()).not.toBeNull();
-    for (const name of [/Send to this worker/, /instead/]) {
+    for (const name of [/^Send to worker$/, /^Send to conductor$/]) {
       const btn = need(optionBtn(name));
       expect(btn.disabled).toBe(true);
       fireEvent.click(btn);
@@ -254,6 +254,48 @@ describe('first-send check', () => {
     fireEvent.keyDown(need(choice()), { key: 'Escape' });
     expect(choice()).toBeNull();
     expect(box().value).toBe('esc');
+  });
+
+  it('Escape on a focused choice button dismisses it, keeps the text and returns focus to the box', () => {
+    mount(f.w1);
+    typeAndEnter('esc btn');
+    const btn = need(optionBtn(/^Send to worker$/));
+    btn.focus();
+    fireEvent.keyDown(btn, { key: 'Escape' });
+    expect(choice()).toBeNull();
+    expect(box().value).toBe('esc btn');
+    expect(document.activeElement).toBe(box());
+    expect(prompts()).toEqual([]);
+  });
+
+  it('opening the choice from the Send button puts focus in the box, so Escape there dismisses it with the text kept', () => {
+    mount(f.w1);
+    type('via send');
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    fireEvent.click(send);
+    expect(choice()).not.toBeNull();
+    expect(document.activeElement).toBe(box());
+    fireEvent.keyDown(box(), { key: 'Escape' });
+    expect(choice()).toBeNull();
+    expect(box().value).toBe('via send');
+    expect(prompts()).toEqual([]);
+  });
+
+  it('the choice offers exactly Send to worker and Send to conductor, and no Keep editing', () => {
+    mount(f.w1);
+    typeAndEnter('x');
+    expect(within(need(choice())).getAllByRole('button').map((b) => b.textContent)).toEqual(['Send to worker', 'Send to conductor']);
+    expect(screen.queryByRole('button', { name: /^Keep editing$/ })).toBeNull();
+    expect(screen.getByRole('group', { name: /^Send to worker or conductor$/ })).toBe(choice());
+  });
+
+  it('the choice renders before the composer card, outside it', () => {
+    mount(f.w1);
+    typeAndEnter('x');
+    need(choice());
+    expect(composer().contains(choice())).toBe(false);
+    expect(choice()!.compareDocumentPosition(composer()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('W1 mid-turn (steer) is checked too', () => {
