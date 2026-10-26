@@ -18,7 +18,7 @@ import { flattenTranscript } from '../src/summarize.ts';
 import { analyzeSessionForPrune } from '../src/sessionPrune.ts';
 import { HUMAN_MARK, CONDUCTOR_MARK } from './promptAuthorCase.mjs';
 import {
-  quoteHumanPrompts, humanPromptsNote, HUMAN_PROMPT_QUOTE_MAX_CHARS, HUMAN_PROMPT_QUOTE_MAX_COUNT,
+  quoteHumanPrompts, humanPromptsNote, stripAuthorMarker, HUMAN_PROMPT_QUOTE_MAX_CHARS, HUMAN_PROMPT_QUOTE_MAX_COUNT,
 } from '../src/promptAuthor.ts';
 import { buildWakeStub, parseWakeCallback, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 
@@ -112,6 +112,11 @@ test('a last-prompt record\'s trailing marker never reaches firstPrompt', async 
     await fs.writeFile(file, JSON.stringify({ type: 'last-prompt', lastPrompt: `hello there${sep}${HUMAN_MARK}` }) + '\n');
     assert.equal(await readFirstPrompt(file), 'hello there', `joined with ${JSON.stringify(sep)}`);
   }
+});
+
+test('stripAuthorMarker removes only a trailing marker', () => {
+  assert.equal(stripAuthorMarker(`keep ${HUMAN_MARK} mid`), `keep ${HUMAN_MARK} mid`);
+  assert.equal(stripAuthorMarker('plain prompt text'), 'plain prompt text');
 });
 
 // ── quoting (src/promptAuthor.ts) ──────────────────────────────────────────

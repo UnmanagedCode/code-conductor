@@ -352,7 +352,8 @@ export interface InstanceManagerLike {
   // sessionId), and called synchronously from SessionRenewController's turn_end
   // handling (src/idleSubscriptions.ts documents why synchronously).
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void;
-  // The human prompts the target's next wake will report, quoted — read by the
+  // The human prompts the caller's next wakes about the target will report (its
+  // held deferred wakes, then the target's pending list), quoted — read by the
   // conductor sends' `humanPrompts` result field.
   pendingHumanPrompts(instanceId: string, callerInstanceId?: string | null): string[];
   // `replayed`: jsonl history (kept out of the wake hubs); `pullOnly`: kept off

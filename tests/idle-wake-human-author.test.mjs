@@ -159,8 +159,8 @@ async function orphaned() {
 
 test('no armed wake: a human turn its CLI dies in keeps no human prompts', async () => {
   const { w, wInst } = await orphaned();
-  // Non-temp, as a resumed conducted worker is (spawn_instance({resume}) passes
-  // no temp): its exit leaves it listed, so no purge clears the hub for it.
+  // Non-temp, as a promoted conducted worker is: its exit leaves it listed, so
+  // no purge clears the hub for it.
   wInst.temp = false;
   await wsPrompt(w, 'OPENTURN nobody is watching');
   await waitFor(() => wInst.status === 'turn' && !wInst._quiescence.empty);
