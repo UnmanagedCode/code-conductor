@@ -1,7 +1,7 @@
 // A view link in the pinned prompt (a copy of a user bubble's rendered HTML) is followed in-app like one in the transcript.
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 
@@ -53,5 +53,21 @@ describe('view links in the pinned prompt', () => {
     expect(clickLink(body.querySelector('p')!)).toBe(false);
     expect(jump).toHaveBeenCalledTimes(2);
     expect(routeStore.get().route.view).toBe('session');
+  });
+  // Pins: Enter on a link inside the pin is left to the browser (the keydown is not default-prevented, so the anchor's own click can follow the link) and does not jump; Enter on the pin itself still jumps. happy-dom synthesizes no click from a keydown, so the link's activation is pinned by the click tests above, not here.
+  it('Enter on a link in the pin is not cancelled and does not jump; Enter on the pin still jumps', () => {
+    const jump = vi.spyOn(stickyPrompt, 'jumpToPinned').mockImplementation(() => {});
+    const body = mountPinned();
+    const enter = (el: Element) => {
+      let prevented = false;
+      const listener = (e: Event) => { prevented = e.defaultPrevented; };
+      document.addEventListener('keydown', listener);
+      try { act(() => { fireEvent.keyDown(el, { key: 'Enter' }); }); } finally { document.removeEventListener('keydown', listener); }
+      return prevented;
+    };
+    for (const a of body.querySelectorAll('a')) expect(enter(a), `Enter on ${a.getAttribute('href')} is not prevented`).toBe(false);
+    expect(jump).not.toHaveBeenCalled();
+    expect(enter(body.closest('[data-pinned-prompt]')!)).toBe(true);
+    expect(jump).toHaveBeenCalledTimes(1);
   });
 });

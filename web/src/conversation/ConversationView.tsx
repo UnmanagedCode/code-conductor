@@ -168,7 +168,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
         tabIndex={pin.kind === 'pinned' ? 0 : undefined}
         title={pin.kind === 'pinned' ? 'Jump to this prompt' : undefined}
         onClick={(e) => { if (!e.defaultPrevented) stickyPrompt.jumpToPinned(); }}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stickyPrompt.jumpToPinned(); } }}
+        onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && !(e.target as Element).closest('a')) { e.preventDefault(); stickyPrompt.jumpToPinned(); } }}
         className={cn('absolute left-0 top-0 z-10 touch-pan-x touch-pinch-zoom', pin.kind === 'pinned' ? 'cursor-pointer' : 'cursor-default')}
         style={{ right: gutter, ...(pin.kind === 'pinned' && pin.shift ? { transform: `translateY(${pin.shift}px)` } : {}) }}
         data-pinned-prompt
