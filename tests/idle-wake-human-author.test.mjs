@@ -146,3 +146,41 @@ test('a hand-spawned session the conductor dispatched to gets no notice for a hu
   const wake = await nthCompletion(c, h, 1);
   assert.doesNotMatch(wake.text, /HUMAN/, 'no authorship outside conducted workers');
 });
+
+// A conducted worker whose owner is gone: its turns arm no wake, so nothing will
+// ever report its human prompts — the record must not outlive the turn.
+async function orphaned() {
+  const { c, w, cInst, wInst } = await conducted();
+  await instances.remove(cInst.id);
+  assert.equal(instances.byId.has(cInst.id), false, 'precondition: the owner is gone');
+  assert.equal(instances.byId.has(wInst.id), true, 'precondition: the worker outlives it');
+  return { c, w, wInst };
+}
+
+test('no armed wake: a human turn its CLI dies in keeps no human prompts', async () => {
+  const { w, wInst } = await orphaned();
+  // Non-temp, as a resumed conducted worker is (spawn_instance({resume}) passes
+  // no temp): its exit leaves it listed, so no purge clears the hub for it.
+  wInst.temp = false;
+  await wsPrompt(w, 'OPENTURN nobody is watching');
+  await waitFor(() => wInst.status === 'turn' && !wInst._quiescence.empty);
+  assert.equal(instances.hasArmedWake(wInst.id), false, 'precondition: nothing armed');
+  wInst.proc.stderr.write('fatal: gone\n');
+  await waitFor(() => wInst._stderr.includes('fatal: gone'));
+  wInst.proc.kill('SIGKILL');
+  await waitFor(() => wInst.status === 'crashed' || wInst.status === 'exited');
+  assert.equal(instances.byId.has(wInst.id), true, 'precondition: the exited worker is still listed');
+  assert.deepEqual(instances.pendingHumanPrompts(wInst.id), []);
+});
+
+test('no armed wake: a human turn a commanded stop interrupts keeps no human prompts', async () => {
+  const { w, wInst } = await orphaned();
+  await wsPrompt(w, 'OPENTURN nobody is watching');
+  await waitFor(() => wInst.status === 'turn' && !wInst._quiescence.empty);
+  assert.equal(instances.hasArmedWake(wInst.id), false, 'precondition: nothing armed');
+  const ended = waitFor(() => wInst.ringSnapshot().some(e => e.kind === 'turn_end'));
+  wInst.interruptTurnForStop();
+  await ended;
+  assert.equal(wInst._stopInterruptedTurn, true, 'precondition: the stop-interrupted turn_end');
+  assert.deepEqual(instances.pendingHumanPrompts(wInst.id), []);
+});

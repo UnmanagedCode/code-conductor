@@ -232,7 +232,7 @@ export function buildTools(): Tool[] {
         'oldest-first). Returns {status, sessionId, source, events, lastSeq, trimmedBefore, hasMore, ' +
         'nextFrom}. Event kinds: text_delta, tool_use, ' +
         'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. A conducted worker\'s `user_echo` ' +
-        'carries `author: "human"|"conductor"`; absent = unknown (an unmarked older transcript, a server- or ' +
+        'carries `author: "human"|"conductor"`; absent = unknown (an unmarked line, a server- or ' +
         'CLI-injected turn, or not a conducted worker) — never inferred. (Caveat: an in-flight block is ' +
         'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
         'mid-turn use get_recent_messages.) A page stops short of `limit` when the next event would push the ' +

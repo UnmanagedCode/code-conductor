@@ -21,6 +21,7 @@ import type { System } from './systems/system.ts';
 import { hostPlatform, samePath, type Platform } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
 import { firstPromptHead } from '../shared/promptPreview.ts';
+import { stripAuthorMarker } from './promptAuthor.ts';
 
 // Re-exported from its implementation on the local system: the store is always
 // local, so cc's own atomic writes and the local System's are one operation.
@@ -1878,7 +1879,9 @@ export async function readFirstPrompt(jsonlPath: string): Promise<string | null>
           }
         }
       }
-      if (rec.type === 'last-prompt' && typeof rec.lastPrompt === 'string') return firstPromptHead(rec.lastPrompt);
+      if (rec.type === 'last-prompt' && typeof rec.lastPrompt === 'string') {
+        return firstPromptHead(stripAuthorMarker(rec.lastPrompt));
+      }
     }
   } finally {
     await fh.close();

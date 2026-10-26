@@ -1245,10 +1245,14 @@ function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleT
 }
 
 // The conductor sends' `humanPrompts` result field: the human's prompts into the
-// target that its next wake will report — the send joined or follows a turn the
-// human started. Read just before the send, and omitted when there are none.
-function humanPromptsField(instances: McpCtx['instances'], inst: InstanceLike): { humanPrompts?: string[] } {
-  const humanPrompts = instances?.pendingHumanPrompts(inst.id) ?? [];
+// target that the caller's next wake about it will report — the send joined or
+// follows a turn the human started. Read just before the send, and omitted when
+// there are none.
+function humanPromptsField(
+  instances: McpCtx['instances'], callerId: string | null | undefined, inst: InstanceLike,
+): { humanPrompts?: string[] } {
+  const callerInstanceId = callerId ? instances?.liveForSession(callerId)?.id ?? null : null;
+  const humanPrompts = instances?.pendingHumanPrompts(inst.id, callerInstanceId) ?? [];
   return humanPrompts.length ? { humanPrompts } : {};
 }
 
@@ -1352,7 +1356,7 @@ export async function sendPrompt(
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, inst);
+  const humanPrompts = humanPromptsField(instances, callerId, inst);
   await inst.promptOrQueueSteer(composedText, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, status: inst.status, ...forwardedField, ...humanPrompts };
 }
@@ -1667,7 +1671,7 @@ export async function approvePlan(
   if (refused) return refused;
   const text = buildApprovePrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, inst);
+  const humanPrompts = humanPromptsField(instances, callerId, inst);
   await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
@@ -1688,7 +1692,7 @@ export async function rejectPlan(
   if (refused) return refused;
   const text = buildRejectPrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, inst);
+  const humanPrompts = humanPromptsField(instances, callerId, inst);
   await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
@@ -1802,7 +1806,7 @@ export async function answerQuestion(
 
   const text = formatUserQuestionAnswers(questions, states);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, inst);
+  const humanPrompts = humanPromptsField(instances, callerId, inst);
   await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }

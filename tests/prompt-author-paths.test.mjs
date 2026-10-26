@@ -10,8 +10,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { waitFor, instForSession, driveTurn, seedSessionJsonl } from './helpers.mjs';
-import { setupIdleWake, callTool, unwrap } from './idleWakeCase.mjs';
+import { waitFor, instForSession, driveTurn, seedSessionJsonl, api } from './helpers.mjs';
+import { setupIdleWake, callTool, unwrap, ctx } from './idleWakeCase.mjs';
 import { localPlace } from '../src/projects.ts';
 import { buildApprovePrompt } from '../shared/planApproval.ts';
 import { formatUserQuestionAnswers } from '../shared/userQuestionAnswers.ts';
@@ -148,4 +148,20 @@ test('a retired worker\'s transcript still names each prompt\'s author', async (
   assert.equal(page.source, 'disk');
   const authors = page.events.filter(e => e.kind === 'user_echo').map(e => [e.text, e.author]);
   assert.deepEqual(authors, [['retired human prompt', 'human'], ['retired conductor prompt', 'conductor']]);
+});
+
+test('the rebase-prompt route into a conducted worker is written human', async () => {
+  await createProject('p'); // a git repo with an initial commit
+  const c = await spawnConductor('p');
+  const wFile = stdinFile();
+  const w = await spawnWorker('p', c, wFile, { createWorktree: true });
+  const wInst = instForSession(instances, w);
+  assert.ok(wInst.worktree, 'precondition: W sits in a worktree');
+  const r = await turn(w, () => api(ctx.baseUrl, 'POST', `/api/instances/${wInst.id}/rebase-prompt`));
+  assert.equal(r.body?.ok, true, JSON.stringify(r.body));
+  const line = (await stdinUserLines(wFile)).at(-1);
+  assert.equal(line.message.content.at(-1).text, HUMAN_MARK);
+  const echo = wInst.ringSnapshot().filter(e => e.kind === 'user_echo').at(-1);
+  assert.match(echo.text, /git rebase --rebase-merges /, 'precondition: the rebase brief');
+  assert.equal(echo.author, 'human');
 });

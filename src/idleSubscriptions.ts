@@ -337,8 +337,12 @@ export class IdleSubscriptionHub {
     const target = this.manager.byId.get(targetInstanceId);
     if (!target) return;
     // A turn a commanded stop interrupted is not a turn finishing: the armed
-    // wake resolves through the exit path instead.
-    if (target._stopInterruptedTurn) return;
+    // wake resolves through the exit path instead. With none armed, nobody is
+    // left to report this turn's human prompts to.
+    if (target._stopInterruptedTurn) {
+      if (!this.subscribers.get(targetInstanceId)?.size) this._humanPrompts.delete(targetInstanceId);
+      return;
+    }
     // A turn_end supersedes any pending idle-drain settle: either it consumes
     // the wake right here, or its defer keeps the turn_end path in
     // charge (and the settle's fire-time freeze check would drop it anyway —
@@ -574,9 +578,10 @@ export class IdleSubscriptionHub {
   // and wake nobody.
   onTargetExit(targetInstanceId: string, exited: { sessionId: string | null; code: number | null; signal: string | null }): void {
     const subs = this.subscribers.get(targetInstanceId);
+    // Taken either way: an exit with no wake armed has nobody to report to.
+    const humanPrompts = this._takeHumanPrompts(targetInstanceId);
     if (!subs || subs.size === 0) return;
     const callers = [...subs.keys()];
-    const humanPrompts = this._takeHumanPrompts(targetInstanceId);
     for (const callerInstanceId of callers) {
       this._dropArmed(targetInstanceId, callerInstanceId);
       this.deliver(callerInstanceId, targetInstanceId, humanPrompts ? { exited, humanPrompts } : { exited });
@@ -1165,10 +1170,16 @@ export class IdleSubscriptionHub {
     return texts;
   }
 
-  // The human prompts the target's NEXT wake will report, without taking them —
-  // for a conductor send that lands before that wake (send_prompt & co.).
-  peekHumanPrompts(targetInstanceId: string): string[] {
-    return [...this._humanPrompts.get(targetInstanceId) ?? []];
+  // The human prompts the caller's next wakes about the target will report,
+  // without taking them, oldest first — for a conductor send that lands before
+  // those wakes (send_prompt & co.): those already taken into a wake held for the
+  // mid-turn caller (_deferredWakes, queued in order), then the target's pending
+  // ones. A held wake for another caller is not this caller's to report.
+  peekHumanPrompts(targetInstanceId: string, callerInstanceId: string | null): string[] {
+    const held = (callerInstanceId ? this._deferredWakes.get(callerInstanceId) ?? [] : [])
+      .filter(p => p.targetInstanceId === targetInstanceId)
+      .flatMap(p => p.opts?.humanPrompts ?? []);
+    return [...held, ...this._humanPrompts.get(targetInstanceId) ?? []];
   }
 
   // Read AND delete the note for one caller/target pair — a note belongs to exactly

@@ -5222,11 +5222,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._idleHub.noteRenewalDeclined(targetInstanceId, requestedBy);
   }
 
-  // The human's prompts into this instance that its owners' next wake will
-  // report, quoted for a send-time result (src/promptAuthor.ts). Read-only: the
-  // wake still carries them.
-  pendingHumanPrompts(instanceId: string): string[] {
-    return quoteHumanPrompts(this._idleHub.peekHumanPrompts(instanceId));
+  // The human's prompts into this instance that the caller's next wake about it
+  // will report, quoted for a send-time result (src/promptAuthor.ts). Read-only:
+  // the wake still carries them.
+  pendingHumanPrompts(instanceId: string, callerInstanceId: string | null = null): string[] {
+    return quoteHumanPrompts(this._idleHub.peekHumanPrompts(instanceId, callerInstanceId));
   }
 
   setServerPort(port: number): void {

@@ -31,6 +31,14 @@ export function parseAuthorMarker(text: unknown): PromptAuthor | null {
   return null;
 }
 
+// `text` without a trailing marker — for a reader handed a marked line's blocks
+// already joined into one string (the CLI's `last-prompt` record), whatever the
+// separator.
+const TRAILING_MARKER = /\s*\[\[cc:author:(?:human|conductor)\]\]\s*$/;
+export function stripAuthorMarker(text: string): string {
+  return text.replace(TRAILING_MARKER, '');
+}
+
 // One CLI line carries one marker, so a coalesced delivery (parked steers, the
 // overage queue's combined resume) is the human's if any part was: quoted back,
 // the conductor still recognises its own words in it.

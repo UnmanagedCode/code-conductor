@@ -65,11 +65,14 @@ export async function spawnConductor(project) {
   });
 }
 
-// A conducted worker spawned BY `callerSid`, recording its stdin to `transcript`.
-export async function spawnWorker(project, callerSid, transcript) {
+// A conducted worker spawned BY `callerSid`, recording its stdin to `transcript`;
+// `extra` adds spawn_instance args (e.g. createWorktree).
+export async function spawnWorker(project, callerSid, transcript, extra = {}) {
   return withEnv({ FAKE_CLAUDE_SCENARIO: SCENARIO_WORKER, FAKE_CLAUDE_TRANSCRIPT: transcript }, async () => {
-    const { sessionId } = unwrap(await callTool('spawn_instance',
-      { project, mode: 'bypassPermissions' }, { caller: callerSid }));
+    const r = unwrap(await callTool('spawn_instance',
+      { project, mode: 'bypassPermissions', ...extra }, { caller: callerSid }));
+    assert.ok(r.sessionId, `spawn_instance refused: ${JSON.stringify(r)}`);
+    const { sessionId } = r;
     const inst = await waitFor(() => {
       const i = instForSession(ctx.instances, sessionId);
       return i?.status === 'idle' && i;

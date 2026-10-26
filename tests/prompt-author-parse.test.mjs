@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { replayPersistedLine, isPureUserPromptLine } from '../src/transcript.ts';
-import { localPlace } from '../src/projects.ts';
+import { localPlace, readFirstPrompt } from '../src/projects.ts';
+import { promises as fs } from 'node:fs';
 import { splitAtUserMessage } from '../src/sessionEdit.ts';
 import { flattenTranscript } from '../src/summarize.ts';
 import { analyzeSessionForPrune } from '../src/sessionPrune.ts';
@@ -101,6 +102,16 @@ test('the summarizer transcript carries no marker', async () => {
 test('the prune turn preview carries no marker', async () => {
   const analysis = await analyzeSessionForPrune({ place: await seedMarked(), sessionId: 'sess-marked' });
   assert.equal(analysis.turns[0].preview, 'human words');
+});
+
+// The CLI's own `last-prompt` record holds a prompt as one string; built from a
+// marked line's joined text it would end with the marker, whatever the join.
+test('a last-prompt record\'s trailing marker never reaches firstPrompt', async () => {
+  for (const sep of ['\n', ' ', '']) {
+    const file = path.join(home, `last-prompt-${sep.length}.jsonl`);
+    await fs.writeFile(file, JSON.stringify({ type: 'last-prompt', lastPrompt: `hello there${sep}${HUMAN_MARK}` }) + '\n');
+    assert.equal(await readFirstPrompt(file), 'hello there', `joined with ${JSON.stringify(sep)}`);
+  }
 });
 
 // ── quoting (src/promptAuthor.ts) ──────────────────────────────────────────

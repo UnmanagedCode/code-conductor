@@ -354,7 +354,7 @@ export interface InstanceManagerLike {
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void;
   // The human prompts the target's next wake will report, quoted — read by the
   // conductor sends' `humanPrompts` result field.
-  pendingHumanPrompts(instanceId: string): string[];
+  pendingHumanPrompts(instanceId: string, callerInstanceId?: string | null): string[];
   // `replayed`: jsonl history (kept out of the wake hubs); `pullOnly`: kept off
   // every socket (wsHub) — see Instance._emitUi.
   on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null; replayed?: boolean; pullOnly?: boolean }) => void): void;

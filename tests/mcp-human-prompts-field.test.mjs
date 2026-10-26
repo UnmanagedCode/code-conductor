@@ -71,3 +71,17 @@ for (const [name, send] of ANSWER_SENDS) {
     assert.deepEqual(res.humanPrompts, ['SLOWTURN human weighs in']);
   });
 }
+
+test('a wake held for a mid-turn owner on a non-steerable model still feeds humanPrompts', async () => {
+  const { c, w, cInst } = await conducted();
+  // The owner's model cannot take a mid-turn injection: a wake reaching it
+  // mid-turn is held (IdleSubscriptionHub._deferredWakes) until its own turn_end.
+  await callTool('send_prompt', { sessionId: c, text: 'COPEN the conductor stays busy' });
+  await waitFor(() => cInst.status === 'turn' && !cInst._quiescence.empty);
+  cInst.acceptsMidTurnSteering = false; // after the model report that re-resolves it
+  await driveTurn(instances, w, () => wsPrompt(w, 'human while the owner is busy'));
+  await waitFor(() => instances._idleHub._deferredWakes.get(cInst.id)?.length === 1);
+  assert.equal(cInst.status, 'turn', 'precondition: the owner is still mid-turn');
+  const res = unwrap(await callTool('send_prompt', { sessionId: w, text: 'conductor follow-up' }, { caller: c }));
+  assert.deepEqual(res.humanPrompts, ['human while the owner is busy']);
+});
