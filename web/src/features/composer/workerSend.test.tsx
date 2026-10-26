@@ -223,6 +223,16 @@ describe('first-send check', () => {
     expect(isWorkerSendAcked(f.w1.sessionId)).toBe(false);
   });
 
+  // Invariant: only Escape (or Keep editing) dismisses the open choice; Enter and a character key leave it open and send nothing.
+  it.each([['Enter', 'Enter'], ['a plain character', 'a']])('%s leaves the open choice open and sends nothing', (_n, key) => {
+    mount(f.w1);
+    typeAndEnter('hold');
+    expect(choice()).not.toBeNull();
+    fireEvent.keyDown(box(), { key });
+    expect(choice()).not.toBeNull();
+    expect(prompts()).toEqual([]);
+  });
+
   it('with the box emptied, neither option acts: no send, no ack, no navigation', () => {
     mount(f.w1);
     typeAndEnter('about to clear');

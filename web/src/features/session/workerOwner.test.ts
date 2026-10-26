@@ -13,6 +13,14 @@ describe('workerOwnerOf', () => {
     expect(ownerOf(f, f.h)).toEqual({ kind: 'none' });
   });
 
+  // Invariant: a session in the conductor project is never a worker, even when conducted with a known owner (a section lead).
+  it('a conducted session in the conductor project resolves to none even with an owner', () => {
+    const f = fleet();
+    const lead = { ...f.c2, conducted: true, ownerSessionId: C1 };
+    expect(ownerOf(f, { ...lead, project: 'other-project' }).kind).toBe('owned'); // premise: only the project differs
+    expect(ownerOf(f, lead)).toEqual({ kind: 'none' });
+  });
+
   it('a live conducted worker resolves its owner\'s label and instance; C1 and C2 workers resolve differently', () => {
     const f = fleet();
     const o1 = ownerOf(f, f.w1);

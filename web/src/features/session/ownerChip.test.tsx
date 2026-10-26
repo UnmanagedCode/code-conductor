@@ -40,6 +40,16 @@ describe('owner chip', () => {
     expect(conductorColor(C1)).not.toBe(conductorColor(C2));
   });
 
+  // Invariant: a conducted conductor-project session (a section lead) renders no owner chip.
+  it('a conducted conductor-project session with an owner shows no chip', () => {
+    const lead = { ...f.c2, conducted: true, ownerSessionId: C1 };
+    show({ ...lead, project: 'other-project' });
+    expect(chip()).not.toBeNull(); // premise: only the project differs
+    cleanup();
+    show(lead);
+    expect(chip()).toBeNull();
+  });
+
   it('C1, H show no chip; WU shows `Conducted worker` and no Back button; WA shows the chip with no button', () => {
     show(f.w1);
     expect(chip()).not.toBeNull(); // premise: this render path does show one
