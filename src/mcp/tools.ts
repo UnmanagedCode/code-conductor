@@ -231,7 +231,9 @@ export function buildTools(): Tool[] {
         'incrementally by passing the returned `nextFrom` back as the next fromSeq (forward paging, ' +
         'oldest-first). Returns {status, sessionId, source, events, lastSeq, trimmedBefore, hasMore, ' +
         'nextFrom}. Event kinds: text_delta, tool_use, ' +
-        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: an in-flight block is ' +
+        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. A conducted worker\'s `user_echo` ' +
+        'carries `author: "human"|"conductor"`; absent = unknown (an unmarked line, a server- or ' +
+        'CLI-injected turn, or not a conducted worker) — never inferred. (Caveat: an in-flight block is ' +
         'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
         'mid-turn use get_recent_messages.) A page stops short of `limit` when the next event would push the ' +
         'result past the MCP result budget — hasMore/nextFrom continue from there; an event too large for any ' +
@@ -339,6 +341,9 @@ export function buildTools(): Tool[] {
       description:
         'Send a user turn to a running instance. ' +
         'A mid-turn send_prompt steers a worker in flight rather than waiting out its turn. ' +
+        'The result carries `humanPrompts` (oldest first, quoted and truncated) only when the human has prompted ' +
+        'this worker directly since its last wake to you — your send joined or followed a turn they started; ' +
+        'check it does not contradict them. ' +
         'PLAYBOOKS: always carry `stage` — it is what makes send_prompt the default transition driver.',
       inputSchema: {
         type: 'object',
@@ -383,7 +388,8 @@ export function buildTools(): Tool[] {
       description:
         'Approve a worker\'s plan: flips the instance to bypassPermissions and sends the canonical approval ' +
         'prompt as a normal user turn. Mirrors the UI\'s Approve & Implement button — use this rather than ' +
-        'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message.',
+        'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message. ' +
+        'May carry `humanPrompts` (see send_prompt).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -400,7 +406,7 @@ export function buildTools(): Tool[] {
       description:
         'Reject a worker\'s plan and ask for refinement. The instance stays in plan mode; the worker will ' +
         'produce a revised plan in its next turn. `feedback` is recommended — without it the worker has no ' +
-        'guidance for what to change.',
+        'guidance for what to change. May carry `humanPrompts` (see send_prompt).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -415,13 +421,14 @@ export function buildTools(): Tool[] {
     {
       name: 'answer_question',
       description:
-        'Answer a worker\'s AskUserQuestion with a STRUCTURED answer — the byte-identical analog of the UI ' +
-        'question card, so the worker can\'t tell a UI answer from an MCP one. Use this rather than a free-text ' +
+        'Answer a worker\'s AskUserQuestion with a STRUCTURED answer — the same answer text the UI ' +
+        'question card sends. Use this rather than a free-text ' +
         'send_prompt when a get_recent_messages message has `questionCount` set (the questions themselves are ' +
         'rendered in that message\'s body, fenced with "--- questions ---" and 1-based numbered). `answers` is ' +
         'aligned by index to those SAME server-side pending questions — 0-based, so body question N is answers[N-1] ' +
         '— each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
-        '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options.',
+        '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options. ' +
+        'May carry `humanPrompts` (see send_prompt).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1027,7 +1034,8 @@ export function buildTools(): Tool[] {
       name: 'get_recent_messages',
       description:
         'Return the most recent assistant message(s) from an instance. Each message has: ' +
-        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `hasPlan`, `planPath`, `questionCount`. ' +
+        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `hasPlan`, `planPath`, `questionCount`, `promptedBy`. ' +
+        '`promptedBy:"human"` marks a message whose turn the human prompted directly; absent = conductor-sent or unknown. ' +
         '`blocks` is present only when non-text blocks exist and contains only `tool_use` and ' +
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +

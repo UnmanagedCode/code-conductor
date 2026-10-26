@@ -1,5 +1,6 @@
-// Who wrote a user turn, judged from the bytes the browser holds. No event,
-// frame, jsonl line or store record carries an author, so the answer is the
+// Who wrote a user turn, judged from the bytes the browser holds. Only a
+// conducted worker's echo carries an `author` (src/promptAuthor.ts); every other
+// session's carries none, so the answer is the
 // in-band shape of the text plus the parser's event flags — the same evidence
 // src/awaitingUser.ts's classifyUserTurn reads, whose text/flag rules live here
 // (isInjectedUserTurn) so the two cannot disagree.

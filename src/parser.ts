@@ -20,7 +20,8 @@ import { planPathFromInput } from './planFile.ts';
 import { AWAITING_INPUT_MESSAGE, EARLIER_AWAITING_INPUT_MESSAGES } from './settings.ts';
 import { TaskStarts, taskNotificationFromFrame, type TaskFrame } from './taskNotification.ts';
 import { isNarration } from './narration.ts';
-import type { UiEvent, UiEventOf, SystemData, UserEchoAttachment, AssistantWireMessage } from '../shared/uiEvent.ts';
+import { parseAuthorMarker } from './promptAuthor.ts';
+import type { UiEvent, UiEventOf, SystemData, UserEchoAttachment, AssistantWireMessage, PromptAuthor } from '../shared/uiEvent.ts';
 import type { Usage } from '../shared/usage.ts';
 
 // ── CLI stream-json wire shapes ───────────────────────────────────────────
@@ -792,14 +793,16 @@ const YIELDED_RESULT_TEXTS: ReadonlySet<unknown> = new Set([AWAITING_INPUT_MESSA
 
 // Consolidate one user message's content blocks into UI events: each
 // tool_result becomes its own event, and all text blocks (minus mid-turn
-// notes and `Attached file:` marker lines) are joined into a single
-// `user_echo` carrying any extracted attachments. Shared by the live path
-// (Parser._handleUser) and both jsonl-replay branches in transcript.ts so
-// live vs replay rendering stays byte-for-byte identical.
+// notes, the author marker and `Attached file:` marker lines) are joined into a
+// single `user_echo` carrying any extracted attachments — and the marker's
+// author (src/promptAuthor.ts), the only source `author` is ever read from.
+// Shared by the live path (Parser._handleUser) and both jsonl-replay branches
+// in transcript.ts so live vs replay rendering stays byte-for-byte identical.
 export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
   const out: UiEvent[] = [];
   const echoTexts: string[] = [];
   const echoAttachments: UserEchoAttachment[] = [];
+  let author: PromptAuthor | null = null;
   for (const raw of contentBlocks) {
     if (!raw || typeof raw !== 'object') continue;
     const block = raw as WireContentBlock;
@@ -817,6 +820,8 @@ export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
     } else if (block.type === 'text') {
       if (typeof block.text !== 'string') continue;
       if (isMidTurnNoteContent(block.text)) continue;
+      const marked = parseAuthorMarker(block.text);
+      if (marked) { author = marked; continue; }
       const { text: leftover, attachments } = extractAttachedMarkers(block.text);
       if (leftover.length) echoTexts.push(leftover);
       for (const a of attachments) echoAttachments.push(a);
@@ -827,6 +832,7 @@ export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
       kind: 'user_echo',
       text: echoTexts.join('\n'),
       attachments: echoAttachments,
+      ...(author ? { author } : {}),
     });
   }
   return out;

@@ -120,7 +120,8 @@ import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts
 import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { hostPlatform, type Platform } from './platform/index.ts';
 import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, ModelSwitchState, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
-import type { UiEvent, UiEventOf, UserEchoAttachment } from '../shared/uiEvent.ts';
+import type { UiEvent, UiEventOf, UserEchoAttachment, PromptAuthor } from '../shared/uiEvent.ts';
+import { authorMarkerBlock, combineAuthors, quoteHumanPrompts } from './promptAuthor.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
@@ -189,12 +190,14 @@ interface OverageQueueItem {
   text: string;
   attachments: unknown[];
   ts: number;
+  author?: PromptAuthor;
 }
 
 // One steer parked on `_pendingSteers` until the armed block-edge stop lands.
 interface PendingSteer {
   text: string;
   attachments?: unknown[];
+  author?: PromptAuthor;
   resolve: () => void;
   reject: (e: Error) => void;
 }
@@ -3375,7 +3378,12 @@ export class Instance extends EventEmitter implements InstanceLike {
   // vision content) and arbitrary file bytes on demand. This avoids
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
-  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string } = {}): Promise<void> {
+  //
+  // `author` says who wrote the prompt — the human (a UI surface) or the
+  // conductor (an MCP send). Recorded only on a CONDUCTED worker, as a trailing
+  // marker block on the line and on the echo (src/promptAuthor.ts); omitted for a
+  // server- or CLI-injected prompt, which has no author.
+  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote, author }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor } = {}): Promise<void> {
     // A rewind/prune is rewriting this session's jsonl. The `!this.proc`
     // check below already rejects for most of that window (the subprocess is
     // killed first), but not for the sliver between the caller's idle check and
@@ -3435,6 +3443,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         text: typeof text === 'string' ? text : '',
         attachments: Array.isArray(attachments) ? attachments : [],
         ts: Date.now(),
+        author,
       };
       this._overageQueue.push(entry);
       this._emitUi({ kind: 'overage_message_queued', data: {
@@ -3497,6 +3506,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (content.length === 0) {
       throw new Error('prompt requires non-empty text or at least one valid attachment');
     }
+    // Last, after the attachment lines; the mid-turn note below goes first.
+    const recordedAuthor = author && this.conducted ? author : null;
+    if (recordedAuthor) content.push(authorMarkerBlock(recordedAuthor));
 
     // NO `@path` PRE-HYDRATION: the CLI expands a mention itself and fires no
     // hook for it — measured — and under the chroot the mention resolves
@@ -3505,7 +3517,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A real prompt is a genuine turn boundary — any Skill invocation still
     // awaiting its content injection is stale (see parser.ts:attachSkillLoad).
     this.parser.expirePendingSkillLoads();
-    this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments });
+    this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments,
+      ...(recordedAuthor ? { author: recordedAuthor } : {}) });
     if (this.firstPrompt == null && safeText.length) {
       this.firstPrompt = firstPromptHead(safeText);
     }
@@ -4328,13 +4341,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // wrapper: callers must be able to await the send and run in the SAME microtask
   // its completion lands in: the idle wake ARMS inside prompt() → _setStatus, so a
   // caller that resumed a tick later could not observe the turn it just started.
-  promptOrQueueSteer(text: string, attachments: unknown[] = []): Promise<void> {
+  promptOrQueueSteer(text: string, attachments: unknown[] = [], { author }: { author?: PromptAuthor } = {}): Promise<void> {
     this._endPristine();
     if (this.needsPostStopSteer) {
-      void this.queueSteerAfterStop(text, { attachments }).catch(() => {});
+      void this.queueSteerAfterStop(text, { attachments, author }).catch(() => {});
       return Promise.resolve();
     }
-    return this.prompt(text, attachments);
+    return this.prompt(text, attachments, { author });
   }
 
   // Deliver `text` to a model that cannot take a mid-turn injection: stop the
@@ -4350,8 +4363,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // Every mid-turn injection site routes here on a model that needs it, through
   // promptOrQueueSteer.
-  async queueSteerAfterStop(text: string, opts: { attachments?: unknown[] } = {}): Promise<void> {
-    const entry: PendingSteer = { text, attachments: opts.attachments, resolve: () => {}, reject: () => {} };
+  async queueSteerAfterStop(text: string, opts: { attachments?: unknown[]; author?: PromptAuthor } = {}): Promise<void> {
+    const entry: PendingSteer = { text, attachments: opts.attachments, author: opts.author, resolve: () => {}, reject: () => {} };
     const p = new Promise<void>((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
     this._pendingSteers.push(entry);
     if (this.status !== 'turn') queueMicrotask(() => this._flushPendingSteers());
@@ -4368,7 +4381,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // nothing twice.
     const entries = this._pendingSteers.splice(0);
     const atts = entries.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
-    this.prompt(entries.map(e => e.text).join('\n\n'), atts, { midTurnNote: POST_STOP_STEER_NOTE }).then(
+    // One line, one marker: see combineAuthors.
+    const author = combineAuthors(entries.map(e => e.author));
+    this.prompt(entries.map(e => e.text).join('\n\n'), atts, { midTurnNote: POST_STOP_STEER_NOTE, author }).then(
       () => {
         for (const e of entries) e.resolve();
         // prompt() can return WITHOUT starting a turn (the overage queue
@@ -5205,6 +5220,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // idle hub so it rides the REQUESTING conductor's wake — see src/idleSubscriptions.ts.
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void {
     this._idleHub.noteRenewalDeclined(targetInstanceId, requestedBy);
+  }
+
+  // The human's prompts into this instance that the caller's next wake about it
+  // will report, quoted for a send-time result (src/promptAuthor.ts). Read-only:
+  // the wake still carries them.
+  pendingHumanPrompts(instanceId: string, callerInstanceId: string | null = null): string[] {
+    return quoteHumanPrompts(this._idleHub.peekHumanPrompts(instanceId, callerInstanceId));
   }
 
   setServerPort(port: number): void {

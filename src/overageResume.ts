@@ -18,6 +18,8 @@
 import { getAccountUsage } from './accountUsage.ts';
 import { usageOverThreshold } from './appSettings.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
+import { combineAuthors } from './promptAuthor.ts';
+import type { PromptAuthor } from '../shared/uiEvent.ts';
 import {
   AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT, QUEUED_ONLY_RESUME_TEXT, QUEUED_SECTION_LEAD,
 } from '../shared/injectedTurns.ts';
@@ -92,6 +94,7 @@ interface OverageQueueItem {
   text: string;
   attachments: unknown[];
   ts: number;
+  author?: PromptAuthor;
 }
 
 // Build the single prompt the resume delivers. With no queued messages it is just
@@ -362,7 +365,7 @@ export class OverageResumeController {
       // .finally(), which runs when the prompt resolves — hence always after the
       // _setStatus('turn') inside it, whichever way the interleaving fell.
       inst._overageResumeFiring = true;
-      inst.prompt(text, attachments, { internal: true })
+      inst.prompt(text, attachments, { internal: true, author: combineAuthors(queue.map(q => q.author)) })
         .catch(() => {})
         .finally(() => { inst._overageResumeFiring = false; });
     } else {

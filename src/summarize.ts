@@ -8,6 +8,7 @@ import { sessionFilePath, findSessionLocation, type TranscriptPlacement } from '
 import { runSessionOneShot, type OneShotUsage } from './sessionOneShot.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { httpError } from './httpError.ts';
+import { parseAuthorMarker } from './promptAuthor.ts';
 
 const LENGTH_INSTRUCTIONS: Record<'short' | 'medium' | 'long', { depth: string; budget: string; structure: string }> = {
   short: {
@@ -73,7 +74,8 @@ export async function flattenTranscript(sessionId: string, place: TranscriptPlac
       if (content.trim()) texts.push(content.trim());
     } else if (Array.isArray(content)) {
       for (const block of content as Array<{ type?: unknown; text?: unknown }>) {
-        if (block && block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        if (block && block.type === 'text' && typeof block.text === 'string' && block.text.trim()
+            && !parseAuthorMarker(block.text)) {
           texts.push(block.text.trim());
         }
       }

@@ -1,0 +1,839 @@
+{
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "$SID",
+      "cwd": "$CWD",
+      "model": "claude-sonnet-4-6",
+      "permissionMode": "$MODE",
+      "tools": [
+        "Bash"
+      ]
+    }
+  ],
+  "turns": [
+    {
+      "on": {
+        "type": "prompt",
+        "text": "COPEN"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_open",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "working"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt",
+        "text": "CSLOW"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_cslow",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "conductor busy"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ],
+      "delay_ms": 400
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c1",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 1"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c2",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 2"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c3",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 3"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c4",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 4"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c5",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 5"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c6",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 6"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c7",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 7"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c8",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 8"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c9",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 9"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c10",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 10"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c11",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 11"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_c12",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "noted 12"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_stop",
+            "index": 0
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_stop"
+          }
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 5,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    }
+  ]
+}

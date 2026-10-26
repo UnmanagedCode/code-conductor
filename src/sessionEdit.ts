@@ -28,6 +28,7 @@ import { sessionFilePath, writeFileAtomic, type TranscriptPlacement } from './pr
 import { isPureUserPromptLine, isResumableLine, replayPersistedLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import { extractAttachedMarkers, isLocalCommandCaveatLine, isOuterUserEcho, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
+import { parseAuthorMarker } from './promptAuthor.ts';
 
 // Parse one trimmed jsonl line, swallowing parse errors (mirrors the
 // tolerant behavior of loadPersistedTranscript).
@@ -58,6 +59,8 @@ function extractUserPromptText(obj: PersistedLine | null | undefined): string {
   const parts: string[] = [];
   for (const b of content as WireContentBlock[]) {
     if (!b || b.type !== 'text' || typeof b.text !== 'string') continue;
+    // The author marker (src/promptAuthor.ts) is bookkeeping, not prose.
+    if (parseAuthorMarker(b.text)) continue;
     // Strip attachment marker lines we wrote at send time so they don't
     // get prefilled back into the composer as visible prose.
     const { text: leftover } = extractAttachedMarkers(b.text);

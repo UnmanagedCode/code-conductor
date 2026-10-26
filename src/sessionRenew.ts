@@ -385,7 +385,9 @@ export class SessionRenewController {
     // A failure here leaves the context cleared with NO summary delivered — the
     // worst outcome in the whole flow, so it must never be swallowed.
     try {
-      await inst.prompt(seed, [], { internal: true });
+      // A conductor's followUp makes the seed carry the conductor's next task, so
+      // it is authored `conductor`; a self-renewal's seed has no author.
+      await inst.prompt(seed, [], { internal: true, author: p.opts.followUp ? 'conductor' : undefined });
     } catch (err) {
       inst._emitUi({
         kind: 'system', subtype: 'renew_error',

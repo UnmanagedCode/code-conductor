@@ -178,10 +178,15 @@ interface ToolResultEvent extends UiEventBase {
   agentTokens?: number;
   agentToolUses?: number | null;
 }
+// Who wrote a CONDUCTED worker's prompt (src/promptAuthor.ts). Absent on every
+// other echo, and on a conducted worker's unmarked line: unknown, never inferred.
+export type PromptAuthor = 'human' | 'conductor';
+
 interface UserEchoEvent extends UiEventBase {
   kind: 'user_echo';
   text: string;
   attachments?: UserEchoAttachment[];
+  author?: PromptAuthor;
   skillLoad?: { skill: string | null };
   cliInjected?: true;
   compactSummary?: true;

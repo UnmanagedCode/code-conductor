@@ -14,7 +14,9 @@
 //
 // Known limit: an MCP send into a non-worker (send_prompt, answer_question,
 // approve_plan, reject_plan) is byte-identical to the user's own and so reads as
-// real. Workers never carry the flag (Instance feeds nothing when conducted).
+// real — only a conducted worker's echo carries an `author`
+// (src/promptAuthor.ts). Workers never carry the flag (Instance feeds nothing
+// when conducted).
 
 import { isInjectedUserTurn } from '../shared/promptOrigin.ts';
 import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';

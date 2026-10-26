@@ -1781,7 +1781,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
           return;
         }
         const blocker = dirty.lines.length > 0 ? 'dirty' : 'conflict';
-        await inst.prompt(buildRebasePrompt(inst.worktree, blocker), [], { annotateIfMidTurn: false });
+        // A human clicked it: authored `human` (src/promptAuthor.ts).
+        await inst.prompt(buildRebasePrompt(inst.worktree, blocker), [], { annotateIfMidTurn: false, author: 'human' });
         res.json({ ok: true, action: 'rebase-prompt-sent', blocker });
       } catch (e) { next(e); }
     });
