@@ -67,6 +67,15 @@ Load both in the page's `<head>`:
   - **A legacy hash URL** (an old bookmark such as `#/card/42`): parse it once on load and `history.replaceState` it into the query form, so the document never keeps a hash.
 - Multi-page plugins bypass the bridge and pollute history.
 
+## Deep links
+
+- **`#plugin/<id>/<subpath>` is the stable deep-link form** a plugin or agent emits in transcript markdown. `<subpath>` is the page's route relative to the plugin root, as the bridge reports it (path + search + hash), e.g. `#plugin/code-review/?review=r-9&thread=t-7` or `#plugin/kanban/board/42`.
+- **Origin-relative: a bare hash, never absolute.** The user's browser may reach cc through a tunnel, a phone or a remote box, while the only origin an agent knows (`CONDUCTOR_URL`) is loopback. A bare hash resolves against whatever origin the user's page has.
+- **A transcript click opens it in the same tab** with one history entry; Back returns to the conversation. Ctrl/middle-click opens a new tab. A plugin whose page is already up (docked, or kept alive) is steered with `navigate` (arriving as `popstate`) without a reload, so read the route on `popstate`. A docked plugin opens full.
+- **The id needs no encoding** (a slug). The subpath is used verbatim, so percent-encode query values as the page's own parser expects.
+- **Rejected links render as literal `[label](#…)` text:** a plugin link whose frame URL would leave `/plugins/<id>/` (dot segments), and any other `#…` (`viewLinkHash`, `web/src/state/route.ts`).
+- `#settings[/<section>]` and `#costs` also open in-app. `#session=`, `#review` and `#commits` are not link targets.
+
 ## Session awareness (optional)
 
 An **optional host capability, not a contract requirement**: a plugin that ignores it is fully compliant, and it is not part of the contract checks.
