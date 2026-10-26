@@ -123,9 +123,12 @@ describe('first-send check', () => {
   it('Send to worker sends one prompt {id: W1.id, text} and acks; the next Enter sends at once; W2 still asks', () => {
     const m = mount(f.w1);
     typeAndEnter('first');
+    draftStore.save(f.w1.sessionId, { text: 'first', transcribed: false });
+    expect(draftStore.load(f.w1.sessionId)).toEqual({ text: 'first', transcribed: false });
     fireEvent.click(need(optionBtn(/^Send to worker$/)));
     expect(prompts()).toEqual([{ id: f.w1.id, text: 'first' }]);
     expect(box().value).toBe('');
+    expect(draftStore.load(f.w1.sessionId)).toBeFalsy();
     expect(choice()).toBeNull();
     expect(isWorkerSendAcked(f.w1.sessionId)).toBe(true);
     typeAndEnter('second');
@@ -155,6 +158,8 @@ describe('first-send check', () => {
     await waitFor(() => expect(document.querySelector('[aria-label="Remove note.txt"]')).not.toBeNull());
     await new Promise((r) => setTimeout(r, 20));
     typeAndEnter('redirect me');
+    draftStore.save(f.w1.sessionId, { text: 'redirect me', transcribed: false });
+    expect(draftStore.load(f.w1.sessionId)).toEqual({ text: 'redirect me', transcribed: false });
     fireEvent.click(need(optionBtn(/^Send to conductor$/)));
     expect(prompts()).toEqual([{ id: f.c1.id, text: 'redirect me', attachments: [{ name: 'note.txt', mediaType: 'text/plain', dataBase64: btoa('hi') }] }]);
     expect(box().value).toBe('');
