@@ -230,7 +230,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   function submit() {
     if (!inst || !canSend || !buildBody()) return;
     // A conducted worker's first send from here asks whether the text was meant for its owner.
-    if (owner.kind === 'owned' && inst.sessionId && !isWorkerSendAcked(inst.sessionId)) { setChoice(true); return; }
+    if (owner.kind === 'owned' && inst.sessionId && !isWorkerSendAcked(inst.sessionId)) { setChoice(true); taRef.current?.focus(); return; }
     deliver(inst);
   }
 

@@ -263,6 +263,20 @@ describe('first-send check', () => {
     expect(prompts()).toEqual([]);
   });
 
+  it('opening the choice from the Send button puts focus in the box, so Escape there dismisses it with the text kept', () => {
+    mount(f.w1);
+    type('via send');
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    fireEvent.click(send);
+    expect(choice()).not.toBeNull();
+    expect(document.activeElement).toBe(box());
+    fireEvent.keyDown(box(), { key: 'Escape' });
+    expect(choice()).toBeNull();
+    expect(box().value).toBe('via send');
+    expect(prompts()).toEqual([]);
+  });
+
   it('the choice offers exactly Send to worker and Send to conductor, and no Keep editing', () => {
     mount(f.w1);
     typeAndEnter('x');
