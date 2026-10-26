@@ -117,9 +117,9 @@ const tickTokens = (v: number) => (v === 0 ? '0' : fmtNum(v).replace(/\.0(?=[kMB
 
 const COST_SERIES: BarSeries<DayRow>[] = [{ label: 'Spend', color: 'var(--primary)', value: (d) => d.cost_usd }];
 const TOKEN_SERIES: BarSeries<DayRow>[] = [
-  { label: 'Output', color: 'var(--primary)', value: (d) => d.output_tokens },
-  { label: 'Input', color: 'var(--info)', value: (d) => d.input_tokens, estimated: (d) => d.tokens_estimated },
   { label: 'Cache input', color: 'var(--plan)', value: cacheInput, estimated: (d) => d.tokens_estimated },
+  { label: 'Input', color: 'var(--info)', value: (d) => d.input_tokens, estimated: (d) => d.tokens_estimated },
+  { label: 'Output', color: 'var(--primary)', value: (d) => d.output_tokens },
 ];
 
 export type BarSeries<D> = { label: string; color: string; value: (d: D) => number; estimated?: (d: D) => boolean };
