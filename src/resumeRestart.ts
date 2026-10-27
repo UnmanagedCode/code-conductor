@@ -415,7 +415,13 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // No await separates this check from create()'s synchronous guards, so a
       // resume still in flight is coalesced there rather than refused.
       const attached = instances.liveForSession(e.sessionId);
-      if (attached) log.log?.(`resume-restart: ${e.sessionId} was already attached; delivering its restart prompt there`);
+      if (attached) {
+        log.log?.(`resume-restart: ${e.sessionId} was already attached; delivering its restart prompt there`);
+        // The browser created it with the defaults; carry over what is runtime-
+        // settable, as the create() below would. `debug` is launch-time only.
+        attached.setPlaybookEnforcement(normalizePlaybookEnforcement(e.playbookEnforcement));
+        attached.setAutoApprovePlan(!!e.autoApprovePlan);
+      }
       const inst = attached ?? await instances.create({
         project: e.project,
         resume: e.sessionId,
