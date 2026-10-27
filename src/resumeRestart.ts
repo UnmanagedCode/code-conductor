@@ -87,6 +87,19 @@ export function buildWorkersResumeText(rootSessionId: string, workers: WorkerRow
   );
 }
 
+// Appended to a restart notice when background work died with the restart.
+export function backgroundWorkLostNote(rootSessionId: string, sessionIds: string[]): string {
+  const who = sessionIds.map((s) => s === rootSessionId ? 'you' : `\`${s}\``).join(', ');
+  return `Background work — background Bash runs, Monitors or background subagents — was still running in ${who}. ` +
+    'The restart killed it, and no completion notice or wake will come for it: re-check what it was doing and re-dispatch what is still needed.';
+}
+
+// The restart notice a busy top-level session is prompted with.
+function restartNoticeFor(e: ResumeEntry): string {
+  const text = e.workers?.length ? buildWorkersResumeText(e.sessionId, e.workers) : RESUME_TEXT;
+  return e.backgroundWorkLost?.length ? `${text}\n\n${backgroundWorkLostNote(e.sessionId, e.backgroundWorkLost)}` : text;
+}
+
 // --- Phase 1+2: drain + restart (old process) ----------------------------
 
 // Classify a live instance into a resume group.
@@ -94,6 +107,14 @@ function groupOf(inst: InstanceLike): 'worker' | 'conductor' | 'other' {
   if (inst.conducted) return 'worker';
   if (isConductorInstance(inst)) return 'conductor';
   return 'other';
+}
+
+// Background work lives only in the CLI process: background Bash runs and
+// Monitors (`backgroundJobs` — the CLI reports a Monitor as `local_bash`) and
+// background subagents (`activeAgentTaskCount`). Shutdown kills it, and no
+// completion notice or wake follows.
+function holdsBackgroundWork(i: InstanceLike | null): boolean {
+  return !!i && (i.backgroundJobs.length > 0 || i.activeAgentTaskCount > 0);
 }
 
 // Resolve once every live instance has left `turn` (idle/exited/crashed), or on
@@ -162,7 +183,9 @@ export async function drainToIdle({ instances, log = console, graceMs = RESUME_D
   // consumed but not yet sent, or held for a mid-turn recipient (`_inFlight` /
   // `_deferredWakes` in the idle hub). Such a conductor has
   // durable re-conduct work (re-spawn workers, re-drive them) even
-  // though it's idle, so it must still receive its restart prompt.
+  // though it's idle, so it must still receive its restart prompt. A restart
+  // widens this for top-level sessions whose background work it kills — in
+  // finishDrain, since an aborted restart kills none.
   const busyAtDrain = new Set(
     live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.id)).map((i) => i.id),
   );
@@ -228,6 +251,13 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
     if (inst.pristine) continue;
     const s = inst.summary();
     const group = groupOf(inst);
+    const workers = subtreeOf.get(inst.id) ?? [];
+    // Background work about to die in step 5, held by a top-level session itself
+    // or anywhere in its spawn subtree. Conducted sessions are left to their chain.
+    const lost = group === 'worker' ? [] : [
+      ...(holdsBackgroundWork(inst) ? [inst.sessionId] : []),
+      ...workers.filter((w) => holdsBackgroundWork(instances.liveForSession(w.sessionId))).map((w) => w.sessionId),
+    ];
     // summary() is the loosely-typed InstanceSummary (index signature), so each
     // field the manifest carries is narrowed here at point of use — the values
     // are app-authored and well-formed.
@@ -260,7 +290,7 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
       // exactly the invisible drift playbooks exist to catch.
       playbookEnforcement: normalizePlaybookEnforcement(s.playbookEnforcement),
       group,
-      wasBusy: busyAtDrain.has(inst.id),
+      wasBusy: busyAtDrain.has(inst.id) || lost.length > 0,
       // Pending overage auto-resume (in-memory-only until now). `autoResumeAt`
       // is the already-computed fire DEADLINE (epoch secs = resetsAt+buffer),
       // present iff a resume was armed; `overageStopped` is the stop-resume
@@ -295,8 +325,8 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
       // they still flush with the resume once the deadline fires.
       overageQueue: Array.isArray(inst._overageQueue) ? inst._overageQueue : [],
     };
-    const workers = subtreeOf.get(inst.id) ?? [];
     if (workers.length) entry.workers = workers;
+    if (lost.length) entry.backgroundWorkLost = lost;
     entries.push(entry);
   }
   try { writeResumeManifest(entries); }
@@ -379,7 +409,24 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
     if (!first) await sleep(staggerMs);
     first = false;
     try {
-      const inst = await instances.create({
+      // The browser's anchor auto-resume can attach a carried-over session before
+      // the staggered restore reaches it. Adopt that instance so the session still
+      // gets its restart prompt; this loop is its only sender, so it arrives once.
+      // No await separates this check from create()'s synchronous guards, so a
+      // resume still in flight is coalesced there rather than refused.
+      const attached = instances.liveForSession(e.sessionId);
+      if (attached) {
+        log.log?.(`resume-restart: ${e.sessionId} was already attached; delivering its restart prompt there`);
+        // The browser created it with the defaults; bring it to what the create()
+        // below would have set. Debug has no runtime disable, so it is only raised.
+        attached.setPlaybookEnforcement(normalizePlaybookEnforcement(e.playbookEnforcement));
+        attached.setAutoApprovePlan(!!e.autoApprovePlan);
+        if (e.debug) {
+          const r = attached.enableDebug();
+          if (!r.ok) log.warn?.(`resume-restart: ${e.sessionId}: enabling debug failed: ${r.reason}`);
+        }
+      }
+      const inst = attached ?? await instances.create({
         project: e.project,
         resume: e.sessionId,
         mode: e.mode,
@@ -440,7 +487,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         try { instances._armRestoredAutoResume(inst, (e.overageResumeAt ?? 0) * 1000); }
         catch (err) { log.warn?.('resume-restart: overage re-arm failed', errMsg(err)); }
       }
-      // Only re-prompt sessions that were mid-turn when the drain began.
+      // Only re-prompt sessions that had work in flight at the drain (wasBusy).
       // Idle sessions are resurrected silently — they have nothing to resume.
       // Skip overage-stopped sessions: the sweep delivers the resume preamble their
       // restored selectors resolve to (overageResumeKind — an idle-parked entry gets
@@ -449,8 +496,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // is not skipped: it falls back to the ordinary restart path, which is exactly
       // what a plain-`stop` session gets.
       if (e.wasBusy !== false && !honourMark) {
-        const text = e.workers?.length ? buildWorkersResumeText(e.sessionId, e.workers) : RESUME_TEXT;
-        try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
+        try { await inst.prompt(restartNoticeFor(e)); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
       }
       restored++;
     } catch (err) {
@@ -492,6 +538,10 @@ interface ResumeEntry {
   overageResetsAt: number | null;
   overageQueue: unknown[];
   workers?: Array<{ project: string; sessionId: string; worktreeName: string | null; parentSessionId?: string | null }>;
+  // Sessions (the root's own included) whose background work was live when the
+  // manifest was written; present only when non-empty. ADDITIVE — absent on a
+  // pre-upgrade manifest, which reads as "none lost".
+  backgroundWorkLost?: string[];
 }
 
 interface RestartLog {

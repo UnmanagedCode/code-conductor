@@ -52,6 +52,7 @@ function liveInstance(order, { id, status, conducted = false, project = 'p' }) {
   const listeners = new Set();
   const inst = {
     id, sessionId: `${id}-session`, project, proc: {}, status, conducted, prompts: [],
+    backgroundJobs: [], activeAgentTaskCount: 0,
     on(_ev, fn) { listeners.add(fn); },
     off(_ev, fn) { listeners.delete(fn); },
     async interrupt() {

@@ -275,6 +275,7 @@ Observed on CLI 2.1.286 (fixture: `tests/fixtures/bg-bash-jobs.stdout.jsonl`):
 | Agent + Bash | one snapshot lists both (`local_agent` + `local_bash`); an Agent's completion drops only it |
 | a subagent's own bg Bash | listed (`task_started.owned_by_subagent:true`); outlives the Agent task, re-invokes the subagent on exit |
 | a subagent's foreground Bash | `task_started` `is_backgrounded:false`, never in a snapshot |
+| `Monitor` (observed on CLI 2.1.302) | listed in the snapshot and `task_started` {`task_type:'local_bash'`, `is_backgrounded:true`}, keyed by the Monitor's `tool_use_id`, like a bg Bash; ends with `task_notification` summary `Monitor "X" stream ended` — so it is tracked as a background job |
 
 - **Tracking.** `Instance._backgroundJobs` (task_id → `{title, startedAt}`), folded by `reconcileBackgroundJobs` (`src/backgroundJobs.ts`) from each snapshot's `local_bash` entries only. `title` = `trunc(description, JOB_TITLE_MAX)` (whitespace collapsed); `startedAt` = cc's clock (epoch ms) when the id first appears; a non-array `tasks` is ignored. Emits `status` only when membership changes. Reset in `spawn()`; cleared in `_handleExit` **before** the exit's own status change (a SIGKILLed CLI sends no empty snapshot).
 - **`summary().backgroundJobs`** — `[{title, startedAt}]`, in every summary surface, including the MCP conductor view (`CONDUCTOR_VIEW_KEYS`). Display-only: never read by `IdleSubscriptionHub` holding (`_targetDefers`, `_waitsOnWork`) or `isCaller`.

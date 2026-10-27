@@ -16,9 +16,12 @@ import {
   clearResumeManifest,
 } from '../src/resumeManifest.ts';
 import {
+  drainToIdle,
+  finishDrain,
   drainToManifest,
   restoreFromResumeManifest,
   buildWorkersResumeText,
+  backgroundWorkLostNote,
   RESUME_TEXT,
 } from '../src/resumeRestart.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
@@ -35,6 +38,11 @@ const NO_TURN = path.join(__dirname, 'fixtures', 'scenario-no-turn.json');
 // its control:interrupt turn answers the drain's soft interrupt with a result so
 // drainToManifest's wait-without-forcing loop can converge.
 const DRAIN = path.join(__dirname, 'fixtures', 'scenario-drain.json');
+// A worker whose first turn starts a background Bash job and ends with it still
+// running (the job stays listed until a `cc_test_job_exit` control request).
+const BG_JOB = path.join(__dirname, 'fixtures', 'scenario-bg-bash-job.json');
+// A turn that starts a background subagent (`local_agent`) which never completes.
+const BG_AGENT = path.join(__dirname, 'fixtures', 'scenario-bg-task-hang.json');
 
 let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
 
@@ -925,6 +933,375 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
     await fs.rm(transcript, { force: true });
+  }
+});
+
+// --- 12. background work dies with the restart -------------------------------
+// A worker that ends its turn with a background job still running wakes its owner
+// (a job does not hold the wake), so the owner reads idle with nothing armed. The
+// restart kills the job, so the top-level session above it must still be prompted
+// and told — and a conducted session never is.
+
+// Spawn under BG_JOB. The fake reads the scenario at spawn, so the env is
+// restored as soon as the session is up.
+async function createWithScenario(scenario, opts) {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = scenario;
+  try {
+    const inst = await instances.create(opts);
+    await waitFor(() => inst.sessionId);
+    return inst;
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+}
+
+// Run the worker's job-starting turn; its turn start arms the owner by spawn
+// ownership, and its turn end wakes it.
+async function startBackgroundJob(w) {
+  await w.prompt('go');
+  await waitFor(() => w.status === 'idle' && w.backgroundJobs.length === 1);
+}
+
+const userEchoes = (inst) => inst.ring.toArray().filter(e => e.kind === 'user_echo');
+
+test('drainToManifest: an idle conductor whose worker holds a live background job is wasBusy:true and lists the job\'s session; an idle conductor with only idle workers stays silent', async () => {
+  await ensureConductProject();
+  await api(baseUrl, 'POST', '/api/projects', { name: 'bgproj' });
+
+  const T = await instances.create({ project: CONDUCT_PROJECT_NAME });
+  const U = await instances.create({ project: CONDUCT_PROJECT_NAME });
+  await waitFor(() => T.sessionId && U.sessionId);
+  const W = await createWithScenario(BG_JOB, { project: 'bgproj', callerInstanceId: T.id, conducted: true });
+  const V = await instances.create({ project: 'bgproj', callerInstanceId: U.id, conducted: true });
+  await waitFor(() => V.sessionId);
+
+  await startBackgroundJob(W);
+  // The wake was delivered (a job does not hold it): T took its turn and is idle
+  // with nothing armed.
+  await waitFor(() => userEchoes(T).length >= 1);
+  await waitFor(() => [T, U, W, V].every(i => i.status === 'idle') && !instances.isIdleCaller(T.id));
+  assert.equal(instances.isIdleCaller(T.id), false, 'premise: T waits on no wake');
+  assert.equal(instances.list().find(r => r.id === T.id)?.waitingOnJob, true, 'premise: T waits on its worker\'s job');
+  assert.equal(W.backgroundJobs.length, 1, 'premise: W holds one job');
+  assert.equal(instances.isIdleCaller(U.id), false, 'premise: U owns only an idle worker');
+
+  try {
+    const entries = await drainToManifest({ instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    const byId = Object.fromEntries(entries.map(e => [e.sessionId, e]));
+    assert.equal(byId[T.sessionId].wasBusy, true, 'the job dies with the restart, so T has work in flight');
+    assert.deepEqual(byId[T.sessionId].backgroundWorkLost, [W.sessionId], 'T is told whose job died');
+    assert.equal(byId[U.sessionId].wasBusy, false, 'an idle conductor owning only idle workers stays silent');
+    assert.equal('backgroundWorkLost' in byId[U.sessionId], false, 'and carries no lost-work list');
+  } finally {
+    clearResumeManifest();
+  }
+});
+
+test('restoreFromResumeManifest tells a root its background work died with the restart', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-bglost-${randomUUID()}.log`);
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'bglost' });
+    const cSid = randomUUID();
+    const pSid = randomUUID();
+    const wSid = randomUUID();
+    const conductCwd = path.join(projectsRoot, '.conduct');
+    const otherCwd = path.join(projectsRoot, 'bglost');
+    for (const [cwd, sid] of [[conductCwd, cSid], [otherCwd, pSid]]) {
+      const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    }
+    const workers = [{ project: 'bglost', sessionId: wSid, worktreeName: null, parentSessionId: cSid }];
+    const base = { mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, wasBusy: true };
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    writeResumeManifest([
+      { ...base, project: '.conduct', sessionId: cSid, cwd: conductCwd, group: 'conductor', workers, backgroundWorkLost: [wSid] },
+      { ...base, project: 'bglost', sessionId: pSid, cwd: otherCwd, group: 'other', backgroundWorkLost: [pSid] },
+    ]);
+
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 2);
+
+    const echoes = (sid) => userEchoes(instances.liveForSession(sid)).map(e => String(e.text ?? ''))
+      .filter(t => t.startsWith(RESUME_TEXT.slice(0, 40)));
+    await waitFor(() => [cSid, pSid].every(sid => echoes(sid).length === 1));
+    const [cText] = echoes(cSid);
+    const [pText] = echoes(pSid);
+    assert.notEqual(cText, buildWorkersResumeText(cSid, workers), 'the conductor is told more than its subtree');
+    assert.notEqual(pText, RESUME_TEXT, 'the plain root is told more than the bare notice');
+    assert.equal(cText, `${buildWorkersResumeText(cSid, workers)}\n\n${backgroundWorkLostNote(cSid, [wSid])}`);
+    assert.equal(pText, `${RESUME_TEXT}\n\n${backgroundWorkLostNote(pSid, [pSid])}`);
+    assert.ok(backgroundWorkLostNote(pSid, [pSid]).includes(' you'), 'the root\'s own work reads as "you"');
+    assert.ok(!backgroundWorkLostNote(pSid, [pSid]).includes(pSid), 'not as its own id');
+    assert.ok(backgroundWorkLostNote(cSid, [wSid]).includes(`\`${wSid}\``), 'a worker is named by its sessionId');
+  } finally {
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+    await fs.rm(transcript, { force: true });
+    clearResumeManifest();
+  }
+});
+
+test('drainToManifest: background work under a conducted session marks only the top-level root above it', async () => {
+  await ensureConductProject();
+  await api(baseUrl, 'POST', '/api/projects', { name: 'bgchain' });
+
+  // T2 → L (a section lead) → W; O (conducted, owner unknown) → W2.
+  const T2 = await instances.create({ project: CONDUCT_PROJECT_NAME });
+  await waitFor(() => T2.sessionId);
+  const L = await instances.create({ project: CONDUCT_PROJECT_NAME, conducted: true, callerInstanceId: T2.id });
+  const O = await instances.create({ project: 'bgchain', conducted: true, callerInstanceId: null });
+  await waitFor(() => L.sessionId && O.sessionId);
+  const W = await createWithScenario(BG_JOB, { project: 'bgchain', callerInstanceId: L.id, conducted: true });
+  const W2 = await createWithScenario(BG_JOB, { project: 'bgchain', callerInstanceId: O.id, conducted: true });
+
+  await startBackgroundJob(W);
+  await startBackgroundJob(W2);
+  // Each wake ran: L woke on W, T2 on L, O on W2.
+  await waitFor(() => [L, T2, O].every(i => userEchoes(i).length >= 1));
+  const all = [T2, L, O, W, W2];
+  await waitFor(() => all.every(i => i.status === 'idle') && all.every(i => !instances.isIdleCaller(i.id)));
+  assert.equal(W.backgroundJobs.length + W2.backgroundJobs.length, 2, 'premise: both jobs still run');
+
+  try {
+    const entries = await drainToManifest({ instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    const byId = Object.fromEntries(entries.map(e => [e.sessionId, e]));
+    assert.equal(byId[T2.sessionId].wasBusy, true, 'the top-level root above the job is prompted');
+    assert.deepEqual(byId[T2.sessionId].backgroundWorkLost, [W.sessionId]);
+    for (const [name, inst] of [['the section lead', L], ['the unknown-owner session', O]]) {
+      const e = byId[inst.sessionId];
+      assert.equal(e.group, 'worker', `${name} is a worker entry`);
+      assert.equal(e.wasBusy, false, `${name} is not newly prompted`);
+      assert.equal('backgroundWorkLost' in e, false, `${name} carries no lost-work list`);
+      assert.equal('workers' in e, false, `${name} carries no subtree`);
+    }
+    assert.deepEqual(entries.filter(e => 'backgroundWorkLost' in e).map(e => e.sessionId), [T2.sessionId],
+      'only the top-level root carries a lost-work list');
+  } finally {
+    clearResumeManifest();
+  }
+});
+
+test('restoreFromResumeManifest delivers the restart prompt exactly once to a session the browser auto-resume already attached', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-attached-${randomUUID()}.log`);
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'attached' });
+    const aSid = randomUUID();
+    const bSid = randomUUID();
+    const cwd = path.join(projectsRoot, 'attached');
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    for (const sid of [aSid, bSid]) await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    const base = { project: 'attached', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other', wasBusy: true };
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    // B first, so the restore reaches it while the browser's resume is in flight.
+    writeResumeManifest([{ ...base, sessionId: bSid }, { ...base, sessionId: aSid }]);
+
+    // A: the browser's anchor auto-resume finished before the restore began.
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'attached', resume: aSid });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const browserA = instances.get(res.body.id);
+    await waitFor(() => browserA.status === 'idle');
+    // B: the browser's resume is in flight when the restore reaches it.
+    const browserB = instances.create({ project: 'attached', resume: bSid });
+    // Record, at the restore's own create() call for B, that B was not yet
+    // attached and that create() handed back the browser's in-flight promise.
+    const restoreCreates = [];
+    instances.create = (opts) => {
+      const unattached = instances.liveForSession(opts.resume) === null;
+      const p = Object.getPrototypeOf(instances).create.call(instances, opts);
+      restoreCreates.push({ resume: opts.resume, unattached, coalesced: p === browserB });
+      return p;
+    };
+
+    const warns = [];
+    let restored;
+    try {
+      ({ restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn: (...a) => warns.push(a.join(' ')) }, staggerMs: 0 }));
+    } finally {
+      delete instances.create;
+    }
+    const instB = await browserB;
+    assert.deepEqual(restoreCreates, [{ resume: bSid, unattached: true, coalesced: true }],
+      'the restore created only B, while the browser\'s resume of it was still in flight, and coalesced onto it; A was adopted');
+    assert.equal(restored, 2, warns.join('\n'));
+    assert.deepEqual(warns.filter(w => w.includes('failed to resume')), []);
+    assert.equal(instances.liveForSession(aSid), browserA, 'A kept the browser\'s instance');
+    assert.equal(instances.liveForSession(bSid), instB, 'B coalesced onto the browser\'s resume');
+
+    const SNIPPET = RESUME_TEXT.slice(0, 40);
+    const echoes = (inst) => userEchoes(inst).filter(e => String(e.text ?? '').includes(SNIPPET));
+    await waitFor(() => echoes(browserA).length === 1 && echoes(instB).length === 1, { timeout: 5000 });
+    await new Promise(r => setTimeout(r, 300));
+    for (const [name, sid, inst] of [['A', aSid, browserA], ['B', bSid, instB]]) {
+      assert.equal([...instances.byId.values()].filter(i => i.proc && i.sessionId === sid).length, 1, `${name}: one live instance`);
+      assert.deepEqual(echoes(inst).map(e => e.text), [RESUME_TEXT], `${name}: exactly one restart prompt`);
+    }
+    const dump = await fs.readFile(transcript, 'utf8');
+    const onWire = (dump.match(new RegExp(SNIPPET.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    assert.equal(onWire, 2, 'two restart prompts on the wire overall');
+  } finally {
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+    await fs.rm(transcript, { force: true });
+    clearResumeManifest();
+  }
+});
+
+// Attach a `.conduct` session the way the browser's anchor auto-resume does, let
+// `prepare` set the state it came up with, then restore a manifest entry
+// carrying `fields` for it. Returns the browser's instance after the restore.
+async function adoptConductorWith(fields, prepare) {
+  await ensureConductProject();
+  const sid = randomUUID();
+  const cwd = path.join(projectsRoot, '.conduct');
+  const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  writeResumeManifest([{
+    project: CONDUCT_PROJECT_NAME, sessionId: sid, cwd, mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
+    worktreeName: null, temp: false, conducted: false, title: null, group: 'conductor', wasBusy: true, ...fields,
+  }]);
+  try {
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: CONDUCT_PROJECT_NAME, resume: sid });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const browser = instances.get(res.body.id);
+    await waitFor(() => browser.status === 'idle');
+    prepare(browser);
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 1);
+    assert.equal(instances.liveForSession(sid), browser, 'the browser\'s instance was adopted');
+    return browser;
+  } finally {
+    clearResumeManifest();
+  }
+}
+
+// Invariant: an adopted instance is RAISED to the manifest's playbook
+// enforcement, autoApprovePlan and debug, from the defaults the browser's resume
+// created it with.
+test('restoreFromResumeManifest raises a session the browser already attached to the entry\'s playbookEnforcement, autoApprovePlan and debug', async () => {
+  await setDefaultPlaybookEnforcement('warn');
+  const browser = await adoptConductorWith({ playbookEnforcement: 'enforce', autoApprovePlan: true, debug: true }, (b) => {
+    assert.deepEqual([b.playbookEnforcement, b.autoApprovePlan, b.debug], ['warn', false, false],
+      'premise: the browser\'s resume came up at the defaults');
+  });
+  assert.equal(browser.playbookEnforcement, 'enforce', 'the manifest\'s enforcement applies');
+  assert.equal(browser.autoApprovePlan, true, 'the manifest\'s autoApprovePlan applies');
+  assert.equal(browser.debug, true, 'the manifest\'s debug applies');
+  assert.ok(browser.debugDir, 'with its mirrors open');
+});
+
+// Invariant: an adopted instance is LOWERED to the manifest's values, the
+// retired `off` normalises to `warn` exactly as the create() path reads it, and
+// an entry with debug off leaves debug capture off.
+test('restoreFromResumeManifest lowers a session the browser already attached to the entry\'s values, normalising a retired `off`', async () => {
+  const browser = await adoptConductorWith({ playbookEnforcement: 'off', autoApprovePlan: false, debug: false }, (b) => {
+    b.setPlaybookEnforcement('enforce');
+    b.setAutoApprovePlan(true);
+    assert.deepEqual([b.playbookEnforcement, b.autoApprovePlan], ['enforce', true], 'premise: the browser\'s instance is at enforce/true');
+    assert.deepEqual([b.debug, b.debugDir], [false, null], 'premise: the browser\'s instance has debug off');
+  });
+  assert.equal(browser.playbookEnforcement, 'warn', '`off` normalises to warn and lowers enforce');
+  assert.equal(browser.autoApprovePlan, false, 'autoApprovePlan is lowered');
+  assert.deepEqual([browser.debug, browser.debugDir], [false, null], 'an entry without debug does not turn it on');
+});
+
+// Invariant: a top-level session's OWN live background job counts — it is
+// listed first, ahead of its subtree's — and the restored notice names it "you".
+test('drainToManifest: a root holding its own background job and a worker holding one lists both, the root first, and the restored notice reads "you"', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-ownbg-${randomUUID()}.log`);
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'ownbg' });
+    const R = await createWithScenario(BG_JOB, { project: 'ownbg' });
+    const W = await createWithScenario(BG_JOB, { project: 'ownbg', callerInstanceId: R.id, conducted: true });
+    // W's turn ends with a job and wakes R; R's wake turn starts R's own job.
+    await startBackgroundJob(W);
+    await waitFor(() => R.status === 'idle' && R.backgroundJobs.length === 1 && !instances.isIdleCaller(R.id));
+    assert.equal(W.backgroundJobs.length, 1, 'premise: W still holds its job');
+
+    const entries = await drainToManifest({ instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    const entry = entries.find(e => e.sessionId === R.sessionId);
+    assert.equal(entry.wasBusy, true);
+    assert.deepEqual(entry.backgroundWorkLost, [R.sessionId, W.sessionId]);
+
+    await waitFor(() => R.proc === null && W.proc === null, { timeout: 20000 });
+    const dir = path.join(claudeProjectsRoot, encodeCwd(R.cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${R.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 1, 'only the root is resumed');
+    const echoes = () => userEchoes(instances.liveForSession(R.sessionId)).map(e => String(e.text ?? ''))
+      .filter(t => t.startsWith(RESUME_TEXT.slice(0, 40)));
+    await waitFor(() => echoes().length === 1);
+    const [text] = echoes();
+    assert.ok(text.includes(`was still running in you, \`${W.sessionId}\`.`), text);
+    assert.equal(text, `${buildWorkersResumeText(R.sessionId, entry.workers)}\n\n${backgroundWorkLostNote(R.sessionId, [R.sessionId, W.sessionId])}`);
+  } finally {
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+    await fs.rm(transcript, { force: true });
+    clearResumeManifest();
+  }
+});
+
+// Invariant: a live background subagent alone (no Bash job) is background work
+// the restart kills, so the root above it lists that session.
+test('drainToManifest: a worker ending its turn with a live background subagent and no job marks its root', async () => {
+  await ensureConductProject();
+  await api(baseUrl, 'POST', '/api/projects', { name: 'bgagent' });
+  const T = await instances.create({ project: CONDUCT_PROJECT_NAME });
+  await waitFor(() => T.sessionId);
+  const W = await createWithScenario(BG_AGENT, { project: 'bgagent', callerInstanceId: T.id, conducted: true });
+  await W.prompt('go');
+  await waitFor(() => W.status === 'idle' && W.activeAgentTaskCount === 1);
+  assert.equal(W.backgroundJobs.length, 0, 'premise: no background Bash job');
+
+  try {
+    const entries = await drainToManifest({ instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    const entry = entries.find(e => e.sessionId === T.sessionId);
+    assert.equal(entry.wasBusy, true);
+    assert.deepEqual(entry.backgroundWorkLost, [W.sessionId]);
+  } finally {
+    clearResumeManifest();
+  }
+});
+
+// Invariant: a subtree row whose session is no longer live by the time
+// finishDrain runs is skipped, not dereferenced, and is not listed as lost.
+test('finishDrain skips a subtree worker that is gone by the time it runs', async () => {
+  await ensureConductProject();
+  await api(baseUrl, 'POST', '/api/projects', { name: 'bggone' });
+  const T = await instances.create({ project: CONDUCT_PROJECT_NAME });
+  await waitFor(() => T.sessionId);
+  const W = await createWithScenario(BG_JOB, { project: 'bggone', callerInstanceId: T.id, conducted: true });
+  await startBackgroundJob(W);
+  await waitFor(() => userEchoes(T).length >= 1 && T.status === 'idle' && !instances.isIdleCaller(T.id));
+
+  const log = { warn() {}, log() {}, error() {} };
+  const state = await drainToIdle({ instances, log, graceMs: 200 });
+  assert.deepEqual(state.subtreeOf.get(T.id).map(r => r.sessionId), [W.sessionId], 'premise: W is in the snapshot');
+  await W.kill({ graceMs: 50 });
+  await waitFor(() => W.proc === null);
+  assert.equal(instances.liveForSession(W.sessionId), null, 'premise: W is gone');
+
+  try {
+    const entries = finishDrain({ instances, log }, state);
+    const entry = entries.find(e => e.sessionId === T.sessionId);
+    assert.equal('backgroundWorkLost' in entry, false, 'a gone worker is not listed');
+    assert.equal(entry.wasBusy, false);
+    assert.deepEqual(entry.workers.map(r => r.sessionId), [W.sessionId], 'its subtree row is still carried');
+  } finally {
+    clearResumeManifest();
   }
 });
 

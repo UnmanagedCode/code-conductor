@@ -28,7 +28,8 @@ export interface BackgroundJob {
 export const JOB_TITLE_MAX = 100;
 
 // Fold one snapshot's `tasks` into the tracked jobs. Only `local_bash` entries
-// count (Agent and Monitor tasks have their own lifecycle). An id already
+// count — which includes Monitors, which the CLI reports as `local_bash`;
+// background Agent tasks (`local_agent`) have their own lifecycle. An id already
 // tracked keeps its entry, so `startedAt` survives later snapshots. Returns
 // null when membership is unchanged — or the frame is malformed — so the caller
 // emits nothing.
