@@ -241,6 +241,45 @@ export async function fullExitFlow({ page, cc }: Args): Promise<void> {
   await expectHidden(page, 'Back after a switch in full');
 }
 
+/** Injects `<a target="_top">` to cc's own page at `#plugin/<id>/inner` into `from`'s page and clicks it with the real mouse. */
+async function clickTopLink(page: Page, from: ProbePlugin, to: ProbePlugin) {
+  const base = await page.evaluate(() => location.pathname + location.search);
+  const frame = probeFrame(page, from.id)!;
+  await frame.evaluate(([href]) => {
+    const a = document.createElement('a');
+    a.id = 'cc-top-link';
+    a.target = '_top';
+    a.href = href;
+    a.textContent = 'go';
+    a.style.cssText = 'position:fixed;top:40px;left:20px;z-index:9;padding:8px;background:#fff';
+    document.body.appendChild(a);
+  }, [`${base}#plugin/${to.id}/inner`]);
+  await frame.locator('#cc-top-link').click();
+}
+
+export async function pluginLinkFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: a `target="_top"` link in a docked plugin's page to a `#plugin/` hash of cc is caught by the bridge and shown in the dock, so the top frame's URL and history never change (a real browser's preventDefault, which happy-dom cannot model); from the full view it is the browser's own navigation.
+  desktopOnly();
+  await onSession(page, cc, 'link');
+  await dockSplit(page, PLAIN);
+  await loaded(page, PLAIN.id, 'docked');
+  const entries = await historyLength(page);
+  await clickTopLink(page, PLAIN, KEEP);
+  await expect.poll(async () => (await storedDock(page))?.id, { message: 'the dock switched to the link\'s plugin' }).toBe(KEEP.id);
+  await expect(page).toHaveURL(/#session=/);
+  expect(await historyLength(page), 'a link shown in the dock costs no entry').toBe(entries);
+  await expectSplit(page, 'after the link');
+  expect(await storedDock(page)).toMatchObject({ id: KEEP.id, subpath: '/inner' });
+  await loaded(page, KEEP.id, 'the linked plugin');
+  expect(framePath(page, KEEP.id)).toBe(`/plugins/${KEEP.id}/inner`);
+
+  await toggle(page, 'Expand to full view').click();
+  await expect(page).toHaveURL(new RegExp(`#plugin/${KEEP.id}/inner$`));
+  await loaded(page, KEEP.id, 'full view');
+  await clickTopLink(page, KEEP, PLAIN);
+  await expect(page, 'from the full view the link navigates as the browser does').toHaveURL(new RegExp(`#plugin/${PLAIN.id}/inner$`));
+}
+
 export async function dragClampFlow({ page, cc }: Args): Promise<void> {
   // Invariant (F8): a drag keeps working while the pointer crosses the plugin's iframe (pointer capture carries it in Chromium; this does not show the body[data-resizing] rule is needed), stops at DOCK_PANEL_MIN_WIDTH and at the transcript limit without leaving split, and a double-click resets the default width.
   desktopOnly();

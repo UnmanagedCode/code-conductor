@@ -18,7 +18,7 @@ import { leaveView, useEscapeToClose } from './ViewShell';
 import { exitToConductor } from './AppSwitcher';
 import { appLabel, catalogStore, hashMirror, overlayStore, pluginFrames, refreshCatalog } from './plugins';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, dockLayout, maxPanel } from './dockLayout';
-import { closeDock, DOCK_WIDTH_STORAGE_KEY, dockCollapsedStore, dockFullStore, dockFullView, dockMirror, dockStore, expandDock, setDockCollapsed } from './dock';
+import { closeDock, DOCK_WIDTH_STORAGE_KEY, dockBesideStore, dockCollapsedStore, dockFullStore, dockFullView, dockMirror, dockStore, expandDock, followFrameLink, setDockCollapsed } from './dock';
 import { cn } from '@/lib/utils';
 
 /** The main row's content width, from its ResizeObserver; null until the first measurement. */
@@ -82,8 +82,14 @@ export function PluginView() {
   }, [mode]);
 
   React.useLayoutEffect(() => {
+    dockBesideStore.set({ id: routeFull ? null : shownId });
+    return () => dockBesideStore.set({ id: null });
+  }, [routeFull, shownId]);
+
+  React.useLayoutEffect(() => {
     pluginFrames.attach(hostRef.current);
-    return () => pluginFrames.attach(null);
+    pluginFrames.setLinkHandler(followFrameLink);
+    return () => { pluginFrames.attach(null); pluginFrames.setLinkHandler(null); };
   }, []);
 
   const subpath = routeFull ? `/${route.pluginPath}` : dock.subpath;

@@ -25,12 +25,13 @@
 // dock's saved subpath in split — so whatever names the frame's place always
 // reads where the frame is, and an outside change back to an earlier subpath
 // still reads as a change; an outside subpath change is forwarded as `navigate`.
+// `openLink` (a plugin link the page's bridge caught) goes to the link handler (dock.ts `followFrameLink`).
 // `ready` and the id-carrying session calls (`openSession` / `sendPrompt`) from
 // any known frame go to the BridgeHandler (pluginSession.ts); `broadcast` posts
 // to every frame, hidden resident ones included.
 import { ApiError, apiFetch, apiResponse, readApiBody } from '@shared/http';
 import { createSignal, createStore } from '@/state/createStore';
-import { replaceHash } from '@/state/route';
+import { replaceHash, viewLinkHash } from '@/state/route';
 
 export type PluginTarget = { id: string; subpath: string };
 /** Where the shown frame's own navigation is recorded. */
@@ -73,6 +74,7 @@ class PluginFrames {
   private token = 0;
   private mirror: RouteMirror = hashMirror;
   private handler: BridgeHandler | null = null;
+  private linkHandler: ((hash: string) => void) | null = null;
   readonly resident = new Map<string, Record_>();
 
   constructor() {
@@ -85,6 +87,10 @@ class PluginFrames {
 
   setBridgeHandler(h: BridgeHandler | null) {
     this.handler = h;
+  }
+
+  setLinkHandler(h: ((hash: string) => void) | null) {
+    this.linkHandler = h;
   }
 
   /** Posts to the shared frame and every resident frame, hidden ones included. */
@@ -264,7 +270,7 @@ class PluginFrames {
     }));
   }
 
-  // Child → parent ({cc:1}; ready / route / openSession / sendPrompt), attributed by the frame that posted
+  // Child → parent ({cc:1}; ready / route / openLink / openSession / sendPrompt), attributed by the frame that posted
   // it. A frame that is not the current plugin's (a hidden resident one, or the
   // page being replaced while the next plugin loads) has its route tracked on
   // its own record only — the user is somewhere else.
@@ -281,6 +287,12 @@ class PluginFrames {
     if (d.type === 'route' && typeof d.path === 'string' && d.path.startsWith('/')) {
       record.subpath = d.path;
       if (active) this.mirror(record.id, d.path);
+      return;
+    }
+    // A link the page's bridge caught: honoured only from the shown frame, and only a hash a transcript link may open.
+    if (d.type === 'openLink') {
+      const hash = active && typeof d.hash === 'string' ? viewLinkHash(d.hash) : null;
+      if (hash) this.linkHandler?.(hash);
       return;
     }
     const reply = (m: unknown) => (ev.source as Window).postMessage(m, location.origin);
