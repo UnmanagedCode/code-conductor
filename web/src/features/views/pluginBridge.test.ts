@@ -286,3 +286,93 @@ describe('window.ccBridge (session awareness)', () => {
     expect(settled).toBe(false);
   });
 });
+
+describe('plugin links', () => {
+  const anchor = (href: string, target: string | null = '_top') => {
+    const a = document.createElement('a');
+    a.setAttribute('href', href);
+    if (target !== null) a.setAttribute('target', target);
+    document.body.appendChild(a);
+    return a;
+  };
+  const opened = (posted: any[]) => posted.filter(([m]) => m.type === 'openLink');
+  afterEach(() => { document.body.innerHTML = ''; });
+
+  describe('accepted', () => {
+    // Pins: a plain click on a `_top` link to cc's own page with a `#plugin/` hash is claimed and handed to cc as `openLink {hash}`.
+    it('a _top link to a #plugin hash on the parent\'s page posts openLink and prevents the navigation', () => {
+      const b = runBridge();
+      const { prevented } = b.click(anchor('http://h/#plugin/code-git/?project=p'));
+      expect(prevented).toBe(true);
+      expect(b.posted.at(-1)).toEqual([{ cc: 1, type: 'openLink', hash: '#plugin/code-git/?project=p' }, 'http://h']);
+    });
+
+    // Pins: `_parent` is the same claim as `_top`, because a plugin frame's parent is cc's page.
+    it('a _parent link is claimed the same way', () => {
+      const b = runBridge();
+      expect(b.click(anchor('http://h/#plugin/a/x', '_parent')).prevented).toBe(true);
+      expect(opened(b.posted)).toEqual([[{ cc: 1, type: 'openLink', hash: '#plugin/a/x' }, 'http://h']]);
+    });
+
+    // Pins: the comparison is against the parent's own pathname and search, not a fixed `/`.
+    it('a link to the parent\'s own path and search is claimed', () => {
+      const b = runBridge({ parentLocation: { pathname: '/app', search: '?x=1' } });
+      expect(b.click(anchor('http://h/app?x=1#plugin/a/')).prevented).toBe(true);
+      expect(opened(b.posted)).toHaveLength(1);
+    });
+
+    // Pins: a click on an element inside the anchor resolves to the anchor.
+    it('a click on a child of the anchor is claimed', () => {
+      const b = runBridge();
+      const span = document.createElement('span');
+      anchor('http://h/#plugin/a/').appendChild(span);
+      expect(b.click(span).prevented).toBe(true);
+      expect(opened(b.posted)).toHaveLength(1);
+    });
+  });
+
+  describe('left to the browser', () => {
+    // Pins: nothing but an unmodified primary click, not already handled, on a `_top`/`_parent` same-page `#plugin/` link is claimed.
+    it.each([
+      ['ctrl held', 'http://h/#plugin/a/', '_top', { ctrlKey: true }],
+      ['meta held', 'http://h/#plugin/a/', '_top', { metaKey: true }],
+      ['shift held', 'http://h/#plugin/a/', '_top', { shiftKey: true }],
+      ['alt held', 'http://h/#plugin/a/', '_top', { altKey: true }],
+      ['a middle button', 'http://h/#plugin/a/', '_top', { button: 1 }],
+      ['already default-prevented', 'http://h/#plugin/a/', '_top', { defaultPrevented: true }],
+      ['no target', 'http://h/#plugin/a/', null, {}],
+      ['_blank', 'http://h/#plugin/a/', '_blank', {}],
+      ['_self', 'http://h/#plugin/a/', '_self', {}],
+      ['another origin', 'http://evil/#plugin/a/', '_top', {}],
+      ['another path', 'http://h/other#plugin/a/', '_top', {}],
+      ['another search', 'http://h/?y=2#plugin/a/', '_top', {}],
+      ['a #settings hash', 'http://h/#settings', '_top', {}],
+      ['a #session hash', 'http://h/#session=s', '_top', {}],
+      ['no hash', 'http://h/', '_top', {}],
+    ] as const)('%s', (_name, href, target, init) => {
+      const b = runBridge();
+      expect(b.click(anchor(href, target), init).prevented).toBe(false);
+      expect(opened(b.posted)).toEqual([]);
+    });
+
+    it('an unreadable parent', () => {
+      const b = runBridge({ parentThrows: true });
+      expect(b.click(anchor('http://h/#plugin/a/')).prevented).toBe(false);
+      expect(opened(b.posted)).toEqual([]);
+    });
+
+    it('a click on a non-anchor element', () => {
+      const b = runBridge();
+      const div = document.createElement('div');
+      document.body.appendChild(div);
+      expect(b.click(div).prevented).toBe(false);
+      expect(opened(b.posted)).toEqual([]);
+    });
+  });
+
+  // Pins: a standalone page registers no click handler, so its links are never rewritten.
+  it('standalone registers no click listener', () => {
+    const b = runBridge({ top: true });
+    expect(b.docListeners.click).toBeUndefined();
+  });
+});

@@ -5,9 +5,11 @@
 // no-op, so plugins stay independently runnable (a 404 for this script
 // outside the embed is harmless).
 //
-// Protocol: `{cc:1, type, ...}` envelope. Three core messages —
+// Protocol: `{cc:1, type, ...}` envelope. Core messages —
 //   child → parent  ready            (bridge alive, initial route follows)
 //   child → parent  route {path}     (child-relative path incl. search+hash)
+//   child → parent  openLink {hash}  (a plain click on a `target="_top"`/`_parent` link to cc's own
+//                                     path + search with a `#plugin/` hash; the bridge prevents the navigation)
 //   parent → child  navigate {path}  (replaceState + synthetic popstate)
 // and four optional session-awareness messages, surfaced as `window.ccBridge`
 // (absent standalone and on a host without them) —
@@ -81,6 +83,26 @@
   };
   window.addEventListener('popstate', reportRoute);
   window.addEventListener('hashchange', reportRoute);
+
+  // A link out to a plugin view of cc itself: handed to cc, which opens it in the dock when one shows. Bubble phase,
+  // so a page's own handler that already prevented the click wins; anything else keeps the browser's default.
+  document.addEventListener('click', function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    var el = /** @type {Element | null} */ (e.target);
+    var a = el && typeof el.closest === 'function' ? el.closest('a[href]') : null;
+    if (!a) return;
+    var t = (a.getAttribute('target') || '').toLowerCase();
+    if (t !== '_top' && t !== '_parent') return;
+    var u;
+    try {
+      u = new URL(/** @type {HTMLAnchorElement} */ (a).href);
+      var p = window.parent.location;
+      if (u.origin !== origin || u.pathname !== p.pathname || u.search !== p.search) return;
+    } catch (err) { return; }
+    if (u.hash.indexOf('#plugin/') !== 0) return;
+    e.preventDefault();
+    window.parent.postMessage({ cc: 1, type: 'openLink', hash: u.hash }, origin);
+  });
 
   // Session awareness. `session` stays undefined until the host's first
   // message; a call's promise resolves with the host's result ({ok, code?}) and never rejects.

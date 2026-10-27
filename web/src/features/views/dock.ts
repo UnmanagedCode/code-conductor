@@ -1,14 +1,15 @@
 // The plugin dock's state: which plugin sits in split beside the session, at
 // which subpath, and the mode a pick from Conductor opens. The full view is the
 // route (`#plugin/<id>/<subpath>`) and split is this store; they never coexist.
+// A plugin link while split shows goes to the dock instead of the route (showLinkInDock).
 // It is the user's place, not a route: persisted per browser, never in the hash.
 // The collapse flag (split shown as a rail) is its own per-browser key.
 import { createStore } from '@/state/createStore';
-import { routeStore } from '@/state/route';
+import { parseHash, routeStore } from '@/state/route';
 import { on } from '@/app/events';
 import { openPlugin } from './api';
 import { leaveView, showActiveSession } from './ViewShell';
-import type { RouteMirror } from './plugins';
+import { catalogStore, type RouteMirror } from './plugins';
 
 /** The mode a pick from Conductor opens; written only by the column's toggle. */
 export type DockPref = 'full' | 'split';
@@ -56,7 +57,7 @@ dockStore.subscribe(() => {
   try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ id, subpath, mode })); } catch { /* storage unavailable */ }
 });
 
-/** Full and split never coexist: entering the full view (a pick, Expand, a link, Forward) ends split, so leaving it lands on Conductor. Only the transition clears, so Dock to side can select while the route is still leaving the plugin. */
+/** Full and split never coexist: entering the full view (a pick, Expand, a link while no split shows, the address bar, Forward) ends split, so leaving it lands on Conductor. Only the transition clears, so Dock to side can select while the route is still leaving the plugin. */
 let inPlugin = routeStore.get().route.view === 'plugin';
 if (inPlugin && dockStore.get().id !== null) closeDock();
 routeStore.subscribe(() => {
@@ -67,6 +68,24 @@ routeStore.subscribe(() => {
 
 /** Whether the plugin column fills the main row: the full view, or a split too narrow to fit; `App` hides the main slot while it does. */
 export const dockFullStore = createStore<{ full: boolean }>({ full: false });
+
+/** The plugin the column shows beside the session (split, rail, or a split too narrow to fit), else null (hidden, the full view, below md); PluginView publishes it from dockLayout. */
+export const dockBesideStore = createStore<{ id: string | null }>({ id: null });
+
+/** Shows a plugin link's hash (already checked by `viewLinkHash`) in the dock and returns true; false when no dock shows or the switcher does not list its plugin, so the caller opens the full view. A rail expands. No route change, no history entry. */
+export function showLinkInDock(hash: string): boolean {
+  if (dockBesideStore.get().id === null) return false;
+  const { view, pluginId, pluginPath } = parseHash(hash);
+  if (view !== 'plugin' || !pluginId || !catalogStore.get().apps.some((a) => a.id === pluginId)) return false;
+  setDockCollapsed(false);
+  dockStore.set({ id: pluginId, subpath: `/${pluginPath}` });
+  return true;
+}
+
+/** A link a plugin page's bridge caught (`openLink`): the dock when one shows; else the fragment navigation the browser would have made for the page's `_top` link. */
+export function followFrameLink(hash: string) {
+  if (!showLinkInDock(hash)) location.hash = hash;
+}
 
 /** A session pick closes a full-screen plugin, as in the full view. Only a user's pick: the first-connect restore keeps what a reload restored. */
 on('select', ({ userGesture }) => {

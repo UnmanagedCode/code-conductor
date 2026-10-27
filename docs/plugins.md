@@ -141,7 +141,7 @@ The scan-time policy is therefore a **strict superset** of the compose-time one,
 
 ### Bridge protocol — `/pluginBridge.js`
 
-Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blocking script, first in `<head>` (no `defer`: the theme and session-width syncs below then run before first paint; a deferred bridge still syncs, but only at deferred-script time) (`web/src/features/views/pluginBridge.js`, served by an explicit `GET /pluginBridge.js` route in `server.ts` whether or not the web UI is built; harmless 404 standalone, no-op when not iframed; the parent side is `pluginFrames` in `web/src/features/views/plugins.ts`). Envelope `{cc:1, type, ...}` over `postMessage`, same-origin both ways. Three core messages (every page) plus four optional session-awareness messages (pages that use `window.ccBridge`):
+Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blocking script, first in `<head>` (no `defer`: the theme and session-width syncs below then run before first paint; a deferred bridge still syncs, but only at deferred-script time) (`web/src/features/views/pluginBridge.js`, served by an explicit `GET /pluginBridge.js` route in `server.ts` whether or not the web UI is built; harmless 404 standalone, no-op when not iframed; the parent side is `pluginFrames` in `web/src/features/views/plugins.ts`). Envelope `{cc:1, type, ...}` over `postMessage`, same-origin both ways. Core messages (every page) plus the optional session-awareness messages (pages that use `window.ccBridge`):
 
 | Direction | Type | Payload | Meaning |
 |---|---|---|---|
@@ -149,6 +149,7 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 | child → parent | `route` | `{path}` | child-relative path (incl. search+hash), which **must begin with `/`** — the parent ignores a `route` whose path does not; parent mirrors it into `#plugin/<id><path>` via `replaceState` |
 | parent → child | `navigate` | `{path}` | external navigation; bridge `replaceState`s `<prefix><path>` and dispatches a synthetic `popstate` |
 | parent → child | `session` | `{session: {sessionId, project, worktree} \| null}` | the active session. `worktree` is the instance's `worktree.worktreeName` (the `worktreeName` key of `GET /api/projects/:name/worktrees`), `null` for the main checkout |
+| child → parent | `openLink` | `{hash}` | a plain click on a `target="_top"` / `_parent` link to cc's own path + search with a `#plugin/` hash, which the bridge prevents and reports; the parent shows it in the dock or follows it as a fragment navigation |
 | child → parent | `openSession` | `{id, sessionId}` | make a live session the selection, as a sidebar pick does |
 | child → parent | `sendPrompt` | `{id, sessionId, text}` | deliver `text` to a live session as its composer's Send does, without selecting it |
 | parent → child | `result` | `{id, ok, code?}` | the answer to one `openSession` / `sendPrompt`, posted to the calling frame only |
@@ -156,6 +157,12 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 **Active session** = `activeInstance(appStore.get())` (`web/src/state/app.ts`): cc's one selection, in every layout; `null` when nothing is selected or the selected instance has no `sessionId` yet. The per-layout table is in [plugin-ui.md](plugin-ui.md) → Session awareness.
 
 **`session` is sent** to one frame on its `ready` (a reload in place sends a fresh `ready`), and to **every** frame — the shared frame and each resident frame, hidden ones included — whenever the active `(sessionId, project, worktree)` triple changes. An unchanged triple (an instance-list refresh, a status change) posts nothing.
+
+**`openLink` rules:**
+- Sent by the bridge itself, not part of `ccBridge`.
+- Honoured only from the **shown** frame (same origin and `ev.source` as every message, and the frame is the current plugin's); a hidden resident frame's is ignored.
+- `hash` must pass `viewLinkHash` (`web/src/state/route.ts`), the check a transcript link gets; anything else is ignored.
+- Outcome: `showLinkInDock` when the dock shows a plugin beside the session and the switcher lists the target; otherwise `location.hash = hash`, the navigation the browser would have made for the `_top` link.
 
 **`openSession` / `sendPrompt` rules:**
 - `id` must be a string; a call without one is ignored (nowhere to reply). Exactly one `result` per received call.

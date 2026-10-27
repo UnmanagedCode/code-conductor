@@ -16,7 +16,7 @@ vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
 import {
-  DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, navigate, net, plainRow, postRoute, residentFrame, resetHost,
+  column, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, navigate, net, plainRow, postRoute, residentFrame, resetHost,
   sessionShown, settle, sharedFrame, standInWindow, viewOpen,
 } from './test/pluginHost';
 import { Markdown } from '@/components/Markdown';
@@ -65,8 +65,8 @@ describe('a plugin link in the transcript', () => {
     expect(location.hash).toBe(ANCHOR);
   });
 
-  // Pins: a docked plain plugin whose page moved itself is steered in place, and the view goes full.
-  it('steers a docked plain plugin\'s frame after the page moved itself', async () => {
+  // Pins: a link while a plain plugin is docked steers its frame in the dock after the page moved itself: no route change, no history entry, split kept.
+  it('steers a docked plain plugin\'s frame in the dock after the page moved itself', async () => {
     await mountApp();
     await dockSplit('alpha');
     const frame = sharedFrame()!;
@@ -74,16 +74,21 @@ describe('a plugin link in the transcript', () => {
     const win = standInWindow(frame);
     postRoute(win, '/?review=r-1');
     const reads = statusReads('alpha');
+    const before = history.length;
     expect(await clickLinkTo('#plugin/alpha/?review=r-9&thread=t-7')).toBe(true);
     expect(sharedFrame()).toBe(frame);
     expect(frame.getAttribute('src')).toBe(src);
     expect(win.posted.at(-1)).toEqual(navigate('/?review=r-9&thread=t-7'));
     expect(statusReads('alpha')).toBe(reads);
+    expect(location.hash).toBe(ANCHOR);
+    expect(history.length).toBe(before);
+    expect(sessionShown()).toBe(true);
     expect(viewOpen()).toBe(true);
-    expect(sessionShown()).toBe(false);
+    expect(column()!.getAttribute('data-dock-mode')).toBe('split');
+    expect(dockStore.get()).toMatchObject({ id: 'alpha', subpath: '/?review=r-9&thread=t-7' });
   });
 
-  // Pins: a docked keep-alive plugin's resident frame is steered by path, not restarted.
+  // Pins: a link while a keep-alive plugin is docked steers its resident frame by path, with the dock kept.
   it('steers a docked keep-alive plugin\'s resident frame by path', async () => {
     await mountApp();
     await dockSplit('beta');
@@ -93,6 +98,8 @@ describe('a plugin link in the transcript', () => {
     expect(residentFrame('beta')).toBe(frame);
     expect(win.posted.at(-1)).toEqual(navigate('/deep/path'));
     expect(starts()).toBe(0);
+    expect(location.hash).toBe(ANCHOR);
+    expect(sessionShown()).toBe(true);
   });
 
   // Pins: a keep-alive page hidden behind the conversation is revealed at the link's subpath after it moved itself.
