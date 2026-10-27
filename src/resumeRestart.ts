@@ -417,10 +417,14 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       const attached = instances.liveForSession(e.sessionId);
       if (attached) {
         log.log?.(`resume-restart: ${e.sessionId} was already attached; delivering its restart prompt there`);
-        // The browser created it with the defaults; carry over what is runtime-
-        // settable, as the create() below would. `debug` is launch-time only.
+        // The browser created it with the defaults; bring it to what the create()
+        // below would have set. Debug has no runtime disable, so it is only raised.
         attached.setPlaybookEnforcement(normalizePlaybookEnforcement(e.playbookEnforcement));
         attached.setAutoApprovePlan(!!e.autoApprovePlan);
+        if (e.debug) {
+          const r = attached.enableDebug();
+          if (!r.ok) log.warn?.(`resume-restart: ${e.sessionId}: enabling debug failed: ${r.reason}`);
+        }
       }
       const inst = attached ?? await instances.create({
         project: e.project,

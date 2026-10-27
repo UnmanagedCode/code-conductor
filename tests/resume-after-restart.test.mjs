@@ -1154,11 +1154,11 @@ test('restoreFromResumeManifest delivers the restart prompt exactly once to a se
   }
 });
 
-// Invariant: an adopted instance runs at the manifest's playbook enforcement and
-// autoApprovePlan, not the defaults the browser's resume created it with.
-test('restoreFromResumeManifest applies the entry\'s playbookEnforcement and autoApprovePlan to a session the browser already attached', async () => {
+// Attach a `.conduct` session the way the browser's anchor auto-resume does, let
+// `prepare` set the state it came up with, then restore a manifest entry
+// carrying `fields` for it. Returns the browser's instance after the restore.
+async function adoptConductorWith(fields, prepare) {
   await ensureConductProject();
-  await setDefaultPlaybookEnforcement('warn');
   const sid = randomUUID();
   const cwd = path.join(projectsRoot, '.conduct');
   const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
@@ -1167,25 +1167,48 @@ test('restoreFromResumeManifest applies the entry\'s playbookEnforcement and aut
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   writeResumeManifest([{
     project: CONDUCT_PROJECT_NAME, sessionId: sid, cwd, mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
-    worktreeName: null, temp: false, conducted: false, debug: false, title: null, group: 'conductor', wasBusy: true,
-    playbookEnforcement: 'enforce', autoApprovePlan: true,
+    worktreeName: null, temp: false, conducted: false, title: null, group: 'conductor', wasBusy: true, ...fields,
   }]);
   try {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: CONDUCT_PROJECT_NAME, resume: sid });
     assert.equal(res.status, 201, JSON.stringify(res.body));
     const browser = instances.get(res.body.id);
     await waitFor(() => browser.status === 'idle');
-    assert.deepEqual([browser.playbookEnforcement, browser.autoApprovePlan], ['warn', false],
-      'premise: the browser\'s resume came up at the defaults');
-
+    prepare(browser);
     const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
-    assert.equal(instances.liveForSession(sid), browser, 'the browser\'s instance was adopted');
-    assert.equal(browser.playbookEnforcement, 'enforce', 'the manifest\'s enforcement applies');
-    assert.equal(browser.autoApprovePlan, true, 'the manifest\'s autoApprovePlan applies');
     assert.equal(restored, 1);
+    assert.equal(instances.liveForSession(sid), browser, 'the browser\'s instance was adopted');
+    return browser;
   } finally {
     clearResumeManifest();
   }
+}
+
+// Invariant: an adopted instance is RAISED to the manifest's playbook
+// enforcement, autoApprovePlan and debug, from the defaults the browser's resume
+// created it with.
+test('restoreFromResumeManifest raises a session the browser already attached to the entry\'s playbookEnforcement, autoApprovePlan and debug', async () => {
+  await setDefaultPlaybookEnforcement('warn');
+  const browser = await adoptConductorWith({ playbookEnforcement: 'enforce', autoApprovePlan: true, debug: true }, (b) => {
+    assert.deepEqual([b.playbookEnforcement, b.autoApprovePlan, b.debug], ['warn', false, false],
+      'premise: the browser\'s resume came up at the defaults');
+  });
+  assert.equal(browser.playbookEnforcement, 'enforce', 'the manifest\'s enforcement applies');
+  assert.equal(browser.autoApprovePlan, true, 'the manifest\'s autoApprovePlan applies');
+  assert.equal(browser.debug, true, 'the manifest\'s debug applies');
+  assert.ok(browser.debugDir, 'with its mirrors open');
+});
+
+// Invariant: an adopted instance is LOWERED to the manifest's values, and the
+// retired `off` normalises to `warn` exactly as the create() path reads it.
+test('restoreFromResumeManifest lowers a session the browser already attached to the entry\'s values, normalising a retired `off`', async () => {
+  const browser = await adoptConductorWith({ playbookEnforcement: 'off', autoApprovePlan: false, debug: false }, (b) => {
+    b.setPlaybookEnforcement('enforce');
+    b.setAutoApprovePlan(true);
+    assert.deepEqual([b.playbookEnforcement, b.autoApprovePlan], ['enforce', true], 'premise: the browser\'s instance is at enforce/true');
+  });
+  assert.equal(browser.playbookEnforcement, 'warn', '`off` normalises to warn and lowers enforce');
+  assert.equal(browser.autoApprovePlan, false, 'autoApprovePlan is lowered');
 });
 
 // Invariant: a top-level session's OWN live background job counts — it is
