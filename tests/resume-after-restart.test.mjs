@@ -1199,16 +1199,19 @@ test('restoreFromResumeManifest raises a session the browser already attached to
   assert.ok(browser.debugDir, 'with its mirrors open');
 });
 
-// Invariant: an adopted instance is LOWERED to the manifest's values, and the
-// retired `off` normalises to `warn` exactly as the create() path reads it.
+// Invariant: an adopted instance is LOWERED to the manifest's values, the
+// retired `off` normalises to `warn` exactly as the create() path reads it, and
+// an entry with debug off leaves debug capture off.
 test('restoreFromResumeManifest lowers a session the browser already attached to the entry\'s values, normalising a retired `off`', async () => {
   const browser = await adoptConductorWith({ playbookEnforcement: 'off', autoApprovePlan: false, debug: false }, (b) => {
     b.setPlaybookEnforcement('enforce');
     b.setAutoApprovePlan(true);
     assert.deepEqual([b.playbookEnforcement, b.autoApprovePlan], ['enforce', true], 'premise: the browser\'s instance is at enforce/true');
+    assert.deepEqual([b.debug, b.debugDir], [false, null], 'premise: the browser\'s instance has debug off');
   });
   assert.equal(browser.playbookEnforcement, 'warn', '`off` normalises to warn and lowers enforce');
   assert.equal(browser.autoApprovePlan, false, 'autoApprovePlan is lowered');
+  assert.deepEqual([browser.debug, browser.debugDir], [false, null], 'an entry without debug does not turn it on');
 });
 
 // Invariant: a top-level session's OWN live background job counts — it is
