@@ -23,6 +23,7 @@ import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject, orchStoreRoot} from '../src/projects.ts';
 import * as projects from '../src/projects.ts';
+import { rotate } from './segmentChain.mjs';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
@@ -262,6 +263,23 @@ describe('a worker session on a remote system', () => {
     const spilled = path.join(projects.toolResultsDirPath(inst.transcriptPlace, inst.backingSessionId), 'r.txt');
     assert.deepEqual(await inst._redirect.preToolUse('Read', { file_path: spilled }), { decision: 'allow' });
     assert.equal((await inst._redirect.preToolUse('Write', { file_path: spilled, content: 'x' })).decision, 'deny');
+  });
+
+  // PINS coverage across a rotation: after a `/clear` the session holds two live
+  // segments, and the OLDER one's spilled results — still cited by the history
+  // the worker carries — stay reachable by Read and guarded from Bash. Driven
+  // through the production rotation branch (`rotate`, tests/segmentChain.mjs).
+  test("the guard and the Read allow cover an older segment's tool-results", async () => {
+    const inst = instances.get(instId);
+    const older = inst.backingSessionId;
+    await rotate(inst, 'c0000000-0000-4000-8000-0000000000aa');
+    assert.deepEqual(inst._segments, [older, 'c0000000-0000-4000-8000-0000000000aa'],
+      'premise: the session holds two live segments');
+    const spilled = path.join(projects.toolResultsDirPath(inst.transcriptPlace, older), 'old.txt');
+    assert.deepEqual(await inst._redirect.preToolUse('Read', { file_path: spilled }), { decision: 'allow' });
+    const bash = await inst._redirect.preToolUse('Bash', { command: `cat ${spilled}` });
+    assert.equal(bash.decision, 'deny', JSON.stringify(bash));
+    assert.ok(bash.reason.includes(`'${spilled}'`), bash.reason);
   });
 
   // PINS: the per-session tmp root is REMOVED with the session. cc creates one
