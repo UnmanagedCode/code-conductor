@@ -107,7 +107,8 @@ A **System** is a third placement for a project: its tree, git repo and shell co
 |---|---|
 | the `claude` CLI, cc's store, `~/.claude/` | **cc's host**, always |
 | the project tree, its git repo, `Bash` | **the system** |
-| `Read` / `Write` / `Edit` / `NotebookEdit` | **not hooked at all** — the CLI runs inside a chroot onto the union, so it opens the system's own bytes at the system's own path |
+| `Read` / `Write` / `Edit` / `NotebookEdit` | **hooked to refuse, never to translate** — the CLI runs inside a chroot onto the union, so it opens the system's own bytes at the system's own path, and a path the session may not reach is refused by name |
+| the CLI's own output files — a backgrounded `Bash`'s `.output`, an oversized result's `tool-results/` file | **cc's host** — `Read` reaches them; a `Bash` command naming one is refused before it runs |
 | `Glob` / `Grep` | **neither** — removed and refused; `find` / `grep` through `Bash` answer about the right machine |
 
 The rest — one fresh shell per command and what that means for `cd`, the output fence, and the named refusals for a system that is unreachable, serves no targets, or cannot mount the union — is in [docs/features.md](docs/features.md) → Projects on a system / Worker sessions on a system.

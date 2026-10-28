@@ -318,6 +318,12 @@ export function subAgentDirPath(place: TranscriptPlacement, backingId: string): 
   return path.join(transcriptRoot(place), encodeCwd(place.cwd), backingId);
 }
 
+// Where the CLI saves a tool result too large to show inline, and the path it
+// cites in that result. Beside `subagents/` in the same per-session directory.
+export function toolResultsDirPath(place: TranscriptPlacement, backingId: string): string {
+  return path.join(subAgentDirPath(place, backingId), 'tool-results');
+}
+
 // Resolve a caller-supplied session id to the BACKING id that names a transcript,
 // or null when nothing on disk can answer to it.
 //

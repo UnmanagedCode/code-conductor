@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { addSystem } from '../src/appSettings.ts';
 import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
-import { redirectTierOptions } from './tierFixture.mjs';
+import { redirectTierOptions, redirectOutputOptions } from './tierFixture.mjs';
 
 const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
 
@@ -45,6 +45,7 @@ async function build({ flags = [], shellCommandTimeoutMs, maxOutputBytes } = {})
     systemId: remote.id,
     systemPath: remote.root,
     ...redirectTierOptions({ systemPath: remote.root }),
+    ...redirectOutputOptions(),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
     emit: (ev) => events.push(ev),
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
@@ -573,6 +574,7 @@ async function wideRedirect() {
     // `/` is the widest mirror there is, and the one every one of these
     // assertions is degenerate without.
     ...redirectTierOptions({ systemPath: remote.root, mirrorRoot: '/' }),
+    ...redirectOutputOptions(),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
     emit: () => {},
   });
@@ -605,3 +607,78 @@ test('a wide mirror still runs every command at the project root', async () => {
   } finally { await wide.close(); }
 });
 
+
+// ── HOST-ONLY OUTPUT PATHS IN A Bash COMMAND ────────────────────────────────
+//
+// The CLI writes a backgrounded or timed-out Bash command's `.output` under
+// CLAUDE_CODE_TMPDIR and an oversized result under its config dir's
+// `tool-results/` — both on cc's host. A forwarded Bash naming either acts on a
+// different path on the system, so it is refused before forwarding, pointing at
+// the Read tool, which reaches it.
+
+const GUARD_TMP = '/store/session-tmp/inst-1';
+const GUARD_RESULTS = '/cfg/.claude/projects/-srv-app/0b7a9a3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tool-results';
+
+const guarded = (dirs = [GUARD_RESULTS]) => new SessionRedirect({
+  system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
+  systemId: 'prod-box', systemPath: '/srv/app',
+  ...redirectTierOptions({ systemPath: '/srv/app' }),
+  ...redirectOutputOptions({ sessionTmpDir: GUARD_TMP, ownToolResultDirs: () => dirs }),
+  forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
+  emit: () => {},
+});
+
+const assertHostOnlyRefusal = (d, token, prefix) => {
+  assert.equal(d.decision, 'deny', JSON.stringify(d));
+  assert.equal(d.updatedInput, undefined, 'a refused command is not rewritten');
+  assert.ok(d.reason.includes(`'${token}'`), `the full token is quoted: ${d.reason}`);
+  assert.ok(d.reason.includes(`'${prefix}'`), `the prefix is quoted: ${d.reason}`);
+  assert.match(d.reason, /Bash runs on (system )?'prod-box'/);
+  assert.match(d.reason, /ORCHESTRATOR/);
+  assert.match(d.reason, /\bRead\b/);
+  assert.match(d.reason, /\boffset\b/);
+  assert.match(d.reason, /\blimit\b/);
+  assert.match(d.reason, /NOT the file being absent/);
+  assert.doesNotMatch(d.reason, /\b(Glob|Grep)\b/, 'it points only at a tool that exists');
+};
+
+// G1 — PINS: a command naming the session tmp dir is refused before it is
+// forwarded, and the refusal names a working alternative.
+test('G1: a Bash command naming the session tmp dir is refused, pointing at Read', async () => {
+  const token = `${GUARD_TMP}/claude-1000/-srv-app/sid/tasks/a.output`;
+  assertHostOnlyRefusal(await guarded().preToolUse('Bash', { command: `tail -n 50 ${token}` }), token, GUARD_TMP);
+});
+
+// G2 — PINS: both prefix families are guarded, the tool-results one included.
+test('G2: a Bash command naming its own tool-results dir is refused, pointing at Read', async () => {
+  const token = `${GUARD_RESULTS}/toolu_01.txt`;
+  assertHostOnlyRefusal(await guarded().preToolUse('Bash', { command: `cat "${token}" | head` }), token, GUARD_RESULTS);
+});
+
+// G3 — PINS: every other command is rewritten exactly as before, including one
+// that names a prefix-sharing sibling or ANOTHER session's tool-results dir.
+test('G3: commands naming no guarded prefix are rewritten unchanged', async () => {
+  const r = guarded();
+  for (const command of [
+    'ls -la',
+    `cat ${GUARD_TMP}0/x.output`,
+    'cat /store/session-tmp/inst-10/x',
+    'cat /cfg/.claude/projects/-srv-app/9f8e7d6c-5b4a-4321-8fed-cba987654321/tool-results/x.txt',
+  ]) {
+    const d = await r.preToolUse('Bash', { command });
+    assert.equal(d.decision, 'allow', command);
+    assert.match(d.updatedInput.command, /bashForwarder\.ts/, command);
+  }
+  assert.deepEqual(await r.preToolUse('Bash', { command: '' }), { decision: 'allow' });
+});
+
+// G4 — PINS: the own tool-results dirs are read on every call, so a backing id
+// minted after construction — a launch, a /clear, a prune — is guarded too.
+test('G4: a tool-results dir added after construction is guarded on the next call', async () => {
+  const dirs = [];
+  const r = guarded(dirs);
+  const token = `${GUARD_RESULTS}/toolu_02.txt`;
+  assert.equal((await r.preToolUse('Bash', { command: `cat ${token}` })).decision, 'allow');
+  dirs.push(GUARD_RESULTS);
+  assertHostOnlyRefusal(await r.preToolUse('Bash', { command: `cat ${token}` }), token, GUARD_RESULTS);
+});

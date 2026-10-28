@@ -11,7 +11,7 @@ import { HookBroker } from '../src/hookBroker.ts';
 import { buildSettingsJSON } from '../src/settings.ts';
 import { FILE_TOOLS, SessionRedirect } from '../src/systems/toolRedirect.ts';
 import { InstanceManager } from '../src/instances.ts';
-import { redirectTierOptions } from './tierFixture.mjs';
+import { redirectTierOptions, redirectOutputOptions } from './tierFixture.mjs';
 
 function fakeRes() {
   const res = {
@@ -158,6 +158,7 @@ test('with no server port, the hook URL and the forwarder URL degrade together',
     system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
     systemId: 'prod-box', systemPath: '/srv/app',
     ...redirectTierOptions({ systemPath: '/srv/app' }),
+    ...redirectOutputOptions(),
     forwarderUrl: off.fwd ?? '',
     emit: () => {},
   });

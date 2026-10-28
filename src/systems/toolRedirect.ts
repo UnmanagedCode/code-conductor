@@ -16,6 +16,9 @@
 //                   (src/systems/bashForwarder.ts). Nothing outlives a command,
 //                   so no command's state reaches any later one and there is
 //                   nothing to keep one agent's commands apart from another's.
+//                   EXCEPT a command naming one of the CLI's own host-only
+//                   output dirs, which is REFUSED and pointed at Read — see
+//                   #guardBash.
 //   Read/Write/    — HOOKED, AND FOR ONE REASON ONLY: to REFUSE a path the
 //   Edit/Notebook    union does not serve to this session. The CLI runs inside
 //                    a chroot onto the union, so at an allowed path it opens
@@ -25,7 +28,9 @@
 //                    worker reads instead of an -ENOENT: the decision comes
 //                    from the shared tier table (classifyForTool,
 //                    src/systems/fuse/tierTable.ts) and NEVER from probing the
-//                    filesystem.
+//                    filesystem. ONE exception rides on top of the table:
+//                    Read (only) of the session's own `tool-results/` dirs —
+//                    see #classifyFile.
 //   Glob/Grep     — removed from the tool registry by the injected settings
 //                   (src/settings.ts) AND refused here by name. A marked CLI's
 //                   `Grep` spawns an UNMARKED `rg`, which the union routes as a
@@ -70,6 +75,7 @@
 
 import path from 'node:path';
 import { SystemError } from './protocol.ts';
+import { withinPosix } from './mirror.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
 import type { System } from './system.ts';
 import { classifyForTool, type TierEntry } from './fuse/tierTable.ts';
@@ -162,6 +168,9 @@ const UNREDIRECTABLE_TOOLS = new Set(['Glob', 'Grep']);
 // far below what threatens the process.
 const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
+// What ends a path token in a shell command, for #guardBash.
+const TOKEN_END = /[\s'"`;|&<>()]/;
+
 const FORWARDER = path.join(path.dirname(new URL(import.meta.url).pathname), 'bashForwarder.ts');
 
 export interface SessionRedirectOptions {
@@ -188,6 +197,18 @@ export interface SessionRedirectOptions {
   // at all, and there is then no fault to report.
   faultAt?: (p: string) => Fault | null;
   settle?: (p: string) => Promise<void>;
+  // THE CLI'S OWN OUTPUT FILES, written on cc's host while Bash runs on the
+  // system. Required, not optional: every production redirect has both, and an
+  // optional pair would let a construction site skip the guard silently.
+  //
+  // THIS session's tmp root — the CLI's CLAUDE_CODE_TMPDIR, where a backgrounded
+  // or timed-out Bash command's `.output` lands.
+  sessionTmpDir: string;
+  // THIS session's own `tool-results/` dirs, one per backing id it has run
+  // under, read on every call: the id is minted at launch and rotates on /clear,
+  // prune and rewind, and history carried across a rotation still cites the
+  // older dirs.
+  ownToolResultDirs: () => readonly string[];
 }
 
 export class SessionRedirect {
@@ -210,6 +231,8 @@ export class SessionRedirect {
   readonly #maxOutputBytes: number;
   readonly #faultAt: ((p: string) => Fault | null) | undefined;
   readonly #settle: ((p: string) => Promise<void>) | undefined;
+  readonly #sessionTmpDir: string;
+  readonly #ownToolResultDirs: () => readonly string[];
 
   // ONE for the whole session, built on first use. It holds configuration only —
   // the project root, the fence, the ceiling — because no command's state
@@ -246,6 +269,8 @@ export class SessionRedirect {
     this.#maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.#faultAt = opts.faultAt;
     this.#settle = opts.settle;
+    this.#sessionTmpDir = opts.sessionTmpDir;
+    this.#ownToolResultDirs = opts.ownToolResultDirs;
   }
 
   // ── PreToolUse ─────────────────────────────────────────────────────
@@ -261,7 +286,7 @@ export class SessionRedirect {
           + `project's files are. Use \`find\` or \`grep\` through Bash, which runs there.`,
       };
     }
-    if (toolName === 'Bash') return this.#redirectBash(toolInput);
+    if (toolName === 'Bash') return this.#guardBash(toolInput) ?? this.#redirectBash(toolInput);
     // ONE BRANCH, and no pull, no push, no path map and no mirror probe behind
     // it. A file has ONE spelling whichever tool names it, so the only question
     // left is whether the union serves that path to this session — which the
@@ -293,6 +318,19 @@ export class SessionRedirect {
       exclude: this.#exclude, mirrorRoot: this.#mirrorRoot,
       systemId: this.systemId, systemPath: this.systemPath,
     }, p);
+    // THE ONE ALLOW THE TABLE CANNOT DECLARE: Read of this session's own spilled
+    // tool results, which the CLI cites in the result and which sit under the
+    // config dir's localRoot deny. The table is built at create, before the
+    // backing id that names the dir exists. Read only — the CLI owns the files,
+    // and the dir sits inside the config dir that holds the credentials.
+    //
+    // It overrides a `host-pinned` deny and nothing else, so the tier gate still
+    // runs first. `withinPosix` normalises `..`, so a traversal out of an own
+    // dir is not within it.
+    if (verdict.decision === 'deny' && verdict.class === 'host-pinned' && toolName === 'Read'
+      && this.#ownToolResultDirs().some(d => withinPosix(p, d) !== null)) {
+      return { decision: 'allow' };
+    }
     if (verdict.decision === 'deny') return { decision: 'deny', reason: verdict.reason };
     // THE FAULT SURFACE IS SECOND, AND THAT ORDERING IS A RULING, NOT A STYLE
     // CHOICE. The tier gate is the owner's most important property; a surface
@@ -308,6 +346,49 @@ export class SessionRedirect {
       return { decision: 'deny', reason: refusalFor(fault, p, this.systemId) };
     }
     return { decision: 'allow' };
+  }
+
+  // A COMMAND NAMING ONE OF THE CLI'S HOST-ONLY OUTPUT DIRS, refused before it
+  // is forwarded. The CLI writes those files on cc's host and cites their paths
+  // to the worker; forwarded, the command would act on a different path on the
+  // system. Read reaches them, so the refusal says so.
+  //
+  // BEST-EFFORT, A SUBSTRING MATCH ON THE COMMAND AS THE MODEL WROTE IT. It
+  // misses a path the command never spells out: a shell expansion (`$VAR/…`,
+  // `~`, a glob or brace that splits the prefix, quote-splitting, a backslash
+  // escape or line continuation), a relative path after a `cd`, an alternate
+  // spelling (`//`, `/./`, a symlinked parent) and a path assembled at runtime.
+  // Other sessions' dirs are not matched on purpose: Read cannot serve them
+  // either. A prefix that only appears inside an `echo`, a comment or a commit
+  // message is refused too — rare, and the refusal says how to proceed.
+  #guardBash(toolInput: Record<string, unknown>): RedirectDecision | null {
+    const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+    if (!command) return null;
+    const prefixes: Array<{ prefix: string; why: string }> = [
+      { prefix: this.#sessionTmpDir,
+        why: "this session's tmp dir, where the CLI writes a backgrounded or timed-out Bash command's output" },
+      ...this.#ownToolResultDirs().map(prefix => ({ prefix,
+        why: 'where the CLI saves a tool result too large to show inline' })),
+    ];
+    for (const { prefix, why } of prefixes) {
+      for (let at = command.indexOf(prefix); at !== -1; at = command.indexOf(prefix, at + 1)) {
+        const end = at + prefix.length;
+        // A COMPONENT BOUNDARY, so `…/inst-1` does not claim `…/inst-10`.
+        if (end < command.length && !TOKEN_END.test(command[end]) && command[end] !== '/') continue;
+        let tokenEnd = end;
+        while (tokenEnd < command.length && !TOKEN_END.test(command[tokenEnd])) tokenEnd++;
+        const token = command.slice(at, tokenEnd);
+        return {
+          decision: 'deny',
+          reason: `cc did not send this command to system '${this.systemId}': it names '${token}', which is `
+            + `under '${prefix}' — ${why}. That directory is on the ORCHESTRATOR's machine; Bash runs on `
+            + `system '${this.systemId}', where cc does not put it, so the command would act on a different `
+            + `path there. This is cc refusing the command, NOT the file being absent. Use the Read tool on `
+            + `'${token}' instead — it reaches the file; pass offset and limit to page through a large one.`,
+        };
+      }
+    }
+    return null;
   }
 
   #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {
