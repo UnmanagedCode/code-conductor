@@ -2640,20 +2640,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A backgrounded Bash's tool result tells the worker, verbatim, to `Read`
     // the task file it names under that root — a path on THIS machine.
     //
-    // WHAT KEEPS THE PIN — and it is not a refusal: no file tool is hooked for
-    // a path outside the project's tree, so nothing here turns on one.
-    // `sessionTmpDir(id)` is in the `localRoots` array below,
-    // which seeds the union's HOST tier (tierTable.ts, `localRoots` → `add
-    // ('host', …)`). So this exact directory is served from the orchestrator's
-    // own filesystem inside the chroot, and the worker's task output means the
-    // same thing to the CLI and to cc. The per-uid default the CLI would
-    // otherwise use is not in that array.
-    //
-    // I have NOT established what the union does with an unpinned path here,
-    // and this comment deliberately does not guess: the pin is load-bearing
-    // because it is what puts the path in the host tier, and that is the whole
-    // claim. Its FORMER justification — the redirect refused any file path
-    // outside the session root — died with the geometry.
+    // WHY THE PIN: it gives that output ONE known host path, which the rest of
+    // the redirect is declared against. `sessionTmpDir(id)` is a `localRoots`
+    // `allow` in `_doCreateResolved`, so the union serves it from the
+    // orchestrator's own filesystem (host tier) and the file-tool hook lets
+    // `Read` name it — the worker's task output means the same thing to the CLI
+    // and to cc. It is also the `sessionTmpDir` the redirect refuses a forwarded
+    // Bash for naming, since Bash runs on the system where the path is not. The
+    // per-uid default the CLI would otherwise use is in neither, and what the
+    // union does with that unpinned path is not established here.
     //
     // Per session, and 0700, so one session's task output is not another's; the
     // CLI validates the override's ownership and mode.
@@ -6170,8 +6165,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // THE ALLOW SET IS THIS ARRAY AND NOWHERE ELSE, with ONE Read-only
       // exception that cannot be declared here: the session's own
       // `tool-results/` dirs (`ownToolResultDirs` below). They are keyed by
-      // backing id, which is minted at launch and rotates, while this array is
-      // fixed at create.
+      // backing id, which is minted at launch and rotates on /clear, renew and
+      // prune, while this array is fixed at create.
       //
       // Each `deny` is a path that holds OTHER sessions' data, and each `allow`
       // is a path a real named tool call has to reach and that Bash — which

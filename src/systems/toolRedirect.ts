@@ -204,10 +204,10 @@ export interface SessionRedirectOptions {
   // THIS session's tmp root — the CLI's CLAUDE_CODE_TMPDIR, where a backgrounded
   // or timed-out Bash command's `.output` lands.
   sessionTmpDir: string;
-  // THIS session's own `tool-results/` dirs, one per backing id it has run
-  // under, read on every call: the id is minted at launch and rotates on /clear,
-  // prune and rewind, and history carried across a rotation still cites the
-  // older dirs.
+  // THIS session's own `tool-results/` dirs, one per backing id in its live
+  // segments (`Instance._segments`), read on every call: the id is minted at
+  // launch and rotates on /clear, renew and prune, and history carried across a
+  // rotation still cites the older dirs.
   ownToolResultDirs: () => readonly string[];
 }
 

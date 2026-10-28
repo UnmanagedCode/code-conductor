@@ -109,7 +109,7 @@ export interface TierEntry {
 // ELSE, with ONE exception that cannot be declared here: `SessionRedirect` lets
 // `Read` (only) reach the session's own `tool-results/` dirs under its config
 // dir's deny. Those are keyed by backing id, which is minted at launch and
-// rotates, while this table is built once at create — see
+// rotates on /clear, renew and prune, while this table is built once at create — see
 // `SessionRedirectOptions.ownToolResultDirs`.
 export interface LocalRoot {
   prefix: string;
