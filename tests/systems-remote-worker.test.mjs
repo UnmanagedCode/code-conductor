@@ -266,20 +266,25 @@ describe('a worker session on a remote system', () => {
   });
 
   // PINS coverage across a rotation: after a `/clear` the session holds two live
-  // segments, and the OLDER one's spilled results — still cited by the history
-  // the worker carries — stay reachable by Read and guarded from Bash. Driven
-  // through the production rotation branch (`rotate`, tests/segmentChain.mjs).
-  test("the guard and the Read allow cover an older segment's tool-results", async () => {
+  // segments, and BOTH segments' spilled results are reachable by Read and
+  // guarded from Bash — the older one because the history the worker carries
+  // still cites it, the current one because that is where new results land.
+  // Driven through the production rotation branch (`rotate`,
+  // tests/segmentChain.mjs).
+  test("the guard and the Read allow cover every live segment's tool-results", async () => {
     const inst = instances.get(instId);
     const older = inst.backingSessionId;
-    await rotate(inst, 'c0000000-0000-4000-8000-0000000000aa');
-    assert.deepEqual(inst._segments, [older, 'c0000000-0000-4000-8000-0000000000aa'],
-      'premise: the session holds two live segments');
-    const spilled = path.join(projects.toolResultsDirPath(inst.transcriptPlace, older), 'old.txt');
-    assert.deepEqual(await inst._redirect.preToolUse('Read', { file_path: spilled }), { decision: 'allow' });
-    const bash = await inst._redirect.preToolUse('Bash', { command: `cat ${spilled}` });
-    assert.equal(bash.decision, 'deny', JSON.stringify(bash));
-    assert.ok(bash.reason.includes(`'${spilled}'`), bash.reason);
+    const current = 'c0000000-0000-4000-8000-0000000000aa';
+    await rotate(inst, current);
+    assert.deepEqual(inst._segments, [older, current], 'premise: the session holds two live segments');
+    assert.equal(inst.backingSessionId, current, 'premise: the rotation moved the backing id');
+    for (const [label, backing] of [['older', older], ['current', inst.backingSessionId]]) {
+      const spilled = path.join(projects.toolResultsDirPath(inst.transcriptPlace, backing), `${label}.txt`);
+      assert.deepEqual(await inst._redirect.preToolUse('Read', { file_path: spilled }), { decision: 'allow' }, label);
+      const bash = await inst._redirect.preToolUse('Bash', { command: `cat ${spilled}` });
+      assert.equal(bash.decision, 'deny', `${label}: ${JSON.stringify(bash)}`);
+      assert.ok(bash.reason.includes(`'${spilled}'`), `${label}: ${bash.reason}`);
+    }
   });
 
   // PINS: the per-session tmp root is REMOVED with the session. cc creates one
