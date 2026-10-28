@@ -95,6 +95,10 @@ export interface TierEntry {
   // EXCEPT a `localRoots`-derived entry, which carries the bit its declaration
   // gave it (see LocalRoot).
   toolAccess: 'allow' | 'deny';
+  // Set only by `addLocal`: the prefix is cc's own (a declared LocalRoot), not an
+  // OS or home pin. It picks the refusal wording — a `cat` on the system cannot
+  // answer for a path only the orchestrator has. The pins file ignores it.
+  localRoot?: true;
 }
 
 // A host-local prefix a redirected session may name, DECLARED rather than
@@ -102,7 +106,11 @@ export interface TierEntry {
 // these is host-pinned for the daemon either way — a local root the daemon
 // served from the remote would answer about the wrong machine — so the bit says
 // only whether a file TOOL may name it. THE ALLOW SET IS THIS ARRAY AND NOTHING
-// ELSE: there is no second list of allowed prefixes anywhere in cc.
+// ELSE, with ONE exception that cannot be declared here: `SessionRedirect` lets
+// `Read` (only) reach the session's own `tool-results/` dirs under its config
+// dir's deny. Those are keyed by backing id, which is minted at launch and
+// rotates on /clear, renew and prune, while this table is built once at create — see
+// `SessionRedirectOptions.ownToolResultDirs`.
 export interface LocalRoot {
   prefix: string;
   access: 'allow' | 'deny';
@@ -478,7 +486,7 @@ export function buildTierTable(input: TierTableInput): TierEntry[] {
   };
   const addLocal = (r: LocalRoot): void => {
     if (!r.prefix || !path.isAbsolute(r.prefix)) return;
-    entries.push({ tier: 'host', prefix: r.prefix, why: r.why, toolAccess: r.access });
+    entries.push({ tier: 'host', prefix: r.prefix, why: r.why, toolAccess: r.access, localRoot: true });
   };
 
   for (const p of binaryPins(input.claudeCommand)) add('host', p, "the CLI binary, its realpath and the realpath's install chain — all walked MARKED");
@@ -605,7 +613,10 @@ export function classifyForTool(
       // is the same string and stands in only to keep this total.
       return { decision: 'deny', class: 'excluded', reason: excludedRefusal(p, session.systemId, isExcluded(p, session.exclude) ?? entry.prefix) };
     default:
-      return { decision: 'deny', class: 'host-pinned', reason: hostPinnedRefusal(p, entry, session.systemId) };
+      return {
+        decision: 'deny', class: 'host-pinned',
+        reason: entry.localRoot ? orchestratorOnlyRefusal(p, entry, session.systemId) : hostPinnedRefusal(p, entry, session.systemId),
+      };
   }
 }
 
@@ -674,4 +685,17 @@ function hostPinnedRefusal(p: string, entry: TierEntry, systemId: string): strin
     + `SYSTEM '${systemId}', not on the orchestrator: \`cat '${p}'\` there answers with system `
     + `'${systemId}''s own file at that path IF IT HAS ONE, which is the right answer for a `
     + `question about '${systemId}' and is NOT the orchestrator's copy this refusal is about.`;
+}
+
+// A DENIED LOCALROOT — cc's own store, its config dirs, another session's data.
+// Same class as a host pin, different last clause: such a path exists only on
+// the orchestrator, so the system's copy at that path is no answer at all, and
+// the `cat` pointer the OS-pin wording offers would send the worker after it.
+function orchestratorOnlyRefusal(p: string, entry: TierEntry, systemId: string): string {
+  return `cc will not bridge '${p}' to this session: '${entry.prefix}' is the ORCHESTRATOR's own `
+    + `(${entry.why}), and no tool in this session carries it. This is cc refusing to carry the `
+    + `file, NOT the file being absent — cc has not looked, and this says nothing about whether it `
+    + `exists. Bash runs on '${systemId}', not on the orchestrator, so a Bash command naming '${p}' `
+    + `reads system '${systemId}''s filesystem and is NOT the orchestrator's copy this refusal is `
+    + `about — do not retry this path through Bash.`;
 }

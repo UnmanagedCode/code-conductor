@@ -33,7 +33,7 @@ import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
 import { divergedRefusal, overCapRefusal, refusesTool } from '../src/systems/fuse/faultRefusals.ts';
 import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
 import { withinPosix } from '../src/systems/mirror.ts';
-import { tierFixtureInput, FIXTURE_OWN_CONFIG_DIR, FIXTURE_OTHER_CONFIG_DIR, FIXTURE_CONFIG_FARM } from './tierFixture.mjs';
+import { tierFixtureInput, redirectOutputOptions, FIXTURE_OWN_CONFIG_DIR, FIXTURE_OTHER_CONFIG_DIR, FIXTURE_CONFIG_FARM, FIXTURE_OWN_BACKING_ID, FIXTURE_OWN_TOOL_RESULTS } from './tierFixture.mjs';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -340,6 +340,7 @@ describe('the four file-tool refusals', () => {
       systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions(),
     });
     assert.ok(Object.keys(FILE_TOOLS).length >= 4, 'the map is not empty');
     for (const [tool, key] of Object.entries(FILE_TOOLS)) {
@@ -563,6 +564,7 @@ describe('the four file-tool refusals', () => {
       systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions(),
     });
     const plan = buildFusePlan({
       instanceId: 'inst-1', cwdInside: SYSTEM_PATH,
@@ -675,6 +677,7 @@ describe('the four file-tool refusals', () => {
       systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions(),
     });
     for (const bad of ['src/main.js', './x', '', undefined, 42]) {
       const d = await redirect.preToolUse('Read', { file_path: bad });
@@ -695,6 +698,7 @@ describe('the four file-tool refusals', () => {
       systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions(),
     });
     assert.deepEqual(await redirect.preToolUse('TodoWrite', { file_path: '/home/wk/.claude/x' }),
       { decision: 'allow' });
@@ -724,6 +728,7 @@ describe('the fault refusals — divergence and over-cap', () => {
       systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions(),
       faultAt: (p) => (p === P ? fault : null),
       settle: async () => {},
     });
@@ -875,6 +880,7 @@ describe('the fault refusals — divergence and over-cap', () => {
       systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions(),
       faultAt: () => DIVERGED,
       settle: async () => {},
     });
@@ -941,6 +947,7 @@ describe('the fault refusals — divergence and over-cap', () => {
       systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
       tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions(),
       // THE FAULT ONLY EXISTS ONCE `settle` HAS RESOLVED, which is what makes
       // the await load-bearing rather than decorative: a `postToolUse` that
       // read the record without waiting sees null and reports nothing.
@@ -1033,4 +1040,98 @@ test('A9c: the farm and its symlink targets are both served by the union', () =>
   // property `realpathsOf(ETC_PINS)` relies on.
   assert.equal(served('/home/wk/.claude/settings.json')?.tier, 'host');
   assert.equal(served('/home/wk/.claude/plugins')?.tier, 'host');
+});
+
+// ── THE SESSION'S OWN SPILLED TOOL RESULTS ──────────────────────────────────
+//
+// The CLI saves a tool result too large to show inline under its config dir,
+// at `<config>/projects/<slug>/<backingId>/tool-results/`, and cites that path
+// in the result. The config dir is a localRoot `deny`, so without the one
+// Read-only exception the worker can reach the file through no tool at all:
+// Bash runs on the system, where the file does not exist.
+describe("a session's own tool-results dir", () => {
+  const OTHER_BACKING_ID = '9f8e7d6c-5b4a-4321-8fed-cba987654321';
+  const OWN_FILE = `${FIXTURE_OWN_TOOL_RESULTS}/toolu_01.txt`;
+
+  const redirectWith = (ownToolResultDirs = () => [FIXTURE_OWN_TOOL_RESULTS]) => {
+    const { tiers, session } = fixture();
+    return new SessionRedirect({
+      system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
+      systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
+      tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
+      forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      ...redirectOutputOptions({ ownToolResultDirs }),
+    });
+  };
+
+  // R1 — PINS: Read reaches the session's own spilled output, and only Read —
+  // the CLI owns those files, and the dir sits inside the config dir that holds
+  // the credentials.
+  test('R1: Read of its own tool-results is allowed; every writing tool is refused', async () => {
+    const redirect = redirectWith();
+    assert.deepEqual(await redirect.preToolUse('Read', { file_path: OWN_FILE }), { decision: 'allow' });
+    const tierReason = denied(fixture().classify(OWN_FILE), 'host-pinned');
+    for (const [tool, key] of Object.entries(FILE_TOOLS).filter(([t]) => t !== 'Read')) {
+      const d = await redirect.preToolUse(tool, { [key]: OWN_FILE });
+      assert.equal(d.decision, 'deny', tool);
+      assert.equal(d.reason, tierReason, `${tool} was not refused by the tier gate's host-pinned rule`);
+    }
+  });
+
+  // R2 — PINS the scope: its OWN dirs, matched by containment that normalises
+  // `..`, and nothing else under the config dir.
+  test('R2: everything else under the config dirs stays refused, traversal included', async () => {
+    const redirect = redirectWith();
+    const slugDir = `${FIXTURE_OWN_CONFIG_DIR}/projects/-srv-app`;
+    for (const p of [
+      `${slugDir}/${OTHER_BACKING_ID}/tool-results/x.txt`,
+      `${slugDir}/${FIXTURE_OWN_BACKING_ID}.jsonl`,
+      `${slugDir}/${FIXTURE_OWN_BACKING_ID}/subagents/agent-x.jsonl`,
+      `${FIXTURE_OWN_CONFIG_DIR}/.credentials.json`,
+      `${FIXTURE_OTHER_CONFIG_DIR}/projects/-srv-app/${FIXTURE_OWN_BACKING_ID}/tool-results/x.txt`,
+      `${FIXTURE_OWN_TOOL_RESULTS}/../../${OTHER_BACKING_ID}/tool-results/x.txt`,
+    ]) {
+      const d = await redirect.preToolUse('Read', { file_path: p });
+      assert.equal(d.decision, 'deny', p);
+    }
+    // THE CONTROL: with no own dirs the very same path is refused, so the allow
+    // above comes from the getter and not from the tier table.
+    const none = await redirectWith(() => []).preToolUse('Read', { file_path: OWN_FILE });
+    assert.equal(none.decision, 'deny');
+  });
+
+  // R3 — PINS the ordering: the exception overrides a host-pinned deny and no
+  // other. The tier gate still runs first, so a getter that somehow named an
+  // excluded, bind-mounted or out-of-mirror path cannot open it.
+  test('R3: the exception never overrides an excluded, bind-mount or outside-mirror deny', async () => {
+    const redirect = redirectWith(() => ['/srv/app/secrets', '/proc', '/opt/elsewhere']);
+    const { classify } = fixture();
+    for (const [p, cls] of [
+      ['/srv/app/secrets/key.pem', 'excluded'],
+      ['/proc/cpuinfo', 'bind-mount'],
+      ['/opt/elsewhere/x', 'outside-mirror-root'],
+    ]) {
+      const d = await redirect.preToolUse('Read', { file_path: p });
+      assert.equal(d.decision, 'deny', p);
+      assert.equal(d.reason, denied(classify(p), cls), p);
+    }
+  });
+
+  // R4 — PINS the localRoot wording: a path that exists only on the
+  // orchestrator is not answered by a `cat` on the system, so the refusal must
+  // not send the worker there. An OS or home pin keeps the `cat` pointer,
+  // because there the system's own copy is the right answer.
+  test('R4: a localRoot deny drops the `cat` pointer; an OS or home pin keeps it', () => {
+    const { classify } = fixture();
+    for (const p of ['/home/wk/.claude/settings.json', OWN_FILE, `${FIXTURE_OTHER_CONFIG_DIR}/x`]) {
+      const reason = denied(classify(p), 'host-pinned');
+      assert.doesNotMatch(reason, /`cat/, reason);
+      assert.match(reason, /do not retry this path through Bash/, reason);
+      namesBashOnTheSystem(reason, SYSTEM_ID);
+      neverClaimsAbsence(reason);
+    }
+    const os = denied(classify('/home/wk/.bashrc'), 'host-pinned');
+    assert.match(os, /`cat '\/home\/wk\/\.bashrc'`/, os);
+    assert.doesNotMatch(os, /do not retry this path through Bash/, os);
+  });
 });

@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
@@ -2137,9 +2137,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // callers are async and return errors to REST/MCP.
   // Bind this session's redirection policy. Called by the manager right after
   // construction, BEFORE launch(): spawn() reads `_redirect` to decide whether
-  // the injected settings drop Read, keep the PostToolUse seam and remove Glob/Grep, and a
-  // session launched without that surface would answer file tools from cc's own
-  // disk.
+  // the injected settings hook Read and the other file tools, keep the
+  // PostToolUse seam and remove Glob/Grep, and a session launched without that
+  // surface would answer file tools from cc's own disk.
   attachRedirect(redirect: SessionRedirect, placement: RedirectPlacement): void {
     this._redirect = redirect;
     this._redirectPlacement = placement;
@@ -2640,20 +2640,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A backgrounded Bash's tool result tells the worker, verbatim, to `Read`
     // the task file it names under that root — a path on THIS machine.
     //
-    // WHAT KEEPS THE PIN — and it is not a refusal: no file tool is hooked for
-    // a path outside the project's tree, so nothing here turns on one.
-    // `sessionTmpDir(id)` is in the `localRoots` array below,
-    // which seeds the union's HOST tier (tierTable.ts, `localRoots` → `add
-    // ('host', …)`). So this exact directory is served from the orchestrator's
-    // own filesystem inside the chroot, and the worker's task output means the
-    // same thing to the CLI and to cc. The per-uid default the CLI would
-    // otherwise use is not in that array.
-    //
-    // I have NOT established what the union does with an unpinned path here,
-    // and this comment deliberately does not guess: the pin is load-bearing
-    // because it is what puts the path in the host tier, and that is the whole
-    // claim. Its FORMER justification — the redirect refused any file path
-    // outside the session root — died with the geometry.
+    // WHY THE PIN: it gives that output ONE known host path, which the rest of
+    // the redirect is declared against. `sessionTmpDir(id)` is a `localRoots`
+    // `allow` in `_doCreateResolved`, so the union serves it from the
+    // orchestrator's own filesystem (host tier) and the file-tool hook lets
+    // `Read` name it — the worker's task output means the same thing to the CLI
+    // and to cc. It is also the `sessionTmpDir` the redirect refuses a forwarded
+    // Bash for naming, since Bash runs on the system where the path is not. The
+    // per-uid default the CLI would otherwise use is in neither, and what the
+    // union does with that unpinned path is not established here.
     //
     // Per session, and 0700, so one session's task output is not another's; the
     // CLI validates the override's ownership and mode.
@@ -6167,16 +6162,21 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // FILE TOOL may name it. Every one is host-pinned for the daemon whatever
       // the bit says — a local root served from the remote would answer about
       // the wrong machine — so `access` decides the hook and nothing else, and
-      // THE ALLOW SET IS THIS ARRAY AND NOWHERE ELSE.
+      // THE ALLOW SET IS THIS ARRAY AND NOWHERE ELSE, with ONE Read-only
+      // exception that cannot be declared here: the session's own
+      // `tool-results/` dirs (`ownToolResultDirs` below). They are keyed by
+      // backing id, which is minted at launch and rotates on /clear, renew and
+      // prune, while this array is fixed at create.
       //
       // Each `deny` is a path that holds OTHER sessions' data, and each `allow`
       // is a path a real named tool call has to reach and that Bash — which
       // execs on the system — cannot see, so a deny would make it unreachable
       // through every channel at once.
+      const tmpRoot = sessionTmpDir(id);
       const localRoots: LocalRoot[] = [
         { prefix: attachmentsDir(project, worktreeMeta?.worktreeName ?? null), access: 'allow',
           why: "this project's upload channel — Bash execs on the system and cannot see it" },
-        { prefix: sessionTmpDir(id), access: 'allow',
+        { prefix: tmpRoot, access: 'allow',
           why: "this session's own tmp dir (CLAUDE_CODE_TMPDIR), per-session by construction" },
         // Plan mode's `Write` lands under here (src/planFile.ts), so a deny
         // breaks plan mode outright for every remote-backed worker. RESIDUAL,
@@ -6259,6 +6259,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // would go stale. Both are why these are getters and not values.
         faultAt: (p) => inst._fuse?.controlServer?.faultAt(p) ?? null,
         settle: (p) => inst._fuse?.controlServer?.settle(p) ?? Promise.resolve(),
+        // THE CLI'S HOST-ONLY OUTPUT DIRS: a Bash naming one is refused, and Read
+        // reaches the tool-results ones. Lazy for the same reason as above — the
+        // backing ids do not exist yet and rotate.
+        sessionTmpDir: tmpRoot,
+        ownToolResultDirs: () => segmentsOf(inst).map(b => toolResultsDirPath(inst.transcriptPlace, b)),
       }), redirectPlacement);
       // The FUSE-union chroot, attached in the same block and gated on the same
       // `remote` boolean, so a session cannot end up with one and not the other.

@@ -25,6 +25,7 @@ import {
   projectRootPlace, remoteConfigDir, remoteConfigDirName, sessionFilePath,
   subAgentDirPath, transcriptRoot,
 } from '../src/projects.ts';
+import * as projects from '../src/projects.ts';
 import { ensureRemoteConfigDir } from '../src/claudeConfigFarm.ts';
 
 const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
@@ -98,6 +99,19 @@ describe('the per-remote CLI config directory', () => {
       const other = remoteConfigDirName('box', 'y'.repeat(127) + 'z');
       assert.notEqual(long, other);
     });
+  });
+
+  // PINS the CLI's own spill layout, as measured from the real CLI on a docker
+  // System: an oversized tool result lands at
+  // `<CLAUDE_CONFIG_DIR>/projects/<encodeCwd(cwd)>/<backingId>/tool-results/`.
+  // Spelled out rather than derived, so a wrong leaf or a wrong parent cannot
+  // agree with itself. `remoteConfigDir` is the CLAUDE_CONFIG_DIR value — T2
+  // pins the spawn env to it.
+  test("toolResultsDirPath is the CLI's measured tool-results layout", () => {
+    const place = { system: 'box', remoteId: null, cwd: '/app' };
+    const backingId = '0b7a9a3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b';
+    assert.equal(projects.toolResultsDirPath(place, backingId),
+      `${remoteConfigDir(place)}/projects/-app/0b7a9a3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tool-results`);
   });
 });
 

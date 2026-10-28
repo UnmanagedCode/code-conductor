@@ -17,9 +17,16 @@ export const FIXTURE_OWN_CONFIG_DIR = '/home/wk/cc-projects/.cc-store/claude-con
 export const FIXTURE_OTHER_CONFIG_DIR = '/home/wk/cc-projects/.cc-store/claude-config/boxb-ba9876543210/.claude';
 export const FIXTURE_CONFIG_FARM = '/home/wk/cc-projects/.cc-store/claude-config';
 
+// The session's own tmp root (the CLI's CLAUDE_CODE_TMPDIR) and one of its own
+// `tool-results/` dirs, laid out as `toolResultsDirPath` lays them out. The
+// slug is `encodeCwd('/srv/app')`.
+export const FIXTURE_SESSION_TMP = '/store/session-tmp/inst-1';
+export const FIXTURE_OWN_BACKING_ID = '0b7a9a3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b';
+export const FIXTURE_OWN_TOOL_RESULTS = `${FIXTURE_OWN_CONFIG_DIR}/projects/-srv-app/${FIXTURE_OWN_BACKING_ID}/tool-results`;
+
 export const FIXTURE_LOCAL_ROOTS = [
   { prefix: '/store/attachments/app', access: 'allow', why: "this project's upload channel" },
-  { prefix: '/store/session-tmp/inst-1', access: 'allow', why: "this session's own tmp dir" },
+  { prefix: FIXTURE_SESSION_TMP, access: 'allow', why: "this session's own tmp dir" },
   { prefix: `${FIXTURE_OWN_CONFIG_DIR}/plans`, access: 'allow', why: "plan mode writes its plan file here — this remote's own config dir" },
   { prefix: FIXTURE_OWN_CONFIG_DIR, access: 'deny', why: "this remote's CLI config and every session on it" },
   { prefix: FIXTURE_CONFIG_FARM, access: 'deny', why: "every other remote's CLI config and transcripts" },
@@ -54,4 +61,11 @@ export function sessionTiers(over = {}) {
 export function redirectTierOptions({ systemPath, mirrorRoot = systemPath, exclude = [], localRoots } = {}) {
   const over = { systemPath, mirrorRoot, exclude, ...(localRoots ? { localRoots } : {}) };
   return { tiers: sessionTiers(over), exclude, mirrorRoot };
+}
+
+// The two host-only output locations `SessionRedirect` guards Bash against and
+// lets Read reach. Overridable per field, so a test can hand it the one getter
+// it is about.
+export function redirectOutputOptions({ sessionTmpDir = FIXTURE_SESSION_TMP, ownToolResultDirs = () => [FIXTURE_OWN_TOOL_RESULTS] } = {}) {
+  return { sessionTmpDir, ownToolResultDirs };
 }

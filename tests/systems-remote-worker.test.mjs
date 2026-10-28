@@ -22,6 +22,8 @@ import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject, orchStoreRoot} from '../src/projects.ts';
+import * as projects from '../src/projects.ts';
+import { rotate } from './segmentChain.mjs';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
@@ -249,6 +251,42 @@ describe('a worker session on a remote system', () => {
     assert.equal(await fs.readFile(taskFile, 'utf8'), 'interim output\n');
   });
 
+  // W1 — PINS the wiring: the manager hands the redirect THIS session's real
+  // tmp root and its real tool-results dir, laid out where cc itself places
+  // the session's transcript. A Bash naming the first is refused; Read of the
+  // second is allowed and Write is not.
+  test("the redirect guards this session's own output paths", async () => {
+    const inst = instances.get(instId);
+    assert.ok(inst.backingSessionId, 'the session has a backing id');
+    const bash = await inst._redirect.preToolUse('Bash', { command: `tail ${sessionTmpDir(inst.id)}/x.output` });
+    assert.equal(bash.decision, 'deny', JSON.stringify(bash));
+    const spilled = path.join(projects.toolResultsDirPath(inst.transcriptPlace, inst.backingSessionId), 'r.txt');
+    assert.deepEqual(await inst._redirect.preToolUse('Read', { file_path: spilled }), { decision: 'allow' });
+    assert.equal((await inst._redirect.preToolUse('Write', { file_path: spilled, content: 'x' })).decision, 'deny');
+  });
+
+  // PINS coverage across a rotation: after a `/clear` the session holds two live
+  // segments, and BOTH segments' spilled results are reachable by Read and
+  // guarded from Bash — the older one because the history the worker carries
+  // still cites it, the current one because that is where new results land.
+  // Driven through the production rotation branch (`rotate`,
+  // tests/segmentChain.mjs).
+  test("the guard and the Read allow cover every live segment's tool-results", async () => {
+    const inst = instances.get(instId);
+    const older = inst.backingSessionId;
+    const current = 'c0000000-0000-4000-8000-0000000000aa';
+    await rotate(inst, current);
+    assert.deepEqual(inst._segments, [older, current], 'premise: the session holds two live segments');
+    assert.equal(inst.backingSessionId, current, 'premise: the rotation moved the backing id');
+    for (const [label, backing] of [['older', older], ['current', inst.backingSessionId]]) {
+      const spilled = path.join(projects.toolResultsDirPath(inst.transcriptPlace, backing), `${label}.txt`);
+      assert.deepEqual(await inst._redirect.preToolUse('Read', { file_path: spilled }), { decision: 'allow' }, label);
+      const bash = await inst._redirect.preToolUse('Bash', { command: `cat ${spilled}` });
+      assert.equal(bash.decision, 'deny', `${label}: ${JSON.stringify(bash)}`);
+      assert.ok(bash.reason.includes(`'${spilled}'`), `${label}: ${bash.reason}`);
+    }
+  });
+
   // PINS: the per-session tmp root is REMOVED with the session. cc creates one
   // dir per redirected session under its own store; never removing them is a
   // leak that grows for the life of the install.
@@ -304,6 +342,7 @@ describe('a worker session on a remote system', () => {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'plain', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.equal(instances.get(r.body.id)._spawnEnv.CLAUDE_CODE_TMPDIR, process.env.CLAUDE_CODE_TMPDIR);
+    assert.equal(instances.get(r.body.id)._redirect, null, 'a local session has no redirect, so no guard');
   });
 
   // PINS THE HOT PATH, end to end: the rewritten command, run by a real shell
