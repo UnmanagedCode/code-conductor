@@ -9,7 +9,14 @@ import path from 'node:path';
 import { runGroupedCommand } from '../groupedCommand.ts';
 import { hostPlatform, type Platform } from '../platform/index.ts';
 import type { MirrorAdvertisement } from './mirror.ts';
+import { SystemError, isSystemErrorCode } from './protocol.ts';
+import { probePtyHelper, spawnPty } from './ptyHost.ts';
 import { msFromNanos, requireAbsolute, typeBitsFor } from './system.ts';
+import {
+  LOCAL_TERMINAL_OPEN_TIMEOUT_MS, TerminalSlots, assertDims, openCancelled, ptyUnavailable, toBuffer,
+  validateTerminalSpec,
+  type Terminal, type TerminalEnd, type TerminalHandlers, type TerminalSpec,
+} from './terminal.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemLstat, SystemStat, WriteFileOptions,
 } from './system.ts';
@@ -91,7 +98,21 @@ export class LocalSystem implements System {
   readonly remoteId = null;
 
   private readonly platform: Platform;
-  constructor(platform: Platform = hostPlatform) { this.platform = platform; }
+  readonly #terminals: TerminalSlots;
+  // The interpreter name the pty probe looks up. A test names an absent one.
+  readonly #ptyPython: string | undefined;
+  readonly #terminalOpenTimeoutMs: number;
+
+  constructor(
+    platform: Platform = hostPlatform,
+    { maxTerminals, ptyPython, terminalOpenTimeoutMs = LOCAL_TERMINAL_OPEN_TIMEOUT_MS }:
+      { maxTerminals?: number; ptyPython?: string; terminalOpenTimeoutMs?: number } = {},
+  ) {
+    this.platform = platform;
+    this.#terminals = new TerminalSlots(maxTerminals);
+    this.#ptyPython = ptyPython;
+    this.#terminalOpenTimeoutMs = terminalOpenTimeoutMs;
+  }
 
   // `async` on these three so a guard violation REJECTS rather than throwing
   // synchronously: ProviderSystem's are async, and the two implementations of
@@ -291,5 +312,66 @@ export class LocalSystem implements System {
   // asked for a mirror even when a provider is standing in for this class.
   async mirror(): Promise<MirrorAdvertisement> {
     return { mirrorRoot: null, exclude: [] };
+  }
+
+  // The pty host in-process, under the same environment rule as `exec`: cc's own
+  // environment, then the caller's overlay, then TERM.
+  async openTerminal(spec: TerminalSpec, handlers: TerminalHandlers): Promise<Terminal> {
+    validateTerminalSpec(spec);
+    const shell = this.platform.terminalShell();
+    if (shell === null) throw ptyUnavailable('cc has no pty helper for this platform (Windows has no local terminals)');
+    const probe = await probePtyHelper(this.#ptyPython === undefined ? {} : { python: this.#ptyPython });
+    if (!probe.ok) throw ptyUnavailable(probe.reason);
+    if (spec.signal?.aborted) throw openCancelled();
+    const release = this.#terminals.acquire(this.id);
+    return new Promise<Terminal>((resolve, reject) => {
+      let started = false;
+      let ended = false;
+      const settle = (): void => {
+        ended = true;
+        release();
+        spec.signal?.removeEventListener('abort', onAbort);
+      };
+      const end = (e: TerminalEnd): void => {
+        if (ended) return;
+        settle();
+        handlers.onExit(e);
+      };
+      const proc = spawnPty({
+        interpreter: probe.interpreter, cwd: spec.cwd, argv: spec.argv ?? shell,
+        env: { ...process.env, ...spec.env, TERM: spec.term }, cols: spec.cols, rows: spec.rows,
+        startTimeoutMs: this.#terminalOpenTimeoutMs,
+      }, {
+        onStarted: () => { started = true; resolve(terminal); },
+        onData: (chunk) => { if (!ended) handlers.onData(chunk); },
+        onExit: (code, signal) => end({ kind: 'exited', code, signal }),
+        onFailed: (code, message) => {
+          const error = new SystemError(isSystemErrorCode(code) ? code : 'EUNKNOWN', `openTerminal: ${message}`);
+          if (started) { end({ kind: 'failed', error }); return; }
+          if (ended) return;
+          settle();
+          reject(error);
+        },
+      });
+      const terminal: Terminal = {
+        write: (data) => { if (!ended) proc.write(toBuffer(data)); },
+        resize: (cols, rows) => { assertDims('resize', cols, rows); if (!ended) proc.resize(cols, rows); },
+        pause: () => proc.pause(),
+        resume: () => proc.resume(),
+        close: () => {
+          if (ended) return;
+          proc.close();
+          end({ kind: 'closed' });
+        },
+      };
+      const onAbort = (): void => {
+        if (started) { terminal.close(); return; }
+        if (ended) return;
+        proc.close();
+        settle();
+        reject(openCancelled());
+      };
+      spec.signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 }

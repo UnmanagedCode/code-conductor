@@ -623,6 +623,10 @@ const PARITY_CASES = {
   // a `local` handle (LocalSystem.mirror's own header), so there is no shared
   // behaviour to compare. Its wire half is tests/systems-mirror-advertisement.
   mirror: null,
+  // Its parity is a whole battery of its own: tests/terminalBattery.mjs runs
+  // the same rows against LocalSystem (tests/systems-terminal-local.test.mjs)
+  // and against ProviderSystem (tests/systems-protocol-conformance.test.mjs).
+  openTerminal: null,
 };
 
 test('every member of System has a parity case, derived from the prototype', async () => {

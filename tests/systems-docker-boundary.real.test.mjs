@@ -56,10 +56,13 @@ const DOCKER = (process.env.CC_DOCKER ?? 'docker').split(/\s+/);
 const CTR = `cc-systems-p5-${process.pid}`;
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Copied into the container. The provider's ENTIRE local import closure is
-// `protocol.ts` and nothing else, so the first two files are all it needs to
-// run; `execCollector.ts` and `system.ts` are inert here and are carried only
-// so the copied set matches the module's siblings. Nothing else crosses in.
-const PROVIDER_FILES = ['referenceProvider.ts', 'protocol.ts', 'execCollector.ts', 'system.ts'];
+// `protocol.ts` and `ptyHost.ts`, which runs `ptyHelper.py`, so those four are
+// all it needs; `execCollector.ts` and `system.ts` are inert here and are
+// carried only so the copied set matches the module's siblings. Nothing else
+// crosses in.
+const PROVIDER_FILES = [
+  'referenceProvider.ts', 'protocol.ts', 'ptyHost.ts', 'ptyHelper.py', 'execCollector.ts', 'system.ts',
+];
 // A directory that is on the CONTAINER's PATH and on no host's, holding a
 // binary that exists only there. It is what makes the argv-form assertion below
 // a discriminator rather than a coincidence: resolving `cc-buildtool` at all
@@ -291,6 +294,29 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.equal(slow.status, 504, JSON.stringify(slow.body));
     assert.equal(slow.body.code, 'EXEC_TIMEOUT');
     assert.equal(slow.body.stdout, 'started\n');
+  });
+
+  // PINS: whether the container's provider offers terminals follows the
+  // CONTAINER's own python3, not cc's. With one, a terminal opens inside the
+  // container (its hostname); without one the handshake carries `pty:false`
+  // and the open is refused SYSTEM_NO_PTY, naming the system and provider.
+  test('a terminal on the container follows the container\'s python3', async () => {
+    const hasPython = await docker('exec', CTR, 'python3', '-I', '-c', 'import pty').then(() => true, () => false);
+    const sys = await systemById('ctrbox', null, 'the docker terminal test');
+    assert.equal(sys.handshake.capabilities.pty, hasPython, 'the handshake follows the container\'s python3');
+    const spec = { cwd: '/app', argv: ['sh', '-c', 'hostname; exit 4'], cols: 80, rows: 24, term: 'xterm' };
+    if (!hasPython) {
+      await assert.rejects(sys.openTerminal(spec, { onData() {}, onExit() {} }),
+        (e) => e.statusCode === 501 && e.code === 'SYSTEM_NO_PTY'
+          && e.message.includes("'ctrbox'") && e.message.includes(sys.handshake.provider));
+      return;
+    }
+    let out = '';
+    const end = await new Promise((resolve, reject) => {
+      sys.openTerminal(spec, { onData: (b) => { out += b.toString('utf8'); }, onExit: resolve }).catch(reject);
+    });
+    assert.deepEqual(end, { kind: 'exited', code: 4, signal: null });
+    assert.equal(out.trim(), (await inCtr('hostname')).trim(), 'the program ran inside the container');
   });
 
   // PINS STREAMING ACROSS THE MACHINE BOUNDARY: output produced inside the

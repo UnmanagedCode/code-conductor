@@ -1,3 +1,4 @@
+import { posixLoginShell } from '../systems/ptyHost.ts';
 import type { Platform } from './platform.ts';
 
 export const posixPlatform: Platform = {
@@ -29,5 +30,8 @@ export const posixPlatform: Platform = {
   },
   pathKey(p) {
     return p;
+  },
+  terminalShell() {
+    return posixLoginShell();
   },
 };

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { MirrorAdvertisement } from './mirror.ts';
 import type { SystemErrorCode } from './protocol.ts';
+import type { Terminal, TerminalHandlers, TerminalSpec } from './terminal.ts';
 
 // The System interface — the seam every PROJECT-SCOPED operation goes through.
 //
@@ -386,4 +387,18 @@ export interface System {
   // target advertises nothing, which is every provider that predates the frame
   // and cc's own machine.
   mirror(): Promise<MirrorAdvertisement>;
+
+  // ── A terminal ─────────────────────────────────────────────────────
+  // A program under a pseudo-terminal on this system — the login shell when
+  // `argv` is absent — streaming bytes both ways (src/systems/terminal.ts owns
+  // the types and the refusals). ON EVERY SYSTEM rather than a provider-only
+  // extra, so a terminal on a local project and one on a remote project take
+  // the same call; both run src/systems/ptyHost.ts.
+  //
+  // NOT A FOURTH MUST: on the wire it is an `exec` carrying `pty`, behind the
+  // optional `pty` capability (docs/systems-protocol.md §2, §5). It REJECTS —
+  // unlike `exec` — because there is no result to carry a refusal in: a named
+  // refusal (`PTY_UNAVAILABLE`, `SYSTEM_NO_PTY`, `TERMINAL_LIMIT`) or a
+  // SystemError about the target. An invalid `spec` throws.
+  openTerminal(spec: TerminalSpec, handlers: TerminalHandlers): Promise<Terminal>;
 }

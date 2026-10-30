@@ -13,6 +13,7 @@
 // operations, no cc imports beyond the shared frame vocabulary.
 //
 //   node src/systems/referenceProvider.ts [--no-process-group-signal]
+//                                         [--no-pty]
 //                                         [--remote <id>=<absolute root>]…
 //                                         [--mirror <[id=]absolute root>]…
 //                                         [--exclude <[id=]absolute path>]…
@@ -36,6 +37,10 @@
 // is injected, and the wire is byte-identical to a provider that never heard of
 // the frame.
 //
+// `pty` (§5, "pty exec") is advertised when this host's python3 runs the pty
+// helper (src/systems/ptyHost.ts — the same code LocalSystem runs in-process),
+// probed once at launch, and never under `--no-pty`.
+//
 // Speaks NDJSON on stdin/stdout and EXITS WHEN STDIN CLOSES, which is how a
 // provider is reaped when cc goes away.
 
@@ -43,10 +48,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
-  BINARY_SNIFF_BYTES, CHUNK_BYTES, MAX_FILE_BYTES, NdjsonDecoder, PROTOCOL_VERSION,
-  SystemError, encodeFrame, remoteIdDefect, type AnyFrame, type FsErrorCode, type ProviderFrame, type SystemErrorCode,
+  BINARY_SNIFF_BYTES, CHUNK_BYTES, MAX_FILE_BYTES, NdjsonDecoder, PROTOCOL_VERSION, PTY_DIM_MAX, PTY_WINDOW_BYTES,
+  SystemError, encodeFrame, isSystemErrorCode, remoteIdDefect,
+  type AnyFrame, type FsErrorCode, type ProviderFrame, type SystemErrorCode,
 } from './protocol.ts';
 import { FS_ERROR_CODES } from './protocol.ts';
+import { posixLoginShell, probePtyHelper, spawnPty, type PtyProcess } from './ptyHost.ts';
 
 const KILL_GRACE_MS = 100;
 
@@ -79,6 +86,8 @@ function withinRoot(root: string, p: string): boolean {
 
 interface Options {
   processGroupSignal: boolean;
+  // False under `--no-pty`: no probe, and `pty` is never advertised.
+  pty: boolean;
   // remote id → the absolute root that target is scoped to. EMPTY means this
   // provider serves exactly one target, does not advertise `remotes`, and
   // behaves byte-identically to one that never heard of them.
@@ -100,7 +109,7 @@ function parseTargeted(flag: string, spec: string): { id: string; value: string 
 
 export function parseProviderArgs(argv: string[]): Options {
   const o: Options = {
-    processGroupSignal: true, remotes: new Map(), mirrors: new Map(),
+    processGroupSignal: true, pty: true, remotes: new Map(), mirrors: new Map(),
     name: 'reference-local',
   };
   const mirrorFor = (id: string): { mirrorRoot: string | null; exclude: string[] } => {
@@ -111,6 +120,7 @@ export function parseProviderArgs(argv: string[]): Options {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-process-group-signal') o.processGroupSignal = false;
+    else if (a === '--no-pty') o.pty = false;
     else if (a === '--remote') {
       const spec = argv[++i] ?? '';
       const eq = spec.indexOf('=');
@@ -151,6 +161,17 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+interface PtyState {
+  proc: PtyProcess;
+  seq: number;
+  // Bytes cc may still be sent before it acks (PTY_WINDOW_BYTES at the start).
+  credit: number;
+  // The part of one chunk the credit could not cover; the helper is paused
+  // while it is held, so there is never more than one.
+  held: Buffer | null;
+  closed: boolean;
+}
+
 interface ExecState {
   child: ChildProcess;
   seq: number;
@@ -167,12 +188,19 @@ export class ReferenceProvider {
   readonly #opts: Options;
   readonly #write: (frame: ProviderFrame) => void;
   readonly #execs = new Map<string, ExecState>();
+  readonly #ptys = new Map<string, PtyState>();
+  // The helper's interpreter when `pty` is advertised, else null.
+  readonly #ptyInterpreter: string | null;
   readonly #writes = new Map<string, { path: string; mode?: number; atomic: boolean; exclusive: boolean; chunks: Buffer[]; bytes: number; failed: boolean }>();
   #greeted = false;
   #onFatal: (msg: string) => void;
 
-  constructor(opts: Options, write: (frame: ProviderFrame) => void, onFatal: (msg: string) => void) {
+  constructor(
+    opts: Options, write: (frame: ProviderFrame) => void, onFatal: (msg: string) => void,
+    { ptyInterpreter = null }: { ptyInterpreter?: string | null } = {},
+  ) {
     this.#opts = opts;
+    this.#ptyInterpreter = opts.pty ? ptyInterpreter : null;
     this.#write = write;
     this.#onFatal = onFatal;
   }
@@ -198,6 +226,7 @@ export class ReferenceProvider {
           remotes: this.#opts.remotes.size > 0,
           remoteDescriptors: this.#opts.mirrors.size > 0,
           remoteListing: this.#opts.remotes.size > 0,
+          pty: this.#ptyInterpreter !== null,
         },
       });
       return;
@@ -244,6 +273,9 @@ export class ReferenceProvider {
       case 'writeFile': return this.#writeOpen(f);
       case 'data': return this.#writeData(f);
       case 'end': return void this.#writeEnd(f);
+      case 'input': return this.#ptyInput(f);
+      case 'resize': return this.#ptyResize(f);
+      case 'ack': return this.#ptyAck(f);
       // UNKNOWN TYPES ARE IGNORED, not an error: that is the extension point
       // that lets the contract grow without a protocol bump.
       default: return;
@@ -253,6 +285,7 @@ export class ReferenceProvider {
   // ── exec ───────────────────────────────────────────────────────────
 
   #exec(f: AnyFrame): void {
+    if (typeof f.pty === 'object' && f.pty !== null) return this.#ptyExec(f);
     const id = String(f.id);
     const cwd = typeof f.cwd === 'string' ? f.cwd : process.cwd();
     const [cmd, args] = typeof f.shell === 'string'
@@ -361,6 +394,7 @@ export class ReferenceProvider {
       this.#terminate({ ...state, closed: false }, 'SIGKILL', true);
     }
     this.#writes.delete(id);
+    this.#ptyClose(id);
   }
 
   // THE COMMAND IS OVER; KILL NOTHING. Everything `#close` does except the
@@ -382,6 +416,98 @@ export class ReferenceProvider {
     state.closed = true;
     if (state.timer) clearTimeout(state.timer);
     this.#execs.delete(String(f.id));
+  }
+
+  // ── pty exec ───────────────────────────────────────────────────────
+
+  #ptyExec(f: AnyFrame): void {
+    const id = String(f.id);
+    if (this.#ptyInterpreter === null) {
+      this.#fail(id, 'EUNSUPPORTED', 'this provider does not advertise pty');
+      return;
+    }
+    const pty = f.pty as Record<string, unknown>;
+    const dim = (v: unknown): boolean => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= PTY_DIM_MAX;
+    if (!dim(pty.cols) || !dim(pty.rows) || typeof pty.term !== 'string') {
+      this.#fail(id, 'EPROTO', 'a pty exec needs integer cols and rows in 1..PTY_DIM_MAX and a string term');
+      return;
+    }
+    const overlay = typeof pty.envOverlay === 'object' && pty.envOverlay !== null
+      ? pty.envOverlay as Record<string, string> : {};
+    const remoteId = typeof f.remoteId === 'string' ? f.remoteId : null;
+    const end = (): void => { state.closed = true; this.#ptys.delete(id); };
+    // The handlers below run only after the helper is spawned, by which time
+    // `state` is assigned.
+    const proc = spawnPty({
+      interpreter: this.#ptyInterpreter,
+      cwd: typeof f.cwd === 'string' ? f.cwd : process.cwd(),
+      argv: Array.isArray(f.argv) ? (f.argv as string[]).map(String) : posixLoginShell(),
+      // The provider's own environment, the routing evidence, the caller's
+      // overlay, then TERM — in that order.
+      env: { ...process.env, ...(remoteId === null ? {} : { CC_REMOTE: remoteId }), ...overlay, TERM: pty.term },
+      cols: pty.cols as number, rows: pty.rows as number,
+    }, {
+      onStarted: () => { if (!state.closed) this.#write({ type: 'ptyStarted', id }); },
+      onData: (chunk) => this.#ptyEmit(id, state, chunk),
+      onExit: (code, signal) => {
+        if (state.closed) return;
+        end();
+        this.#write({ type: 'exit', id, code, signal, timedOut: false });
+      },
+      onFailed: (code, message) => {
+        if (state.closed) return;
+        end();
+        this.#fail(id, isSystemErrorCode(code) ? code : 'EUNKNOWN', message);
+      },
+    });
+    const state: PtyState = { proc, seq: 0, credit: PTY_WINDOW_BYTES, held: null, closed: false };
+    this.#ptys.set(id, state);
+  }
+
+  // As much of `chunk` as the credit covers goes out now; the rest is held and
+  // the helper paused until an `ack` returns credit.
+  #ptyEmit(id: string, state: PtyState, chunk: Buffer): void {
+    if (state.closed) return;
+    const now = chunk.subarray(0, state.credit);
+    if (now.length > 0) {
+      state.credit -= now.length;
+      this.#write({ type: 'stdout', id, seq: state.seq++, dataB64: now.toString('base64') });
+    }
+    if (now.length < chunk.length) {
+      state.held = chunk.subarray(now.length);
+      state.proc.pause();
+    } else if (state.credit === 0) {
+      state.proc.pause();
+    }
+  }
+
+  #ptyAck(f: AnyFrame): void {
+    const state = this.#ptys.get(String(f.id));
+    if (!state || typeof f.bytes !== 'number' || !(f.bytes > 0)) return;
+    state.credit = Math.min(PTY_WINDOW_BYTES, state.credit + f.bytes);
+    const held = state.held;
+    state.held = null;
+    if (held) this.#ptyEmit(String(f.id), state, held);
+    if (state.held === null && state.credit > 0) state.proc.resume();
+  }
+
+  #ptyInput(f: AnyFrame): void {
+    const state = this.#ptys.get(String(f.id));
+    if (state) state.proc.write(Buffer.from(String(f.dataB64), 'base64'));
+  }
+
+  #ptyResize(f: AnyFrame): void {
+    const state = this.#ptys.get(String(f.id));
+    const dim = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= PTY_DIM_MAX;
+    if (state && dim(f.cols) && dim(f.rows)) state.proc.resize(f.cols, f.rows);
+  }
+
+  #ptyClose(id: string): void {
+    const state = this.#ptys.get(id);
+    if (!state) return;
+    state.closed = true;
+    this.#ptys.delete(id);
+    state.proc.close();
   }
 
   // ── describeRemote ─────────────────────────────────────────────────
@@ -528,6 +654,7 @@ export class ReferenceProvider {
       } catch { /* already gone */ }
     }
     this.#execs.clear();
+    for (const id of [...this.#ptys.keys()]) this.#ptyClose(id);
   }
 }
 
@@ -535,8 +662,12 @@ let atomicSeq = 0;
 
 // ── Entry point ──────────────────────────────────────────────────────
 
-export function runReferenceProvider(argv: string[]): void {
+export async function runReferenceProvider(argv: string[]): Promise<void> {
   const opts = parseProviderArgs(argv);
+  // Probed BEFORE stdin is read, so the hello can answer it; node holds stdin
+  // until a listener is attached. `--no-pty` skips the spawn entirely.
+  const probe = opts.pty ? await probePtyHelper() : null;
+  const ptyInterpreter = probe?.ok ? probe.interpreter : null;
   // EPIPE on stdout means cc is gone; there is nobody left to tell.
   process.stdout.on('error', () => process.exit(0));
   const write = (frame: ProviderFrame): void => { process.stdout.write(encodeFrame(frame)); };
@@ -547,7 +678,7 @@ export function runReferenceProvider(argv: string[]): void {
     provider.shutdown();
     process.exit(1);
   };
-  provider = new ReferenceProvider(opts, write, fatal);
+  provider = new ReferenceProvider(opts, write, fatal, { ptyInterpreter });
 
   process.stdin.on('data', (chunk: Buffer) => {
     let frames: AnyFrame[];
@@ -568,4 +699,9 @@ export function runReferenceProvider(argv: string[]): void {
 
 // `import.meta.filename` is the module's own path; this runs the provider only
 // when the file IS the entry point, so importing it in a test does not start it.
-if (process.argv[1] === import.meta.filename) runReferenceProvider(process.argv.slice(2));
+if (process.argv[1] === import.meta.filename) {
+  runReferenceProvider(process.argv.slice(2)).catch((e: unknown) => {
+    process.stderr.write(`reference-provider: ${errMsg(e)}\n`);
+    process.exit(1);
+  });
+}

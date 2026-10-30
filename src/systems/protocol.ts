@@ -44,6 +44,19 @@ export const MIRROR_PATH_MAX = 4096;
 // of headroom while still catching a provider that never emits a newline.
 export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
+// The most raw stdout bytes a provider may have sent for one pty exec that cc
+// has not yet `ack`ed (§5, "pty exec"). Spec-fixed, like CHUNK_BYTES, so a
+// provider never has to guess it. It bounds how far one flooding terminal can
+// get ahead of git and every other operation on the SAME provider pipe: at most
+// this much per open terminal is ever queued in front of them.
+export const PTY_WINDOW_BYTES = 4 * CHUNK_BYTES;
+
+// The largest `cols` or `rows` a terminal may be opened or resized to. A fence
+// against a nonsense size, not a claim about any display: it sits far above a
+// real screen and below the u16 the helper's TIOCSWINSZ packs each dimension
+// into (src/systems/ptyHelper.py).
+export const PTY_DIM_MAX = 4096;
+
 // The most a caller may name a target with. DELIBERATELY NOT `isSlug`: a remote
 // id is a container name, a hostname or a VM id, and those legitimately carry
 // `_` and `.`. What is refused is what cannot survive being a wire field or
@@ -78,6 +91,7 @@ export const PROTOCOL_ERROR_CODES = [
   'EFBIG',         // a file above MAX_FILE_BYTES, or output above a caller's fence
   'ECANCELLED',    // the caller went away: an interrupt, or a tool timeout
   'ENOREMOTE',     // the named remote is not one this provider serves
+  'EPTY',          // the target could not allocate a terminal (openpty failed)
 ] as const;
 
 export const FS_ERROR_CODES = [
@@ -222,10 +236,19 @@ export interface Capabilities {
   // READ ONLY ALONGSIDE `remotes`: a provider without it serves one unnamed
   // target, so there are no `remoteId`s to list.
   remoteListing: boolean;
+  // The provider runs an `exec` carrying `pty` under a pseudo-terminal and
+  // takes `input`, `resize` and `ack` for it (§5, "pty exec"). Absent → cc
+  // never sends any of the four, and `openTerminal` on that system is refused
+  // SYSTEM_NO_PTY naming the provider.
+  //
+  // A CAPABILITY for the same reason `remotes` is one: unknown fields are
+  // ignored by contract, so a provider that predates it would run the `exec`
+  // with no terminal and drop every keystroke.
+  pty: boolean;
 }
 
 export const NO_CAPABILITIES: Capabilities = {
-  processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false,
+  processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false, pty: false,
 };
 
 export function readCapabilities(v: unknown): Capabilities {
@@ -237,6 +260,7 @@ export function readCapabilities(v: unknown): Capabilities {
     // Gated on `remotes`, so no caller gating on `remoteListing` alone can reach
     // a single-target provider.
     remoteListing: o.remotes === true && o.remoteListing === true,
+    pty: o.pty === true,
   };
 }
 
@@ -266,7 +290,7 @@ export interface HelloProviderFrame {
 // `remoteId` names which of the provider's targets the operation is for. It is
 // carried by the four REQUESTS only (`exec`, `readFile`, `writeFile`,
 // `describeRemote`): every follow-on frame (`signal`, `close`, `detach`, `data`,
-// `end`) is addressed by `id`, and AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
+// `end`, `input`, `resize`, `ack`) is addressed by `id`, and AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
 // a provider that advertises `remotes`; `describeRemote` — the fourth — is
 // itself sent only to one that advertises `remoteDescriptors`. `listRemotes`
 // is a request frame OUTSIDE these four: it asks about the provider, not a
@@ -282,7 +306,23 @@ export interface ExecFrame {
   timeoutMs?: number;
   killGraceMs?: number;
   stdin?: 'ignore' | 'pipe';
+  // Present → a PTY EXEC (§5, "pty exec"), sent only to a provider advertising
+  // `pty`. It carries `argv` or neither — neither is the target user's login
+  // shell, because the provider owns the interpreter — and never `shell`,
+  // `env`, `timeoutMs` or `stdin`.
+  pty?: PtySpec;
 }
+// `envOverlay` is ADDED to the provider's own environment, then `TERM=term`
+// over both. A different name from `exec.env`, which REPLACES: cc cannot wrap a
+// login shell it does not know in `env(1)`, so the overlay has to ride the
+// frame.
+export interface PtySpec { cols: number; rows: number; term: string; envOverlay?: Record<string, string> }
+// The three follow-on frames of a pty exec. No `remoteId`: the id is bound.
+// `input` is bytes for the terminal, chunked at CHUNK_BYTES; `ack` returns
+// `bytes` of credit against PTY_WINDOW_BYTES.
+export interface InputFrame { type: 'input'; id: string; dataB64: string }
+export interface ResizeFrame { type: 'resize'; id: string; cols: number; rows: number }
+export interface AckFrame { type: 'ack'; id: string; bytes: number }
 export interface SignalFrame { type: 'signal'; id: string; signal: string; processGroup: boolean }
 export interface CloseFrame { type: 'close'; id: string }
 // THE OTHER WAY AN `exec` ENDS, and the difference from `close` is the whole
@@ -323,10 +363,15 @@ export interface RemoteListEntry { remoteId: string }
 export interface RemoteListFrame { type: 'remoteList'; id: string; remotes: RemoteListEntry[] }
 
 export interface StreamFrame { type: 'stdout' | 'stderr'; id: string; seq: number; dataB64: string }
+// `code` is null only for a pty exec whose program a signal ended; a plain
+// exec always reports a number.
 export interface ExitFrame {
-  type: 'exit'; id: string; code: number; signal: string | null; timedOut: boolean;
+  type: 'exit'; id: string; code: number | null; signal: string | null; timedOut: boolean;
   descendantsMaySurvive?: boolean;
 }
+// A pty exec STARTED: sent once, after the program was exec'd. Before it only
+// an `error` may arrive for the id; after it, `stdout` frames and one `exit`.
+export interface PtyStartedFrame { type: 'ptyStarted'; id: string }
 export interface ReadFileResultFrame {
   type: 'readFileResult'; id: string; size: number; mode: number; isBinary: boolean;
 }
@@ -344,10 +389,11 @@ export interface ErrorFrame {
 
 export type ClientFrame =
   | HelloClientFrame | ExecFrame | SignalFrame | CloseFrame | DetachFrame
-  | ReadFileFrame | WriteFileFrame | DescribeRemoteFrame | ListRemotesFrame | DataFrame | EndFrame;
+  | ReadFileFrame | WriteFileFrame | DescribeRemoteFrame | ListRemotesFrame | DataFrame | EndFrame
+  | InputFrame | ResizeFrame | AckFrame;
 
 export type ProviderFrame =
-  | HelloProviderFrame | StreamFrame | ExitFrame
+  | HelloProviderFrame | StreamFrame | ExitFrame | PtyStartedFrame
   | ReadFileResultFrame | WriteFileResultFrame | RemoteDescriptorFrame | RemoteListFrame
   | DataFrame | EndFrame | ErrorFrame;
 
@@ -492,7 +538,7 @@ export function decodeFrame(text: string): AnyFrame {
 
 // The frame types whose meaning IS their payload. A type not listed here may
 // carry a `dataB64` cc does not know about; unknown fields stay ignorable.
-const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data']);
+const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data', 'input']);
 
 // Strict base64: canonical alphabet, correct padding, length a multiple of 4.
 // Deliberately two linear tests rather than one regex with a `*` group, so a

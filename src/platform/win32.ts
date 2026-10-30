@@ -165,6 +165,12 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
       if (n.length > 1 && n.endsWith('\\') && !/^[A-Za-z]:\\$/.test(n)) n = n.slice(0, -1);
       return n.toLowerCase();
     },
+
+    // The pty helper needs POSIX ptys, and ConPTY would be a second
+    // implementation: no local terminals here (docs/windows.md).
+    terminalShell() {
+      return null;
+    },
   };
 }
 

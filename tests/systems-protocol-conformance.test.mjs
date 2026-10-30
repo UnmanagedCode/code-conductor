@@ -19,13 +19,15 @@ import path from 'node:path';
 import {
   CHUNK_BYTES, FS_ERROR_CODES, MAX_FILE_BYTES, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION, readRemoteList,
 } from '../src/systems/protocol.ts';
+import * as protocol from '../src/systems/protocol.ts';
 import { ProviderConnection } from '../src/systems/providerConnection.ts';
 import { parseFindLines } from '../src/systems/providerSystem.ts';
 import {
-  CAPABILITY_CONFIGS, IS_REFERENCE_PROVIDER, REMOTE_ID_ENV, TOGGLED_CAPABILITIES, VERIFY_LISTING,
-  assertNegotiatedCapabilities, conformanceRemoteId, listRemotesRaw, makeProviderSystem, providerArgv,
-  remoteListingVerdict,
+  CAPABILITY_CONFIGS, IS_REFERENCE_PROVIDER, NO_PTY_FLAG, REMOTE_ID_ENV, TOGGLED_CAPABILITIES, VERIFY_LISTING,
+  VERIFY_PTY, assertNegotiatedCapabilities, conformanceRemoteId, listRemotesRaw, makeProviderSystem, providerArgv,
+  ptyVerdict, remoteListingVerdict,
 } from './referenceProviderHarness.mjs';
+import { TERMINAL_ROWS, openSession, terminalRowTest } from './terminalBattery.mjs';
 import { rmrf } from './rmrf.mjs';
 import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -640,6 +642,38 @@ for (const config of CAPABILITY_CONFIGS) {
       await sys.removeTree(path.join(root, 'never-existed'));
     });
   });
+
+  // ── Terminals: the pty exec (§5) ─────────────────────────────────
+
+  if (config.flags.includes(NO_PTY_FLAG)) {
+    // PINS the absent-behaviour of `pty`: a provider launched `--no-pty`
+    // advertises `pty:false`, and cc refuses a terminal on it SYSTEM_NO_PTY
+    // (501) naming the system and the provider — before anything is sent.
+    test(`${tag} a provider without pty is refused SYSTEM_NO_PTY by name`, async () => {
+      await withSystem(config.flags, async (sys, root) => {
+        assert.equal(sys.handshake.capabilities.pty, false);
+        await assert.rejects(openSession(sys, { cwd: root, argv: ['cat'] }),
+          (e) => e.statusCode === 501 && e.code === 'SYSTEM_NO_PTY'
+            && e.message.includes(`'${sys.id}'`) && e.message.includes(sys.handshake.provider));
+      });
+    });
+  } else {
+    // The whole terminal battery, over the wire, wherever `pty` is advertised —
+    // each row registered HERE so its test id is this file's.
+    for (const row of TERMINAL_ROWS) {
+      test(`${tag} ${row.name}`, terminalRowTest(row, {
+        open: async ({ maxTerminals } = {}) => {
+          const sys = makeProviderSystem(config.flags, maxTerminals === undefined ? {} : { maxTerminals });
+          await sys.connect();
+          return { sys, dispose: () => sys.dispose() };
+        },
+        gate: (sys) => {
+          const v = ptyVerdict(sys.handshake.capabilities);
+          return v === VERIFY_PTY ? null : v;
+        },
+      }));
+    }
+  }
 }
 
 // ── Cases that do not vary by capability ─────────────────────────────
@@ -1238,12 +1272,186 @@ test('the third-party capability assertion tolerates a superset but pins the tog
     assertNegotiatedCapabilities(superset, config, false);
     assert.throws(() => assertNegotiatedCapabilities(superset, config, true), assert.AssertionError,
       'the reference provider is still held to the exact set');
+    // `pty` is held only to `false` under `--no-pty`: a third-party provider
+    // may lack terminals in any configuration.
+    if (config.flags.includes(NO_PTY_FLAG)) {
+      assert.throws(() => assertNegotiatedCapabilities({ ...superset, pty: true }, config, false),
+        assert.AssertionError, 'pty is pinned false under --no-pty');
+    } else {
+      assertNegotiatedCapabilities({ ...superset, pty: false }, config, false);
+      assert.throws(() => assertNegotiatedCapabilities({ ...config.caps, pty: !config.caps.pty }, config, true),
+        assert.AssertionError, 'the reference provider is held to the host probe');
+    }
     for (const cap of TOGGLED_CAPABILITIES) {
+      if (cap === 'pty') continue;
       assert.throws(
         () => assertNegotiatedCapabilities({ ...superset, [cap]: !config.caps[cap] }, config, false),
         assert.AssertionError, `${cap} is pinned for a third-party provider too`);
     }
   }
+});
+
+// ── Terminals on the wire ────────────────────────────────────────────
+//
+// Outside the per-configuration loop: these hold whenever `pty` is advertised,
+// and skip by `ptyVerdict` otherwise.
+
+// One raw readFile on a connection, resolving with its terminal frame.
+function rawRead(conn, filePath) {
+  const id = conn.nextId('r');
+  return new Promise((resolve) => {
+    conn.open(id, {
+      frame: (f) => { if (f.type === 'end' || f.type === 'error') { conn.close(id); resolve(f); } },
+      down: resolve,
+    });
+    conn.send({ type: 'readFile', id, ...BOUND, path: filePath });
+  });
+}
+
+const within = (p, ms, what) => Promise.race([
+  p, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not complete within ${ms}ms`)), ms)),
+]);
+
+// PINS the credit window (§5, "pty exec"): a terminal flooding output with no
+// `ack` has at most PTY_WINDOW_BYTES on the wire — and then nothing more, while
+// an exec and a readFile on the same pipe still complete. An `ack` returns
+// credit and output resumes. Also: `ptyStarted` is the id's first frame, and a
+// pty id never carries `stderr` (the terminal merges it).
+test('a flooding terminal holds one credit window and blocks nothing else on the pipe', async (t) => {
+  const dir = await mkdtemp('cc-pty-window-');
+  const root = await fs.realpath(dir);
+  await fs.writeFile(path.join(root, 'f.txt'), 'beside the flood');
+  const conn = new ProviderConnection({ launch: { argv: providerArgv([]) } });
+  try {
+    const hs = await conn.ensureUp();
+    const v = ptyVerdict(hs.capabilities);
+    if (v !== VERIFY_PTY) { t.skip(v); return; }
+    const id = conn.nextId('t');
+    const types = [];
+    let bytes = 0;
+    conn.open(id, {
+      frame: (f) => {
+        types.push(f.type);
+        if (f.type === 'stdout') bytes += Buffer.from(f.dataB64, 'base64').length;
+      },
+      down: () => {},
+    });
+    conn.send({ type: 'exec', id, ...BOUND, cwd: root, argv: ['yes'], pty: { cols: 80, rows: 24, term: 'xterm' } });
+    assert.ok(await settle(() => bytes >= protocol.PTY_WINDOW_BYTES, 10_000), `the flood filled the window (${bytes})`);
+    // Three round trips: anything the provider was going to send past the
+    // window has had time to arrive.
+    for (let i = 0; i < 3; i++) {
+      const r = await within(rawExec(conn, { type: 'exec', id: conn.nextId('e'), ...BOUND, cwd: root, argv: ['true'], stdin: 'ignore' }),
+        5_000, `exec ${i} beside the flood`);
+      assert.equal(r.end.code, 0);
+    }
+    assert.equal(bytes, protocol.PTY_WINDOW_BYTES, 'no more than one window went out unacked');
+    const read = await within(rawRead(conn, path.join(root, 'f.txt')), 5_000, 'a readFile beside the flood');
+    assert.equal(read.type, 'end');
+    const acked = bytes;
+    conn.send({ type: 'ack', id, bytes: acked });
+    assert.ok(await settle(() => bytes > acked, 10_000), 'an ack returns credit and the output resumes');
+    assert.equal(types[0], 'ptyStarted', 'ptyStarted is the first frame for the id');
+    assert.equal(types.includes('stderr'), false, 'a pty id never carries stderr');
+    conn.send({ type: 'close', id });
+    conn.close(id);
+  } finally {
+    conn.dispose();
+    await rmrf(dir);
+  }
+});
+
+// PINS: the op ceiling bounds a terminal's OPEN and not its life. On a handle
+// whose ceiling abandons a plain exec, a terminal opened on it still echoes at
+// three times that ceiling.
+test('the op ceiling abandons a plain exec but not an open terminal', async (t) => {
+  const OP_MS = 800;
+  const dir = await mkdtemp('cc-pty-backstop-');
+  const root = await fs.realpath(dir);
+  const sys = makeProviderSystem([], { defaultOpTimeoutMs: OP_MS });
+  try {
+    await sys.connect();
+    const v = ptyVerdict(sys.handshake.capabilities);
+    if (v !== VERIFY_PTY) { t.skip(v); return; }
+    const s = await openSession(sys, { cwd: root, argv: ['cat'] });
+    const openedAt = Date.now();
+    const r = await sys.exec({ argv: ['sleep', '30'] }, { cwd: root, stdin: 'ignore' });
+    assert.equal(r.timedOut, true);
+    assert.equal(r.abandonedAfterMs, OP_MS, 'the plain exec was abandoned at the ceiling');
+    await new Promise(res => setTimeout(res, Math.max(0, 3 * OP_MS - (Date.now() - openedAt))));
+    s.terminal.write('still-here\n');
+    await s.until(/still-here\r\nstill-here\r\n/);
+    s.terminal.close();
+    assert.deepEqual((await s.ended).end, { kind: 'closed' });
+  } finally {
+    sys.dispose();
+    await rmrf(dir);
+  }
+});
+
+// PINS: when the provider goes away under an open terminal, the terminal ends
+// `failed` with ETRANSPORT — and the provider's stdin EOF killed the program
+// (MUST 3).
+test('a provider going away fails an open terminal ETRANSPORT and kills its program', async (t) => {
+  const dir = await mkdtemp('cc-pty-down-');
+  const root = await fs.realpath(dir);
+  const sys = makeProviderSystem([]);
+  try {
+    await sys.connect();
+    const v = ptyVerdict(sys.handshake.capabilities);
+    if (v !== VERIFY_PTY) { t.skip(v); return; }
+    const s = await openSession(sys, { cwd: root, argv: ['sh', '-c', 'echo PID=$$; exec sleep 1000'] });
+    const [, pid] = await s.until(/PID=(\d+)/);
+    sys.dispose();
+    const { end } = await s.ended;
+    assert.equal(end.kind, 'failed');
+    expectCode(end.error, 'ETRANSPORT', 'a terminal whose provider went away');
+    assert.ok(await settle(() => !alive(Number(pid)), 5_000), `the program (${pid}) is gone`);
+  } finally {
+    sys.dispose();
+    await rmrf(dir);
+  }
+});
+
+// PINS: one provider pipe is one terminal cap, shared by every bound view of
+// it — and each view's terminal runs on that view's own remote.
+test('bound views share their provider\'s terminal cap, and each terminal runs on its own remote', async (t) => {
+  const dir = await mkdtemp('cc-pty-views-');
+  const root = await fs.realpath(dir);
+  const rootA = path.join(root, 'a');
+  const rootB = path.join(root, 'b');
+  await fs.mkdir(rootA);
+  await fs.mkdir(rootB);
+  const owner = makeProviderSystem(['--remote', `a=${rootA}`, '--remote', `b=${rootB}`], { remoteId: null, maxTerminals: 1 });
+  try {
+    await owner.connect();
+    const v = ptyVerdict(owner.handshake.capabilities);
+    if (v !== VERIFY_PTY) { t.skip(v); return; }
+    const a = owner.bindRemote('a');
+    const b = owner.bindRemote('b');
+    const remoteOf = ['sh', '-c', 'echo REMOTE=$CC_REMOTE; cat'];
+    const sa = await openSession(a, { cwd: rootA, argv: remoteOf });
+    await sa.until(/REMOTE=a\r\n/);
+    await assert.rejects(openSession(b, { cwd: rootB, argv: ['cat'] }),
+      (e) => e.statusCode === 429 && e.code === 'TERMINAL_LIMIT', 'the other view shares the one slot');
+    sa.terminal.close();
+    const sb = await openSession(b, { cwd: rootB, argv: remoteOf });
+    await sb.until(/REMOTE=b\r\n/);
+    sb.terminal.close();
+  } finally {
+    owner.dispose();
+    await rmrf(dir);
+  }
+});
+
+// PINS THE GATE the terminal rows run behind: they run iff `pty` is advertised,
+// for any provider, and otherwise skip with the reason.
+//
+// Pure: it drives the verdict directly, launching no provider.
+test('a provider that does not advertise pty skips the terminal rows, never fails them', () => {
+  assert.equal(ptyVerdict({ pty: true }), VERIFY_PTY);
+  assert.equal(ptyVerdict({ pty: false }), 'the provider does not advertise pty — optional (§2); no terminal to verify');
+  assert.notEqual(ptyVerdict({}), VERIFY_PTY, 'a missing key is false');
 });
 
 // ── Completeness ─────────────────────────────────────────────────────
@@ -1266,6 +1474,7 @@ test('every code in the taxonomy is produced by a real failure somewhere in this
     // The one code no test can provoke without filling a disk; its classifier
     // row is asserted in tests/systems-protocol-codec.test.mjs.
     ENOSPC: 'tests/systems-protocol-codec.test.mjs (classifier only)',
+    EPTY: 'tests/systems-pty-fallback.test.mjs',
   };
   const covered = new Set([...produced, ...Object.keys(elsewhere)]);
   const all = [...PROTOCOL_ERROR_CODES, ...FS_ERROR_CODES];
