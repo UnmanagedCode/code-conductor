@@ -90,7 +90,7 @@ import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // applied at the ingress boundaries — the spawn route and the WS toggle — not here.
 import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbooks.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getTaskToolsEnabled, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { ConductorReadNudge, readNudgeEvent } from './conductorReadNudge.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
@@ -2634,6 +2634,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Remote workers get the same host value: their CLI runs on this machine,
     // and their redirected Bash runs on the remote without cc's env.
     spawnEnv.CC_PROJECTS_ROOT = path.resolve(projectsRoot());
+    // Settings → Models → Task tools. The CLI offers TaskCreate/Get/List/Update
+    // only on its own model allowlist (Claude ≤4.x) unless this is truthy; the env
+    // var is the opt-in with no permission side effects (`--tools`/`--allowedTools`
+    // naming a task tool also opts in, but those restrict the tool set / add
+    // allow-rules). Unset when off, so the launch is exactly what it was without
+    // the setting.
+    if (getTaskToolsEnabled()) spawnEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
     // REDIRECTED SESSIONS ONLY: pin the CLI's per-uid tmp root to a cc-owned
     // per-session directory.
     //

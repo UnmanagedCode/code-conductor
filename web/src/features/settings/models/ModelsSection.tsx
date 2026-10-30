@@ -500,6 +500,30 @@ function DebugDefaultCard() {
   );
 }
 
+function TaskToolsCard() {
+  const [on, setOn] = React.useState<boolean | null>(null);
+  React.useEffect(() => {
+    json<{ taskTools?: boolean }>('/api/settings/spawn').then((d) => setOn(!!d.taskTools)).catch(() => setOn(false));
+  }, []);
+  return (
+    <SettingsCard
+      title="Task tools"
+      description="Give every session cc launches the CLI's task-list tools (TaskCreate, TaskUpdate, …), so its task list shows in the task panel. Applies when a session next starts or resumes; a running session keeps the tools it launched with. Off by default."
+      action={
+        <Switch
+          checked={!!on}
+          disabled={on === null}
+          aria-label="Enable the task tools for every session"
+          onCheckedChange={(v) => {
+            setOn(v);
+            post('/api/settings/spawn/prefs', { taskTools: v }).catch(() => { /* next open re-syncs */ });
+          }}
+        />
+      }
+    />
+  );
+}
+
 export function ModelsSection() {
   const { data, error, status } = useStore(modelsSettingsStore, (s) => s);
   return (
@@ -516,6 +540,7 @@ export function ModelsSection() {
           <div className="grid gap-6 @2xl:grid-cols-2">
             <ConductorSessionCard data={data} />
             <DebugDefaultCard />
+            <TaskToolsCard />
           </div>
         </>
       )}

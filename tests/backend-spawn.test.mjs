@@ -17,7 +17,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend, settle } from './helpers.mjs';
-import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
+import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend, setTaskToolsEnabled,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier, setTierEffort,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
 import { getSessionBackend, setSessionBackend, sessionsFile, isTemp, isConducted, getSessionMode } from '../src/sessionStore.ts';
@@ -292,6 +292,20 @@ describe('substitution-backend spawn command/args', () => {
     await addCustomModel({ label: 'SR', model: 'sr:v1', backend: 'shadow-root', contextWindow: 128_000 });
     const { env } = await spawnOnBackend({ model: 'sr:v1', backend: 'shadow-root' });
     assert.equal(env.CC_PROJECTS_ROOT, projectsRoot, 'cc-managed value wins over the user env pair');
+  });
+
+  // Pins: with the Task tools setting on, cc's CLAUDE_CODE_ENABLE_TODO_TOOLS=1 beats a same-named backend env pair.
+  test('cc\'s task-tools var beats a same-named backend env pair when the setting is on', async () => {
+    await addBackend({
+      id: 'shadow-tasks', label: 'Shadow tasks', template: 'shadowctl claude --model {model} --',
+      env: [{ key: 'CLAUDE_CODE_ENABLE_TODO_TOOLS', value: '0' }],
+    });
+    await addCustomModel({ label: 'ST', model: 'st:v1', backend: 'shadow-tasks', contextWindow: 128_000 });
+    await setTaskToolsEnabled(true);
+    try {
+      const { env } = await spawnOnBackend({ model: 'st:v1', backend: 'shadow-tasks' });
+      assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, '1', 'cc-managed value wins over the user env pair');
+    } finally { await setTaskToolsEnabled(false); }
   });
 });
 
