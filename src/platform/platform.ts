@@ -38,4 +38,8 @@ export interface Platform {
   splitCommand(line: string): string[];
   // Equality key for two host paths.
   pathKey(p: string): string;
+  // The argv a local terminal runs when its caller names no program — the
+  // user's login shell — or null where cc has no pty helper for this host, and
+  // `LocalSystem.openTerminal` refuses PTY_UNAVAILABLE.
+  terminalShell(): string[] | null;
 }

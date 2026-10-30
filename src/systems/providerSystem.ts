@@ -38,6 +38,10 @@ import { ProviderConnection, type ConnectionOptions, type Handshake } from './pr
 import { ProviderShell, type ShellExecOptions, type ShellHost } from './providerShell.ts';
 import { closingTailMatches } from './shellFraming.ts';
 import { msFromFindStamp, requireAbsolute, typeBitsFor } from './system.ts';
+import {
+  TerminalSlots, assertDims, openCancelled, systemNoPty, toBuffer, validateTerminalSpec,
+  type Terminal, type TerminalEnd, type TerminalHandlers, type TerminalSpec,
+} from './terminal.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemLstat, SystemStat, WriteFileOptions,
 } from './system.ts';
@@ -100,6 +104,9 @@ export interface ProviderSystemOptions extends ConnectionOptions {
   remoteId?: string | null;
   // Ceiling for an operation the caller did not bound. Tests shrink it.
   defaultOpTimeoutMs?: number;
+  // Open terminals on this provider pipe, shared with every bound view. Tests
+  // shrink it.
+  maxTerminals?: number;
 }
 
 // What a BOUND VIEW is built from: the OWNER's live connection rather than a
@@ -111,6 +118,7 @@ interface ViewOptions {
   remoteId: string;
   defaultOpTimeoutMs: number;
   conn: ProviderConnection;
+  terminals: TerminalSlots;
 }
 
 export class ProviderSystem implements System, ShellHost {
@@ -118,6 +126,9 @@ export class ProviderSystem implements System, ShellHost {
   readonly remoteId: string | null;
   readonly #conn: ProviderConnection;
   readonly #defaultOpTimeoutMs: number;
+  // ONE CAP PER PROVIDER PIPE: an owner's slots are every bound view's, since
+  // every terminal on them shares the one connection.
+  readonly #terminals: TerminalSlots;
   // Whether this handle OWNS the connection. False for a bound view, which
   // shares the owner's — one endpoint, many targets, one process.
   readonly #owns: boolean;
@@ -139,11 +150,13 @@ export class ProviderSystem implements System, ShellHost {
       this.#owns = false;
       this.#conn = opts.conn;
       this.#defaultOpTimeoutMs = opts.defaultOpTimeoutMs;
+      this.#terminals = opts.terminals;
       return;
     }
-    const { id: _id, remoteId: _remoteId, defaultOpTimeoutMs, ...connOpts } = opts;
+    const { id: _id, remoteId: _remoteId, defaultOpTimeoutMs, maxTerminals, ...connOpts } = opts;
     this.#owns = true;
     this.#defaultOpTimeoutMs = defaultOpTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
+    this.#terminals = new TerminalSlots(maxTerminals);
     this.#conn = new ProviderConnection(connOpts);
   }
 
@@ -154,6 +167,7 @@ export class ProviderSystem implements System, ShellHost {
   bindRemote(remoteId: string): ProviderSystem {
     return new ProviderSystem({
       id: this.id, remoteId, defaultOpTimeoutMs: this.#defaultOpTimeoutMs, conn: this.#conn,
+      terminals: this.#terminals,
     });
   }
 
@@ -658,6 +672,153 @@ export class ProviderSystem implements System, ShellHost {
       });
       this.#conn.send(open(id));
       afterOpen?.(id);
+    });
+  }
+
+  // ── openTerminal: the pty exec (§5) ───────────────────────────────
+  //
+  // THE ONE OPERATION THE BACKSTOP DOES NOT BOUND FOR LIFE. Only the OPEN is
+  // bounded — `exec` to `ptyStarted`, at the op ceiling. After that a terminal
+  // lives until its owner closes it, its program exits, or the connection dies.
+  //
+  // CREDIT FLOW CONTROL keeps one flooding terminal from starving git on the
+  // same pipe: the provider holds at most PTY_WINDOW_BYTES unacked, and cc acks
+  // each chunk only once it has been handed to `onData` — never while paused.
+  async openTerminal(spec: TerminalSpec, handlers: TerminalHandlers): Promise<Terminal> {
+    validateTerminalSpec(spec);
+    let hs: Handshake;
+    try { hs = await this.#conn.ensureUp(); }
+    catch (e) {
+      throw new SystemError('ETRANSPORT',
+        `openTerminal: system '${this.id}' cannot be reached: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // THE GATE: a provider without the capability never receives a pty exec or
+    // any of its follow-on frames. One that predates `pty` would ignore the
+    // field and run the program with no terminal.
+    if (!hs.capabilities.pty) throw systemNoPty(this.id, hs.provider);
+    // The remotes backstop, as in #exec.
+    if (this.remoteId !== null && !hs.capabilities.remotes) {
+      throw new SystemError('EUNSUPPORTED',
+        `system '${this.id}' is served by ${hs.provider}, which does not support named remotes`);
+    }
+    if (spec.signal?.aborted) throw openCancelled();
+    const release = this.#terminals.acquire(this.id);
+    const id = this.#conn.nextId('t');
+    return new Promise<Terminal>((resolve, reject) => {
+      let started = false;
+      // The id is closed, the slot released: nothing more goes on the wire.
+      let wireDone = false;
+      // `onExit` has been called.
+      let reported = false;
+      let paused = false;
+      const held: Buffer[] = [];
+      // An end that arrived while paused, delivered after the held chunks.
+      let pendingEnd: TerminalEnd | null = null;
+
+      const finishWire = (): void => {
+        if (wireDone) return;
+        wireDone = true;
+        clearTimeout(timer);
+        this.#conn.close(id);
+        release();
+        spec.signal?.removeEventListener('abort', onAbort);
+      };
+      const report = (e: TerminalEnd): void => {
+        finishWire();
+        if (reported) return;
+        if (paused || held.length > 0) { pendingEnd = e; return; }
+        reported = true;
+        handlers.onExit(e);
+      };
+      const fail = (error: SystemError): void => {
+        if (started) { report({ kind: 'failed', error }); return; }
+        if (wireDone) return;
+        finishWire();
+        reject(error);
+      };
+      const deliver = (chunk: Buffer): void => {
+        handlers.onData(chunk);
+        if (!wireDone) this.#conn.send({ type: 'ack', id, bytes: chunk.length });
+      };
+
+      const timer = setTimeout(() => {
+        if (started || wireDone) return;
+        this.#conn.send({ type: 'close', id });
+        fail(new SystemError('ETIMEDOUT',
+          `openTerminal: the provider did not start the terminal within ${this.#defaultOpTimeoutMs}ms`));
+      }, this.#defaultOpTimeoutMs);
+      timer.unref?.();
+
+      const terminal: Terminal = {
+        write: (data) => {
+          const buf = toBuffer(data);
+          for (let at = 0; at < buf.length && !wireDone; at += CHUNK_BYTES) {
+            this.#conn.send({ type: 'input', id, dataB64: buf.subarray(at, at + CHUNK_BYTES).toString('base64') });
+          }
+        },
+        resize: (cols, rows) => {
+          assertDims('resize', cols, rows);
+          if (!wireDone) this.#conn.send({ type: 'resize', id, cols, rows });
+        },
+        pause: () => { paused = true; },
+        resume: () => {
+          if (!paused) return;
+          paused = false;
+          while (!paused && held.length > 0) deliver(held.shift() as Buffer);
+          if (!paused && pendingEnd !== null && !reported) {
+            reported = true;
+            handlers.onExit(pendingEnd);
+          }
+        },
+        close: () => {
+          if (reported) return;
+          if (!wireDone) this.#conn.send({ type: 'close', id });
+          finishWire();
+          held.length = 0;
+          reported = true;
+          handlers.onExit({ kind: 'closed' });
+        },
+      };
+      const onAbort = (): void => {
+        if (started) { terminal.close(); return; }
+        if (wireDone) return;
+        this.#conn.send({ type: 'close', id });
+        finishWire();
+        reject(openCancelled());
+      };
+      spec.signal?.addEventListener('abort', onAbort, { once: true });
+
+      this.#conn.open(id, {
+        frame: (f) => {
+          if (wireDone) return;
+          if (f.type === 'ptyStarted') {
+            if (started) return;
+            started = true;
+            clearTimeout(timer);
+            resolve(terminal);
+          } else if (f.type === 'stdout') {
+            const chunk = decodeData(f);
+            if (paused) held.push(chunk);
+            else deliver(chunk);
+          } else if (f.type === 'exit') {
+            report({
+              kind: 'exited',
+              code: typeof f.code === 'number' ? f.code : null,
+              signal: typeof f.signal === 'string' ? f.signal : null,
+            });
+          } else if (f.type === 'error') {
+            fail(new SystemError(isSystemErrorCode(f.code) ? f.code : 'EUNKNOWN', `openTerminal: ${frameMessage(f)}`));
+          }
+        },
+        // Before the start this rejects the open; after it, the terminal is lost.
+        down: (err) => fail(err),
+      });
+      const env = spec.env && Object.keys(spec.env).length > 0 ? spec.env : undefined;
+      this.#conn.send({
+        type: 'exec', id, ...this.#binding(), cwd: spec.cwd,
+        ...(spec.argv ? { argv: spec.argv } : {}),
+        pty: { cols: spec.cols, rows: spec.rows, term: spec.term, ...(env ? { envOverlay: env } : {}) },
+      });
     });
   }
 

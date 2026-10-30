@@ -6,6 +6,7 @@ cc on Windows 11: what differs at runtime, the Start-menu launcher, and the cont
 
 - Git for Windows with Git Bash is required; a bare `git.exe` is not enough.
 - Systems, the FUSE union and Voice are off.
+- No local terminals: `System.openTerminal` on `local` refuses `PTY_UNAVAILABLE` (501) — the pty helper needs POSIX ptys ([architecture.md](architecture.md) → Terminals).
 - Capabilities, Git Bash resolution and kill semantics: [architecture.md](architecture.md) → `src/platform/win32.ts`.
 
 ## Launcher

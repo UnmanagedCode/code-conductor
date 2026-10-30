@@ -28,7 +28,7 @@ System owns a project's tree, its git repo and shell commands run inside it.
 | Binary payloads | base64 in a `dataB64` field (~33% overhead). |
 | Blank lines | Ignored between frames. Not an error. |
 | Line ceiling | `MAX_LINE_BYTES` = 4 MiB. A longer line is `EPROTO`. It is a framing fence, not a payload budget: one chunk frame is `CHUNK_BYTES × 4/3` plus a small envelope, an order of magnitude below it. |
-| Payload validity | A `dataB64` on a `stdout`, `stderr` or `data` frame **MUST be canonical base64** (standard alphabet, correct padding, length a multiple of 4) and **MUST be present**. A payload is part of its frame, so an invalid one is `EPROTO` and fatal exactly as an unparseable line is — decoders in most languages stop at the first bad character and return the prefix, which would turn a corrupted chunk into a silently truncated success. |
+| Payload validity | A `dataB64` on a `stdout`, `stderr`, `data` or `input` frame **MUST be canonical base64** (standard alphabet, correct padding, length a multiple of 4) and **MUST be present**. A payload is part of its frame, so an invalid one is `EPROTO` and fatal exactly as an unparseable line is — decoders in most languages stop at the first bad character and return the prefix, which would turn a corrupted chunk into a silently truncated success. |
 | Chunk size | `CHUNK_BYTES` = 64 KiB of raw bytes per `data` frame, before base64. **Both ends MUST chunk at it** — a payload is not permitted to ride as one large frame. A 32 MiB read sent as a single frame breaches the line ceiling below and dies `EPROTO` mid-transfer. |
 | Per-file cap | `MAX_FILE_BYTES` = 32 MiB. A read or write above it is `EFBIG`. |
 | Paths | **Absolute, on the system.** cc never sends a relative path — **enforced client-side, on both implementations of `System`** (`requireAbsolute`, `src/systems/system.ts`, since the invariant is a property of cc's callers rather than of a transport): every path-taking operation, plus the `cwd` of `exec`, which is the one way a `cwd` reaches the wire. A relative path is cc's own bug, so it REJECTS with the operation named, never a returned refusal and never a frame a provider has to reject. |
@@ -44,6 +44,8 @@ Provider MUSTs:
    is reparented inside the container and outlives the provider, so a docker
    provider has to SIGKILL the `docker exec` processes of its **still-open**
    operations on exit. cc has no way to clean up after a provider that does not.
+   **An open pty exec is an open operation**: its program is killed as `close`
+   kills one (§5, "pty exec").
 
    **SCOPED TO OPERATIONS THAT ARE STILL OPEN, and that scope is load-bearing.**
    An `exec` cc has ended with `detach` is closed, and its command — and anything
@@ -57,7 +59,8 @@ Provider MUSTs:
    way.
 4. Interleave concurrent ids correctly (§4).
 5. **Answer every operation it accepts, or refuse it.** Each `id` cc opens
-   terminates in a frame for that `id` — `exit`, `readFileResult` + `end`,
+   terminates in a frame for that `id` — `exit` (for a pty exec, after
+   `ptyStarted`), `readFileResult` + `end`,
    `writeFileResult`, `remoteDescriptor`, `remoteList`, or an `error` frame from §8's
    taxonomy — unless cc ends it first with `close` or `detach`, after which the
    provider emits nothing for it (§5's rules). Accepting an operation and then
@@ -192,7 +195,7 @@ a user-visible difference, **and a test that runs the fallback**.
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
 | **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The answer is the NARROWEST mirror root — `mirrorRoot = systemPath`, nothing excluded | None in traffic or geometry: a session on such a system is byte-identical to one before the capability existed. **Known wording defect:** an `outside-mirror-root` refusal still calls that default root "the mirror root that system advertises" and names the one path twice (`outsideMirrorRefusal`, `src/systems/fuse/tierTable.ts`, receives no advertised-vs-defaulted signal) | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, and the resolved scope is `{mirrorRoot: systemPath, exclude: []}` with no local image composed for it. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
 | **`remoteListing`** | **2 — OPTIONAL** | Without it cc **never sends `listRemotes`**; the System is reported **not enumerable** — never as having no remotes — and a `remoteId` is named by hand. **Read as absent unless `remotes` is also advertised** — a single-target provider has no `remoteId`s to list | With it, cc's Remote field offers the listed ids, plus a way to type another, and cc's remote enumeration reports them; without it, the Remote field is free text and the enumeration reports the System not enumerable | `tests/systems-remote-listing-fallback.test.mjs` → "no listRemotes frame reaches a provider that does not advertise remoteListing": a recording provider that does not advertise the capability, driven through cc's one sender by every surface on it, receives no `listRemotes` frame, and each surface reports it not enumerable with no list. Also `tests/systems-protocol-codec.test.mjs` → "remoteListing is read only alongside remotes"; the `remoteListing:false` asserted in every configuration's handshake row of `tests/systems-protocol-conformance.test.mjs`; and that suite's reference-only row "a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed". Under `npm run gate:systems` row 1 advertises the capability because it carries `--remote`, but the application never sends `listRemotes` to the gate's `local` stand-in: enumeration decides `local` by id (`enumerateSystemRemotes`, `src/systems/remoteEnumeration.ts`). The suites that do send it register their own providers and run inside every row |
-| `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
+| **`pty`** | **2 — OPTIONAL** | cc **never sends** a pty `exec`, `input`, `resize` or `ack`; `System.openTerminal` on that system is refused **`SYSTEM_NO_PTY` (501)** before anything goes on the wire. Flag: `--no-pty` (§10) | Terminals on that system are refused, naming the system and its provider. Everything else on the system is unchanged | `tests/systems-pty-fallback.test.mjs` — a recording provider launched `--no-pty` is refused by name and receives no pty frame, and a reference provider with no python3 on its `PATH` advertises `pty:false` on its own. Plus the `--no-pty` row of every configuration of `tests/systems-protocol-conformance.test.mjs`, and row 2 of `npm run gate:systems`, whose fold is made meaningful by `tests/systems-terminal-seam.test.mjs` (a terminal through the `local` handle) |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename` | **not in the protocol** | — | cc never renames on a system: a cross-tier rename is `EXDEV` and a project-tier directory rename refuses, so nothing can ask for one | — |
 | `symlink` | **not in the protocol — a DERIVATION** | — | cc does create symlinks on a system (the union's reconcile carries one), but over `exec` as `ln -sfn` (§7). Still not a frame and still not a capability: a provider implements nothing for it | — |
@@ -406,7 +409,7 @@ anything — but it is lying in its own logs.
 | Frame | Fields | Meaning |
 |---|---|---|
 | `hello` | `protocol`, `client` | Opens the connection |
-| `exec` | `id`, `cwd`, **`argv`** *or* **`shell`**, `remoteId?`, `env?`, `timeoutMs?`, `killGraceMs?`, `stdin?` | Run a command |
+| `exec` | `id`, `cwd`, **`argv`** *or* **`shell`**, `remoteId?`, `env?`, `timeoutMs?`, `killGraceMs?`, `stdin?`, `pty?` | Run a command. With **`pty`** (`{cols, rows, term, envOverlay?}`) it is a **pty exec** (§5): `argv` or neither, never `shell`/`env`/`timeoutMs`/`stdin`. **Requires `pty`** |
 | `signal` | `id`, `signal`, `processGroup` | Signal a running command. **`signal` is a POSIX signal NAME in `SIG*` form** (`"SIGTERM"`, `"SIGKILL"`) — never a bare name and never a number |
 | `close` | `id` | Abandon the operation **and kill the command** |
 | `detach` | `id` | The command is over: stop reporting, **kill nothing**. **`exec` ids only** |
@@ -416,6 +419,9 @@ anything — but it is lying in its own logs.
 | `listRemotes` | `id` | Ask which `remoteId`s the provider is configured to route to (§2.2). **Requires `remoteListing`.** Carries no `remoteId` |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a `writeFile` payload |
 | `end` | `id` | End of a `writeFile` payload |
+| `input` | `id`, `dataB64` | Bytes for a pty exec's terminal, chunked at `CHUNK_BYTES` |
+| `resize` | `id`, `cols`, `rows` | Resize a pty exec's terminal |
+| `ack` | `id`, `bytes` | Return `bytes` of credit for a pty exec's `stdout` (§5) |
 
 **`remoteId` is carried by those four REQUEST frames and by nothing else.**
 It names which of the provider's targets the operation is for, and it is sent
@@ -430,7 +436,8 @@ about the provider, not a target (§2.2).
 |---|---|---|
 | `hello` | `protocol`, `provider`, `capabilities?` | Handshake reply |
 | `stdout` / `stderr` | `id`, `seq`, `dataB64` | Output of a running command |
-| `exit` | `id`, `code`, `signal`, `timedOut`, `descendantsMaySurvive?` | Terminal for an `exec` |
+| `exit` | `id`, `code`, `signal`, `timedOut`, `descendantsMaySurvive?` | Terminal for an `exec`. For a pty exec `code` is `null` when a signal ended the program |
+| `ptyStarted` | `id` | A pty exec's program was exec'd; sent once, before any `stdout` |
 | `readFileResult` | `id`, `size`, `mode`, `isBinary` | Opens a read; `data`… then `end` follow |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a read |
 | `end` | `id` | Terminal for a `readFile` |
@@ -453,7 +460,7 @@ opening `exec` / `readFile` / `writeFile` is the operation's target for every
 frame that follows it (`describeRemote`, the fourth request frame, has no
 follow-on frames — it opens and closes in one exchange — and neither has
 `listRemotes`, which names no remote at all) — `signal`, `close`,
-`detach`, `data`, `end` carry no `remoteId` and a provider must not look for one on them. A provider
+`detach`, `data`, `end`, `input`, `resize`, `ack` carry no `remoteId` and a provider must not look for one on them. A provider
 that re-derived the target per frame would have to answer "which target" for a
 frame that never names one.
 
@@ -511,8 +518,9 @@ Rules:
     its deadline still armed, and it reaps the command when that fires. **cc
     cannot detect that**, and does not try: it is MUST 5's breach, reported by
     nothing.
-- **Backstop: no operation is unbounded, with no exceptions.** cc arms its own
-  deadline on every `exec` — at `timeoutMs + EXEC_TIMEOUT_SLACK_MS`
+- **Backstop: no operation is unbounded, with ONE exception — a pty exec's
+  life, which belongs to its owner** (below). cc arms its own
+  deadline on every other `exec` — at `timeoutMs + EXEC_TIMEOUT_SLACK_MS`
   (`src/systems/providerSystem.ts`) when the caller named one, and at
   `DEFAULT_OP_TIMEOUT_MS` when it did not (`runGit` and the §7 derivations
   deliberately carry no timeout, because locally there is nothing to time out
@@ -529,8 +537,52 @@ Rules:
   `ETIMEDOUT`. The ceiling is a
   liveness fence, not a performance budget: it sits above the slowest legitimate
   operation cc issues, so it can only ever turn a hang into a reported failure.
-  **No operation is an exception**: a redirected shell command is an ordinary
+  **No other operation is an exception**: a redirected shell command is an ordinary
   bounded `exec`, carrying the per-command ceiling of §5 as its `timeoutMs`.
+  A pty exec's OPEN (`exec` → `ptyStarted` or `error`) carries the same
+  `DEFAULT_OP_TIMEOUT_MS` ceiling, and expiry sends `close` and fails it
+  `ETIMEDOUT`.
+
+### pty exec
+
+A terminal: one program under a pseudo-terminal, bytes both ways. Sent only to
+a provider advertising `pty` (§2). It is what `System.openTerminal`
+(`src/systems/terminal.ts`) is on the wire.
+
+```
+cc  →  {"type":"exec","id":"t3","cwd":"/app","pty":{"cols":80,"rows":24,"term":"xterm-256color","envOverlay":{"HISTFILE":"/app/.hist"}}}
+   ←  {"type":"ptyStarted","id":"t3"}
+   ←  {"type":"stdout","id":"t3","seq":0,"dataB64":"…"}
+cc  →  {"type":"ack","id":"t3","bytes":412}
+cc  →  {"type":"input","id":"t3","dataB64":"bHMK"}
+cc  →  {"type":"resize","id":"t3","cols":120,"rows":40}
+   ←  {"type":"exit","id":"t3","code":0,"signal":null,"timedOut":false}
+```
+
+| Field / frame | Contract |
+|---|---|
+| `argv` | The program, run under the terminal as its session leader and controlling tty. **Absent → the target user's login shell**: the provider owns the interpreter (§2). Never `shell`. |
+| `pty.cols`, `pty.rows` | Integers in `1..PTY_DIM_MAX` (`src/systems/protocol.ts`). The terminal has this size **before** the program starts. |
+| `pty.term` | Becomes `TERM`, over anything `envOverlay` says. |
+| `pty.envOverlay` | **ADDED** to the provider's own environment — never a replacement, unlike `exec.env`, which a pty exec never carries. Order: the provider's environment, then the overlay, then `TERM`. It rides the frame rather than `env(1)` because cc cannot wrap a login shell it does not know. |
+| `ptyStarted` | Sent **once**, after the program was exec'd. Before it only `error` may arrive for the id — a missing `cwd` or program (`ENOENT`, `ENOTDIR`, `EACCES`), or `EPTY` when no terminal could be allocated. After it, `stdout` frames and one `exit`. |
+| `stdout` | The terminal's output. **There are no `stderr` frames**: the terminal merges the two. |
+| `input` | Bytes written to the terminal. `^C` is byte `0x03`, which the terminal turns into SIGINT for the foreground job — **cc never sends `signal` or `detach` for a pty id**, and a provider MAY ignore them. |
+| `resize` | Sets the terminal's size; the program's foreground job gets SIGWINCH. |
+| `ack` | **CREDIT FLOW CONTROL.** For a pty id the provider's **unacked raw `stdout` bytes MUST NOT exceed `PTY_WINDOW_BYTES`**; each `ack` returns `bytes` of credit. cc acks a chunk once it has handed it to its owner, and acks nothing while the owner has paused it. So a flooding terminal holds at most one window of the provider pipe ahead of every other operation on it. |
+| `close` | The owner closed the terminal: hang the terminal up (SIGHUP to its session), then SIGKILL what is left of the session's process groups after a grace; emit nothing further. A job that left the session (`setsid`) survives, as it does when a local terminal window closes. |
+| `exit` | The program ended: `code`, or `code: null` and the `signal` that ended it. `timedOut` is always `false`. **Every `stdout` byte the program wrote before exiting arrives before it.** |
+
+**The lifetime is the owner's.** After `ptyStarted` cc arms **no abandon
+timer**: a terminal ends when its owner closes it, when its program exits, or
+when the connection dies (cc then reports it lost, `ETRANSPORT`). MUST 3 covers
+an open pty exec like any other open operation.
+
+**The reference provider's terminal** is `src/systems/ptyHost.ts` running
+`src/systems/ptyHelper.py` — the same code `LocalSystem` runs in-process — and
+needs **python3** on the target: without it the provider advertises
+`pty:false`. Measured on Linux only; its behaviour on macOS and Termux is
+unmeasured.
 
 ### The redirected shell command (cc-side framing)
 
@@ -838,6 +890,7 @@ shell.
 | `ESHELLGONE` | A redirected command destroyed its own framing, so no sentinel could arrive. |
 | `EFBIG` | A read or write above `MAX_FILE_BYTES`. |
 | `ECANCELLED` | The caller went away: an interrupt, or a tool timeout. **cc raises this one itself**, from the caller's cancellation channel (see §5), in `src/systems/providerShell.ts`. The provider-produced table below has no row for it. |
+| `EPTY` | A pty exec's target could not allocate a pseudo-terminal — `openpty` failed, or the transport refuses a tty (an sshd with `PermitTTY no`). **id-addressed**, before `ptyStarted`. |
 | `ENOREMOTE` | The request named a `remoteId` this provider does not serve — one it is not configured to route to, or one whose target an attempt found absent or unreachable (§2.2) — or named none, on a provider that advertises `remotes` and therefore has no default. cc converts it to `REMOTE_NOT_FOUND` (502) at the registry. **It MUST be id-addressed** — see §9. |
 
 ### What a provider puts in an `error` frame
@@ -850,6 +903,7 @@ provider's choice — it follows from what failed:
 | `readFile` / `writeFile` that the filesystem refused | **the FS code the local filesystem would have raised**, from `FS_ERROR_CODES` (`src/systems/protocol.ts`) — e.g. `EEXIST` (an `exclusive` write over an existing file), `EISDIR` (a read of a directory) |
 | `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
 | an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
+| a pty exec that could not get a terminal | `EPTY`, **id-addressed** |
 | an `exec`, `readFile`, `writeFile` or `describeRemote` naming a `remoteId` it does not serve (§2.2's configuration or reachability refusal), or naming none while it advertises `remotes` — never a `listRemotes`, which names no remote by design (§2.2) | `ENOREMOTE`, **id-addressed** |
 | a `listRemotes` it cannot answer completely this time, because its configuration is unreadable — a provider that can never list its configured set completely does not advertise `remoteListing` and falls under the next row | `EUNKNOWN`, **id-addressed**, the reason in `message` — never a partial list (§2.2) |
 | a `listRemotes` while not advertising `remoteListing`, if it answers at all | `EUNSUPPORTED`, **id-addressed** |
@@ -949,10 +1003,17 @@ that passes them, so renaming one reds the suite.
 | Flag / variable | The provider must | Effect on the handshake |
 |---|---|---|
 | `--no-process-group-signal` | send a `signal` to the direct child only (§5) | `processGroupSignal: false` |
+| `--no-pty` | advertise no terminals. A provider without pty support simply accepts the flag | `pty: false` |
 | `--remote <id>=<absolute root>` | serve that target — the id is its whole address; the root is where the suite places that target's fixtures, not a fence it asks you to enforce. An unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true`, and `remoteListing: true` if the provider implements §2.2 — its `remoteList` must then be exactly the `--remote` ids — its configured set (§2.2) |
 | `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` (§2.1) | `remoteDescriptors: true` |
 | `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` | `remoteDescriptors: true` |
 | `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts**, naming the target it ran on | — (asserted directly, not negotiated) |
+
+**The terminal rows are gated on the handshake too.** A provider that does not
+advertise `pty` gets them skipped with a printed reason; one that does is held
+to the whole terminal battery (`tests/terminalBattery.mjs`) and the wire rows
+beside it — the credit window, the open-only ceiling, the shared cap. Under
+`--no-pty` it must advertise `pty: false`, which the handshake row asserts.
 
 **The enumeration rows (§2.2) are gated on the handshake.** A provider that does
 not advertise `remoteListing` gets them **skipped with a printed reason** — the
@@ -1066,6 +1127,7 @@ ten of each.
 | `signal`, `processGroup:true` | `docker exec … kill -- -<pgid>` → `processGroupSignal: true` |
 | `detach` | Drop the exec from the provider's bookkeeping and stop forwarding its frames. **Signal nothing** — this frame's whole content is that the command is over and is not to be killed. It is then **out of MUST 3's exit reap too**, which covers operations still open: a detached `docker exec` keeps running, exactly as a detached local one does |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
+| `pty` | `docker exec -it <ctr> …`, run under a pseudo-terminal the provider allocates on its own host side so `-t` has a tty to copy; `resize` sets that terminal's size and docker forwards the SIGWINCH. `input` writes to it, `stdout` reads from it |
 | `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
 | `remoteListing` | `false` for the shape above: it attempts any container name and learns from the daemon whether one exists, so it cannot list its configured set completely (§2.2). `true` only for a provider that keeps its own configuration of the containers it routes; it lists them whether reachable or not, and an unreachable one is then an `ENOREMOTE` on the operation, not an absence from the list |
 
