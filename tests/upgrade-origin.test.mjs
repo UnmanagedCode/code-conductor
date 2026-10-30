@@ -146,3 +146,19 @@ test('guard: the warn limit resets once its window has passed', () => {
   assert.equal(log.warns.length, WARN_LIMIT + 2);
   assert.match(log.warns[WARN_LIMIT + 1], new RegExp(`evil${WARN_LIMIT}\\.example`));
 });
+
+test('guard: a rolled-over window re-arms its own suppression line', () => {
+  const log = fakeLog();
+  let t = 0;
+  const admit = createUpgradeOriginGuard({ log, now: () => t });
+  const refuse = (i) => admit({ headers: headers(`http://evil${i}.example`, '127.0.0.1:8787') }, fakeSocket());
+  for (let i = 0; i <= WARN_LIMIT; i++) refuse(i);
+  assert.equal(log.warns.length, WARN_LIMIT + 1);
+  t = WARN_WINDOW_MS;
+  for (let i = 0; i <= WARN_LIMIT; i++) refuse(1000 + i); // fresh distinct pairs
+  const second = log.warns.slice(WARN_LIMIT + 1);
+  assert.equal(second.length, WARN_LIMIT + 1);
+  assert.equal(second.filter((w) => /not logged/.test(w)).length, 1);
+  assert.match(second[WARN_LIMIT], /not logged/);
+  assert.equal(log.warns.length, 2 * (WARN_LIMIT + 1));
+});
