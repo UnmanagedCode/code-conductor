@@ -4,13 +4,16 @@
 // One battery, because local and remote terminals take the same path and the
 // same API, so they owe the same behaviour.
 //
+// ROWS, NOT TESTS: this file declares none. Each entry file registers every row
+// of `TERMINAL_ROWS` with its own `test()` call (`terminalRowTest` builds the
+// body), so a row's test id belongs to the `.test.mjs` file that ran it.
+//
 // Each row opens real terminals running real programs. A row that needs a pid
 // to be gone polls `kill(pid, 0)` within a bound rather than sleeping, so it
 // assumes the program runs on THIS machine — true of LocalSystem, and of a
 // provider that reaches the test process's own filesystem, which is what the
 // conformance suite already verifies.
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -70,11 +73,11 @@ export async function openSession(sys, spec) {
   return { terminal, until, ended, get out() { return out; }, get calls() { return calls; } };
 }
 
-// Register the battery. `open(opts)` builds a fresh system — `opts.maxTerminals`
-// is the cap — and returns `{ sys, dispose }`. `gate(sys)` returns null to run a
-// row, or a skip reason.
-export function terminalBattery(tag, { open, gate = () => null }) {
-  const row = (name, fn, opts = {}) => test(`${tag} ${name}`, async (t) => {
+// The body of one row's test. `open(opts)` builds a fresh system —
+// `opts.maxTerminals` is the cap — and returns `{ sys, dispose }`. `gate(sys)`
+// returns null to run the row, or a skip reason.
+export function terminalRowTest({ fn, opts = {} }, { open, gate = () => null }) {
+  return async (t) => {
     const dir = await mkdtemp('cc-terminal-');
     const cwd = await fs.realpath(dir);
     const { sys, dispose } = await open(opts);
@@ -86,7 +89,19 @@ export function terminalBattery(tag, { open, gate = () => null }) {
       await dispose();
       await rmrf(dir);
     }
-  });
+  };
+}
+
+// A process's state letter from /proc (`Z` once it has exited unreaped), or
+// null when it is gone or there is no /proc.
+async function procState(pid) {
+  try { return (await fs.readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1][0]; }
+  catch { return null; }
+}
+
+export const TERMINAL_ROWS = [];
+{
+  const row = (name, fn, opts = {}) => { TERMINAL_ROWS.push({ name, fn, opts }); };
 
   // PINS: bytes reach the program and its output comes back, and the program's
   // exit is the terminal's end — `^D` on an empty line is EOF to `cat`.
@@ -148,16 +163,37 @@ export function terminalBattery(tag, { open, gate = () => null }) {
   });
 
   // PINS: output the program wrote just before exiting is ALL delivered before
-  // `onExit`. Twenty times, because losing the tail is a race, not a constant.
-  row('output written just before exit is delivered before onExit', async (sys, cwd) => {
-    const N = 50_000;
-    for (let i = 0; i < 20; i++) {
-      const s = await openSession(sys, { cwd, argv: ['sh', '-c', `head -c ${N} /dev/zero | tr '\\0' x; printf END`] });
-      const { end, outAtExit } = await s.ended;
-      assert.deepEqual(end, { kind: 'exited', code: 0, signal: null });
-      assert.equal(outAtExit.length, N + 3, `iteration ${i}: every byte arrived before onExit`);
-      assert.ok(outAtExit.endsWith('END'), `iteration ${i}: the last bytes too`);
+  // `onExit` — what is still in the terminal when the program is reaped.
+  //
+  // DETERMINISTIC by a stopped reader: the helper ($PPID of the program) is
+  // SIGSTOPped, the program writes DRAIN_BYTES into the terminal and exits —
+  // which it can only do because DRAIN_BYTES fits the terminal's buffer — and
+  // only once it is a zombie is the helper continued. It then finds the exit
+  // with the whole output still unread, and one read of the terminal returns
+  // far less than DRAIN_BYTES (measured: 4095), so only the post-exit drain
+  // can deliver the rest. Measured: 8000 bytes fit and 12000 do not on Linux
+  // 6.17; the precondition below fails by name where the buffer is smaller.
+  row('output still in the terminal when the program exits is delivered before onExit', async (sys, cwd) => {
+    const DRAIN_BYTES = 8000;
+    const s = await openSession(sys, {
+      cwd,
+      argv: ['sh', '-c', `echo IDS=$$,$PPID; while [ ! -e GO ]; do sleep 0.01; done; `
+        + `head -c ${DRAIN_BYTES} /dev/zero | tr '\\0' x; printf END`],
+    });
+    const [, pid, helper] = (await s.until(/IDS=(\d+),(\d+)\r\n/)).map(Number);
+    const before = s.out.length;
+    process.kill(helper, 'SIGSTOP');
+    try {
+      await fs.writeFile(path.join(cwd, 'GO'), '');
+      assert.ok(await settle(async () => (await procState(pid)) === 'Z'),
+        `precondition: the program exits while its reader is stopped — ${DRAIN_BYTES} bytes must fit the terminal's buffer`);
+    } finally {
+      process.kill(helper, 'SIGCONT');
     }
+    const { end, outAtExit } = await s.ended;
+    assert.deepEqual(end, { kind: 'exited', code: 0, signal: null });
+    assert.equal(outAtExit.length - before, DRAIN_BYTES + 3, 'every byte arrived before onExit');
+    assert.ok(outAtExit.endsWith('END'), 'the last bytes too');
   });
 
   // PINS: the terminal opens at the size asked for, and `resize` changes what

@@ -7,11 +7,15 @@
 // is a passthrough around the reference provider that appends every CLIENT
 // frame, verbatim, one JSON line per frame, to the file named by `--record`.
 //
-//   node recordingProvider.mjs --record <file> [--pty-epty] [reference provider flags…]
+//   node recordingProvider.mjs --record <file> [--pty-fake <mode>] [reference provider flags…]
 //
-// `--pty-epty` stands in for a target that cannot allocate a terminal: the
+// `--pty-fake` stands in for a pty target that misbehaves in one named way: the
 // hello advertises `pty` whatever the provider said, and every pty exec is
-// answered `error {code: EPTY}` here instead of reaching the provider.
+// answered HERE, never reaching the provider. Modes:
+//   epty      — `error {code: EPTY}`: the target cannot allocate a terminal.
+//   silent    — nothing, ever: an open that never starts.
+//   overflow  — `ptyStarted`, then on the id's first `input`, one chunk more
+//               stdout than PTY_WINDOW_BYTES with no ack waited for.
 //
 // Nothing downstream is touched — the provider's answers are the real
 // provider's own — so a test recording the wire is otherwise running exactly
@@ -23,17 +27,22 @@ import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CHUNK_BYTES, PTY_WINDOW_BYTES } from '../../src/systems/protocol.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFERENCE = path.resolve(__dirname, '..', '..', 'src', 'systems', 'referenceProvider.ts');
 
 let record = null;
-let ptyEpty = false;
+let ptyFake = null;
 const passThrough = [];
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--record') record = process.argv[++i];
-  else if (process.argv[i] === '--pty-epty') ptyEpty = true;
+  else if (process.argv[i] === '--pty-fake') ptyFake = process.argv[++i];
   else passThrough.push(process.argv[i]);
+}
+if (ptyFake !== null && !['epty', 'silent', 'overflow'].includes(ptyFake)) {
+  process.stderr.write(`recordingProvider: unknown --pty-fake mode ${JSON.stringify(ptyFake)}\n`);
+  process.exit(1);
 }
 if (!record) {
   process.stderr.write('recordingProvider: --record <file> is required\n');
@@ -43,7 +52,7 @@ if (!record) {
 const child = spawn(process.execPath, [REFERENCE, ...passThrough], {
   stdio: ['pipe', 'pipe', 'inherit'],
 });
-if (!ptyEpty) child.stdout.pipe(process.stdout);
+if (ptyFake === null) child.stdout.pipe(process.stdout);
 else {
   let out = '';
   child.stdout.on('data', (chunk) => {
@@ -74,17 +83,36 @@ process.stdin.on('data', (chunk) => {
     // Synchronous: the recording must be on disk before the answer this frame
     // provokes reaches cc, or a test that reads it after its own await races.
     appendFileSync(record, line + '\n');
-    if (ptyEpty) {
-      const f = JSON.parse(line);
-      if (f.type === 'exec' && f.pty) {
-        process.stdout.write(`${JSON.stringify({
-          type: 'error', id: f.id, code: 'EPTY', message: 'openpty: out of pseudo-terminals (recordingProvider --pty-epty)',
-        })}\n`);
-        continue;
-      }
-    }
+    if (ptyFake !== null && fakePty(JSON.parse(line))) continue;
     child.stdin.write(line + '\n');
   }
 });
 
 process.stdin.on('end', () => { try { child.stdin.end(); } catch { /* ignore */ } });
+
+// The pty ids this fixture answered itself, so their follow-on frames stay here.
+const fakeIds = new Set();
+const flooded = new Set();
+const answer = (f) => process.stdout.write(`${JSON.stringify(f)}\n`);
+
+// True when the frame was a fake pty's and has been answered here.
+function fakePty(f) {
+  if (f.type === 'exec' && f.pty) {
+    fakeIds.add(f.id);
+    if (ptyFake === 'epty') {
+      answer({ type: 'error', id: f.id, code: 'EPTY', message: 'openpty: out of pseudo-terminals (recordingProvider --pty-fake epty)' });
+    } else if (ptyFake === 'overflow') {
+      answer({ type: 'ptyStarted', id: f.id });
+    }
+    return true;
+  }
+  if (!fakeIds.has(f.id)) return false;
+  if (ptyFake === 'overflow' && f.type === 'input' && !flooded.has(f.id)) {
+    flooded.add(f.id);
+    const chunk = Buffer.alloc(CHUNK_BYTES, 0x78).toString('base64');
+    for (let seq = 0; seq * CHUNK_BYTES <= PTY_WINDOW_BYTES; seq++) {
+      answer({ type: 'stdout', id: f.id, seq, dataB64: chunk });
+    }
+  }
+  return true;
+}

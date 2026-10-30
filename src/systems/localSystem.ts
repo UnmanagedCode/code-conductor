@@ -13,7 +13,8 @@ import { SystemError, isSystemErrorCode } from './protocol.ts';
 import { probePtyHelper, spawnPty } from './ptyHost.ts';
 import { msFromNanos, requireAbsolute, typeBitsFor } from './system.ts';
 import {
-  TerminalSlots, assertDims, openCancelled, ptyUnavailable, toBuffer, validateTerminalSpec,
+  LOCAL_TERMINAL_OPEN_TIMEOUT_MS, TerminalSlots, assertDims, openCancelled, ptyUnavailable, toBuffer,
+  validateTerminalSpec,
   type Terminal, type TerminalEnd, type TerminalHandlers, type TerminalSpec,
 } from './terminal.ts';
 import type {
@@ -100,14 +101,17 @@ export class LocalSystem implements System {
   readonly #terminals: TerminalSlots;
   // The interpreter name the pty probe looks up. A test names an absent one.
   readonly #ptyPython: string | undefined;
+  readonly #terminalOpenTimeoutMs: number;
 
   constructor(
     platform: Platform = hostPlatform,
-    { maxTerminals, ptyPython }: { maxTerminals?: number; ptyPython?: string } = {},
+    { maxTerminals, ptyPython, terminalOpenTimeoutMs = LOCAL_TERMINAL_OPEN_TIMEOUT_MS }:
+      { maxTerminals?: number; ptyPython?: string; terminalOpenTimeoutMs?: number } = {},
   ) {
     this.platform = platform;
     this.#terminals = new TerminalSlots(maxTerminals);
     this.#ptyPython = ptyPython;
+    this.#terminalOpenTimeoutMs = terminalOpenTimeoutMs;
   }
 
   // `async` on these three so a guard violation REJECTS rather than throwing
@@ -336,6 +340,7 @@ export class LocalSystem implements System {
       const proc = spawnPty({
         interpreter: probe.interpreter, cwd: spec.cwd, argv: spec.argv ?? shell,
         env: { ...process.env, ...spec.env, TERM: spec.term }, cols: spec.cols, rows: spec.rows,
+        startTimeoutMs: this.#terminalOpenTimeoutMs,
       }, {
         onStarted: () => { started = true; resolve(terminal); },
         onData: (chunk) => { if (!ended) handlers.onData(chunk); },

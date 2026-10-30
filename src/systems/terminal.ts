@@ -68,6 +68,12 @@ export interface Terminal {
 // PIPE for a provider (every `bindRemote` view shares its owner's).
 export const MAX_TERMINALS_PER_SYSTEM = 16;
 
+// The bound on a LOCAL terminal's open — the helper starting the program. A
+// liveness fence like the provider's op ceiling, which bounds a remote open:
+// a healthy start takes milliseconds, so this can only turn a hang into a
+// refusal.
+export const LOCAL_TERMINAL_OPEN_TIMEOUT_MS = 30_000;
+
 // What a TERM value may be: a terminfo name.
 export const TERM_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 

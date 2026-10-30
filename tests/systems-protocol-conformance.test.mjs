@@ -27,7 +27,7 @@ import {
   VERIFY_PTY, assertNegotiatedCapabilities, conformanceRemoteId, listRemotesRaw, makeProviderSystem, providerArgv,
   ptyVerdict, remoteListingVerdict,
 } from './referenceProviderHarness.mjs';
-import { openSession, terminalBattery } from './terminalBattery.mjs';
+import { TERMINAL_ROWS, openSession, terminalRowTest } from './terminalBattery.mjs';
 import { rmrf } from './rmrf.mjs';
 import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -658,18 +658,21 @@ for (const config of CAPABILITY_CONFIGS) {
       });
     });
   } else {
-    // The whole terminal battery, over the wire, wherever `pty` is advertised.
-    terminalBattery(tag, {
-      open: async ({ maxTerminals } = {}) => {
-        const sys = makeProviderSystem(config.flags, maxTerminals === undefined ? {} : { maxTerminals });
-        await sys.connect();
-        return { sys, dispose: () => sys.dispose() };
-      },
-      gate: (sys) => {
-        const v = ptyVerdict(sys.handshake.capabilities);
-        return v === VERIFY_PTY ? null : v;
-      },
-    });
+    // The whole terminal battery, over the wire, wherever `pty` is advertised —
+    // each row registered HERE so its test id is this file's.
+    for (const row of TERMINAL_ROWS) {
+      test(`${tag} ${row.name}`, terminalRowTest(row, {
+        open: async ({ maxTerminals } = {}) => {
+          const sys = makeProviderSystem(config.flags, maxTerminals === undefined ? {} : { maxTerminals });
+          await sys.connect();
+          return { sys, dispose: () => sys.dispose() };
+        },
+        gate: (sys) => {
+          const v = ptyVerdict(sys.handshake.capabilities);
+          return v === VERIFY_PTY ? null : v;
+        },
+      }));
+    }
   }
 }
 

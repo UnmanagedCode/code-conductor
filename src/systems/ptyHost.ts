@@ -119,6 +119,9 @@ export interface PtySpawnSpec {
   env: NodeJS.ProcessEnv;
   cols: number;
   rows: number;
+  // Bound on the START: no `S` within it fails the open ETIMEDOUT and kills
+  // the helper. Absent → unbounded, for a caller that bounds the open itself.
+  startTimeoutMs?: number;
 }
 
 export interface PtyHandlers {
@@ -157,10 +160,17 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
   // The helper ended without reporting while frames were still queued behind
   // a pause: the failure is reported once they have been delivered.
   let failAfterQueue: (() => void) | null = null;
+  const startTimer = spec.startTimeoutMs === undefined ? null : setTimeout(() => {
+    if (started || done) return;
+    finish(() => h.onFailed('ETIMEDOUT', `the pty helper did not start the program within ${spec.startTimeoutMs}ms`));
+    try { child?.kill('SIGKILL'); } catch { /* already gone */ }
+  }, spec.startTimeoutMs);
+  startTimer?.unref();
 
   const finish = (fn: () => void): void => {
     if (done) return;
     done = true;
+    if (startTimer) clearTimeout(startTimer);
     fn();
   };
 
@@ -168,7 +178,11 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
   const pump = (): void => {
     while (!paused && !done && queue.length > 0) {
       const f = queue.shift() as HelperFrame;
-      if (f.type === 'S') { started = true; h.onStarted(); }
+      if (f.type === 'S') {
+        started = true;
+        if (startTimer) clearTimeout(startTimer);
+        h.onStarted();
+      }
       else if (f.type === 'o') h.onData(f.payload);
       else if (f.type === 'x') {
         const r = parseJson(f.payload);
@@ -260,6 +274,7 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
     close() {
       if (done) return;
       done = true;
+      if (startTimer) clearTimeout(startTimer);
       const c = child;
       if (!c) return;
       // Drain and discard, so a helper blocked writing to a paused pipe reaches

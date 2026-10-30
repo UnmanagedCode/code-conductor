@@ -27,7 +27,7 @@ function expectedRefusal(sys) {
   if (argv === null) return probe.ok ? null : 'PTY_UNAVAILABLE';
   if (argv.includes(REFERENCE_PROVIDER)) return probe.ok && !argv.includes('--no-pty') ? null : 'SYSTEM_NO_PTY';
   // A third-party provider: only its handshake can say.
-  return sys.handshake?.capabilities.pty ? null : 'SYSTEM_NO_PTY';
+  return sys.handshake.capabilities.pty ? null : 'SYSTEM_NO_PTY';
 }
 
 // PINS: `openTerminal` on the `local` handle opens a working terminal exactly
@@ -39,6 +39,9 @@ test('a terminal on the local handle works or is refused by name', async () => {
   try {
     const cwd = await fs.realpath(dir);
     const sys = await systemById(LOCAL_SYSTEM_ID, null, 'the terminal seam test');
+    // `local` comes back unconnected; a third-party provider's expectation is
+    // read off its handshake, so make one first.
+    if (typeof sys.connect === 'function') await sys.connect();
     const refusal = expectedRefusal(sys);
     if (refusal !== null) {
       await assert.rejects(openSession(sys, { cwd, argv: ['cat'] }),

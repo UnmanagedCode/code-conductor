@@ -28,7 +28,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import {
-  CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
+  CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, PTY_WINDOW_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   readRemoteList, type AnyFrame, type Capabilities, type ClientFrame, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
@@ -684,6 +684,8 @@ export class ProviderSystem implements System, ShellHost {
   // CREDIT FLOW CONTROL keeps one flooding terminal from starving git on the
   // same pipe: the provider holds at most PTY_WINDOW_BYTES unacked, and cc acks
   // each chunk only once it has been handed to `onData` — never while paused.
+  // cc ENFORCES the window too, since it is what bounds `held`: a provider past
+  // it has its terminal closed and ended `failed` EPROTO.
   async openTerminal(spec: TerminalSpec, handlers: TerminalHandlers): Promise<Terminal> {
     validateTerminalSpec(spec);
     let hs: Handshake;
@@ -712,6 +714,9 @@ export class ProviderSystem implements System, ShellHost {
       let reported = false;
       let paused = false;
       const held: Buffer[] = [];
+      // Bytes received and not yet acked. cc has sent every ack it counts, so a
+      // provider within its window can never put this above PTY_WINDOW_BYTES.
+      let unacked = 0;
       // An end that arrived while paused, delivered after the held chunks.
       let pendingEnd: TerminalEnd | null = null;
 
@@ -738,6 +743,7 @@ export class ProviderSystem implements System, ShellHost {
       };
       const deliver = (chunk: Buffer): void => {
         handlers.onData(chunk);
+        unacked -= chunk.length;
         if (!wireDone) this.#conn.send({ type: 'ack', id, bytes: chunk.length });
       };
 
@@ -798,6 +804,24 @@ export class ProviderSystem implements System, ShellHost {
             resolve(terminal);
           } else if (f.type === 'stdout') {
             const chunk = decodeData(f);
+            unacked += chunk.length;
+            if (unacked > PTY_WINDOW_BYTES) {
+              // Immediately, paused or not: what is held came from a provider
+              // that broke the contract, and holding more is the unbounded
+              // growth the window exists to prevent.
+              const error = new SystemError('EPROTO',
+                `openTerminal: the provider sent ${unacked} unacked bytes, past the ${PTY_WINDOW_BYTES}-byte window`);
+              this.#conn.send({ type: 'close', id });
+              if (!started) { fail(error); return; }
+              finishWire();
+              held.length = 0;
+              pendingEnd = null;
+              if (!reported) {
+                reported = true;
+                handlers.onExit({ kind: 'failed', error });
+              }
+              return;
+            }
             if (paused) held.push(chunk);
             else deliver(chunk);
           } else if (f.type === 'exit') {
