@@ -192,3 +192,55 @@ test('stdout past the credit window ends the terminal failed EPROTO', async () =
     }
   });
 });
+
+// PINS THE BOUNDARY of the enforced window: EXACTLY PTY_WINDOW_BYTES unacked is
+// legal — it is where a compliant provider stops — and the terminal stays
+// alive holding it while paused; on resume all of it is delivered and acked.
+// Only the first byte BEYOND the window is the breach: with a full window held
+// again, one more byte ends the terminal `failed` EPROTO.
+//
+// The barrier after each `input` is a plain exec on the same connection: the
+// fixture writes the stdout frames before it forwards the exec, so the exec's
+// answer arrives after every one of them.
+test('exactly the credit window unacked is legal; the next byte is the breach', async () => {
+  await withDir(async (cwd) => {
+    const record = path.join(cwd, 'wire.ndjson');
+    const sys = new ProviderSystem({
+      id: 'window-box',
+      launch: { argv: [process.execPath, RECORDING, '--record', record, '--pty-fake', 'window'] },
+    });
+    const barrier = async () => assert.equal((await sys.exec({ argv: ['true'] }, { cwd })).code, 0);
+    try {
+      let delivered = 0;
+      let end = null;
+      const terminal = await sys.openTerminal({ ...SPEC, cwd }, {
+        onData: (b) => { delivered += b.length; },
+        onExit: (e) => { end = e; },
+      });
+      terminal.pause();
+      terminal.write('a');
+      await barrier();
+      assert.equal(end, null, 'a full window held while paused is not a breach');
+      assert.equal(delivered, 0, 'and nothing is delivered while paused');
+
+      terminal.resume();
+      assert.equal(delivered, PTY_WINDOW_BYTES, 'resume delivers the whole window');
+      const sumAcks = (frames) => frames.filter((f) => f.type === 'ack').reduce((n, f) => n + f.bytes, 0);
+      const frames = await settleRecorded(record, (fs_) => sumAcks(fs_) === PTY_WINDOW_BYTES);
+      assert.equal(sumAcks(frames), PTY_WINDOW_BYTES, 'and acks every byte of it');
+
+      terminal.pause();
+      terminal.write('a');
+      await barrier();
+      assert.equal(end, null, 'a second full window, after the acks, is legal too');
+      terminal.write('b');
+      await barrier();
+      assert.equal(end?.kind, 'failed', 'one byte past the window is the breach');
+      assert.equal(end.error.code, 'EPROTO');
+      assert.match(end.error.message, new RegExp(`sent ${PTY_WINDOW_BYTES + 1} unacked bytes`));
+      assert.equal(delivered, PTY_WINDOW_BYTES, 'nothing held at the breach was delivered');
+    } finally {
+      sys.dispose();
+    }
+  });
+});

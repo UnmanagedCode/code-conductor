@@ -37,6 +37,8 @@ export async function settle(pred, ms = 5_000) {
 //   until(re)  — resolves with the match once the output matches, or fails
 //                naming the output it had.
 //   ended      — the TerminalEnd, with the output as it stood when onExit fired.
+//                BOUNDED each time it is read: a terminal that never ends fails
+//                the row by name within WAIT_MS, not at the runner's timeout.
 export async function openSession(sys, spec) {
   let out = '';
   let calls = 0;
@@ -70,7 +72,19 @@ export async function openSession(sys, spec) {
     waiters.add(check);
     check();
   });
-  return { terminal, until, ended, get out() { return out; }, get calls() { return calls; } };
+  const boundedEnd = () => {
+    let timer;
+    return Promise.race([
+      ended.finally(() => clearTimeout(timer)),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          `the terminal did not end (onExit) within ${WAIT_MS}ms; output so far: ${JSON.stringify(out.slice(-400))}`)), WAIT_MS);
+      }),
+    ]);
+  };
+  return {
+    terminal, until, get ended() { return boundedEnd(); }, get out() { return out; }, get calls() { return calls; },
+  };
 }
 
 // The body of one row's test. `open(opts)` builds a fresh system —

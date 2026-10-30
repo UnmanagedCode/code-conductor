@@ -16,6 +16,9 @@
 //   silent    — nothing, ever: an open that never starts.
 //   overflow  — `ptyStarted`, then on the id's first `input`, one chunk more
 //               stdout than PTY_WINDOW_BYTES with no ack waited for.
+//   window    — `ptyStarted`, then per `input`: an `a` in it sends EXACTLY
+//               PTY_WINDOW_BYTES of stdout, a `b` sends ONE byte — neither
+//               waits for an ack, so the test decides where the boundary is.
 //
 // Nothing downstream is touched — the provider's answers are the real
 // provider's own — so a test recording the wire is otherwise running exactly
@@ -40,7 +43,7 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (process.argv[i] === '--pty-fake') ptyFake = process.argv[++i];
   else passThrough.push(process.argv[i]);
 }
-if (ptyFake !== null && !['epty', 'silent', 'overflow'].includes(ptyFake)) {
+if (ptyFake !== null && !['epty', 'silent', 'overflow', 'window'].includes(ptyFake)) {
   process.stderr.write(`recordingProvider: unknown --pty-fake mode ${JSON.stringify(ptyFake)}\n`);
   process.exit(1);
 }
@@ -101,7 +104,7 @@ function fakePty(f) {
     fakeIds.add(f.id);
     if (ptyFake === 'epty') {
       answer({ type: 'error', id: f.id, code: 'EPTY', message: 'openpty: out of pseudo-terminals (recordingProvider --pty-fake epty)' });
-    } else if (ptyFake === 'overflow') {
+    } else if (ptyFake === 'overflow' || ptyFake === 'window') {
       answer({ type: 'ptyStarted', id: f.id });
     }
     return true;
@@ -114,5 +117,18 @@ function fakePty(f) {
       answer({ type: 'stdout', id: f.id, seq, dataB64: chunk });
     }
   }
+  if (ptyFake === 'window' && f.type === 'input') {
+    const text = Buffer.from(f.dataB64, 'base64').toString('utf8');
+    const send = (bytes) => {
+      for (let at = 0; at < bytes; at += CHUNK_BYTES) {
+        const n = Math.min(CHUNK_BYTES, bytes - at);
+        answer({ type: 'stdout', id: f.id, seq: seqs.get(f.id) ?? 0, dataB64: Buffer.alloc(n, 0x77).toString('base64') });
+        seqs.set(f.id, (seqs.get(f.id) ?? 0) + 1);
+      }
+    };
+    if (text.includes('a')) send(PTY_WINDOW_BYTES);
+    if (text.includes('b')) send(1);
+  }
   return true;
 }
+const seqs = new Map();
