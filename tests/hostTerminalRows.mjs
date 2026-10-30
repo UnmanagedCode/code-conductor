@@ -41,7 +41,9 @@ export const terminalUrl = (baseUrl, spec) =>
 export function connectTerminal(baseUrl, spec, { headers } = {}) {
   return new Promise((resolve) => {
     const ws = new WebSocket(terminalUrl(baseUrl, spec), { headers });
-    let out = Buffer.alloc(0);
+    // A latin1 string, appended to: linear in the output, where re-concatenating
+    // a Buffer per message is quadratic — and a flooding row reads megabytes.
+    let out = '';
     const texts = [];
     const waiters = new Set();
     let closeInfo = null;
@@ -58,7 +60,7 @@ export function connectTerminal(baseUrl, spec, { headers } = {}) {
     });
     ws.on('error', (error) => resolve({ error }));
     ws.on('message', (data, isBinary) => {
-      if (isBinary) out = Buffer.concat([out, data]);
+      if (isBinary) out += data.toString('latin1');
       else texts.push(JSON.parse(data.toString('utf8')));
       wake();
     });
@@ -76,7 +78,7 @@ export function connectTerminal(baseUrl, spec, { headers } = {}) {
       };
       const timer = setTimeout(() => {
         waiters.delete(check);
-        rej(new Error(`${what}: not within ${ms}ms; output so far: ${JSON.stringify(out.toString('latin1').slice(-400))}`
+        rej(new Error(`${what}: not within ${ms}ms; output so far: ${JSON.stringify(out.slice(-400))}`
           + `, texts: ${JSON.stringify(texts)}, close: ${JSON.stringify(closeInfo)}`));
       }, ms);
       waiters.add(check);
@@ -84,11 +86,10 @@ export function connectTerminal(baseUrl, spec, { headers } = {}) {
     });
     ws.on('open', () => resolve({
       ws,
-      get out() { return out.toString('latin1'); },
-      get bytes() { return out; },
+      get out() { return out; },
       texts,
       get closeInfo() { return closeInfo; },
-      until: (re, ms) => waitFor(() => re.exec(out.toString('latin1')), `output matching ${re}`, ms),
+      until: (re, ms) => waitFor(() => re.exec(out), `output matching ${re}`, ms),
       closed: (ms) => waitFor(() => closeInfo, 'the socket closing', ms),
       send: (data) => ws.send(data, { binary: true }),
       control: (obj) => ws.send(JSON.stringify(obj)),
