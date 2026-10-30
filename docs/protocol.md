@@ -100,6 +100,22 @@ Notes on `assistant` envelope handling that don't table cleanly: `buildMessageFr
 
 ## WebSocket protocol
 
+**Handshake: Origin check** (`src/upgradeOrigin.ts`, the first step of `server.ts`'s `server.on('upgrade')` dispatcher, so it covers `/ws`, `/plugins/<id>/…` and unknown paths alike):
+- **No `Origin` header → admitted.** Browsers always send one on a WebSocket, so its absence means a non-browser client (the test suite's `ws` client, a plugin backend, code-live).
+- **Otherwise admitted only if** all hold (`upgradeOriginAllowed`):
+  - `Origin` parses as a URL with protocol `http:` or `https:` and `new URL(origin).origin === origin` — refuses `null` (sandboxed / `file:` pages), `chrome-extension://…`, an Origin with a path or userinfo, a malformed value, and duplicate headers Node joined into `"a, b"`;
+  - `Host` is present and parses as `new URL(`${originProtocol}//${host}`)` with no userinfo, path, query or fragment;
+  - the two URLs' `.host` are equal — lowercased hostname plus effective port (a default port dropped on both sides under the Origin's scheme; IPv6 brackets kept).
+- **The scheme is ignored**: a TLS front (a tunnel, Tailscale funnel) shows the browser `https://` while cc's own hop is plain http. **`X-Forwarded-Host` is neither read nor trusted.**
+- **Refusal:** a raw `HTTP/1.1 403 Forbidden` + `Connection: close`, then the socket is destroyed — before the wsHub sees the request and before the plugin proxy lazy-starts any child.
+- **Log:** a refusal `console.warn`s `websocket upgrade refused: Origin … does not match Host …`, subject to two bounds:
+  - **Dedupe (memory-bounded):** a pair already warned about is silent, so a reconnect loop logs once. The memo holds at most `WARNED_PAIRS_CAP` pairs (oldest evicted), so a pair evicted by more distinct pairs warns again.
+  - **Rate limit (log-bounded):** at most `WARN_LIMIT` refusal warns per `WARN_WINDOW_MS` window, then one `… further refused upgrades not logged …` line, then silence until the window rolls over. Rotating attacker-chosen Origins therefore logs at most `WARN_LIMIT + 1` lines per window. A pair silenced by the limit is not remembered, so it warns in a later window.
+  - Constants: `src/upgradeOrigin.ts`.
+- **Contract on a proxy in front of cc: forward `Host` unchanged.** code-hub's authproxy (both plain requests and upgrades), its cloudflared and Tailscale tunnels and its raw TCP relays do; the Vite dev server's `/ws` and `/plugins` entries in `web/vite.config.ts` carry no `changeOrigin`, so they do too. A proxy that rewrites `Host` gets every browser upgrade refused, visible as the warn above.
+- **Known limitation — DNS rebinding passes:** a rebound name makes `Origin` and `Host` agree. It affects `/api` equally; closing it needs a `Host` allowlist (a new setting), out of scope here. Plain-HTTP CSRF on `/api/*` is likewise not covered.
+- **Pins:** `tests/ws-origin.test.mjs` (real server, both paths, the no-lazy-start proof, LAN-share and tunnel acceptance), `tests/upgrade-origin.test.mjs` (the rule's rows, the guard's 403, the dedupe and the rate limit).
+
 **Client → server:**
 | `t` | Fields |
 |---|---|
@@ -463,7 +479,7 @@ Observed on CLI 2.1.286 (fixture: `tests/fixtures/bg-bash-jobs.stdout.jsonl`):
 - **Every response cc produces** carries `HOST_SECURITY_HEADERS` (`src/securityHeaders.ts`): `X-Frame-Options: SAMEORIGIN`, `Content-Security-Policy: frame-ancestors 'self'` and `X-Content-Type-Options: nosniff`. `server.ts` sets them with the app-level `hostSecurityHeaders()` ahead of every mount, and disables `X-Powered-By`.
 - **Covered:** `/api` (errors and NDJSON streams included), `/mcp`, the `/plugins` mount's own 301/404/502/503, `/pluginBridge.js`, `/pluginTheme*`, the static UI and the building page.
 - **Express's default 404/500 and serve-static's directory redirect** replace the CSP with `default-src 'none'`, which does not govern framing; `X-Frame-Options` is their framing protection.
-- **WebSocket upgrades** (101 and refusals) are raw socket writes and render no document.
+- **WebSocket upgrades** (101 and refusals) are raw socket writes and render no document; an upgrade failing the [Origin check](#websocket-protocol) is a raw `403`.
 - **Proxied plugin responses** do not carry cc's policy; see [plugins.md](plugins.md) → Reverse proxy.
 - **Pins:** `tests/security-headers.test.mjs`, `tests/plugins-proxy.test.mjs`, `web/e2e/frame-ancestors.spec.ts`.
 

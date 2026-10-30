@@ -37,6 +37,7 @@ import { WEB_ROOT, ensureWebBuild, webBuildRunning, webHandler, webInputs } from
 import { bootCommitHookVars, bootSwapGuard, measureBootCommit, type BootCommit } from './src/bootCommit.ts';
 import { setMergeHookVarsProvider } from './src/worktrees.ts';
 import { hostSecurityHeaders } from './src/securityHeaders.ts';
+import { createUpgradeOriginGuard } from './src/upgradeOrigin.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -146,11 +147,15 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   app.use(webHandler(webDistDir ? { distDir: webDistDir } : {}));
 
   const server = http.createServer(app);
-  // noServer + manual dispatch: the wsHub keeps /ws, plugin WebSockets pipe
-  // through the reverse proxy, anything else is refused. (With noServer the
-  // ws lib never touches `server`, so no error forwarding to guard against.)
+  // noServer + manual dispatch: every upgrade first passes the Origin check
+  // (a cross-origin browser upgrade gets a 403 before any handler or plugin
+  // child sees it), then the wsHub keeps /ws, plugin WebSockets pipe through
+  // the reverse proxy, anything else is refused. (With noServer the ws lib
+  // never touches `server`, so no error forwarding to guard against.)
   const wss = new WebSocketServer({ noServer: true });
+  const admitOrigin = createUpgradeOriginGuard();
   server.on('upgrade', (req, socket, head) => {
+    if (!admitOrigin(req, socket)) return;
     let pathname: string | null = null;
     try { pathname = new URL(req.url ?? '', 'http://placeholder').pathname; }
     catch { socket.destroy(); return; }
