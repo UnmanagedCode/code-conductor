@@ -38,6 +38,22 @@ export function parseHash(hash: string): Route {
 /** The host of cc's in-app link form, `http://cc.internal/#<view>`: it resolves nowhere, so only cc acts on it. */
 export const CC_LINK_HOST = 'cc.internal';
 
+/** `href` resolved against cc's page, as a link in it resolves; null when it does not parse. */
+function resolveLink(href: string): URL | null {
+  try { return new URL(href, location.href); } catch { return null; }
+}
+
+/** Whether `u` is on cc's link host: an http(s) URL whose host is exactly CC_LINK_HOST. */
+function onLinkHost(u: URL): boolean {
+  return (u.protocol === 'http:' || u.protocol === 'https:') && u.host === CC_LINK_HOST;
+}
+
+/** Whether `href`, resolved against cc's page, is on cc's link host, whether or not it names a view. */
+export function isCcLinkHost(href: string): boolean {
+  const u = resolveLink(href);
+  return !!u && onLinkHost(u);
+}
+
 /** The views a link to cc may open in-app. #review/#commits carry params a hash can't (viewStore), and a #session= hash selects nothing on push (the controller selects on popstate only), so neither is a link target. */
 const LINKABLE: ReadonlySet<MainView> = new Set(['plugin', 'settings', 'costs']);
 
@@ -49,10 +65,9 @@ const LINKABLE: ReadonlySet<MainView> = new Set(['plugin', 'settings', 'costs'])
  * origin. That rejects dot segments (also `%2e%2e` and `\`) and an id that is not one plain path segment.
  */
 export function viewLinkHash(href: string): string | null {
-  let u: URL;
-  try { u = new URL(href, location.href); } catch { return null; }
-  if (u.username || u.password) return null;
-  const internal = (u.protocol === 'http:' || u.protocol === 'https:') && u.host === CC_LINK_HOST && u.pathname === '/' && u.search === '';
+  const u = resolveLink(href);
+  if (!u || u.username || u.password) return null;
+  const internal = onLinkHost(u) && u.pathname === '/' && u.search === '';
   const ownPage = u.origin === location.origin && u.pathname === location.pathname && u.search === location.search;
   if (!internal && !ownPage) return null;
   const hash = u.hash;

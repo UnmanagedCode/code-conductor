@@ -434,10 +434,11 @@ describe('plugin links', () => {
         expect(opened(b.posted)).toEqual([]);
       });
 
-      // Pins: only an exact host match on an http(s) scheme is cc.internal.
+      // Pins: only an exact host match on an http(s) scheme is cc.internal; a suffix lookalike (evilcc.internal) is not.
       it.each([
         'http://cc.internal.evil.com/#plugin/a/', 'http://cc.internal@evil.com/#plugin/a/', 'http://cc.internal./#plugin/a/',
-        'http://cc.internal:8080/#plugin/a/', 'ftp://cc.internal/#plugin/a/',
+        'http://cc.internal:8080/#plugin/a/', 'ftp://cc.internal/#plugin/a/', 'http://evilcc.internal/#plugin/a/',
+        'http://xcc.internal/#plugin/a/',
       ])('%s', (href) => {
         const b = hosted();
         expect(b.click(anchor(href, '_blank')).prevented).toBe(false);

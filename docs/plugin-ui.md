@@ -79,7 +79,7 @@ Load both in the page's `<head>`:
 
   When the dock shows, it opens there; otherwise cc sets the hash as the browser would have. The page sees the result as `navigate`/`popstate` or a reload, as before. Any other link (another target, host, path, search or hash, one the page already handled) is left to the browser. **Limitation:** a modified or middle click on a `cc.internal` link inside a plugin page stays the browser's and reaches the dead host.
 - **The id needs no encoding** (a slug). The subpath is used verbatim, so percent-encode query values as the page's own parser expects.
-- **Rejected `cc.internal` links render as literal text** (`viewLinkHash`, `web/src/state/route.ts`): one naming no linkable view, a plugin link whose frame URL would leave `/plugins/<id>/` (dot segments), a non-root path, a search, or userinfo. An explicit link reads `[label](href)`, an autolink its bare URL. A lookalike host (`cc.internal.evil.com`, `cc.internal@evil.com`, `cc.internal.`, `cc.internal:8080`) is an ordinary new-tab link.
+- **Rejected `cc.internal` links render as literal text** (`viewLinkHash`, `web/src/state/route.ts`): one naming no linkable view, a plugin link whose frame URL would leave `/plugins/<id>/` (dot segments), a non-root path, a search, or userinfo — however spelled, protocol-relative `//cc.internal/…` included. An explicit link reads `[label](href)`, an autolink its bare URL. A lookalike host (`cc.internal.evil.com`, `cc.internal@evil.com`, `cc.internal.`, `cc.internal:8080`) is an ordinary new-tab link.
 - `http://cc.internal/#settings[/<section>]` and `http://cc.internal/#costs` also open in-app. `#session=`, `#review` and `#commits` are not link targets.
 
 ## Session awareness (optional)

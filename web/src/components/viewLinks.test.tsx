@@ -117,9 +117,11 @@ describe('view links in markdown', () => {
     'http://cc.internal/', 'http://cc.internal/#foo', 'http://cc.internal/#session=s', 'http://cc.internal/#review',
     'http://cc.internal/#commits', 'http://cc.internal/x#costs', 'http://cc.internal/?a=1#costs', 'http://u@cc.internal/#costs',
     'http://u:p@cc.internal/#costs', 'http://cc.internal/#plugin/code-review/../../api/projects',
+    '//cc.internal/#nope', '//cc.internal/x#costs',
   ];
   for (const href of CC_LITERAL) {
-    // Pins: a cc.internal link that names no view, has a non-root path or a search, or carries userinfo is literal text, never a live anchor.
+    // Pins: a cc.internal link that names no view, has a non-root path or a search, or carries userinfo is literal text, never a live
+    // anchor, however it is spelled (protocol-relative included).
     it(`${href} renders as literal text`, () => {
       const { container } = render(<Markdown text={`[x](${href})`} />);
       expect(container.querySelector('a')).toBeNull();
@@ -153,6 +155,8 @@ describe('view links in markdown', () => {
     { text: '[x](http://evil.com/?h=cc.internal#costs)', href: 'http://evil.com/?h=cc.internal#costs' },
     { text: '[x](http://cc.internal./#costs)', href: 'http://cc.internal./#costs' },
     { text: '[x](http://cc.internal:8080/#costs)', href: 'http://cc.internal:8080/#costs' },
+    { text: '[x](http://evilcc.internal/#costs)', href: 'http://evilcc.internal/#costs' },
+    { text: '[x](http://xcc.internal/#costs)', href: 'http://xcc.internal/#costs' },
   ])('$href keeps its new-tab anchor', ({ text, href }) => {
     const { container } = render(<Markdown text={text} />);
     const a = container.querySelector('a')!;
@@ -165,10 +169,13 @@ describe('view links in markdown', () => {
 });
 
 describe('links on cc\'s own origin that are not its page', () => {
-  // Pins: another path on cc's origin, or cc's page with userinfo, is not cc's page and keeps its new-tab anchor.
+  // Pins: another path on cc's origin, or cc's page with userinfo, is not cc's page and keeps its new-tab anchor; the own-page rule
+  // compares the full origin, so the other scheme on cc's host, or cc's hostname on another port, is not cc's page either.
   it.each([
     () => `${location.origin}/plugins/code-review/#costs`,
     () => `http://u@${location.host}/#costs`,
+    () => `${location.protocol === 'http:' ? 'https:' : 'http:'}//${location.host}/#costs`,
+    () => `${location.protocol}//${location.hostname}:${location.port === '1' ? '2' : '1'}/#costs`,
   ])('own-origin lookalike %# keeps its new-tab anchor', (build) => {
     const href = build();
     const { container } = render(<Markdown text={`[x](${href})`} />);

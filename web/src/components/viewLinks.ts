@@ -1,17 +1,11 @@
 // The app's policy for links to cc in rendered markdown (shared/markdown.ts emits each link as a new-tab anchor):
 // `http://cc.internal/#<view>`, cc's own page, or a bare `#…`.
 import type * as React from 'react';
-import { CC_LINK_HOST, openView, viewLinkHash } from '@/state/route';
+import { isCcLinkHost, openView, viewLinkHash } from '@/state/route';
 import { showLinkInDock } from '@/features/views/dock';
 
-/** A link only cc acts on: a bare `#…`, or any http(s) URL on the cc.internal host. */
-function ccOwned(href: string): boolean {
-  if (href.startsWith('#')) return true;
-  try {
-    const u = new URL(href);
-    return (u.protocol === 'http:' || u.protocol === 'https:') && u.host === CC_LINK_HOST;
-  } catch { return false; }
-}
+/** A link only cc acts on: a bare `#…`, or any link on the cc.internal host. */
+const ccOwned = (href: string) => href.startsWith('#') || isCcLinkHost(href);
 
 /**
  * A link to cc naming a view becomes a same-tab link to its in-app hash, so a middle-click opens cc at that view. Any
