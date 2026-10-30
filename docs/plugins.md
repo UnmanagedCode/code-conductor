@@ -190,7 +190,7 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 
 **Security.** `openSession` / `sendPrompt` let any plugin page, hidden keep-alive frames included, drive any session. That adds no reach: a plugin page is same-origin with cc and can already call cc's unauthenticated API and socket. It is why the content-rendering rules in [plugin-ui.md](plugin-ui.md) Part 2 matter.
 
-**REST metadata a plugin backend reads** alongside these messages (full shapes in [protocol.md](protocol.md)): `GET /api/projects/:name/worktrees` per worktree — `worktreePath`, `branch`, `baseBranch`, `baseSha`, `baseWorktree` (the parent worktree's `worktreeName`; absent = forked from the main checkout), `parentPath` (the main checkout); `GET /api/projects` row `path` (the main checkout when a project has no worktrees); `GET /api/projects/:name/location` → `{name, system, remoteId, path}`, the placement lookup that runs no git, unlike `GET /api/projects` ([protocol.md](protocol.md) REST endpoints); `GET /api/instances` — `{sessionId, project, status, cwd, displayLabel, worktree: {worktreeName, branch, baseBranch, baseSha} | null}` per instance, `worktree: null` = the main checkout; `displayLabel` is the label to show a person for the session, never empty — the one cc's sidebar shows, except for an untitled session after a rotation, a rewind to its first prompt, or an over-long first record, where the sidebar reads the transcript's own first prompt instead (protocol.md → `summary().pristine` / `title` / `displayLabel`). **Live = `status` not `exited`/`crashed`**: the `sessionIds` lists on the worktrees and projects rows are *not* liveness-filtered (they include retained exited non-temp instances), so use `GET /api/instances` for "live". To run a command on a project's System (git, a temp file, anything with stdin or env), use [`POST /api/exec`](#host-exec--post-apiexec).
+**REST metadata a plugin backend reads** alongside these messages (full shapes in [protocol.md](protocol.md)): `GET /api/projects/:name/worktrees` per worktree — `worktreePath`, `branch`, `baseBranch`, `baseSha`, `baseWorktree` (the parent worktree's `worktreeName`; absent = forked from the main checkout), `parentPath` (the main checkout); `GET /api/projects` row `path` (the main checkout when a project has no worktrees); `GET /api/projects/:name/location` → `{name, system, remoteId, path}`, the placement lookup that runs no git, unlike `GET /api/projects` ([protocol.md](protocol.md) REST endpoints); `GET /api/instances` — `{sessionId, project, status, cwd, displayLabel, worktree: {worktreeName, branch, baseBranch, baseSha} | null}` per instance, `worktree: null` = the main checkout; `displayLabel` is the label to show a person for the session, never empty — the one cc's sidebar shows, except for an untitled session after a rotation, a rewind to its first prompt, or an over-long first record, where the sidebar reads the transcript's own first prompt instead (protocol.md → `summary().pristine` / `title` / `displayLabel`). **Live = `status` not `exited`/`crashed`**: the `sessionIds` lists on the worktrees and projects rows are *not* liveness-filtered (they include retained exited non-temp instances), so use `GET /api/instances` for "live". To run a command on a project's System (git, a temp file, anything with stdin or env), use [`POST /api/exec`](#host-exec--post-apiexec); to open an interactive terminal there, [`GET /api/terminal`](#host-terminal--get-apiterminal-websocket).
 
 Inside the iframe the bridge patches `history.pushState` → `replaceState`, so a plugin visit adds exactly one joint-history entry (hardware Back exits to the conductor). Multi-page plugins bypass this and pollute history.
 
@@ -259,6 +259,61 @@ rm -rf -- "$d"                         # clean up
 **Known limitations.**
 - A staged stdin file leaks when the provider dies between the staging write and the wrapper's `rm`. cc then tries to remove it (best-effort, not awaited) and logs `exec: could not remove staged stdin <path> on system <id>: …` when that fails; the file stays under `/tmp/cc-stdin-*` on the target.
 - On a provider System, a call with stdin or `env` reports a missing or non-executable `argv[0]` through the wrapper's pre-check, which follows execvp as local spawn does: a bare name runs the first executable regular file on PATH, is `EACCES` when PATH holds only non-executable entries of that name (a file without the execute bit, a directory), and `ENOENT` when it holds none; a path is `ENOENT` when absent and `EACCES` when a directory or not executable. It agrees with a local spawn for `ENOENT` and `EACCES` only — any other reason a binary cannot start surfaces as the command's own failure — and even there with one exception: a PATH directory the caller may not search (mode 0000, another user's home) is reported `ENOENT` where local spawn says `EACCES`, since the wrapper cannot see into it.
+
+### Host terminal — `GET /api/terminal` (WebSocket)
+
+A plugin backend opens a terminal — a program under a pseudo-terminal, bytes both ways — on a project's System, or on a System addressed directly, by dialling a WebSocket to `$CONDUCTOR_URL/api/terminal`. Local and remote targets take the same path, `System.openTerminal` ([architecture.md](architecture.md) → Terminals). Implemented in `src/hostTerminal.ts`, dispatched from the upgrade handler in `server.ts`; the target forms and their resolution are `src/hostTarget.ts`, shared with [Host exec](#host-exec--post-apiexec). cc is the byte pipe only: the plugin owns sessions, scrollback and reattach, and a terminal dies with cc.
+
+**Handshake:** `GET /api/terminal?spec=<URL-encoded JSON object>` with WebSocket upgrade headers. A plain GET without an upgrade is express's 404. The spec rides the URL, so its size limit is node's header limit (`--max-http-header-size`); over it node answers 431.
+
+**`spec` keys** (an unknown key is refused; there is no `shell`):
+
+| Key | Rule |
+|---|---|
+| target | exactly one form, as on [Host exec](#host-exec--post-apiexec): `project`, `worktree?` — or `system`, `remoteId?`, `cwd` |
+| `argv?` | non-empty array of strings, no NUL, `argv[0]` non-empty. Absent = the target user's login shell |
+| `env?` | an overlay with Host exec's rules. It reaches the **program only**, never a process hosting the terminal ([systems-protocol.md](systems-protocol.md) §5, `pty.envOverlay`) |
+| `cols`, `rows` | integers in `1..PTY_DIM_MAX` (`src/systems/protocol.ts`), required |
+| `term?` | matches `TERM_RE` (`src/systems/terminal.ts`); default `TERMINAL_DEFAULT_TERM` (`src/hostTerminal.ts`) |
+
+**Every refusal comes before the upgrade.** cc opens the terminal *before* completing the handshake, so a refusal is an HTTP answer — `<status>`, `Content-Type: application/json`, body `{error, code, …}` — then the socket is closed. Node's `ws` client surfaces it as `unexpected-response`.
+
+| Status | `code` | When | Extra fields |
+|---|---|---|---|
+| 403 | `ORIGIN_REFUSED` | the request carries an `Origin` header, whatever its value — checked first, before the spec is read. An `Origin` that fails cc's global upgrade guard ([protocol.md](protocol.md) → Handshake: Origin check) — `null`, cross-origin — is refused 403 by that guard first, with no body | |
+| 400 | `INVALID_ARGUMENT` | no `spec`, not JSON, not an object, an unknown key, any shape rule above, both or neither target form | |
+| 400 | `CWD_NOT_ABSOLUTE` | form B with a relative `cwd` | |
+| 404 | `PROJECT_UNKNOWN` / `WORKTREE_UNKNOWN` | from resolution | |
+| 501 | `SYSTEMS_UNAVAILABLE` | a non-local system on a platform with `remoteSystems` off — form B is refused before any provider launches | |
+| 501 | `SYSTEM_NOT_REGISTERED` / `SYSTEM_NO_PROVIDER` / `SYSTEM_NO_REMOTES` | from resolution | |
+| 501 | `SYSTEM_NO_PTY` / `PTY_UNAVAILABLE` | the provider lacks the `pty` capability / cc's own host has no pty helper (Windows, or no python3) | |
+| 429 | `TERMINAL_LIMIT` | `MAX_TERMINALS_PER_SYSTEM` (`src/systems/terminal.ts`) already open on that system — per host for `local`, per provider pipe otherwise | |
+| 502 | `SYSTEM_UNREACHABLE` | the provider died or never started the terminal (`ETRANSPORT` / `ETIMEDOUT`) | |
+| 502 | `REMOTE_NOT_FOUND` | the provider does not know the target (`ENOREMOTE`) | |
+| 422 | `TERMINAL_SPAWN_FAILED` | the target answered and the program did not start: missing program or cwd, `EACCES`, no terminal (`EPTY`) | `errno` — the protocol code |
+| 500 | — | a cc bug; logged with `console.error` | |
+
+**After the 101:**
+
+- **Binary messages** carry raw terminal bytes both ways. A UTF-8 sequence may be split across two messages. `^C` is binary `0x03`.
+- **Client → cc text** is control only: `{"type":"resize","cols":N,"rows":N}`.
+- **cc → client text** is exactly one message, the last: `{"type":"exit","code":N|null,"signal":"SIG…"|null}` (`code` null when a signal ended the program) or `{"type":"failed","code":"<SystemErrorCode>","error":"…"}`.
+
+| Close | Meaning |
+|---|---|
+| 1000 | the program exited; the `exit` message precedes it |
+| 1011 | the terminal was lost (`failed`, e.g. the provider died, `ETRANSPORT`); the `failed` message precedes it |
+| 1008 | the client broke the protocol — a text message that is not a valid `resize`. The reason names it; the program is killed |
+| 1009 | a message over `TERMINAL_WS_MAX_MESSAGE_BYTES` (`src/hostTerminal.ts`), enforced by `ws`. Chunk large pastes |
+| any, from the client | the client closing or erroring closes the terminal: hang-up, then SIGKILL of what is left of its session's process groups |
+
+**Backpressure, both ways — nothing is dropped.**
+- **cc → client.** Bytes handed to the socket and not yet written are counted; at `TERMINAL_WS_HIGH_WATER_BYTES` cc pauses the terminal, so a client that stops reading stops the program on its next write; at 0 it resumes.
+- **Client → cc.** When the terminal reports its input backed up (`Terminal.write` returns false — the program is not reading) cc stops reading the socket, and resumes on `onDrain`. A client that keeps sending sees its own send buffer grow.
+- Held in cc per terminal: about `TERMINAL_WRITE_HIGH_WATER_BYTES` (`src/systems/terminal.ts`) plus one message plus one socket read inbound, and `TERMINAL_WS_HIGH_WATER_BYTES` plus one chunk outbound.
+- No keepalive or ping.
+
+**Security.** The trust model is Host exec's: no caller check. The fences are the loopback bind (`HOST`, default `127.0.0.1`; `CONDUCTOR_URL` is loopback) and the refusal of **any** `Origin`: a browser always sends one on a WebSocket handshake, so no page reaches this endpoint — same-origin cc pages and plugin iframes included, which the global upgrade guard alone would admit — while a plugin backend, a non-browser client, sends none. A page cannot reach it through `/plugins/<id>/…` either: the proxy dials the plugin's port, not cc's. **Behind a code-hub share of cc** (authproxy, tunnel, Funnel, LAN) the proxy gates every upgrade on its own cookie or Basic auth and replays the headers unchanged, `Origin` included: a browser behind the share is refused by the Origin rule, and a non-browser client holding the share's credentials reaches this endpoint — exactly as it already reaches `POST /api/exec`, so it adds no reach. A LAN share with auth off exposes both equally.
 
 ### Theme stylesheet — `/pluginTheme.css`
 

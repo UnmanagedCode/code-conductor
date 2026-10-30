@@ -38,6 +38,7 @@ import { bootCommitHookVars, bootSwapGuard, measureBootCommit, type BootCommit }
 import { setMergeHookVarsProvider } from './src/worktrees.ts';
 import { hostSecurityHeaders } from './src/securityHeaders.ts';
 import { createUpgradeOriginGuard } from './src/upgradeOrigin.ts';
+import { createTerminalEndpoint } from './src/hostTerminal.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -149,11 +150,14 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   const server = http.createServer(app);
   // noServer + manual dispatch: every upgrade first passes the Origin check
   // (a cross-origin browser upgrade gets a 403 before any handler or plugin
-  // child sees it), then the wsHub keeps /ws, plugin WebSockets pipe through
-  // the reverse proxy, anything else is refused. (With noServer the ws lib
-  // never touches `server`, so no error forwarding to guard against.)
+  // child sees it), then the wsHub keeps /ws, /api/terminal opens a host
+  // terminal for a plugin backend (src/hostTerminal.ts, which refuses ANY
+  // Origin), plugin WebSockets pipe through the reverse proxy, anything else is
+  // refused. (With noServer the ws lib never touches `server`, so no error
+  // forwarding to guard against.)
   const wss = new WebSocketServer({ noServer: true });
   const admitOrigin = createUpgradeOriginGuard();
+  const terminalEndpoint = createTerminalEndpoint({ capabilities: platform.capabilities });
   server.on('upgrade', (req, socket, head) => {
     if (!admitOrigin(req, socket)) return;
     let pathname: string | null = null;
@@ -161,6 +165,8 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
     catch { socket.destroy(); return; }
     if (pathname === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    } else if (pathname === '/api/terminal') {
+      terminalEndpoint.handleUpgrade(req, socket, head);
     } else if (pathname !== null && pathname.startsWith('/plugins/')) {
       pluginProxy.handleUpgrade(req, socket, head);
     } else {

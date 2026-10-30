@@ -1,8 +1,10 @@
 // A terminal through the `local` handle — the one `npm run gate:systems`
 // replaces with a provider. In-process it runs LocalSystem; under the gate it
 // runs the protocol's pty exec in row 1 and the `pty:false` fallback in row 2
-// (`--no-pty`). This file is what makes the gate's pty fold MEAN something:
-// nothing else in the application opens a terminal yet.
+// (`--no-pty`). This file is what makes the gate's pty fold MEAN something at
+// the System layer; tests/host-terminal-route.test.mjs runs the same
+// configurations through GET /api/terminal, the one application surface that
+// opens a terminal.
 //
 // What it expects is derived from the configuration, never from the handle
 // under test: in-process, the host's probe decides; over the reference

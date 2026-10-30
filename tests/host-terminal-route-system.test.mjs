@@ -107,10 +107,11 @@ describe('GET /api/terminal with remoteSystems off', () => {
   });
   afterEach(async () => { disposeSystemHandles(); await rmrf(root); await rmrf(home); });
 
-  // PINS: a terminal on a non-local system, addressed either way, is refused
-  // 501 SYSTEMS_UNAVAILABLE before the system is resolved — no provider is
-  // launched.
-  test('a non-local system is 501 SYSTEMS_UNAVAILABLE before any provider launches', async () => {
+  // PINS: a terminal on a non-local system is refused 501
+  // SYSTEMS_UNAVAILABLE, addressed either way — and addressed by system, before
+  // the system is resolved, so no provider is launched. (By project, resolving
+  // the project comes first, as on POST /api/exec.)
+  test('a non-local system is 501 SYSTEMS_UNAVAILABLE; by system, before any provider launches', async () => {
     const record = path.join(root, 'wire.jsonl');
     await addSystem({ id: 'recbox', label: 'rec', launch: ['node', RECORDING, '--record', record] });
     const tree = await seedRepo(path.join(root, 'app'));
@@ -119,11 +120,14 @@ describe('GET /api/terminal with remoteSystems off', () => {
     // the request's.
     disposeSystemHandles();
     await fs.rm(record, { force: true });
-    for (const target of [{ system: 'recbox', cwd: root }, { project: 'app' }]) {
-      const r = await refused(ctx.baseUrl, { ...target, ...SIZE, argv: ['cat'] });
-      assert.equal(r.status, 501, JSON.stringify(r.body));
-      assert.equal(r.body.code, 'SYSTEMS_UNAVAILABLE');
-    }
+    const bySystem = await refused(ctx.baseUrl, { system: 'recbox', cwd: root, ...SIZE, argv: ['cat'] });
+    assert.equal(bySystem.status, 501, JSON.stringify(bySystem.body));
+    assert.equal(bySystem.body.code, 'SYSTEMS_UNAVAILABLE');
     await assert.rejects(fs.stat(record), { code: 'ENOENT' }, 'no provider was launched');
+    const byProject = await refused(ctx.baseUrl, { project: 'app', ...SIZE, argv: ['cat'] });
+    assert.equal(byProject.status, 501, JSON.stringify(byProject.body));
+    assert.equal(byProject.body.code, 'SYSTEMS_UNAVAILABLE');
+    assert.equal((await fs.readFile(record, 'utf8').catch(() => '')).split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l)).some((f) => f.type === 'exec' && f.pty), false, 'no terminal was opened');
   });
 });
