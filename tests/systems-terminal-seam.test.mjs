@@ -11,24 +11,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import { probePtyHelper } from '../src/systems/ptyHost.ts';
-import { LOCAL_PROVIDER_ENV, LOCAL_SYSTEM_ID, parseProviderLaunch, systemById } from '../src/systems/registry.ts';
-import { REFERENCE_PROVIDER } from './referenceProviderHarness.mjs';
+import { LOCAL_SYSTEM_ID, systemById } from '../src/systems/registry.ts';
 import { rmrf } from './rmrf.mjs';
-import { openSession } from './terminalBattery.mjs';
+import { expectedLocalTerminalRefusal, openSession } from './terminalBattery.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-
-const probe = await probePtyHelper();
-const spec = process.env[LOCAL_PROVIDER_ENV]?.trim();
-const argv = spec ? parseProviderLaunch(spec) : null;
-
-// null → a terminal opens; otherwise the refusal code expected.
-function expectedRefusal(sys) {
-  if (argv === null) return probe.ok ? null : 'PTY_UNAVAILABLE';
-  if (argv.includes(REFERENCE_PROVIDER)) return probe.ok && !argv.includes('--no-pty') ? null : 'SYSTEM_NO_PTY';
-  // A third-party provider: only its handshake can say.
-  return sys.handshake.capabilities.pty ? null : 'SYSTEM_NO_PTY';
-}
 
 // PINS: `openTerminal` on the `local` handle opens a working terminal exactly
 // when its configuration supports one, and is otherwise refused by the name
@@ -42,7 +28,7 @@ test('a terminal on the local handle works or is refused by name', async () => {
     // `local` comes back unconnected; a third-party provider's expectation is
     // read off its handshake, so make one first.
     if (typeof sys.connect === 'function') await sys.connect();
-    const refusal = expectedRefusal(sys);
+    const refusal = expectedLocalTerminalRefusal(sys);
     if (refusal !== null) {
       await assert.rejects(openSession(sys, { cwd, argv: ['cat'] }),
         (e) => e.statusCode === 501 && e.code === refusal, `expected ${refusal}`);

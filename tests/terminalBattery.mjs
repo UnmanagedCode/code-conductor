@@ -22,10 +22,29 @@ import path from 'node:path';
 // that row by assertion instead of failing the whole file at link time.
 import * as protocol from '../src/systems/protocol.ts';
 import * as terminalModule from '../src/systems/terminal.ts';
+import { probePtyHelper } from '../src/systems/ptyHost.ts';
+import { LOCAL_PROVIDER_ENV, parseProviderLaunch } from '../src/systems/registry.ts';
+import { REFERENCE_PROVIDER } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 const WAIT_MS = 10_000;
+
+const probe = await probePtyHelper();
+
+// What a terminal on the `local` handle does under the CURRENT configuration —
+// the one `npm run gate:systems` replaces with a provider: null when one opens,
+// otherwise the 501 refusal code it owes. Derived from the configuration, never
+// from the handle under test: in-process the host's probe decides; over the
+// reference provider its `--no-pty` flag and the same probe do; a third-party
+// provider's handshake (connect `sys` first) is the only word on it.
+export function expectedLocalTerminalRefusal(sys) {
+  const spec = process.env[LOCAL_PROVIDER_ENV]?.trim();
+  const argv = spec ? parseProviderLaunch(spec) : null;
+  if (argv === null) return probe.ok ? null : 'PTY_UNAVAILABLE';
+  if (argv.includes(REFERENCE_PROVIDER)) return probe.ok && !argv.includes('--no-pty') ? null : 'SYSTEM_NO_PTY';
+  return sys.handshake.capabilities.pty ? null : 'SYSTEM_NO_PTY';
+}
 
 export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
