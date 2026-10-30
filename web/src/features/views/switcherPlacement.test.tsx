@@ -97,12 +97,30 @@ afterEach(async () => {
 });
 
 describe('one switcher, by layout state, on desktop', () => {
-  it('on a session it is the sidebar\'s, and the drawer copy (open across a resize) holds none', async () => {
-    // Invariant: with the column hidden the one switcher is the desktop sidebar's; the drawer copy never adds a second.
+  it('on a session it is the sidebar\'s; with the drawer open across a live crossing of md it moves to the drawer and back', async () => {
+    // Invariant: both sidebar copies follow the live breakpoint query, not the value at mount: above md the desktop sidebar's alone, below md the open drawer's alone.
+    let wide = true;
+    const listeners = new Set<() => void>();
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      media: query,
+      get matches() { return /min-width/.test(query) && wide; },
+      onchange: null,
+      addEventListener: (_t: string, fn: () => void) => listeners.add(fn),
+      removeEventListener: (_t: string, fn: () => void) => listeners.delete(fn),
+      addListener: (fn: () => void) => listeners.add(fn),
+      removeListener: (fn: () => void) => listeners.delete(fn),
+      dispatchEvent: () => true,
+    }));
+    const cross = async (v: boolean) => { act(() => { wide = v; for (const fn of [...listeners]) fn(); }); await settle(); };
     await mountApp();
     expect(placement(), 'hidden').toEqual(['sidebar']);
     await openDrawer();
     expect(placement(), 'hidden, the drawer open on desktop').toEqual(['sidebar']);
+    await cross(false);
+    expect(uiStore.get().sidebarOpen, 'fixture check: the drawer stays open across the crossing').toBe(true);
+    expect(placement(), 'crossed below md').toEqual(['drawer']);
+    await cross(true);
+    expect(placement(), 'crossed back above md').toEqual(['sidebar']);
   });
 
   it('in the full view it is the bar\'s', async () => {
