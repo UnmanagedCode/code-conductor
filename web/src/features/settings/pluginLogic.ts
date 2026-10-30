@@ -17,6 +17,9 @@ export type UpdateResult = {
   restarted?: { ok?: boolean; error?: string; skipped?: boolean } | null;
 };
 
+/** The installed library entries behind their origin: what Update all would update. */
+export const updatableEntries = (library: LibraryEntry[] | null): LibraryEntry[] => (library || []).filter((e) => e.installed && e.updateAvailable);
+
 export const versionLabel = (row: PluginRow) => (row.activeVersion?.type === 'worktree' ? row.activeVersion.name : 'main');
 
 /** The meta line under a plugin's name. */

@@ -11,13 +11,21 @@ vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () =>
 import { performRestart } from '@/features/sidebar/restart';
 import { AboutSection, selfUpdateStore } from './AboutSection';
 import { claudeUpdateStore } from './ClaudeUpdateCard';
+import { pluginsStore } from './PluginsSection';
 
 const INITIAL_SELF = selfUpdateStore.get();
 const INITIAL_CLAUDE = claudeUpdateStore.get();
+const INITIAL_PLUGINS = pluginsStore.get();
 
 const CLAUDE_URL = '/api/settings/claude-update';
 // cc itself is up to date, so its Version card offers no button of its own.
-const SELF_UP_TO_DATE = { 'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }) };
+const SELF_UP_TO_DATE = {
+  'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }),
+  // About loads the plugin list for its Update plugins button; none are behind.
+  'GET /api/plugins': () => ({ rows: [], notices: [] }),
+  'GET /api/projects': () => [],
+  'GET /api/plugins/library': () => ({ entries: [], skipped: [] }),
+};
 const CLAUDE_FOUND = { [`GET ${CLAUDE_URL}`]: () => ({ found: true, command: 'claude', version: '2.0.0' }) };
 
 const claudeCard = () => screen.getByText('Claude Code', { selector: '[data-slot="card-title"]' }).closest('[data-slot="card"]') as HTMLElement;
@@ -43,6 +51,7 @@ const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20
 beforeEach(() => {
   selfUpdateStore.set(INITIAL_SELF);
   claudeUpdateStore.set(INITIAL_CLAUDE);
+  pluginsStore.set(INITIAL_PLUGINS);
   vi.mocked(performRestart).mockClear();
 });
 afterEach(() => vi.unstubAllGlobals());

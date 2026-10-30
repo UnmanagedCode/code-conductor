@@ -13,8 +13,8 @@ export function SectionIntro({ title, children }: { title: string; children?: Re
   );
 }
 
-export function SettingsCard({ title, description, action, children, className }: {
-  title: React.ReactNode; description?: React.ReactNode; action?: React.ReactNode; children?: React.ReactNode; className?: string;
+export function SettingsCard({ title, description, action, actionClassName, children, className }: {
+  title: React.ReactNode; description?: React.ReactNode; action?: React.ReactNode; actionClassName?: string; children?: React.ReactNode; className?: string;
 }) {
   return (
     <Card className={cn('gap-4', className)}>
@@ -23,7 +23,7 @@ export function SettingsCard({ title, description, action, children, className }
           <CardTitle>{title}</CardTitle>
           {description && <CardDescription className="max-w-[70ch] leading-relaxed [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[0.85em] [&_strong]:font-medium [&_strong]:text-foreground">{description}</CardDescription>}
         </div>
-        {action && <div className="shrink-0">{action}</div>}
+        {action && <div className={cn('shrink-0', actionClassName)}>{action}</div>}
       </CardHeader>
       {children !== undefined && <CardContent className="space-y-4">{children}</CardContent>}
     </Card>
