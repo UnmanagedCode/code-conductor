@@ -80,7 +80,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   // subprocess is spawned, but swaps the launcher itself).
   if (claudeLauncherOverride) claudeLauncher = claudeLauncherOverride;
 
-  const { server, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform, webDistDir });
+  const { server, wss, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform, webDistDir });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -129,7 +129,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
     await rmrf(tmpHome);
   }
 
-  return { baseUrl, wsUrl, server, instances, pluginHost, pluginLibrary, tmpHome, projectsRoot, claudeProjectsRoot, close };
+  return { baseUrl, wsUrl, server, wss, instances, pluginHost, pluginLibrary, tmpHome, projectsRoot, claudeProjectsRoot, close };
 }
 
 // MCP returns no longer carry the instanceId — resolve a live instance from
