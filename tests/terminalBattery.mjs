@@ -15,8 +15,13 @@
 // conformance suite already verifies.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+// Namespace imports, so a constant a row needs that is not exported yet reds
+// that row by assertion instead of failing the whole file at link time.
+import * as protocol from '../src/systems/protocol.ts';
+import * as terminalModule from '../src/systems/terminal.ts';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 
@@ -33,15 +38,37 @@ export async function settle(pred, ms = 5_000) {
   return pred();
 }
 
+// `n` bytes covering every byte value, the same on every run (xorshift32).
+export function patternBytes(n) {
+  const b = Buffer.alloc(n);
+  let x = 0x2545f491;
+  for (let i = 0; i < n; i++) {
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    b[i] = x & 0xff;
+  }
+  return b;
+}
+
+const sha256 = (b) => createHash('sha256').update(b).digest('hex');
+
+// A program that puts its terminal in raw mode — so every byte reaches it
+// unchanged and nothing is echoed — says READY, waits for `gate` (a file in
+// its cwd) when one is named, then hashes exactly `n` bytes of input.
+const hashInput = (n, gate = null) => ['sh', '-c', 'stty raw -echo; echo READY; '
+  + (gate ? `while [ ! -e ${gate} ]; do sleep 0.01; done; ` : '') + `head -c ${n} | sha256sum`];
+const DIGEST_RE = /([0-9a-f]{64}) {2}-/;
+
 // One open terminal, its output accumulated and its end awaited.
 //   until(re)  — resolves with the match once the output matches, or fails
 //                naming the output it had.
+//   drains     — how many times `onDrain` has fired; drained() waits for one.
 //   ended      — the TerminalEnd, with the output as it stood when onExit fired.
 //                BOUNDED each time it is read: a terminal that never ends fails
 //                the row by name within WAIT_MS, not at the runner's timeout.
 export async function openSession(sys, spec) {
   let out = '';
   let calls = 0;
+  let drains = 0;
   const waiters = new Set();
   let endWith;
   const ended = new Promise((r) => { endWith = r; });
@@ -55,6 +82,10 @@ export async function openSession(sys, spec) {
         for (const w of waiters) w();
       },
       onExit(end) { endWith({ end, outAtExit: out }); },
+      onDrain() {
+        drains += 1;
+        for (const w of waiters) w();
+      },
     },
   );
   const until = (re, ms = WAIT_MS) => new Promise((resolve, reject) => {
@@ -72,6 +103,20 @@ export async function openSession(sys, spec) {
     waiters.add(check);
     check();
   });
+  const drained = (ms = WAIT_MS) => new Promise((resolve, reject) => {
+    const check = () => {
+      if (drains === 0) return;
+      waiters.delete(check);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      waiters.delete(check);
+      reject(new Error(`no onDrain within ${ms}ms`));
+    }, ms);
+    waiters.add(check);
+    check();
+  });
   const boundedEnd = () => {
     let timer;
     return Promise.race([
@@ -83,13 +128,15 @@ export async function openSession(sys, spec) {
     ]);
   };
   return {
-    terminal, until, get ended() { return boundedEnd(); }, get out() { return out; }, get calls() { return calls; },
+    terminal, until, drained, get ended() { return boundedEnd(); }, get out() { return out; }, get calls() { return calls; },
+    get drains() { return drains; },
   };
 }
 
 // The body of one row's test. `open(opts)` builds a fresh system —
 // `opts.maxTerminals` is the cap — and returns `{ sys, dispose }`. `gate(sys)`
-// returns null to run the row, or a skip reason.
+// returns null to run the row, or a skip reason. A row is handed the test
+// context too, to skip on what only it can check.
 export function terminalRowTest({ fn, opts = {} }, { open, gate = () => null }) {
   return async (t) => {
     const dir = await mkdtemp('cc-terminal-');
@@ -98,7 +145,7 @@ export function terminalRowTest({ fn, opts = {} }, { open, gate = () => null }) 
     try {
       const reason = gate(sys);
       if (reason !== null) { t.skip(reason); return; }
-      await fn(sys, cwd);
+      await fn(sys, cwd, t);
     } finally {
       await dispose();
       await rmrf(dir);
@@ -314,5 +361,75 @@ export const TERMINAL_ROWS = [];
     const s = await openSession(sys, { cwd, argv: ['cat'] });
     assert.throws(() => s.terminal.resize(0, 10), /resize: cols/);
     s.terminal.close();
+  });
+
+  // PINS (F4): the env overlay is in the PROGRAM's environment and absent from
+  // the environment of the pty helper hosting it — the program's parent. The
+  // probe set includes a loader variable, the kind that would reach the
+  // interpreter running the helper.
+  row('the env overlay reaches the program and never the helper', async (sys, cwd, t) => {
+    if (!await fs.access('/proc/self/environ').then(() => true, () => false)) {
+      t.skip('no /proc on this host: a process\'s environment cannot be read');
+      return;
+    }
+    const s = await openSession(sys, {
+      cwd, env: { CC_F4_PROBE: 'f4-on', LD_LIBRARY_PATH: '/cc-f4-probe' },
+      argv: ['sh', '-c', 'echo "HOST=$PPID V=$CC_F4_PROBE L=$LD_LIBRARY_PATH"; read x'],
+    });
+    const [, host, v, l] = await s.until(/HOST=(\d+) V=(\S*) L=(\S*)\r\n/);
+    assert.equal(v, 'f4-on', 'the overlay is in the program\'s environment');
+    assert.equal(l, '/cc-f4-probe', 'the loader variable too');
+    const cmdline = await fs.readFile(`/proc/${host}/cmdline`, 'latin1');
+    assert.ok(cmdline.includes('ptyHelper.py'), `precondition: the program's parent is the pty helper (${cmdline})`);
+    const environ = (await fs.readFile(`/proc/${host}/environ`, 'latin1')).split('\0');
+    assert.equal(environ.some((e) => e.startsWith('CC_F4_PROBE=')), false, 'the overlay is not in the helper\'s environment');
+    assert.equal(environ.includes('LD_LIBRARY_PATH=/cc-f4-probe'), false, 'nor is the loader variable');
+    s.terminal.close();
+    await s.ended;
+  });
+
+  // PINS: input far past one input-credit window reaches the program with no
+  // byte lost, duplicated or reordered — credit keeps returning.
+  row('input past one window arrives intact', async (sys, cwd) => {
+    const W = protocol.PTY_INPUT_WINDOW_BYTES;
+    assert.equal(typeof W, 'number', 'PTY_INPUT_WINDOW_BYTES is exported');
+    const data = patternBytes(4 * W);
+    const s = await openSession(sys, { cwd, argv: hashInput(data.length) });
+    await s.until(/READY/);
+    s.terminal.write(data);
+    const [, digest] = await s.until(DIGEST_RE, 30_000);
+    assert.equal(digest, sha256(data));
+    assert.deepEqual((await s.ended).end, { kind: 'exited', code: 0, signal: null });
+  });
+
+  // PINS: `write` returns false once the input the program has not read reaches
+  // the high-water mark, never drains while the program does not read, and
+  // fires `onDrain` once it has read everything — and no byte written past the
+  // `false` is dropped.
+  row('write reports backpressure while the program does not read, and drains when it does', async (sys, cwd) => {
+    const W = protocol.PTY_INPUT_WINDOW_BYTES;
+    const HIGH = terminalModule.TERMINAL_WRITE_HIGH_WATER_BYTES;
+    assert.equal(typeof W, 'number', 'PTY_INPUT_WINDOW_BYTES is exported');
+    assert.equal(typeof HIGH, 'number', 'TERMINAL_WRITE_HIGH_WATER_BYTES is exported');
+    const data = patternBytes(4 * W);
+    const s = await openSession(sys, { cwd, argv: hashInput(data.length, 'GO') });
+    await s.until(/READY/);
+    const STEP = 16 * 1024;
+    const results = [];
+    for (let at = 0; at < data.length; at += STEP) results.push(s.terminal.write(data.subarray(at, at + STEP)));
+    // The loop is synchronous, so no write can have been reported in it: the
+    // first `false` is the write that took the unread total TO the mark.
+    const first = Math.ceil(HIGH / STEP) - 1;
+    assert.deepEqual(results.slice(0, first + 1), [...Array(first).fill(true), false],
+      'write reports backpressure exactly when the unread input reaches the high-water mark');
+    // Far more than the terminal can hold is unread, so nothing can drain.
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(s.drains, 0, 'no onDrain while the program reads nothing');
+    await fs.writeFile(path.join(cwd, 'GO'), '');
+    await s.drained();
+    const [, digest] = await s.until(DIGEST_RE, 30_000);
+    assert.equal(digest, sha256(data), 'every byte, including those written after `false`, arrived');
+    assert.deepEqual((await s.ended).end, { kind: 'exited', code: 0, signal: null });
+    assert.equal(s.drains, 1, 'onDrain fired once');
   });
 }
