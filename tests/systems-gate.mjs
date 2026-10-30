@@ -26,8 +26,10 @@
 //     whole suite. Row 1 proves the present-behaviour whole-suite, row 2 the
 //     fallback. What makes the fold MEAN something is
 //     tests/systems-terminal-seam.test.mjs, which opens a terminal through the
-//     `local` handle this gate replaces — nothing else in the application
-//     opens one — and expects an echo in row 1 and SYSTEM_NO_PTY in row 2.
+//     `local` handle this gate replaces and expects an echo in row 1 and
+//     SYSTEM_NO_PTY in row 2 — and tests/host-terminal-route.test.mjs, which
+//     does the same through GET /api/terminal, the one application surface
+//     that opens one.
 //     The cell the fold gives up, `processGroupSignal:false` with `pty` on, is
 //     no cell at all: no terminal row depends on group signalling.
 //

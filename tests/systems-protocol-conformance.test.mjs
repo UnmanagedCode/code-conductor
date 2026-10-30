@@ -1361,6 +1361,63 @@ test('a flooding terminal holds one credit window and blocks nothing else on the
   }
 });
 
+// PINS input credit (§5, "Input credit") from the provider's side: one window
+// of input sent to a program that reads nothing is credited back only as far
+// as the terminal took it — the `inputAck` total stays BELOW the window, so a
+// provider that grants on receipt fails here — and once the program reads it
+// all, the total reaches the window exactly, so a provider that never grants
+// fails here too.
+test('input credit is granted for bytes written to the terminal, not bytes received, and every byte\'s credit returns', async (t) => {
+  const W = protocol.PTY_INPUT_WINDOW_BYTES;
+  assert.equal(typeof W, 'number', 'PTY_INPUT_WINDOW_BYTES is exported');
+  const dir = await mkdtemp('cc-pty-input-credit-');
+  const root = await fs.realpath(dir);
+  const conn = new ProviderConnection({ launch: { argv: providerArgv([]) } });
+  try {
+    const hs = await conn.ensureUp();
+    const v = ptyVerdict(hs.capabilities);
+    if (v !== VERIFY_PTY) { t.skip(v); return; }
+    const id = conn.nextId('t');
+    let out = '';
+    let credited = 0;
+    conn.open(id, {
+      frame: (f) => {
+        if (f.type === 'stdout') {
+          const chunk = Buffer.from(f.dataB64, 'base64');
+          out += chunk.toString('latin1');
+          conn.send({ type: 'ack', id, bytes: chunk.length });
+        } else if (f.type === 'inputAck') credited += f.bytes;
+      },
+      down: () => {},
+    });
+    conn.send({
+      type: 'exec', id, ...BOUND, cwd: root, pty: { cols: 80, rows: 24, term: 'xterm' },
+      argv: ['sh', '-c', `stty raw -echo; echo READY; while [ ! -e GO ]; do sleep 0.01; done; head -c ${W} >/dev/null; echo DONE; exec sleep 1000`],
+    });
+    assert.ok(await settle(() => out.includes('READY'), 10_000), `the program is ready (${JSON.stringify(out)})`);
+    for (let at = 0; at < W; at += CHUNK_BYTES) {
+      conn.send({ type: 'input', id, dataB64: Buffer.alloc(Math.min(CHUNK_BYTES, W - at), 0x61).toString('base64') });
+    }
+    // Three round trips: the provider has received every input frame, and a
+    // provider granting on receipt has granted for all of them.
+    for (let i = 0; i < 3; i++) {
+      await within(rawExec(conn, { type: 'exec', id: conn.nextId('e'), ...BOUND, cwd: root, argv: ['true'], stdin: 'ignore' }),
+        5_000, `exec ${i} beside the unread input`);
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(credited < W, `while the program reads nothing, less than the window is credited (${credited} of ${W})`);
+    await fs.writeFile(path.join(root, 'GO'), '');
+    assert.ok(await settle(() => credited >= W, 10_000), `every byte's credit returns once the program reads (${credited} of ${W})`);
+    assert.ok(await settle(() => out.includes('DONE'), 10_000), 'the program read it all');
+    assert.equal(credited, W, 'and not one byte more');
+    conn.send({ type: 'close', id });
+    conn.close(id);
+  } finally {
+    conn.dispose();
+    await rmrf(dir);
+  }
+});
+
 // PINS: the op ceiling bounds a terminal's OPEN and not its life. On a handle
 // whose ceiling abandons a plain exec, a terminal opened on it still echoes at
 // three times that ceiling.

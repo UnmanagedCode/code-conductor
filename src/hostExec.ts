@@ -2,9 +2,9 @@
 // addressed directly, for a plugin backend (docs/plugins.md → Host exec).
 //
 // All of it lives here so the route in src/routes.ts stays a mount: request
-// validation, the capability gate, target resolution through the same
-// resolvers the MCP surface uses (resolveProjectCwd, systemById), and the
-// mapping from an ExecResult to a status and a body.
+// validation and the mapping from an ExecResult to a status and a body. The
+// target forms, the capability gate and resolution are src/hostTarget.ts,
+// shared with GET /api/terminal.
 //
 // OUTPUT IS BUFFERED WHOLE BEHIND A FAILURE FENCE (`maxBufferBytes`). Paging
 // would mean re-running a command for page two, which is neither idempotent nor
@@ -12,13 +12,11 @@
 // calls. Past the fence the command is killed and the answer is
 // EXEC_OUTPUT_TOO_LARGE — never a clipped success.
 
-import path from 'node:path';
 import type { PlatformCapabilities } from './platform/index.ts';
-import { capabilityRefusal } from './capabilities.ts';
-import { httpError } from './httpError.ts';
-import { resolveProjectCwd } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, systemById } from './systems/registry.ts';
-import { ENV_NAME_RE } from './systems/execWrap.ts';
+import {
+  HOST_TARGET_KEYS, invalidArgument, isPlainObject, parseEnvOverlay, parseHostTarget, placeOf, resolveHostTarget,
+  type HostTarget,
+} from './hostTarget.ts';
 import { isBase64 } from './systems/protocol.ts';
 import type { ExecResult, ExecSpec, System } from './systems/system.ts';
 
@@ -31,14 +29,14 @@ export const EXEC_MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 export const EXEC_BODY_LIMIT = 16 * 1024 * 1024;
 
 const KEYS = new Set([
-  'project', 'worktree', 'system', 'remoteId', 'cwd',
+  ...HOST_TARGET_KEYS,
   'argv', 'shell', 'env', 'stdin', 'stdinB64', 'timeoutMs', 'encoding', 'maxOutputBytes',
 ]);
 
 type Encoding = 'utf8' | 'base64';
 
 interface HostExecRequest {
-  target: { project: string; worktree: string | null } | { system: string; remoteId: string | null; cwd: string };
+  target: HostTarget;
   spec: ExecSpec;
   env: Record<string, string> | undefined;
   stdin: Buffer | undefined;
@@ -52,13 +50,8 @@ export interface HostExecResponse {
   body: Record<string, unknown>;
 }
 
-function invalid(message: string): Error {
-  return httpError(400, `exec: ${message}`, { code: 'INVALID_ARGUMENT' });
-}
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
+const OP = 'exec';
+const invalid = (message: string): Error => invalidArgument(OP, message);
 
 function boundedInt(v: unknown, name: string, max: number, dflt: number): number {
   if (v === undefined) return dflt;
@@ -77,36 +70,7 @@ function parseRequest(body: unknown): HostExecRequest {
   }
   const has = (k: string) => body[k] !== undefined;
 
-  let target: HostExecRequest['target'];
-  const formA = has('project') || has('worktree');
-  const formB = has('system') || has('remoteId') || has('cwd');
-  if (formA && formB) throw invalid('name the target by project (+ worktree) or by system (+ remoteId) + cwd, not both');
-  if (formA) {
-    if (typeof body.project !== 'string' || body.project === '') throw invalid('project must be a non-empty string');
-    if (body.worktree !== undefined && body.worktree !== null && (typeof body.worktree !== 'string' || body.worktree === '')) {
-      throw invalid('worktree must be a non-empty string');
-    }
-    target = { project: body.project, worktree: (body.worktree as string | null | undefined) ?? null };
-  } else if (formB) {
-    if (typeof body.system !== 'string' || body.system === '') throw invalid('system must be a non-empty string');
-    if (body.remoteId !== undefined && body.remoteId !== null && typeof body.remoteId !== 'string') {
-      throw invalid('remoteId must be a string');
-    }
-    // '' and absent both mean the provider's own default target, as on
-    // system_bash (addressedSystem, src/mcp/handlers.ts).
-    const remoteId = body.remoteId === '' || body.remoteId === undefined ? null : body.remoteId as string | null;
-    if (body.system === LOCAL_SYSTEM_ID && remoteId !== null) {
-      throw invalid(`system '${LOCAL_SYSTEM_ID}' has no targets — remoteId must be absent`);
-    }
-    if (typeof body.cwd !== 'string' || body.cwd === '') throw invalid('cwd is required with system, as an absolute path on it');
-    if (!path.isAbsolute(body.cwd)) {
-      throw httpError(400, `exec: cwd must be an absolute path on the system, got ${JSON.stringify(body.cwd)}`,
-        { code: 'CWD_NOT_ABSOLUTE' });
-    }
-    target = { system: body.system, remoteId, cwd: body.cwd };
-  } else {
-    throw invalid('name a target: project (+ worktree), or system (+ remoteId) + cwd');
-  }
+  const target = parseHostTarget(body, OP);
 
   let spec: ExecSpec;
   if (has('argv') === has('shell')) throw invalid('give exactly one of argv and shell');
@@ -124,15 +88,7 @@ function parseRequest(body: unknown): HostExecRequest {
     spec = { shell: body.shell };
   }
 
-  let env: Record<string, string> | undefined;
-  if (has('env')) {
-    if (!isPlainObject(body.env)) throw invalid('env must be an object of string values');
-    for (const [k, v] of Object.entries(body.env)) {
-      if (!ENV_NAME_RE.test(k)) throw invalid(`env name ${JSON.stringify(k)} does not match ${ENV_NAME_RE}`);
-      if (typeof v !== 'string' || v.includes('\0')) throw invalid(`env value for ${k} must be a string without NUL`);
-    }
-    env = body.env as Record<string, string>;
-  }
+  const env = has('env') ? parseEnvOverlay(body.env, OP) : undefined;
 
   let stdin: Buffer | undefined;
   if (has('stdin') && has('stdinB64')) throw invalid('give at most one of stdin and stdinB64');
@@ -168,12 +124,6 @@ function spawnErrno(r: ExecResult): string | null {
 function encodeStream(r: ExecResult, which: 'out' | 'err', encoding: Encoding): string {
   if (encoding === 'base64') return ((which === 'out' ? r.stdoutBytes : r.stderrBytes) ?? Buffer.alloc(0)).toString('base64');
   return which === 'out' ? r.stdout : r.stderr;
-}
-
-// What ran and where, as the caller addressed it. `local` has no targets by
-// contract (System.remoteId), so its remoteId is always null here.
-function placeOf(sys: System, cwd: string): { system: string; remoteId: string | null; cwd: string } {
-  return { system: sys.id, remoteId: sys.id === LOCAL_SYSTEM_ID ? null : sys.remoteId, cwd };
 }
 
 function mapResult(r: ExecResult, sys: System, cwd: string, req: HostExecRequest): HostExecResponse {
@@ -231,20 +181,7 @@ export async function runHostExec(
   { capabilities, signal }: { capabilities: PlatformCapabilities; signal?: AbortSignal },
 ): Promise<HostExecResponse> {
   const req = parseRequest(body);
-  let sys: System;
-  let cwd: string;
-  if ('project' in req.target) {
-    const resolved = await resolveProjectCwd(req.target.project, req.target.worktree);
-    if (resolved.system.id !== LOCAL_SYSTEM_ID && !capabilities.remoteSystems) throw capabilityRefusal('remoteSystems');
-    sys = resolved.system;
-    cwd = resolved.cwd;
-  } else {
-    // BEFORE systemById, so a platform without remote Systems launches no
-    // provider to refuse with.
-    if (req.target.system !== LOCAL_SYSTEM_ID && !capabilities.remoteSystems) throw capabilityRefusal('remoteSystems');
-    sys = await systemById(req.target.system, req.target.remoteId, `exec on system '${req.target.system}'`);
-    cwd = req.target.cwd;
-  }
+  const { sys, cwd } = await resolveHostTarget(req.target, capabilities, OP);
   const r = await sys.exec(req.spec, {
     cwd,
     timeoutMs: req.timeoutMs,
