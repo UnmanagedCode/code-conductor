@@ -73,8 +73,9 @@ describe('the plugin dock collapse', () => {
     const b = ctl(COLLAPSE);
     expect(b, 'the Collapse control').not.toBeNull();
     expect(columnButtons()[0]).toBe(COLLAPSE);
-    const h1 = column()!.querySelector('h1')!;
-    expect(b!.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING, 'before the title').toBeTruthy();
+    const title = column()!.querySelector('[data-plugin-title]');
+    expect(title, 'the bar\'s title').not.toBeNull();
+    expect(b!.compareDocumentPosition(title!) & Node.DOCUMENT_POSITION_FOLLOWING, 'before the title').toBeTruthy();
   });
 
   it('Collapse shows the rail beside the session: rail mode, Expand plugin dock and the plugin\'s name in it, the section hidden from AT, no handle', async () => {
@@ -200,7 +201,7 @@ describe('the plugin dock collapse', () => {
     await press(COLLAPSE);
     await go('#plugin/alpha/');
     expect(mode()).toBe('full');
-    expect(columnButtons()).toEqual(['Dock to side', 'Close plugin']);
+    expect(columnButtons()).toEqual(['Dock to side', 'Switch app', 'Close plugin']);
     expect(localStorage.getItem(COLLAPSED_KEY)).toBe('false');
     await pressColumn('Dock to side');
     expect(mode()).toBe('split');
@@ -262,7 +263,7 @@ describe('the plugin dock collapse', () => {
     expect(document.activeElement).not.toBe(ctl(EXPAND));
   });
 
-  it('below md a collapse shows nothing beside the session and no dock control; a pick opens the full view with only Open sidebar and Close', async () => {
+  it('below md a collapse shows nothing beside the session and no dock control; a pick opens the full view with only Open sidebar, the switcher and Close', async () => {
     // Invariant: the phone layout has no rail and no Collapse.
     let wide = true;
     const listeners = new Set<() => void>();
@@ -289,6 +290,6 @@ describe('the plugin dock collapse', () => {
     expect(mode(), 'back above md the rail returns').toBe('rail');
     await cross(false);
     await pickApp('beta');
-    expect(columnButtons()).toEqual(['Open sidebar', 'Close plugin']);
+    expect(columnButtons()).toEqual(['Open sidebar', 'Switch app', 'Close plugin']);
   });
 });

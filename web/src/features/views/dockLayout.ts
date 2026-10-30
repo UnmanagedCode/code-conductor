@@ -1,6 +1,7 @@
 // The plugin column's mode, derived from the route, the breakpoint, the dock
 // selection and the room the main row leaves: hidden, a split beside the
-// transcript, a rail (the split collapsed to a strip), or full (the whole row). DOM-free (no JSX, no `@/` imports) so
+// transcript, a rail (the split collapsed to a strip), or full (the whole row);
+// and where the one app switcher shows for a mode. DOM-free (no JSX, no `@/` imports) so
 // the e2e suite imports its constants as well.
 
 /** The drag and key floor. */
@@ -13,6 +14,14 @@ export const DOCK_PANEL_DEFAULT_WIDTH = 420;
 export const DOCK_TRANSCRIPT_MIN_WIDTH = 400;
 
 export type DockMode = 'hidden' | 'split' | 'rail' | 'full';
+
+export type SwitcherSlot = 'pane' | 'sidebar' | 'drawer';
+
+/** Where the one app switcher shows: the column's bar while it shows a plugin at split or full width; else the sidebar copy of the current breakpoint (the rail has no room for it). */
+export function switcherSlot(mode: DockMode, desktop: boolean): SwitcherSlot {
+  if (mode === 'split' || mode === 'full') return 'pane';
+  return desktop ? 'sidebar' : 'drawer';
+}
 
 /** The widest panel that leaves the transcript its floor in a main row `available` px wide. */
 export function maxPanel(available: number): number {

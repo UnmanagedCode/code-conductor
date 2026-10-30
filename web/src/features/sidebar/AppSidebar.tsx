@@ -108,7 +108,18 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
         <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
           <OctopusMark className="size-6" />
         </div>
-        <AppSwitcher title="Code Conductor" subtitle={liveSummary(liveCount)} />
+        <AppSwitcher
+          slot={mobile ? 'drawer' : 'sidebar'}
+          title="Code Conductor"
+          subtitle={liveSummary(liveCount)}
+          className="hover:bg-sidebar-accent"
+          fallback={(
+            <div className="ml-1 min-w-0 flex-1 leading-tight">
+              <h1 className="truncate text-sm font-semibold tracking-tight">Code Conductor</h1>
+              <div className="truncate text-[11px] text-muted-foreground">{liveSummary(liveCount)}</div>
+            </div>
+          )}
+        />
         <NotifyToggle />
         <HeaderButton label={route.view === 'settings' ? 'Close settings' : 'Settings'} onClick={toggleSettings}>
           <SettingsIcon />

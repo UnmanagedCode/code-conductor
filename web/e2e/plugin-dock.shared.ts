@@ -45,6 +45,8 @@ const label = (flow: string) => `dock-${flow}-${test.info().project.name}`;
 const column = (page: Page) => page.locator('[data-plugin-column]');
 const section = (page: Page) => page.locator('section[data-view="plugin"]');
 const header = (page: Page) => section(page).locator('header');
+/** The strip's title: the app switcher while it shows there, else a plain heading. */
+const title = (page: Page) => header(page).locator('[data-plugin-title]');
 /** The column's mode toggle named `name`, in its header strip. */
 const toggle = (page: Page, name: 'Dock to side' | 'Expand to full view') => header(page).getByRole('button', { name, exact: true });
 /** The strip's Close plugin, the switcher's Conductor pick. */
@@ -92,9 +94,9 @@ async function expectHidden(page: Page, what: string) {
   await expect(column(page), `${what}: the column hidden`).toHaveAttribute('data-dock-mode', 'hidden');
 }
 
-/** Picks `p` from the desktop switcher, whatever it opens (the URL is the session's for a split). */
+/** Picks `p` from the app switcher wherever it shows, whatever it opens (the URL is the session's for a split). */
 async function pick(page: Page, p: ProbePlugin) {
-  await desktopSidebar(page).getByRole('button', { name: 'Switch app' }).click();
+  await next.openSwitcher(page);
   await page.locator(`[data-app-id="${p.id}"]`).click();
 }
 
@@ -135,7 +137,7 @@ async function dockSplitAtW(page: Page, p: ProbePlugin) {
 // ── flows ────────────────────────────────────────────────────────────────
 
 export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F1, F3): the column holds Collapse (split only) and its mode toggle left of the plugin's name, then Close plugin at the strip's end, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
+  // Invariant (F1, F3): the column holds Collapse (split only) and its mode toggle left of the switcher (the plugin's name), then Close plugin at the strip's end, in a header strip above the frame: across the row in full, at the default width beside the session in split, and nothing on Conductor.
   desktopOnly();
   await onSession(page, cc, 'geometry');
   const viewport = page.viewportSize()!;
@@ -154,7 +156,7 @@ export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
   expect(c.x, 'full: Close is right of Dock to side').toBeGreaterThanOrEqual(right(dock) - 0.5);
   expect(c.y < bottom(dock) && bottom(c) > dock.y, 'full: Close is on the toggle\'s row').toBe(true);
   expect(right(c), 'full: Close is inside the strip').toBeLessThanOrEqual(right(h) + 0.5);
-  const name = await boxOf(header(page).locator('h1'), 'the heading');
+  const name = await boxOf(title(page), 'the title');
   expect(right(dock), 'full: Dock to side is left of the name').toBeLessThanOrEqual(name.x + 0.5);
   expect(right(name), 'full: the name is left of Close').toBeLessThanOrEqual(c.x + 0.5);
   const f = await boxOf(section(page).locator('iframe:visible'), 'the frame');
@@ -176,10 +178,10 @@ export async function toggleGeometryFlow({ page, cc }: Args): Promise<void> {
   expect(sc.x, 'split: Close is right of Expand to full view').toBeGreaterThanOrEqual(right(expand) - 0.5);
   expect(sc.y < bottom(expand) && bottom(sc) > expand.y, 'split: Close is on the toggle\'s row').toBe(true);
   expect(right(sc), 'split: Close is inside the strip').toBeLessThanOrEqual(right(sh) + 0.5);
-  await expect(header(page).getByRole('button'), 'three controls: Collapse, the toggle and Close').toHaveCount(3);
+  await expect(header(page).getByRole('button'), 'four buttons: Collapse, the toggle, the switcher and Close').toHaveCount(4);
   const collapseBox = await boxOf(header(page).getByRole('button', { name: 'Collapse plugin dock', exact: true }), 'Collapse plugin dock');
   expect(right(collapseBox), 'split: Collapse is left of Expand to full view').toBeLessThanOrEqual(expand.x + 0.5);
-  const sname = await boxOf(header(page).locator('h1'), 'the heading in split');
+  const sname = await boxOf(title(page), 'the title in split');
   expect(right(expand), 'split: Expand to full view is left of the name').toBeLessThanOrEqual(sname.x + 0.5);
   expect(right(sname), 'split: the name is left of Close').toBeLessThanOrEqual(sc.x + 0.5);
 
@@ -444,7 +446,7 @@ export async function collapseFlow({ page, cc }: Args): Promise<void> {
 
   const collapseBtn = header(page).getByRole('button').first();
   await expect(collapseBtn).toHaveAccessibleName('Collapse plugin dock');
-  expect(right(await boxOf(collapseBtn, 'Collapse')), 'Collapse is left of the heading').toBeLessThanOrEqual((await boxOf(header(page).locator('h1'), 'the heading')).x + 0.5);
+  expect(right(await boxOf(collapseBtn, 'Collapse')), 'Collapse is left of the title').toBeLessThanOrEqual((await boxOf(title(page), 'the title')).x + 0.5);
   const mainBefore = await boxOf(main(page), 'the session');
   await collapseBtn.click();
 
@@ -494,6 +496,72 @@ export async function collapseFlow({ page, cc }: Args): Promise<void> {
   await expect(handle(page)).toHaveAttribute('aria-valuenow', String(W));
 }
 
+/** A navigation label no bar at the dock's floor, nor across a desktop row, fits on one line. */
+const LONG_LABEL = 'A plugin whose navigation label runs far past the width of any bar it could sit in '.repeat(3).trim();
+
+/** `GET /api/plugins` (that exact path) answers with PLAIN's row carrying LONG_LABEL as its nav label. */
+async function longLabel(page: Page) {
+  await page.route((u) => u.pathname === '/api/plugins', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const res = await route.fetch();
+    const body = await res.json() as { rows: { id: string; navLabel?: string }[] };
+    await route.fulfill({ response: res, json: { ...body, rows: body.rows.map((r) => (r.id === PLAIN.id ? { ...r, navLabel: LONG_LABEL } : r)) } });
+  });
+}
+
+/** The strip's controls named in `labels` and its switcher: each inside the strip, hit at its centre, none overlapping another; the chevron inside the trigger and the label truncated. */
+async function barFits(page: Page, what: string, labels: string[]) {
+  await parkPointer(page);
+  const h = await boxOf(header(page), `${what}: the strip`);
+  const sw = header(page).getByRole('button', { name: 'Switch app', exact: true });
+  await expect(sw, `${what}: the switcher in the strip`).toBeVisible();
+  await expect(sw, `${what}: it reads the long label`).toContainText(LONG_LABEL);
+  const boxes: [string, Box][] = [];
+  for (const l of [...labels, 'Switch app']) boxes.push([l, await boxOf(header(page).getByRole('button', { name: l, exact: true }), `${what}: ${l}`)]);
+  for (const [l, b] of boxes) {
+    expect(b.x >= h.x - 0.5 && b.y >= h.y - 0.5 && right(b) <= right(h) + 0.5 && bottom(b) <= bottom(h) + 0.5, `${what}: ${l} inside the strip`).toBe(true);
+    expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('button')?.getAttribute('aria-label'), [b.x + b.width / 2, b.y + b.height / 2] as const), `${what}: ${l} is what a click at its centre hits`).toBe(l);
+  }
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const [la, a] = boxes[i]!;
+      const [lb, b] = boxes[j]!;
+      expect(right(a) <= b.x + 0.5 || right(b) <= a.x + 0.5 || bottom(a) <= b.y + 0.5 || bottom(b) <= a.y + 0.5, `${what}: ${la} and ${lb} do not overlap`).toBe(true);
+    }
+  }
+  const t = boxes.find(([l]) => l === 'Switch app')![1];
+  const chevron = await boxOf(sw.locator('svg').last(), `${what}: the chevron`);
+  expect(chevron.x >= t.x - 0.5 && right(chevron) <= right(t) + 0.5 && chevron.y >= t.y - 0.5 && bottom(chevron) <= bottom(t) + 0.5, `${what}: the chevron inside the trigger`).toBe(true);
+  expect(await sw.locator('span span').first().evaluate((el) => el.scrollWidth > el.clientWidth), `${what}: the label truncates`).toBe(true);
+}
+
+export async function barSwitcherFitsFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: the one switcher never squeezes or covers the strip's controls, even with a long name at the dock's floor, and the page holds one switcher in every mode.
+  desktopOnly();
+  await longLabel(page);
+  await onSession(page, cc, 'bar-switcher');
+  const switchers = page.locator('[data-app-switcher]');
+  await expect(switchers, 'hidden: one switcher').toHaveCount(1);
+
+  await dockSplit(page, PLAIN);
+  await dragHandle(page, DOCK_PANEL_DEFAULT_WIDTH);
+  await expect(handle(page), 'fixture check: docked at the floor').toHaveAttribute('aria-valuenow', String(DOCK_PANEL_MIN_WIDTH));
+  await expect(switchers, 'split: one switcher').toHaveCount(1);
+  await barFits(page, 'split at the floor', ['Collapse plugin dock', 'Expand to full view', 'Close plugin']);
+
+  await header(page).getByRole('button', { name: 'Collapse plugin dock', exact: true }).click();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'rail');
+  await expect(switchers, 'rail: one switcher').toHaveCount(1);
+  await expect(desktopSidebar(page).getByRole('button', { name: 'Switch app' }), 'rail: it is the sidebar\'s').toBeVisible();
+  await column(page).getByRole('button', { name: 'Expand plugin dock', exact: true }).click();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'split');
+
+  await toggle(page, 'Expand to full view').click();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'full');
+  await expect(switchers, 'full: one switcher').toHaveCount(1);
+  await barFits(page, 'full', ['Dock to side', 'Close plugin']);
+}
+
 export async function persistFlow({ page, cc }: Args): Promise<void> {
   // Invariant (reload): the docked page's own navigation stays off the URL, and a reload restores split on that plugin at its width and its route, checked in the switcher.
   desktopOnly();
@@ -507,7 +575,7 @@ export async function persistFlow({ page, cc }: Args): Promise<void> {
   await page.reload();
   await expectSplit(page, 'reloaded');
   await expect(handle(page)).toHaveAttribute('aria-valuenow', String(W));
-  await desktopSidebar(page).getByRole('button', { name: 'Switch app' }).click();
+  await next.openSwitcher(page);
   await expect(page.getByRole('menuitemradio', { name: new RegExp(`^${KEEP.name}`) }), 'checked in the switcher').toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toHaveCount(0);

@@ -1,6 +1,6 @@
-// The plugin column's mode rules and the plugin on screen, one per test, and the split limit at its boundary.
+// The plugin column's mode rules and the plugin on screen, one per test, the split limit at its boundary, and where the app switcher shows.
 import { describe, expect, it } from 'vitest';
-import { canSplit, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH, dockLayout, maxPanel, shownApp } from './dockLayout';
+import { canSplit, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH, dockLayout, type DockMode, maxPanel, shownApp, switcherSlot } from './dockLayout';
 
 /** The narrowest main row a split fits in. */
 const SPLIT_MIN_ROW = DOCK_PANEL_MIN_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH;
@@ -117,5 +117,43 @@ describe('shownApp', () => {
   ] as const)('%s shows %s', (_what, over, id) => {
     // Invariant (F2): the switcher checks the full view's plugin, else the listed split selection beside a session on desktop, else Conductor.
     expect(shownApp(input(over as Partial<Input>))).toBe(id);
+  });
+});
+
+describe('switcherSlot', () => {
+  it.each([
+    ['hidden', true, 'sidebar'],
+    ['hidden', false, 'drawer'],
+    ['rail', true, 'sidebar'],
+    ['rail', false, 'drawer'],
+    ['split', true, 'pane'],
+    ['split', false, 'pane'],
+    ['full', true, 'pane'],
+    ['full', false, 'pane'],
+  ] as const)('%s on desktop=%s shows it in the %s', (mode, desktop, slot) => {
+    // Invariant: the switcher is in the pane exactly when the column's bar is reachable and shows a plugin (split or full); else the current breakpoint's sidebar copy.
+    expect(switcherSlot(mode, desktop)).toBe(slot);
+  });
+
+  it('every dockLayout input places it in one slot whatever room the main row leaves, and never in the desktop sidebar below md', () => {
+    // Invariant: the placement never depends on the measured width (so the published mode is enough), and a phone never places it in the CSS-hidden aside.
+    const ids = [null, 'alpha', 'gone'] as const;
+    const rooms = [null, SPLIT_MIN_ROW - 1, 1100] as const;
+    const modes = new Set<DockMode>();
+    for (const view of ['session', 'plugin', 'settings'] as const)
+      for (const routePluginId of ids)
+        for (const dockId of ids)
+          for (const collapsed of [false, true])
+            for (const desktop of [false, true]) {
+              const slots = new Set(rooms.map((available) => {
+                const { mode } = dockLayout(input({ view, routePluginId, dockId, collapsed, desktop, available }));
+                modes.add(mode);
+                return switcherSlot(mode, desktop);
+              }));
+              const where = JSON.stringify({ view, routePluginId, dockId, collapsed, desktop });
+              expect(slots.size, `one slot for every room: ${where}`).toBe(1);
+              if (!desktop) expect(slots.has('sidebar'), `below md never the desktop sidebar: ${where}`).toBe(false);
+            }
+    expect([...modes].sort(), 'fixture check: the sweep reaches every mode').toEqual(['full', 'hidden', 'rail', 'split']);
   });
 });

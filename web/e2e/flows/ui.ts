@@ -43,6 +43,8 @@ export interface Ui {
   terminate(page: Page, accept: boolean): Promise<void>;
   /** The header's Resume button. */
   resumeButton(page: Page): Locator;
+  /** Opens the app switcher wherever it shows (the shown plugin column's bar, else the sidebar, opening the drawer on a drawer viewport) and waits for its menu. */
+  openSwitcher(page: Page): Promise<void>;
   /** Opens plugin `id` from the app switcher; the URL then names it. */
   openPlugin(page: Page, id: string): Promise<void>;
   /** Leaves a plugin view for the conductor through the app switcher. */
@@ -521,15 +523,22 @@ export const next: Ui = {
     await expect(dialog).toBeHidden();
   },
   resumeButton: (page) => next.sessionHeader(page).getByRole('button', { name: 'Resume' }),
+  async openSwitcher(page) {
+    const bar = page.locator('section[data-view="plugin"][aria-hidden="false"] [data-app-switcher]');
+    if (await bar.count()) await bar.click();
+    else {
+      await next.openSidebar(page);
+      await sidebar(page).getByRole('button', { name: 'Switch app' }).click();
+    }
+    await expect(page.getByRole('menu')).toBeVisible();
+  },
   async openPlugin(page, id) {
-    await next.openSidebar(page);
-    await sidebar(page).getByRole('button', { name: 'Switch app' }).click();
+    await next.openSwitcher(page);
     await page.locator(`[data-app-id="${id}"]`).click();
     await expect(page).toHaveURL(new RegExp(`#plugin/${escapeRe(id)}/`));
   },
   async leavePlugin(page) {
-    await next.openSidebar(page);
-    await sidebar(page).getByRole('button', { name: 'Switch app' }).click();
+    await next.openSwitcher(page);
     await page.getByRole('menuitemradio', { name: 'Conductor' }).click();
     await expect(page).not.toHaveURL(/#plugin\//);
   },

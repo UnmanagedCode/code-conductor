@@ -1,7 +1,10 @@
-// Sidebar header switcher between Code Conductor and plugin frontends.
-// Renders nothing until an enabled plugin contributes a frontend. A plugin with
-// a resident (keep-alive) frame is labelled "(running)": its page keeps going —
-// possibly with the microphone open — while you're elsewhere.
+// The switcher between Code Conductor and plugin frontends. One shows at a time,
+// in the slot switcherSlot names for the column's mode (dockModeStore) and the
+// breakpoint: the plugin column's bar while it shows a plugin at split or full
+// width, else the desktop sidebar's or the phone drawer's header. Every other slot,
+// and every slot until an enabled plugin contributes a frontend, renders its plain
+// title. A plugin with a resident (keep-alive) frame is labelled "(running)": its
+// page keeps going — possibly with the microphone open — while you're elsewhere.
 import * as React from 'react';
 import { ChevronsUpDownIcon, PlugIcon } from 'lucide-react';
 import {
@@ -13,9 +16,10 @@ import { useRoute } from '@/state/route';
 import { closeSidebarOnMobile } from '@/app/ui';
 import { pluginsChangedSignal } from '@/features/settings/pluginsSignal';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
+import { cn } from '@/lib/utils';
 import { appLabel, catalogStore, pluginFrames, refreshCatalog, residentSignal, RESIDENT_SUFFIX } from './plugins';
-import { shownApp } from './dockLayout';
-import { closeDock, dockStore, selectApp } from './dock';
+import { shownApp, switcherSlot, type SwitcherSlot } from './dockLayout';
+import { closeDock, dockModeStore, dockStore, selectApp } from './dock';
 import { showActiveSession } from './ViewShell';
 
 /** The Conductor entry's value in the switcher's radio group; no plugin id is empty. */
@@ -28,31 +32,28 @@ export function exitToConductor() {
   closeSidebarOnMobile();
 }
 
-/** The sidebar title; becomes the Conductor ↔ plugin dropdown once a plugin contributes a frontend. */
-export function AppSwitcher({ title, subtitle }: { title: string; subtitle?: React.ReactNode }) {
+/** The Conductor ↔ plugin dropdown in `slot` while it is the one switcher's slot and a plugin contributes a frontend, else `fallback` (the slot's plain title). */
+export function AppSwitcher({ slot, title, subtitle, fallback, className }: {
+  slot: SwitcherSlot; title: string; subtitle?: React.ReactNode; fallback: React.ReactNode; className?: string;
+}) {
   const apps = useStore(catalogStore, (s) => s.apps);
   const route = useRoute();
   const dockId = useStore(dockStore, (s) => s.id);
+  const mode = useStore(dockModeStore, (s) => s.mode);
   const desktop = useMediaQuery(WIDE_QUERY);
   useSignal(residentSignal);
   const pluginsRev = useSignal(pluginsChangedSignal);
-  React.useEffect(() => { void refreshCatalog(); }, [pluginsRev]);
+  // The sidebar copies read the catalog; PluginView refreshes it for the bar's.
+  React.useEffect(() => { if (slot !== 'pane') void refreshCatalog(); }, [pluginsRev, slot]);
 
-  if (!apps.length) {
-    return (
-      <div className="ml-1 min-w-0 flex-1 leading-tight">
-        <h1 className="truncate text-sm font-semibold tracking-tight">{title}</h1>
-        {subtitle && <div className="truncate text-[11px] text-muted-foreground">{subtitle}</div>}
-      </div>
-    );
-  }
+  if (!apps.length || switcherSlot(mode, desktop) !== slot) return <>{fallback}</>;
   const currentId = shownApp({ desktop, view: route.view, routePluginId: route.pluginId, catalogIds: apps.map((p) => p.id), dockId });
   const current = apps.find((p) => p.id === currentId) ?? null;
   const live = new Set(pluginFrames.residentIds());
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left leading-tight outline-none hover:bg-sidebar-accent focus-visible:ring-[3px] focus-visible:ring-ring"
+        className={cn('flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left leading-tight outline-none focus-visible:ring-[3px] focus-visible:ring-ring', className)}
         aria-label="Switch app"
         data-app-switcher
       >

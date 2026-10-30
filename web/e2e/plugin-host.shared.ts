@@ -39,10 +39,8 @@ async function loaded(page: Page, id: string, what: string): Promise<Probe> {
 
 /** Opens the app switcher, runs `read` on its menu, and closes it again. */
 async function withSwitcher<T>(page: Page, read: (menu: Locator) => Promise<T>): Promise<T> {
-  await next.openSidebar(page);
-  await page.getByRole('button', { name: 'Switch app' }).filter({ visible: true }).click();
+  await next.openSwitcher(page);
   const menu = page.getByRole('menu');
-  await expect(menu).toBeVisible();
   const out = await read(menu);
   await page.keyboard.press('Escape');
   await expect(menu).toBeHidden();

@@ -10,6 +10,7 @@ import { on } from '@/app/events';
 import { openPlugin } from './api';
 import { leaveView, showActiveSession } from './ViewShell';
 import { catalogStore, type RouteMirror } from './plugins';
+import type { DockMode } from './dockLayout';
 
 /** The mode a pick from Conductor opens; written only by the column's toggle. */
 export type DockPref = 'full' | 'split';
@@ -66,8 +67,8 @@ routeStore.subscribe(() => {
   inPlugin = now;
 });
 
-/** Whether the plugin column fills the main row: the full view, or a split too narrow to fit; `App` hides the main slot while it does. */
-export const dockFullStore = createStore<{ full: boolean }>({ full: false });
+/** The plugin column's mode, published by PluginView from dockLayout: `App` hides the main slot while it is 'full' (the full view, or a split too narrow to fit), and the app switcher's slots place the one switcher by it. */
+export const dockModeStore = createStore<{ mode: DockMode }>({ mode: 'hidden' });
 
 /** The plugin the column shows beside the session (split, rail, or a split too narrow to fit), else null (hidden, the full view, below md); PluginView publishes it from dockLayout. */
 export const dockBesideStore = createStore<{ id: string | null }>({ id: null });
@@ -89,7 +90,7 @@ export function followFrameLink(hash: string) {
 
 /** A session pick closes a full-screen plugin, as in the full view. Only a user's pick: the first-connect restore keeps what a reload restored. */
 on('select', ({ userGesture }) => {
-  if (userGesture && dockFullStore.get().full) closeDock();
+  if (userGesture && dockModeStore.get().mode === 'full') closeDock();
 });
 
 /** Split: the docked frame's own navigation is remembered as the dock's subpath. */

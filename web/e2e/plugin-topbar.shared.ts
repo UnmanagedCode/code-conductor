@@ -1,6 +1,7 @@
 // The plugin view's top bar: on drawer viewports the drawer button sits in a bar above the
 // plugin's page, never over it, and stays reachable while the start overlay is up; on desktop
-// the same bar carries the plugin's name and Dock to side. Every viewport's bar ends in Close plugin.
+// the same bar carries Dock to side. Every viewport's bar holds the app switcher (labelled
+// with the plugin's name) and ends in Close plugin.
 // The bodies are shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
@@ -40,10 +41,24 @@ async function drawerOpensFrom(page: Page, menu: Locator) {
   await boxOf(openDrawerRoot(page), 'the open drawer');
 }
 
-// Invariant: below md the view has a bar with the drawer button, the plugin's name and Close plugin; the frame starts under it and nothing covers the frame's top-left corner.
+/** A navigation label no phone bar fits on one line. */
+const LONG_LABEL = 'A plugin whose navigation label runs far past the width of a phone bar';
+
+/** `GET /api/plugins` (that exact path) answers with the probe's row carrying LONG_LABEL as its nav label. */
+async function longLabel(page: Page) {
+  await page.route((u) => u.pathname === '/api/plugins', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const res = await route.fetch();
+    const body = await res.json() as { rows: { id: string; navLabel?: string }[] };
+    await route.fulfill({ response: res, json: { ...body, rows: body.rows.map((r) => (r.id === PROBE.id ? { ...r, navLabel: LONG_LABEL } : r)) } });
+  });
+}
+
+// Invariant: below md the view has a bar with the drawer button, the app switcher (even with a long name) and Close plugin, each hit at its centre; the frame starts under it, nothing covers the frame's top-left corner, and the drawer then holds a static title, not a second switcher.
 /** Drawer viewports: the bar, the frame under it, an uncovered corner, and the button opens the drawer. */
 export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
   test.skip(isDesktop(), 'a desktop has no phone top bar');
+  await longLabel(page);
   await page.goto(`/#plugin/${PROBE.id}/`);
   await pageLoaded(page);
   const v = view(page);
@@ -51,7 +66,9 @@ export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
   const menu = v.getByRole('button', { name: 'Open sidebar' });
   await expect(bar).toBeVisible();
   await expect(bar.getByRole('button', { name: 'Open sidebar' })).toBeVisible();
-  await expect(bar.getByRole('heading', { name: PROBE.name })).toBeVisible();
+  const sw = bar.getByRole('button', { name: 'Switch app', exact: true });
+  await expect(sw).toBeVisible();
+  await expect(sw, 'the switcher reads the plugin').toContainText(LONG_LABEL);
 
   const barBox = await boxOf(bar, 'the bar');
   const frameBox = await boxOf(v.locator('iframe:visible'), 'the frame');
@@ -73,10 +90,19 @@ export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
   expect(closeBox.x >= barBox.x - 0.5 && closeBox.y >= barBox.y - 0.5 && closeBox.x + closeBox.width <= barBox.x + barBox.width + 0.5 && closeBox.y + closeBox.height <= barBox.y + barBox.height + 0.5, 'Close within the bar').toBe(true);
   expect(await hitIs(page, closeBox.x + closeBox.width / 2, closeBox.y + closeBox.height / 2, 'button[aria-label="Close plugin"]'), 'Close is hit at its centre').toBe(true);
 
+  const swBox = await boxOf(sw, 'the switcher');
+  expect(swBox.x >= barBox.x - 0.5 && swBox.y >= barBox.y - 0.5 && swBox.x + swBox.width <= barBox.x + barBox.width + 0.5 && swBox.y + swBox.height <= barBox.y + barBox.height + 0.5, 'the switcher within the bar').toBe(true);
+  expect(swBox.x, 'the switcher is right of Open sidebar').toBeGreaterThanOrEqual(menuBox.x + menuBox.width - 0.5);
+  expect(swBox.x + swBox.width, 'the switcher is left of Close').toBeLessThanOrEqual(closeBox.x + 0.5);
+  expect(await hitIs(page, swBox.x + swBox.width / 2, swBox.y + swBox.height / 2, 'button[aria-label="Switch app"]'), 'the switcher is hit at its centre').toBe(true);
+
   const shot = test.info().outputPath('plugin-view.png');
   await page.screenshot({ path: shot });
   await test.info().attach('plugin-view', { path: shot, contentType: 'image/png' });
   await drawerOpensFrom(page, menu);
+  await expect(openDrawerRoot(page).getByRole('heading', { level: 1 }), 'the drawer\'s title is static').toHaveText('Code Conductor');
+  await expect(page.locator('[data-app-switcher]'), 'one switcher in the page').toHaveCount(1);
+  await expect(v.locator('[data-app-switcher]'), 'and it is the bar\'s').toHaveCount(1);
 }
 
 // Invariant: while the plugin fails to start, the start overlay sits below the bar and the drawer button stays tappable.
@@ -102,8 +128,8 @@ export async function overlayBelowBarFlow({ page }: Ctx): Promise<void> {
   await drawerOpensFrom(page, menu);
 }
 
-// Invariant: on desktop the view's bar holds the plugin's name, Dock to side and Close plugin, no drawer button, and the frame fills the rest of the view below it.
-/** Desktop: the bar with the name, Dock to side and Close plugin, no drawer button, and the frame from the bar's bottom to the view's. */
+// Invariant: on desktop the view's bar holds the app switcher (the plugin's name), Dock to side and Close plugin, no drawer button, and the frame fills the rest of the view below it.
+/** Desktop: the bar with the switcher, Dock to side and Close plugin, no drawer button, and the frame from the bar's bottom to the view's. */
 export async function desktopStripFlow({ page }: Ctx): Promise<void> {
   test.skip(!isDesktop(), 'drawer viewports have the phone bar');
   await page.goto(`/#plugin/${PROBE.id}/`);
@@ -112,7 +138,7 @@ export async function desktopStripFlow({ page }: Ctx): Promise<void> {
   const bar = v.locator('header');
   await expect(v.getByRole('button', { name: 'Open sidebar' })).toHaveCount(0);
   await expect(bar).toBeVisible();
-  await expect(bar.getByRole('heading', { name: PROBE.name })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Switch app', exact: true })).toContainText(PROBE.name);
   await expect(bar.getByRole('button', { name: 'Dock to side', exact: true })).toBeVisible();
   await expect(bar.getByRole('button', { name: 'Close plugin', exact: true })).toBeVisible();
   const barBox = await boxOf(bar, 'the bar');
