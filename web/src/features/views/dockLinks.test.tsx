@@ -179,12 +179,14 @@ describe('a link the plugin page\'s bridge reports (openLink)', () => {
   });
 
   describe('is ignored', () => {
-    // Pins: the parent re-judges every bridge href with the transcript's rule, so a link the bridge prevented but cc does not accept changes nothing.
+    // Pins: the parent re-judges every bridge href with the transcript's rule, so a link the bridge prevented but cc does not accept changes nothing;
+    // cc's link form is http(s) only, so a cc.internal host on another scheme (ftp, ws) is not cc's.
     it.each([
       '#plugin/alpha/../x', '#plugin/alpha/%2e%2e/x', '#plugin/', '#session=s', '#review', '#commits',
       'https://evil.example/', 'javascript:alert(1)', 42, undefined,
       'http://cc.internal/x#plugin/beta/', 'http://cc.internal/?a#plugin/beta/', 'http://u@cc.internal/#plugin/beta/',
       'http://cc.internal.evil.com/#plugin/beta/', 'http://cc.internal/#review',
+      'ftp://cc.internal/#plugin/beta/', 'ws://cc.internal/#plugin/beta/',
     ])('an href of %j', async (href) => {
       await mountApp();
       await dockSplit('alpha');

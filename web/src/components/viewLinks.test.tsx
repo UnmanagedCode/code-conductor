@@ -170,12 +170,14 @@ describe('view links in markdown', () => {
 
 describe('links on cc\'s own origin that are not its page', () => {
   // Pins: another path on cc's origin, or cc's page with userinfo, is not cc's page and keeps its new-tab anchor; the own-page rule
-  // compares the full origin, so the other scheme on cc's host, or cc's hostname on another port, is not cc's page either.
+  // compares the full origin, so the other scheme on cc's host, or cc's hostname on another port, is not cc's page either; and it matches
+  // the search too, so cc's origin and path with a query is not cc's page.
   it.each([
     () => `${location.origin}/plugins/code-review/#costs`,
     () => `http://u@${location.host}/#costs`,
     () => `${location.protocol === 'http:' ? 'https:' : 'http:'}//${location.host}/#costs`,
     () => `${location.protocol}//${location.hostname}:${location.port === '1' ? '2' : '1'}/#costs`,
+    () => `${location.origin}${location.pathname}?x=1#costs`,
   ])('own-origin lookalike %# keeps its new-tab anchor', (build) => {
     const href = build();
     const { container } = render(<Markdown text={`[x](${href})`} />);
