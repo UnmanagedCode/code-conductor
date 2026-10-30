@@ -73,7 +73,7 @@ import {
   getCustomModels, addCustomModel, updateCustomModel, removeCustomModel,
   getBackends, getSubstitutionBackends, backendModels, addBackend, updateBackend, removeBackend,
   getSystems, addSystem, updateSystem, removeSystem,
-  getDebugByDefault, setDebugByDefault,
+  getDebugByDefault, setDebugByDefault, getTaskToolsEnabled, setTaskToolsEnabled,
 } from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
@@ -466,17 +466,19 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.post('/settings/claude-update', (req, res, next) => streamNdjsonAction(res, next,
     (onChunk, onValidated) => applyClaudeUpdate({ platform: hostPlatform, onChunk: (t) => onChunk('update', t), onValidated })));
 
-  // Settings → About: whether newly spawned instances default to debug
-  // capture when a spawn call doesn't name `debug` explicitly (see
-  // InstanceManager._doCreate). An explicit per-spawn value always wins.
+  // Settings → Models spawn prefs: debugByDefault (whether newly spawned
+  // instances default to debug capture when a spawn call doesn't name `debug`;
+  // an explicit per-spawn value always wins) and taskTools (opt every launched
+  // session into the CLI's task tools; see Instance.spawn).
   r.get('/settings/spawn', async (req, res, next) => {
-    try { res.json({ debugByDefault: getDebugByDefault() }); } catch (e) { next(e); }
+    try { res.json({ debugByDefault: getDebugByDefault(), taskTools: getTaskToolsEnabled() }); } catch (e) { next(e); }
   });
   r.post('/settings/spawn/prefs', async (req, res, next) => {
     try {
       const body = jsonBody(req);
       if (body.debugByDefault !== undefined) await setDebugByDefault(body.debugByDefault);
-      res.json({ debugByDefault: getDebugByDefault() });
+      if (body.taskTools !== undefined) await setTaskToolsEnabled(body.taskTools);
+      res.json({ debugByDefault: getDebugByDefault(), taskTools: getTaskToolsEnabled() });
     } catch (e) { next(e); }
   });
 

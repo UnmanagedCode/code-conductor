@@ -27,7 +27,7 @@ import { rotate } from './segmentChain.mjs';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { addBackend, addCustomModel } from '../src/appSettings.ts';
+import { addBackend, addCustomModel, setTaskToolsEnabled } from '../src/appSettings.ts';
 import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
 
 const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
@@ -101,6 +101,23 @@ describe('a worker session on a remote system', () => {
   });
   const onSystem = (rel) => path.join(tree, rel);
   const inSession = (rel) => path.join(root, rel);
+
+  // Task tools setting reaches a remote worker's launch env (the CLI runs on cc's host).
+  test('the task-tools env var rides on a remote worker launch when the setting is on', async () => {
+    const saved = process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS;
+    delete process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS;
+    try {
+      await setTaskToolsEnabled(true);
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const inst = instances.get(r.body.id);
+      await waitFor(() => inst.status === 'idle' && inst._spawnEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS);
+      assert.equal(inst._spawnEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS, '1');
+    } finally {
+      await setTaskToolsEnabled(false);
+      if (saved !== undefined) process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS = saved;
+    }
+  });
 
   // PINS CRITERION 8: the session's cwd IS the project's tree on its system.
   // Nothing is composed, nothing is copied, and the config surface the CLI reads

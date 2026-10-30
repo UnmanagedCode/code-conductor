@@ -689,6 +689,28 @@ describe('Models', () => {
     expect(screen.getByRole('option', { name: 'Inherit (high)' })).toBeTruthy();
   });
 
+  it('the task-tools switch reflects the stored setting and posts only taskTools when toggled', async () => {
+    const calls = mockFetch({
+      'GET /api/settings/spawn': () => ({ debugByDefault: false, taskTools: false }),
+      'POST /api/settings/spawn/prefs': () => ({ debugByDefault: false, taskTools: true }),
+    });
+    modelsSettingsStore.set({ data: models() as any });
+    wrap(<ModelsSection />);
+    const sw = await screen.findByRole('switch', { name: 'Enable the task tools for every session' });
+    await waitFor(() => expect(sw).toHaveProperty('disabled', false));
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(sw);
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ taskTools: true }));
+  });
+
+  it('the task-tools switch renders checked when the server says it is on', async () => {
+    mockFetch({ 'GET /api/settings/spawn': () => ({ taskTools: true }) });
+    modelsSettingsStore.set({ data: models() as any });
+    wrap(<ModelsSection />);
+    const sw = await screen.findByRole('switch', { name: 'Enable the task tools for every session' });
+    await waitFor(() => expect(sw.getAttribute('aria-checked')).toBe('true'));
+  });
+
   it('changing a tier\'s effort posts tierEffort; the last enabled tier cannot be switched off', async () => {
     const calls = mockFetch({ 'GET /api/settings/spawn': () => ({}), 'POST /api/settings/models/prefs': () => models() });
     modelsSettingsStore.set({ data: models({ enabledTiers: { fast: false, powerful: true } }) as any });

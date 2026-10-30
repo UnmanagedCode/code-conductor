@@ -49,7 +49,7 @@ interface StoredSettings {
     overageThresholdEnabled?: unknown;
     overageThresholdPct?: unknown;
   };
-  spawn?: { debugByDefault?: unknown };
+  spawn?: { debugByDefault?: unknown; taskTools?: unknown };
   systems?: { registry?: unknown };
   plugins?: { libraryDirs?: unknown; builtinLibrary?: unknown };
 }
@@ -177,6 +177,17 @@ export async function setDebugByDefault(enabled: unknown): Promise<boolean> {
   const cur = loadSync();
   const next = { ...cur, spawn: { ...(cur.spawn || {}), debugByDefault: !!enabled } };
   await writeSettings(next);
+  return !!enabled;
+}
+
+// Spawn group: taskTools opts every session cc launches into the CLI's task
+// tools (CLAUDE_CODE_ENABLE_TODO_TOOLS, set in Instance.spawn). Read at each
+// spawn/resume, so it applies to the next launch without a restart. Off by default.
+export function getTaskToolsEnabled(): boolean { return Boolean(loadSync().spawn?.taskTools); }
+
+export async function setTaskToolsEnabled(enabled: unknown): Promise<boolean> {
+  const cur = loadSync();
+  await writeSettings({ ...cur, spawn: { ...(cur.spawn || {}), taskTools: !!enabled } });
   return !!enabled;
 }
 
