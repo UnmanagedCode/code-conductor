@@ -11,7 +11,7 @@ import { ApiError } from '@shared/http';
 import { json, post, errText, streamAction, capLog } from './api';
 import { notifyPluginsChanged, type PluginsChange } from './pluginsSignal';
 import {
-  backendLocalOnly, contributions, hookWarning, isUsable, metaBits, updateChange, updateWarning,
+  backendLocalOnly, contributions, hookWarning, isUsable, metaBits, updatableEntries, updateChange, updateWarning,
   type LibraryEntry, type PluginRow, type UpdateResult,
 } from './pluginLogic';
 import { createStore, useStore } from '@/state/createStore';
@@ -71,7 +71,7 @@ function claim(): boolean {
  * Reloads both lists and the load-owned status lines. `reset` also drops both
  * action notes and every live log; a remount's load keeps them.
  */
-async function loadPlugins(reset: boolean): Promise<PluginRow[] | null> {
+export async function loadPlugins(reset: boolean): Promise<PluginRow[] | null> {
   try {
     const [plugins, projects, lib] = await Promise.all([
       json<{ rows: PluginRow[]; notices?: { file: string; reason: string; backup?: string }[] }>('/api/plugins'),
@@ -165,7 +165,7 @@ async function update(entry: LibraryEntry) {
 }
 
 async function updateAll() {
-  const targets = (pluginsStore.get().library || []).filter((e) => e.installed && e.updateAvailable);
+  const targets = updatableEntries(pluginsStore.get().library);
   if (!targets.length || !claim()) return;
   pluginsStore.set({ libTail: '' });
   const outcomes: ({ name: string } & Awaited<ReturnType<typeof runUpdate>>)[] = [];
@@ -203,13 +203,20 @@ async function updateAll() {
   }
 }
 
+/** Update all as either Settings page offers it: how many entries a run would update, its progress label while one runs, and whether any plugin action holds the guard. */
+export function useUpdateAllPlugins() {
+  const updatable = useStore(pluginsStore, (s) => updatableEntries(s.library).length);
+  const progress = useStore(pluginsStore, (s) => s.updatingAll);
+  const locked = useStore(pluginsStore, (s) => s.busy);
+  return { updatable, progress, locked, run: () => void updateAll() };
+}
+
 export function PluginsSection() {
-  const { rows, worktrees, library, loaded, libLoaded, note, libNote, libTail, live, busy, acting, busyEntry, updatingAll } = useStore(pluginsStore, (s) => s);
+  const { rows, worktrees, library, loaded, libLoaded, note, libNote, libTail, live, acting, busyEntry } = useStore(pluginsStore, (s) => s);
+  const { updatable, progress: updatingAll, locked, run: runUpdateAll } = useUpdateAllPlugins();
   React.useEffect(() => { void loadPlugins(false); }, []);
   const status = note ?? loaded;
   const libStatus = libNote ?? libLoaded;
-  const updatable = (library || []).filter((e) => e.installed && e.updateAvailable).length;
-  const locked = busy;
   const isActing = (id: string | null, a: PluginAction) => acting?.id === id && acting.action === a;
   const label = (id: string | null, a: PluginAction, icon: React.ReactNode, idle: string) =>
     isActing(id, a) ? <><LoaderCircleIcon className="animate-spin" /> {PENDING_LABEL[a]}</> : <>{icon}{icon ? ' ' : ''}{idle}</>;
@@ -320,7 +327,7 @@ export function PluginsSection() {
         title="Plugin Library"
         description="Plugins you can clone into your projects root. Once installed, a plugin appears above (rescan if needed); enable it there."
         action={
-          <Button variant="outline" size="sm" disabled={!updatable || locked} onClick={() => void updateAll()} title="Update every installed library plugin that is behind its origin, one at a time">
+          <Button variant="outline" size="sm" disabled={!updatable || locked} onClick={runUpdateAll} title="Update every installed library plugin that is behind its origin, one at a time">
             {updatingAll ?? (updatable ? `Update all (${updatable})` : 'Update all')}
           </Button>
         }

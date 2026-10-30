@@ -7,6 +7,7 @@ import { createStore, useStore } from '@/state/createStore';
 import { SettingsCard, Status, LogBox, type StatusLine } from './ui';
 import { ClaudeUpdateCard } from './ClaudeUpdateCard';
 import { ApiError } from '@shared/http';
+import { loadPlugins, useUpdateAllPlugins } from './PluginsSection';
 import { json, errText, streamAction, capLog } from './api';
 
 export type SelfUpdateStatus = { version?: string; upstream?: string | null; ahead?: number | null; behind?: number | null; canCheck?: boolean; diverged?: boolean; updateAvailable?: boolean };
@@ -30,8 +31,14 @@ export const selfUpdateStore = createStore<{ line: StatusLine; canUpdate: boolea
   line: { text: 'Checking for updates…' }, canUpdate: false, updating: false, label: 'Update', log: '',
 });
 
+const WRAP = 'h-auto min-w-0 py-1.5 text-left whitespace-normal';
+
 export function AboutSection() {
   const { line, canUpdate, updating, label, log } = useStore(selfUpdateStore, (s) => s);
+  const plugins = useUpdateAllPlugins();
+  const showPlugins = plugins.updatable > 0 || plugins.progress !== null;
+
+  React.useEffect(() => { void loadPlugins(false); }, []);
 
   React.useEffect(() => {
     if (selfUpdateStore.get().updating) return;
@@ -84,7 +91,18 @@ export function AboutSection() {
       </div>
       <SettingsCard
         title="Version"
-        action={canUpdate && <Button size="sm" disabled={updating} onClick={() => void update()}><RefreshCwIcon className={updating ? 'animate-spin' : undefined} /> {label}</Button>}
+        // A narrow column lets the action shrink and its buttons wrap their labels, instead of overflowing.
+        actionClassName="min-w-0 shrink"
+        action={(canUpdate || showPlugins) && (
+          <div className="flex flex-col items-end gap-2 @md:flex-row">
+            {canUpdate && <Button size="sm" className={WRAP} disabled={updating} onClick={() => void update()}><RefreshCwIcon className={updating ? 'animate-spin' : undefined} /> {label}</Button>}
+            {showPlugins && (
+              <Button size="sm" className={WRAP} disabled={plugins.locked} onClick={plugins.run}>
+                <RefreshCwIcon className={plugins.progress ? 'animate-spin' : undefined} /> {plugins.progress ?? `Update plugins (${plugins.updatable})`}
+              </Button>
+            )}
+          </div>
+        )}
       >
         <Status text={line.text} tone={line.tone ?? 'muted'} />
         <LogBox text={log} />
