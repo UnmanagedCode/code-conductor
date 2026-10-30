@@ -11,7 +11,7 @@ import { TOAST_EDGE_GAP } from '@/ui/toastLayout';
 import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
-import { dockFullStore } from '@/features/views/dock';
+import { dockModeStore } from '@/features/views/dock';
 import { DialogsHost } from '@/features/dialogs/DialogsHost';
 import { focusContent } from '@/lib/modalFocus';
 
@@ -49,7 +49,7 @@ function MainView() {
 export function App() {
   const sidebarOpen = useStore(uiStore, (s) => s.sidebarOpen);
   const theme = useStore(themeStore, (s) => s.resolved);
-  const columnFull = useStore(dockFullStore, (s) => s.full);
+  const columnFull = useStore(dockModeStore, (s) => s.mode === 'full');
   return (
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}

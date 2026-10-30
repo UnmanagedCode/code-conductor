@@ -92,14 +92,14 @@ describe('the plugin dock', () => {
     expect(viewOpen()).toBe(false);
   });
 
-  it('the column\'s controls are Collapse, then the mode toggle, then Close plugin: Expand to full view in split, Dock to side in full, and nothing else', async () => {
-    // Invariant (F1): the switcher picks the plugin; the column carries Collapse (split only), the full ⇄ split toggle and Close plugin after it.
+  it('the column\'s controls are Collapse, then the mode toggle, then the switcher, then Close plugin: Expand to full view in split, Dock to side in full, and nothing else', async () => {
+    // Invariant (F1): the switcher picks the plugin; the column carries Collapse (split only), the full ⇄ split toggle, the switcher and Close plugin after it.
     await mountApp();
     await dockSplit('alpha');
-    expect(columnButtons(), 'split').toEqual(['Collapse plugin dock', 'Expand to full view', 'Close plugin']);
+    expect(columnButtons(), 'split').toEqual(['Collapse plugin dock', 'Expand to full view', 'Switch app', 'Close plugin']);
     await pressColumn('Expand to full view');
     expect(location.hash, 'fixture check: expanded').toBe('#plugin/alpha/');
-    expect(columnButtons(), 'full').toEqual(['Dock to side', 'Close plugin']);
+    expect(columnButtons(), 'full').toEqual(['Dock to side', 'Switch app', 'Close plugin']);
     expect(column()!.querySelector('nav'), 'no navigation strip').toBeNull();
   });
 
@@ -291,7 +291,7 @@ describe('a narrow window', () => {
     expect(viewOpen(), 'the plugin shown').toBe(true);
     expect(sessionShown(), 'over the session').toBe(false);
     expect(dockHandle(), 'no handle').toBeNull();
-    expect(columnButtons(), 'no toggle, only Close').toEqual(['Close plugin']);
+    expect(columnButtons(), 'no toggle, only the switcher and Close').toEqual(['Switch app', 'Close plugin']);
     expect(location.hash).toBe(ANCHOR);
     expect(setItem, 'nothing written').not.toHaveBeenCalled();
     expect(await checkedNow()).toEqual(['alpha']);
@@ -352,6 +352,6 @@ describe('below md', () => {
     await cross(false);
     await pickApp('beta');
     expect(location.hash, 'the full-page view').toBe('#plugin/beta/');
-    expect(columnButtons(), 'the phone bar: no toggle, only Open sidebar and Close').toEqual(['Open sidebar', 'Close plugin']);
+    expect(columnButtons(), 'the phone bar: no toggle, only Open sidebar, the switcher and Close').toEqual(['Open sidebar', 'Switch app', 'Close plugin']);
   });
 });

@@ -19,7 +19,7 @@ export type SwitcherSlot = 'pane' | 'sidebar' | 'drawer';
 
 /** Where the one app switcher shows: the column's bar while it shows a plugin at split or full width; else the sidebar copy of the current breakpoint (the rail has no room for it). */
 export function switcherSlot(mode: DockMode, desktop: boolean): SwitcherSlot {
-  void mode;
+  if (mode === 'split' || mode === 'full') return 'pane';
   return desktop ? 'sidebar' : 'drawer';
 }
 

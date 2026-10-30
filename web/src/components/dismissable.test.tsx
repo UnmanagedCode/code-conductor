@@ -87,7 +87,7 @@ describe('popovers and menus dismiss on an outside press and on Escape', () => {
     // Invariant: the Conductor / plugin switcher closes on a press outside and on Escape.
     catalogStore.set({ apps: [{ id: 'fake-plugin', name: 'Fake', enabled: true, hasFrontend: true }] });
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ rows: [{ id: 'fake-plugin', name: 'Fake', enabled: true, hasFrontend: true }] }) })));
-    wrap(<AppSwitcher title="Code Conductor" />);
+    wrap(<AppSwitcher slot="sidebar" title="Code Conductor" fallback={null} />);
     const trigger = () => screen.getByRole('button', { name: 'Switch app' });
     await settle();
     await dismissesOnOutsidePressAndEscape({
