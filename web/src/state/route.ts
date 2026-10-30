@@ -35,25 +35,36 @@ export function parseHash(hash: string): Route {
   return { ...base, sessionId: readSessionAnchor() };
 }
 
-/** The views a markdown link may open in-app. #review/#commits carry params a hash can't (viewStore), and a #session= hash selects nothing on push (the controller selects on popstate only), so neither is a link target. */
+/** The host of cc's in-app link form, `http://cc.internal/#<view>`: it resolves nowhere, so only cc acts on it. */
+export const CC_LINK_HOST = 'cc.internal';
+
+/** The views a link to cc may open in-app. #review/#commits carry params a hash can't (viewStore), and a #session= hash selects nothing on push (the controller selects on popstate only), so neither is a link target. */
 const LINKABLE: ReadonlySet<MainView> = new Set(['plugin', 'settings', 'costs']);
 
 /**
- * The hash an agent-authored link opens in-app, or null. A plugin link must name an id, and its frame URL
+ * The hash a link to cc opens in-app, or null. A link to cc is `http(s)://cc.internal/#<view>` (exact host, path `/`,
+ * no search) or a URL on cc's own page (same origin, path and search; a bare `#…` resolves there); neither may carry
+ * userinfo. The result is the link's normalized fragment. A plugin link must name an id, and its frame URL
  * (`/plugins/<id>/<subpath>`, built as PluginView/PluginFrames build it) must stay under `/plugins/<id>/` on this
  * origin. That rejects dot segments (also `%2e%2e` and `\`) and an id that is not one plain path segment.
  */
 export function viewLinkHash(href: string): string | null {
-  if (!href.startsWith('#')) return null;
+  let u: URL;
+  try { u = new URL(href, location.href); } catch { return null; }
+  if (u.username || u.password) return null;
+  const internal = (u.protocol === 'http:' || u.protocol === 'https:') && u.host === CC_LINK_HOST && u.pathname === '/' && u.search === '';
+  const ownPage = u.origin === location.origin && u.pathname === location.pathname && u.search === location.search;
+  if (!internal && !ownPage) return null;
+  const hash = u.hash;
   let route: Route;
-  try { route = parseHash(href); } catch { return null; }
+  try { route = parseHash(hash); } catch { return null; }
   if (!LINKABLE.has(route.view)) return null;
-  if (route.view !== 'plugin') return href;
+  if (route.view !== 'plugin') return hash;
   if (!route.pluginId) return null;
   const base = `/plugins/${route.pluginId}/`;
   try {
-    const u = new URL(base + route.pluginPath, location.origin);
-    return u.origin === location.origin && u.pathname.startsWith(base) ? href : null;
+    const frame = new URL(base + route.pluginPath, location.origin);
+    return frame.origin === location.origin && frame.pathname.startsWith(base) ? hash : null;
   } catch { return null; }
 }
 

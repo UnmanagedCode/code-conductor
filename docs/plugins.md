@@ -149,7 +149,7 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 | child → parent | `route` | `{path}` | child-relative path (incl. search+hash), which **must begin with `/`** — the parent ignores a `route` whose path does not; parent mirrors it into `#plugin/<id><path>` via `replaceState` |
 | parent → child | `navigate` | `{path}` | external navigation; bridge `replaceState`s `<prefix><path>` and dispatches a synthetic `popstate` |
 | parent → child | `session` | `{session: {sessionId, project, worktree} \| null}` | the active session. `worktree` is the instance's `worktree.worktreeName` (the `worktreeName` key of `GET /api/projects/:name/worktrees`), `null` for the main checkout |
-| child → parent | `openLink` | `{hash}` | a plain click on a `target="_top"` / `_parent` link to cc's own path + search with a `#plugin/` hash, which the bridge prevents and reports; the parent shows it in the dock or follows it as a fragment navigation |
+| child → parent | `openLink` | `{href}` | a plain click on a link whose http(s) host is cc's link host (`cc.internal`), whatever its `target`, or on a `target="_top"` / `_parent` link to cc's own path + search with a `#plugin/` hash; the bridge prevents it and reports the resolved `href`; the parent shows it in the dock or follows it as a fragment navigation |
 | child → parent | `openSession` | `{id, sessionId}` | make a live session the selection, as a sidebar pick does |
 | child → parent | `sendPrompt` | `{id, sessionId, text}` | deliver `text` to a live session as its composer's Send does, without selecting it |
 | parent → child | `result` | `{id, ok, code?}` | the answer to one `openSession` / `sendPrompt`, posted to the calling frame only |
@@ -161,8 +161,9 @@ Plugin frontends include `<script src="/pluginBridge.js"></script>` as a blockin
 **`openLink` rules:**
 - Sent by the bridge itself, not part of `ccBridge`.
 - Honoured only from the **shown** frame (same origin and `ev.source` as every message, and the frame is the current plugin's); a hidden resident frame's is ignored.
-- `hash` must pass `viewLinkHash` (`web/src/state/route.ts`), the check a transcript link gets; anything else is ignored.
-- Outcome: `showLinkInDock` when the dock shows a plugin beside the session and the switcher lists the target; otherwise `location.hash = hash`, the navigation the browser would have made for the `_top` link.
+- `href` must pass `viewLinkHash` (`web/src/state/route.ts`), the check a transcript link gets; anything else (a message without a string `href` included) is ignored. The bridge prevents every plain click on a `cc.internal` link, so one cc rejects goes nowhere.
+- The bridge reads the link host from `data-cc-link-host` on cc's `<html>` (below). Under an unreadable parent it catches no link.
+- Outcome: `showLinkInDock` when the dock shows a plugin beside the session and the switcher lists the target; otherwise `location.hash = <the hash viewLinkHash returned>`, the navigation a `_top` link to cc's page makes.
 
 **`openSession` / `sendPrompt` rules:**
 - `id` must be a string; a call without one is ignored (nowhere to reply). Exactly one `result` per received call.
@@ -195,6 +196,8 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 **Theme sync** (not a message): the bridge reads the parent's `<html>` directly and mirrors cc's resolved theme onto the page's own `<html>` — the `dark` class, plus `data-cc-theme="light"|"dark"`, which is present only while cc owns the theme. It applies it synchronously when the script executes and again on every change through a `MutationObserver` on the parent `<html>`'s `class`, hidden frames included. cc's `<html>` carries `.dark` exactly when its resolved theme is dark (`web/index.html`'s pre-paint script, then `web/src/app/theme.ts`, which also follows `prefers-color-scheme` under "system"). A parent whose `document` cannot be read (cross-origin: `SecurityError`) leaves the page's theme alone; standalone or outside a `/plugins/<id>/` mount the bridge does nothing at all.
 
 **Session width sync** (not a message): the bridge mirrors cc's committed session-column width onto the page's own `<html>` as the custom property `--cc-session-width`: `<n>px` while Full is off, `none` while it is on (`sessionWidthCss`, `web/src/app/sessionWidthScale.ts`). cc publishes it as `data-cc-session-width` on its own `<html>` (`startPluginSessionWidth`, `web/src/features/views/pluginSessionWidth.ts`, started from `main.tsx`); the bridge copies the attribute when the script executes and again on every change through a `MutationObserver`, hidden frames included. Only the committed setting is published: a handle drag updates plugins on release, not during it. Unset under an unreadable parent, standalone, or outside a `/plugins/<id>/` mount, and while the attribute is absent. Use it as `max-width: var(--cc-session-width, <fallback>)`. A plugin never reads cc's storage.
+
+**Link host** (not a message): cc publishes `CC_LINK_HOST` (`cc.internal`, `web/src/state/route.ts`) as `data-cc-link-host` on its own `<html>` (`startPluginLinkHost`, `web/src/features/views/pluginLinkHost.ts`, started from `main.tsx`). The bridge reads it from the parent at click time to recognise a `cc.internal` link (`openLink` above); it has no copy of the name. Nothing is mirrored into the plugin page.
 
 ### Host exec — `POST /api/exec`
 

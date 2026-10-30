@@ -35,8 +35,8 @@ async function clickLinkTo(href: string) {
 }
 
 /** A plugin page's bridge reports a link it caught, as `win`'s frame posts it. */
-async function openLink(win: StandIn, hash: unknown) {
-  postFrom(win, { cc: 1, type: 'openLink', hash });
+async function openLink(win: StandIn, href: unknown) {
+  postFrom(win, { cc: 1, type: 'openLink', href });
   await settle();
 }
 
@@ -73,6 +73,18 @@ describe('a transcript link while the dock shows a plugin', () => {
     expect(sharedFrame()).toBeNull();
     expect(sessionShown()).toBe(true);
     expect(await checkedNow()).toEqual(['beta']);
+  });
+
+  // Pins: a `http://cc.internal/` transcript link opens in the dock while the dock shows, with no route or history change.
+  it('a cc.internal link switches the dock to its plugin', async () => {
+    await mountApp();
+    await dockSplit('alpha');
+    const before = history.length;
+    expect(await clickLinkTo('http://cc.internal/#plugin/beta/deep/path')).toBe(true);
+    expect(location.hash).toBe(ANCHOR);
+    expect(history.length).toBe(before);
+    expect(dockStore.get()).toMatchObject({ id: 'beta', subpath: '/deep/path' });
+    expect(sessionShown()).toBe(true);
   });
 
   // Pins: a link while the dock is collapsed to a rail expands it and steers the docked plugin.
@@ -128,6 +140,18 @@ describe('a link the plugin page\'s bridge reports (openLink)', () => {
     expect(sessionShown()).toBe(true);
   });
 
+  // Pins: the parent accepts a bridge `href` in the `http://cc.internal/` form.
+  it('a cc.internal href switches the dock', async () => {
+    await mountApp();
+    await dockSplit('alpha');
+    const win = standInWindow(sharedFrame()!);
+    const before = history.length;
+    await openLink(win, 'http://cc.internal/#plugin/beta/?project=p');
+    expect(dockStore.get()).toMatchObject({ id: 'beta', subpath: '/?project=p' });
+    expect(location.hash).toBe(ANCHOR);
+    expect(history.length).toBe(before);
+  });
+
   // Pins: an accepted openLink to the docked plugin steers its own frame without a reload and keeps the split.
   it('to the docked plugin steers its frame', async () => {
     await mountApp();
@@ -155,21 +179,36 @@ describe('a link the plugin page\'s bridge reports (openLink)', () => {
   });
 
   describe('is ignored', () => {
-    // Pins: a hash a transcript link may not open is never acted on, whatever the frame sends.
+    // Pins: the parent re-judges every bridge href with the transcript's rule, so a link the bridge prevented but cc does not accept changes nothing.
     it.each([
       '#plugin/alpha/../x', '#plugin/alpha/%2e%2e/x', '#plugin/', '#session=s', '#review', '#commits',
       'https://evil.example/', 'javascript:alert(1)', 42, undefined,
-    ])('a hash of %j', async (hash) => {
+      'http://cc.internal/x#plugin/beta/', 'http://cc.internal/?a#plugin/beta/', 'http://u@cc.internal/#plugin/beta/',
+      'http://cc.internal.evil.com/#plugin/beta/', 'http://cc.internal/#review',
+    ])('an href of %j', async (href) => {
       await mountApp();
       await dockSplit('alpha');
       const win = standInWindow(sharedFrame()!);
       const before = history.length;
       const posted = win.posted.length;
-      await openLink(win, hash);
+      await openLink(win, href);
       expect(dockStore.get()).toMatchObject({ id: 'alpha', subpath: '/' });
       expect(location.hash).toBe(ANCHOR);
       expect(history.length).toBe(before);
       expect(win.posted.length).toBe(posted);
+    });
+
+    // Pins: the payload field is `href`; a message carrying only the old `hash` field changes nothing.
+    it('a message with only a hash field', async () => {
+      await mountApp();
+      await dockSplit('alpha');
+      const win = standInWindow(sharedFrame()!);
+      const before = history.length;
+      postFrom(win, { cc: 1, type: 'openLink', hash: '#plugin/beta/x' });
+      await settle();
+      expect(dockStore.get()).toMatchObject({ id: 'alpha', subpath: '/' });
+      expect(location.hash).toBe(ANCHOR);
+      expect(history.length).toBe(before);
     });
 
     // Pins: only a frame cc mounted may send it.
@@ -186,7 +225,7 @@ describe('a link the plugin page\'s bridge reports (openLink)', () => {
       await mountApp();
       await dockSplit('alpha');
       const win = standInWindow(sharedFrame()!);
-      window.dispatchEvent(new MessageEvent('message', { data: { cc: 1, type: 'openLink', hash: '#plugin/beta/x' }, origin: 'http://evil.example', source: win as unknown as Window }));
+      window.dispatchEvent(new MessageEvent('message', { data: { cc: 1, type: 'openLink', href: '#plugin/beta/x' }, origin: 'http://evil.example', source: win as unknown as Window }));
       await settle();
       expect(dockStore.get()).toMatchObject({ id: 'alpha' });
       expect(location.hash).toBe(ANCHOR);

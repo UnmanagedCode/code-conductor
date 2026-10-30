@@ -8,8 +8,10 @@
 // Protocol: `{cc:1, type, ...}` envelope. Core messages —
 //   child → parent  ready            (bridge alive, initial route follows)
 //   child → parent  route {path}     (child-relative path incl. search+hash)
-//   child → parent  openLink {hash}  (a plain click on a `target="_top"`/`_parent` link to cc's own
-//                                     path + search with a `#plugin/` hash; the bridge prevents the navigation)
+//   child → parent  openLink {href}  (a plain click on a link to cc's link host — `data-cc-link-host` on the
+//                                     parent's <html> — whatever its target, or on a `target="_top"`/`_parent`
+//                                     link to cc's own path + search with a `#plugin/` hash; the bridge prevents
+//                                     the navigation and cc judges the href)
 //   parent → child  navigate {path}  (replaceState + synthetic popstate)
 // and four optional session-awareness messages, surfaced as `window.ccBridge`
 // (absent standalone and on a host without them) —
@@ -44,6 +46,7 @@
   // Theme: read the parent's <html> directly (same origin) rather than wait for
   // a message, which could only arrive after DOMContentLoaded. A parent whose
   // document cannot be read (cross-origin) leaves the theme alone.
+  /** @type {HTMLElement | null} */
   var hostRoot = null;
   try { hostRoot = window.parent.document.documentElement; } catch (e) { hostRoot = null; }
   if (hostRoot) {
@@ -84,24 +87,29 @@
   window.addEventListener('popstate', reportRoute);
   window.addEventListener('hashchange', reportRoute);
 
-  // A link out to a plugin view of cc itself: handed to cc, which opens it in the dock when one shows. Bubble phase,
-  // so a page's own handler that already prevented the click wins; anything else keeps the browser's default.
+  // A link out to cc itself: handed to cc, which opens it in the dock when one shows. A link on cc's link host
+  // (which resolves nowhere) is claimed whatever its target, so even one cc rejects never reaches the dead host; a
+  // `_top`/`_parent` link to cc's own page is claimed for a `#plugin/` hash. Bubble phase, so a page's own handler
+  // that already prevented the click wins; anything else keeps the browser's default.
   document.addEventListener('click', function (e) {
     if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
     var el = /** @type {Element | null} */ (e.target);
     var a = el && typeof el.closest === 'function' ? el.closest('a[href]') : null;
     if (!a) return;
-    var t = (a.getAttribute('target') || '').toLowerCase();
-    if (t !== '_top' && t !== '_parent') return;
     var u;
-    try {
-      u = new URL(/** @type {HTMLAnchorElement} */ (a).href);
-      var p = window.parent.location;
-      if (u.origin !== origin || u.pathname !== p.pathname || u.search !== p.search) return;
-    } catch (err) { return; }
-    if (u.hash.indexOf('#plugin/') !== 0) return;
+    try { u = new URL(/** @type {HTMLAnchorElement} */ (a).href); } catch (err) { return; }
+    var linkHost = hostRoot && hostRoot.getAttribute('data-cc-link-host');
+    if (!(linkHost && (u.protocol === 'http:' || u.protocol === 'https:') && u.host === linkHost)) {
+      var t = (a.getAttribute('target') || '').toLowerCase();
+      if (t !== '_top' && t !== '_parent') return;
+      try {
+        var p = window.parent.location;
+        if (u.origin !== origin || u.pathname !== p.pathname || u.search !== p.search) return;
+      } catch (err) { return; }
+      if (u.hash.indexOf('#plugin/') !== 0) return;
+    }
     e.preventDefault();
-    window.parent.postMessage({ cc: 1, type: 'openLink', hash: u.hash }, origin);
+    window.parent.postMessage({ cc: 1, type: 'openLink', href: u.href }, origin);
   });
 
   // Session awareness. `session` stays undefined until the host's first

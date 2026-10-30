@@ -1,6 +1,6 @@
 import { test } from './harness/fixtures.ts';
 import {
-  KEEP, PLAIN, collapseFlow, dragClampFlow, fullExitFlow, installProbes, keyboardFlow, narrowWindowFlow, noReloadFlow, persistFlow, phoneFlow, pluginLinkFlow, sessionHandleCoexistFlow, sessionWidthFlow,
+  KEEP, PLAIN, collapseFlow, dragClampFlow, fullExitFlow, installProbes, keyboardFlow, narrowWindowFlow, noReloadFlow, persistFlow, phoneFlow, pluginLinkFlow, internalLinkFlow, sessionHandleCoexistFlow, sessionWidthFlow,
   toastClearsToggleFlow, toggleGeometryFlow,
 } from './plugin-dock.shared.ts';
 
@@ -22,3 +22,4 @@ test('the session handles stay clear of the dock and sidebar handles and the scr
 test('below md the plugin view is full-page whatever the remembered mode, with no toggle', phoneFlow);
 test('a toast sits below the strip and never covers its toggle or Close', toastClearsToggleFlow);
 test('a _top link in a docked plugin\'s page to another plugin shows it in the dock with no URL or history change, and from the full view navigates as the browser does', pluginLinkFlow);
+test('a cc.internal link in a docked plugin\'s page is the bridge\'s whatever its target: no target steers the page in place, _blank opens no tab and shows the plugin in the dock', internalLinkFlow);
