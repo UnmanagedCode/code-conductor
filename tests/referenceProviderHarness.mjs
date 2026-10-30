@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ProviderSystem } from '../src/systems/providerSystem.ts';
+import { probePtyHelper } from '../src/systems/ptyHost.ts';
 import { parseProviderLaunch } from '../src/systems/registry.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -89,6 +90,10 @@ export const IS_REFERENCE_PROVIDER = !process.env[PROVIDER_ARGV_ENV]?.trim();
 // `assertNegotiatedCapabilities` below is the one reader, and the one place the
 // third-party relaxation lives.
 //
+// `pty` in the first is THIS HOST's answer, not a constant: the reference
+// provider advertises it exactly when its python3 runs the pty helper, which is
+// the probe below, on the same PATH. The second passes `--no-pty`.
+//
 // Neither passes `--remote` or `--mirror`, so both report
 // `remotes:false`, `remoteListing:false` and `remoteDescriptors:false`. That is a property of THIS
 // matrix, not of the gate's — see the divergence note at the top of the file.
@@ -99,16 +104,20 @@ export const IS_REFERENCE_PROVIDER = !process.env[PROVIDER_ARGV_ENV]?.trim();
 // present-behaviour is unreachable through the LOCAL system whatever backs it —
 // mirror()'s only consumer is composeSessionRoot, and both its call sites sit
 // behind a redirect placement gated on `id !== LOCAL_SYSTEM_ID`.
+export const HOST_PTY = (await probePtyHelper()).ok;
+
+export const NO_PTY_FLAG = '--no-pty';
+
 export const CAPABILITY_CONFIGS = [
   {
     name: 'all capabilities',
     flags: [],
-    caps: { processGroupSignal: true, remotes: false, remoteDescriptors: false, remoteListing: false },
+    caps: { processGroupSignal: true, remotes: false, remoteDescriptors: false, remoteListing: false, pty: HOST_PTY },
   },
   {
-    name: 'processGroupSignal:false',
-    flags: ['--no-process-group-signal'],
-    caps: { processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false },
+    name: 'processGroupSignal:false, pty:false',
+    flags: ['--no-process-group-signal', NO_PTY_FLAG],
+    caps: { processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false, pty: false },
   },
 ];
 
@@ -139,9 +148,10 @@ export const TOGGLED_CAPABILITIES = Object.keys(CAPABILITY_CONFIGS[0].caps)
 // The handshake's capability assertion. EXACT for the reference provider: the
 // flags it was launched with are the whole of what it advertises.
 //
-// RELAXED for a third-party provider, on ONE axis only — the toggled
-// capabilities must still match, and `remotes`/`remoteDescriptors`/
-// `remoteListing` may be a SUPERSET. A provider kind that serves many targets (a container id per
+// RELAXED for a third-party provider, on TWO axes — the toggled capabilities
+// must still match, except that `pty` is held only to `false` under `--no-pty`
+// (a provider may lack terminals entirely, which is optional), and
+// `remotes`/`remoteDescriptors`/`remoteListing` may be a SUPERSET. A provider kind that serves many targets (a container id per
 // target) advertises `remotes:true` always; making it lie to get through the
 // suite would be a test-only divergence in the one field cc negotiates on.
 //
@@ -173,7 +183,11 @@ export function assertNegotiatedCapabilities(caps, config, isReference = IS_REFE
     return;
   }
   assert.ok(TOGGLED_CAPABILITIES.length > 0, 'a matrix that toggles nothing pins nothing');
+  if (config.flags.includes(NO_PTY_FLAG)) {
+    assert.equal(caps.pty, false, `pty: a provider launched with ${NO_PTY_FLAG} advertises no terminals`);
+  }
   for (const cap of TOGGLED_CAPABILITIES) {
+    if (cap === 'pty') continue;
     assert.equal(caps[cap], config.caps[cap],
       `${cap}: the flag the provider was launched with is what it advertises`);
   }
@@ -190,6 +204,17 @@ export function remoteListingVerdict(caps, isReference = IS_REFERENCE_PROVIDER) 
   return isReference || caps.remoteListing === true
     ? VERIFY_LISTING
     : 'the provider does not advertise remoteListing — optional (§2); nothing to verify';
+}
+
+// THE TERMINAL ROWS' GATE. `pty` is optional, so they run iff the handshake
+// advertises it and otherwise skip with this reason — for the reference
+// provider too, whose handshake row already holds it to HOST_PTY exactly.
+export const VERIFY_PTY = 'verify';
+
+export function ptyVerdict(caps) {
+  return caps.pty === true
+    ? VERIFY_PTY
+    : 'the provider does not advertise pty — optional (§2); no terminal to verify';
 }
 
 // One raw `listRemotes` on an up connection, resolving with the id it sent and

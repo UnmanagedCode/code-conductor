@@ -14,6 +14,7 @@ import {
   REMOTE_ID_MAX, SystemError, classifySpawnError, classifyStderr, decodeFrame, encodeFrame, execFailure,
   isBase64, isSystemErrorCode, readCapabilities, readRemoteList, remoteIdDefect,
 } from '../src/systems/protocol.ts';
+import * as protocol from '../src/systems/protocol.ts';
 import { validateRemoteId } from '../src/projects.ts';
 
 const push = (dec, s) => dec.push(Buffer.from(s, 'utf8'));
@@ -108,9 +109,9 @@ test('a payload frame with a corrupted or missing dataB64 is EPROTO — on every
   // corrupted chunk into a SILENT PARTIAL ANSWER: a writeFile that reports
   // success having dropped its tail, or a command whose stdout is quietly
   // truncated with exit 0. Checked here, once, for both ends and both
-  // directions — `stdout`/`stderr`/`data` come from the provider, `data` goes to
-  // it.
-  for (const type of ['stdout', 'stderr', 'data']) {
+  // directions — `stdout`/`stderr`/`data` come from the provider, `data` and a
+  // terminal's `input` go to it.
+  for (const type of ['stdout', 'stderr', 'data', 'input']) {
     assert.throws(
       () => decodeFrame(`{"type":"${type}","id":"x","seq":0,"dataB64":"SEVMTE8=!!corrupted"}`),
       (e) => e instanceof SystemError && e.code === 'EPROTO' && /invalid base64/.test(e.message),
@@ -224,6 +225,35 @@ test('capability negotiation: a missing key is false, an unknown key is ignored'
     'a system that serves many targets says so, and says nothing else');
   assert.deepEqual(readCapabilities({ processGroupSignal: 'yes' }), NO_CAPABILITIES,
     'only a literal true enables a capability');
+});
+
+// PINS: `pty` is negotiated like every other capability — only a literal true
+// enables it, absence is false — and on its own, coupled to nothing.
+test('pty is read only as a literal true, and alone', () => {
+  assert.equal(NO_CAPABILITIES.pty, false);
+  assert.deepEqual(readCapabilities({ pty: true }), { ...NO_CAPABILITIES, pty: true });
+  assert.equal(readCapabilities({ pty: 'yes' }).pty, false);
+  assert.equal(readCapabilities({ processGroupSignal: true, remotes: true }).pty, false);
+});
+
+// PINS: the pty frames are ordinary frames to the codec, `EPTY` is a protocol
+// code, and the credit window is a whole number of chunks.
+test('the pty frames decode, and EPTY is a protocol-level code', () => {
+  for (const line of [
+    '{"type":"ptyStarted","id":"t1"}',
+    '{"type":"resize","id":"t1","cols":100,"rows":40}',
+    '{"type":"ack","id":"t1","bytes":65536}',
+    '{"type":"input","id":"t1","dataB64":"aGkK"}',
+    '{"type":"exec","id":"t1","cwd":"/","pty":{"cols":80,"rows":24,"term":"xterm","envOverlay":{"A":"1"}}}',
+  ]) {
+    assert.deepEqual(decodeFrame(line), JSON.parse(line), line);
+  }
+  assert.ok(PROTOCOL_ERROR_CODES.includes('EPTY'));
+  assert.equal(FS_ERROR_CODES.includes('EPTY'), false, 'a channel property, not a filesystem errno');
+  assert.equal(isSystemErrorCode('EPTY'), true);
+  assert.equal(protocol.PTY_WINDOW_BYTES % protocol.CHUNK_BYTES, 0);
+  assert.ok(protocol.PTY_WINDOW_BYTES > protocol.CHUNK_BYTES, 'more than one chunk can be in flight');
+  assert.ok(protocol.PTY_DIM_MAX <= 0xffff, 'a dimension fits the u16 the helper packs it into');
 });
 
 test('remoteListing is read only alongside remotes — a single-target provider has no remoteIds to list', async (t) => {

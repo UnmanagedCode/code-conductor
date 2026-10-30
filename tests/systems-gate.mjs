@@ -18,7 +18,18 @@
 // THE MATRIX MOVES. It TOGGLES one — `processGroupSignal`, one row with the
 // fallback on. It carries `remotes` ON IN ROW 1 — folded into an existing pass
 // rather than given its own, and cleared on row 2 — and it does not exercise
-// `remoteDescriptors` or `remoteListing` at all.
+// `remoteDescriptors` or `remoteListing` at all. It folds `pty` into the
+// processGroupSignal toggle: on in row 1 (wherever this host's python3 runs the
+// pty helper), `--no-pty` in row 2.
+//
+//   * `pty` is folded for the reason `remotes` is: a row of its own costs a
+//     whole suite. Row 1 proves the present-behaviour whole-suite, row 2 the
+//     fallback. What makes the fold MEAN something is
+//     tests/systems-terminal-seam.test.mjs, which opens a terminal through the
+//     `local` handle this gate replaces — nothing else in the application
+//     opens one — and expects an echo in row 1 and SYSTEM_NO_PTY in row 2.
+//     The cell the fold gives up, `processGroupSignal:false` with `pty` on, is
+//     no cell at all: no terminal row depends on group signalling.
 //
 //   * `remotes` is folded because a separate pass costs a WHOLE SUITE and buys the
 //     same field on the same frames. Measured across the two rows: byte-for-byte
@@ -127,7 +138,7 @@ const CONFIGS = [
     flags: ['--remote', `${GATE_REMOTE}=/`],
     remoteId: GATE_REMOTE,
   },
-  { name: 'processGroupSignal:false', flags: ['--no-process-group-signal'] },
+  { name: 'processGroupSignal:false, pty:false', flags: ['--no-process-group-signal', '--no-pty'] },
 ];
 
 // A row's output is TEED, not swallowed: every chunk goes straight to this

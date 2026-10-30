@@ -7,7 +7,11 @@
 // is a passthrough around the reference provider that appends every CLIENT
 // frame, verbatim, one JSON line per frame, to the file named by `--record`.
 //
-//   node recordingProvider.mjs --record <file> [reference provider flags…]
+//   node recordingProvider.mjs --record <file> [--pty-epty] [reference provider flags…]
+//
+// `--pty-epty` stands in for a target that cannot allocate a terminal: the
+// hello advertises `pty` whatever the provider said, and every pty exec is
+// answered `error {code: EPTY}` here instead of reaching the provider.
 //
 // Nothing downstream is touched — the provider's answers are the real
 // provider's own — so a test recording the wire is otherwise running exactly
@@ -24,9 +28,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFERENCE = path.resolve(__dirname, '..', '..', 'src', 'systems', 'referenceProvider.ts');
 
 let record = null;
+let ptyEpty = false;
 const passThrough = [];
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--record') record = process.argv[++i];
+  else if (process.argv[i] === '--pty-epty') ptyEpty = true;
   else passThrough.push(process.argv[i]);
 }
 if (!record) {
@@ -37,7 +43,22 @@ if (!record) {
 const child = spawn(process.execPath, [REFERENCE, ...passThrough], {
   stdio: ['pipe', 'pipe', 'inherit'],
 });
-child.stdout.pipe(process.stdout);
+if (!ptyEpty) child.stdout.pipe(process.stdout);
+else {
+  let out = '';
+  child.stdout.on('data', (chunk) => {
+    out += chunk.toString('utf8');
+    let nl;
+    while ((nl = out.indexOf('\n')) >= 0) {
+      const line = out.slice(0, nl);
+      out = out.slice(nl + 1);
+      let f = null;
+      try { f = JSON.parse(line); } catch { /* not ours to judge */ }
+      if (f?.type === 'hello') f.capabilities = { ...f.capabilities, pty: true };
+      process.stdout.write(`${f?.type === 'hello' ? JSON.stringify(f) : line}\n`);
+    }
+  });
+}
 child.on('exit', () => process.exit(0));
 
 // Line-delimited, so a frame is only recorded once it is whole — a partial
@@ -53,6 +74,15 @@ process.stdin.on('data', (chunk) => {
     // Synchronous: the recording must be on disk before the answer this frame
     // provokes reaches cc, or a test that reads it after its own await races.
     appendFileSync(record, line + '\n');
+    if (ptyEpty) {
+      const f = JSON.parse(line);
+      if (f.type === 'exec' && f.pty) {
+        process.stdout.write(`${JSON.stringify({
+          type: 'error', id: f.id, code: 'EPTY', message: 'openpty: out of pseudo-terminals (recordingProvider --pty-epty)',
+        })}\n`);
+        continue;
+      }
+    }
     child.stdin.write(line + '\n');
   }
 });

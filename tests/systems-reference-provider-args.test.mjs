@@ -39,3 +39,16 @@ test('the reference provider refuses at launch a --remote id cc would refuse', a
     assert.match(r.stderr, /--remote id "a b" is not a valid remoteId \(invalid-char\)/);
   });
 });
+
+// PINS: `--no-pty` is parsed — the provider then never advertises `pty`, and
+// never probes for one — and the default is to offer terminals.
+test('the reference provider takes --no-pty, and offers terminals by default', () => {
+  assert.equal(parseProviderArgs([]).pty, true);
+  assert.equal(parseProviderArgs(['--no-pty']).pty, false);
+  assert.equal(parseProviderArgs(['--no-process-group-signal', '--no-pty']).processGroupSignal, false);
+  const r = spawnSync(process.execPath, [REFERENCE_PROVIDER, '--no-pty'], {
+    input: '{"type":"hello","protocol":1,"client":"t"}\n', encoding: 'utf8', timeout: 20_000,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout.split('\n')[0]).capabilities.pty, false, 'the hello advertises no pty');
+});
