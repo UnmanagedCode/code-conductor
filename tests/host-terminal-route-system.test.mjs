@@ -10,8 +10,9 @@ import { test, describe, before, after, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
 import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { seedRepo } from './remoteSystem.mjs';
+import { flakyLaunch, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
@@ -90,6 +91,67 @@ describe('GET /api/terminal on a provider system', () => {
     } finally {
       for (const s of sessions) s.ws.close();
       await Promise.all(sessions.map((s) => s.closed().catch(() => {})));
+    }
+  });
+
+  // PINS: an open the far side fails for transport reasons is 502
+  // SYSTEM_UNREACHABLE — a provider dying on the pty exec (ETRANSPORT), or
+  // answering it ETIMEDOUT — and one it refuses ENOREMOTE is 502
+  // REMOTE_NOT_FOUND: named refusals, never 422 TERMINAL_SPAWN_FAILED.
+  test('an open failing ETRANSPORT or ETIMEDOUT is 502 SYSTEM_UNREACHABLE; ENOREMOTE is 502 REMOTE_NOT_FOUND', async () => {
+    const MARK = 'cc-terminal-open-marker';
+    const argv = ['sh', '-c', `cat # ${MARK}`];
+    await addSystem({ id: 'dies', label: 'dies', launch: flakyLaunch({ dieOn: MARK }) });
+    await addSystem({ id: 'slow', label: 'slow', launch: flakyLaunch({ errorFrame: MARK, errorCode: 'ETIMEDOUT' }) });
+    await addSystem({
+      id: 'gone', label: 'gone', launch: flakyLaunch({ errorFrame: MARK, errorCode: 'ENOREMOTE', flags: ['--remote', 't1=/'] }),
+    });
+    const cases = [
+      [{ system: 'dies', cwd: root }, 'SYSTEM_UNREACHABLE'],
+      [{ system: 'slow', cwd: root }, 'SYSTEM_UNREACHABLE'],
+      [{ system: 'gone', remoteId: 't1', cwd: root }, 'REMOTE_NOT_FOUND'],
+    ];
+    for (const [target, code] of cases) {
+      const r = await refused(env.baseUrl, { ...target, ...SIZE, argv });
+      assert.equal(r.status, 502, `${target.system}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.code, code, target.system);
+      // A failure of the open reads `terminal: …`; a resolution refusal reads
+      // `terminal on system '…': …`.
+      assert.match(r.body.error, /^terminal: /, `${target.system}: the open failed, not resolution`);
+    }
+  });
+
+  // PINS: a terminal opened for a handshake the WebSocket server then rejects —
+  // a POST carrying upgrade headers, which `ws` answers 405 without ever
+  // calling back — is closed: the provider is sent `close` for its id.
+  test('a terminal whose upgrade never completes is closed', async () => {
+    const spec = encodeURIComponent(JSON.stringify({ ...env.target, ...SIZE, argv: ['cat'] }));
+    const { port } = new URL(env.baseUrl);
+    const status = await new Promise((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1', port, method: 'POST', path: `/api/terminal?spec=${spec}`,
+        headers: {
+          Connection: 'Upgrade', Upgrade: 'websocket',
+          'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13',
+        },
+      });
+      req.on('response', (res) => { res.resume(); resolve(res.statusCode); });
+      req.on('upgrade', () => reject(new Error('the upgrade completed')));
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(status, 405, 'ws refused the handshake');
+    let pty = [];
+    const until = Date.now() + 5_000;
+    for (;;) {
+      const all = await frames();
+      pty = all.filter((f) => f.type === 'exec' && f.pty).map((f) => f.id);
+      if ((pty.length === 1 && all.some((f) => f.type === 'close' && f.id === pty[0])) || Date.now() > until) {
+        assert.equal(pty.length, 1, 'the terminal was opened before the handshake');
+        assert.ok(all.some((f) => f.type === 'close' && f.id === pty[0]), 'and then closed');
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
     }
   });
 });

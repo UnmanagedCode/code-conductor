@@ -110,6 +110,14 @@ test('a socket close or error closes the terminal exactly once', async () => {
   assert.equal(terminal.calls('close').length, 1);
 });
 
+// PINS: a socket `error` on its own — no `close` after it — closes the
+// terminal.
+test('a socket error alone closes the terminal', async () => {
+  const { ws, terminal } = await attached();
+  ws.emit('error', new Error('reset'));
+  assert.equal(terminal.calls('close').length, 1);
+});
+
 // PINS: output and the end that arrive before the socket is attached are
 // delivered on attach, in order.
 test('output and an end before the attach are delivered on attach, in order', async () => {

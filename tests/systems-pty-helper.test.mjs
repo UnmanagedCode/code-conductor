@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import * as ptyHost from '../src/systems/ptyHost.ts';
 import {
   HelperFrameDecoder, PTY_HELPER_PATH, encodeHelperFrame, posixLoginShell, probePtyHelper, spawnPty,
 } from '../src/systems/ptyHost.ts';
@@ -182,6 +183,8 @@ test('a helper whose stdin ends before the v frame starts nothing and exits 0', 
 // the runner's per-test teardown would close a subtest's fixtures under it.
 for (const [what, type, payload] of [
   ['a d frame', 'd', 'x'],
+  // Well-formed as an overlay, so only the TYPE check can refuse it.
+  ['a d frame whose payload is a JSON object', 'd', '{}'],
   ['a v that is not JSON', 'v', '{'],
   ['a v that is a JSON array', 'v', '[]'],
   ['a v with a non-string value', 'v', '{"A":1}'],
@@ -238,4 +241,55 @@ test('w frames report d bytes written into the terminal, not received, and every
     h.end();
     await h.exited();
   });
+});
+
+// PINS ptyHost's helper input window: of a write far larger than
+// HELPER_INPUT_WINDOW_BYTES, a helper that reports nothing written receives
+// EXACTLY the window's worth of `d` bytes — that is what bounds the helper's
+// own queue — and a `w` report of n lets exactly n more through.
+//
+// Against tests/fixtures/fakePtyHelper.mjs, which runs no program: each resize
+// is a barrier behind every `d` sent before it.
+test('ptyHost holds the d bytes a helper has not reported written to its window', async () => {
+  const W = ptyHost.HELPER_INPUT_WINDOW_BYTES;
+  assert.equal(typeof W, 'number', 'HELPER_INPUT_WINDOW_BYTES is exported');
+  const GRANT_BYTES = 1000;
+  const dir = await mkdtemp('cc-pty-helper-window-');
+  try {
+    const cwd = await fs.realpath(dir);
+    const record = path.join(cwd, 'record');
+    const interpreter = path.join(cwd, 'fake-python');
+    const fake = path.join(import.meta.dirname, 'fixtures', 'fakePtyHelper.mjs');
+    await fs.writeFile(interpreter, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fake)} ${JSON.stringify(record)} ${GRANT_BYTES} "$@"\n`,
+      { mode: 0o755 });
+    let proc;
+    const written = [];
+    await new Promise((resolve, reject) => {
+      proc = spawnPty({ interpreter, cwd, argv: ['unused'], env: process.env, programEnv: {}, cols: 80, rows: 24 }, {
+        onStarted: resolve,
+        onData: () => {},
+        onWritten: (n) => {
+          written.push(n);
+          // After ptyHost has sent what the report let through.
+          setImmediate(() => proc.resize(80, 25));
+        },
+        onExit: () => reject(new Error('the fake helper exited')),
+        onFailed: (code, message) => reject(new Error(`${code}: ${message}`)),
+      });
+    });
+    try {
+      proc.write(Buffer.alloc(3 * W, 0x61));
+      proc.resize(80, 24);
+      const lines = async () => (await fs.readFile(record, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+      const until = Date.now() + 5_000;
+      while ((await lines()).length < 2 && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+      assert.deepEqual(await lines(), [`R ${W}`, `R ${W + GRANT_BYTES}`],
+        'one window while nothing is reported, then exactly the reported bytes more');
+      assert.deepEqual(written, [GRANT_BYTES], 'the report reached onWritten');
+    } finally {
+      proc.close();
+    }
+  } finally {
+    await rmrf(dir);
+  }
 });

@@ -264,7 +264,7 @@ rm -rf -- "$d"                         # clean up
 
 A plugin backend opens a terminal — a program under a pseudo-terminal, bytes both ways — on a project's System, or on a System addressed directly, by dialling a WebSocket to `$CONDUCTOR_URL/api/terminal`. Local and remote targets take the same path, `System.openTerminal` ([architecture.md](architecture.md) → Terminals). Implemented in `src/hostTerminal.ts`, dispatched from the upgrade handler in `server.ts`; the target forms and their resolution are `src/hostTarget.ts`, shared with [Host exec](#host-exec--post-apiexec). cc is the byte pipe only: the plugin owns sessions, scrollback and reattach, and a terminal dies with cc.
 
-**Handshake:** `GET /api/terminal?spec=<URL-encoded JSON object>` with WebSocket upgrade headers. A plain GET without an upgrade is express's 404. The spec rides the URL, so its size limit is node's header limit (`--max-http-header-size`); over it node answers 431.
+**Handshake:** `GET /api/terminal?spec=<URL-encoded JSON object>` with WebSocket upgrade headers. A plain GET without an upgrade is express's 404. The spec rides the URL, so its size limit is node's header limit (`--max-http-header-size`); over it node answers 431. **The request line may be logged** by anything in front of cc — a code-hub share, a tunnel, a reverse proxy — so `env` must not carry secrets; hand a secret to the program another way (a file it reads, or over the terminal's own input).
 
 **`spec` keys** (an unknown key is refused; there is no `shell`):
 
@@ -310,6 +310,7 @@ A plugin backend opens a terminal — a program under a pseudo-terminal, bytes b
 **Backpressure, both ways — nothing is dropped.**
 - **cc → client.** Bytes handed to the socket and not yet written are counted; at `TERMINAL_WS_HIGH_WATER_BYTES` cc pauses the terminal, so a client that stops reading stops the program on its next write; at 0 it resumes.
 - **Client → cc.** When the terminal reports its input backed up (`Terminal.write` returns false — the program is not reading) cc stops reading the socket, and resumes on `onDrain`. A client that keeps sending sees its own send buffer grow.
+- **A client that stops reading output also freezes its own keyboard.** While the terminal is paused, the input it holds is not reported written, so once about `TERMINAL_WRITE_HIGH_WATER_BYTES` of input is buffered cc stops reading the socket too. Reading again resumes both.
 - Held in cc per terminal: about `TERMINAL_WRITE_HIGH_WATER_BYTES` (`src/systems/terminal.ts`) plus one message plus one socket read inbound, and `TERMINAL_WS_HIGH_WATER_BYTES` plus one chunk outbound.
 - No keepalive or ping.
 

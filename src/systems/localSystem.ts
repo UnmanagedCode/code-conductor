@@ -314,8 +314,9 @@ export class LocalSystem implements System {
     return { mirrorRoot: null, exclude: [] };
   }
 
-  // The pty host in-process, under the same environment rule as `exec`: cc's own
-  // environment, then the caller's overlay, then TERM.
+  // The pty host in-process. The helper runs in cc's own environment; the
+  // caller's overlay, then TERM, is its `v` frame and reaches the PROGRAM only,
+  // merged over that environment at the program's exec.
   async openTerminal(spec: TerminalSpec, handlers: TerminalHandlers): Promise<Terminal> {
     validateTerminalSpec(spec);
     const shell = this.platform.terminalShell();

@@ -33,7 +33,7 @@ const WRITE_CHUNK = 64 * 1024;
 // The most `d` bytes sent to the helper and not yet reported written (`w`).
 // The helper reads its stdin eagerly, so this is what bounds its own queue;
 // the rest of a write waits here.
-const HELPER_INPUT_WINDOW_BYTES = 64 * 1024;
+export const HELPER_INPUT_WINDOW_BYTES = 64 * 1024;
 
 // ── Probe ────────────────────────────────────────────────────────────
 
