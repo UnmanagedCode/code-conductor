@@ -5,7 +5,7 @@
 // once per distinct (Origin, Host) pair. Contract: docs/protocol.md → Handshake: Origin check.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { upgradeOriginAllowed, createUpgradeOriginGuard, WARNED_PAIRS_CAP } from '../src/upgradeOrigin.ts';
+import { upgradeOriginAllowed, createUpgradeOriginGuard, WARNED_PAIRS_CAP, WARN_LIMIT, WARN_WINDOW_MS } from '../src/upgradeOrigin.ts';
 
 const headers = (origin, host) => ({ ...(origin !== undefined && { origin }), ...(host !== undefined && { host }) });
 
@@ -40,7 +40,9 @@ test('upgradeOriginAllowed refuses', async (t) => {
     ['an Origin with a path', 'http://127.0.0.1:8787/x', '127.0.0.1:8787'],
     ['a joined duplicate Origin', 'http://127.0.0.1:8787, http://127.0.0.1:8787', '127.0.0.1:8787'],
     ['Origin present but Host missing', 'http://127.0.0.1:8787', undefined],
+    ['a non-http(s) Origin that serializes to itself', 'ftp://x:8787', 'x:8787'],
     ['Host with userinfo', 'http://127.0.0.1:8787', 'u@127.0.0.1:8787'],
+    ['Host with a userinfo password', 'http://127.0.0.1:8787', ':secret@127.0.0.1:8787'],
     ['Host with a path', 'http://127.0.0.1:8787', '127.0.0.1:8787/x'],
     ['Host with a query', 'http://127.0.0.1:8787', '127.0.0.1:8787?x'],
     ['https://x against Host x:80', 'https://x', 'x:80'],
@@ -107,7 +109,9 @@ test('guard: each guard owns its warned-pair memo', () => {
 
 test('guard: the warned-pair memo is bounded and evicts the oldest pair', () => {
   const log = fakeLog();
-  const admit = createUpgradeOriginGuard({ log });
+  let t = 0;
+  // Each refusal lands in a fresh rate window, so only the memo decides what warns.
+  const admit = createUpgradeOriginGuard({ log, now: () => (t += WARN_WINDOW_MS) });
   const refuse = (i) => admit({ headers: headers(`http://evil${i}.example`, '127.0.0.1:8787') }, fakeSocket());
   for (let i = 0; i <= WARNED_PAIRS_CAP; i++) refuse(i);
   assert.equal(log.warns.length, WARNED_PAIRS_CAP + 1);
@@ -115,4 +119,30 @@ test('guard: the warned-pair memo is bounded and evicts the oldest pair', () => 
   assert.equal(log.warns.length, WARNED_PAIRS_CAP + 1);
   refuse(0); // the oldest was evicted when the memo filled
   assert.equal(log.warns.length, WARNED_PAIRS_CAP + 2);
+});
+
+test('guard: rotating more distinct pairs than the memo holds yields bounded warn output', () => {
+  const log = fakeLog();
+  const admit = createUpgradeOriginGuard({ log, now: () => 0 });
+  for (let i = 0; i < 1000; i++) {
+    admit({ headers: headers(`http://evil${i % (WARNED_PAIRS_CAP + 1)}.example`, '127.0.0.1:8787') }, fakeSocket());
+  }
+  assert.equal(log.warns.length, WARN_LIMIT + 1);
+  assert.match(log.warns[WARN_LIMIT], /not logged/);
+});
+
+test('guard: the warn limit resets once its window has passed', () => {
+  const log = fakeLog();
+  let t = 0;
+  const admit = createUpgradeOriginGuard({ log, now: () => t });
+  const refuse = (i) => admit({ headers: headers(`http://evil${i}.example`, '127.0.0.1:8787') }, fakeSocket());
+  for (let i = 0; i <= WARN_LIMIT; i++) refuse(i); // the last one is suppressed
+  assert.equal(log.warns.length, WARN_LIMIT + 1);
+  t = WARN_WINDOW_MS - 1;
+  refuse(WARN_LIMIT + 1);
+  assert.equal(log.warns.length, WARN_LIMIT + 1, 'still inside the window: no further line');
+  t = WARN_WINDOW_MS;
+  refuse(WARN_LIMIT); // suppressed earlier, so not remembered: it warns in the new window
+  assert.equal(log.warns.length, WARN_LIMIT + 2);
+  assert.match(log.warns[WARN_LIMIT + 1], new RegExp(`evil${WARN_LIMIT}\\.example`));
 });

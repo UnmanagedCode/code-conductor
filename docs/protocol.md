@@ -108,10 +108,13 @@ Notes on `assistant` envelope handling that don't table cleanly: `buildMessageFr
   - the two URLs' `.host` are equal — lowercased hostname plus effective port (a default port dropped on both sides under the Origin's scheme; IPv6 brackets kept).
 - **The scheme is ignored**: a TLS front (a tunnel, Tailscale funnel) shows the browser `https://` while cc's own hop is plain http. **`X-Forwarded-Host` is neither read nor trusted.**
 - **Refusal:** a raw `HTTP/1.1 403 Forbidden` + `Connection: close`, then the socket is destroyed — before the wsHub sees the request and before the plugin proxy lazy-starts any child.
-- **Log:** one `console.warn` (`websocket upgrade refused: Origin … does not match Host …`) per distinct `(Origin, Host)` pair; the memo is bounded by `WARNED_PAIRS_CAP` (oldest pair evicted), so a reconnect loop or attacker-chosen values neither flood the log nor grow memory.
+- **Log:** a refusal `console.warn`s `websocket upgrade refused: Origin … does not match Host …`, subject to two bounds:
+  - **Dedupe (memory-bounded):** a pair already warned about is silent, so a reconnect loop logs once. The memo holds at most `WARNED_PAIRS_CAP` pairs (oldest evicted), so a pair evicted by more distinct pairs warns again.
+  - **Rate limit (log-bounded):** at most `WARN_LIMIT` refusal warns per `WARN_WINDOW_MS` window, then one `… further refused upgrades not logged …` line, then silence until the window rolls over. Rotating attacker-chosen Origins therefore logs at most `WARN_LIMIT + 1` lines per window. A pair silenced by the limit is not remembered, so it warns in a later window.
+  - Constants: `src/upgradeOrigin.ts`.
 - **Contract on a proxy in front of cc: forward `Host` unchanged.** code-hub's authproxy (both plain requests and upgrades), its cloudflared and Tailscale tunnels and its raw TCP relays do; the Vite dev server's `/ws` and `/plugins` entries in `web/vite.config.ts` carry no `changeOrigin`, so they do too. A proxy that rewrites `Host` gets every browser upgrade refused, visible as the warn above.
 - **Known limitation — DNS rebinding passes:** a rebound name makes `Origin` and `Host` agree. It affects `/api` equally; closing it needs a `Host` allowlist (a new setting), out of scope here. Plain-HTTP CSRF on `/api/*` is likewise not covered.
-- **Pins:** `tests/ws-origin.test.mjs` (real server, both paths, the no-lazy-start proof, LAN-share and tunnel acceptance), `tests/upgrade-origin.test.mjs` (the rule's rows and the guard's 403 / warn-once behaviour).
+- **Pins:** `tests/ws-origin.test.mjs` (real server, both paths, the no-lazy-start proof, LAN-share and tunnel acceptance), `tests/upgrade-origin.test.mjs` (the rule's rows, the guard's 403, the dedupe and the rate limit).
 
 **Client → server:**
 | `t` | Fields |
