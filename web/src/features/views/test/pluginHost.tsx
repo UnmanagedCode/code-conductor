@@ -2,7 +2,7 @@
 // answered at `fetch`, each frame given a stand-in window that records what the
 // host posts to it (happy-dom loads no frame document), and the bridge's route
 // messages dispatched as a frame posts them.
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { expect, vi } from 'vitest';
 import { App } from '@/App';
 import { appStore } from '@/state/app';
@@ -186,16 +186,26 @@ export function emitWidth(px: number) {
   });
 }
 
-// ── the app switcher (the sidebar header's Radix DropdownMenu) ──────────────
+// ── the app switcher (a Radix DropdownMenu: the plugin column's bar, the sidebar or the drawer) ──
 
 /** The sidebar column outside the phone drawer. */
 export const sidebar = () => [...document.querySelectorAll('[data-sidebar]')].find((e) => !e.closest('[data-slot="sheet-content"]')) as HTMLElement;
-export const switcher = () => within(sidebar()).queryByRole('button', { name: 'Switch app' });
+/** The one app switcher's trigger wherever it shows, CSS-hidden copies counted (happy-dom applies no stylesheet); asserts there is at most one. */
+export const switcher = () => {
+  const all = document.querySelectorAll<HTMLElement>('[data-app-switcher]');
+  expect(all.length, 'at most one app switcher in the page').toBeLessThanOrEqual(1);
+  return all[0] ?? null;
+};
 
-/** Opens the switcher's menu (focus + ArrowDown, as Radix opens on a keyboard press) and returns it. While it is open Radix hides the rest from role queries. */
+/** Opens the switcher's menu (focus + ArrowDown, as Radix opens on a keyboard press) and returns it; with none in the page it opens the drawer first (a phone's switcher on a session lives there). While it is open Radix hides the rest from role queries. */
 export async function openSwitcher(): Promise<HTMLElement> {
-  const trigger = switcher()!;
-  await act(async () => { trigger.focus(); fireEvent.keyDown(trigger, { key: 'ArrowDown' }); });
+  if (!switcher() && !uiStore.get().sidebarOpen) {
+    await act(async () => { uiStore.set({ sidebarOpen: true }); });
+    await settle();
+  }
+  const trigger = switcher();
+  expect(trigger, 'the app switcher').not.toBeNull();
+  await act(async () => { trigger!.focus(); fireEvent.keyDown(trigger!, { key: 'ArrowDown' }); });
   await settle();
   return screen.getByRole('menu');
 }
