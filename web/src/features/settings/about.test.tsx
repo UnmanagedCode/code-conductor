@@ -330,4 +330,44 @@ describe('About: Update plugins', () => {
     act(() => { s2.push(OK); s2.end(); });
     await waitFor(() => expect(pluginsStore.get().busy).toBe(false));
   });
+
+  // Invariant: a run in progress keeps its button and Updating i/n… label even when the list shows nothing behind any more.
+  it('shows the running progress, disabled, when a reload already finds nothing behind', async () => {
+    const s1 = ndjsonStream(); const s2 = ndjsonStream();
+    const { view } = await startRun({ a: s1, b: s2 });
+    await waitFor(() => expect(pluginButtons()).toEqual([['Updating 1/2…', true]]));
+    library = upToDate();
+    view.unmount();
+    render(<AboutSection />);
+    await waitFor(() => expect(pluginsStore.get().library?.some((e) => e.updateAvailable)).toBe(false));
+    expect(pluginButtons()).toEqual([['Updating 1/2…', true]]);
+    act(() => { s1.push(OK); s1.end(); });
+    await waitFor(() => expect(pluginButtons()).toEqual([['Updating 2/2…', true]]));
+    act(() => { s2.push(OK); s2.end(); });
+    await waitFor(() => expect(pluginButtons()).toEqual([]));
+  });
+
+  // Invariant: opening About leaves a running plugin action's status line and live output on the Plugins page.
+  it('opening About keeps a running row Update\'s status line and live output', async () => {
+    const held = ndjsonStream();
+    library = [entry('a')];
+    mockFetch({
+      ...PLUGIN_ROUTES,
+      'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }),
+      [UPDATE('a')]: () => held.response,
+    });
+    render(<TooltipProvider><PluginsSection /></TooltipProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    act(() => held.push({ type: 'chunk', text: 'pulling a\n' }));
+    await screen.findByText(/pulling a/);
+    expect(screen.getByText('Updating a…')).toBeTruthy();
+    render(<AboutSection />);
+    await waitFor(() => expect(pluginButtons()).toEqual([['Update plugins (1)', true]]));
+    await settle();
+    expect(screen.getByText('Updating a…')).toBeTruthy();
+    expect(screen.getByText(/pulling a/)).toBeTruthy();
+    act(() => { held.push(OK); held.end(); });
+    library = upToDate();
+    await waitFor(() => expect(pluginsStore.get().busy).toBe(false));
+  });
 });
