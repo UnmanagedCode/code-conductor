@@ -5,10 +5,11 @@
 //
 // A terminal is a python3 helper (src/systems/ptyHelper.py, stdlib only) that
 // owns the pseudo-terminal, spoken to over a length-prefixed byte protocol on
-// its stdin/stdout. That is what keeps a native npm dependency out of cc:
-// `node-pty` builds at install time, which the Windows installer refuses
-// (docs/windows.md, C3). The cost is a python3 on the host — detected once per
-// process by `probePtyHelper`, so installing one later takes a restart.
+// its stdin/stdout (docs/systems-protocol.md §5, "The pty helper"). That is
+// what keeps a native npm dependency out of cc: `node-pty` builds at install
+// time, which the Windows installer refuses (docs/windows.md, C3). The cost is
+// a python3 on the host — detected once per process by `probePtyHelper`, so
+// installing one later takes a restart.
 //
 // Provider-side code imports this file, so it imports nothing of cc's: it is
 // copied beside the reference provider wherever that runs.
@@ -29,6 +30,10 @@ const PROBE_TIMEOUT_MS = 10_000;
 const STDERR_TAIL = 2 * 1024;
 // Bytes per `d` frame to the helper.
 const WRITE_CHUNK = 64 * 1024;
+// The most `d` bytes sent to the helper and not yet reported written (`w`).
+// The helper reads its stdin eagerly, so this is what bounds its own queue;
+// the rest of a write waits here.
+const HELPER_INPUT_WINDOW_BYTES = 64 * 1024;
 
 // ── Probe ────────────────────────────────────────────────────────────
 
@@ -116,7 +121,11 @@ export interface PtySpawnSpec {
   interpreter: string;
   cwd: string;
   argv: string[];
+  // The HELPER's environment — the base the program's is built on.
   env: NodeJS.ProcessEnv;
+  // Merged over `env` for the PROGRAM only, sent as the helper's first frame:
+  // the caller's overlay never reaches the interpreter hosting the terminal.
+  programEnv: Record<string, string>;
   cols: number;
   rows: number;
   // Bound on the START: no `S` within it fails the open ETIMEDOUT and kills
@@ -127,6 +136,10 @@ export interface PtySpawnSpec {
 export interface PtyHandlers {
   onStarted(): void;
   onData(chunk: Buffer): void;
+  // `bytes` more of what `write` was given are in the terminal — written into
+  // it, not merely received. Delivered in order with `onData`, so not while
+  // paused.
+  onWritten(bytes: number): void;
   onExit(code: number | null, signal: string | null): void;
   // Before `onStarted`: the program never ran. After it: the helper died
   // without reporting an exit. `code` is a protocol code name.
@@ -134,6 +147,7 @@ export interface PtyHandlers {
 }
 
 export interface PtyProcess {
+  // Queued, and sent to the helper as its window allows.
   write(data: Buffer): void;
   resize(cols: number, rows: number): void;
   // No `onData` (nor `onExit`) is delivered between `pause()` and `resume()`.
@@ -155,8 +169,11 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
   let stderrTail = '';
   const queue: HelperFrame[] = [];
   const decoder = new HelperFrameDecoder();
-  // Bytes written before the spawn happened (the cwd check is async).
+  // Frames sent before the spawn happened (the cwd check is async).
   const early: Buffer[] = [];
+  // Input not yet sent to the helper, and what was sent and not yet reported.
+  const input: Buffer[] = [];
+  let inFlight = 0;
   // The helper ended without reporting while frames were still queued behind
   // a pause: the failure is reported once they have been delivered.
   let failAfterQueue: (() => void) | null = null;
@@ -184,7 +201,12 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
         h.onStarted();
       }
       else if (f.type === 'o') h.onData(f.payload);
-      else if (f.type === 'x') {
+      else if (f.type === 'w' && f.payload.length === 4) {
+        const n = f.payload.readUInt32BE(0);
+        inFlight -= n;
+        h.onWritten(n);
+        sendInput();
+      } else if (f.type === 'x') {
         const r = parseJson(f.payload);
         finish(() => h.onExit(typeof r.code === 'number' ? r.code : null, typeof r.signal === 'string' ? r.signal : null));
       } else if (f.type === 'e') {
@@ -202,6 +224,17 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
     if (done) return;
     if (!child) { early.push(b); return; }
     if (child.stdin?.writable) child.stdin.write(b);
+  };
+
+  const sendInput = (): void => {
+    while (!done && child && input.length > 0 && inFlight < HELPER_INPUT_WINDOW_BYTES) {
+      const head = input[0] as Buffer;
+      const n = Math.min(head.length, WRITE_CHUNK, HELPER_INPUT_WINDOW_BYTES - inFlight);
+      send(encodeHelperFrame('d', head.subarray(0, n)));
+      inFlight += n;
+      if (n === head.length) input.shift();
+      else input[0] = head.subarray(n);
+    }
   };
 
   const start = (): void => {
@@ -235,7 +268,10 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
       pump();
     });
     if (paused) c.stdout?.pause();
+    // The overlay is the FIRST frame: the helper starts nothing before it.
+    send(encodeHelperFrame('v', Buffer.from(JSON.stringify(spec.programEnv), 'utf8')));
     for (const b of early.splice(0)) send(b);
+    sendInput();
   };
 
   // The cwd is checked FIRST: a missing one would otherwise surface as the
@@ -253,7 +289,9 @@ export function spawnPty(spec: PtySpawnSpec, h: PtyHandlers): PtyProcess {
 
   return {
     write(data) {
-      for (let at = 0; at < data.length; at += WRITE_CHUNK) send(encodeHelperFrame('d', data.subarray(at, at + WRITE_CHUNK)));
+      if (done || data.length === 0) return;
+      input.push(data);
+      sendInput();
     },
     resize(cols, rows) {
       const p = Buffer.alloc(4);

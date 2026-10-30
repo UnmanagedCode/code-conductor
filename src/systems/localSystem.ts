@@ -13,7 +13,7 @@ import { SystemError, isSystemErrorCode } from './protocol.ts';
 import { probePtyHelper, spawnPty } from './ptyHost.ts';
 import { msFromNanos, requireAbsolute, typeBitsFor } from './system.ts';
 import {
-  LOCAL_TERMINAL_OPEN_TIMEOUT_MS, TerminalSlots, assertDims, openCancelled, ptyUnavailable, toBuffer,
+  InputGauge, LOCAL_TERMINAL_OPEN_TIMEOUT_MS, TerminalSlots, assertDims, openCancelled, ptyUnavailable, toBuffer,
   validateTerminalSpec,
   type Terminal, type TerminalEnd, type TerminalHandlers, type TerminalSpec,
 } from './terminal.ts';
@@ -337,13 +337,15 @@ export class LocalSystem implements System {
         settle();
         handlers.onExit(e);
       };
+      const gauge = new InputGauge(() => { if (!ended) handlers.onDrain?.(); });
       const proc = spawnPty({
         interpreter: probe.interpreter, cwd: spec.cwd, argv: spec.argv ?? shell,
-        env: { ...process.env, ...spec.env, TERM: spec.term }, cols: spec.cols, rows: spec.rows,
+        env: process.env, programEnv: { ...spec.env, TERM: spec.term }, cols: spec.cols, rows: spec.rows,
         startTimeoutMs: this.#terminalOpenTimeoutMs,
       }, {
         onStarted: () => { started = true; resolve(terminal); },
         onData: (chunk) => { if (!ended) handlers.onData(chunk); },
+        onWritten: (bytes) => gauge.written(bytes),
         onExit: (code, signal) => end({ kind: 'exited', code, signal }),
         onFailed: (code, message) => {
           const error = new SystemError(isSystemErrorCode(code) ? code : 'EUNKNOWN', `openTerminal: ${message}`);
@@ -354,7 +356,12 @@ export class LocalSystem implements System {
         },
       });
       const terminal: Terminal = {
-        write: (data) => { if (!ended) proc.write(toBuffer(data)); },
+        write: (data) => {
+          if (ended) return true;
+          const buf = toBuffer(data);
+          proc.write(buf);
+          return gauge.accept(buf.length);
+        },
         resize: (cols, rows) => { assertDims('resize', cols, rows); if (!ended) proc.resize(cols, rows); },
         pause: () => proc.pause(),
         resume: () => proc.resume(),

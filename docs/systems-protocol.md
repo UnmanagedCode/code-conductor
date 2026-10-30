@@ -195,7 +195,7 @@ a user-visible difference, **and a test that runs the fallback**.
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
 | **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The answer is the NARROWEST mirror root — `mirrorRoot = systemPath`, nothing excluded | None in traffic or geometry: a session on such a system is byte-identical to one before the capability existed. **Known wording defect:** an `outside-mirror-root` refusal still calls that default root "the mirror root that system advertises" and names the one path twice (`outsideMirrorRefusal`, `src/systems/fuse/tierTable.ts`, receives no advertised-vs-defaulted signal) | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, and the resolved scope is `{mirrorRoot: systemPath, exclude: []}` with no local image composed for it. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
 | **`remoteListing`** | **2 — OPTIONAL** | Without it cc **never sends `listRemotes`**; the System is reported **not enumerable** — never as having no remotes — and a `remoteId` is named by hand. **Read as absent unless `remotes` is also advertised** — a single-target provider has no `remoteId`s to list | With it, cc's Remote field offers the listed ids, plus a way to type another, and cc's remote enumeration reports them; without it, the Remote field is free text and the enumeration reports the System not enumerable | `tests/systems-remote-listing-fallback.test.mjs` → "no listRemotes frame reaches a provider that does not advertise remoteListing": a recording provider that does not advertise the capability, driven through cc's one sender by every surface on it, receives no `listRemotes` frame, and each surface reports it not enumerable with no list. Also `tests/systems-protocol-codec.test.mjs` → "remoteListing is read only alongside remotes"; the `remoteListing:false` asserted in every configuration's handshake row of `tests/systems-protocol-conformance.test.mjs`; and that suite's reference-only row "a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed". Under `npm run gate:systems` row 1 advertises the capability because it carries `--remote`, but the application never sends `listRemotes` to the gate's `local` stand-in: enumeration decides `local` by id (`enumerateSystemRemotes`, `src/systems/remoteEnumeration.ts`). The suites that do send it register their own providers and run inside every row |
-| **`pty`** | **2 — OPTIONAL** | cc **never sends** a pty `exec`, `input`, `resize` or `ack`; `System.openTerminal` on that system is refused **`SYSTEM_NO_PTY` (501)** before anything goes on the wire. Flag: `--no-pty` (§10) | Terminals on that system are refused, naming the system and its provider. Everything else on the system is unchanged | `tests/systems-pty-fallback.test.mjs` — a recording provider launched `--no-pty` is refused by name and receives no pty frame, and a reference provider with no python3 on its `PATH` advertises `pty:false` on its own. Plus the `--no-pty` configuration's refusal row in `tests/systems-protocol-conformance.test.mjs`, and row 2 of `npm run gate:systems`, whose fold is made meaningful by `tests/systems-terminal-seam.test.mjs` (a terminal through the `local` handle) |
+| **`pty`** | **2 — OPTIONAL** | cc **never sends** a pty `exec`, `input`, `resize` or `ack`, and expects no `inputAck`; `System.openTerminal` on that system is refused **`SYSTEM_NO_PTY` (501)** before anything goes on the wire. Flag: `--no-pty` (§10) | Terminals on that system are refused, naming the system and its provider. Everything else on the system is unchanged | `tests/systems-pty-fallback.test.mjs` — a recording provider launched `--no-pty` is refused by name and receives no pty frame, and a reference provider with no python3 on its `PATH` advertises `pty:false` on its own. Plus the `--no-pty` configuration's refusal row in `tests/systems-protocol-conformance.test.mjs`, and row 2 of `npm run gate:systems`, whose fold is made meaningful by `tests/systems-terminal-seam.test.mjs` (a terminal through the `local` handle) |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename` | **not in the protocol** | — | cc never renames on a system: a cross-tier rename is `EXDEV` and a project-tier directory rename refuses, so nothing can ask for one | — |
 | `symlink` | **not in the protocol — a DERIVATION** | — | cc does create symlinks on a system (the union's reconcile carries one), but over `exec` as `ln -sfn` (§7). Still not a frame and still not a capability: a provider implements nothing for it | — |
@@ -419,7 +419,7 @@ anything — but it is lying in its own logs.
 | `listRemotes` | `id` | Ask which `remoteId`s the provider is configured to route to (§2.2). **Requires `remoteListing`.** Carries no `remoteId` |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a `writeFile` payload |
 | `end` | `id` | End of a `writeFile` payload |
-| `input` | `id`, `dataB64` | Bytes for a pty exec's terminal, chunked at `CHUNK_BYTES` |
+| `input` | `id`, `dataB64` | Bytes for a pty exec's terminal, chunked at `CHUNK_BYTES` and sent only against input credit (§5, "Input credit") |
 | `resize` | `id`, `cols`, `rows` | Resize a pty exec's terminal |
 | `ack` | `id`, `bytes` | Return `bytes` of credit for a pty exec's `stdout` (§5) |
 
@@ -438,6 +438,7 @@ about the provider, not a target (§2.2).
 | `stdout` / `stderr` | `id`, `seq`, `dataB64` | Output of a running command |
 | `exit` | `id`, `code`, `signal`, `timedOut`, `descendantsMaySurvive?` | Terminal for an `exec`. For a pty exec `code` is `null` when a signal ended the program |
 | `ptyStarted` | `id` | A pty exec's program was exec'd; sent once, before any `stdout` |
+| `inputAck` | `id`, `bytes` | Return `bytes` (a positive integer) of input credit for a pty exec: that many more `input` bytes were written into its terminal (§5, "Input credit"). Not terminal for the id |
 | `readFileResult` | `id`, `size`, `mode`, `isBinary` | Opens a read; `data`… then `end` follow |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a read |
 | `end` | `id` | Terminal for a `readFile` |
@@ -460,7 +461,7 @@ opening `exec` / `readFile` / `writeFile` is the operation's target for every
 frame that follows it (`describeRemote`, the fourth request frame, has no
 follow-on frames — it opens and closes in one exchange — and neither has
 `listRemotes`, which names no remote at all) — `signal`, `close`,
-`detach`, `data`, `end`, `input`, `resize`, `ack` carry no `remoteId` and a provider must not look for one on them. A provider
+`detach`, `data`, `end`, `input`, `resize`, `ack` carry no `remoteId` and a provider must not look for one on them; nor does the provider's `inputAck`. A provider
 that re-derived the target per frame would have to answer "which target" for a
 frame that never names one.
 
@@ -555,6 +556,7 @@ cc  →  {"type":"exec","id":"t3","cwd":"/app","pty":{"cols":80,"rows":24,"term"
    ←  {"type":"stdout","id":"t3","seq":0,"dataB64":"…"}
 cc  →  {"type":"ack","id":"t3","bytes":412}
 cc  →  {"type":"input","id":"t3","dataB64":"bHMK"}
+   ←  {"type":"inputAck","id":"t3","bytes":3}
 cc  →  {"type":"resize","id":"t3","cols":120,"rows":40}
    ←  {"type":"exit","id":"t3","code":0,"signal":null,"timedOut":false}
 ```
@@ -564,10 +566,11 @@ cc  →  {"type":"resize","id":"t3","cols":120,"rows":40}
 | `argv` | The program, run under the terminal as its session leader and controlling tty. **Absent → the target user's login shell**: the provider owns the interpreter (§2). Never `shell`. |
 | `pty.cols`, `pty.rows` | Integers in `1..PTY_DIM_MAX` (`src/systems/protocol.ts`). The terminal has this size **before** the program starts. |
 | `pty.term` | Becomes `TERM`, over anything `envOverlay` says. |
-| `pty.envOverlay` | **ADDED** to the provider's own environment — never a replacement, unlike `exec.env`, which a pty exec never carries. Order: the provider's environment, then the overlay, then `TERM`. It rides the frame rather than `env(1)` because cc cannot wrap a login shell it does not know. |
+| `pty.envOverlay` | **ADDED** to the provider's own environment — never a replacement, unlike `exec.env`, which a pty exec never carries. Order: the provider's environment, then the overlay, then `TERM`. It rides the frame rather than `env(1)` because cc cannot wrap a login shell it does not know. **It reaches the program only.** A provider MUST NOT apply it to any process of its own that hosts the terminal — an interpreter, a `docker`/`ssh` client, a pty helper, or a wrapper or trampoline it runs on either side before the program. It is applied at the final exec of the program itself. |
 | `ptyStarted` | Sent **once**, after the program was exec'd. Before it only `error` may arrive for the id — a missing `cwd` or program (`ENOENT`, `ENOTDIR`, `EACCES`), or `EPTY` when no terminal could be allocated. After it, `stdout` frames and one `exit`. |
 | `stdout` | The terminal's output. **There are no `stderr` frames**: the terminal merges the two. |
-| `input` | Bytes written to the terminal. `^C` is byte `0x03`, which the terminal turns into SIGINT for the foreground job — **cc never sends `signal` or `detach` for a pty id**, and a provider MAY ignore them. |
+| `input` | Bytes written to the terminal. `^C` is byte `0x03`, which the terminal turns into SIGINT for the foreground job — **cc never sends `signal` or `detach` for a pty id**, and a provider MAY ignore them. Sent only against input credit: see "Input credit" below. |
+| `inputAck` | Input credit returned for bytes **written into the terminal** — see "Input credit" below. |
 | `resize` | Sets the terminal's size; the program's foreground job gets SIGWINCH. |
 | `ack` | **CREDIT FLOW CONTROL.** For a pty id the provider's **unacked raw `stdout` bytes MUST NOT exceed `PTY_WINDOW_BYTES`**; each `ack` returns `bytes` of credit. cc acks a chunk once it has handed it to its owner, and acks nothing while the owner has paused it. So a flooding terminal holds at most one window of the provider pipe ahead of every other operation on it. **cc enforces it**: when the bytes it has received for a pty id less the bytes it has acked exceed `PTY_WINDOW_BYTES`, cc sends `close` and ends that terminal `failed` with `EPROTO` — at once, even while its owner has it paused, delivering none of the held output. Id-addressed: the connection and every other operation on it carry on. |
 | `close` | The owner closed the terminal: hang the terminal up (SIGHUP to its session), then SIGKILL what is left of the session's process groups after a grace; emit nothing further. A job that left the session (`setsid`) survives, as it does when a local terminal window closes. |
@@ -577,6 +580,103 @@ cc  →  {"type":"resize","id":"t3","cols":120,"rows":40}
 timer**: a terminal ends when its owner closes it, when its program exits, or
 when the connection dies (cc then reports it lost, `ETRANSPORT`). MUST 3 covers
 an open pty exec like any other open operation.
+
+#### Input credit
+
+`ack` bounds the output a provider holds ahead of cc; **`inputAck` bounds the
+input cc puts on the wire ahead of the program**. Part of `pty`: no flag of its
+own, no protocol bump. The window is `PTY_INPUT_WINDOW_BYTES`
+(`src/systems/protocol.ts`), spec-fixed like `PTY_WINDOW_BYTES`.
+
+1. **Initial window.** At `ptyStarted` cc holds `PTY_INPUT_WINDOW_BYTES` of input
+   credit for the id. cc sends no `input` before `ptyStarted`.
+2. **cc's obligation.** For a pty id, the raw (decoded) `input` bytes cc has
+   sent, minus the `inputAck` bytes it has received, **never exceed
+   `PTY_INPUT_WINDOW_BYTES`**. cc chunks `input` at `min(CHUNK_BYTES, remaining
+   credit)`. A provider therefore buffers at most one window of input per
+   terminal.
+3. **When the provider grants credit.** Only **after the bytes have been written
+   into the terminal device the provider owns** — accepted by its pty master's
+   `write`, or by whatever pty it hosts the program under. Receipt does not
+   count. A program that stops reading fills the terminal's input queue; writes
+   then stop being accepted, credit stops, and cc stops sending. That is the
+   backpressure.
+4. **Granting freedom.** A provider MAY coalesce several writes into one
+   `inputAck`, or split one `input` frame's bytes across several. It MUST
+   eventually grant credit for every byte it wrote. It MUST NOT grant credit
+   for bytes it has not written.
+5. **No credit after the end.** After `exit`, or after cc's `close`, no
+   `inputAck` is owed. One that arrives is dropped (§4, a frame for a closed
+   id).
+6. **Over-grant is a violation.** If cc receives an `inputAck` whose `bytes` is
+   not a positive integer, or that would take its un-credited count below zero,
+   cc sends `close` and ends that terminal `failed` with `EPROTO`. Id-addressed:
+   the connection and every other operation on it carry on. It mirrors the
+   `ack` rule.
+7. **A provider that never grants.** After one window, input stalls. The
+   terminal stays open: its `stdout`, `ack`, `resize` and `close` are
+   unaffected, because none of them consumes input credit. cc keeps the
+   caller's further writes in its own buffer and reports backpressure to the
+   caller (`Terminal.write` returns `false`), so a well-behaved caller stops
+   reading its own source. cc **never** times out or fails a terminal for
+   missing credit; the terminal's life is its owner's. For the user it looks
+   like a frozen keyboard on a live screen.
+8. **Conformance.** Rows in `tests/systems-protocol-conformance.test.mjs`,
+   gated on `pty`: "input credit is granted for bytes written to the terminal,
+   not bytes received, and every byte's credit returns", and the battery row
+   "input past one window arrives intact". A provider that acks on receipt
+   fails the first; one that never acks fails the second.
+
+```
+cc  →  {"type":"input","id":"t3","dataB64":"…CHUNK_BYTES…"}   credit: PTY_INPUT_WINDOW_BYTES − CHUNK_BYTES
+cc  →  … more, until the credit is 0; then nothing further for t3
+   ←  {"type":"inputAck","id":"t3","bytes":4096}            4096 more bytes are in the terminal
+cc  →  {"type":"input","id":"t3","dataB64":"…4096 bytes…"}
+```
+
+### The pty helper
+
+`src/systems/ptyHelper.py` is the reference provider's terminal and
+`LocalSystem`'s, and it is a **reusable contract**: a provider MAY run a
+byte-for-byte copy of it and drive it over the stdio protocol below, granting
+`inputAck` from the helper's own `w` frames. cc's `src/systems/ptyHost.ts` does
+exactly that for the reference provider. The header comment in the file
+restates this table; this section is its home.
+
+**Invocation:** `python3 -I ptyHelper.py <cols> <rows> -- <argv...>`
+
+- `cols` and `rows` are decimal integers in `1..PTY_DIM_MAX`.
+- `argv` is the program and is required. A login shell is the spawner's choice
+  of argv (e.g. `["/bin/bash","-l"]`).
+- The helper's cwd is the program's cwd.
+- The helper's environment is the **base** environment and must **not** carry
+  the caller's overlay (`pty.envOverlay` above).
+
+**Framing, both directions:** 1 type byte (ASCII), a u32 big-endian payload
+length, then the payload.
+
+| Dir | Type | Payload | Meaning |
+|---|---|---|---|
+| spawner → helper | `v` | UTF-8 JSON object of string → string | **Required, and the FIRST frame.** The env overlay the program runs with, merged over the helper's own environment (`{**os.environ, **v}`), with `TERM` included by the spawner. `{}` for none. The helper reads it before forking. EOF before it means the helper starts nothing and exits 0. Any other first frame, or a payload that is not a JSON object of strings, produces `e` with `EPROTO` and no start |
+| spawner → helper | `d` | Raw bytes | Bytes for the terminal. The helper queues them and writes them to the pty master as it accepts them |
+| spawner → helper | `r` | u16 BE cols, u16 BE rows | Resize (TIOCSWINSZ on the master; the program's foreground job gets SIGWINCH) |
+| spawner → helper | EOF | — | **Close.** Hang the terminal up (SIGHUP to the session), then SIGKILL what is left of the session's process groups after `CLOSE_GRACE_S` |
+| helper → spawner | `S` | — | The program was exec'd. Sent once. Before it only `e` can arrive |
+| helper → spawner | `o` | Raw bytes | Terminal output (stdout and stderr merged) |
+| helper → spawner | `w` | u32 BE `n`, n ≥ 1 | **The drain report.** `n` more bytes of `d` payload have been written into the pty master, counted after each successful `write(2)` to it. Reports arrive in order and their sum never exceeds the `d` bytes received. Bytes the helper discards because the master is gone (the program's terminal closed) are never reported. **Grant `inputAck{bytes: n}` per `w`**, or coalesce several |
+| helper → spawner | `x` | JSON `{code, signal}` | The program exited (`code` is null when a signal ended it). All `o` frames precede it. The last frame |
+| helper → spawner | `e` | JSON `{code, message}` | Failure, with `code` a §8 code name (`ENOENT`, `EACCES`, `EPTY`, `EPROTO`, …). The last frame |
+
+**Bounding the helper.** The helper reads its stdin eagerly — it must, so that
+`r` frames are never stuck behind input — so its own input queue holds whatever
+`d` bytes the spawner has sent and `w` has not yet reported. A spawner bounds
+that queue by holding sent-minus-reported `d` bytes under a window of its own:
+`ptyHost.ts` uses `HELPER_INPUT_WINDOW_BYTES`; a provider that forwards cc's
+`input` straight to the helper is already bounded by `PTY_INPUT_WINDOW_BYTES`.
+
+`tests/systems-pty-helper.test.mjs` drives the helper over raw stdio, with no
+`ptyHost.ts`, the way a provider running a copy does — `v`, the bad-first-frame
+refusal, and the `w` totals.
 
 **The reference provider's terminal** is `src/systems/ptyHost.ts` running
 `src/systems/ptyHelper.py` — the same code `LocalSystem` runs in-process — and
@@ -1012,7 +1112,11 @@ that passes them, so renaming one reds the suite.
 **The terminal rows are gated on the handshake too.** A provider that does not
 advertise `pty` gets them skipped with a printed reason; one that does is held
 to the whole terminal battery (`tests/terminalBattery.mjs`) and the wire rows
-beside it — the credit window, the open-only ceiling, the shared cap. Under
+beside it — the output credit window, input credit granted for written bytes
+only (§5, "Input credit"), the open-only ceiling, the shared cap. The battery's
+env-overlay row reads the pty helper's environment from `/proc` and so holds a
+provider whose program's parent is a copy of `ptyHelper.py` on the test
+process's own machine. Under
 `--no-pty` it must advertise `pty: false`, which the handshake row asserts.
 
 **The enumeration rows (§2.2) are gated on the handshake.** A provider that does
@@ -1127,7 +1231,7 @@ ten of each.
 | `signal`, `processGroup:true` | `docker exec … kill -- -<pgid>` → `processGroupSignal: true` |
 | `detach` | Drop the exec from the provider's bookkeeping and stop forwarding its frames. **Signal nothing** — this frame's whole content is that the command is over and is not to be killed. It is then **out of MUST 3's exit reap too**, which covers operations still open: a detached `docker exec` keeps running, exactly as a detached local one does |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
-| `pty` | `docker exec -it <ctr> …`, run under a pseudo-terminal the provider allocates on its own host side so `-t` has a tty to copy; `resize` sets that terminal's size and docker forwards the SIGWINCH. `input` writes to it, `stdout` reads from it |
+| `pty` | `docker exec -it <ctr> …`, run under a pseudo-terminal the provider allocates on its own host side so `-t` has a tty to copy; `resize` sets that terminal's size and docker forwards the SIGWINCH. `input` writes to it, `stdout` reads from it. **Input credit** (§5) is granted once bytes are written into that **host-side** pty master — from the helper's `w` frames, if the provider runs a copy of `ptyHelper.py` there. **The env overlay reaches only the program**, applied at the far side's final exec — never the host-side `docker` client's environment, and never a far-side wrapper the provider runs before the program |
 | `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
 | `remoteListing` | `false` for the shape above: it attempts any container name and learns from the daemon whether one exists, so it cannot list its configured set completely (§2.2). `true` only for a provider that keeps its own configuration of the containers it routes; it lists them whether reachable or not, and an unreachable one is then an `ENOREMOTE` on the operation, not an absence from the list |
 

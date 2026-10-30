@@ -1,22 +1,37 @@
 # The pty helper: one program under a pseudo-terminal, spoken to over a
 # length-prefixed byte protocol on stdin/stdout. Stdlib only, so it runs
-# wherever a python3 does; src/systems/ptyHost.ts is its one caller, and it
-# owns the frame vocabulary this file mirrors.
+# wherever a python3 does. In cc, src/systems/ptyHost.ts drives it; a provider
+# may run a byte-for-byte copy and drive it over this same protocol, whose home
+# is docs/systems-protocol.md §5, "The pty helper".
 #
 #   python3 -I ptyHelper.py <cols> <rows> -- <argv...>
 #
-# The cwd and the environment are the spawn's. A frame is 1 type byte, a u32
-# big-endian payload length, then the payload.
+# The cwd is the program's. The environment is the spawner's BASE environment
+# and never carries the caller's overlay: that arrives in the `v` frame and
+# reaches the program alone. A frame is 1 type byte, a u32 big-endian payload
+# length, then the payload.
 #
-#   node -> helper   d  bytes for the terminal
-#                    r  u16 cols, u16 rows
-#   helper -> node   S  the program was exec'd
-#                    o  output
-#                    x  exit, JSON {code, signal}
-#                    e  failure, JSON {code, message}
+#   spawner -> helper  v  REQUIRED, FIRST: JSON object of string -> string, the
+#                         env overlay the program runs with, merged over this
+#                         process's environment. EOF before it: start nothing,
+#                         exit 0. Anything else first: `e` EPROTO, no start
+#                      d  bytes for the terminal
+#                      r  u16 cols, u16 rows
+#                      EOF  CLOSE: hang the terminal up, then SIGKILL what is
+#                         left of the session's process groups after a grace
+#   helper -> spawner  S  the program was exec'd; before it only `e` arrives
+#                      o  output
+#                      w  u32 n >= 1: n more `d` bytes were written into the
+#                         terminal, counted per successful write. In order; the
+#                         sum never exceeds the `d` bytes received, and bytes
+#                         discarded because the terminal closed are never
+#                         reported
+#                      x  exit, JSON {code, signal}; the last frame
+#                      e  failure, JSON {code, message}; the last frame
 #
-# EOF on stdin is CLOSE: hang the terminal up, then SIGKILL what is left of the
-# session's process groups after a grace.
+# Stdin is read eagerly, so an `r` is never stuck behind input: the spawner
+# bounds the `d` bytes queued here by holding sent-minus-reported under a
+# window of its own.
 
 import errno
 import fcntl
@@ -59,6 +74,34 @@ def send_json(kind, obj):
     send(kind, json.dumps(obj).encode())
 
 
+def read_overlay():
+    """The `v` frame, read before anything starts. Returns (overlay, leftover
+    stdin bytes), or (None, None) on EOF before it is whole; raises ValueError
+    naming what is wrong with any other first frame."""
+    buf = b''
+    while True:
+        if len(buf) >= 5:
+            (length,) = struct.unpack('>I', buf[1:5])
+            if len(buf) >= 5 + length:
+                break
+        chunk = os.read(0, 64 * 1024)
+        if not chunk:
+            return None, None
+        buf += chunk
+    kind, payload, rest = buf[:1], buf[5:5 + length], buf[5 + length:]
+    if kind != b'v':
+        raise ValueError('the first frame must be v (the env overlay), got %r' % kind.decode('latin1'))
+    try:
+        overlay = json.loads(payload.decode('utf-8'))
+    except ValueError as e:
+        raise ValueError('the v frame is not JSON: %s' % e)
+    if not isinstance(overlay, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and k and '=' not in k and '\0' not in k and '\0' not in v
+            for k, v in overlay.items()):
+        raise ValueError('the v frame must be a JSON object of variable names to strings, without NUL')
+    return overlay, rest
+
+
 def set_winsize(fd, cols, rows):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
 
@@ -90,6 +133,17 @@ def main():
     cols, rows = int(sys.argv[1]), int(sys.argv[2])
     argv = sys.argv[4:]
 
+    # Nothing is started before the overlay is known.
+    try:
+        overlay, inbuf = read_overlay()
+    except ValueError as e:
+        send_json(b'e', {'code': 'EPROTO', 'message': str(e)})
+        return 1
+    if overlay is None:
+        return 0
+    env = dict(os.environ)
+    env.update(overlay)
+
     # SIGCHLD wakes the select through a self-pipe. Armed BEFORE the fork, so a
     # program that exits at once still wakes it; both ends are close-on-exec,
     # and the exec resets the handler, so the program inherits neither.
@@ -112,7 +166,9 @@ def main():
         try:
             # Before the exec, so the program never sees a 0x0 terminal.
             set_winsize(0, cols, rows)
-            os.execvpe(argv[0], argv, os.environ)
+            # execvpe searches the PATH of `env`, so an overlay PATH still
+            # chooses the program.
+            os.execvpe(argv[0], argv, env)
         except OSError as e:
             name = errno.errorcode.get(e.errno, 'EUNKNOWN')
             os.write(status_w, ('%s\n%s: %s' % (name, argv[0], e.strerror)).encode())
@@ -135,7 +191,6 @@ def main():
     os.set_blocking(master, False)
     master_open = True
     stdin_open = True
-    inbuf = b''
     pending = b''
     status = None
 
@@ -154,6 +209,27 @@ def main():
             return False
         send(b'o', data)
         return True
+
+    def take_frames():
+        nonlocal inbuf, pending
+        while len(inbuf) >= 5:
+            (length,) = struct.unpack('>I', inbuf[1:5])
+            if len(inbuf) < 5 + length:
+                break
+            kind, payload = inbuf[:1], inbuf[5:5 + length]
+            inbuf = inbuf[5 + length:]
+            if kind == b'd':
+                pending += payload
+            elif kind == b'r' and length == 4:
+                c, r = struct.unpack('>HH', payload)
+                if master_open:
+                    try:
+                        set_winsize(master, c, r)
+                    except OSError:
+                        pass
+
+    # Frames that arrived with the `v`.
+    take_frames()
 
     while status is None:
         rl = [wake_r]
@@ -176,9 +252,12 @@ def main():
             try:
                 n = os.write(master, pending)
                 pending = pending[n:]
+                if n > 0:
+                    send(b'w', struct.pack('>I', n))
             except BlockingIOError:
                 pass
             except OSError:
+                # The terminal is gone: what is queued is discarded, unreported.
                 pending = b''
         if master_open and master in ready_r:
             read_master()
@@ -188,21 +267,7 @@ def main():
                 stdin_open = False
                 break
             inbuf += data
-            while len(inbuf) >= 5:
-                (length,) = struct.unpack('>I', inbuf[1:5])
-                if len(inbuf) < 5 + length:
-                    break
-                kind, payload = inbuf[:1], inbuf[5:5 + length]
-                inbuf = inbuf[5 + length:]
-                if kind == b'd':
-                    pending += payload
-                elif kind == b'r' and length == 4:
-                    c, r = struct.unpack('>HH', payload)
-                    if master_open:
-                        try:
-                            set_winsize(master, c, r)
-                        except OSError:
-                            pass
+            take_frames()
         try:
             wpid, wstatus = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:

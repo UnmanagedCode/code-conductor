@@ -51,6 +51,13 @@ export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 // this much per open terminal is ever queued in front of them.
 export const PTY_WINDOW_BYTES = 4 * CHUNK_BYTES;
 
+// The other direction (§5, "Input credit"): the most raw `input` bytes cc may
+// have sent for one pty exec that the provider has not credited back with
+// `inputAck` — and a provider grants credit only for bytes WRITTEN INTO the
+// terminal, so a program that stops reading stops cc sending. Spec-fixed for
+// the same reason; it is what bounds the input a provider buffers per terminal.
+export const PTY_INPUT_WINDOW_BYTES = 4 * CHUNK_BYTES;
+
 // The largest `cols` or `rows` a terminal may be opened or resized to. A fence
 // against a nonsense size, not a claim about any display: it sits far above a
 // real screen and below the u16 the helper's TIOCSWINSZ packs each dimension
@@ -315,11 +322,13 @@ export interface ExecFrame {
 // `envOverlay` is ADDED to the provider's own environment, then `TERM=term`
 // over both. A different name from `exec.env`, which REPLACES: cc cannot wrap a
 // login shell it does not know in `env(1)`, so the overlay has to ride the
-// frame.
+// frame. It reaches the PROGRAM only — never an interpreter, a client, a pty
+// helper or a wrapper the provider runs to host the terminal.
 export interface PtySpec { cols: number; rows: number; term: string; envOverlay?: Record<string, string> }
 // The three follow-on frames of a pty exec. No `remoteId`: the id is bound.
-// `input` is bytes for the terminal, chunked at CHUNK_BYTES; `ack` returns
-// `bytes` of credit against PTY_WINDOW_BYTES.
+// `input` is bytes for the terminal, chunked at CHUNK_BYTES and sent only
+// against input credit (PTY_INPUT_WINDOW_BYTES); `ack` returns `bytes` of
+// output credit against PTY_WINDOW_BYTES.
 export interface InputFrame { type: 'input'; id: string; dataB64: string }
 export interface ResizeFrame { type: 'resize'; id: string; cols: number; rows: number }
 export interface AckFrame { type: 'ack'; id: string; bytes: number }
@@ -372,6 +381,10 @@ export interface ExitFrame {
 // A pty exec STARTED: sent once, after the program was exec'd. Before it only
 // an `error` may arrive for the id; after it, `stdout` frames and one `exit`.
 export interface PtyStartedFrame { type: 'ptyStarted'; id: string }
+// Returns `bytes` (a positive integer) of input credit for a pty exec: that
+// many more `input` bytes were written into its terminal. One past what cc has
+// sent is EPROTO for that terminal.
+export interface InputAckFrame { type: 'inputAck'; id: string; bytes: number }
 export interface ReadFileResultFrame {
   type: 'readFileResult'; id: string; size: number; mode: number; isBinary: boolean;
 }
@@ -393,7 +406,7 @@ export type ClientFrame =
   | InputFrame | ResizeFrame | AckFrame;
 
 export type ProviderFrame =
-  | HelloProviderFrame | StreamFrame | ExitFrame | PtyStartedFrame
+  | HelloProviderFrame | StreamFrame | ExitFrame | PtyStartedFrame | InputAckFrame
   | ReadFileResultFrame | WriteFileResultFrame | RemoteDescriptorFrame | RemoteListFrame
   | DataFrame | EndFrame | ErrorFrame;
 

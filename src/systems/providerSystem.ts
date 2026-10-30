@@ -28,7 +28,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import {
-  CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, PTY_WINDOW_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
+  CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, PTY_INPUT_WINDOW_BYTES, PTY_WINDOW_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   readRemoteList, type AnyFrame, type Capabilities, type ClientFrame, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
@@ -39,7 +39,7 @@ import { ProviderShell, type ShellExecOptions, type ShellHost } from './provider
 import { closingTailMatches } from './shellFraming.ts';
 import { msFromFindStamp, requireAbsolute, typeBitsFor } from './system.ts';
 import {
-  TerminalSlots, assertDims, openCancelled, systemNoPty, toBuffer, validateTerminalSpec,
+  InputGauge, TerminalSlots, assertDims, openCancelled, systemNoPty, toBuffer, validateTerminalSpec,
   type Terminal, type TerminalEnd, type TerminalHandlers, type TerminalSpec,
 } from './terminal.ts';
 import type {
@@ -686,6 +686,14 @@ export class ProviderSystem implements System, ShellHost {
   // each chunk only once it has been handed to `onData` — never while paused.
   // cc ENFORCES the window too, since it is what bounds `held`: a provider past
   // it has its terminal closed and ended `failed` EPROTO.
+  //
+  // INPUT CREDIT is the same in the other direction: cc has at most
+  // PTY_INPUT_WINDOW_BYTES of `input` uncredited, the provider grants
+  // `inputAck` as the bytes are written into the terminal, and the rest of a
+  // write waits in `pendingInput` — so a program that stops reading stops cc
+  // sending, and `write` reports it. A grant past what cc sent is EPROTO, the
+  // same way. A provider that never grants freezes the keyboard and nothing
+  // else: cc never fails a terminal for missing credit.
   async openTerminal(spec: TerminalSpec, handlers: TerminalHandlers): Promise<Terminal> {
     validateTerminalSpec(spec);
     let hs: Handshake;
@@ -719,6 +727,10 @@ export class ProviderSystem implements System, ShellHost {
       let unacked = 0;
       // An end that arrived while paused, delivered after the held chunks.
       let pendingEnd: TerminalEnd | null = null;
+      // Input not yet sent, and the credit to send it with.
+      const pendingInput: Buffer[] = [];
+      let inputCredit = PTY_INPUT_WINDOW_BYTES;
+      const gauge = new InputGauge(() => { if (!reported) handlers.onDrain?.(); });
 
       const finishWire = (): void => {
         if (wireDone) return;
@@ -746,6 +758,29 @@ export class ProviderSystem implements System, ShellHost {
         unacked -= chunk.length;
         if (!wireDone) this.#conn.send({ type: 'ack', id, bytes: chunk.length });
       };
+      const sendInput = (): void => {
+        while (!wireDone && inputCredit > 0 && pendingInput.length > 0) {
+          const head = pendingInput[0] as Buffer;
+          const n = Math.min(head.length, CHUNK_BYTES, inputCredit);
+          this.#conn.send({ type: 'input', id, dataB64: head.subarray(0, n).toString('base64') });
+          inputCredit -= n;
+          if (n === head.length) pendingInput.shift();
+          else pendingInput[0] = head.subarray(n);
+        }
+      };
+      // The provider broke a credit rule: its terminal is closed and ended
+      // `failed` at once, paused or not, delivering nothing it held.
+      const breach = (error: SystemError): void => {
+        this.#conn.send({ type: 'close', id });
+        if (!started) { fail(error); return; }
+        finishWire();
+        held.length = 0;
+        pendingEnd = null;
+        if (!reported) {
+          reported = true;
+          handlers.onExit({ kind: 'failed', error });
+        }
+      };
 
       const timer = setTimeout(() => {
         if (started || wireDone) return;
@@ -757,10 +792,11 @@ export class ProviderSystem implements System, ShellHost {
 
       const terminal: Terminal = {
         write: (data) => {
+          if (wireDone) return true;
           const buf = toBuffer(data);
-          for (let at = 0; at < buf.length && !wireDone; at += CHUNK_BYTES) {
-            this.#conn.send({ type: 'input', id, dataB64: buf.subarray(at, at + CHUNK_BYTES).toString('base64') });
-          }
+          if (buf.length > 0) pendingInput.push(buf);
+          sendInput();
+          return gauge.accept(buf.length);
         },
         resize: (cols, rows) => {
           assertDims('resize', cols, rows);
@@ -806,24 +842,24 @@ export class ProviderSystem implements System, ShellHost {
             const chunk = decodeData(f);
             unacked += chunk.length;
             if (unacked > PTY_WINDOW_BYTES) {
-              // Immediately, paused or not: what is held came from a provider
-              // that broke the contract, and holding more is the unbounded
-              // growth the window exists to prevent.
-              const error = new SystemError('EPROTO',
-                `openTerminal: the provider sent ${unacked} unacked bytes, past the ${PTY_WINDOW_BYTES}-byte window`);
-              this.#conn.send({ type: 'close', id });
-              if (!started) { fail(error); return; }
-              finishWire();
-              held.length = 0;
-              pendingEnd = null;
-              if (!reported) {
-                reported = true;
-                handlers.onExit({ kind: 'failed', error });
-              }
+              // What is held came from a provider that broke the contract, and
+              // holding more is the unbounded growth the window exists to prevent.
+              breach(new SystemError('EPROTO',
+                `openTerminal: the provider sent ${unacked} unacked bytes, past the ${PTY_WINDOW_BYTES}-byte window`));
               return;
             }
             if (paused) held.push(chunk);
             else deliver(chunk);
+          } else if (f.type === 'inputAck') {
+            const uncredited = PTY_INPUT_WINDOW_BYTES - inputCredit;
+            if (!Number.isInteger(f.bytes) || (f.bytes as number) <= 0 || (f.bytes as number) > uncredited) {
+              breach(new SystemError('EPROTO',
+                `openTerminal: the provider granted ${String(f.bytes)} bytes of input credit with ${uncredited} uncredited`));
+              return;
+            }
+            inputCredit += f.bytes as number;
+            gauge.written(f.bytes as number);
+            sendInput();
           } else if (f.type === 'exit') {
             report({
               kind: 'exited',

@@ -442,13 +442,18 @@ export class ReferenceProvider {
       interpreter: this.#ptyInterpreter,
       cwd: typeof f.cwd === 'string' ? f.cwd : process.cwd(),
       argv: Array.isArray(f.argv) ? (f.argv as string[]).map(String) : posixLoginShell(),
-      // The provider's own environment, the routing evidence, the caller's
-      // overlay, then TERM — in that order.
-      env: { ...process.env, ...(remoteId === null ? {} : { CC_REMOTE: remoteId }), ...overlay, TERM: pty.term },
+      // The helper runs in the provider's own environment; the program's adds
+      // the routing evidence, the caller's overlay, then TERM — in that order.
+      // The overlay reaches the program only (§5).
+      env: process.env,
+      programEnv: { ...(remoteId === null ? {} : { CC_REMOTE: remoteId }), ...overlay, TERM: pty.term },
       cols: pty.cols as number, rows: pty.rows as number,
     }, {
       onStarted: () => { if (!state.closed) this.#write({ type: 'ptyStarted', id }); },
       onData: (chunk) => this.#ptyEmit(id, state, chunk),
+      // Input credit, granted as the helper reports bytes written into the
+      // terminal — never on receipt.
+      onWritten: (bytes) => { if (!state.closed) this.#write({ type: 'inputAck', id, bytes }); },
       onExit: (code, signal) => {
         if (state.closed) return;
         end();

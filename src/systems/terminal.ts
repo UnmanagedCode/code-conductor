@@ -15,7 +15,7 @@
 
 import { httpError } from '../httpError.ts';
 import { assertEnvOverlay } from './execWrap.ts';
-import { PTY_DIM_MAX, SystemError } from './protocol.ts';
+import { CHUNK_BYTES, PTY_DIM_MAX, SystemError } from './protocol.ts';
 import { requireAbsolute } from './system.ts';
 
 export interface TerminalSpec {
@@ -25,6 +25,7 @@ export interface TerminalSpec {
   argv?: string[];
   // ADDED to the target's own environment, never a replacement — the caller
   // cannot know a remote target's HOME, PATH or LANG. ENV_NAME_RE names, no NUL.
+  // It reaches the PROGRAM only, never a process hosting the terminal.
   env?: Record<string, string>;
   // Integers in 1..PTY_DIM_MAX.
   cols: number;
@@ -42,6 +43,9 @@ export interface TerminalHandlers {
   onData(chunk: Buffer): void;
   // Exactly once.
   onExit(end: TerminalEnd): void;
+  // After a `write` returned false: the input it reported has all been written
+  // into the terminal. Once per `false`.
+  onDrain?(): void;
 }
 
 export type TerminalEnd =
@@ -53,7 +57,12 @@ export type TerminalEnd =
   | { kind: 'failed'; error: SystemError };
 
 export interface Terminal {
-  write(data: Buffer | string): void;
+  // Never drops or refuses a byte. Returns false once the input accepted and
+  // not yet written into the terminal is at or above
+  // TERMINAL_WRITE_HIGH_WATER_BYTES — the program is not reading — and a caller
+  // should stop reading its own source until `onDrain`. After the end a write
+  // is discarded and returns true: there is nothing to wait for.
+  write(data: Buffer | string): boolean;
   resize(cols: number, rows: number): void;
   // No `onData` between `pause()` and `resume()`: the backpressure lever a
   // WebSocket owner drives from its `bufferedAmount`. The program blocks on its
@@ -62,6 +71,36 @@ export interface Terminal {
   resume(): void;
   // Idempotent. Kills the program's session; `onExit({kind:'closed'})` follows.
   close(): void;
+}
+
+// The input a terminal holds for a program that is not reading before `write`
+// reports backpressure.
+export const TERMINAL_WRITE_HIGH_WATER_BYTES = CHUNK_BYTES;
+
+// A terminal's input accounting, shared by both implementations: bytes are
+// `accept`ed from the caller and reported `written` into the terminal — by the
+// pty helper locally, by the provider's `inputAck` remotely.
+export class InputGauge {
+  readonly #onDrain: () => void;
+  #buffered = 0;
+  #blocked = false;
+
+  constructor(onDrain: () => void) { this.#onDrain = onDrain; }
+
+  // The value `write` returns.
+  accept(bytes: number): boolean {
+    this.#buffered += bytes;
+    if (this.#buffered < TERMINAL_WRITE_HIGH_WATER_BYTES) return true;
+    this.#blocked = true;
+    return false;
+  }
+
+  written(bytes: number): void {
+    this.#buffered -= bytes;
+    if (this.#buffered > 0 || !this.#blocked) return;
+    this.#blocked = false;
+    this.#onDrain();
+  }
 }
 
 // Open terminals per system — per HOST for the in-process `local`, per provider
