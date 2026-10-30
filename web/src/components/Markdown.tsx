@@ -6,8 +6,8 @@ import { adoptViewLinks, followViewLink } from './viewLinks';
 /**
  * Markdown through the app's safe renderer (shared/markdown.ts): text only
  * via textContent, links and images restricted to safe schemes. Styled by the
- * `.md` rules in index.css. `#` links follow the app's policy (viewLinks.ts): a cc view
- * opens in the same tab, any other renders as literal text.
+ * `.md` rules in index.css. Links to cc (`http://cc.internal/#…`, cc's own page) follow the
+ * app's policy (viewLinks.ts): a cc view opens in the same tab, any other renders as literal text.
  */
 export const Markdown = React.memo(function Markdown({
   text, className, renderInto,

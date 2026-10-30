@@ -12,6 +12,7 @@ import { startNotifications } from '@/features/notifications';
 import { startVoice } from '@/features/voice';
 import { startPluginSessionBridge } from '@/features/views/pluginSession';
 import { startPluginSessionWidth } from '@/features/views/pluginSessionWidth';
+import { startPluginLinkHost } from '@/features/views/pluginLinkHost';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -28,3 +29,4 @@ startNotifications();
 startVoice();
 startPluginSessionBridge();
 startPluginSessionWidth();
+startPluginLinkHost();

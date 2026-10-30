@@ -1,7 +1,8 @@
 // The bridge runs inside plugin frames as a classic script; drive it against a scripted fake window.
 // Plugin pages load the root /pluginBridge.js, served from this directory's pluginBridge.js.
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { observerTurn, runBridge } from './test/bridge';
+import { startPluginLinkHost } from './pluginLinkHost';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -299,19 +300,19 @@ describe('plugin links', () => {
   afterEach(() => { document.body.innerHTML = ''; });
 
   describe('accepted', () => {
-    // Pins: a plain click on a `_top` link to cc's own page with a `#plugin/` hash is claimed and handed to cc as `openLink {hash}`.
+    // Pins: a plain click on a `_top` link to cc's own page with a `#plugin/` hash is claimed and handed to cc as `openLink {href}`.
     it('a _top link to a #plugin hash on the parent\'s page posts openLink and prevents the navigation', () => {
       const b = runBridge();
       const { prevented } = b.click(anchor('http://h/#plugin/code-git/?project=p'));
       expect(prevented).toBe(true);
-      expect(b.posted.at(-1)).toEqual([{ cc: 1, type: 'openLink', hash: '#plugin/code-git/?project=p' }, 'http://h']);
+      expect(b.posted.at(-1)).toEqual([{ cc: 1, type: 'openLink', href: 'http://h/#plugin/code-git/?project=p' }, 'http://h']);
     });
 
     // Pins: `_parent` is the same claim as `_top`, because a plugin frame's parent is cc's page.
     it('a _parent link is claimed the same way', () => {
       const b = runBridge();
       expect(b.click(anchor('http://h/#plugin/a/x', '_parent')).prevented).toBe(true);
-      expect(opened(b.posted)).toEqual([[{ cc: 1, type: 'openLink', hash: '#plugin/a/x' }, 'http://h']]);
+      expect(opened(b.posted)).toEqual([[{ cc: 1, type: 'openLink', href: 'http://h/#plugin/a/x' }, 'http://h']]);
     });
 
     // Pins: the comparison is against the parent's own pathname and search, not a fixed `/`.
@@ -367,6 +368,90 @@ describe('plugin links', () => {
       document.body.appendChild(div);
       expect(b.click(div).prevented).toBe(false);
       expect(opened(b.posted)).toEqual([]);
+    });
+  });
+
+  describe('cc.internal links', () => {
+    // The link host is published on cc's real <html> by startPluginLinkHost; drop whatever a test added to it.
+    let rootAttrs: string[] = [];
+    beforeEach(() => { rootAttrs = document.documentElement.getAttributeNames(); });
+    afterEach(() => {
+      for (const n of document.documentElement.getAttributeNames()) if (!rootAttrs.includes(n)) document.documentElement.removeAttribute(n);
+    });
+    /** A bridge whose parent is cc's <html> after cc published its link host. */
+    const hosted = () => {
+      startPluginLinkHost();
+      return runBridge({ hostRoot: document.documentElement });
+    };
+
+    // Pins: the bridge claims a plain click on a cc.internal link whatever its target, and hands cc the full href.
+    it.each(['_blank', null, '_self', '_top', '_parent'])('target %j is claimed and posted as openLink {href}', (target) => {
+      const b = hosted();
+      expect(b.click(anchor('http://cc.internal/#plugin/a/x', target)).prevented).toBe(true);
+      expect(opened(b.posted)).toEqual([[{ cc: 1, type: 'openLink', href: 'http://cc.internal/#plugin/a/x' }, 'http://h']]);
+    });
+
+    // Pins: the host is compared after URL normalization, on either scheme, with any fragment (the parent judges it).
+    it.each([
+      ['HTTP://CC.INTERNAL/#plugin/a/', 'http://cc.internal/#plugin/a/'],
+      ['https://cc.internal/#settings', 'https://cc.internal/#settings'],
+    ])('%s is claimed', (href, posted) => {
+      const b = hosted();
+      expect(b.click(anchor(href, '_blank')).prevented).toBe(true);
+      expect(opened(b.posted)).toEqual([[{ cc: 1, type: 'openLink', href: posted }, 'http://h']]);
+    });
+
+    // Pins: a cc.internal link never navigates to the dead host, even one cc will reject.
+    it('a cc.internal link cc will reject is still prevented and posted', () => {
+      const b = hosted();
+      expect(b.click(anchor('http://cc.internal/nope', null)).prevented).toBe(true);
+      expect(opened(b.posted)).toEqual([[{ cc: 1, type: 'openLink', href: 'http://cc.internal/nope' }, 'http://h']]);
+    });
+
+    // Pins: the bridge reads the host cc publishes (no literal of its own): with cc's published host it catches, with none it does not.
+    it('catches only under a parent that published its link host', () => {
+      const href = 'http://cc.internal/#plugin/a/x';
+      const bare = runBridge();
+      expect(bare.click(anchor(href, '_blank')).prevented, 'no published host').toBe(false);
+      expect(opened(bare.posted)).toEqual([]);
+      const b = hosted();
+      expect(b.click(anchor(href, '_blank')).prevented, 'cc published its host').toBe(true);
+      expect(opened(b.posted)).toHaveLength(1);
+    });
+
+    describe('left to the browser', () => {
+      // Pins: only an unmodified primary click not already handled is claimed (a modified click on a cc.internal link is a documented limitation).
+      it.each([
+        ['ctrl held', { ctrlKey: true }],
+        ['meta held', { metaKey: true }],
+        ['shift held', { shiftKey: true }],
+        ['alt held', { altKey: true }],
+        ['a middle button', { button: 1 }],
+        ['already default-prevented', { defaultPrevented: true }],
+      ] as const)('%s', (_name, init) => {
+        const b = hosted();
+        expect(b.click(anchor('http://cc.internal/#plugin/a/', '_blank'), init).prevented).toBe(false);
+        expect(opened(b.posted)).toEqual([]);
+      });
+
+      // Pins: only an exact host match on an http(s) scheme is cc.internal; a suffix lookalike (evilcc.internal) is not.
+      it.each([
+        'http://cc.internal.evil.com/#plugin/a/', 'http://cc.internal@evil.com/#plugin/a/', 'http://cc.internal./#plugin/a/',
+        'http://cc.internal:8080/#plugin/a/', 'ftp://cc.internal/#plugin/a/', 'http://evilcc.internal/#plugin/a/',
+        'http://xcc.internal/#plugin/a/',
+      ])('%s', (href) => {
+        const b = hosted();
+        expect(b.click(anchor(href, '_blank')).prevented).toBe(false);
+        expect(opened(b.posted)).toEqual([]);
+      });
+
+      // Pins: no readable parent means no host, so no catch.
+      it('an unreadable parent', () => {
+        startPluginLinkHost();
+        const b = runBridge({ parentThrows: true });
+        expect(b.click(anchor('http://cc.internal/#plugin/a/', '_blank')).prevented).toBe(false);
+        expect(opened(b.posted)).toEqual([]);
+      });
     });
   });
 

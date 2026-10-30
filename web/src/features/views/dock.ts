@@ -82,7 +82,7 @@ export function showLinkInDock(hash: string): boolean {
   return true;
 }
 
-/** A link a plugin page's bridge caught (`openLink`): the dock when one shows; else the fragment navigation the browser would have made for the page's `_top` link. */
+/** A link a plugin page's bridge caught (`openLink`, its href already checked by `viewLinkHash`): the dock when one shows; else the fragment navigation a `_top` link to cc's page makes. */
 export function followFrameLink(hash: string) {
   if (!showLinkInDock(hash)) location.hash = hash;
 }

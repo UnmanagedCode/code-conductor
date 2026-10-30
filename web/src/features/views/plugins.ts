@@ -25,7 +25,8 @@
 // dock's saved subpath in split — so whatever names the frame's place always
 // reads where the frame is, and an outside change back to an earlier subpath
 // still reads as a change; an outside subpath change is forwarded as `navigate`.
-// `openLink` (a plugin link the page's bridge caught) goes to the link handler (dock.ts `followFrameLink`).
+// `openLink` (a link to cc the page's bridge caught; its `href` judged by `viewLinkHash`) goes to the link handler
+// (dock.ts `followFrameLink`).
 // `ready` and the id-carrying session calls (`openSession` / `sendPrompt`) from
 // any known frame go to the BridgeHandler (pluginSession.ts); `broadcast` posts
 // to every frame, hidden resident ones included.
@@ -289,9 +290,9 @@ class PluginFrames {
       if (active) this.mirror(record.id, d.path);
       return;
     }
-    // A link the page's bridge caught: honoured only from the shown frame, and only a hash a transcript link may open.
+    // A link the page's bridge caught: honoured only from the shown frame, and only an href a transcript link may open.
     if (d.type === 'openLink') {
-      const hash = active && typeof d.hash === 'string' ? viewLinkHash(d.hash) : null;
+      const hash = active && typeof d.href === 'string' ? viewLinkHash(d.href) : null;
       if (hash) this.linkHandler?.(hash);
       return;
     }

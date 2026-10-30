@@ -280,6 +280,49 @@ export async function pluginLinkFlow({ page, cc }: Args): Promise<void> {
   await expect(page, 'from the full view the link navigates as the browser does').toHaveURL(new RegExp(`#plugin/${PLAIN.id}/inner$`));
 }
 
+/** Injects a `http://cc.internal/` link (with `target` when given) into `from`'s page and real-clicks it. */
+async function clickInternalLink(page: Page, from: ProbePlugin, href: string, target: string | null) {
+  const frame = probeFrame(page, from.id)!;
+  await frame.evaluate(([h, t]) => {
+    document.getElementById('cc-internal-link')?.remove();
+    const a = document.createElement('a');
+    a.id = 'cc-internal-link';
+    if (t) a.target = t;
+    a.href = h!;
+    a.textContent = 'go';
+    a.style.cssText = 'position:fixed;top:40px;left:20px;z-index:9;padding:8px;background:#fff';
+    document.body.appendChild(a);
+  }, [href, target]);
+  await frame.locator('#cc-internal-link').click();
+}
+
+export async function internalLinkFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: a `http://cc.internal/#plugin/…` link in a docked plugin's page is caught by the bridge whatever its target: a link with
+  // no target steers the docked page in place (same document, never the dead host), and a `_blank` one opens no tab and switches the
+  // dock with no URL or history change. Both are a real browser's preventDefault, which happy-dom cannot model.
+  desktopOnly();
+  await onSession(page, cc, 'internal-link');
+  await dockSplit(page, PLAIN);
+  const before = await loaded(page, PLAIN.id, 'docked');
+  const entries = await historyLength(page);
+  let opened = 0;
+  page.context().on('page', () => { opened += 1; });
+
+  await clickInternalLink(page, PLAIN, `http://cc.internal/#plugin/${PLAIN.id}/again`, null);
+  await expect.poll(() => framePath(page, PLAIN.id), { message: 'the docked page was steered to the link\'s subpath' }).toBe(`/plugins/${PLAIN.id}/again`);
+  expect((await readProbe(page, PLAIN.id))?.nonce, 'the same document: the frame never left for the dead host').toBe(before.nonce);
+
+  await clickInternalLink(page, PLAIN, `http://cc.internal/#plugin/${KEEP.id}/inner`, '_blank');
+  await expect.poll(async () => (await storedDock(page))?.id, { message: 'the dock switched to the link\'s plugin' }).toBe(KEEP.id);
+  expect(await storedDock(page)).toMatchObject({ id: KEEP.id, subpath: '/inner' });
+  await expect(page).toHaveURL(/#session=/);
+  expect(await historyLength(page), 'a link shown in the dock costs no entry').toBe(entries);
+  await expectSplit(page, 'after the link');
+  await loaded(page, KEEP.id, 'the linked plugin');
+  expect(framePath(page, KEEP.id)).toBe(`/plugins/${KEEP.id}/inner`);
+  expect(opened, 'a _blank cc.internal link opens no tab').toBe(0);
+}
+
 export async function dragClampFlow({ page, cc }: Args): Promise<void> {
   // Invariant (F8): a drag keeps working while the pointer crosses the plugin's iframe (pointer capture carries it in Chromium; this does not show the body[data-resizing] rule is needed), stops at DOCK_PANEL_MIN_WIDTH and at the transcript limit without leaving split, and a double-click resets the default width.
   desktopOnly();
