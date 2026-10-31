@@ -243,6 +243,19 @@ test('GET /api/plugins/library also lists the code-playwright default entry with
   } finally { await boot.close(); }
 });
 
+test('GET /api/plugins/library also lists the code-terminal default entry with its npm postClone/postPull', async () => {
+  const boot = await bootServer();
+  try {
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
+    const row = r.body.entries.find(e => e.id === 'code-terminal');
+    assert.ok(row, 'default entry present');
+    assert.equal(row.name, 'Code Terminal');
+    assert.equal(row.repo, 'https://github.com/UnmanagedCode/code-terminal');
+    assert.equal(row.postClone, 'npm install');
+    assert.equal(row.postPull, 'npm install');
+  } finally { await boot.close(); }
+});
+
 test('POST /api/plugins/library/:id/update — unknown id 404, not-installed 404', async () => {
   const boot = await bootServer();
   try {
