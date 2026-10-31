@@ -29,8 +29,18 @@ const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 
 // `conventions` (project-convention fragments, optionally carrying a one-time
 // scaffold facet), `roles` and `playbooks` are active pluginApi:1 capabilities
-// that require no backend, so a contributions-only plugin is valid.
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin']);
+// that require no backend, so a contributions-only plugin is valid. `menuItems`
+// needs a frontend: its buttons open that frontend.
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin', 'menuItems']);
+
+export const MENU_ITEMS_MAX = 8;
+export const MENU_LABEL_MAX = 40;
+export const MENU_PATH_MAX = 200;
+export const MENU_ITEM_SCOPES = ['project', 'worktree'] as const;
+// RFC 3986 path characters only: no '%', '?', '#', '\', whitespace or control
+// characters. A flat class, never a nested repeat (which can backtrack).
+const MENU_PATH_RE = /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@\/]*$/;
+
 
 // ── Normalized manifest shapes ─────────────────────────────────────────────
 
@@ -83,6 +93,12 @@ export interface PluginMcp {
   tools: PluginMcpTool[];
 }
 
+export interface PluginMenuItem {
+  label: string;
+  scope: (typeof MENU_ITEM_SCOPES)[number];
+  path: string;
+}
+
 export interface PluginManifest {
   id: string;
   name: string;
@@ -95,6 +111,7 @@ export interface PluginManifest {
   roles?: PluginRole[];
   playbooks?: PluginPlaybook[];
   claudePlugin?: string;
+  menuItems?: PluginMenuItem[];
 }
 
 // Which checkout of a plugin's project a manifest is read from — the main
@@ -217,6 +234,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
   const roles = validateRoles(raw.roles, errors);
   const playbooks = validatePlaybooks(raw.playbooks, errors);
   const claudePlugin = validateClaudePlugin(raw.claudePlugin, errors);
+  const menuItems = validateMenuItems(raw.menuItems, frontend, errors);
 
   if (errors.length > 0) return { errors, id: displayId(raw) };
   return {
@@ -232,6 +250,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
       ...(roles ? { roles } : {}),
       ...(playbooks ? { playbooks } : {}),
       ...(claudePlugin !== undefined ? { claudePlugin } : {}),
+      ...(menuItems ? { menuItems } : {}),
     },
   };
 }
@@ -466,6 +485,53 @@ function validatePlaybooks(playbooks: unknown, errors: string[]): PluginPlaybook
       slug: typeof e.slug === 'string' ? e.slug : '',
       file: typeof e.file === 'string' ? e.file : '',
     });
+  });
+  return out;
+}
+
+// menuItems: [{ label, scope, path }] — buttons in the sidebar's project and
+// worktree ⋮ menus that open the plugin's frontend at `path`. Requires a
+// frontend. `path` stays inside /plugins/<id>/: the host appends the only query,
+// so no '%', '?', '#', '//' or '.'/'..' segment is accepted. Returns a
+// normalized array or null.
+function validateMenuItems(value: unknown, frontend: PluginFrontend | null, errors: string[]): PluginMenuItem[] | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length === 0) {
+    errors.push("'menuItems' must be a non-empty array");
+    return null;
+  }
+  if (value.length > MENU_ITEMS_MAX) {
+    errors.push(`'menuItems' allows at most ${MENU_ITEMS_MAX} entries`);
+    return null;
+  }
+  if (!frontend) {
+    errors.push("'menuItems' requires 'frontend'");
+    return null;
+  }
+  const out: PluginMenuItem[] = [];
+  value.forEach((entry, i) => {
+    const label = `menuItems[${i}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      errors.push(`'${label}' must be an object`);
+      return;
+    }
+    const e = entry as Record<string, unknown>;
+    for (const k of Object.keys(e)) {
+      if (!['label', 'scope', 'path'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+    }
+    const text = typeof e.label === 'string' ? e.label.trim() : '';
+    if (text === '' || text.length > MENU_LABEL_MAX) {
+      errors.push(`'${label}.label' is required (non-empty string, max ${MENU_LABEL_MAX} chars)`);
+    }
+    const scope = MENU_ITEM_SCOPES.find(s => s === e.scope);
+    if (!scope) errors.push(`'${label}.scope' must be one of: ${MENU_ITEM_SCOPES.join(', ')}`);
+    const p = e.path;
+    const pathOk = typeof p === 'string' && p.length <= MENU_PATH_MAX && MENU_PATH_RE.test(p)
+      && !p.includes('//') && !p.split('/').some(seg => seg === '.' || seg === '..');
+    if (!pathOk) {
+      errors.push(`'${label}.path' must be a '/'-led path inside the plugin's frontend (no '//', '.' or '..' segment, '?', '#', '%', '\\' or whitespace; max ${MENU_PATH_MAX} chars)`);
+    }
+    if (text !== '' && scope && pathOk) out.push({ label: text, scope, path: p });
   });
   return out;
 }

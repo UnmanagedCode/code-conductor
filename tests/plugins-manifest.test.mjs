@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { validateManifest, readManifest, claudePluginPaths } from '../src/plugins/manifest.ts';
+import { validateManifest, readManifest, claudePluginPaths, MENU_ITEMS_MAX, MENU_LABEL_MAX, MENU_PATH_MAX } from '../src/plugins/manifest.ts';
 import { readFixtureManifest } from './plugin-helpers.mjs';
 import { localSystem } from '../src/systems/registry.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -435,4 +435,104 @@ test('claudePlugin: a backslash `..` segment is refused, `data..v2` still accept
     assert.ok(r.errors, `claudePlugin=${v} should be refused`);
   }
   assert.equal(validateManifest(base({ claudePlugin: 'data..v2' })).errors, undefined);
+});
+
+// ── menuItems ──────────────────────────────────────────────────────────────
+
+const fe = { backend: { start: 'x' }, frontend: {} };
+const item = (over = {}) => ({ label: 'Board', scope: 'project', path: '/board', ...over });
+const withItems = (menuItems) => validateManifest(base({ ...fe, menuItems }));
+/** The rejection names the offending field and yields no manifest. */
+function assertRefused(r, field) {
+  assert.equal(r.manifest, undefined);
+  assert.ok(r.errors?.some(e => field.test(e)), `an error names ${field}: ${JSON.stringify(r.errors)}`);
+}
+
+test('menuItems: valid entries normalize — label trimmed, manifest order and both scopes kept', () => {
+  const r = withItems([item({ label: '  Board  ' }), item({ label: 'Diff', scope: 'worktree', path: '/diff' }), item({ label: 'Issues', path: '/issues' })]);
+  assert.equal(r.errors, undefined);
+  assert.deepEqual(r.manifest.menuItems, [
+    { label: 'Board', scope: 'project', path: '/board' },
+    { label: 'Diff', scope: 'worktree', path: '/diff' },
+    { label: 'Issues', scope: 'project', path: '/issues' },
+  ]);
+});
+
+test('menuItems: absent → key omitted from the normalized manifest', () => {
+  const r = validateManifest(base(fe));
+  assert.equal(r.errors, undefined);
+  assert.equal('menuItems' in r.manifest, false);
+});
+
+test('menuItems: requires frontend', () => {
+  const r = validateManifest(base({ backend: { start: 'x' }, menuItems: [item()] }));
+  assertRefused(r, /menuItems/);
+});
+
+test('menuItems: not an array, an empty array, or more than MENU_ITEMS_MAX entries is refused; exactly MENU_ITEMS_MAX is accepted', async (t) => {
+  for (const [name, v] of [['a string', 'x'], ['an object', item()], ['null', null], ['empty', []], ['over the cap', Array.from({ length: MENU_ITEMS_MAX + 1 }, () => item())]]) {
+    await t.test(name, () => assertRefused(withItems(v), /menuItems/));
+  }
+  await t.test('exactly the cap', () => {
+    const r = withItems(Array.from({ length: MENU_ITEMS_MAX }, () => item()));
+    assert.equal(r.errors, undefined);
+    assert.equal(r.manifest.menuItems.length, MENU_ITEMS_MAX);
+  });
+});
+
+test('menuItems: malformed entries are refused', async (t) => {
+  const rows = [
+    ['a string entry', 'x'], ['a null entry', null], ['an array entry', []],
+    ['an unknown key', item({ icon: 'x' })],
+    ['a missing label', { scope: 'project', path: '/a' }],
+    ['a missing scope', { label: 'A', path: '/a' }],
+    ['a missing path', { label: 'A', scope: 'project' }],
+    ['a non-string label', item({ label: 5 })],
+    ['a non-string path', item({ path: 5 })],
+  ];
+  for (const [name, entry] of rows) {
+    await t.test(name, () => assertRefused(withItems([item(), entry]), /menuItems\[1\]/));
+  }
+});
+
+test('menuItems: label — blank or over MENU_LABEL_MAX is refused; exactly MENU_LABEL_MAX is accepted', async (t) => {
+  for (const [name, label] of [['empty', ''], ['blank', '   '], ['over the cap', 'a'.repeat(MENU_LABEL_MAX + 1)]]) {
+    await t.test(name, () => assertRefused(withItems([item({ label })]), /menuItems\[0\]\.label/));
+  }
+  await t.test('exactly the cap', () => {
+    assert.equal(withItems([item({ label: 'a'.repeat(MENU_LABEL_MAX) })]).errors, undefined);
+  });
+  await t.test('the cap counts the trimmed label', () => {
+    assert.equal(withItems([item({ label: ` ${'a'.repeat(MENU_LABEL_MAX)} ` })]).errors, undefined);
+  });
+});
+
+test("menuItems: scope must be exactly 'project' or 'worktree'", async (t) => {
+  for (const scope of ['workspace', 'Project', '', null]) {
+    await t.test(JSON.stringify(scope), () => assertRefused(withItems([item({ scope })]), /menuItems\[0\]\.scope/));
+  }
+});
+
+test('menuItems: unsafe paths are refused', async (t) => {
+  const paths = ['board', '', '//evil.com/x', '/a//b', '/..', '/a/../b', '/./a', '/a/.', 'https://evil.com', 'javascript:alert(1)',
+    '/a?x=1', '/a#x', '/%2e%2e/x', '/a%2Fb', '/a\\b', '/a b', '/a\nb', '/' + 'a'.repeat(MENU_PATH_MAX)];
+  for (const p of paths) {
+    await t.test(JSON.stringify(p), () => assertRefused(withItems([item({ path: p })]), /menuItems\[0\]\.path/));
+  }
+});
+
+test('menuItems: safe paths are accepted', async (t) => {
+  const paths = ['/', '/board', '/board/', '/a.b/c..d', "/x-y_z~!$&'()*+,;=:@", '/' + 'a'.repeat(MENU_PATH_MAX - 1)];
+  for (const p of paths) {
+    await t.test(JSON.stringify(p).slice(0, 40), () => {
+      const r = withItems([item({ path: p })]);
+      assert.equal(r.errors, undefined);
+      assert.equal(r.manifest.menuItems[0].path, p);
+    });
+  }
+});
+
+test('menuItems: one bad entry invalidates the whole manifest', () => {
+  const r = withItems([item(), item({ label: 'B', path: '/b' }), item({ path: '/../x' })]);
+  assertRefused(r, /menuItems\[2\]\.path/);
 });

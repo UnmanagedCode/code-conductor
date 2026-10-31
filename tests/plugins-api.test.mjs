@@ -38,6 +38,33 @@ test('GET /api/plugins lists the discovered catalog', async () => {
   } finally { await boot.close(); }
 });
 
+async function writeFakeManifest(boot, menuItems) {
+  const file = path.join(boot.projectsRoot, 'fakeplug', 'conductor.plugin.json');
+  const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+  await fs.writeFile(file, JSON.stringify({ ...manifest, menuItems }));
+}
+
+test("GET /api/plugins carries a plugin's menuItems", async () => {
+  const boot = await setup();
+  try {
+    const menuItems = [{ label: 'Board', scope: 'project', path: '/board' }, { label: 'Diff', scope: 'worktree', path: '/diff' }];
+    await writeFakeManifest(boot, menuItems);
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins');
+    assert.deepEqual(r.body.rows.find(p => p.id === 'fake-plugin')?.menuItems, menuItems);
+  } finally { await boot.close(); }
+});
+
+test('a malformed menuItems entry lists the plugin invalid with the error', async () => {
+  const boot = await setup();
+  try {
+    await writeFakeManifest(boot, [{ label: 'Board', scope: 'project', path: '/../x' }]);
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins');
+    const row = r.body.rows.find(p => p.project === 'fakeplug');
+    assert.equal(row?.state, 'invalid');
+    assert.ok(row.errors.some(e => /menuItems\[0\]\.path/.test(e)), JSON.stringify(row.errors));
+  } finally { await boot.close(); }
+});
+
 test('enable → start → status → stop → disable round-trip', async () => {
   const boot = await setup();
   try {

@@ -32,6 +32,7 @@ const ROW_FIELDS = [
   'id',
   'localOnly',
   'manifestSource',
+  'menuItems',
   'name',
   'navLabel',
   'pid',
@@ -83,6 +84,7 @@ test('a running row carries the same field set, with the UI-read fields populate
     assert.equal(row.frontendKeepAlive, false);
     assert.equal(row.navLabel, 'Fake');
     assert.equal(row.hasMcp, true);
+    assert.deepEqual(row.menuItems, []);
     assert.equal(row.hasBackend, true);
     assert.equal(row.hasFrontend, true);
     assert.equal(typeof row.startedAt, 'string');
@@ -107,6 +109,51 @@ test('frontendKeepAlive mirrors the manifest\'s frontend.keepAlive', async () =>
     const row = await host.status('fake-plugin');
     assert.deepEqual(Object.keys(row).sort(), ROW_FIELDS);
     assert.equal(row.frontendKeepAlive, true);
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('menuItems mirrors the manifest\'s validated entries', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const manifest = await readFixtureManifest();
+    manifest.menuItems = [
+      { label: '  Board  ', scope: 'project', path: '/board' },
+      { label: 'Diff', scope: 'worktree', path: '/diff' },
+    ];
+    await env.addPluginProject('aplug', { manifest });
+    const row = await host.status('fake-plugin');
+    assert.deepEqual(Object.keys(row).sort(), ROW_FIELDS);
+    assert.deepEqual(row.menuItems, [
+      { label: 'Board', scope: 'project', path: '/board' },
+      { label: 'Diff', scope: 'worktree', path: '/diff' },
+    ]);
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('menuItems: only the winning row of a duplicate id carries them', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const items = [{ label: 'Board', scope: 'project', path: '/board' }];
+    const winner = await readFixtureManifest();
+    winner.menuItems = items;
+    const loser = await readFixtureManifest();
+    loser.menuItems = [{ label: 'Evil', scope: 'project', path: '/evil' }];
+    await env.addPluginProject('aplug', { manifest: winner });
+    await env.addPluginProject('bdup', { manifest: loser });
+    await host.enable('fake-plugin');
+    const rows = Object.fromEntries((await host.list()).map(r => [r.project, r]));
+    assert.equal(rows.bdup.state, 'conflict');
+    assert.equal(rows.bdup.enabled, true, 'fixture check: the conflict row reads the shared id\'s enabled flag');
+    assert.deepEqual(rows.aplug.menuItems, items, 'positive control: the winning row carries its items');
+    assert.deepEqual(rows.bdup.menuItems, []);
   } finally {
     await host.stopAll();
     await env.restore();
