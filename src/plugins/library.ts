@@ -172,6 +172,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-terminal',
+    name: 'Code Terminal',
+    description: 'In-browser terminals grouped by project, on the System each project lives on — this machine or a remote one.',
+    repo: 'https://github.com/UnmanagedCode/code-terminal',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
