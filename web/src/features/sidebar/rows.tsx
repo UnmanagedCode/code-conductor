@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
-  ArrowUpIcon, FolderGit2Icon, FolderIcon, GitBranchIcon, LockIcon, PlusIcon, ServerIcon,
-  ServerOffIcon, XIcon, FileDiffIcon, ArchiveIcon, SquareIcon,
+  ArrowUpIcon, FolderGit2Icon, FolderIcon, GitBranchIcon, LockIcon, ServerIcon,
+  ServerOffIcon, ArchiveIcon, SquareIcon,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { conductorColor } from '@shared/conductorColor';
@@ -11,14 +11,13 @@ import { promptPreview, sessionLabel } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import type { Project, Worktree } from '@/state/types';
-import { closeSession, promoteSession, removeWorktree, resumeSession, type CloseArgs } from '@/app/sessionActions';
+import { closeSession, promoteSession, resumeSession, type CloseArgs } from '@/app/sessionActions';
 import { selectInstance } from '@/app/controller';
 import { closeSidebarOnMobile } from '@/app/ui';
-import { openProjectRemoteDialog, openSpawnDialog } from '@/features/dialogs/api';
-import { openCommits, openReview } from '@/features/views/api';
+import { openProjectRemoteDialog } from '@/features/dialogs/api';
+import { openCommits } from '@/features/views/api';
 import { dotState, type SessionItem } from './derive';
 import { useAgoTick } from './state';
-import { ProjectMenu } from './ProjectMenu';
 
 /** The owner bar: a 3px left bar in the conductor's colour. */
 export function ownerStyle(owner: string | null | undefined): React.CSSProperties | undefined {
@@ -248,13 +247,14 @@ function worktreeTitle(ms: { ahead: number; behind: number }, base: string | und
 
 // ── Project row ──────────────────────────────────────────────────────────
 
-export function ProjectRow({ project: p, readOnly = false, liveCount = 0, instanceCount = 0, meta }: {
-  project: Project; readOnly?: boolean; liveCount?: number; instanceCount?: number; meta?: React.ReactNode;
+/** A project's sidebar row; `menu` is its ⋮, which the lens passes only where the project's full record resolves. */
+export function ProjectRow({ project: p, liveCount = 0, meta, menu }: {
+  project: Project; liveCount?: number; meta?: React.ReactNode; menu?: React.ReactNode;
 }) {
   const remote = !!p.system && p.system !== 'local';
   const unreachable = (p.systemUnreachable as string | null) || null;
   const ms = p.mergeStatus;
-  const systemClickable = remote && !unreachable && !readOnly;
+  const systemClickable = remote && !unreachable;
   const where = p.remoteId ? `remote '${p.remoteId}' of system '${p.system}'` : `system '${p.system}'`;
   const systemTitle = unreachable
     ?? `This project's tree, git repo and commands live on ${where} at ${p.path}. A worker session runs the claude CLI here and redirects its shell and file tools there.${systemClickable ? ' Click to change which target it is on.' : ''}`;
@@ -294,15 +294,16 @@ export function ProjectRow({ project: p, readOnly = false, liveCount = 0, instan
       )}
       {meta}
       {liveCount > 0 && <span className="size-1.5 shrink-0 rounded-full bg-success" title={`${liveCount} live`} />}
-      {!readOnly && <ProjectMenu project={p} instanceCount={instanceCount} />}
+      {menu}
     </div>
   );
 }
 
 // ── Worktree head ────────────────────────────────────────────────────────
 
-export function WorktreeHead({ project, wt, readOnly = false, owner = null, ownerTitle, dim = false, chevron }: {
-  project: string; wt: Worktree; readOnly?: boolean; owner?: string | null; ownerTitle?: (sid: string) => string; dim?: boolean; chevron?: React.ReactNode;
+/** A worktree's sidebar row; `menu` is its ⋮, which the lens passes only where the project lists the worktree. */
+export function WorktreeHead({ project, wt, owner = null, ownerTitle, dim = false, chevron, menu }: {
+  project: string; wt: Worktree; owner?: string | null; ownerTitle?: (sid: string) => string; dim?: boolean; chevron?: React.ReactNode; menu?: React.ReactNode;
 }) {
   const ms = wt.mergeStatus;
   return (
@@ -326,22 +327,7 @@ export function WorktreeHead({ project, wt, readOnly = false, owner = null, owne
         </span>
       )}
       <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">← {wt.baseBranch}</span>
-      <IconAction label="Review changes" onClick={() => {
-        closeSidebarOnMobile();
-        openReview({ title: `${project} / ${wt.worktreeName}`, url: `/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(wt.worktreeName)}/diff` });
-      }}>
-        <FileDiffIcon className="size-3.5" />
-      </IconAction>
-      {!readOnly && (
-        <>
-          <IconAction label="New session in this worktree" onClick={() => openSpawnDialog(project, { worktree: wt.worktreeName })} className={REVEAL}>
-            <PlusIcon className="size-3.5" />
-          </IconAction>
-          <IconAction label="Remove worktree" onClick={() => void removeWorktree(project, wt.worktreeName)} className={cn(REVEAL, 'hover:text-destructive')}>
-            <XIcon className="size-3.5" />
-          </IconAction>
-        </>
-      )}
+      {menu}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { GitCommitHorizontalIcon, GitMergeIcon, GitPullRequestArrowIcon, LockIcon, LockOpenIcon, PencilLineIcon, ArrowDownIcon } from 'lucide-react';
+import { FileDiffIcon, GitCommitHorizontalIcon, GitMergeIcon, GitPullRequestArrowIcon, LockIcon, LockOpenIcon, PencilLineIcon, ArrowDownIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -11,7 +11,7 @@ import { apiFetch } from '@shared/http';
 import { openReview, viewStore } from './api';
 import { ViewMessage, ViewShell } from './ViewShell';
 import { BAND_H, DOT_CY, DOT_R, LANE_W, computeGraph, laneColor, laneEmanates, laneX, type GraphRow } from './graph';
-import { commitDiffUrl, commitsApiBase, commitsStats, dividerIndex, uncommittedDiffUrl, type Commit, type CommitsPayload } from './commitsModel';
+import { commitDiffUrl, commitsApiBase, commitsStats, dividerIndex, uncommittedDiffUrl, worktreeDiffUrl, type Commit, type CommitsPayload } from './commitsModel';
 
 /** One row's slice of the rail: a fixed-height SVG node band plus full-height filler lines. */
 export function CommitRail({ layout, maxCols, node = true, uncommitted = false, fromWorkingTree = false }: { layout: GraphRow | null; maxCols: number; node?: boolean; uncommitted?: boolean; fromWorkingTree?: boolean }) {
@@ -131,7 +131,7 @@ export function CommitList({ data, apiBase, onOpen }: {
   );
 }
 
-/** A project's (or a worktree checkout's) commit history, with Sync / Merge / Lock for a worktree. */
+/** A project's (or a worktree checkout's) commit history, with Review / Sync / Merge / Lock for a worktree. */
 export function CommitsView() {
   const params = useStore(viewStore, (s) => s.commits);
   const project = params?.project ?? null;
@@ -183,6 +183,15 @@ export function CommitsView() {
   const isLocked = locked === true;
   const actions = worktree ? (
     <>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => openReview({ title: `${project} / ${worktree}`, url: worktreeDiffUrl(apiBase) })}
+        title="Review this worktree's changes against its base"
+        aria-label="Review changes"
+      >
+        <FileDiffIcon /> <span className="hidden sm:inline">Review</span>
+      </Button>
       <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(syncWorktree)} title="Bring this worktree up to date with its parent branch" aria-label="Sync">
         <GitPullRequestArrowIcon /> <span className="hidden sm:inline">Sync</span>
       </Button>

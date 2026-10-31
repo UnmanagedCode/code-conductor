@@ -8,13 +8,14 @@ import { archived, gone, insts, spawnConductor, spawnWorker } from './flows/flee
 import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
-type Inst = { id: string; sessionId: string; status: string; temp?: boolean; playbook?: string | null; stage?: string | null };
+type Inst = { id: string; sessionId: string; status: string; temp?: boolean; playbook?: string | null; stage?: string | null; worktree?: { worktreeName: string } | null };
 
 const label = (s: string) => `e2e-cl-${s}-${test.info().project.name}`;
-/** The tree's structural and close actions: none may appear in a conductor tree. */
-const STRUCTURAL = ['Project menu', 'New session in this worktree', 'Remove worktree', 'Stop session', 'Archive session (keeps history)'];
+/** The row review, a loose spawn/remove button and the close actions: none may appear in a conductor tree. */
+const NEVER_IN_TREE = ['Review changes', 'New session in this worktree', 'Remove worktree', 'Stop session', 'Archive session (keeps history)'];
 
-// Invariant: the expanded tree offers no structural or close action while commit history and review stay; ↑ sits on exactly
+// Invariant: the expanded tree carries commit history and the project and worktree ⋮ menus, whose worktree menu holds New session
+// in this worktree then Remove worktree…, and no row review, loose spawn/remove or close action; ↑ sits on exactly
 // the live temp conductor and worker rows of the lens, once each; a stage line shows exactly on a bound worker, matching /api/instances.
 export async function treeFlow({ page, cc }: Ctx): Promise<void> {
   test.setTimeout(180_000);
@@ -43,12 +44,23 @@ export async function treeFlow({ page, cc }: Ctx): Promise<void> {
   await expect(sb.locator(`[data-conductor="${b.sessionId}"]`)).toHaveCount(1);
   for (const w of [main, inWt, bound]) await expect(await next.treeWorkerRow(page, a.sessionId, w.sessionId)).toHaveCount(1);
 
-  await test.step('the tree is read-only', async () => {
+  await test.step('the tree carries the row menus', async () => {
     const tree = sb.locator(`[data-conductor="${a.sessionId}"] [data-conductor-tree]`);
+    const wtName = ((await insts(cc)) as Inst[]).find((i) => i.sessionId === inWt.sessionId)?.worktree?.worktreeName;
+    expect(wtName, 'fixture: the worktree worker reports its worktree').toBeTruthy();
+    const head = tree.locator(`[data-worktree-row="${wtName}"]`);
+    const trigger = head.getByRole('button', { name: 'Worktree menu', exact: true });
+    // The worktree ⋮ shows once the project list carries the worktree.
+    await expect(trigger).toHaveCount(1);
     const actions = await tree.locator('button[aria-label]').evaluateAll((bs) => [...new Set(bs.map((x) => x.getAttribute('aria-label')))]);
-    for (const l of STRUCTURAL) expect(actions, l).not.toContain(l);
-    expect(actions).toContain('Commit history');
-    expect(actions).toContain('Review changes');
+    for (const l of ['Commit history', 'Project menu', 'Worktree menu']) expect(actions, l).toContain(l);
+    for (const l of NEVER_IN_TREE) expect(actions, l).not.toContain(l);
+    // The ⋮ is hover-revealed on a pointer device and always shown on touch.
+    if (!(await page.evaluate(() => matchMedia('(hover: none)').matches))) await head.hover();
+    await trigger.click();
+    await expect(page.getByRole('menuitem')).toHaveText(['New session in this worktree', 'Remove worktree…']);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
     await next.lens(page, 'projects');
     const row = await next.projectRow(page, P);
     await expect(row.getByRole('button', { name: 'Project menu' }), 'positive control: the Projects lens offers it').toHaveCount(1);

@@ -9,8 +9,9 @@ vi.mock('@/app/sessionActions', () => ({
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { closeDialog, dialogStore } from '@/features/dialogs/api';
 import type { Project } from '@/state/types';
-import { closeProjectMenu, openProjectMenu, pickProjectMenuItem, projectMenuItems, projectMenuTrigger } from '@/test/projectMenu';
+import { closeProjectMenu, openProjectMenu, pickProjectMenuItem, projectMenuItems, projectMenuTrigger } from '@/test/rowMenu';
 import { ProjectRow, REVEAL } from './rows';
+import { ProjectMenu } from './ProjectMenu';
 
 const project = (over: Partial<Project> = {}) => ({
   name: 'api', path: '/p/api', workspace: null, system: 'local', remoteId: null, systemUnreachable: null,
@@ -18,7 +19,7 @@ const project = (over: Partial<Project> = {}) => ({
 }) as Project;
 
 function renderRow(p: Project, instanceCount = 0) {
-  render(<TooltipProvider><ProjectRow project={p} instanceCount={instanceCount} /></TooltipProvider>);
+  render(<TooltipProvider><ProjectRow project={p} menu={<ProjectMenu project={p} instanceCount={instanceCount} />} /></TooltipProvider>);
   return document.querySelector(`[data-project-row="${p.name}"]`) as HTMLElement;
 }
 

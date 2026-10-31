@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { CLOSE_TITLES } from '@shared/closeAction';
 import { blockOf, conductor, el, hand, inactiveGroup, proj, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
+import { pickProjectMenuItem, pickWorktreeMenuItem } from '@/test/rowMenu';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -31,6 +32,7 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions } = await import('./state');
 const { viewStore } = await import('@/features/views/api');
+const { closeDialog, dialogStore } = await import('@/features/dialogs/api');
 /** The sidebar state a fresh page starts from, read before any test writes it. */
 const FRESH = sidebarStore.get();
 
@@ -60,8 +62,8 @@ const projectItem = (tree: HTMLElement, name: string) => (tree.querySelector(`[d
 const worktreeItem = (tree: HTMLElement, name: string) => (tree.querySelector(`[data-worktree-row="${name}"]`) as HTMLElement | null)?.parentElement ?? null;
 const workerRows = (root: HTMLElement) => [...root.querySelectorAll('[data-session-row]')].map((e) => e.getAttribute('data-session-row'));
 const labels = (root: HTMLElement) => new Set([...root.querySelectorAll('button[aria-label]')].map((b) => b.getAttribute('aria-label')));
-/** The tree's structural and close actions: none may appear in a conductor tree. */
-const STRUCTURAL = ['Project menu', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.stop, CLOSE_TITLES.archive];
+/** The row's review, its loose spawn/remove and the close actions: none may appear in a conductor tree. */
+const NEVER_IN_TREE = ['Review changes', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.stop, CLOSE_TITLES.archive];
 
 beforeEach(() => {
   localStorage.clear();
@@ -77,6 +79,9 @@ beforeEach(() => {
   viewStore.set({ review: null, commits: null });
   location.hash = '';
   seed();
+});
+afterEach(() => {
+  for (const k of Object.keys(dialogStore.get()) as (keyof ReturnType<typeof dialogStore.get>)[]) closeDialog(k);
 });
 
 describe('conductor chips', () => {
@@ -228,20 +233,19 @@ describe('expanded conductor tree', () => {
     ]);
   });
 
-  it('the expanded tree is read-only: no spawn, delete, worktree or close action, while commit history and review stay', async () => {
-    // Invariant: the tree offers only commit history, review and promote; the same project, worktree and workers offer the structural actions in the Projects lens.
+  it('the expanded tree carries the project and worktree ⋮ menus and commit history, and no review, loose spawn/remove or close button', async () => {
+    // Invariant: the tree's rows carry the same ⋮ menus as the Projects lens and commit history, never the row review, a loose spawn/remove button or a close action; the Projects lens shows the menus and a close action on the same fleet.
     sidebarStore.set({ expandedWorktrees: ['proj'] });
     seed(treeFixture());
     renderSidebar();
     await settle();
     const tree = labels(expand('A'));
-    for (const l of STRUCTURAL) expect(tree.has(l), l).toBe(false);
-    expect(tree.has('Commit history')).toBe(true);
-    expect(tree.has('Review changes')).toBe(true);
+    for (const l of ['Project menu', 'Worktree menu', 'Commit history']) expect(tree.has(l), l).toBe(true);
+    for (const l of NEVER_IN_TREE) expect(tree.has(l), l).toBe(false);
     act(() => uiStore.set({ lens: 'projects' }));
     await settle();
     const projects = labels(el('[data-project-list]'));
-    for (const l of ['Project menu', 'New session in this worktree', 'Remove worktree', CLOSE_TITLES.archive]) expect(projects.has(l), `positive control: ${l}`).toBe(true);
+    for (const l of ['Project menu', 'Worktree menu', CLOSE_TITLES.archive]) expect(projects.has(l), `positive control: ${l}`).toBe(true);
   });
 
   it('a worker with no session yet gets no row in the tree, beside its sibling that has one', async () => {
@@ -312,8 +316,8 @@ describe('expanded conductor tree', () => {
     expect(workerRows(item)).toEqual([]);
   });
 
-  it('an idle project lists its surviving recorded worktrees by name, each marked idle, read-only and with no worker rows', async () => {
-    // Invariant: recorded worktree names still in the project's list show, sorted, marked idle; a deleted or unrecorded worktree does not; each keeps only commit history and review.
+  it('an idle project lists its surviving recorded worktrees by name, each marked idle, with commit history and its ⋮ and no worker rows', async () => {
+    // Invariant: recorded worktree names still in the project's list show, sorted, marked idle; a deleted or unrecorded worktree does not; each carries commit history and its ⋮, and no row review or loose spawn/remove.
     seed({
       projects: [proj('p', { worktrees: [wt('wt-z'), wt('wt-a'), wt('unrecorded')] })],
       instances: [conductor('A')],
@@ -328,8 +332,8 @@ describe('expanded conductor tree', () => {
       expect(item.getAttribute('data-idle'), name).toBe('true');
       expect(workerRows(item)).toEqual([]);
       const actions = labels(item);
-      expect(actions.has('Commit history') && actions.has('Review changes'), name).toBe(true);
-      expect(actions.has('New session in this worktree') || actions.has('Remove worktree'), name).toBe(false);
+      expect(actions.has('Commit history') && actions.has('Worktree menu'), name).toBe(true);
+      for (const l of ['Review changes', 'New session in this worktree', 'Remove worktree']) expect(actions.has(l), `${name}: ${l}`).toBe(false);
     }
   });
 
@@ -396,16 +400,14 @@ describe('expanded conductor tree', () => {
     expect(workerRows(theirs)).toEqual(['bw']);
   });
 
-  it('commit history and review on a recorded-only worktree open that project and worktree', async () => {
-    // Invariant: a recorded-only worktree's commit history and review address its (project, worktree) pair.
+  it('commit history on a recorded-only worktree opens that project and worktree', async () => {
+    // Invariant: a recorded-only worktree's commit history addresses its (project, worktree) pair.
     seed({ projects: [proj('p', { worktrees: [wt('wt')] })], instances: [conductor('A')], conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: ['wt'] }] } });
     renderSidebar();
     await settle();
     const item = worktreeItem(expand('A'), 'wt')!;
     fireEvent.click(within(item).getByRole('button', { name: 'Commit history' }));
     expect(viewStore.get().commits).toEqual({ project: 'p', worktree: 'wt' });
-    fireEvent.click(within(item).getByRole('button', { name: 'Review changes' }));
-    expect(viewStore.get().review?.url).toBe('/api/projects/p/worktrees/wt/diff');
   });
 
   it("a worktree head shows the listed worktree's current meta, recorded-only or live, never the worker instance's copy", async () => {
@@ -479,5 +481,79 @@ describe('expanded conductor tree', () => {
     act(() => appStore.set({ instances: [conductor('A'), worker('w', 'A', 'proj', null, { playbook: 'forge', stage: 'implement' })] }));
     expect(treeOf('A')!.querySelector('[data-session-row="w"]') === row).toBe(true);
     expect(row?.querySelector('[data-stage]')?.textContent).toBe('forge · implement');
+  });
+});
+
+describe('row menus in the conductor tree', () => {
+  /** The tree's head row for project `name`: its own actions, never the worktree rows below it. */
+  const projectRowIn = (tree: HTMLElement, name: string) => tree.querySelector(`[data-project-row="${name}"]`) as HTMLElement;
+  const headIn = (tree: HTMLElement, name: string) => tree.querySelector(`[data-worktree-row="${name}"]`) as HTMLElement;
+
+  it('a tree project shows the ⋮ only when its full record resolves; a stub row has no ⋮, no system pill and no commit history', async () => {
+    // Invariant: a tree project shows the ⋮ only when its full record resolves; a stub row has no ⋮, no system pill and no commit history.
+    seed({
+      projects: [proj('p', { isGitRepo: true, system: 'ssh-box', systemUnreachable: null })],
+      instances: [conductor('A'), worker('wp', 'A', 'p'), worker('wg', 'A', 'gone')],
+    });
+    renderSidebar();
+    await settle();
+    const tree = expand('A');
+    const full = projectRowIn(tree, 'p');
+    expect(labels(full).has('Project menu'), 'the listed project').toBe(true);
+    expect(full.querySelector('[data-system-pill]'), 'the listed project\'s pill').not.toBeNull();
+    expect(labels(full).has('Commit history'), 'the listed project\'s history').toBe(true);
+    const stub = projectRowIn(tree, 'gone');
+    expect(stub, 'precondition: the unlisted chip project has a row').not.toBeNull();
+    expect(labels(stub).has('Project menu'), 'the stub').toBe(false);
+    expect(stub.querySelector('[data-system-pill]'), 'the stub\'s pill').toBeNull();
+    expect(labels(stub).has('Commit history'), 'the stub\'s history').toBe(false);
+  });
+
+  it('a tree worktree shows the ⋮ only when the project lists it; a worktree synthesized from a live worker\'s instance has none', async () => {
+    // Invariant: a tree worktree shows the ⋮ only when the project lists it; a worktree synthesized from a live worker's instance copy has none.
+    seed({
+      projects: [proj('p', { worktrees: [wt('listed')] })],
+      instances: [conductor('A'), worker('wl', 'A', 'p', 'listed'), worker('wg', 'A', 'p', 'ghost')],
+    });
+    renderSidebar();
+    await settle();
+    const tree = expand('A');
+    const listed = labels(headIn(tree, 'listed'));
+    const ghost = labels(headIn(tree, 'ghost'));
+    expect(listed.has('Commit history') && ghost.has('Commit history'), 'positive control: both heads render').toBe(true);
+    expect(listed.has('Worktree menu'), 'listed').toBe(true);
+    expect(ghost.has('Worktree menu'), 'synthesized').toBe(false);
+  });
+
+  it('Delete… is reachable from the Conductors lens and opens the delete dialog with the full record and the project\'s instance count', async () => {
+    // Invariant: Delete… is reachable from the Conductors lens and opens the delete dialog with the full record and the project's instance count.
+    const f = treeFixture();
+    seed(f);
+    renderSidebar();
+    await settle();
+    await pickProjectMenuItem(projectRowIn(expand('A'), 'proj'), 'Delete…');
+    expect(dialogStore.get().deleteProject).toEqual({ project: f.projects[0], instanceCount: f.instances.filter((i: any) => i.project === 'proj').length });
+  });
+
+  it('Remove worktree… and New session in this worktree are reachable from the Conductors lens', async () => {
+    // Invariant: Remove worktree… and New session in this worktree are reachable from the Conductors lens.
+    seed(treeFixture());
+    renderSidebar();
+    await settle();
+    const tree = expand('A');
+    await pickWorktreeMenuItem(headIn(tree, 'wt-a'), 'Remove worktree…');
+    expect(removeWorktree.mock.calls).toEqual([['proj', 'wt-a']]);
+    await pickWorktreeMenuItem(headIn(tree, 'wt-a'), 'New session in this worktree');
+    expect(dialogStore.get().spawn).toEqual({ project: 'proj', opts: { worktree: 'wt-a' } });
+  });
+
+  it('a registered remote project\'s system pill opens the remote dialog from the Conductors lens', async () => {
+    // Invariant: a registered remote project's system pill opens the remote dialog from the Conductors lens.
+    const p = proj('p', { isGitRepo: true, system: 'ssh-box', systemUnreachable: null });
+    seed({ projects: [p], instances: [conductor('A'), worker('wp', 'A', 'p')] });
+    renderSidebar();
+    await settle();
+    fireEvent.click(projectRowIn(expand('A'), 'p').querySelector('[data-system-pill]') as HTMLElement);
+    expect(dialogStore.get().projectRemote).toEqual({ project: p });
   });
 });

@@ -15,6 +15,8 @@ import {
   setWorktreesOpen, useAgoTick, useSidebarUi,
 } from './state';
 import { Hint, IconAction, ProjectRow, SessionRow, WorktreeHead } from './rows';
+import { ProjectMenu } from './ProjectMenu';
+import { WorktreeMenu } from './WorktreeMenu';
 import type { SidebarModel } from './useSidebarModel';
 
 export function Chevron({ open, onToggle, label }: { open: boolean; onToggle: () => void; label: string }) {
@@ -186,6 +188,7 @@ function WorktreeItem({ ctx, project, wt }: { ctx: Ctx; project: Project; wt: an
         owner={own.kind === 'single' ? own.owner : null}
         ownerTitle={ctx.m.ownerTitle}
         chevron={total > 0 ? <Chevron open={open} label="Sessions" onToggle={() => setSessionsOpen(key, !open)} /> : <ChevronSpacer />}
+        menu={<WorktreeMenu project={project} worktree={wt.worktreeName} />}
       />
       {total > 0 && open && (
         <SessionsList
@@ -241,8 +244,8 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
       <ProjectRow
         project={p}
         liveCount={direct.length}
-        instanceCount={allInstances.length}
         meta={showSessions ? <SessionsMeta summary={summary} /> : null}
+        menu={<ProjectMenu project={p} instanceCount={allInstances.length} />}
       />
       {showSessions && <SessionsGroup ctx={ctx} project={p.name} liveInstances={direct} summary={summary} />}
       {!showSessions && worktrees.length === 0 && !owner && (

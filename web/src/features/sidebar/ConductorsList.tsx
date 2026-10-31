@@ -9,6 +9,8 @@ import { CONDUCT_PROJECT } from '@shared/conductors';
 import { chipsOf, wtName } from './derive';
 import { setConductorOpen, sidebarStore, useSidebarUi } from './state';
 import { Ago, CloseButton, Dot, dotTitle, ProjectRow, PromoteButton, rowName, SessionRow, UnreadPill, WorktreeHead } from './rows';
+import { ProjectMenu } from './ProjectMenu';
+import { WorktreeMenu } from './WorktreeMenu';
 import type { SidebarModel } from './useSidebarModel';
 
 function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel; workers: Instance[]; projectName: string; worktreeName: string | null }) {
@@ -32,14 +34,18 @@ function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel
   );
 }
 
-/** A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees. */
+/**
+ * A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees.
+ * A project row carries its ⋮ only when the project list holds its record, and a worktree row only when that project lists it.
+ */
 function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips: ConductorChip[] }) {
   const workers = workersOf(sid, m.instances);
   const byName = new Map(m.projects.map((p) => [p.name, p]));
   return (
     <ul className="space-y-0.5 py-1 pl-1" data-conductor-tree>
       {chips.map((chip) => {
-        const p: Project = byName.get(chip.project) ?? ({ name: chip.project, worktrees: [] } as unknown as Project);
+        const full = byName.get(chip.project);
+        const p: Project = full ?? ({ name: chip.project, worktrees: [] } as unknown as Project);
         const mine = workers.filter((w) => w.project === chip.project);
         const direct = mine.filter((w) => !wtName(w));
         const byWt = new Map<string, Instance[]>();
@@ -54,16 +60,20 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
         const names = [...byWt.keys(), ...recorded].sort((a, b) => a.localeCompare(b));
         return (
           <li key={chip.project}>
-            <ProjectRow project={p} readOnly />
+            <ProjectRow
+              project={p}
+              menu={full && <ProjectMenu project={full} instanceCount={m.instances.filter((i) => i.project === full.name).length} />}
+            />
             {direct.length > 0 && <WorkerList m={m} workers={direct} projectName={chip.project} worktreeName={null} />}
             {names.length > 0 && (
               <ul className="ml-3 space-y-px border-l border-sidebar-border pl-1.5">
                 {names.map((n) => {
                   const ws = byWt.get(n);
-                  const wt: Worktree = listed.get(n) ?? { ...ws![0].worktree, worktreeName: n };
+                  const listedWt = listed.get(n);
+                  const wt: Worktree = listedWt ?? { ...ws![0].worktree, worktreeName: n };
                   return (
                     <li key={n} data-idle={!ws || undefined}>
-                      <WorktreeHead project={chip.project} wt={wt} readOnly dim={!ws} />
+                      <WorktreeHead project={chip.project} wt={wt} dim={!ws} menu={full && listedWt && <WorktreeMenu project={full} worktree={n} />} />
                       {ws && <WorkerList m={m} workers={ws} projectName={chip.project} worktreeName={n} />}
                     </li>
                   );
