@@ -32,6 +32,7 @@ const ROW_FIELDS = [
   'id',
   'localOnly',
   'manifestSource',
+  'menuItems',
   'name',
   'navLabel',
   'pid',
@@ -83,6 +84,7 @@ test('a running row carries the same field set, with the UI-read fields populate
     assert.equal(row.frontendKeepAlive, false);
     assert.equal(row.navLabel, 'Fake');
     assert.equal(row.hasMcp, true);
+    assert.deepEqual(row.menuItems, []);
     assert.equal(row.hasBackend, true);
     assert.equal(row.hasFrontend, true);
     assert.equal(typeof row.startedAt, 'string');
@@ -107,6 +109,28 @@ test('frontendKeepAlive mirrors the manifest\'s frontend.keepAlive', async () =>
     const row = await host.status('fake-plugin');
     assert.deepEqual(Object.keys(row).sort(), ROW_FIELDS);
     assert.equal(row.frontendKeepAlive, true);
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('menuItems mirrors the manifest\'s validated entries', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const manifest = await readFixtureManifest();
+    manifest.menuItems = [
+      { label: '  Board  ', scope: 'project', path: '/board' },
+      { label: 'Diff', scope: 'worktree', path: '/diff' },
+    ];
+    await env.addPluginProject('aplug', { manifest });
+    const row = await host.status('fake-plugin');
+    assert.deepEqual(Object.keys(row).sort(), ROW_FIELDS);
+    assert.deepEqual(row.menuItems, [
+      { label: 'Board', scope: 'project', path: '/board' },
+      { label: 'Diff', scope: 'worktree', path: '/diff' },
+    ]);
   } finally {
     await host.stopAll();
     await env.restore();
