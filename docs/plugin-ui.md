@@ -62,7 +62,7 @@ Load both in the page's `<head>`:
 - **Keep the document at the plugin root.** The page is served at `/plugins/<id>/` inside cc and at `/` standalone; on a deep path, relative URLs resolve against the wrong directory.
 - **Read the route on load and on `popstate`.** cc's `navigate` message arrives as a `popstate`.
 - Example scheme: route state in the query string. Write it with `history.pushState(null, '', '?view=card&id=42')`, read it from `location.search`.
-- **A page opened from a row ⋮ item** gets `ccProject` (and `ccWorktree`) in its query. A `pushState('?…')` of its own replaces them, so keep them if the page needs them ([plugins.md](plugins.md) → `menuItems`).
+- **A page opened from a row ⋮ item** gets `ccProject` (and `ccWorktree`) in its query. A `pushState('?…')` of its own replaces them, so keep them if the page needs them, and treat them as untrusted text ([plugins.md](plugins.md) → `menuItems`).
 - Two examples for the cases that tempt a hash:
   - **An in-page anchor** (`<a href="#section">`): have its click handler call `preventDefault()` and then `scrollIntoView()` on the target, so the click changes no URL.
   - **A legacy hash URL** (an old bookmark such as `#/card/42`): parse it once on load and `history.replaceState` it into the query form, so the document never keeps a hash.

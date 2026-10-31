@@ -97,6 +97,25 @@ describe('plugin groups in a row ⋮', () => {
     expect(rowMenuItems(menu).at(-1)!.textContent).toBe('Delete…');
   });
 
+  it('the menus keep the plugin groups between the existing items and the destructive item', async () => {
+    // Invariant: project ⋮ = New session, Edit conventions…, plugin items, Delete…; worktree ⋮ = New session in this worktree, plugin items, Remove worktree…; one separator before each group and one before the destructive item.
+    catalogStore.set({ apps: CATALOG });
+    renderApi();
+    const sequence = (menu: HTMLElement) => [...menu.querySelectorAll('[role="menuitem"], [role="separator"]')]
+      .map((n) => (n.getAttribute('role') === 'separator' ? '—' : n.textContent));
+    expect(sequence(await openProjectMenu(projectRowOf('api')))).toEqual([
+      'New session', 'Edit conventions…',
+      '—', '<b>Board</b>', 'Issues', '—', 'Wiki', '—', 'Notes',
+      '—', 'Delete…',
+    ]);
+    await closeRowMenu();
+    expect(sequence(await openWorktreeMenu(headOf('wt1')))).toEqual([
+      'New session in this worktree',
+      '—', 'Diff', '—', 'Terminal', 'Logs',
+      '—', 'Remove worktree…',
+    ]);
+  });
+
   it('Projects lens: the worktree ⋮ lists only worktree items; a plugin with none in that scope has no group', async () => {
     // Invariant: the worktree ⋮ shows worktree-scope items only, and omits a plugin with none.
     catalogStore.set({ apps: CATALOG });

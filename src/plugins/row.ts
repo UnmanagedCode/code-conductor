@@ -126,7 +126,8 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
     conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description, hasScaffold: !!g.scaffold })),
     roles: (entry.manifest?.roles ?? []).map(r => ({ slug: `${id}/${r.slug}`, name: r.name })),
     playbooks: (entry.manifest?.playbooks ?? []).map(p => ({ slug: `${id}/${p.slug}` })),
-    menuItems: (entry.manifest?.menuItems ?? []).map(({ label, scope, path }) => ({ label, scope, path })),
+    // Only an `ok` entry contributes (the registry's contributingEntries() rule): a conflict's losing manifest shares the winner's id and so its `enabled`.
+    menuItems: (entry.discoveryState === 'ok' ? entry.manifest?.menuItems ?? [] : []).map(({ label, scope, path }) => ({ label, scope, path })),
     port: record?.port ?? null,
     pid: record?.pid ?? null,
     startedAt: record?.startedAt ?? null,

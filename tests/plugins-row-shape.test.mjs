@@ -137,6 +137,29 @@ test('menuItems mirrors the manifest\'s validated entries', async () => {
   }
 });
 
+test('menuItems: only the winning row of a duplicate id carries them', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const items = [{ label: 'Board', scope: 'project', path: '/board' }];
+    const winner = await readFixtureManifest();
+    winner.menuItems = items;
+    const loser = await readFixtureManifest();
+    loser.menuItems = [{ label: 'Evil', scope: 'project', path: '/evil' }];
+    await env.addPluginProject('aplug', { manifest: winner });
+    await env.addPluginProject('bdup', { manifest: loser });
+    await host.enable('fake-plugin');
+    const rows = Object.fromEntries((await host.list()).map(r => [r.project, r]));
+    assert.equal(rows.bdup.state, 'conflict');
+    assert.equal(rows.bdup.enabled, true, 'fixture check: the conflict row reads the shared id\'s enabled flag');
+    assert.deepEqual(rows.aplug.menuItems, items, 'positive control: the winning row carries its items');
+    assert.deepEqual(rows.bdup.menuItems, []);
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
 test('crashTail carries the child output after a crash', async () => {
   const env = await makePluginRoot();
   const host = createPluginHost({ _backoffUnitMs: 1 });
