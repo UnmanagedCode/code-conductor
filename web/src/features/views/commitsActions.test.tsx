@@ -295,3 +295,32 @@ describe('the lock', () => {
     expect(screen.getByText('four'), 'control: wt4\'s own list is').toBeTruthy();
   });
 });
+
+describe('Review changes', () => {
+  const review = () => screen.getByRole('button', { name: 'Review changes' }) as HTMLButtonElement;
+
+  it('a worktree\'s history offers Review changes, which opens that worktree\'s base...HEAD review', async () => {
+    // Invariant: a worktree's history offers Review changes, which opens exactly that worktree's base...HEAD review.
+    await mount('p', 'wt');
+    await click(review());
+    expect(viewStore.get().review).toEqual({ title: 'p / wt', url: '/api/projects/p/worktrees/wt/diff' });
+  });
+
+  it('a project\'s own history has no Review changes', async () => {
+    // Invariant: a project's own history has no Review changes.
+    await mount('p', null);
+    expect(document.querySelector('[data-commit-list]'), 'positive control: the history loaded').not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review changes' })).toBeNull();
+  });
+
+  it('Review stays enabled while a worktree action is in flight', async () => {
+    // Invariant: Review stays enabled while a worktree action is in flight.
+    const h = heldResult();
+    vi.spyOn(actions, 'syncWorktree').mockReturnValueOnce(h.promise);
+    await mount('p', 'wt');
+    await click(action('Sync'));
+    expect(action('Sync').disabled, 'precondition: the Sync is in flight').toBe(true);
+    expect(review().disabled).toBe(false);
+    await h.release({ ok: false, reason: 'no' });
+  });
+});

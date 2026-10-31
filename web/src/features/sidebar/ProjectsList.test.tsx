@@ -644,16 +644,15 @@ describe('Projects tree', () => {
     expect(within(el('[data-project-list]')).queryByText('no commits')).toBeNull();
   });
 
-  it('commit history names the project on a project row and the pair on a worktree row, as the worktree review does', () => {
-    // Invariant: a worktree's commit history and review address the (project, worktree) pair; a project's addresses the project alone.
+  it('commit history names the project on a project row and the pair on a worktree row', () => {
+    // Invariant: a worktree's commit history addresses the (project, worktree) pair; a project's addresses the project alone; the worktree row has no review of its own.
     sidebarStore.set({ expandedWorktrees: ['demo'] });
     seed({ projects: [proj('demo', { isGitRepo: true, worktrees: [wt('demo_wt')] })] });
     renderSidebar();
     const wtRow = el('[data-worktree-row="demo_wt"]');
     fireEvent.click(within(wtRow).getByRole('button', { name: 'Commit history' }));
     expect(viewStore.get().commits).toEqual({ project: 'demo', worktree: 'demo_wt' });
-    fireEvent.click(within(wtRow).getByRole('button', { name: 'Review changes' }));
-    expect(viewStore.get().review).toEqual({ title: 'demo / demo_wt', url: '/api/projects/demo/worktrees/demo_wt/diff' });
+    expect(within(wtRow).queryByRole('button', { name: 'Review changes' })).toBeNull();
     fireEvent.click(within(el('[data-project-row="demo"]')).getByRole('button', { name: 'Commit history' }));
     expect(viewStore.get().commits).toEqual({ project: 'demo', worktree: null });
   });

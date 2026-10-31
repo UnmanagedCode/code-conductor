@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
-import { closeProjectMenu, openProjectMenu, projectMenuItems } from '@/test/projectMenu';
+import { closeProjectMenu, openProjectMenu, openWorktreeMenu, projectMenuItems } from '@/test/rowMenu';
 import {
   A, ALPHA, BRAVO, C, COLOUR, FLEET_UI, NO_BAR, barOf, conductor, disk, fleet, headOf, labelOf, openOf, proj, projectRowOf, rowOf,
   seed, seedFleet, worker, wt,
@@ -217,8 +217,11 @@ describe('Projects-lens ownership colour', () => {
       ['New session', null], ['Edit conventions…', null], ['Delete…', null],
     ]);
     await closeProjectMenu();
-    expect(within(headOf('solo-a')).getByRole('button', { name: 'New session in this worktree' })).toBeTruthy();
-    expect(within(headOf('solo-a')).getByRole('button', { name: 'Remove worktree' })).toBeTruthy();
+    const wtMenu = await openWorktreeMenu(headOf('solo-a'));
+    expect(projectMenuItems(wtMenu).map((i) => [i.textContent, i.getAttribute('aria-disabled')])).toEqual([
+      ['New session in this worktree', null], ['Remove worktree…', null],
+    ]);
+    await closeProjectMenu();
   });
 });
 

@@ -32,6 +32,8 @@ export function commitsApiBase(project: string, worktree?: string | null) {
 
 export const commitDiffUrl = (apiBase: string, sha: string) => `${apiBase}/commits/${encodeURIComponent(sha)}/diff`;
 export const uncommittedDiffUrl = (apiBase: string) => `${apiBase}/commits/uncommitted/diff`;
+/** A worktree's base...HEAD review, on its `commitsApiBase`. */
+export const worktreeDiffUrl = (apiBase: string) => `${apiBase}/diff`;
 
 /**
  * Index of the row the "already in <base>" divider sits above, or -1. Each

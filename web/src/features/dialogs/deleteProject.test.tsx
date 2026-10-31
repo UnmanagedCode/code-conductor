@@ -32,7 +32,7 @@ import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { performProjectDelete } from '@/app/sessionActions';
 import type { Instance, Project } from '@/state/types';
-import { pickProjectMenuItem } from '@/test/projectMenu';
+import { pickProjectMenuItem } from '@/test/rowMenu';
 
 const local = (over: Partial<Project> = {}) =>
   ({ name: 'demo', path: '/w/demo', system: 'local', remoteId: null, worktrees: [], ...over }) as unknown as Project;

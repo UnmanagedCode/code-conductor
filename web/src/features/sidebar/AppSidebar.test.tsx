@@ -4,7 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { formatAutoResumeTime } from '@shared/usage';
-import { closeProjectMenu, openProjectMenu, pickProjectMenuItem, projectMenuItems } from '@/test/projectMenu';
+import { closeProjectMenu, openProjectMenu, pickProjectMenuItem, pickWorktreeMenuItem, projectMenuItems } from '@/test/rowMenu';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -265,13 +265,14 @@ describe('AppSidebar', () => {
     expect(within(farRow()).queryByText('dubious ownership')).toBeNull();
   });
 
-  it('a worktree\'s × removes that worktree', () => {
+  it('a worktree\'s Remove worktree… removes that worktree', async () => {
+    // Invariant: the worktree menu's Remove worktree… runs removeWorktree for that row's project and worktree.
     uiStore.set({ lens: 'projects' });
     sidebarStore.set({ expandedWorktrees: ['api'] });
     seed({ projects: [{ name: 'api', path: '/p/api', workspace: null, system: 'local', remoteId: null, worktrees: [{ worktreeName: 'wt1', baseBranch: 'main' }] }] as any });
     renderSidebar();
     const wtRow = document.querySelector('[data-worktree-row="wt1"]') as HTMLElement;
-    fireEvent.click(within(wtRow).getByRole('button', { name: 'Remove worktree' }));
+    await pickWorktreeMenuItem(wtRow, 'Remove worktree…');
     expect(removeWorktree).toHaveBeenCalledWith('api', 'wt1');
   });
 

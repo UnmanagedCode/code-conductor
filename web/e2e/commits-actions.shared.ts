@@ -1,5 +1,6 @@
-// The web UI's commit history on a real cc: Sync, Merge and Lock are named at
-// every width, Lock round-trips through the server and gates Merge, each
+// The web UI's commit history on a real cc: Review changes, Sync, Merge and Lock
+// are named at every width, Review changes opens the worktree's review and Back
+// returns to its history, Lock round-trips through the server and gates Merge, each
 // worktree shows its own lock, an action in flight disables all three and an
 // ok Sync reloads the list, and Merge asks before it sends anything. The body
 // is shared by the per-project spec files; this module declares no tests.
@@ -51,10 +52,19 @@ export async function commitsActionsFlow({ page, cc }: Args): Promise<void> {
   const view = commitsView(page);
   const named = (name: string) => view.getByRole('button', { name, exact: true });
 
-  // Invariant: Sync, Merge and Lock are named at every width.
+  // Invariant: Review changes, Sync, Merge and Lock are named at every width.
+  await expect(named('Review changes'), 'Review changes is named').toBeVisible();
   await expect(named('Sync'), 'Sync is named').toBeVisible();
   await expect(named('Merge'), 'Merge is named').toBeVisible();
   await expect(named('Lock'), 'Lock is named').toBeEnabled();
+
+  // Invariant: Review changes opens this worktree's base...HEAD review, and Back returns to its history.
+  await named('Review changes').click();
+  await expect(page).toHaveURL(/#review$/);
+  await expect(page.locator('main[data-view="review"]').getByRole('heading', { level: 1 })).toContainText(`${project} / ${one}`);
+  await back(page);
+  await expect(page).toHaveURL(/#commits$/);
+  await expect(view.getByRole('heading', { level: 1 }), 'back on the worktree history').toContainText(one);
 
   // Invariant: Lock asks the server, shows its answer, and gates Merge, both ways.
   await expect(named('Lock')).toHaveAttribute('aria-pressed', 'false');
