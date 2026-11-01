@@ -1,7 +1,8 @@
 // The image viewer overlay: a tap on a conversation image opens it, a tap on the big image zooms to
 // 1:1. These flows measure where the zoomed image sits, where its scrollbar sits and where the view
 // starts, on an image that fits, one that overflows only vertically, one that overflows both ways
-// and a wide one whose viewer's top moves on zoom. The body is shared by the per-project spec files; this module declares no tests.
+// and a wide one whose viewer's top moves on zoom; and that a tap outside the image, fit or zoomed, closes
+// the viewer and never zooms. The body is shared by the per-project spec files; this module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
@@ -123,6 +124,17 @@ function noPageOrDialogScroll(z: Zoomed, what: string) {
   expect(z.dialogOver, `${what}: the dialog does not scroll`).toEqual({ x: 0, y: 0 });
 }
 
+/** The fit image's box is the painted image: its aspect kept (no letterbox band), within the fit limits with one binding, centred. */
+async function expectFitBox(page: Page, s: Size, dialog: Rect, what: string) {
+  const img = await rectOf(bigImage(page));
+  const maxH = 0.9 * await page.evaluate(() => window.innerHeight);
+  expect(Math.abs(img.height - (img.width * s.height) / s.width), `${what}: the fit image's box keeps the image's aspect`).toBeLessThanOrEqual(2);
+  expect(img.width, `${what}: the fit image is no wider than the dialog content`).toBeLessThanOrEqual(dialog.width + EPS);
+  expect(img.height, `${what}: the fit image is no taller than 90% of the viewport`).toBeLessThanOrEqual(maxH + EPS);
+  expect(Math.min(Math.abs(img.width - dialog.width), Math.abs(img.height - maxH)), `${what}: one fit limit binds`).toBeLessThanOrEqual(EPS);
+  expect(Math.abs(centerX(img) - centerX(dialog)), `${what}: the fit image is centred in the dialog`).toBeLessThanOrEqual(EPS);
+}
+
 async function attachShot(page: Page, name: string) {
   await test.info().attach(name, { body: await page.screenshot(), contentType: 'image/png' });
 }
@@ -132,7 +144,7 @@ async function zoomAt(page: Page, s: Size, fx: number, fy: number) {
   await openOverlay(page, s);
   const fitDialog = await rectOf(dialogOf(page));
   const fitImg = await rectOf(bigImage(page));
-  expect(Math.abs(fitImg.width - fitDialog.width), `${s.name}: the fit image is as wide as the dialog content`).toBeLessThanOrEqual(EPS);
+  await expectFitBox(page, s, fitDialog, s.name);
   const closeOffset = async () => {
     const c = await rectOf(dialogOf(page).getByRole('button', { name: 'Close' }));
     const d = await rectOf(dialogOf(page));
@@ -168,8 +180,7 @@ export async function smallFitsCenteredFlow({ page, cc }: Args): Promise<void> {
   await bigImage(page).click();
   await expect(bigImage(page)).toHaveAttribute('title', 'Actual size');
   await settled(bigImage(page));
-  const fit = await rectOf(bigImage(page));
-  expect(Math.abs(fit.width - z.dialog.width), 'back at fit, the image is as wide as the dialog content').toBeLessThanOrEqual(EPS);
+  await expectFitBox(page, SMALL, await rectOf(dialogOf(page)), 'back at fit');
   await page.mouse.click(2, 2);
   await expect(wrapperOf(page)).toHaveCount(0);
 }
@@ -216,4 +227,45 @@ export async function wideReanchorsOnZoomFlow({ page, cc }: Args): Promise<void>
   expect(Math.abs(z.scroll.top - want.top), 'the vertical start comes from the zoomed viewer\'s origin').toBeLessThanOrEqual(tolerance);
   expect(Math.abs(z.scroll.left - want.left)).toBeLessThanOrEqual(tolerance);
   await attachShot(page, 'wide-zoomed');
+}
+
+/** A tap where the project taps: the touchscreen on a touch device, the mouse otherwise. */
+async function tapAt(page: Page, pt: { x: number; y: number }): Promise<void> {
+  if (test.info().project.use.hasTouch) await page.touchscreen.tap(pt.x, pt.y);
+  else await page.mouse.click(pt.x, pt.y);
+}
+
+const cursorAt = (page: Page, pt: { x: number; y: number }) =>
+  page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, pt);
+
+export async function outsideClickClosesFlow({ page, cc }: Args): Promise<void> {
+  await sendImages(page, cc, [TALL, SMALL]);
+  await openOverlay(page, TALL);
+  const dialog = await rectOf(dialogOf(page));
+  const centre = await paintedPoint(page, TALL, 0.5, 0.5);
+  const paintedLeft = (await paintedPoint(page, TALL, 0, 0.5)).x;
+  expect(paintedLeft - dialog.left, 'positive control: the dialog has room beside the painted image').toBeGreaterThan(40);
+  expect(await cursorAt(page, centre), 'positive control: the zoom cursor shows over the image').toBe('zoom-in');
+  const beside = { x: Math.round((dialog.left + paintedLeft) / 2), y: centre.y };
+  await attachShot(page, 'tall-fit');
+  expect(await cursorAt(page, beside), 'no zoom cursor beside the image').not.toBe('zoom-in');
+  await bigImage(page).evaluate((img) => {
+    const w = window as unknown as { __zoomTitles: (string | null)[] };
+    w.__zoomTitles = [];
+    new MutationObserver((ms) => { for (const m of ms) w.__zoomTitles.push((m.target as Element).getAttribute('title')); })
+      .observe(img, { attributes: true, attributeFilter: ['title'] });
+  });
+  await tapAt(page, beside);
+  await expect(wrapperOf(page), 'a tap beside the fit image closes the preview').toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { __zoomTitles: (string | null)[] }).__zoomTitles), 'the tap beside the image never zoomed').toEqual([]);
+
+  await openOverlay(page, SMALL);
+  await tapAt(page, await paintedPoint(page, SMALL, 0.5, 0.5));
+  await expect(bigImage(page)).toHaveAttribute('title', 'Fit to screen');
+  await settled(wrapperOf(page));
+  const zDialog = await rectOf(dialogOf(page));
+  const zWrapper = await rectOf(wrapperOf(page));
+  expect(zDialog.width - zWrapper.width, 'positive control: the dialog is much wider than the zoomed image').toBeGreaterThan(40);
+  await tapAt(page, { x: Math.round((zDialog.left + zWrapper.left) / 2), y: Math.round((zWrapper.top + zWrapper.bottom) / 2) });
+  await expect(wrapperOf(page), 'a tap beside the zoomed image closes the preview').toHaveCount(0);
 }

@@ -3,14 +3,20 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { tapFraction, zoomScroll } from './zoomScroll';
 
+const FIT_MAX_W = 'min(96vw, 1400px)';
+const FIT_MAX_H = '90dvh';
+
 /**
  * A thumbnail that opens in an in-page overlay. Handling the tap in-page sidesteps
  * Chrome-on-Android's data: URL navigation block and the standalone-PWA custom tab.
- * In the overlay a tap toggles fit-to-screen and 1:1; the 1:1 view is centred when it fits and otherwise starts with the tapped spot under the pointer, then pans by scrolling.
+ * In the overlay a tap on the image toggles fit-to-screen and 1:1; the 1:1 view is centred when it fits and otherwise starts with the tapped spot under the pointer, then pans by scrolling.
+ * A tap anywhere outside the image closes it. The fit image is sized from its aspect ratio, so its box is the painted image and has no letterbox band to catch a tap.
  */
 export function ImageZoom({ src, alt, className }: { src: string; alt: string; className?: string }) {
   const [open, setOpen] = React.useState(false);
   const [actual, setActual] = React.useState(false);
+  const [ratio, setRatio] = React.useState<number | null>(null);
+  const pressOnSurface = React.useRef(false);
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const pendingTap = React.useRef<{ fx: number; fy: number; clientX: number; clientY: number } | null>(null);
 
@@ -47,15 +53,22 @@ export function ImageZoom({ src, alt, className }: { src: string; alt: string; c
         <img src={src} alt={alt} loading="lazy" className={cn('max-w-full object-contain', className)} />
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-[min(96vw,1400px)] border-0 bg-transparent p-0 shadow-none sm:max-w-[min(96vw,1400px)]">
+        <DialogContent
+          className="border-0 bg-transparent p-0 shadow-none"
+          style={{ maxWidth: FIT_MAX_W }}
+          onPointerDown={(e) => { pressOnSurface.current = e.target === e.currentTarget; }}
+          onClick={(e) => { if (e.target === e.currentTarget && pressOnSurface.current) setOpen(false); }}
+        >
           <DialogTitle className="sr-only">{alt}</DialogTitle>
-          <div ref={wrapperRef} className={cn('max-h-[90dvh] rounded-lg', actual ? 'max-w-full justify-self-center overflow-auto' : 'overflow-hidden')} data-image-overlay>
+          <div ref={wrapperRef} style={{ maxHeight: FIT_MAX_H }} className={cn('max-w-full justify-self-center rounded-lg', actual ? 'overflow-auto' : 'overflow-hidden')} data-image-overlay>
             <img
               src={src}
               alt={alt}
               onClick={toggle}
+              onLoad={(e) => { const { naturalWidth: w, naturalHeight: h } = e.currentTarget; if (w > 0 && h > 0) setRatio(w / h); }}
               title={actual ? 'Fit to screen' : 'Actual size'}
-              className={cn(actual ? 'max-w-none cursor-zoom-out' : 'max-h-[90dvh] w-full cursor-zoom-in object-contain')}
+              style={actual ? undefined : { maxHeight: FIT_MAX_H, width: ratio ? `min(${FIT_MAX_W}, calc(${FIT_MAX_H} * ${ratio}))` : undefined }}
+              className={cn(actual ? 'max-w-none cursor-zoom-out' : 'h-auto max-w-full cursor-zoom-in')}
             />
           </div>
         </DialogContent>

@@ -209,3 +209,77 @@ describe('image overlay zoom position', () => {
     expect(overlay()!.querySelector('img')!.getAttribute('src')).toBe(SRC);
   });
 });
+
+describe('clicks around the image', () => {
+  const surface = () => document.querySelector('[data-slot="dialog-content"]') as HTMLElement;
+  const backdrop = () => document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement;
+  const big = () => overlay()!.querySelector('img')!;
+  /** Records every title change on the big image, so "never zoomed" is observed, not inferred from the end state. */
+  const watchTitle = () => {
+    const records: string[] = [];
+    const mo = new MutationObserver((ms) => { for (const m of ms) records.push((m.target as Element).getAttribute('title') ?? ''); });
+    mo.observe(big(), { attributes: true, attributeFilter: ['title'] });
+    return { records, stop: () => { records.push(...mo.takeRecords().map((m) => (m.target as Element).getAttribute('title') ?? '')); mo.disconnect(); } };
+  };
+  const press = async (down: Element, up: Element) => {
+    await act(async () => {
+      fireEvent.pointerDown(down);
+      fireEvent.click(up);
+    });
+    await flush();
+  };
+
+  it('a click on the dialog surface beside the fit image closes the preview and does not zoom', async () => {
+    // Invariant: at fit, a press and click on the surface around the image (not the backdrop) dismisses the preview and never toggles the zoom.
+    const { root } = await withToolImage();
+    await open(root);
+    expect(overlay(), 'positive control: the preview is open').not.toBeNull();
+    expect(big().getAttribute('title'), 'positive control: it opens at fit').toBe('Actual size');
+    const titles = watchTitle();
+    await press(surface(), surface());
+    expect(overlay(), 'a click on the surface beside the image closes the preview').toBeNull();
+    titles.stop();
+    expect(titles.records).toEqual([]);
+  });
+
+  it('zoomed in, a click on the surface beside the image closes the preview', async () => {
+    // Invariant: at 1:1, a press and click on the surface around the image dismisses the preview.
+    const { root } = await withToolImage();
+    await open(root);
+    fireEvent.click(big());
+    await flush();
+    expect(big().getAttribute('title'), 'positive control: a click on the image zooms in').toBe('Fit to screen');
+    await press(surface(), surface());
+    expect(overlay(), 'a click on the surface beside the image closes the preview').toBeNull();
+  });
+
+  it('a press that starts on the image or the zoomed scroller and ends on the surface neither closes nor zooms', async () => {
+    // Invariant: only a press that both starts and ends on the surface itself closes; a drag off the image and a press on the scroller (its scrollbar) do not.
+    const { root } = await withToolImage();
+    await open(root);
+    fireEvent.click(big());
+    await flush();
+    expect(big().getAttribute('title'), 'positive control: zoomed in').toBe('Fit to screen');
+    const titles = watchTitle();
+    await press(big(), surface());
+    expect(overlay(), 'a drag from the image onto the surface keeps the preview open').not.toBeNull();
+    await press(overlay()!, overlay()!);
+    expect(overlay(), 'a press on the zoomed scroller keeps the preview open').not.toBeNull();
+    titles.stop();
+    expect(titles.records).toEqual([]);
+    expect(big().getAttribute('title')).toBe('Fit to screen');
+  });
+
+  it('the zoom cursor class sits on the image only, in both modes', async () => {
+    // Invariant: the zoom cursors belong to the big image alone, never to its scroller, the dialog surface or the backdrop.
+    const { root } = await withToolImage();
+    await open(root);
+    const around = () => [overlay()!, surface(), backdrop()].map((e) => e.className);
+    expect(big().className).toContain('cursor-zoom-in');
+    for (const c of around()) expect(c).not.toMatch(/cursor-zoom/);
+    fireEvent.click(big());
+    await flush();
+    expect(big().className).toContain('cursor-zoom-out');
+    for (const c of around()) expect(c).not.toMatch(/cursor-zoom/);
+  });
+});
