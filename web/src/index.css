@@ -11,18 +11,14 @@
   /* The height of each view's top bar. App.tsx's Toaster sits below it, never over its controls. */
   --header-height: 3.5rem;
 
-  --mascot-body: oklch(0.7 0.16 35);
-  --mascot-shade: oklch(0.6 0.16 32);
-  --mascot-belly: oklch(0.86 0.08 50);
-  --mascot-coat: oklch(0.25 0.02 260);
-  --mascot-ink: oklch(0.2 0.02 40);
-  --mascot-baton: oklch(0.22 0.02 40);
+  /* The logo's theme inks (components/logo); logoArt.ts's PALETTES carries the same values for the static icons. */
+  --logo-ink: #15171c;
+  --logo-tile: #f7e5de;
 }
 
 .dark {
-  --mascot-belly: oklch(0.82 0.08 50);
-  --mascot-coat: oklch(0.2 0.02 260);
-  --mascot-baton: oklch(0.95 0.01 80);
+  --logo-ink: #ffffff;
+  --logo-tile: #291812;
 }
 
 @theme inline {
@@ -61,11 +57,10 @@
   --color-info: var(--info);
   --color-plan: var(--plan);
 
-  --animate-sway: sway 4s ease-in-out infinite;
+  --animate-cursor-blink: cursor-blink 1.1s step-end infinite;
 
-  @keyframes sway {
-    0%, 100% { transform: rotate(-2deg); }
-    50% { transform: rotate(2deg); }
+  @keyframes cursor-blink {
+    50% { opacity: 0; }
   }
 }
 

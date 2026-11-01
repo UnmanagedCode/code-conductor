@@ -32,6 +32,10 @@ const distParent = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
 const distDir = path.join(distParent, 'dist');
 const log = { log: vi.fn(), error: vi.fn() };
 let first: WebState;
+/** index.html's icon and apple-touch-icon links: each one's href and its `sizes` value, or null. */
+const iconLinks = (html: string) => [...html.matchAll(/<link\b[^>]*\brel="(?:icon|apple-touch-icon)"[^>]*>/g)].map(([tag]) => ({
+  href: tag.match(/\bhref="([^"]*)"/)?.[1], sizes: tag.match(/\bsizes="([^"]*)"/)?.[1] ?? null,
+}));
 
 beforeAll(async () => {
   first = await ensureWebBuild({ log, distDir });
@@ -86,11 +90,33 @@ describe('ensureWebBuild', () => {
     expect(log.log.mock.calls.map((c) => String(c[0])).filter((w) => /chunks are larger than/.test(w))).toEqual([]);
   });
 
-  it('every URL in index.html is root-absolute: the entry chunk, the manifest and the favicon', () => {
+  it('every URL in index.html is root-absolute: the entry chunk, the manifest and every icon link', () => {
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
     expect(html).toMatch(/src="\/assets\/[^"]+\.js"/);
     expect(html).toContain('href="/manifest.webmanifest"');
-    expect(html).toContain('href="/favicon.svg"');
+    const hrefs = iconLinks(html).map((l) => l.href);
+    expect(hrefs.length, 'fixture check: index.html links an icon').toBeGreaterThan(0);
+    expect(hrefs.filter((h) => !/^\/[^/]/.test(h ?? ''))).toEqual([]);
+  });
+
+  it('every icon index.html links and the manifest lists ships in the build, at the dimensions it declares', () => {
+    // Invariant: no icon reference dangles, and a browser or launcher picking an icon by its sizes gets a file that size.
+    const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
+    const manifest = JSON.parse(fs.readFileSync(path.join(distDir, 'manifest.webmanifest'), 'utf8'));
+    const icons = [
+      ...iconLinks(html).map((l) => ({ file: l.href?.replace(/^\//, ''), sizes: l.sizes })),
+      ...manifest.icons.map((i: { src: string; sizes?: string }) => ({ file: i.src, sizes: i.sizes ?? null })),
+    ];
+    expect(icons.length, 'fixture check: icons are referenced').toBeGreaterThan(0);
+    expect(icons.filter((i) => !i.file || !fs.existsSync(path.join(distDir, i.file))).map((i) => i.file)).toEqual([]);
+    // A declared WxH (not `any`) is checked against the PNG's IHDR: width and height, big-endian, at bytes 16 and 20.
+    const sized = icons.filter((i) => /^\d+x\d+$/.test(i.sizes ?? ''));
+    expect(sized.length, 'fixture check: some icon declares its dimensions').toBeGreaterThan(0);
+    for (const { file, sizes } of sized) {
+      const png = fs.readFileSync(path.join(distDir, file!));
+      expect(png.subarray(1, 4).toString('latin1'), `${file} is a PNG`).toBe('PNG');
+      expect(`${png.readUInt32BE(16)}x${png.readUInt32BE(20)}`, file).toBe(sizes);
+    }
   });
 
   it('the manifest link requests credentials, so the manifest loads behind an authenticated proxy that gates every request', () => {

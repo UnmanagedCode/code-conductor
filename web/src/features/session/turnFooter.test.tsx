@@ -43,31 +43,31 @@ describe('turn footer', () => {
 });
 
 describe('working row', () => {
-  const noMascot = () => {
+  const noLogo = () => {
     expect(within(indicator()!).queryByRole('img')).toBeNull();
-    expect(indicator()!.querySelector('svg[aria-label="Code Conductor mascot"]')).toBeNull();
+    expect(indicator()!.querySelector('[data-logo]')).toBeNull();
   };
   const label = () => indicator()!.querySelector('[data-turn-label]') as HTMLElement;
 
-  // Pins: a running turn's row is the label plus Interrupt, with no mascot picture.
-  it('while a turn runs the row shows its label and Interrupt, and no mascot', () => {
+  // Pins: a running turn's row is the label plus Interrupt, with no logo picture.
+  it('while a turn runs the row shows its label and Interrupt, and no logo', () => {
     seed([inst('W', { status: 'turn', displayStatus: 'turn' })], 'W');
     view();
-    noMascot();
+    noLogo();
     expect(label().textContent).toBe('Working…');
     expect(screen.getByRole('button', { name: /Interrupt/ })).toBeTruthy();
   });
 
-  // Pins: a pending interrupt's row shows the stopping label and Interrupt now, with no mascot picture.
-  it('while an interrupt is pending the row shows the stopping label and Interrupt now, and no mascot', () => {
+  // Pins: a pending interrupt's row shows the stopping label and Interrupt now, with no logo picture.
+  it('while an interrupt is pending the row shows the stopping label and Interrupt now, and no logo', () => {
     seed([inst('W', { status: 'turn', displayStatus: 'turn', interrupting: true })], 'W');
     view();
-    noMascot();
+    noLogo();
     expect(label().textContent).toBe('Stopping at the next safe point…');
     expect(screen.getByRole('button', { name: 'Interrupt now' })).toBeTruthy();
   });
 
-  // Pins: the label carries the motion cue in both states (the mascot no longer moves).
+  // Pins: the label carries the motion cue in both states.
   it('the label pulses in both states', () => {
     for (const interrupting of [false, true]) {
       seed([inst('W', { status: 'turn', displayStatus: 'turn', interrupting })], 'W');

@@ -10,7 +10,7 @@ vi.mock('@shared/ws', () => ({
   connect: () => {},
   send: (t: string, payload: any, opts: any = {}) => { sent.push([t, payload, opts]); return opts.ack ? Promise.resolve({ ok: true }) : undefined; },
 }));
-vi.mock('@/conversation/ConversationView', () => ({ ConversationView: () => null }));
+vi.mock('@/conversation/ConversationView', () => ({ ConversationView: ({ empty }: { empty: React.ReactNode }) => <div data-conversation-empty>{empty}</div> }));
 vi.mock('@/features/composer/Composer', () => ({ Composer: ({ usageSlot }: { usageSlot: React.ReactNode }) => <div>{usageSlot}</div> }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -141,5 +141,67 @@ describe('SessionView', () => {
       rateLimits.reset();
       accountUsageStore.set({ usage: null, stale: false });
     }
+  });
+});
+
+describe('the logo', () => {
+  /** What would hide `el` or an ancestor, as far as happy-dom can see: the `hidden` attribute, a hiding computed style or presentation attribute, or a hiding Tailwind utility (no stylesheet is loaded). */
+  const hiders = (el: Element) => {
+    const out: string[] = [];
+    for (let e: Element | null = el; e; e = e.parentElement) {
+      const style = getComputedStyle(e);
+      const name = `${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ''}`;
+      if (e.hasAttribute('hidden')) out.push(`${name}[hidden]`);
+      if (style.display === 'none' || e.getAttribute('display') === 'none') out.push(`${name} display:none`);
+      if (style.visibility === 'hidden' || e.getAttribute('visibility') === 'hidden') out.push(`${name} visibility:hidden`);
+      for (const prop of ['opacity', 'fill-opacity']) {
+        if (Number(style.getPropertyValue(prop) || 1) === 0 || Number(e.getAttribute(prop) ?? 1) === 0) out.push(`${name} ${prop}:0`);
+      }
+      for (const c of e.classList) if (/^(hidden|invisible|opacity-0|fill-transparent|sr-only)$/.test(c)) out.push(`${name}.${c}`);
+    }
+    return out;
+  };
+  /** Whether the mark in `scope` blinks; its cursor is drawn and nothing hides it, either way. */
+  const blinks = (scope: Element | null) => {
+    const cursor = scope?.querySelector('svg[data-logo="mark"] [data-logo-cursor]');
+    expect(cursor, 'the mark draws its cursor').toBeTruthy();
+    expect(hiders(cursor!), 'nothing hides the cursor').toEqual([]);
+    return cursor!.classList.contains('animate-cursor-blink');
+  };
+  /** Steps the connection under the mounted view, asserting `scope`'s mark blinks only while it is open. */
+  const followsConnection = (scope: () => Element | null) => {
+    for (const [connection, blinking] of [['connecting', false], ['open', true], ['reconnecting', false], ['open', true]] as const) {
+      act(() => appStore.set({ connection }));
+      expect(blinks(scope()), connection).toBe(blinking);
+    }
+  };
+
+  it('control: the visibility probe sees every hiding form it checks', () => {
+    // Invariant (of the helper): each form `hiders` lists is one happy-dom reports, on the element or an ancestor; a plain one reports none.
+    const host = document.createElement('div');
+    host.innerHTML = '<svg><g id="plain"><rect/></g><g style="display:none"><rect/></g><g display="none"><rect/></g><g style="visibility:hidden"><rect/></g>'
+      + '<g visibility="hidden"><rect/></g><g style="opacity:0"><rect/></g><g opacity="0"><rect/></g><g fill-opacity="0"><rect/></g><g hidden><rect/></g>'
+      + '<g class="hidden"><rect/></g><g class="invisible"><rect/></g><g class="opacity-0"><rect/></g></svg>';
+    document.body.append(host);
+    try {
+      const rects = [...host.querySelectorAll('rect')];
+      expect(hiders(rects[0])).toEqual([]);
+      expect(rects.slice(1).filter((r) => hiders(r).length === 0).map((r) => r.parentElement!.outerHTML.slice(0, 40))).toEqual([]);
+    } finally { host.remove(); }
+  });
+
+  it('on the landing the cursor blinks while the socket is open and holds still while it connects or reconnects', () => {
+    // Invariant: the landing mark's blink follows connection === 'open', live, under the mounted view, and its cursor stays drawn and visible in every state.
+    seed({ connection: 'connecting' });
+    renderView();
+    followsConnection(() => document.querySelector('[data-empty-state]'));
+  });
+
+  it('in an empty chat the cursor follows the connection the same way', () => {
+    // Invariant: the empty-conversation mark blinks only while the socket is open, its cursor drawn and visible in every state.
+    seed({ connection: 'connecting', instances: [inst('A')], activeId: 'A' });
+    renderView();
+    expect(document.querySelector('[data-empty-state]'), 'fixture check: a session, not the landing').toBeNull();
+    followsConnection(() => document.querySelector('[data-conversation-empty]'));
   });
 });

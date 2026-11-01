@@ -25,7 +25,7 @@ vi.mock('@/app/sessionActions', () => ({
   promoteSession: vi.fn(),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
-vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
+vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: ({ fallback }: { fallback: React.ReactNode }) => <>{fallback}</> }));
 vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => null }));
 
 const { AppSidebar } = await import('./AppSidebar');
@@ -325,6 +325,18 @@ describe('AppSidebar', () => {
     expect(sidebarStore.get().expandedWorkspaces).toContain('Acme');
     expect(sidebarStore.get().filter).toBe('cond');
     expect(sidebarStore.get().expandedConductors).toContain('cond');
+  });
+
+  it('the header shows the logo tile and the wordmark as a heading that reads Code Conductor, none of it animated', () => {
+    // Invariant: the header's picture is the tile, its h1 holds the wordmark and still reads "Code Conductor", and nothing in it animates even while connected.
+    seed({ connection: 'open' });
+    renderSidebar();
+    const header = document.querySelector('[data-sidebar]')!.firstElementChild!;
+    expect(within(header as HTMLElement).getByRole('img', { name: 'Code Conductor' }).getAttribute('data-logo')).toBe('tile');
+    const h1 = within(header as HTMLElement).getByRole('heading', { level: 1 });
+    expect(h1.textContent).toBe('Code Conductor');
+    expect(h1.querySelector('svg[data-logo="wordmark"]')).not.toBeNull();
+    expect([header, ...header.querySelectorAll('*')].filter((e) => /\banimate-/.test(e.getAttribute('class') ?? ''))).toEqual([]);
   });
 
   it('shows Reconnecting… after the socket dropped', () => {

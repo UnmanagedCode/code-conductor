@@ -323,6 +323,19 @@ describe('the bar\'s switcher', () => {
     expect(reads(), 'split').toBe(boot);
   });
 
+  it('the Conductor entry shows the small logo, not animated', async () => {
+    // Invariant: the Apps menu's Conductor row carries the 16px logo design, static.
+    await mountApp();
+    await go('#plugin/alpha/');
+    const menu = await openBarSwitcher();
+    const conductor = switcherEntries(menu).find((e) => entryId(e) === 'conductor')!;
+    const logo = conductor.querySelector('svg[data-logo]');
+    expect(logo?.getAttribute('data-logo')).toBe('small');
+    expect(logo!.querySelectorAll('[class*="animate-"]').length).toBe(0);
+    expect(logo!.getAttribute('class') ?? '').not.toMatch(/animate-/);
+    await closeSwitcher();
+  });
+
   it('on an unlisted plugin\'s full view, with apps listed, reads its id and checks Conductor', async () => {
     // Invariant: the bar's switcher names an unlisted plugin by its id, and the checked entry rule is unchanged (Conductor).
     await mountApp();

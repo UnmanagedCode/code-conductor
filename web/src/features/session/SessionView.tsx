@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { MenuIcon, SparklesIcon, FolderPlusIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { OctopusMaestro } from '@/components/mascot/Octopus';
+import { LogoMark } from '@/components/logo/Logo';
 import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { uiStore } from '@/app/ui';
@@ -17,12 +17,16 @@ import { SubagentPanel, TaskPanel, TurnIndicator } from './SessionPanels';
 import { UsageChip } from './UsageChip';
 import { focusPromptAfterSelect } from './promptFocus';
 
+/** The logo whose cursor blinks while the socket is open and holds still while it (re)connects. */
+function LiveMark({ className }: { className?: string }) {
+  const connected = useStore(appStore, (s) => s.connection === 'open');
+  return <LogoMark blink={connected} className={className} />;
+}
 
 function EmptyState() {
-  const connection = useStore(appStore, (s) => s.connection);
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 p-6 text-center" data-empty-state>
-      <OctopusMaestro mood={connection === 'open' ? 'happy' : 'sleepy'} className="size-36 md:size-40" />
+      <LiveMark className="size-32" />
       <div className="space-y-2">
         <h2 className="text-2xl font-semibold tracking-tight text-balance">Ready when you are, maestro</h2>
         <p className="mx-auto max-w-md text-muted-foreground">
@@ -71,7 +75,7 @@ export function SessionView() {
         <ConversationView
           empty={
             <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">
-              <OctopusMaestro mood="curious" className="size-24" />
+              <LiveMark className="size-24" />
               <p>No messages yet. Send a prompt to start.</p>
             </div>
           }

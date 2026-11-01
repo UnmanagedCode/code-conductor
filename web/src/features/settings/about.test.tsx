@@ -9,6 +9,7 @@ vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
 vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => ({ ok: true })) }));
 
 import { performRestart } from '@/features/sidebar/restart';
+import { appStore } from '@/state/app';
 import { AboutSection, selfUpdateStore } from './AboutSection';
 import { PluginsSection, pluginsStore } from './PluginsSection';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -51,6 +52,17 @@ describe('About', () => {
     expect(notice.getByRole('link', { name: 'GNU Affero General Public License v3.0 (AGPL-3.0)' }).getAttribute('href')).toBe('https://www.gnu.org/licenses/agpl-3.0.html');
     expect(notice.getByRole('link', { name: 'github.com/UnmanagedCode/code-conductor' }).getAttribute('href')).toBe('https://github.com/UnmanagedCode/code-conductor');
     expect(notice.getByText(/§13/)).toBeTruthy();
+  });
+
+  it('shows the logo mark, still even while the socket is open', () => {
+    // Invariant: About's logo is the full mark and never blinks; only the landing and empty chat follow the connection.
+    act(() => appStore.set({ connection: 'open' }));
+    mockFetch({ ...PLUGIN_ROUTES, 'GET /api/settings/self-update': () => available });
+    const { container } = render(<AboutSection />);
+    const mark = container.querySelector('svg[data-logo="mark"]');
+    expect(mark).not.toBeNull();
+    expect(mark!.querySelector('[data-logo-cursor]'), 'fixture check: the cursor is drawn').not.toBeNull();
+    expect(mark!.querySelectorAll('[class*="animate-"]').length).toBe(0);
   });
 
   // Each self-update status maps to its own wording, and Update is offered for an available fast-forward alone; a failed check says why.

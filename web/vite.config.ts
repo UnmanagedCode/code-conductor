@@ -26,6 +26,16 @@ export default defineConfig({
     // chunks; the entry (React + Radix + the session view) is past Vite's default
     // warning size, and every boot-time rebuild would print the warning.
     chunkSizeWarningLimit: 800,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          // The logo's art data (the outlined wordmark above all) is large, and the
+          // entry chunk is at its budget; the logo gets its own chunk, still
+          // statically imported, so the page preloads it with the entry.
+          groups: [{ name: 'logo-art', test: /[\\/]components[\\/]logo[\\/]logoArt\.ts$/ }],
+        },
+      },
+    },
   },
   server: {
     // The web app imports the modules it shares with the server from ../shared.

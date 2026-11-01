@@ -10,7 +10,7 @@ import { ChevronsUpDownIcon } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { OctopusMark } from '@/components/mascot/Octopus';
+import { LogoSmall } from '@/components/logo/Logo';
 import { useSignal, useStore } from '@/state/createStore';
 import { useRoute } from '@/state/route';
 import { closeSidebarOnMobile } from '@/app/ui';
@@ -35,7 +35,7 @@ export function exitToConductor() {
 
 /** The Conductor ↔ plugin dropdown in `slot` while it is the one switcher's slot and a plugin contributes a frontend, else `fallback` (the slot's plain title). */
 export function AppSwitcher({ slot, title, subtitle, fallback, className }: {
-  slot: SwitcherSlot; title: string; subtitle?: React.ReactNode; fallback: React.ReactNode; className?: string;
+  slot: SwitcherSlot; title: React.ReactNode; subtitle?: React.ReactNode; fallback: React.ReactNode; className?: string;
 }) {
   const apps = useStore(catalogStore, (s) => s.apps);
   const route = useRoute();
@@ -69,7 +69,7 @@ export function AppSwitcher({ slot, title, subtitle, fallback, className }: {
         {/* The checked entry is the plugin on screen, full or split (Conductor while none, or the route names an unlisted plugin). Picking the shown plugin, or Conductor from Conductor, changes nothing; picking Conductor while the route names an unlisted plugin leaves its view. */}
         <DropdownMenuRadioGroup value={current?.id ?? CONDUCTOR}>
           <DropdownMenuRadioItem value={CONDUCTOR} onSelect={() => { if (currentId) exitToConductor(); }}>
-            <OctopusMark className="size-4 text-primary" />
+            <LogoSmall className="size-4" />
             <span className="flex-1">Conductor</span>
           </DropdownMenuRadioItem>
           <DropdownMenuSeparator />

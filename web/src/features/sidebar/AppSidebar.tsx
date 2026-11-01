@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { OctopusMark } from '@/components/mascot/Octopus';
+import { LogoTile, Wordmark } from '@/components/logo/Logo';
 import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { closeView, useRoute } from '@/state/route';
@@ -45,6 +45,9 @@ function HeaderButton({ label, onClick, children }: { label: string; onClick: ()
     </Hint>
   );
 }
+
+/** The header's title: the outlined wordmark, its text kept for headings and screen readers. */
+const TITLE = <><Wordmark className="mb-0.5 block h-3 w-auto" /><span className="sr-only">Code Conductor</span></>;
 
 function liveSummary(n: number) {
   if (n === 0) return 'All quiet';
@@ -105,17 +108,15 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
       data-sidebar
     >
       <div className="flex items-center gap-1 px-3 pt-[max(env(safe-area-inset-top,0px),1rem)] pb-3">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
-          <OctopusMark className="size-6" />
-        </div>
+        <LogoTile className="size-8 shrink-0" />
         <AppSwitcher
           slot={mobile ? 'drawer' : 'sidebar'}
-          title="Code Conductor"
+          title={TITLE}
           subtitle={liveSummary(liveCount)}
           className="hover:bg-sidebar-accent"
           fallback={(
             <div className="ml-1 min-w-0 flex-1 leading-tight">
-              <h1 className="truncate text-sm font-semibold tracking-tight">Code Conductor</h1>
+              <h1 className="truncate text-sm font-semibold tracking-tight">{TITLE}</h1>
               <div className="truncate text-[11px] text-muted-foreground">{liveSummary(liveCount)}</div>
             </div>
           )}
