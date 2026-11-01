@@ -3,6 +3,7 @@ import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding
 import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
 import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
 import type { System } from '../systems/system.ts';
+import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(system, dir) reads + validates; validateManifest(json) normalizes a
@@ -79,6 +80,7 @@ export interface PluginFrontend {
   path: string;
   navLabel: string;
   keepAlive: boolean;
+  icon?: PluginIconName;
 }
 
 export interface PluginMcpTool {
@@ -632,7 +634,7 @@ function validateFrontend(f: unknown, backend: PluginBackend | null, name: unkno
   const rec = f as Record<string, unknown>;
   if (!backend) errors.push("'frontend' requires 'backend'");
   for (const k of Object.keys(rec)) {
-    if (!['path', 'navLabel', 'keepAlive'].includes(k)) errors.push(`unknown key 'frontend.${k}'`);
+    if (!['path', 'navLabel', 'keepAlive', 'icon'].includes(k)) errors.push(`unknown key 'frontend.${k}'`);
   }
   if (rec.path !== undefined && (typeof rec.path !== 'string' || !rec.path.startsWith('/'))) {
     errors.push("'frontend.path' must be a path starting with '/'");
@@ -643,10 +645,13 @@ function validateFrontend(f: unknown, backend: PluginBackend | null, name: unkno
   if (rec.keepAlive !== undefined && typeof rec.keepAlive !== 'boolean') {
     errors.push("'frontend.keepAlive' must be a boolean");
   }
+  const icon = typeof rec.icon === 'string' && (PLUGIN_ICONS as readonly string[]).includes(rec.icon) ? (rec.icon as PluginIconName) : undefined;
+  if (rec.icon !== undefined && icon === undefined) errors.push(`'frontend.icon' must be one of: ${PLUGIN_ICONS.join(', ')}`);
   return {
     path: typeof rec.path === 'string' ? rec.path : '/',
     navLabel: typeof rec.navLabel === 'string' && rec.navLabel.trim() !== '' ? rec.navLabel.trim() : (typeof name === 'string' ? name.trim() : ''),
     keepAlive: rec.keepAlive === true,
+    ...(icon !== undefined ? { icon } : {}),
   };
 }
 

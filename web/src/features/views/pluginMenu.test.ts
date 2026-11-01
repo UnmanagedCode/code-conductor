@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseHash, viewLinkHash } from '@/state/route';
 import { menuGroups, pluginScopeSubpath } from './pluginMenu';
+import * as pluginMenu from './pluginMenu';
 import type { PluginRow } from './plugins';
 
 describe('pluginScopeSubpath', () => {
@@ -47,5 +48,47 @@ describe('menuGroups', () => {
   it('keeps catalog order and manifest order, filters by scope, drops plugins with nothing in scope', () => {
     expect(shape('project')).toEqual([['a', ['A1', 'A3']], ['c', ['C1']]]);
     expect(shape('worktree')).toEqual([['a', ['A2']], ['b', ['B1']]]);
+  });
+});
+
+describe('menuSections', () => {
+  const app = (id: string, menuItems: PluginRow['menuItems']): PluginRow => ({ id, name: id, enabled: true, hasFrontend: true, menuItems });
+  const apps = [
+    app('a', [{ label: 'A1', scope: 'project', path: '/1' }, { label: 'A2', scope: 'worktree', path: '/2' }, { label: 'A3', scope: 'project', path: '/3' }]),
+    app('b', [{ label: 'B1', scope: 'project', path: '/1' }]),
+    app('c', [{ label: 'C1', scope: 'project', path: '/1' }, { label: 'C2', scope: 'worktree', path: '/2' }, { label: 'C3', scope: 'worktree', path: '/3' }]),
+    app('d', []),
+  ];
+
+  // Pins: a plugin with exactly one item in scope is a single (catalog order), one with more is a group, one with none is neither.
+  it('splits plugins with one item in scope from those with more', () => {
+    const s = pluginMenu.menuSections(apps, 'project');
+    expect(s.singles.map(({ app, item }) => [app.id, item.label])).toEqual([['b', 'B1'], ['c', 'C1']]);
+    expect(s.groups.map((g) => [g.app.id, g.items.map((i) => i.label)])).toEqual([['a', ['A1', 'A3']]]);
+  });
+
+  // Pins: the count is per scope, so a plugin with several items overall but one in this scope is a single.
+  it('counts items per scope', () => {
+    const s = pluginMenu.menuSections(apps, 'worktree');
+    expect(s.singles.map(({ app, item }) => [app.id, item.label])).toEqual([['a', 'A2']]);
+    expect(s.groups.map((g) => [g.app.id, g.items.map((i) => i.label)])).toEqual([['c', ['C2', 'C3']]]);
+  });
+});
+
+describe('pluginShortName', () => {
+  const short = (name: string, navLabel?: string) => pluginMenu.pluginShortName({ name, navLabel });
+
+  // Pins: a leading "Code " is stripped (any run of whitespace after it), the nav label wins over the name.
+  it('strips a leading "Code " from the displayed label', () => {
+    expect(short('Code Kanban')).toBe('Kanban');
+    expect(short('Code X', 'Code Board')).toBe('Board');
+    expect(short('Code  Multi Word')).toBe('Multi Word');
+  });
+
+  // Pins: no other label is altered, and the result is never empty.
+  it('leaves any other label whole', () => {
+    expect(short('Playwright Harness')).toBe('Playwright Harness');
+    expect(short('Codex Tools')).toBe('Codex Tools');
+    expect(short('Code')).toBe('Code');
   });
 });

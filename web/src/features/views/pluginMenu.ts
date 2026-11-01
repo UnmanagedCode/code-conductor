@@ -3,7 +3,7 @@
 // in the frame URL's query (docs/plugins.md → menuItems).
 import { openPlugin } from './api';
 import { showLinkInDock } from './dock';
-import type { PluginMenuItem, PluginRow } from './plugins';
+import { appLabel, type PluginMenuItem, type PluginRow } from './plugins';
 
 /** The query parameters a plugin page reads its row from. */
 export const SCOPE_PARAMS = { project: 'ccProject', worktree: 'ccWorktree' } as const;
@@ -23,6 +23,19 @@ export function menuGroups(apps: PluginRow[], scope: PluginMenuItem['scope']): A
     .map((app) => ({ app, items: (app.menuItems ?? []).filter((i) => i.scope === scope) }))
     .filter((g) => g.items.length > 0);
 }
+
+/** The row ⋮'s plugin sections: plugins with one item in scope as flat entries, plugins with more as headed groups; each in catalog order. */
+export function menuSections(apps: PluginRow[], scope: PluginMenuItem['scope']) {
+  const groups = menuGroups(apps, scope);
+  return {
+    singles: groups.filter((g) => g.items.length === 1).map(({ app, items: [item] }) => ({ app, item: item! })),
+    groups: groups.filter((g) => g.items.length > 1),
+  };
+}
+
+const CODE_PREFIX = /^Code\s+(\S.*)$/;
+/** The trailing tag of a flat plugin entry: `appLabel` without a leading "Code ", else the whole label. */
+export const pluginShortName = (app: Pick<PluginRow, 'name' | 'navLabel'>) => CODE_PREFIX.exec(appLabel(app))?.[1] ?? appLabel(app);
 
 /** The dock when a plugin shows beside the session (replacing a different docked plugin), else the plugin's full view. */
 export function openPluginForRow(id: string, path: string, scope: RowScope) {

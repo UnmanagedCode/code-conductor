@@ -7,7 +7,7 @@ import { PluginMenuItems } from '@/features/views/PluginMenuItems';
 import { conventionsNotice } from './conventionsNotice';
 import { ATTENTION_DOT, RowMenu } from './RowMenu';
 
-/** A project row's ⋮: New session, Edit conventions…, a group per plugin with project-scope `menuItems`, Delete…, with a dot when its convention selection needs attention. */
+/** A project row's ⋮: New session, Edit conventions…, the plugins' project-scope `menuItems` (flat when a plugin has one, a group when more), Delete…, with a dot when its convention selection needs attention. */
 export function ProjectMenu({ project: p, instanceCount }: { project: Project; instanceCount: number }) {
   const unreachable = (p.systemUnreachable as string | null) || null;
   const notice = conventionsNotice(p);

@@ -6,7 +6,7 @@ import { openSpawnDialog } from '@/features/dialogs/api';
 import { PluginMenuItems } from '@/features/views/PluginMenuItems';
 import { RowMenu } from './RowMenu';
 
-/** A worktree row's ⋮: New session in this worktree, a group per plugin with worktree-scope `menuItems`, then Remove worktree…. */
+/** A worktree row's ⋮: New session in this worktree, the plugins' worktree-scope `menuItems` (flat when a plugin has one, a group when more), then Remove worktree…. */
 export function WorktreeMenu({ project: p, worktree }: { project: Project; worktree: string }) {
   const unreachable = (p.systemUnreachable as string | null) || null;
   return (

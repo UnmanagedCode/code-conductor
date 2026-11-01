@@ -6,7 +6,7 @@
 // title. A plugin with a resident (keep-alive) frame is labelled "(running)": its
 // page keeps going — possibly with the microphone open — while you're elsewhere.
 import * as React from 'react';
-import { ChevronsUpDownIcon, PlugIcon } from 'lucide-react';
+import { ChevronsUpDownIcon } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -21,6 +21,7 @@ import { appLabel, catalogStore, pluginFrames, refreshCatalog, residentSignal, R
 import { shownApp, switcherSlot, type SwitcherSlot } from './dockLayout';
 import { closeDock, dockModeStore, dockStore, selectApp } from './dock';
 import { showActiveSession } from './ViewShell';
+import { PluginIcon } from './PluginIcon';
 
 /** The Conductor entry's value in the switcher's radio group; no plugin id is empty. */
 const CONDUCTOR = '';
@@ -74,7 +75,7 @@ export function AppSwitcher({ slot, title, subtitle, fallback, className }: {
           <DropdownMenuSeparator />
           {apps.map((p) => (
             <DropdownMenuRadioItem key={p.id} value={p.id} onSelect={() => { if (currentId !== p.id) selectApp(p.id, desktop); }} data-app-id={p.id}>
-              <PlugIcon />
+              <PluginIcon icon={p.icon} />
               <span className="flex-1 truncate">{appLabel(p) + (live.has(p.id) ? RESIDENT_SUFFIX : '')}</span>
             </DropdownMenuRadioItem>
           ))}

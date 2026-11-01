@@ -100,6 +100,17 @@ describe('the app switcher', () => {
     await closeSwitcher();
   });
 
+  it('shows each entry\'s plugin icon, the plug when it has none', async () => {
+    // Invariant: a catalog row's `icon` names the lucide icon on its switcher entry; a row without one shows the generic plug.
+    net.catalog = [app('ic', 'Iconic', { icon: 'git-branch' }), app('pl', 'Plain')];
+    await mountApp();
+    const menu = await openSwitcher();
+    const iconOf = (id: string) => switcherEntries(menu).find((e) => entryId(e) === id)!.querySelector('svg')!.getAttribute('class');
+    expect(iconOf('ic')).toContain('lucide-git-branch');
+    expect(iconOf('pl')).toContain('lucide-plug');
+    await closeSwitcher();
+  });
+
   it('shows the open plugin\'s nav label, not its name, on the trigger itself', async () => {
     // Invariant: while a plugin whose navLabel differs from its name is current, the switcher trigger shows the navLabel.
     net.catalog = [app('ka', 'Keep Plugin', { navLabel: 'Keeper' }), app('pl', 'Plain')];

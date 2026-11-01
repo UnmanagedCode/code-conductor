@@ -24,9 +24,16 @@ export async function closeRowMenu() {
   await settle();
 }
 
-/** Opens the row's ⋮ menu and picks the item whose text is `label`. */
+/** An item's text as assistive tech names it: its `aria-hidden` parts (a trailing tag, an attention dot) left out. */
+export const rowMenuItemLabel = (i: HTMLElement) => {
+  const c = i.cloneNode(true) as HTMLElement;
+  c.querySelectorAll('[aria-hidden="true"]').forEach((n) => n.remove());
+  return c.textContent;
+};
+
+/** Opens the row's ⋮ menu and picks the item whose accessible name is `label`. */
 export async function pickRowMenuItem(row: HTMLElement, name: string, label: string) {
-  const item = rowMenuItems(await openRowMenu(row, name)).find((i) => i.textContent === label);
+  const item = rowMenuItems(await openRowMenu(row, name)).find((i) => rowMenuItemLabel(i) === label);
   if (!item) throw new Error(`the ${name.toLowerCase()} has no "${label}" item`);
   await act(async () => { fireEvent.click(item); });
   await settle();
