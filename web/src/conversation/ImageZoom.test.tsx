@@ -270,6 +270,16 @@ describe('clicks around the image', () => {
     expect(big().getAttribute('title')).toBe('Fit to screen');
   });
 
+  it('a press that starts on the surface and ends on the image zooms and does not close', async () => {
+    // Invariant: a press that starts on the surface closes only when its click also lands on the surface; a click on the image after a surface press only toggles the zoom.
+    const { root } = await withToolImage();
+    await open(root);
+    expect(big().getAttribute('title'), 'positive control: it opens at fit').toBe('Actual size');
+    await press(surface(), big());
+    expect(overlay(), 'a press from the surface released on the image keeps the preview open').not.toBeNull();
+    expect(big().getAttribute('title'), 'the click on the image zoomed in').toBe('Fit to screen');
+  });
+
   it('the zoom cursor class sits on the image only, in both modes', async () => {
     // Invariant: the zoom cursors belong to the big image alone, never to its scroller, the dialog surface or the backdrop.
     const { root } = await withToolImage();

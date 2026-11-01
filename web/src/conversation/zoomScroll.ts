@@ -5,8 +5,9 @@ export type Point = { x: number; y: number };
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 /**
- * Where a tap on the fit `<img>` (an `object-contain` box) lands on the painted image, as fractions
- * of the image itself. A tap in the letterbox band clamps to the nearest image edge.
+ * Where a tap on the fit `<img>` lands on the painted image, as fractions of the image itself.
+ * `ImageZoom` sizes that box to the painted image, so the letterbox inset this allows for is 0;
+ * a tap past an edge clamps to that edge.
  */
 export function tapFraction(tap: Point, box: Size, natural: Natural): { fx: number; fy: number } {
   const scale = Math.min(box.width / natural.naturalWidth, box.height / natural.naturalHeight);
