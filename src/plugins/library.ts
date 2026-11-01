@@ -180,6 +180,22 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-browser',
+    name: 'Code Browser',
+    description: 'A shared headless Chromium that agents drive with Playwright and a person watches and takes control of from a browser panel.',
+    repo: 'https://github.com/UnmanagedCode/code-browser',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
+  {
+    id: 'code-artifact',
+    name: 'Code Artifact',
+    description: 'Publishes versioned, immutable artifacts — documents, static sites, files and runnable apps — and gives the user a link to open them in cc.',
+    repo: 'https://github.com/UnmanagedCode/code-artifact',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
