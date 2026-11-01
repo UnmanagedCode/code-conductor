@@ -10,7 +10,7 @@ vi.mock('@shared/ws', () => ({
   connect: () => {},
   send: (t: string, payload: any, opts: any = {}) => { sent.push([t, payload, opts]); return opts.ack ? Promise.resolve({ ok: true }) : undefined; },
 }));
-vi.mock('@/conversation/ConversationView', () => ({ ConversationView: () => null }));
+vi.mock('@/conversation/ConversationView', () => ({ ConversationView: ({ empty }: { empty: React.ReactNode }) => <div data-conversation-empty>{empty}</div> }));
 vi.mock('@/features/composer/Composer', () => ({ Composer: ({ usageSlot }: { usageSlot: React.ReactNode }) => <div>{usageSlot}</div> }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -141,5 +141,36 @@ describe('SessionView', () => {
       rateLimits.reset();
       accountUsageStore.set({ usage: null, stale: false });
     }
+  });
+});
+
+describe('the logo', () => {
+  /** Whether the mark in `scope` blinks; its cursor is drawn either way. */
+  const blinks = (scope: Element | null) => {
+    const cursor = scope?.querySelector('svg[data-logo="mark"] [data-logo-cursor]');
+    expect(cursor, 'the mark draws its cursor').toBeTruthy();
+    return cursor!.classList.contains('animate-cursor-blink');
+  };
+  /** Steps the connection under the mounted view, asserting `scope`'s mark blinks only while it is open. */
+  const followsConnection = (scope: () => Element | null) => {
+    for (const [connection, blinking] of [['connecting', false], ['open', true], ['reconnecting', false], ['open', true]] as const) {
+      act(() => appStore.set({ connection }));
+      expect(blinks(scope()), connection).toBe(blinking);
+    }
+  };
+
+  it('on the landing the cursor blinks while the socket is open and holds still while it connects or reconnects', () => {
+    // Invariant: the landing mark's blink follows connection === 'open', live, under the mounted view.
+    seed({ connection: 'connecting' });
+    renderView();
+    followsConnection(() => document.querySelector('[data-empty-state]'));
+  });
+
+  it('in an empty chat the cursor follows the connection the same way', () => {
+    // Invariant: the empty-conversation mark blinks only while the socket is open.
+    seed({ connection: 'connecting', instances: [inst('A')], activeId: 'A' });
+    renderView();
+    expect(document.querySelector('[data-empty-state]'), 'fixture check: a session, not the landing').toBeNull();
+    followsConnection(() => document.querySelector('[data-conversation-empty]'));
   });
 });

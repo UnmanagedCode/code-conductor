@@ -1,4 +1,4 @@
-// The working indicator holds no mascot; its label's pulse is the motion, and under prefers-reduced-motion it stays visible but nothing in it keeps animating.
+// The working indicator holds no picture; its label's pulse is the motion, and under prefers-reduced-motion it stays visible but nothing in it keeps animating.
 // getAnimations() is the observable: a looping animation is `running`, a suppressed one has finished.
 // The body is shared by the per-project spec files.
 import type { Page } from '@playwright/test';
@@ -21,7 +21,7 @@ export async function reducedMotionFlow({ page, cc }: { page: Page; cc: Paramete
     await next.sendPrompt(page, 'MIDTURN-HOLD keep the turn running');
     const indicator = page.locator('[data-turn-indicator="working"]');
     await expect(indicator).toBeVisible();
-    await expect(indicator.getByRole('img'), 'the indicator holds no mascot').toHaveCount(0);
+    await expect(indicator.getByRole('img'), 'the indicator holds no picture').toHaveCount(0);
     // Control: with no preference the indicator animates, so a zero below is the preference's doing.
     await expect.poll(() => running(page), { message: 'control: the indicator animates' }).toBeGreaterThan(0);
 

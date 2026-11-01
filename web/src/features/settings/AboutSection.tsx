@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ExternalLinkIcon, RefreshCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { OctopusBadge } from '@/components/mascot/Octopus';
+import { LogoMark } from '@/components/logo/Logo';
 import { performRestart } from '@/features/sidebar/restart';
 import { createStore, useStore } from '@/state/createStore';
 import { SettingsCard, Status, LogBox, type StatusLine } from './ui';
@@ -83,7 +83,7 @@ export function AboutSection() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <OctopusBadge className="size-16 shrink-0" />
+        <LogoMark className="size-16 shrink-0" />
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Code Conductor</h2>
           <p className="text-sm text-muted-foreground">Orchestrate multiple Claude Code CLI instances across projects from one browser tab.</p>

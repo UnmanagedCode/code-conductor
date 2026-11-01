@@ -86,11 +86,45 @@ describe('ensureWebBuild', () => {
     expect(log.log.mock.calls.map((c) => String(c[0])).filter((w) => /chunks are larger than/.test(w))).toEqual([]);
   });
 
-  it('every URL in index.html is root-absolute: the entry chunk, the manifest and the favicon', () => {
+  it('every URL in index.html is root-absolute: the entry chunk, the manifest and the favicons', () => {
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
     expect(html).toMatch(/src="\/assets\/[^"]+\.js"/);
     expect(html).toContain('href="/manifest.webmanifest"');
-    expect(html).toContain('href="/favicon.svg"');
+    expect(html).toContain('href="/favicon-16.png"');
+    expect(html).toContain('href="/favicon-32.png"');
+  });
+
+  it('every icon index.html links and the manifest lists ships in the build, and each sized PNG link names a PNG of that size', () => {
+    // Invariant: no icon reference dangles, and a browser picking a favicon by its sizes attribute gets a file that size.
+    const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
+    const links = [...html.matchAll(/<link\b[^>]*\brel="(?:icon|apple-touch-icon)"[^>]*>/g)].map(([tag]) => ({
+      href: tag.match(/\bhref="\/([^"]+)"/)?.[1], sizes: tag.match(/\bsizes="(\d+)x(\d+)"/),
+    }));
+    const manifest = JSON.parse(fs.readFileSync(path.join(distDir, 'manifest.webmanifest'), 'utf8'));
+    const named = [...links.map((l) => l.href), ...manifest.icons.map((i: { src: string }) => i.src)];
+    expect(links.length, 'fixture check: index.html links icons').toBeGreaterThan(1);
+    expect(named.filter((f) => !f || !fs.existsSync(path.join(distDir, f)))).toEqual([]);
+    const sized = links.filter((l) => l.sizes);
+    expect(sized.length, 'fixture check: the favicons carry sizes').toBeGreaterThan(0);
+    for (const { href, sizes } of sized) {
+      const png = fs.readFileSync(path.join(distDir, href!));
+      expect(png.subarray(1, 4).toString('latin1'), href).toBe('PNG');
+      // IHDR: width and height, big-endian, at bytes 16 and 20.
+      expect([png.readUInt32BE(16), png.readUInt32BE(20)], href).toEqual([Number(sizes![1]), Number(sizes![2])]);
+    }
+  });
+
+  it('the logo art ships in its own chunk, which the entry imports statically and index.html preloads', () => {
+    // Invariant: the art data stays out of the budgeted entry chunk without loading late: no first-paint gap where the logo should be.
+    const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
+    const entry = html.match(/<script type="module"[^>]*\bsrc="\/assets\/([^"]+\.js)"/)?.[1];
+    const logo = fs.readdirSync(path.join(distDir, 'assets')).filter((f) => /^logo-art-.+\.js$/.test(f));
+    expect(entry, 'fixture check: the entry script').toBeTruthy();
+    expect(logo).toHaveLength(1);
+    expect(html).toContain(`<link rel="modulepreload" crossorigin href="/assets/${logo[0]}">`);
+    const entryJs = fs.readFileSync(path.join(distDir, 'assets', entry!), 'utf8');
+    expect(entryJs).toMatch(new RegExp(`(?:^|[;\\n])import\\{[^}]*\\}from"\\./${logo[0].replace(/[.-]/g, '\\$&')}"`));
+    expect(entryJs, 'the wordmark path is not inlined in the entry').not.toContain('M1201 -1490H469.436');
   });
 
   it('the manifest link requests credentials, so the manifest loads behind an authenticated proxy that gates every request', () => {

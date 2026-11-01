@@ -130,8 +130,8 @@ test('the served plugin theme, booted with no build', async (t) => {
     });
 
     await t.test("every palette property index.css declares itself is served, unless it is host-only", async () => {
-      // Invariant: a token added to index.css's own :root/.dark instead of themeTokens.css fails here unless it matches the host-only allowlist (--header-height, --mascot-*).
-      const HOST_ONLY = /^--(header-height$|mascot-)/;
+      // Invariant: a token added to index.css's own :root/.dark instead of themeTokens.css fails here unless it matches the host-only allowlist (--header-height, --logo-*).
+      const HOST_ONLY = /^--(header-height$|logo-)/;
       const own = palette(await fs.readFile(INDEX_CSS, 'utf8'));
       const served = palette(sheet);
       let hostOnly = 0;
