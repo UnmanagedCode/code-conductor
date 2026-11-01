@@ -283,6 +283,32 @@ test('GET /api/plugins/library also lists the code-terminal default entry with i
   } finally { await boot.close(); }
 });
 
+test('GET /api/plugins/library also lists the code-browser default entry with its npm postClone/postPull', async () => {
+  const boot = await bootServer();
+  try {
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
+    const row = r.body.entries.find(e => e.id === 'code-browser');
+    assert.ok(row, 'default entry present');
+    assert.equal(row.name, 'Code Browser');
+    assert.equal(row.repo, 'https://github.com/UnmanagedCode/code-browser');
+    assert.equal(row.postClone, 'npm install');
+    assert.equal(row.postPull, 'npm install');
+  } finally { await boot.close(); }
+});
+
+test('GET /api/plugins/library also lists the code-artifact default entry with its npm postClone/postPull', async () => {
+  const boot = await bootServer();
+  try {
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
+    const row = r.body.entries.find(e => e.id === 'code-artifact');
+    assert.ok(row, 'default entry present');
+    assert.equal(row.name, 'Code Artifact');
+    assert.equal(row.repo, 'https://github.com/UnmanagedCode/code-artifact');
+    assert.equal(row.postClone, 'npm install');
+    assert.equal(row.postPull, 'npm install');
+  } finally { await boot.close(); }
+});
+
 test('POST /api/plugins/library/:id/update — unknown id 404, not-installed 404', async () => {
   const boot = await bootServer();
   try {
