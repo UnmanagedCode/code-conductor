@@ -1,6 +1,6 @@
-// The logo's renderers: only a blinking mark animates, and only its cursor; no
-// variant ships a <style>; every knockout mask resolves inside its own SVG, with
-// ids that never collide between instances; the pictures are named.
+// The logo's renderers on the real arts: only a blinking mark animates, and only
+// its cursor; no variant ships a <style>; the pictures are named. Knockout
+// structure is pinned on a synthetic art in logoArt.test.tsx.
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import { LogoMark, LogoSmall, LogoTile, Wordmark } from './Logo';
@@ -34,32 +34,6 @@ describe('Logo', () => {
     const { container } = render(<>{VARIANTS.map(([name, el]) => <div key={name}>{el}</div>)}<LogoMark blink /></>);
     expect(container.querySelectorAll('svg[data-logo]').length, 'fixture check: every variant renders').toBe(VARIANTS.length + 1);
     expect(container.querySelectorAll('style').length).toBe(0);
-  });
-
-  it('two marks on one page use disjoint mask ids, and every mask reference resolves inside its own SVG', () => {
-    // Invariant: knockouts are masks named per instance, so a second logo never borrows (or breaks) the first one's gaps.
-    const { container } = render(<><LogoMark /><LogoMark blink /><LogoTile /><LogoSmall /></>);
-    const svgs = [...container.querySelectorAll('svg[data-logo]')];
-    const idsOf = (svg: Element) => [...svg.querySelectorAll('mask')].map((m) => m.id);
-    for (const svg of svgs) {
-      const ids = idsOf(svg);
-      expect(ids.length, `fixture check: ${svg.getAttribute('data-logo')} has knockouts`).toBeGreaterThan(0);
-      const refs = [...svg.querySelectorAll('[mask]')].map((e) => e.getAttribute('mask')!.match(/^url\(#(.+)\)$/)?.[1]);
-      expect(refs.length).toBe(ids.length);
-      for (const ref of refs) expect(ids).toContain(ref);
-    }
-    const all = svgs.flatMap(idsOf);
-    expect(new Set(all).size).toBe(all.length);
-  });
-
-  it('the tile\'s backdrop rect sits outside every mask, so its gaps show the tile colour', () => {
-    // Invariant: a knockout cuts the logo's own layers down to the tile, never through it to the sidebar.
-    const { container } = render(<LogoTile />);
-    const svg = container.querySelector('svg[data-logo="tile"]')!;
-    const plate = [...svg.querySelectorAll('rect')].filter((r) => r.getAttribute('fill') === 'var(--logo-tile)');
-    expect(plate.length, 'fixture check: the tile draws its backdrop').toBe(1);
-    expect(plate[0].closest('[mask], mask')).toBeNull();
-    expect(svg.querySelectorAll('[mask]').length, 'fixture check: the tile has knockouts').toBeGreaterThan(0);
   });
 
   it('each picture is an image named Code Conductor; the wordmark is decorative', () => {

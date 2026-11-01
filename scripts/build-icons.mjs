@@ -1,9 +1,8 @@
 // Regenerates web/public's logo icons from web/src/components/logo/logoArt.ts:
 // icon.svg as text, every PNG rasterised by Playwright's Chromium at its exact
 // pixel size. Run `node scripts/build-icons.mjs` after changing the art, and
-// commit the results; web/src/components/logo/icons.test.ts fails while icon.svg
-// differs from the module. Exits non-zero when a self-check fails: a maskable
-// icon drawing outside its safe zone, or a favicon with an opaque corner.
+// commit the results. Exits non-zero when a self-check fails: a maskable icon
+// drawing outside its safe zone, or a favicon with an opaque corner.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
