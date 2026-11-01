@@ -1,7 +1,7 @@
 // The image viewer overlay: a tap on a conversation image opens it, a tap on the big image zooms to
 // 1:1. These flows measure where the zoomed image sits, where its scrollbar sits and where the view
-// starts, on an image that fits, one that overflows only vertically and one that overflows both
-// ways. The body is shared by the per-project spec files; this module declares no tests.
+// starts, on an image that fits, one that overflows only vertically, one that overflows both ways
+// and a wide one whose viewer's top moves on zoom. The body is shared by the per-project spec files; this module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
