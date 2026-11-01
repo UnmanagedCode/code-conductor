@@ -1,7 +1,8 @@
 // The transcript's horizontal layout in a real browser, on every project: no avatar, and the user
 // bubble, action cards, assistant body and turn footer's status icon share one left edge and one
-// width, and prose is inset to the user text's edges; the footer carries the bubble's controls at its right end, clear of the figures, also
-// as the viewport narrows. The body is shared by the per-project spec files.
+// width; prose starts at the user text's left edge and ends a bubble padding inside the bubble's right
+// edge; the footer carries the bubble's controls at its right end, clear of the figures, also as the
+// viewport narrows. The body is shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { createProject } from './harness/api.ts';
