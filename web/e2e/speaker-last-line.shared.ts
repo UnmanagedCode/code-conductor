@@ -137,7 +137,7 @@ async function screenshot(page: Page, name: string) {
 }
 
 export async function lastLineFlow({ page, cc }: Args): Promise<void> {
-  // Invariant: on every project, a block ending in prose (a line, a wrapped paragraph, a list) holds its read-aloud after its last word, on its last line, inside the body, adding no line, whichever place it has in the bubble; a block ending in code keeps a row under it at the body's edge; no block is marked for a gutter; a tap on the wrapping block's control reads that block; on desktop, Tab from the call before a block reaches that block's control with a visible focus.
+  // Invariant: on every project, a block ending in prose (a line, a wrapped paragraph, a list) holds its read-aloud after its last word, on its last line, inside the body, adding no line, whichever place it has in the bubble; a block ending in code keeps a row under it at the code's left edge; no block is marked for a gutter; a tap on the wrapping block's control reads that block; on desktop, Tab from the call before a block reaches that block's control with a visible focus.
   fakeOnly(cc);
   const bodies = await speechSeam(page);
   await run(page, cc, 'last-line', LAYOUT);
@@ -160,7 +160,7 @@ export async function lastLineFlow({ page, cc }: Args): Promise<void> {
   expect(d.end, 'the code-ending block is on a row').toBe('row');
   expect(d.codeWrap, 'fixture check: the block renders its code').not.toBeNull();
   expect(d.button.top, 'the row is under the code').toBeGreaterThanOrEqual(d.codeWrap!.bottom - EDGE);
-  expectNear(d.button.left, d.body.left, EDGE, 'the row starts at the body\'s edge');
+  expectNear(d.button.left, d.codeWrap!.left, EDGE, 'the row starts at the code\'s left edge');
   await expect(page.locator('[data-speak-gutter]'), 'no block is marked for a gutter').toHaveCount(0);
 
   if (isDesktop()) {
@@ -184,14 +184,14 @@ export async function lastLineFlow({ page, cc }: Args): Promise<void> {
 }
 
 export async function codeFirstFlow({ page, cc }: Args): Promise<void> {
-  // Invariant: a bubble's first block ending in a code block keeps its read-aloud on a row of its own under the code, at the body's left edge.
+  // Invariant: a bubble's first block ending in a code block keeps its read-aloud on a row of its own under the code, at the code's left edge.
   fakeOnly(cc);
   await run(page, cc, 'code-first', CODE_FIRST);
   const m = await measure(block(page, 'npm test'));
   expect(m.end, 'the code-ending first block is on a row').toBe('row');
   expect(m.codeWrap, 'fixture check: the block renders its code').not.toBeNull();
   expect(m.button.top, 'the row is under the code').toBeGreaterThanOrEqual(m.codeWrap!.bottom - EDGE);
-  expectNear(m.button.left, m.body.left, EDGE, 'the row starts at the body\'s edge');
+  expectNear(m.button.left, m.codeWrap!.left, EDGE, 'the row starts at the code\'s left edge');
 }
 
 export async function iconSizeFlow({ page, cc }: Args): Promise<void> {
