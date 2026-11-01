@@ -130,7 +130,7 @@ describe('user item width', () => {
     const top = users.filter((u) => !u.parentElement!.closest('[data-item="assistant"]'));
     expect(nested, 'fixture check: one user item inside the sub-agent panel').toHaveLength(1);
     expect(top, 'fixture check: one root user item').toHaveLength(1);
-    expect(nested[0].closest('[data-item="assistant"]')!.querySelectorAll(':scope > [data-assistant-avatar]'), 'fixture check: the enclosing root bubble has its avatar').toHaveLength(1);
+    expect(nested[0].closest('[data-item="assistant"]')!.parentElement!.closest('[data-item="assistant"]'), 'fixture check: the enclosing bubble is a root one').toBeNull();
     expect(marginX(nested[0])).toEqual([]);
     expect(alignClasses(nested[0])).toEqual([]);
   });

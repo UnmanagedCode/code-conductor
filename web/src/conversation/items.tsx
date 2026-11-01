@@ -10,7 +10,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { CopyButton } from '@/components/CopyButton';
 import { Markdown } from '@/components/Markdown';
-import { OctopusHead } from '@/components/mascot/Octopus';
 import { SpeakButton } from '@/features/voice/SpeakButton';
 import { voiceStore } from '@/features/voice/store';
 import { useStore } from '@/state/createStore';
@@ -23,7 +22,7 @@ import { fieldText, PlanCard, QuestionCard } from './cards';
 import { BubbleBody } from './BubbleBody';
 import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { ImageZoom } from './ImageZoom';
-import { renderWithSpeakSlot, SPEAK_GUTTER, SPEAK_INLINE, SPEAK_REVEAL } from './speakSlot';
+import { renderWithSpeakSlot, SPEAK_INLINE, SPEAK_REVEAL } from './speakSlot';
 
 export type BubbleActions = {
   canRewind: boolean;
@@ -43,7 +42,8 @@ export const ItemsList = React.memo(function ItemsList({ model, ctx, actions }: 
         const carries = controlsCarrier(model.items[i - 1], it) ? model.items[i - 1] as AssistantNode : null;
         return (
           <RootItemView key={it.id} node={it} rev={it.rev} ctx={ctx} actions={actions} currentSegment={cur}
-            controlsBelow={controlsCarrier(it, model.items[i + 1])} carries={carries} carriesRev={carries?.rev ?? -1} />
+            controlsBelow={controlsCarrier(it, model.items[i + 1])} carries={carries} carriesRev={carries?.rev ?? -1}
+            afterAssistant={!model.isSub && it.type === 'assistant' && model.items[i - 1]?.type === 'assistant'} />
         );
       })}
     </>
@@ -67,13 +67,13 @@ function assistantHasText(node: AssistantNode): boolean {
   return node.children.some((c) => c.type === 'text') || !!node.planText;
 }
 
-const RootItemView = React.memo(function RootItemView({ node, ctx, actions, currentSegment, controlsBelow, carries }: {
+const RootItemView = React.memo(function RootItemView({ node, ctx, actions, currentSegment, controlsBelow, carries, afterAssistant }: {
   node: RootItem; rev: number; ctx: RenderCtx; actions: BubbleActions | null; currentSegment: string | null;
-  controlsBelow: boolean; carries: AssistantNode | null; carriesRev: number;
+  controlsBelow: boolean; carries: AssistantNode | null; carriesRev: number; afterAssistant: boolean;
 }) {
   switch (node.type) {
     case 'user': return <UserBubble node={node} model={ctx.model} actions={actions} currentSegment={currentSegment} />;
-    case 'assistant': return <AssistantBubble node={node} ctx={ctx} controlsBelow={controlsBelow} />;
+    case 'assistant': return <AssistantBubble node={node} ctx={ctx} controlsBelow={controlsBelow} afterAssistant={afterAssistant} />;
     case 'system': return <SystemLineView node={node} model={ctx.model} />;
     case 'turn_end': return <TurnEndView node={node} carries={carries} model={ctx.model} />;
     case 'plan': return <div data-item="plan"><PlanCard node={node} model={ctx.model} /></div>;
@@ -84,7 +84,7 @@ const RootItemView = React.memo(function RootItemView({ node, ctx, actions, curr
     case 'divider': return <DividerView node={node} />;
   }
 }, (a, b) => a.node === b.node && a.rev === b.rev && a.actions === b.actions && a.currentSegment === b.currentSegment && a.ctx === b.ctx
-  && a.controlsBelow === b.controlsBelow && a.carries === b.carries && a.carriesRev === b.carriesRev);
+  && a.controlsBelow === b.controlsBelow && a.carries === b.carries && a.carriesRev === b.carriesRev && a.afterAssistant === b.afterAssistant);
 
 // ── User ─────────────────────────────────────────────────────────────────
 
@@ -336,12 +336,11 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
 /**
  * One text block of an assistant bubble. A finished block's read-aloud sits after its last word, in a slot the
  * markdown render appends to its last paragraph, list item or quote, or on a row of its own when the block
- * ends in anything else. Every block but the bubble's first (whose gutter holds the avatar) moves it into the gutter at `md` and up.
+ * ends in anything else.
  */
-function TextBlock({ node, view, first, isSub }: { node: TextNode; view: TextView; first: boolean; isSub: boolean }) {
+function TextBlock({ node, view, isSub }: { node: TextNode; view: TextView; isSub: boolean }) {
   const ttsAvailable = useStore(voiceStore, (s) => s.ttsAvailable);
   const speaks = node.finalized && !isSub && ttsAvailable;
-  const gutter = speaks && !first;
   // A streaming block shows its raw deltas; it renders markdown once finalized.
   const rendered = node.finalized && view !== 'raw';
   // The current render's slot: undefined until the markdown has rendered, null when its last block has no inline end.
@@ -350,24 +349,21 @@ function TextBlock({ node, view, first, isSub }: { node: TextNode; view: TextVie
   // Forget the slot while the markdown is gone or rendered without one: otherwise the render that brings the rendered view
   // or the voice back would mount the control for one commit into that old, detached slot, before Markdown hands over a fresh one.
   React.useLayoutEffect(() => { if (!speaks || !rendered) setSlot(undefined); }, [speaks, rendered]);
-  const button = <SpeakButton text={node.buffer} nodeId={node.id} className={cn(SPEAK_INLINE, gutter && SPEAK_GUTTER, SPEAK_REVEAL)} />;
+  const button = <SpeakButton text={node.buffer} nodeId={node.id} className={cn(SPEAK_INLINE, SPEAK_REVEAL)} />;
   const end = !speaks ? undefined : !rendered ? 'inline' : slot === undefined ? undefined : slot ? 'inline' : 'row';
   return (
-    <div data-text-block data-speak-end={end} data-speak-gutter={gutter || undefined} className={cn(speaks && 'group/speak relative')}>
-      <div className={ASSISTANT_PROSE_INSET}>
-        {rendered
-          ? <Markdown text={node.buffer} className={MD_TEXT} renderInto={speaks ? renderInto : undefined} />
-          : (
-            <div className="text-[15px] leading-relaxed whitespace-pre-wrap">
-              {node.buffer}
-              {!node.finalized && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-primary/60 align-text-bottom" />}
-              {speaks && <span data-speak-slot>{button}</span>}
-            </div>
-          )}
-      </div>
+    <div data-text-block data-speak-end={end} className={cn(speaks && 'group/speak')}>
+      {rendered
+        ? <Markdown text={node.buffer} className={MD_TEXT} renderInto={speaks ? renderInto : undefined} />
+        : (
+          <div className="text-[15px] leading-relaxed whitespace-pre-wrap">
+            {node.buffer}
+            {!node.finalized && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-primary/60 align-text-bottom" />}
+            {speaks && <span data-speak-slot>{button}</span>}
+          </div>
+        )}
       {rendered && end === 'inline' && slot && createPortal(button, slot)}
-      {/* In the gutter the row holds only an out-of-flow button; as a block box it collapses, letting the code's margin through. */}
-      {rendered && end === 'row' && <div data-speak-slot className={cn('flex', gutter && 'md:block')}>{button}</div>}
+      {rendered && end === 'row' && <div data-speak-slot className="flex">{button}</div>}
     </div>
   );
 }
@@ -375,7 +371,7 @@ function TextBlock({ node, view, first, isSub }: { node: TextNode; view: TextVie
 /** A progress note: muted and italic under a small "note" label, so it never reads as the answer. No border: a bordered box in the bubble is an action card. */
 function NarrationBlock({ node, view }: { node: NarrationNode; view: TextView }) {
   return (
-    <div data-narration className={cn(ASSISTANT_PROSE_INSET, 'text-muted-foreground')}>
+    <div data-narration className="text-muted-foreground">
       <div className="flex items-center gap-1.5 text-xs">
         <MessageCircleIcon className="size-3.5" />
         note
@@ -386,9 +382,6 @@ function NarrationBlock({ node, view }: { node: NarrationNode; view: TextView })
     </div>
   );
 }
-
-/** Phone-only inset of an assistant turn's prose, so it does not sit flush with the action cards' border; cards and controls keep the transcript edge. */
-const ASSISTANT_PROSE_INSET = 'px-1.5 md:px-0';
 
 // The bubble's controls show while it is hovered or one of them has focus, and always where nothing hovers.
 const ASSISTANT_CONTROLS_REVEAL = 'opacity-0 transition-opacity group-hover/asst:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
@@ -405,20 +398,18 @@ function AssistantControls({ node, model, className }: { node: AssistantNode; mo
   );
 }
 
-/** The avatar's column at `md` and up: AssistantBubble's `size-8` avatar; the turn-end icon cell takes the same width. */
-const AVATAR_COLUMN = 'md:w-8';
+/** An assistant bubble straight after another (an unprompted turn replayed from the transcript, which has no turn-end row): a hairline marks where its turn starts. */
+const TURN_SEAM = 'border-t pt-6';
 
-function AssistantBubble({ node, ctx, controlsBelow }: { node: AssistantNode; ctx: RenderCtx; controlsBelow: boolean }) {
+function AssistantBubble({ node, ctx, controlsBelow, afterAssistant }: { node: AssistantNode; ctx: RenderCtx; controlsBelow: boolean; afterAssistant: boolean }) {
+  const root = !ctx.model.isSub;
+  // The group name is the speaker cue for assistive tech; a sub-agent's bubble sits inside a named card already.
   return (
-    <div className="group/asst flex flex-col gap-2 md:flex-row md:gap-3" data-item="assistant">
-      {!ctx.model.isSub && (
-        <div data-assistant-avatar className="md:mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/15">
-          <OctopusHead className="size-6" />
-        </div>
-      )}
-      <div data-assistant-body className="min-w-0 md:flex-1 space-y-3">
-        {node.children.map((c, i) => {
-          if (c.type === 'text') return <TextBlock key={c.id} node={c} view={node.view} first={i === 0} isSub={ctx.model.isSub} />;
+    <div className={cn('group/asst', afterAssistant && TURN_SEAM)} data-item="assistant" data-after-assistant={afterAssistant || undefined}
+      role={root ? 'group' : undefined} aria-label={root ? 'Code Conductor' : undefined}>
+      <div data-assistant-body className="min-w-0 space-y-3">
+        {node.children.map((c) => {
+          if (c.type === 'text') return <TextBlock key={c.id} node={c} view={node.view} isSub={ctx.model.isSub} />;
           if (c.type === 'narration') return <NarrationBlock key={c.id} node={c} view={node.view} />;
           if (c.type === 'group') return <ActionGroup key={c.id} node={c} rev={c.rev} ctx={ctx} />;
           return <CallUsageLine key={c.id} node={c} />;
@@ -491,8 +482,8 @@ function TurnEndView({ node, carries, model }: { node: TurnEndNode; carries: Ass
   const p = turnEndParts(node.ev);
   return (
     <div className="group/asst -mt-4 flex items-center gap-x-3 text-xs text-muted-foreground tabular-nums" data-item="turn-end">
-      <div className="flex min-w-0 flex-1 items-center gap-1 md:gap-3">
-        <span data-turn-icon className={cn('flex shrink-0 items-center justify-center', AVATAR_COLUMN, p.ok ? 'text-success' : 'text-destructive')}>
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        <span data-turn-icon className={cn('flex shrink-0 items-center justify-center', p.ok ? 'text-success' : 'text-destructive')}>
           {p.ok ? <CircleCheckIcon className="size-3.5" /> : <CircleAlertIcon className="size-3.5" />}
         </span>
         <div data-turn-stats className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">

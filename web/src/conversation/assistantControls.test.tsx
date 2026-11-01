@@ -571,7 +571,7 @@ describe('replay and lazy pages', () => {
 describe('on the turn-end row', () => {
   const kinds = (m: ConversationModel) => m.items.map((i) => i.type);
 
-  it("the row sits flush with the avatar gutter (no body-column indent) and pulls up under the bubble", async () => {
+  it("the turn-end row starts at the bubble's edge with its status icon in its own cell, and pulls up under the bubble", async () => {
     const { root } = await show([...text('m1', 0, 'one'), turnEnd()]);
     const row = turnEndBelow(bubbles(root)[0])!;
     expect(row.className, 'no indent to the body column').not.toMatch(/(^|\s)(md:)?p[lx]-\d/);
@@ -579,9 +579,7 @@ describe('on the turn-end row', () => {
     const icon = row.querySelector('[data-turn-icon]')!;
     const stats = row.querySelector('[data-turn-stats]')!;
     expect(icon.querySelector('svg'), 'the status icon is in its own cell').not.toBeNull();
-    expect(icon.classList.contains('md:w-8'), 'the cell is the avatar column wide').toBe(true);
     expect(stats.contains(icon), 'the icon is outside the stats column').toBe(false);
-    expect(icon.parentElement!.classList.contains('md:gap-3'), 'the gutter-to-body gap matches the avatar row').toBe(true);
     expect(icon.parentElement!.contains(stats), 'icon and stats share the wrapper').toBe(true);
     expect(stats.querySelector('svg'), 'the stats carry no icon').toBeNull();
     expect(stats.textContent).toContain('Done');

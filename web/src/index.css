@@ -62,15 +62,10 @@
   --color-plan: var(--plan);
 
   --animate-sway: sway 4s ease-in-out infinite;
-  --animate-baton: baton 0.9s ease-in-out infinite;
 
   @keyframes sway {
     0%, 100% { transform: rotate(-2deg); }
     50% { transform: rotate(2deg); }
-  }
-  @keyframes baton {
-    0%, 100% { transform: rotate(-14deg); }
-    50% { transform: rotate(16deg); }
   }
 }
 
