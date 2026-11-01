@@ -159,9 +159,44 @@ describe('image overlay zoom position', () => {
     // happy-dom lays out at 0 and may clamp an assigned scroll; probe that first.
     const probe = document.createElement('div');
     probe.scrollLeft = 5;
-    if (probe.scrollLeft !== 5) return;
+    expect(probe.scrollLeft, 'positive control: happy-dom keeps an assigned scrollLeft').toBe(5);
     expect(wrapper.scrollLeft).toBe(Math.min(2000, Math.max(0, 0.75 * 3000 - pointer.x)));
     expect(wrapper.scrollTop).toBeCloseTo(Math.min(1200, Math.max(0, 0.25 * 2000 - pointer.y)), 3);
+  });
+
+  it('the pointer origin is the zoomed scroller\'s rect, not the fit-mode wrapper\'s', async () => {
+    // Invariant: the wrapper's rect is read after the zoom lands (its top moves when it grows), so the scroll comes from the post-zoom origin.
+    const { root } = await withToolImage();
+    await open(root);
+    const img = overlay()!.querySelector('img')! as HTMLImageElement;
+    stubGeometry(img, { naturalWidth: 3000, naturalHeight: 1000 });
+    img.getBoundingClientRect = () => rect(50, 100, 600, 200); // painted exactly: 3:1
+    const wrapper = overlay() as HTMLElement;
+    stubGeometry(wrapper, { clientWidth: 1000, clientHeight: 500 });
+    const fitRect = rect(30, 100, 600, 200);
+    const actualRect = rect(50, 10, 1000, 500);
+    wrapper.getBoundingClientRect = () => (img.getAttribute('title') === 'Fit to screen' ? actualRect : fitRect);
+    fireEvent.click(img, { clientX: 350, clientY: 150 }); // fx 0.5, fy 0.25
+    await flush();
+    // Post-zoom origin (50, 10): pointer (300, 140) → (1200, 110); the fit origin (30, 100) would give (1180, 200).
+    expect(wrapper.scrollLeft).toBe(1200);
+    expect(wrapper.scrollTop).toBe(110);
+  });
+
+  it('a tap outside the zoomed scroller\'s client box is clamped to it', async () => {
+    // Invariant: the pointer offset is clamped to [0, client size]; unclamped it would give left 2550 and top 1560.
+    const { root } = await withToolImage();
+    await open(root);
+    const img = overlay()!.querySelector('img')! as HTMLImageElement;
+    stubGeometry(img, { naturalWidth: 3000, naturalHeight: 2000 });
+    img.getBoundingClientRect = () => rect(100, 50, 400, 400);
+    const wrapper = overlay() as HTMLElement;
+    stubGeometry(wrapper, { clientWidth: 400, clientHeight: 300 });
+    wrapper.getBoundingClientRect = () => rect(50, 10, 400, 300);
+    fireEvent.click(img, { clientX: 500, clientY: 450 }); // fx 1, fy 1, pointer (450, 440) → clamped (400, 300)
+    await flush();
+    expect(wrapper.scrollLeft).toBe(2600);
+    expect(wrapper.scrollTop).toBe(1700);
   });
 
   it('an attached image opens the same overlay with its own source', async () => {

@@ -16,6 +16,8 @@ type Size = { name: string; width: number; height: number };
 const SMALL: Size = { name: 'small.png', width: 200, height: 140 };
 const TALL: Size = { name: 'tall.png', width: 300, height: 2400 };
 const LARGE: Size = { name: 'large.png', width: 3000, height: 2000 };
+/** Its fit box is shorter than its 1:1 viewer, which the 90dvh cap makes taller, so the viewer's top moves on zoom. */
+const WIDE: Size = { name: 'wide.png', width: 3000, height: 1000 };
 
 type Rect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
 type Zoomed = {
@@ -137,6 +139,7 @@ async function zoomAt(page: Page, s: Size, fx: number, fy: number) {
     return { right: c.right - d.right, top: c.top - d.top, width: c.width, height: c.height };
   };
   const closeBefore = await closeOffset();
+  const wrapperBefore = await rectOf(wrapperOf(page));
   const tap = await paintedPoint(page, s, fx, fy);
   // One CSS pixel of tap precision on the fit image is this many pixels of 1:1 scroll.
   const tolerance = Math.ceil(1 / Math.min(fitImg.width / s.width, fitImg.height / s.height)) + 1;
@@ -148,7 +151,7 @@ async function zoomAt(page: Page, s: Size, fx: number, fy: number) {
   noPageOrDialogScroll(z, s.name);
   // The dialog box shrinks around a small image, so the button is compared at its offset from the dialog's top-right corner.
   expect(await closeOffset(), `${s.name}: the Close button keeps its place in the dialog's corner on zoom`).toEqual(closeBefore);
-  return { z, tap, fitDialog, tolerance };
+  return { z, tap, fitDialog, tolerance, wrapperBefore };
 }
 
 export async function smallFitsCenteredFlow({ page, cc }: Args): Promise<void> {
@@ -200,4 +203,17 @@ export async function largeStartsAtTapFlow({ page, cc }: Args): Promise<void> {
   expect(Math.abs(z.scroll.top - want.top)).toBeLessThanOrEqual(tolerance);
   await attachShot(page, 'large-zoomed');
   await closeOverlay(page);
+}
+
+export async function wideReanchorsOnZoomFlow({ page, cc }: Args): Promise<void> {
+  await sendImages(page, cc, [WIDE]);
+  const f = { fx: 0.5, fy: 0.25 };
+  const { z, tap, tolerance, wrapperBefore } = await zoomAt(page, WIDE, f.fx, f.fy);
+  expect(z.wrapper.top, 'positive control: the viewer grew, so its top moved on zoom').toBeLessThan(wrapperBefore.top - 50);
+  const want = expectedScroll(WIDE, f, tap, z);
+  const fromFitOrigin = expectedScroll(WIDE, f, tap, { ...z, wrapper: wrapperBefore });
+  expect(fromFitOrigin.top - want.top, 'positive control: the fit-mode origin would scroll well away from the right answer').toBeGreaterThan(3 * tolerance + 50);
+  expect(Math.abs(z.scroll.top - want.top), 'the vertical start comes from the zoomed viewer\'s origin').toBeLessThanOrEqual(tolerance);
+  expect(Math.abs(z.scroll.left - want.left)).toBeLessThanOrEqual(tolerance);
+  await attachShot(page, 'wide-zoomed');
 }
