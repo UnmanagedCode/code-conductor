@@ -13,13 +13,11 @@
 
   /* The logo's theme inks (components/logo); logoArt.ts's PALETTES carries the same values for the static icons. */
   --logo-ink: #15171c;
-  --logo-inverse: #ffffff;
   --logo-tile: #f7e5de;
 }
 
 .dark {
   --logo-ink: #ffffff;
-  --logo-inverse: #15171c;
   --logo-tile: #291812;
 }
 

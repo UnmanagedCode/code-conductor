@@ -24,7 +24,11 @@ function LogoSvg({ art, name, blink = false, className }: {
   const id = React.useId();
   const { masks, tree } = knockoutTree(art.elements);
   const box = viewBoxRect(art.viewBox);
-  const ink = (el: LogoElement) => APP_INKS[el.ink!];
+  const ink = (el: LogoElement) => {
+    const fill = APP_INKS[el.ink!];
+    if (!fill) throw new Error(`logo: the app has no colour for ink "${el.ink}"`);
+    return fill;
+  };
   const node = (n: KnockoutNode, i: number): React.ReactNode => ('el' in n
     ? <Shape key={i} el={n.el} fill={ink(n.el)} blink={blink} />
     : <g key={i} mask={`url(#${id}k${n.mask})`}>{n.children.map(node)}</g>);

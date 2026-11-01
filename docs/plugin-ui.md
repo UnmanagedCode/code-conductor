@@ -495,7 +495,7 @@ export default defineConfig({
 }
 ```
 
-- Keep this `@theme inline` block as written: its `--font-*`, `--radius-*` and `--color-*` entries are the ones in `<cc-checkout>/web/src/index.css`, and cc's `tests/plugin-theme.test.mjs` fails when this doc's block differs from them. cc's own `index.css` also carries the logo's cursor-blink animation, which are not part of the comparison and not part of this setup.
+- Keep this `@theme inline` block as written: its `--font-*`, `--radius-*` and `--color-*` entries are the ones in `<cc-checkout>/web/src/index.css`, and cc's `tests/plugin-theme.test.mjs` fails when this doc's block differs from them. cc's own `index.css` also carries the logo's cursor-blink animation, which is not part of the comparison and not part of this setup.
 
 **The standalone fallback, `frontend/src/cc-theme-fallback.css`:** a one-time snapshot of cc's tokens wrapped in `@layer base`. Make it from any one of these sources:
 

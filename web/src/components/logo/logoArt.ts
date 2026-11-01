@@ -30,18 +30,17 @@ export type Art = {
 
 export type Palette = 'light' | 'dark';
 
-/** The static files' inks. The app's `ink`, `inverse` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values. */
+/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER, a static file. */
 export const PALETTES: Record<Palette, Record<Ink, string>> = {
   light: { coral: '#f07456', deep: '#c8482c', ink: '#15171c', inverse: '#ffffff', tile: '#f7e5de' },
   dark: { coral: '#f07456', deep: '#c8482c', ink: '#ffffff', inverse: '#15171c', tile: '#291812' },
 };
 
-/** The app's inks: coral never changes, the rest follow the theme. */
-export const APP_INKS: Record<Ink, string> = {
+/** The inks the app's arts use: coral never changes, the rest follow the theme. */
+export const APP_INKS: Partial<Record<Ink, string>> = {
   coral: PALETTES.light.coral,
   deep: PALETTES.light.deep,
   ink: 'var(--logo-ink)',
-  inverse: 'var(--logo-inverse)',
   tile: 'var(--logo-tile)',
 };
 
