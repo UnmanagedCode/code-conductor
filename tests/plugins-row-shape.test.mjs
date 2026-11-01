@@ -29,6 +29,7 @@ const ROW_FIELDS = [
   'hasBackend',
   'hasFrontend',
   'hasMcp',
+  'icon',
   'id',
   'localOnly',
   'manifestSource',
@@ -85,6 +86,7 @@ test('a running row carries the same field set, with the UI-read fields populate
     assert.equal(row.navLabel, 'Fake');
     assert.equal(row.hasMcp, true);
     assert.deepEqual(row.menuItems, []);
+    assert.equal(row.icon, null);
     assert.equal(row.hasBackend, true);
     assert.equal(row.hasFrontend, true);
     assert.equal(typeof row.startedAt, 'string');
@@ -131,6 +133,43 @@ test('menuItems mirrors the manifest\'s validated entries', async () => {
       { label: 'Board', scope: 'project', path: '/board' },
       { label: 'Diff', scope: 'worktree', path: '/diff' },
     ]);
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('icon mirrors the manifest\'s frontend.icon', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const manifest = await readFixtureManifest();
+    manifest.frontend = { ...manifest.frontend, icon: 'square-kanban' };
+    await env.addPluginProject('aplug', { manifest });
+    const row = await host.status('fake-plugin');
+    assert.equal(row.icon, 'square-kanban');
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('icon: only the winning row of a duplicate id carries it', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const winner = await readFixtureManifest();
+    winner.frontend = { ...winner.frontend, icon: 'package' };
+    const loser = await readFixtureManifest();
+    loser.frontend = { ...loser.frontend, icon: 'git-branch' };
+    await env.addPluginProject('aplug', { manifest: winner });
+    await env.addPluginProject('bdup', { manifest: loser });
+    await host.enable('fake-plugin');
+    const rows = Object.fromEntries((await host.list()).map(r => [r.project, r]));
+    assert.equal(rows.bdup.state, 'conflict');
+    assert.equal(rows.bdup.enabled, true, 'fixture check: the conflict row reads the shared id\'s enabled flag');
+    assert.equal(rows.aplug.icon, 'package', 'positive control: the winning row carries its icon');
+    assert.equal(rows.bdup.icon, null);
   } finally {
     await host.stopAll();
     await env.restore();

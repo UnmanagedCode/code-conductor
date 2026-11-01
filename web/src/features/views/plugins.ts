@@ -305,7 +305,7 @@ class PluginFrames {
 export const pluginFrames = new PluginFrames();
 
 export type PluginMenuItem = { label: string; scope: 'project' | 'worktree'; path: string };
-export type PluginRow = { id: string; name: string; navLabel?: string | null; enabled?: boolean; hasFrontend?: boolean; frontendKeepAlive?: boolean; state?: string; menuItems?: PluginMenuItem[] };
+export type PluginRow = { id: string; name: string; navLabel?: string | null; enabled?: boolean; hasFrontend?: boolean; frontendKeepAlive?: boolean; icon?: string | null; state?: string; menuItems?: PluginMenuItem[] };
 /** A plugin's name as the app switcher and the plugin view's top bar show it. */
 export const appLabel = (p: Pick<PluginRow, 'name' | 'navLabel'>) => p.navLabel || p.name;
 

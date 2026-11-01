@@ -22,7 +22,7 @@ import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { parseHash } from '@/state/route';
 import { proj, wt } from '@/test/sidebarFleet';
-import { closeRowMenu, openProjectMenu, pickRowMenuItem, rowMenuItems } from '@/test/rowMenu';
+import { closeRowMenu, openProjectMenu, pickRowMenuItem, rowMenuItemLabel, rowMenuItems } from '@/test/rowMenu';
 import { sidebarStore } from '@/features/sidebar/state';
 import { dockStore, readDockState } from './dock';
 import type { PluginRow } from './plugins';
@@ -134,7 +134,7 @@ describe('a plugin row ⋮ button', () => {
   it('a disabled plugin contributes no items', async () => {
     await mountApp();
     await seedRows();
-    const texts = rowMenuItems(await openProjectMenu(projectRow('api'))).map((i) => i.textContent);
+    const texts = rowMenuItems(await openProjectMenu(projectRow('api'))).map(rowMenuItemLabel);
     expect(texts).toContain('Board');
     expect(texts).not.toContain('Off item');
     await closeRowMenu();

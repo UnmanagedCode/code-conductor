@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { validateManifest, readManifest, claudePluginPaths, MENU_ITEMS_MAX, MENU_LABEL_MAX, MENU_PATH_MAX } from '../src/plugins/manifest.ts';
+import { PLUGIN_ICONS } from '../shared/pluginIcons.ts';
 import { readFixtureManifest } from './plugin-helpers.mjs';
 import { localSystem } from '../src/systems/registry.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -208,6 +209,30 @@ test('a non-boolean frontend.keepAlive marks the manifest invalid', async (t) =>
     await t.test(label, () => {
       const r = validateManifest(base({ backend: { start: 'x' }, frontend: { keepAlive: value } }));
       assert.deepEqual(r.errors, ["'frontend.keepAlive' must be a boolean"]);
+    });
+  }
+});
+
+test('frontend.icon: every allow-listed name is accepted and kept', async (t) => {
+  for (const name of PLUGIN_ICONS) {
+    await t.test(name, () => {
+      const r = validateManifest(base({ backend: { start: 'x' }, frontend: { icon: name } }));
+      assert.equal(r.errors, undefined);
+      assert.equal(r.manifest.frontend.icon, name);
+    });
+  }
+});
+
+test('frontend.icon absent: the normalized frontend has no icon key', () => {
+  const r = validateManifest(base({ backend: { start: 'x' }, frontend: {} }));
+  assert.equal(Object.hasOwn(r.manifest.frontend, 'icon'), false);
+});
+
+test('an unknown or non-string frontend.icon marks the manifest invalid', async (t) => {
+  for (const [label, value] of [['an unlisted name', 'kanban'], ['7', 7], ['null', null], ['true', true], ['the empty string', '']]) {
+    await t.test(label, () => {
+      const r = validateManifest(base({ backend: { start: 'x' }, frontend: { icon: value } }));
+      assert.deepEqual(r.errors, [`'frontend.icon' must be one of: ${PLUGIN_ICONS.join(', ')}`]);
     });
   }
 });
