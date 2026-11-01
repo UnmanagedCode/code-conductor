@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 vi.mock('@/conversation/ConversationView', () => ({ ConversationView: () => null }));
@@ -38,6 +38,42 @@ describe('turn footer', () => {
       const rr = view();
       expect(indicator()?.getAttribute('data-turn-indicator') === 'working', status).toBe(working);
       rr.unmount();
+    }
+  });
+});
+
+describe('working row', () => {
+  const noMascot = () => {
+    expect(within(indicator()!).queryByRole('img')).toBeNull();
+    expect(indicator()!.querySelector('svg[aria-label="Code Conductor mascot"]')).toBeNull();
+  };
+  const label = () => indicator()!.querySelector('[data-turn-label]') as HTMLElement;
+
+  // Pins: a running turn's row is the label plus Interrupt, with no mascot picture.
+  it('while a turn runs the row shows its label and Interrupt, and no mascot', () => {
+    seed([inst('W', { status: 'turn', displayStatus: 'turn' })], 'W');
+    view();
+    noMascot();
+    expect(label().textContent).toBe('Working…');
+    expect(screen.getByRole('button', { name: /Interrupt/ })).toBeTruthy();
+  });
+
+  // Pins: a pending interrupt's row shows the stopping label and Interrupt now, with no mascot picture.
+  it('while an interrupt is pending the row shows the stopping label and Interrupt now, and no mascot', () => {
+    seed([inst('W', { status: 'turn', displayStatus: 'turn', interrupting: true })], 'W');
+    view();
+    noMascot();
+    expect(label().textContent).toBe('Stopping at the next safe point…');
+    expect(screen.getByRole('button', { name: 'Interrupt now' })).toBeTruthy();
+  });
+
+  // Pins: the label carries the motion cue in both states (the mascot no longer moves).
+  it('the label pulses in both states', () => {
+    for (const interrupting of [false, true]) {
+      seed([inst('W', { status: 'turn', displayStatus: 'turn', interrupting })], 'W');
+      const r = view();
+      expect(label().classList.contains('animate-pulse'), `interrupting=${interrupting}`).toBe(true);
+      r.unmount();
     }
   });
 });

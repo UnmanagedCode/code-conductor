@@ -2,7 +2,6 @@ import * as React from 'react';
 import { CircleCheckIcon, CircleDotIcon, CircleIcon, CircleXIcon, LoaderCircleIcon, ListTodoIcon, BotIcon, ChevronDownIcon, PauseIcon, ZapIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { OctopusMaestro } from '@/components/mascot/Octopus';
 import { useSignal, useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
@@ -107,8 +106,7 @@ export function TurnIndicator({ inst }: { inst: Instance }) {
     const interrupting = !!inst.interrupting;
     return (
       <div className="flex items-center gap-2 px-1 text-sm text-muted-foreground" data-turn-indicator="working">
-        <OctopusMaestro mood="conducting" className="size-7" />
-        <span className={cn(!interrupting && 'animate-pulse')}>{interrupting ? 'Stopping at the next safe point…' : 'Working…'}</span>
+        <span data-turn-label className="animate-pulse">{interrupting ? 'Stopping at the next safe point…' : 'Working…'}</span>
         <div className="ml-auto flex items-center gap-1">
           {!interrupting && (
             <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => send('interrupt', { id: inst.id })} title="Stop at the next output boundary. Finished blocks and tool results are kept.">

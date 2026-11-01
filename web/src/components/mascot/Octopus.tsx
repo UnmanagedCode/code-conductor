@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 
-export type OctopusMood = 'happy' | 'sleepy' | 'conducting' | 'curious';
+export type OctopusMood = 'happy' | 'sleepy' | 'curious';
 
 type Props = {
   mood?: OctopusMood;
@@ -25,7 +25,7 @@ function Eyes({ mood, cx = [49, 71], cy = 48 }: { mood: OctopusMood; cx?: [numbe
       </g>
     );
   }
-  const look = mood === 'curious' ? 2 : mood === 'conducting' ? 1.5 : 0.8;
+  const look = mood === 'curious' ? 2 : 0.8;
   return (
     <g>
       {cx.map((x) => (
@@ -41,7 +41,6 @@ function Eyes({ mood, cx = [49, 71], cy = 48 }: { mood: OctopusMood; cx?: [numbe
 
 /** Full character: an octopus in a bow tie, conducting with one arm. */
 export function OctopusMaestro({ mood = 'happy', className, title = 'Code Conductor mascot' }: Props) {
-  const conducting = mood === 'conducting';
   return (
     <svg viewBox="0 0 120 120" className={cn('overflow-visible', className)} role="img" aria-label={title}>
       <g className={cn(mood !== 'sleepy' && 'animate-sway')} style={{ transformOrigin: '60px 100px', transformBox: 'view-box' }}>
@@ -92,10 +91,7 @@ export function OctopusMaestro({ mood = 'happy', className, title = 'Code Conduc
         </g>
 
         {/* baton arm */}
-        <g
-          className={cn(conducting && 'animate-baton')}
-          style={{ transformOrigin: '84px 66px', transformBox: 'view-box' }}
-        >
+        <g>
           <path d="M84 66 C 94 63, 100 54, 101 44" stroke={BODY} strokeWidth={9.5} strokeLinecap="round" fill="none" />
           <line x1={101} y1={42} x2={111} y2={14} stroke={BATON} strokeWidth={2.6} strokeLinecap="round" />
           <circle cx={101.5} cy={42.5} r={3.6} fill={BELLY} />
@@ -106,13 +102,6 @@ export function OctopusMaestro({ mood = 'happy', className, title = 'Code Conduc
           <g fill="var(--muted-foreground)" fontFamily="var(--font-sans)" fontWeight={700}>
             <text x={96} y={24} fontSize={11}>z</text>
             <text x={104} y={14} fontSize={8}>z</text>
-          </g>
-        )}
-        {conducting && (
-          <g fill="var(--primary)" opacity={0.85}>
-            <path d="M14 22 v-9 l7 -2 v9" stroke="var(--primary)" strokeWidth={1.6} fill="none" />
-            <circle cx={12} cy={22} r={2.6} />
-            <circle cx={19} cy={20} r={2.6} />
           </g>
         )}
       </g>
@@ -134,18 +123,6 @@ export function OctopusMark({ className, title = 'Code Conductor' }: Omit<Props,
       <path d="M9 21 C 9 11, 15.5 5, 24 5 C 32.5 5, 39 11, 39 21 C 39 28, 33 32, 24 32 C 15 32, 9 28, 9 21 Z" fill="currentColor" />
       <circle cx={19} cy={20} r={3.1} fill="var(--background)" />
       <circle cx={29} cy={20} r={3.1} fill="var(--background)" />
-    </svg>
-  );
-}
-
-/** Head only, for small avatars where the full character turns to noise. */
-export function OctopusHead({ mood = 'happy', className, title = 'Code Conductor' }: Props) {
-  return (
-    <svg viewBox="22 8 76 76" className={className} role="img" aria-label={title}>
-      <path d="M27 49 C 27 25, 43 13, 60 13 C 77 13, 93 25, 93 49 C 93 66, 80 76, 60 76 C 40 76, 27 66, 27 49 Z" fill={BODY} />
-      <path d="M33 40 C 36 26, 46 19, 58 18" stroke="#fff" strokeOpacity={0.35} strokeWidth={4} strokeLinecap="round" fill="none" />
-      <Eyes mood={mood} />
-      <path d="M53.5 60 Q60 66.5 66.5 60" stroke={INK} strokeWidth={2.8} strokeLinecap="round" fill="none" />
     </svg>
   );
 }

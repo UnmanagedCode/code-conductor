@@ -1,8 +1,8 @@
 // Where a finished text block's read-aloud sits: inside the block's last line of prose
 // (a slot at the inline end of its last paragraph, list item or quote) or on a row of its
-// own when the block ends in a heading, code block, table or rule; and which blocks
-// move it into the avatar gutter at `md` and up (every one but the bubble's first). The
-// geometry itself is checked in the browser (web/e2e/speaker-gutter.shared.ts).
+// own when the block ends in a heading, code block, table or rule; the same for every
+// block of a bubble, first or later. The geometry itself is checked in the browser
+// (web/e2e/speaker-last-line.shared.ts).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
 import { voiceStore } from '@/features/voice/store';
@@ -101,37 +101,26 @@ describe('read-aloud placement', () => {
     expect(block.getAttribute('data-speak-end')).toBe('row');
   });
 
-  // Pins: the bubble's first block (beside the avatar) ends inline and never moves into the gutter.
-  it('the first block of a bubble, ending in prose, ends inline and stays out of the gutter', async () => {
+  // Pins: every block of a bubble, first or later, ending in prose holds its control inline in its last paragraph, and none is marked for a gutter.
+  it('every block of a bubble, first or later, ending in prose holds its control in its last paragraph\'s inline slot, and no block is marked for a gutter', async () => {
     const { root } = await show(PROSE_THEN_LATER('Opening line.'));
-    const [first] = blocks(root);
-    expect(blocks(root).length, 'fixture check: two text blocks around a tool').toBe(2);
-    expect(first.getAttribute('data-speak-end')).toBe('inline');
-    expect(first.hasAttribute('data-speak-gutter'), 'the first block keeps the gutter for the avatar').toBe(false);
+    const bs = blocks(root);
+    expect(bs.length, 'fixture check: two text blocks around a tool').toBe(2);
+    for (const b of bs) {
+      expectInlineIn(speaker(b), md(b).querySelector(':scope > p:last-child'), 'last paragraph');
+      expect(b.getAttribute('data-speak-end')).toBe('inline');
+    }
+    expect(root.querySelector('[data-speak-gutter]')).toBeNull();
   });
 
-  // Pins: every later block ending in prose ends inline and is marked for the gutter.
-  it('a later block, ending in prose, ends inline and is marked for the gutter', async () => {
-    const { root } = await show(PROSE_THEN_LATER('Opening line.'));
-    const [, later] = blocks(root);
-    expect(later.getAttribute('data-speak-end')).toBe('inline');
-    expect(later.hasAttribute('data-speak-gutter'), 'a later block moves its control into the gutter').toBe(true);
-  });
-
-  // Pins: the first block ending in code falls back to its own row and stays out of the gutter.
-  it('the first block of a bubble, ending in a code block, keeps its own row and stays out of the gutter', async () => {
-    const { root } = await show(PROSE_THEN_LATER('Run:\n\n```\nnpm test\n```'));
-    const [first] = blocks(root);
-    expect(first.getAttribute('data-speak-end')).toBe('row');
-    expect(first.hasAttribute('data-speak-gutter')).toBe(false);
-  });
-
-  // Pins: a later block ending in code is on a row and still marked for the gutter.
-  it('a later block, ending in a code block, keeps its own row and is marked for the gutter', async () => {
-    const { root } = await show([...text('m1', 0, 'Opening line.'), ...tool('m1', 1, 't1', 'Bash'), ...text('m1', 2, 'Run:\n\n```\nnpm test\n```')]);
-    const [, later] = blocks(root);
-    expect(later.getAttribute('data-speak-end')).toBe('row');
-    expect(later.hasAttribute('data-speak-gutter')).toBe(true);
+  // Pins: a first or later block ending in code keeps its own row, and nothing is marked for a gutter.
+  it('first or later, a block ending in a code block keeps its own row', async () => {
+    const code = 'Run:\n\n```\nnpm test\n```';
+    const { root } = await show([...text('m1', 0, code), ...tool('m1', 1, 't1', 'Bash'), ...text('m1', 2, code)]);
+    const bs = blocks(root);
+    expect(bs.length, 'fixture check: two text blocks around a tool').toBe(2);
+    for (const b of bs) expect(b.getAttribute('data-speak-end')).toBe('row');
+    expect(root.querySelector('[data-speak-gutter]')).toBeNull();
   });
 
   // Pins: with no voice the block carries no slot and no placement attribute; a voice arriving adds exactly one control, inline.
