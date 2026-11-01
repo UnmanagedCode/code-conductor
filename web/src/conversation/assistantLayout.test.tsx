@@ -2,7 +2,7 @@
 // every block, and a root bubble is a group named for assistive tech. No JS reads the width; geometry
 // is web/e2e/transcript-layout.shared.ts (happy-dom computes no layout).
 import { describe, expect, it } from 'vitest';
-import { within } from '@testing-library/react';
+import { act, within } from '@testing-library/react';
 import { ConversationModel, type AssistantNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 import { groupsOf, text, tool, turnEnd } from './testkit';
@@ -82,5 +82,36 @@ describe('assistant bubble layout', () => {
     const ended = await show([...text('m1', 0, 'A'), turnEnd(), boundary, ...text('m2', 0, 'B')]);
     expect(ended.m.items.map((i) => i.type), 'fixture check').toEqual(['assistant', 'turn_end', 'assistant']);
     for (const b of bubbles(ended.root)) expect(b.hasAttribute('data-after-assistant')).toBe(false);
+  });
+
+  // Pins: a seam is never marked inside a sub-agent's list, even where two sub bubbles are adjacent.
+  it('a sub-agent bubble straight after another sub bubble is not marked as a seam', async () => {
+    const sub = (msgId: string, t: string): UiEvent => ({ kind: 'assistant_message', msgId, blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: t }] } });
+    const { m, root } = await show([
+      { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent' },
+      { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
+      sub('ms1', 'S1'),
+      { kind: 'turn_boundary', toolUseId: null, status: null, parentToolUseId: 'tuA' },
+      sub('ms2', 'S2'),
+    ]);
+    const card = groupsOf(m.items[0] as AssistantNode)[0].children[0] as ToolNode;
+    expect(card.sub!.items.map((i) => i.type), 'fixture check: the sub-agent list is two bubbles').toEqual(['assistant', 'assistant']);
+    expect(subBubbles(root), 'fixture check: both sub bubbles are on screen').toHaveLength(2);
+    for (const b of subBubbles(root)) expect(b.hasAttribute('data-after-assistant')).toBe(false);
+  });
+
+  // Pins: a mounted bubble's seam marker follows a change in its previous item (a page prepended above it).
+  it('a mounted root bubble gains the seam marker when a page puts an assistant bubble above it', async () => {
+    const m = new ConversationModel();
+    const { root } = await show(text('m2', 0, 'B'), m);
+    const [mounted] = bubbles(root);
+    expect(bubbles(root), 'fixture check: one bubble, unmarked').toHaveLength(1);
+    expect(mounted.hasAttribute('data-after-assistant')).toBe(false);
+
+    act(() => { m.prependPage(m.renderPage([...text('m1', 0, 'A'), { kind: 'turn_boundary', toolUseId: null, status: null }], null, null), m.leadingAssistantWrap); });
+    await flush();
+    expect(m.items.map((i) => i.type), 'fixture check: the page added a bubble above').toEqual(['assistant', 'assistant']);
+    expect(bubbles(root)[1] === mounted, 'the mounted bubble element was reused, not remounted').toBe(true);
+    expect(mounted.hasAttribute('data-after-assistant')).toBe(true);
   });
 });
