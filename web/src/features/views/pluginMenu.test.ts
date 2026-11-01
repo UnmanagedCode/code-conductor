@@ -85,6 +85,12 @@ describe('pluginShortName', () => {
     expect(short('Code  Multi Word')).toBe('Multi Word');
   });
 
+  // Pins: the prefix match is case-sensitive, so a differently-cased prefix stays in the tag.
+  it('leaves a differently-cased prefix whole', () => {
+    expect(short('code board')).toBe('code board');
+    expect(short('CODE Board')).toBe('CODE Board');
+  });
+
   // Pins: no other label is altered, and the result is never empty.
   it('leaves any other label whole', () => {
     expect(short('Playwright Harness')).toBe('Playwright Harness');

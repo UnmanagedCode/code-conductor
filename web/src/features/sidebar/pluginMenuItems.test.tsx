@@ -123,6 +123,24 @@ describe('plugin entries in a row ⋮', () => {
     ]);
   });
 
+  it('the flat section has exactly one separator before it when no plugin has a group, and a group exactly one when no plugin is flat', async () => {
+    // Invariant: only single-item plugins in scope → core items, one separator, the flat entries, one separator, Delete…; only 2+ plugins → core items, one separator, the group (header then items), one separator, Delete…; no empty-section separator in either.
+    const sequence = (menu: HTMLElement) => [...menu.querySelectorAll('[role="menuitem"], [role="separator"]')]
+      .map((n) => (n.getAttribute('role') === 'separator' ? '—' : rowMenuItemLabel(n as HTMLElement)));
+    catalogStore.set({ apps: CATALOG.filter((a) => a.id !== 'alpha') });
+    renderApi();
+    expect(sequence(await openProjectMenu(projectRowOf('api')))).toEqual([
+      'New session', 'Edit conventions…', '—', 'Wiki', 'Notes', '—', 'Delete…',
+    ]);
+    await closeRowMenu();
+    catalogStore.set({ apps: CATALOG.filter((a) => a.id === 'alpha') });
+    const menu = await openProjectMenu(projectRowOf('api'));
+    expect(sequence(menu)).toEqual([
+      'New session', 'Edit conventions…', '—', '<b>Board</b>', 'Issues', '—', 'Delete…',
+    ]);
+    expect(groupsOf(menu)).toEqual(PROJECT_GROUPS);
+  });
+
   it('Projects lens: the worktree ⋮ lists only worktree items; a plugin with none in that scope has no entry', async () => {
     // Invariant: the worktree ⋮ shows worktree-scope items only, groups by that scope's item count, and omits a plugin with none.
     catalogStore.set({ apps: CATALOG });
