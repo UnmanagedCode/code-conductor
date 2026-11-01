@@ -104,10 +104,10 @@ function ViewToggle({ view, onChange }: { view: 'rendered' | 'raw'; onChange: (v
 
 // Single newlines inside a paragraph are line breaks people typed: keep them.
 const MD_TEXT = 'whitespace-pre-wrap';
-/** A user bubble's horizontal padding; the attachments row below it shares it, so its chips start at the bubble's text. */
-const USER_BUBBLE_PAD_X = 'px-4';
+/** The horizontal inset of transcript text: a user bubble's padding. The attachments row and assistant prose share it, so their content starts at the bubble's text. */
+export const TEXT_INSET_X = 'px-4';
 /** A user bubble: a soft tint and an accent strip on its right edge, the side its author speaks from; no outline. A tone adds the colours. */
-export const USER_BUBBLE = `rounded-l-2xl rounded-r-md border-r-[3px] py-2.5 ${USER_BUBBLE_PAD_X}`;
+export const USER_BUBBLE = `rounded-l-2xl rounded-r-md border-r-[3px] py-2.5 ${TEXT_INSET_X}`;
 /** The tone of a prompt a person typed (and of the sticky pin that repeats one). */
 export const USER_TONE_PROMPT = 'bg-primary/10 dark:bg-primary/15 border-r-primary/60';
 
@@ -205,7 +205,7 @@ function WakeBody({ body }: { body: string }) {
 function Attachments({ list, resolve }: { list: any[]; resolve?: (f: string) => string | null }) {
   if (!list.length) return null;
   return (
-    <div className={cn('flex flex-wrap gap-2', USER_BUBBLE_PAD_X)} data-user-attachments>
+    <div className={cn('flex flex-wrap gap-2', TEXT_INSET_X)} data-user-attachments>
       {list.map((a, i) => {
         if (a?.kind === 'image') {
           const src = typeof a.dataBase64 === 'string'
@@ -352,7 +352,7 @@ function TextBlock({ node, view, isSub }: { node: TextNode; view: TextView; isSu
   const button = <SpeakButton text={node.buffer} nodeId={node.id} className={cn(SPEAK_INLINE, SPEAK_REVEAL)} />;
   const end = !speaks ? undefined : !rendered ? 'inline' : slot === undefined ? undefined : slot ? 'inline' : 'row';
   return (
-    <div data-text-block data-speak-end={end} className={cn(speaks && 'group/speak')}>
+    <div data-text-block data-speak-end={end} className={cn(TEXT_INSET_X, speaks && 'group/speak')}>
       {rendered
         ? <Markdown text={node.buffer} className={MD_TEXT} renderInto={speaks ? renderInto : undefined} />
         : (
@@ -371,7 +371,7 @@ function TextBlock({ node, view, isSub }: { node: TextNode; view: TextView; isSu
 /** A progress note: muted and italic under a small "note" label, so it never reads as the answer. No border: a bordered box in the bubble is an action card. */
 function NarrationBlock({ node, view }: { node: NarrationNode; view: TextView }) {
   return (
-    <div data-narration className="text-muted-foreground">
+    <div data-narration className={cn(TEXT_INSET_X, 'text-muted-foreground')}>
       <div className="flex items-center gap-1.5 text-xs">
         <MessageCircleIcon className="size-3.5" />
         note

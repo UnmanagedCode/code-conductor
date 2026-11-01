@@ -7,6 +7,8 @@ import { ConversationModel, type AssistantNode, type ToolNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 import { groupsOf, text, tool, turnEnd } from './testkit';
 import type { UiEvent } from '@shared/uiEvent';
+import { TEXT_INSET_X, USER_BUBBLE } from './items';
+import { tokens } from './userBubbleTestkit';
 
 async function show(events: UiEvent[], m = new ConversationModel()) {
   m.applyEvents(events);
@@ -113,5 +115,34 @@ describe('assistant bubble layout', () => {
     expect(m.items.map((i) => i.type), 'fixture check: the page added a bubble above').toEqual(['assistant', 'assistant']);
     expect(bubbles(root)[1] === mounted, 'the mounted bubble element was reused, not remounted').toBe(true);
     expect(mounted.hasAttribute('data-after-assistant')).toBe(true);
+  });
+
+  // Pins: assistant prose and notes carry the user bubble's own horizontal padding, while the body and the action card (bordered boxes) carry none of it.
+  it("every text block and note, root and sub-agent, carries the user bubble's horizontal padding; the body and the action card do not", async () => {
+    const inset = tokens(TEXT_INSET_X);
+    expect(inset.length, 'fixture check: the shared token has classes').toBeGreaterThan(0);
+    expect(tokens(USER_BUBBLE), "fixture check: the bubble's padding is the token").toEqual(expect.arrayContaining(inset));
+    const { root } = await show([
+      { kind: 'user_echo', text: 'go', userIndex: 0 },
+      ...text('m1', 0, 'Finalized prose'),
+      { kind: 'text_delta', msgId: 'm1', blockIdx: 1, text: 'Streaming prose' },
+      { kind: 'thinking_delta', msgId: 'm1', blockIdx: 2, text: 'A note.', narration: true },
+      { kind: 'thinking_end', msgId: 'm1', blockIdx: 2 },
+      ...tool('m1', 3, 't1', 'Bash'),
+      { kind: 'tool_use_start', msgId: 'm1', blockIdx: 4, toolUseId: 'tuA', name: 'Agent' },
+      { kind: 'tool_use', msgId: 'm1', blockIdx: 4, toolUseId: 'tuA', name: 'Agent', input: { description: 'sub' } },
+      { kind: 'assistant_message', msgId: 'ms', blockIdx: 0, parentToolUseId: 'tuA', message: { content: [{ type: 'text', text: 'Sub prose' }] } },
+    ]);
+    const blocks = [...root.querySelectorAll('[data-text-block], [data-narration]')];
+    expect(blocks.length, 'fixture check: finalized, streaming, note and sub-agent blocks all render').toBeGreaterThanOrEqual(4);
+    expect(subBubbles(root)[0].querySelector('[data-text-block]'), 'fixture check: the sub-agent shows prose').not.toBeNull();
+    expect(root.querySelector('[data-text-block] .animate-pulse'), 'fixture check: a streaming block (with its cursor) renders').not.toBeNull();
+    const has = (el: Element) => inset.every((c) => el.classList.contains(c));
+    for (const b of blocks) expect(has(b), `${b.getAttribute('data-narration') !== null ? 'note' : 'text block'} "${b.textContent}" carries the inset`).toBe(true);
+    const bodies = [...root.querySelectorAll('[data-assistant-body]')];
+    const cards = [...root.querySelectorAll('[data-group-trigger]')].map((t) => t.parentElement!);
+    expect(bodies.length, 'fixture check: bodies').toBeGreaterThan(0);
+    expect(cards.length, 'fixture check: cards').toBeGreaterThan(0);
+    for (const el of [...bodies, ...cards]) expect(inset.some((c) => el.classList.contains(c)), 'a bordered box or the body carries no inset class').toBe(false);
   });
 });

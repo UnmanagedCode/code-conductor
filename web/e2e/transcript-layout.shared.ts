@@ -1,14 +1,15 @@
 // The transcript's horizontal layout in a real browser, on every project: no avatar, and the user
-// bubble, action cards, prose, assistant body and turn footer's status icon share one left edge and
-// one width; the footer carries the bubble's controls at its right end, clear of the figures, also
-// as the viewport narrows. The body is shared by the per-project spec files.
+// bubble, action cards, assistant body and turn footer's status icon share one left edge and one
+// width; prose starts at the user text's left edge and ends a bubble padding inside the bubble's right
+// edge; the footer carries the bubble's controls at its right end, clear of the figures, also as the
+// viewport narrows. The body is shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { createProject } from './harness/api.ts';
 import { next } from './flows/ui.ts';
 
 export async function layoutFlow({ page, cc }: { page: Page; cc: Cc }): Promise<void> {
-  // Invariant: on desktop, phone and android the user bubble, the first action card, the first prose paragraph, the assistant body and the footer icon start at one non-zero left edge, the card and body end where the user bubble ends, the avatar is gone, the bubble is named Code Conductor, and the footer controls end at the body's right edge without overlapping a figure.
+  // Invariant: on desktop, phone and android the user bubble, the first action card, the assistant body and the footer icon start at one non-zero left edge, the first prose paragraph starts at the user text's left edge and ends a bubble padding inside the bubble's right edge, the card and body end where the user bubble ends, the avatar is gone, the bubble is named Code Conductor, and the footer controls end at the body's right edge without overlapping a figure.
   const name = test.info().project.name;
   const project = `tl-${name}`;
   await createProject(cc, project);
@@ -28,6 +29,8 @@ export async function layoutFlow({ page, cc }: { page: Page; cc: Cc }): Promise<
     return {
       column: { left: cr.left + parseFloat(cs.paddingLeft), right: cr.right - parseFloat(cs.paddingRight) },
       user: box(document.querySelector('[data-item=user] [data-user-text]')!),
+      userText: box(document.querySelector('[data-item=user] [data-user-text] .md')!),
+      userPadRight: parseFloat(getComputedStyle(document.querySelector('[data-item=user] [data-user-text]')!).paddingRight),
       card: box(last.querySelector('[data-group-trigger]')!.parentElement!),
       prose: box(last.querySelector('[data-text-block] p')!),
       body: box(last.querySelector(':scope > [data-assistant-body]')!),
@@ -37,7 +40,10 @@ export async function layoutFlow({ page, cc }: { page: Page; cc: Cc }): Promise<
   const near = (a: number, b: number, msg: string) => expect(Math.abs(a - b), `${msg}: ${a} vs ${b}`).toBeLessThanOrEqual(0.5);
   expect(m.user.left, 'the column has a non-zero left edge').toBeGreaterThan(0);
   near(m.user.left, m.column.left, 'the user bubble starts at the column edge');
-  for (const k of ['card', 'prose', 'body', 'icon'] as const) near(m[k].left, m.user.left, `${k} starts at the user bubble's edge`);
+  for (const k of ['card', 'body', 'icon'] as const) near(m[k].left, m.user.left, `${k} starts at the user bubble's edge`);
+  expect(m.userText.left, 'fixture check: the user text sits inside the bubble').toBeGreaterThan(m.user.left);
+  near(m.prose.left, m.userText.left, 'the prose starts at the user bubble\'s text');
+  near(m.prose.right, m.user.right - m.userPadRight, 'the prose ends a bubble padding inside the bubble\'s right edge');
   near(m.body.right, m.user.right, 'the body ends where the user bubble ends');
   near(m.card.right, m.user.right, 'the card ends where the user bubble ends');
   await expect(page.locator('[data-assistant-avatar]')).toHaveCount(0);
