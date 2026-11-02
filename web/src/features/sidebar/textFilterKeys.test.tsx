@@ -5,6 +5,7 @@ import { act, fireEvent, render } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { uiStore } from '@/app/ui';
+import { focusContent } from '@/lib/modalFocus';
 import { seed } from '@/test/sidebarFleet';
 import { filterInput, typeFilter } from '@/test/textFilter';
 
@@ -76,15 +77,37 @@ describe('/', () => {
     expect(document.activeElement).toBe(filterInput());
   });
 
-  it('does nothing while a dialog outside the sidebar is open', () => {
-    // Pins: the shortcut never reaches past an open dialog.
+  it.each([['dialog'], ['menu']])('does nothing while a %s outside the sidebar is open', (role) => {
+    // Pins: the shortcut never reaches past an open dialog or menu.
     renderSidebar();
-    const dialog = document.createElement('div');
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('data-state', 'open');
-    append(dialog);
+    const layer = document.createElement('div');
+    layer.setAttribute('role', role);
+    layer.setAttribute('data-state', 'open');
+    append(layer);
     expect(press(document.body, { key: '/' })).toBe(true);
     expect(document.activeElement).not.toBe(filterInput());
+  });
+
+  it('ignores a keydown something else already prevented', () => {
+    // Pins: a prevented `/` belongs to whoever prevented it.
+    renderSidebar();
+    const claim = (e: Event) => e.preventDefault();
+    document.addEventListener('keydown', claim);
+    try {
+      expect(press(document.body, { key: '/' })).toBe(false);
+      expect(document.activeElement).not.toBe(filterInput());
+    } finally { document.removeEventListener('keydown', claim); }
+  });
+
+  it('is not taken by the desktop copy while the viewport is below the wide breakpoint', () => {
+    // Pins: only the shown copy acts; the desktop column, hidden below `md`, never takes the shortcut.
+    const narrow = vi.spyOn(window, 'matchMedia').mockImplementation((q: string) => (
+      { matches: false, media: q, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+    try {
+      renderSidebar();
+      expect(press(document.body, { key: '/' })).toBe(true);
+      expect(document.activeElement).not.toBe(filterInput());
+    } finally { narrow.mockRestore(); }
   });
 });
 
@@ -106,14 +129,36 @@ describe('Esc in the input', () => {
   });
 });
 
+describe('keepFilterEscape', () => {
+  it('prevents an Escape whose target is the filter input, and no other', () => {
+    // Pins: the drawer guard acts only for the filter field.
+    renderSidebar();
+    const outside = document.createElement('button');
+    append(outside);
+    const prevented = (target: Element) => {
+      let result = false;
+      const listener = (e: KeyboardEvent) => { keepFilterEscape(e); result = e.defaultPrevented; };
+      document.addEventListener('keydown', listener);
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      document.removeEventListener('keydown', listener);
+      return result;
+    };
+    expect(prevented(filterInput())).toBe(true);
+    expect(prevented(outside)).toBe(false);
+  });
+});
+
 describe('in the phone drawer', () => {
   it('the first Esc clears the input without closing the drawer, and the next Esc closes it', async () => {
     // Pins (a decision): Esc in the drawer's input only clears; a second Esc dismisses the drawer as before.
+    // Mounted as App mounts it, with `focusContent`: opening on the first control would open its tooltip, and an
+    // open tooltip is the topmost layer that takes the first Escape, so the guard would never be exercised.
+    // Without `keepFilterEscape` Radix's capture-phase listener on the document dismisses on that first Escape.
     const onOpenChange = vi.fn();
     render(
       <TooltipProvider>
         <Sheet open onOpenChange={onOpenChange}>
-          <SheetContent side="left" onEscapeKeyDown={keepFilterEscape}>
+          <SheetContent side="left" onOpenAutoFocus={focusContent} onEscapeKeyDown={keepFilterEscape}>
             <SheetTitle className="sr-only">Navigation</SheetTitle>
             <AppSidebar mobile />
           </SheetContent>

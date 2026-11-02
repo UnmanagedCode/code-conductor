@@ -28,18 +28,21 @@ const summary = (count: number, lastActivity = 1) => ({ count, archivedCount: 0,
 
 /**
  * Acme (user-open) holds `shop`. Ops (user-closed) holds `api` (Sessions group collapsed; rows `fix login bug`,
- * `docs pass`) and `web` (Worktrees group closed; worktree `feat-x`, Sessions group collapsed, row `login page`).
- * `tools` is unassigned with one live hand session. Every group's state differs from its default.
+ * `docs pass`), `web` (a main row `web readme`; Worktrees group closed; worktrees `feat-x`, whose Sessions group
+ * is collapsed and holds `login page`, and `feat-y` holding `tidy imports`) and `billing`, which has no sessions.
+ * `Empty` is a workspace with no project. `tools` is unassigned with one live hand session.
+ * Every group's state differs from its default.
  */
 function world(extraInstances: any[] = []) {
   seed({
     projects: [
       proj('shop', { workspace: 'Acme', sessions: summary(1, 3) }),
       proj('api', { workspace: 'Ops', sessions: summary(2, 5) }),
-      proj('web', { workspace: 'Ops', isGitRepo: true, worktrees: [wt('feat-x', { sessions: summary(1, 4) })] }),
+      proj('web', { workspace: 'Ops', isGitRepo: true, sessions: summary(1, 2), worktrees: [wt('feat-x', { sessions: summary(1, 4) }), wt('feat-y', { sessions: summary(1, 1) })] }),
+      proj('billing', { workspace: 'Ops' }),
       proj('tools'),
     ],
-    workspaces: ['Acme', 'Ops'],
+    workspaces: ['Acme', 'Empty', 'Ops'],
     instances: [hand('h-lint', 'tools', null, { firstPrompt: 'lint sweep' }), ...extraInstances],
   });
   sidebarStore.set({
@@ -50,7 +53,9 @@ function world(extraInstances: any[] = []) {
 const calls = () => routeFetch({
   'GET /api/projects/shop/sessions': rowsRoute([disk('d-ship', 'ship cart', 3)]),
   'GET /api/projects/api/sessions': rowsRoute([disk('d-fix', 'fix login bug', 2), disk('d-docs', 'docs pass', 1)]),
+  'GET /api/projects/web/sessions': rowsRoute([disk('d-web', 'web readme', 2)]),
   'GET /api/projects/web/worktrees/feat-x/sessions': rowsRoute([disk('d-login', 'login page', 4)]),
+  'GET /api/projects/web/worktrees/feat-y/sessions': rowsRoute([disk('d-tidy', 'tidy imports', 1)]),
 });
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
@@ -118,7 +123,7 @@ describe('what a query shows and opens', () => {
     expect(isOpen(bandOf('Ops'))).toBe(false);
     expect(shownProjects()).toEqual([]);
     await act(async () => { fireEvent.click(bandOf('Ops')!); });
-    expect(shownProjects()).toEqual(['api', 'web']);
+    expect(shownProjects()).toEqual(['api', 'web', 'billing']);
     expect(isOpen(sessionsToggleOf('api'))).toBe(false);
     expect(isOpen(worktreesToggleOf('web'))).toBe(false);
   });
@@ -130,6 +135,8 @@ describe('what a query shows and opens', () => {
     renderSidebar();
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(summaryOf('api')).toContain('Sessions (2)');
+    expect(bandOf('Ops')!.textContent).toContain('(3)');
+    expect(worktreesToggleOf('web')!.textContent).toContain('Worktrees (2)');
     await search('login');
     expect(bandOf('Ops')!.textContent).toContain('(2)');
     expect(worktreesToggleOf('web')!.textContent).toContain('Worktrees (1)');
@@ -144,6 +151,77 @@ describe('what a query shows and opens', () => {
     await search('LOG');
     expect(marksIn(el('[data-session-row="d-fix"]'))).toEqual(['log']);
     expect(openOf('d-fix').getAttribute('aria-label')).toBe(`fix login bug, ${dotTitle({ status: 'offline' })}`);
+  });
+});
+
+describe('what a narrowed project lists', () => {
+  it('a project narrowed only by worktree hits shows no main Sessions group, and one narrowed by a main hit shows it', async () => {
+    // Pins: the main Sessions group follows the main-checkout hits, not the project's worktree hits.
+    world(); calls();
+    renderSidebar();
+    await search('login');
+    expect(document.querySelector('[data-project-sessions="web"]')).toBeNull();
+    expect(document.querySelector('[data-sessions="web"]')).toBeNull();
+    expect(rowIds('web:feat-x')).toEqual(['d-login']);
+    await search('readme');
+    expect(isOpen(sessionsToggleOf('web'))).toBe(true);
+    expect(rowIds('web')).toEqual(['d-web']);
+    expect(document.querySelector('[data-worktrees="web"]')).toBeNull();
+  });
+
+  it('lists only the worktrees that match, whichever one that is', async () => {
+    // Pins: a narrowed project's Worktrees group is cut to its hits (two worktrees, one hit each time).
+    world(); calls();
+    renderSidebar();
+    await search('login');
+    expect([...document.querySelectorAll('[data-worktrees="web"] [data-worktree-row]')].map((e) => e.getAttribute('data-worktree-row'))).toEqual(['feat-x']);
+    await search('tidy');
+    expect([...document.querySelectorAll('[data-worktrees="web"] [data-worktree-row]')].map((e) => e.getAttribute('data-worktree-row'))).toEqual(['feat-y']);
+  });
+});
+
+describe('an empty workspace', () => {
+  it('stays listed when its name matches, and is not listed for another query or under a scope', async () => {
+    // Pins: a workspace-name hit keeps an empty band without a scope, and only then.
+    world(); calls();
+    renderSidebar();
+    await search('empty');
+    expect(bandOf('Empty')).toBeTruthy();
+    expect(shownProjects()).toEqual([]);
+    expect(document.querySelector('[data-filter-empty]')).toBeNull();
+    await search('zzz');
+    expect(bandOf('Empty')).toBeNull();
+    chooseOption(trigger(), 'Hand-spawned only');
+    await search('empty');
+    expect(bandOf('Empty')).toBeNull();
+  });
+});
+
+describe('transient collapses of filter-opened groups', () => {
+  const clearWithX = () => act(async () => { fireEvent.click(within(filterInput().parentElement!).getByRole('button', { name: 'Clear filter' })); });
+
+  it('toggling a filter-opened group collapses it and the same toggle opens it again', async () => {
+    // Pins: the transient toggle works both ways (collapse, then expand).
+    world(); calls();
+    renderSidebar();
+    await search('login');
+    expect(isOpen(bandOf('Ops'))).toBe(true);
+    await act(async () => { fireEvent.click(bandOf('Ops')!); });
+    expect(isOpen(bandOf('Ops'))).toBe(false);
+    await act(async () => { fireEvent.click(bandOf('Ops')!); });
+    expect(isOpen(bandOf('Ops'))).toBe(true);
+  });
+
+  it('clearing the query forgets the collapse: the next search opens the group again', async () => {
+    // Pins: transient collapses reset when the query empties.
+    world(); calls();
+    renderSidebar();
+    await search('login');
+    await act(async () => { fireEvent.click(bandOf('Ops')!); });
+    expect(isOpen(bandOf('Ops'))).toBe(false);
+    await clearWithX();
+    await search('login');
+    expect(isOpen(bandOf('Ops'))).toBe(true);
   });
 });
 

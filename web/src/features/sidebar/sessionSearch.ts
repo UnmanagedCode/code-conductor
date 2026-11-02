@@ -9,7 +9,7 @@ import { appStore } from '@/state/app';
 import { on } from '@/app/events';
 import type { Project } from '@/state/types';
 import { filterOwner, placeKeyOf, type Filter } from './derive';
-import { ensureSessions, sessionsCache, sessionsSignal, sidebarStore } from './state';
+import { ensureSessions, invalidateSessions, sessionsCache, sessionsSignal, sidebarStore } from './state';
 import { textFilterStore } from './textFilterState';
 import { tokensOf } from './textFilter';
 
@@ -52,7 +52,7 @@ const inFlight = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 /** True once the debounce has fired in this search session. */
 let started = false;
-/** Identifies the search session; a settle from an earlier one is ignored. */
+/** Identifies the search session; a settle from an earlier one holds nothing. */
 let epoch = 0;
 let prevQuery = '';
 
@@ -82,7 +82,7 @@ const planNow = () => planLoads({
 });
 
 function updatePending() {
-  const pending = (timer !== null && planNow().length > 0) || queue.length + inFlight.size > 0;
+  const pending = active() && ((timer !== null && planNow().length > 0) || queue.length + inFlight.size > 0);
   if (pending !== searchStore.get().pending) searchStore.set({ pending });
 }
 
@@ -92,20 +92,26 @@ function pump() {
     if (inFlight.has(place.key)) continue;
     inFlight.add(place.key);
     const mine = epoch;
-    void ensureSessions(place.project, place.worktree).then(() => {
-      if (mine === epoch) settle(place);
-    });
+    void ensureSessions(place.project, place.worktree).then(() => settle(place, mine));
   }
   updatePending();
 }
 
-function settle(place: PlaceRef) {
+/** `place.fp` is the fingerprint the load started under; `mine` the search session that started it. */
+function settle(place: PlaceRef, mine: number) {
   inFlight.delete(place.key);
-  const rows = sessionsCache.get(place.key);
-  if (rows) held.set(place.key, { fp: place.fp, rows });
-  attempted.set(place.key, place.fp);
-  searchStore.set((s) => ({ version: s.version + 1 }));
-  pump();
+  if (currentFp(place.key) !== place.fp) {
+    // The place changed while its load was in flight, so what it returned may predate the change: refetch rather than hold it.
+    attempted.delete(place.key);
+    invalidateSessions(place.key);
+  } else if (mine === epoch) {
+    const rows = sessionsCache.get(place.key);
+    if (rows) held.set(place.key, { fp: place.fp, rows });
+    attempted.set(place.key, place.fp);
+    searchStore.set((s) => ({ version: s.version + 1 }));
+  }
+  if (active() && started) replan();
+  else pump();
 }
 
 /** Enqueues what `planNow` finds and starts loads. */
@@ -120,7 +126,7 @@ function endSession() {
   timer = null;
   started = false;
   queue = [];
-  inFlight.clear();
+  // `inFlight` stays: those requests are still outstanding and keep their slots until they settle.
   held.clear();
   attempted.clear();
   searchStore.set((s) => ({ pending: false, version: s.version + 1 }));
@@ -147,7 +153,20 @@ export function resetSessionSearch() {
   fpCache = null;
 }
 
+let prevFilter = sidebarStore.get().filter;
+/** A scope change during an active search: drop queued loads the new scope cannot show, then plan for it. */
+function onScopeChange() {
+  const filter = sidebarStore.get().filter;
+  if (filter === prevFilter) return;
+  prevFilter = filter;
+  if (!active() || !started) return;
+  const shown = new Set(planLoads({ projects: appStore.get().projects, filter, attempted: new Map() }).map((p) => p.key));
+  queue = queue.filter((q) => shown.has(q.key));
+  replan();
+}
+
 textFilterStore.subscribe(onQueryChange);
+sidebarStore.subscribe(onScopeChange);
 appStore.subscribe(() => { if (active() && started) replan(); });
 sessionsSignal.subscribe(() => { if (active() && started) replan(); });
 on('sessionsStale', (place) => {

@@ -9,7 +9,7 @@ import { emit } from '@/app/events';
 import { uiStore } from '@/app/ui';
 import { held, routeFetch, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { A, ALPHA, conductor, el, hand, proj, seed, worker } from '@/test/sidebarFleet';
-import { rowIds, rowsRoute, sessionGets, settleSearch, typeFilter } from '@/test/textFilter';
+import { rowIds, rowsRoute, sessionGets, sessionsToggleOf, settleSearch, typeFilter } from '@/test/textFilter';
 
 vi.mock('@/app/controller', () => ({ selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn() }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -173,5 +173,129 @@ describe('the session loader', () => {
     for (const g of gates.values()) g.release({ json: [] });
     await flush(); await flush();
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
+  });
+
+  it('refetches a place whose fingerprint changed while its load was in flight, with no further keystroke', async () => {
+    // Pins: rows held for a place reflect a fetch that started at or after the fingerprint they are stamped with; a change mid-load leads to a real refetch.
+    seedPlaces(['p1']);
+    const first = held<RouteAnswer>();
+    let n = 0;
+    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-new', 'alpha new')] }) });
+    renderSidebar();
+    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(sessionGets(calls)).toHaveLength(1);
+    await act(async () => {
+      appStore.set({ instances: [hand('h-new', 'p1', null, { firstPrompt: 'beta' })], projects: [proj('p1', { sessions: summary(2, 2, 9) })] });
+    });
+    first.release({ json: [disk('d-old', 'alpha old')] });
+    await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(2);
+    expect(rowIds('p1')).toEqual(['d-new']);
+  });
+
+  it('re-plans when the scope changes during an active search: Hand to All fetches the places Hand skipped', async () => {
+    // Pins: a scope change mid-query loads the lists the new scope can show, without another keystroke.
+    seedPlaces(['p1', 'p2'], (n) => ({ sessions: summary(1, n === 'p2' ? 1 : 0) }));
+    const calls = routeFetch({ 'GET /api/projects/': rowsRoute([]) });
+    renderSidebar();
+    await act(async () => { sidebarStore.set({ filter: 'hand' }); });
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(urls(calls)).toEqual(['/api/projects/p2/sessions']);
+    await act(async () => { sidebarStore.set({ filter: '' }); });
+    await flush(); await flush();
+    expect(urls(calls)).toEqual(['/api/projects/p2/sessions', '/api/projects/p1/sessions']);
+  });
+
+  it('drops queued loads when the scope changes to one that fetches nothing', async () => {
+    // Pins: a scope change prunes the queue, so an owner scope starts no further request.
+    const names = placeNames(6);
+    seedPlaces(names, () => ({}), [conductor(A, { title: ALPHA }), worker('wa-w', A, 'p1')]);
+    const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
+    const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
+    renderSidebar();
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
+    await act(async () => { sidebarStore.set({ filter: A }); });
+    for (const g of gates.values()) g.release({ json: [] });
+    await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
+  });
+
+  it('never has more than the cap outstanding across a clear and retype under a different scope', async () => {
+    // Pins: loads still running from an earlier search session keep their slots, so distinct outstanding GETs stay within the cap.
+    const names = placeNames(10);
+    // p5..p10 hold hand sessions: under Hand the first search loads those, under All the second plans p1..p4 first.
+    seedPlaces(names, (n) => ({ sessions: summary(1, Number(n.slice(1)) >= 5 ? 1 : 0) }));
+    const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
+    const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
+    const released = new Set<string>();
+    const outstanding = () => urls(calls).filter((u) => !released.has(u.split('/')[3])).length;
+    renderSidebar();
+    await act(async () => { sidebarStore.set({ filter: 'hand' }); });
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(urls(calls)).toEqual(['p5', 'p6', 'p7', 'p8'].map((n) => `/api/projects/${n}/sessions`));
+    await typeFilter(''); await flush();
+    await act(async () => { sidebarStore.set({ filter: '' }); });
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(outstanding()).toBe(SESSION_SEARCH_CONCURRENCY);
+    released.add('p5'); gates.get('p5')!.release({ json: [] });
+    await flush(); await flush();
+    expect(outstanding()).toBe(SESSION_SEARCH_CONCURRENCY);
+    for (const [n, g] of gates) { released.add(n); g.release({ json: [] }); }
+    await flush(); await flush(); await flush();
+    expect(new Set(urls(calls)).size).toBe(10);
+  });
+
+
+  /**
+   * `p1` and `p2` loaded by a search for `alpha`, then `p1`'s filter-opened group collapsed through its own toggle:
+   * with no mounted group the tree's `ensureSessions` cannot refetch, so only the loader can.
+   */
+  async function loadedWithP1Collapsed() {
+    seedPlaces(['p1', 'p2']);
+    const calls = routeFetch({
+      'GET /api/projects/p1/sessions': rowsRoute([disk('d-1', 'alpha one')]),
+      'GET /api/projects/p2/sessions': rowsRoute([disk('d-2', 'alpha two')]),
+    });
+    renderSidebar();
+    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(rowIds('p1')).toEqual(['d-1']);
+    await act(async () => { sessionsToggleOf('p1')!.click(); });
+    expect(rowIds('p1')).toEqual([]);
+    return { calls, before: sessionGets(calls).length };
+  }
+
+  it('the loader itself refetches a place whose count changed, with its group unmounted', async () => {
+    // Pins: the loader (not the tree's own load) refetches a changed place, and only that place.
+    const { calls, before } = await loadedWithP1Collapsed();
+    await act(async () => {
+      appStore.set({
+        instances: [hand('h-new', 'p1', null, { firstPrompt: 'beta' })],
+        projects: [proj('p1', { sessions: summary(2, 2, 1) }), proj('p2', { sessions: summary(1) })],
+      });
+    });
+    await flush(); await flush();
+    expect(urls(calls).slice(before)).toEqual(['/api/projects/p1/sessions']);
+  });
+
+  it('the loader refetches a place whose only change is its last activity', async () => {
+    // Pins: the fingerprint includes lastActivity, not just the count.
+    const { calls, before } = await loadedWithP1Collapsed();
+    invalidateSessions(); // what a turn ending does to that place's list; the summary then changes
+    await act(async () => { appStore.set({ projects: [proj('p1', { sessions: summary(1, 1, 9) }), proj('p2', { sessions: summary(1) })] }); });
+    await flush(); await flush();
+    expect(urls(calls).slice(before)).toEqual(['/api/projects/p1/sessions']);
+  });
+
+  it('a failed place counts as attempted: wiping the error latch with an unchanged fingerprint and typing again retries nothing', async () => {
+    // Pins: the loader records a failed place as attempted by itself, not only through the error latch in ensureSessions.
+    seedPlaces(['p-fail']);
+    const calls = routeFetch({ 'GET /api/projects/p-fail/sessions': () => new Error('boom') });
+    renderSidebar();
+    await typeFilter('needle'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(sessionGets(calls)).toHaveLength(1);
+    await act(async () => { invalidateSessions(); });
+    await typeFilter('needle l'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(sessionGets(calls)).toHaveLength(1);
   });
 });

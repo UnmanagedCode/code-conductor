@@ -129,3 +129,23 @@ export async function filterRowFitsFlow({ page, cc }: Ctx): Promise<void> {
   expect(m.bodyOverflow).toBeLessThanOrEqual(0);
   expect(m.pageOverflow).toBeLessThanOrEqual(0);
 }
+
+/** Waits out every finite animation and transition (the drawer's close slide); an endless pulse never finishes. */
+const settled = (page: Page) => page.locator('body').evaluate((el) => Promise.all(el.getAnimations({ subtree: true })
+  .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => undefined))));
+
+// Invariant: in the phone drawer the first Escape in the filter clears it and leaves the drawer open; the next Escape closes it.
+export async function drawerEscapeFlow({ page }: Ctx): Promise<void> {
+  test.skip(test.info().project.name === 'desktop', 'the drawer exists below the md breakpoint only');
+  await page.goto('/');
+  await next.lens(page, 'projects');
+  const sb = nextSidebar(page);
+  const input = sb.getByRole('textbox', { name: 'Filter projects' });
+  await input.fill('abc');
+  await input.press('Escape');
+  await expect(input).toHaveValue('');
+  await settled(page);
+  await expect(sb, 'the first Escape cleared the filter and left the drawer open').toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(sb, 'the next Escape closes the drawer').toHaveCount(0);
+}
