@@ -1,15 +1,17 @@
 // Regenerates web/public's logo icons from web/src/components/logo/logoArt.ts:
 // icon.svg as text, every PNG rasterised by Playwright's Chromium at its exact
-// pixel size. Run `node scripts/build-icons.mjs` after changing the art, and
+// pixel size; docs/assets/logo-{light,dark}.svg as text, the README's lockup. Run `node scripts/build-icons.mjs` after changing the art, and
 // commit the results. Exits non-zero when a self-check fails: a maskable icon
 // drawing outside its safe zone, or a favicon with an opaque corner.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { artToSvgString, FAV32_BORDER, iconSvg, pwaIconSvg, PWA_BACKGROUND, SMALL16 } from '../web/src/components/logo/logoArt.ts';
+import { artToSvgString, FAV32_BORDER, iconSvg, lockupSvg, pwaIconSvg, PWA_BACKGROUND, SMALL16 } from '../web/src/components/logo/logoArt.ts';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'public');
+
+const DOCS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'assets');
 
 const icon = iconSvg();
 /** [file, size, svg text, check] — `size` is the PNG's width and height. */
@@ -49,6 +51,8 @@ function problems(check, size, px) {
 }
 
 fs.writeFileSync(path.join(PUBLIC, 'icon.svg'), icon);
+fs.mkdirSync(DOCS, { recursive: true });
+for (const palette of ['light', 'dark']) fs.writeFileSync(path.join(DOCS, `logo-${palette}.svg`), lockupSvg(palette));
 const browser = await chromium.launch();
 let failed = false;
 try {
@@ -77,4 +81,5 @@ try {
   await browser.close();
 }
 console.log('ok   icon.svg');
+console.log('ok   docs/assets/logo-*.svg');
 process.exit(failed ? 1 : 0);

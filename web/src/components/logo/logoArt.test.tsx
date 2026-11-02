@@ -20,7 +20,7 @@ const { FIXTURE } = vi.hoisted(() => {
 });
 vi.mock('./logoArt', async (importOriginal) => ({ ...await importOriginal<typeof import('./logoArt')>(), MARK: FIXTURE }));
 
-const { artToSvgString, iconSvg, pwaIconSvg, PWA_ICONS } = await vi.importActual<typeof import('./logoArt')>('./logoArt');
+const { artToSvgString, iconSvg, lockupSvg, pwaIconSvg, PWA_ICONS } = await vi.importActual<typeof import('./logoArt')>('./logoArt');
 const { LogoMark } = await import('./Logo');
 
 /** The painted (non-mask) tagged elements under `svg`, in document order. */
@@ -106,7 +106,7 @@ describe('the static builder', () => {
       artToSvgString(art, { palette, size: 32 }),
       artToSvgString(art, { palette, size: 32, plate: { fill: '#000', art: 0.8, radius: 0.2 } }),
     ]));
-    texts.push(iconSvg(), ...Object.keys(PWA_ICONS).map((kind) => pwaIconSvg(kind as keyof typeof PWA_ICONS, 64)));
+    texts.push(iconSvg(), lockupSvg('light'), lockupSvg('dark'), ...Object.keys(PWA_ICONS).map((kind) => pwaIconSvg(kind as keyof typeof PWA_ICONS, 64)));
     for (const text of texts) {
       expect(text).not.toMatch(/<style/i);
       expect(text).not.toMatch(/animat/i);
