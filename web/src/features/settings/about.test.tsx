@@ -56,7 +56,7 @@ describe('About', () => {
   });
 
   it('shows the full lockup — mark and wordmark — as its heading, still even while the socket is open', () => {
-    // Invariant: About's logo is the lockup, which draws the whole mark and the whole wordmark, names the h2, and never blinks.
+    // Invariant: About's logo is the lockup, which draws the whole mark and the whole wordmark, each shape at the same placement (d and effective transform), names the h2, and never blinks.
     act(() => appStore.set({ connection: 'open' }));
     mockFetch({ ...PLUGIN_ROUTES, 'GET /api/settings/self-update': () => available });
     const { container } = render(<AboutSection />);
@@ -64,14 +64,19 @@ describe('About', () => {
     const lockup = h2.querySelector('svg[data-logo="lockup"]');
     expect(lockup).not.toBeNull();
     expect(lockup!.querySelector('[data-logo-cursor]'), 'fixture check: the cursor is drawn').not.toBeNull();
-    // Painted shapes only: a mask's own shape is a cut-out, not drawing.
-    const painted = (root: Element) => new Set([...root.querySelectorAll('path,rect')].filter((e) => !e.closest('mask')).map((e) => e.getAttribute('d')));
+    // Painted shapes only (a mask's own shape is a cut-out), each keyed by its drawing and its effective placement: its own transform plus every ancestor's.
+    const placement = (e: Element) => {
+      const chain: string[] = [];
+      for (let n: Element | null = e; n && n.tagName.toLowerCase() !== 'svg'; n = n.parentElement) chain.push(n.getAttribute('transform') ?? '');
+      return `${e.getAttribute('d')}@${chain.join('|')}`;
+    };
+    const painted = (root: Element) => new Set([...root.querySelectorAll('path,rect')].filter((e) => !e.closest('mask')).map(placement));
     const lockupPainted = painted(lockup!);
     const parts = render(<><LogoMark /><Wordmark /></>).container;
     for (const part of ['mark', 'wordmark']) {
       const drawn = painted(parts.querySelector(`svg[data-logo="${part}"]`)!);
       expect(drawn.size, `fixture check: the ${part} paints shapes`).toBeGreaterThan(0);
-      for (const d of drawn) expect(lockupPainted.has(d), `the lockup draws the ${part}'s shape`).toBe(true);
+      for (const shape of drawn) expect(lockupPainted.has(shape), `the lockup draws the ${part}'s shape`).toBe(true);
     }
     expect([h2, ...h2.querySelectorAll('*')].filter((e) => /\banimate-/.test(e.getAttribute('class') ?? '')), 'nothing in the heading animates').toEqual([]);
     expect(container.querySelectorAll('[data-logo-cursor].animate-cursor-blink').length).toBe(0);

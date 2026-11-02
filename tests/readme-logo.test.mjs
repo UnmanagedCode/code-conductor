@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PALETTES } from '../web/src/components/logo/logoArt.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const picture = (() => {
@@ -59,4 +60,22 @@ test("every image the README's logo picture names exists and is a static, self-c
     assert.ok(fs.existsSync(file), `${rel} exists`);
     assert.deepEqual(problems(fs.readFileSync(file, 'utf8')), [], rel);
   }
+});
+
+test("the dark source names the dark-palette file, the light source and the img fallback the light-palette file", () => {
+  // Invariant: each source's file is drawn in the ink of the scheme its media names (read from PALETTES), and the <img> fallback is the light file; swapped srcsets or one palette written into both files fail.
+  const inkOf = (file) => {
+    const svg = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const has = (palette) => svg.includes(`fill="${PALETTES[palette].ink}"`);
+    return has('light') === has('dark') ? 'neither or both' : has('dark') ? 'dark' : 'light';
+  };
+  assert.notEqual(PALETTES.light.ink, PALETTES.dark.ink, 'fixture check: the palettes\' ink differs');
+  const sourceFor = (scheme) => {
+    const tag = tags('source').find((t) => (attr(t, 'media') ?? '').includes(`prefers-color-scheme: ${scheme}`));
+    assert.ok(tag, `a ${scheme} source`);
+    return attr(tag, 'srcset');
+  };
+  assert.equal(inkOf(sourceFor('dark')), 'dark', 'the dark source is drawn for dark');
+  assert.equal(inkOf(sourceFor('light')), 'light', 'the light source is drawn for light');
+  assert.equal(inkOf(attr(tags('img')[0], 'src')), 'light', 'the img fallback is drawn for light');
 });
