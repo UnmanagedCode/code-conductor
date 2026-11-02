@@ -487,3 +487,38 @@ describe('idle chips and spawn history', () => {
     expect(rowIds('hand')).toEqual(['wh']);
   });
 });
+
+describe('scope menu', () => {
+  const rect = (left: number, right: number) => ({ left, right, width: right - left, top: 0, bottom: 32, height: 32, x: left, y: 0, toJSON: () => ({}) }) as DOMRect;
+  const closeMenu = () => {
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+  };
+
+  it('every option carries its full label as its title', () => {
+    // Invariant: a label the menu cuts short stays readable, because each option's title is its whole label.
+    seedFleet(fleet());
+    renderSidebar();
+    selectOptions(trigger());
+    const options = screen.getAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual(['All sessions', 'Hand-spawned only', ALPHA, BRAVO, CHARLIE]);
+    for (const o of options) expect(o.getAttribute('title')).toBe(o.textContent);
+    closeMenu();
+  });
+
+  it('the menu takes the filter row\'s width, measured at every open', () => {
+    // Invariant: the menu's width is the filter row's width at the moment it opens, not a stale or fixed one.
+    seedFleet(fleet());
+    renderSidebar();
+    const bar = vi.spyOn(el('[data-filter-row]'), 'getBoundingClientRect');
+    vi.spyOn(trigger(), 'getBoundingClientRect').mockReturnValue(rect(150, 219));
+    bar.mockReturnValue(rect(12, 220));
+    selectOptions(trigger());
+    expect(screen.getByRole('listbox').style.width).toBe('208px');
+    closeMenu();
+    bar.mockReturnValue(rect(12, 312));
+    selectOptions(trigger());
+    expect(screen.getByRole('listbox').style.width).toBe('300px');
+    closeMenu();
+  });
+});

@@ -71,23 +71,27 @@ export async function lensControlsFitFlow({ page, cc }: Ctx): Promise<void> {
   expect(fit.menuInside).toBe(true);
 }
 
+/** An owner with a long label, from clones of the real session in the page's instance list. */
+async function withLongOwner(page: Page, realId: string) {
+  await page.route('**/api/instances', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const res = await route.fetch();
+    const list = (await res.json()) as Record<string, unknown>[];
+    const base = list.find((i) => i.id === realId);
+    if (base) {
+      list.push({ ...base, id: `${realId}-owner`, sessionId: 'e2e-owner', title: LONG_OWNER, ownerSessionId: null });
+      list.push({ ...base, id: `${realId}-worker`, sessionId: 'e2e-worker', title: 'worker', conducted: true, ownerSessionId: 'e2e-owner' });
+    }
+    await route.fulfill({ response: res, json: list });
+  });
+}
+
 // Invariant: the filter row (input, clear button, scope trigger) stays one line inside the column at the
 // narrowest sidebar width, with a typed query and a long conductor scope label, and overlaps nothing.
 export async function filterRowFitsFlow({ page, cc }: Ctx): Promise<void> {
   const project = `e2e-lens-row-${test.info().project.name}`;
   const real = await spawnSession(cc, project);
-  // An owner with a long label, from clones of the real session in the page's instance list.
-  await page.route('**/api/instances', async (route) => {
-    if (route.request().method() !== 'GET') return route.continue();
-    const res = await route.fetch();
-    const list = (await res.json()) as Record<string, unknown>[];
-    const base = list.find((i) => i.id === real.id);
-    if (base) {
-      list.push({ ...base, id: `${real.id}-owner`, sessionId: 'e2e-owner', title: LONG_OWNER, ownerSessionId: null });
-      list.push({ ...base, id: `${real.id}-worker`, sessionId: 'e2e-worker', title: 'worker', conducted: true, ownerSessionId: 'e2e-owner' });
-    }
-    await route.fulfill({ response: res, json: list });
-  });
+  await withLongOwner(page, real.id);
   if (test.info().project.name === 'desktop') {
     await page.addInitScript(([key, width]) => localStorage.setItem(key, width), [SIDEBAR_KEY, String(SIDEBAR_MIN)]);
   }
@@ -148,4 +152,59 @@ export async function drawerEscapeFlow({ page }: Ctx): Promise<void> {
   await expect(sb, 'the first Escape cleared the filter and left the drawer open').toBeVisible();
   await page.keyboard.press('Escape');
   await expect(sb, 'the next Escape closes the drawer').toHaveCount(0);
+}
+
+// Invariant: the scope menu opens below the filter row and spans exactly its width (by pointer and by keyboard),
+// stays inside the column, and cuts a label too long for it with an ellipsis, the full label in its title.
+export async function filterMenuAlignFlow({ page, cc }: Ctx): Promise<void> {
+  const real = await spawnSession(cc, `e2e-lens-menu-${test.info().project.name}`);
+  await withLongOwner(page, real.id);
+  if (test.info().project.name === 'desktop') {
+    await page.addInitScript(([key, width]) => localStorage.setItem(key, width), [SIDEBAR_KEY, String(SIDEBAR_MIN)]);
+  }
+  await page.goto('/');
+  await next.lens(page, 'projects');
+  const sb = nextSidebar(page);
+  const trigger = sb.getByRole('combobox', { name: 'Filter by conductor' });
+  const listbox = page.getByRole('listbox');
+  const measure = async () => {
+    await expect(listbox).toBeVisible();
+    await settled(page);
+    const bar = await sb.first().evaluate((root) => {
+      const r = (root.querySelector('[data-filter-row]') as HTMLElement).getBoundingClientRect();
+      return { left: r.left, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    });
+    const col = await sb.first().evaluate((root) => root.getBoundingClientRect().right);
+    const menu = await listbox.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, width: r.width, height: r.height };
+    });
+    return { bar, col, menu };
+  };
+  const expectAligned = ({ bar, col, menu }: Awaited<ReturnType<typeof measure>>) => {
+    expect(bar.width > 0 && bar.height > 0 && menu.width > 0 && menu.height > 0, 'fixture check: the rects are real').toBe(true);
+    expect(Math.abs(menu.left - bar.left), 'the menu starts at the bar\'s left edge').toBeLessThanOrEqual(1);
+    expect(Math.abs(menu.right - bar.right), 'the menu ends at the bar\'s right edge').toBeLessThanOrEqual(1);
+    expect(menu.top, 'the menu opens below the bar').toBeGreaterThanOrEqual(bar.bottom - 1);
+    expect(menu.right, 'the menu stays inside the column').toBeLessThanOrEqual(col + 1);
+  };
+
+  await trigger.click();
+  expectAligned(await measure());
+  const option = listbox.getByRole('option', { name: LONG_OWNER });
+  expect(await option.getAttribute('title'), 'the option carries its full label').toBe(LONG_OWNER);
+  const cut = await option.locator('.truncate').evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(cut, 'the long label is cut, not wrapped or widening the menu').toBeGreaterThan(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+
+  await page.keyboard.press('Escape');
+  await expect(listbox).toHaveCount(0);
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  expectAligned(await measure());
+  await page.keyboard.press('Escape');
+  await expect(listbox).toHaveCount(0);
+
+  await next.filterTo(page, 'e2e-owner', LONG_OWNER);
+  await expect(sb.locator('[data-filter]')).toHaveAttribute('data-filter', 'e2e-owner');
 }
