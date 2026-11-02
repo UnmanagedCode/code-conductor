@@ -17,7 +17,7 @@ export function keepFilterEscape(e: KeyboardEvent) {
   if (e.target instanceof Element && e.target.closest(INPUT_SELECTOR)) e.preventDefault();
 }
 
-/** The scope trigger's short label: All, Hand, or the conductor's own label (the menu items keep the long ones). */
+/** The scope trigger's short label: All, Hand, or the conductor's own label (the menu items show the long ones). */
 const shortLabel = (filter: string, options: SidebarModel['options']) =>
   filter === '' ? 'All' : filter === 'hand' ? 'Hand' : options.find((o) => o.value === filter)?.label ?? filter;
 const fullLabel = (filter: string, options: SidebarModel['options']) => options.find((o) => o.value === filter)?.label ?? 'All sessions';
@@ -53,8 +53,19 @@ export function FilterBar({ m, active }: { m: SidebarModel; active: boolean }) {
     consumeFilterFocus();
   }, [active, focusWanted]);
   const owner = filterOwner(ui.filter);
+  const barRef = React.useRef<HTMLDivElement>(null);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  // Radix Select has no anchor part, so the menu is aligned to the trigger's end and corrected to the bar: its
+  // width is the bar's and `alignOffset` (negated by floating-ui for end alignment) is the trigger-to-bar gap.
+  const [menuFit, setMenuFit] = React.useState<{ width: number; offset: number } | null>(null);
+  const fitMenu = (open: boolean) => {
+    if (!open || !barRef.current || !triggerRef.current) return;
+    const bar = barRef.current.getBoundingClientRect();
+    const trigger = triggerRef.current.getBoundingClientRect();
+    setMenuFit({ width: bar.width, offset: trigger.right - bar.right });
+  };
   return (
-    <div data-filter-row className="mx-3 mt-2 flex h-8 items-center rounded-md border bg-background/60">
+    <div ref={barRef} data-filter-row className="mx-3 mt-2 flex h-8 items-center rounded-md border bg-background/60">
       <SearchIcon className="mx-2 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       <input
         ref={inputRef}
@@ -92,13 +103,15 @@ export function FilterBar({ m, active }: { m: SidebarModel; active: boolean }) {
         style={ownerStyle(owner)}
         data-filter={ui.filter || 'all'}
       >
-        <Select value={ui.filter || 'all'} onValueChange={(v) => setFilter(v === 'all' ? '' : v)}>
-          <SelectTrigger size="sm" aria-label="Filter by conductor" title={fullLabel(ui.filter, m.options)} className="h-7 w-auto max-w-full border-0 bg-transparent text-xs shadow-none">
+        <Select value={ui.filter || 'all'} onOpenChange={fitMenu} onValueChange={(v) => setFilter(v === 'all' ? '' : v)}>
+          <SelectTrigger ref={triggerRef} size="sm" aria-label="Filter by conductor" title={fullLabel(ui.filter, m.options)} className="h-7 w-auto max-w-full border-0 bg-transparent text-xs shadow-none">
             <SelectValue>{shortLabel(ui.filter, m.options)}</SelectValue>
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent align="end" alignOffset={menuFit?.offset ?? 0} style={menuFit ? { width: menuFit.width } : undefined} className="min-w-0">
             {m.options.map((o) => (
-              <SelectItem key={o.value || 'all'} value={o.value || 'all'} className="text-xs">{o.label}</SelectItem>
+              <SelectItem key={o.value || 'all'} value={o.value || 'all'} title={o.label} className="text-xs *:[span]:last:min-w-0">
+                <span className="truncate">{o.label}</span>
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
