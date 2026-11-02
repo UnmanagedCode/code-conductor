@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
+    <img src="docs/assets/logo-light.svg" alt="Code Conductor" width="296">
+  </picture>
+</p>
+
 # CodeConductor
 
 [Promo video](https://unmanagedcode.github.io/code-conductor-promo/) · [Windows installer releases](https://github.com/UnmanagedCode/code-conductor-windows/releases)
