@@ -7,6 +7,7 @@ import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { chooseOption } from '@/test/radixSelect';
 import { routeFetch } from '@/test/routeFetch';
+import { formatAgo } from '@/lib/time';
 import { A, ALPHA, conductor, el, hand, openOf, proj, seed, worker, wt } from '@/test/sidebarFleet';
 import {
   bandOf, filterInput, isOpen, marksIn, rowIds, rowsRoute, sessionsToggleOf, settleSearch, shownProjects, typeFilter,
@@ -221,6 +222,31 @@ describe('a project the scope hides', () => {
     chooseOption(trigger(), 'All sessions');
     await search('billing');
     expect(shownProjects()).toEqual(['billing']);
+  });
+});
+
+describe('a narrowed place\'s Sessions summary', () => {
+  it('takes its live count and last activity from the matching rows, not the whole place', async () => {
+    // Pins: with a hit, `live` and `last` describe the listed rows (a non-matching live row and a newer row are not counted).
+    const HOUR = 3_600_000;
+    const old = Date.now() - 5 * HOUR;
+    const recent = Date.now() - 60_000;
+    expect(formatAgo(old), 'fixture check: the two ages read differently').not.toBe(formatAgo(recent));
+    seed({
+      projects: [proj('api', { sessions: { count: 2, archivedCount: 0, handCount: 2, lastActivity: recent } })],
+      workspaces: [],
+      instances: [hand('d-docs', 'api', null, { firstPrompt: 'docs pass' })],
+    });
+    sidebarStore.set({ collapsedSessions: ['api'], expandedWorktrees: [], expandedWorkspaces: [], filter: '' });
+    routeFetch({ 'GET /api/projects/api/sessions': rowsRoute([disk('d-fix', 'fix login bug', old), disk('d-docs', 'docs pass', recent)]) });
+    renderSidebar();
+    await search('login'); // the one hit is the old, not-live row
+    expect(summaryOf('api')).toContain('Sessions (1)');
+    expect(summaryOf('api')).not.toContain('live');
+    expect(summaryOf('api')).toContain(`last ${formatAgo(old)}`);
+    await search('docs'); // the one hit is the recent, live row
+    expect(summaryOf('api')).toContain('Sessions (1) · 1 live');
+    expect(summaryOf('api')).toContain(`last ${formatAgo(recent)}`);
   });
 });
 

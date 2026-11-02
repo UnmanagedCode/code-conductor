@@ -9,7 +9,7 @@ import { appStore } from '@/state/app';
 import { on } from '@/app/events';
 import type { Project } from '@/state/types';
 import { filterOwner, placeKeyOf, type Filter } from './derive';
-import { ensureSessions, invalidateSessions, sessionsCache, sessionsSignal, sidebarStore } from './state';
+import { ensureSessions, invalidateSessions, sessionsCache, sessionsSignal, sessionsStatus, sidebarStore } from './state';
 import { textFilterStore } from './textFilterState';
 import { tokensOf } from './textFilter';
 
@@ -78,11 +78,14 @@ export const heldRowsOf = (key: string): any[] | null => held.get(key)?.rows ?? 
 /** Whether the search already holds this place's list at its current fingerprint (the tree need not load it). */
 export const searchCovers = (key: string) => active() && held.get(key)?.fp === currentFp(key);
 
+/** A key whose load is still in progress (the loader's own, a released one, or the tree's) gets no second request: its settle re-plans it. */
+const busy = (key: string) => inFlight.has(key) || sessionsStatus(key) === 'loading';
+
 const planNow = () => planLoads({
   projects: appStore.get().projects,
   filter: sidebarStore.get().filter,
   attempted,
-  skip: (key) => inFlight.has(key) || queue.some((q) => q.key === key),
+  skip: (key) => busy(key) || queue.some((q) => q.key === key),
 });
 
 function updatePending() {
@@ -93,7 +96,7 @@ function updatePending() {
 function pump() {
   while (inFlight.size < SESSION_SEARCH_CONCURRENCY && queue.length > 0) {
     const place = queue.shift()!;
-    if (inFlight.has(place.key)) continue;
+    if (busy(place.key)) continue;
     const request: Request = { mine: epoch };
     inFlight.set(place.key, request);
     // Not aborted: the request keeps running and lands in the cache through `ensureSessions`; the loader only stops counting it.
@@ -106,7 +109,11 @@ function pump() {
   updatePending();
 }
 
-/** Frees `request`'s slot if it still holds it; false when it was already released. */
+/**
+ * Frees `request`'s slot if it still holds it; false when it was already released. The identity check is a
+ * defence: a released request's settle can run after a newer request for the same key took the slot (planned
+ * by the signal bump inside `ensureSessions`' own settle), and must not free that one.
+ */
 function free(place: PlaceRef, request: Request) {
   if (inFlight.get(place.key) !== request) return false;
   inFlight.delete(place.key);
@@ -127,6 +134,7 @@ function settle(place: PlaceRef, request: Request) {
   if (currentFp(place.key) !== place.fp) {
     // The place changed while its load was in flight, so what it returned may predate the change: refetch rather than hold it.
     attempted.delete(place.key);
+    held.delete(place.key);
     invalidateSessions(place.key);
   } else if (request.mine === epoch) {
     const rows = sessionsCache.get(place.key);

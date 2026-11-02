@@ -438,4 +438,50 @@ describe('the session loader', () => {
     for (const g of gates.values()) g.release({ json: [] });
     await flush(); await flush(); await flush();
   });
+
+  it('refetches a place whose fingerprint changed while its released request was still loading, without a second request in the meantime', async () => {
+    // Pins: rows held for a place come from a fetch that started at or after the change; no second request starts for a key still loading.
+    seedPlaces(['p1']);
+    const first = held<RouteAnswer>();
+    let n = 0;
+    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-new', 'alpha new')] }) });
+    renderSidebar();
+    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); }); // the request is released, still loading
+    await flush();
+    await act(async () => { appStore.set({ projects: [proj('p1', { sessions: summary(2, 2, 9) })] }); });
+    await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(1);
+    first.release({ json: [disk('d-old', 'alpha old')] });
+    await flush(); await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(2);
+    expect(rowIds('p1')).toEqual(['d-new']);
+    // The new rows are the ones held: a wipe at the unchanged fingerprint refetches nothing and keeps them listed.
+    await act(async () => { invalidateSessions(); });
+    await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(2);
+    expect(rowIds('p1')).toEqual(['d-new']);
+  });
+
+  it('never queues a place twice: re-plans over a queued place fetch it once, even when the cache is wiped before its turn', async () => {
+    // Pins: a re-plan skips places already queued, so a queued place is requested exactly once.
+    const names = placeNames(6);
+    seedPlaces(names);
+    const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
+    const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
+    renderSidebar();
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS); // p1..p4 running, p5 and p6 queued
+    for (let i = 0; i < 2; i++) await act(async () => { appStore.set({}); }); // two re-plans over the queued places
+    gates.get('p1')!.release({ json: [] });
+    await flush(); await flush(); // p5 starts
+    gates.get('p5')!.release({ json: [] });
+    await flush(); await flush(); // p5 settles, p6 starts; a duplicate p5 would still be queued
+    await act(async () => { invalidateSessions(); }); // a wipe at an unchanged fingerprint: a duplicate p5 would now refetch
+    gates.get('p6')!.release({ json: [] });
+    await flush(); await flush();
+    for (const g of gates.values()) g.release({ json: [] });
+    await flush(); await flush(); await flush();
+    expect(urls(calls).filter((u) => u.includes('/p5/'))).toHaveLength(1);
+    expect(urls(calls)).toHaveLength(6);
+  });
 });
