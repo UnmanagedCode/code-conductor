@@ -20,7 +20,9 @@ const NONE: WorkerOwner = { kind: 'none' };
 
 export function workerOwnerOf(inst: Instance, { instances, conductRows }: { instances: readonly Instance[]; conductRows: readonly any[] }): WorkerOwner {
   if (!inst.conducted) return NONE;
-  const sessionId = inst.ownerSessionId;
+  // The server reports the root conductor as `ownerSessionId`; a live section lead that spawned this worker is the nearer owner.
+  const spawner = inst.callerInstanceId ? instances.find((i) => i.id === inst.callerInstanceId) : undefined;
+  const sessionId = spawner && spawner.project === CONDUCT_PROJECT && spawner.conducted && spawner.sessionId ? spawner.sessionId : inst.ownerSessionId;
   if (!sessionId) return { kind: 'unknown' };
   const conductors = deriveConductors({ conductRows, instances });
   const label = ownerLabel(sessionId, { conductors, instances });

@@ -11,7 +11,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { selectInstance } from '@/app/controller';
 import { conductorColor } from '@shared/conductorColor';
 import { draftStore } from './drafts';
-import { C1, C1_LABEL, C2, fleet, seedWorkerFleet, type Fleet } from '@/test/workerFleet';
+import { C1, C1_LABEL, C2, C2_LABEL, fleet, seedWorkerFleet, type Fleet } from '@/test/workerFleet';
 import { Composer, composerPlaceholder } from './Composer';
 import { WORKER_SEND_ACK_KEY, isWorkerSendAcked } from './workerSendAck';
 import { workerOwnerOf } from '@/features/session/workerOwner';
@@ -61,6 +61,13 @@ describe('placeholder', () => {
     // Invariant: a conducted conductor-project session names its lead in the placeholder like any owned worker.
     mount({ ...f.c2, conducted: true, ownerSessionId: C1 });
     expect(box().placeholder).toBe(`Message ${f.c2.title} · worker of ${C1_LABEL}…`);
+  });
+
+  it('a section lead\'s worker names the section lead, not the root conductor', () => {
+    // Invariant: the placeholder's owner is the worker's live section-lead spawner.
+    const lead = { ...f.c2, conducted: true, ownerSessionId: C1 };
+    mount({ ...f.w1, callerInstanceId: lead.id }, { ...f, c2: lead });
+    expect(box().placeholder).toBe(`Message Wone · worker of ${C2_LABEL}…`);
   });
 
   it('WU and the unchanged sessions', () => {

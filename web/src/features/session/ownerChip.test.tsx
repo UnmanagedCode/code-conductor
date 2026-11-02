@@ -55,6 +55,24 @@ describe('owner chip', () => {
     expect(vi.mocked(selectInstance).mock.calls).toEqual([[f.c1.id, { push: true, userGesture: true }]]);
   });
 
+  // Invariant: a section lead's worker links back to the section lead (label, colour, click and Alt+ArrowUp), not to the root conductor.
+  it('a section lead\'s worker shows `Back to <section lead>` and goes there on click and Alt+↑', () => {
+    const lead = { ...f.c2, conducted: true, ownerSessionId: C1 };
+    seedWorkerFleet({ ...f, c2: lead });
+    const sub = { ...f.w1, callerInstanceId: lead.id };
+    show(sub);
+    expect(back(C2_LABEL)).not.toBeNull();
+    expect(back(C1_LABEL)).toBeNull();
+    expect(chip()!.style.getPropertyValue('--owner-color')).toBe(conductorColor(C2));
+    fireEvent.click(back(C2_LABEL)!);
+    expect(vi.mocked(selectInstance).mock.calls).toEqual([[lead.id, { push: true, userGesture: true }]]);
+    cleanup();
+    vi.mocked(selectInstance).mockClear();
+    show(sub);
+    altUp();
+    expect(vi.mocked(selectInstance).mock.calls).toEqual([[lead.id, { push: true, userGesture: true }]]);
+  });
+
   it('C1, H show no chip; WU shows `Conducted worker` and no Back button; WA shows the chip with no button', () => {
     show(f.w1);
     expect(chip()).not.toBeNull(); // premise: this render path does show one

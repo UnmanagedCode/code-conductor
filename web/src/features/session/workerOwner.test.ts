@@ -21,6 +21,17 @@ describe('workerOwnerOf', () => {
     expect(ownerOf(f, f.c1)).toEqual({ kind: 'none' }); // premise: a top-level conductor stays none
   });
 
+  // Invariant: a worker's owner is its direct spawner when that is a live section lead (its sid, label and instance), otherwise the root conductor.
+  it('a section lead\'s worker resolves to the section lead; an ordinary worker of the lead still resolves to the lead', () => {
+    const f = fleet();
+    const lead = { ...f.c2, conducted: true, ownerSessionId: C1 }; // sid C2 / label C2_LABEL, distinct from the root C1
+    const g = { ...f, c2: lead };
+    const sub = { ...f.w1, callerInstanceId: lead.id }; // root owner C1, spawned by the section lead
+    expect(ownerOf(g, sub)).toMatchObject({ kind: 'owned', sessionId: C2, label: C2_LABEL, target: { kind: 'select', instanceId: lead.id } });
+    const plain = { ...f.w1, callerInstanceId: f.c1.id };
+    expect(ownerOf(g, plain)).toMatchObject({ kind: 'owned', sessionId: C1, label: C1_LABEL, target: { kind: 'select', instanceId: f.c1.id } });
+  });
+
   it('a live conducted worker resolves its owner\'s label and instance; C1 and C2 workers resolve differently', () => {
     const f = fleet();
     const o1 = ownerOf(f, f.w1);
