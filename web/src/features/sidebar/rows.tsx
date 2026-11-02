@@ -148,15 +148,15 @@ export function rowName(label: string, status: string, stage: string | null, unr
   return [label, status, stage, unread > 0 ? `${unread} unread` : null].filter(Boolean).join(', ');
 }
 
-export function SessionRow({ session, projectName, worktreeName, activeId, unread, showOwner = false, showDelete = true, stage = null, ownerTitle, highlight }: {
+export function SessionRow({ session, projectName, worktreeName, activeId, unread, owner = null, showDelete = true, stage = null, ownerTitle, highlight }: {
   session: SessionItem; projectName: string; worktreeName: string | null; activeId: string | null; unread: number;
-  showOwner?: boolean; showDelete?: boolean; stage?: string | null; ownerTitle?: (sid: string) => string; highlight?: string[];
+  /** The owner whose colour bar and `conductor:` tooltip the row carries; null for none. */
+  owner?: string | null; showDelete?: boolean; stage?: string | null; ownerTitle?: (sid: string) => string; highlight?: string[];
 }) {
   const label = sessionLabel(session);
   const status = session.instanceDisplayStatus ?? session.instanceStatus ?? 'offline';
   const live = !!session.instanceId;
   const active = live && session.instanceId === activeId;
-  const owner = showOwner ? session.ownerSessionId ?? null : null;
   const title = (session.title ?? '').trim();
   const preview = promptPreview(session.firstPrompt);
   const tooltip = [session.sessionId, title && preview ? preview : null, owner ? `conductor: ${ownerTitle?.(owner) ?? owner}` : null].filter(Boolean).join('\n');

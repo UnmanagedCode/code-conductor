@@ -3,9 +3,12 @@
 // (`/api/instances` and the `.conduct` disk list) to plain values.
 //
 // Ownership is live-only by construction: the server reports `ownerSessionId`
-// only on a live conducted instance (null on a hand-spawned session and on
-// anything dead, never on a disk row), so nothing here needs its own liveness
-// check to decide what a conductor owns. Spawn history is a separate,
+// (the root conductor of a spawn chain) only on a live conducted instance
+// (null on a hand-spawned session and on anything dead, never on a disk row),
+// so nothing here needs its own liveness check to decide what a conductor
+// owns. liveDirectOwnerOf refines that root to the direct owner — the live
+// section lead that spawned the worker — and keeps the live-only gate.
+// Spawn history is a separate,
 // disk-derived input (`GET /api/conductors/projects`: the projects and the
 // recorded worktree names) that reaches the sidebar only through
 // conductorChips (the chips, the Conductors tree, the filter), never
@@ -34,6 +37,7 @@ export type InstanceFields = {
   temp?: boolean;
   conducted?: boolean;
   ownerSessionId?: string | null;
+  callerInstanceId?: string | null;
   awaitingWake?: boolean;
   waitingOnJob?: boolean;
   awaitingUser?: AskKind | null;
@@ -159,6 +163,55 @@ export function isTopLevelConductor(s: { project: string; conducted?: boolean | 
 
 const byActivityDesc = (a: ConductorRow, b: ConductorRow) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
 
+// A conductor row from its `.conduct` disk row alone: every instance field at
+// its not-live value. `onDisk` false is the placeholder for an instance with
+// no disk row yet.
+function conductorRowFromDisk(r: ConductRow & { sessionId: string }, onDisk: boolean): ConductorRow {
+  return {
+    sessionId: r.sessionId,
+    title: r.title ?? null,
+    firstPrompt: r.firstPrompt ?? null,
+    lastActivity: r.lastActivity ?? 0,
+    onDisk,
+    instanceId: null,
+    instanceStatus: null,
+    instanceDisplayStatus: null,
+    instanceAwaitingWake: false,
+    instanceWaitingOnJob: false,
+    // Instance-only: a dead conductor is never waiting on you, whatever
+    // its disk row reports.
+    awaitingUser: null,
+    awaitingUserSource: null,
+    // Instance-only: only a live instance can be promoted.
+    instanceTemp: false,
+    // Instance-only: an armed overage resume and its queue live on the
+    // instance.
+    autoResumeAt: null,
+    queuedCount: 0,
+    live: false,
+  };
+}
+
+// Places a conductor row by its instance: the instance fields, its title over
+// the disk row's, its first prompt where the disk row has none, and the later
+// activity of the two.
+function overlayInstance(row: ConductorRow, inst: InstanceFields): void {
+  row.instanceId = inst.id;
+  row.instanceStatus = inst.status;
+  row.instanceDisplayStatus = inst.displayStatus ?? null;
+  row.instanceAwaitingWake = !!inst.awaitingWake;
+  row.instanceWaitingOnJob = !!inst.waitingOnJob;
+  row.awaitingUser = inst.awaitingUser ?? null;
+  row.awaitingUserSource = inst.awaitingUserSource ?? null;
+  row.instanceTemp = !!inst.temp;
+  row.autoResumeAt = inst.autoResumeAt ?? null;
+  row.queuedCount = inst.queuedCount ?? 0;
+  if (inst.title) row.title = inst.title;
+  if (!row.firstPrompt && inst.firstPrompt) row.firstPrompt = inst.firstPrompt;
+  row.lastActivity = Math.max(row.lastActivity ?? 0, inst.lastResponseAt ?? inst.createdAt ?? 0);
+  row.live = isLiveStatus(inst.status);
+}
+
 // Every top-level conductor — the non-archived, non-conducted `.conduct` disk rows unioned with the
 // non-conducted `.conduct` instances, keyed by sessionId — split into live (an instance in a
 // live status) and inactive (disk-only, or an exited/crashed instance, which
@@ -171,55 +224,13 @@ export function deriveConductors({ conductRows = [], instances = [] }: { conduct
   const bySid = new Map<string, ConductorRow>();
   for (const r of conductRows) {
     if (!r?.sessionId || r.archived || r.conducted) continue;
-    bySid.set(r.sessionId, {
-      sessionId: r.sessionId,
-      title: r.title ?? null,
-      firstPrompt: r.firstPrompt ?? null,
-      lastActivity: r.lastActivity ?? 0,
-      instanceId: null,
-      instanceStatus: null,
-      instanceDisplayStatus: null,
-      instanceAwaitingWake: false,
-      instanceWaitingOnJob: false,
-      // Instance-only: a dead conductor is never waiting on you, whatever
-      // its disk row reports.
-      awaitingUser: null,
-      awaitingUserSource: null,
-      // Instance-only: only a live instance can be promoted.
-      instanceTemp: false,
-      // Instance-only: an armed overage resume and its queue live on the
-      // instance.
-      autoResumeAt: null,
-      queuedCount: 0,
-      live: false,
-      onDisk: true,
-    });
+    bySid.set(r.sessionId, conductorRowFromDisk(r as ConductRow & { sessionId: string }, true));
   }
   for (const inst of instances) {
-    if (!inst.sessionId || inst.project !== CONDUCT_PROJECT) continue;
+    if (!hasSessionId(inst) || inst.project !== CONDUCT_PROJECT) continue;
     if (!isTopLevelConductor(inst)) { bySid.delete(inst.sessionId); continue; }
-    // The instance fields after onDisk are placeholders, in the order the
-    // assignments below write them.
-    const row: ConductorRow = bySid.get(inst.sessionId) ?? {
-      sessionId: inst.sessionId, title: null, firstPrompt: null, lastActivity: 0, onDisk: false,
-      instanceId: null, instanceStatus: null, instanceDisplayStatus: null, instanceAwaitingWake: false,
-      instanceWaitingOnJob: false, awaitingUser: null, awaitingUserSource: null, instanceTemp: false,
-      autoResumeAt: null, queuedCount: 0, live: false,
-    };
-    row.instanceId = inst.id;
-    row.instanceStatus = inst.status;
-    row.instanceDisplayStatus = inst.displayStatus ?? null;
-    row.instanceAwaitingWake = !!inst.awaitingWake;
-    row.instanceWaitingOnJob = !!inst.waitingOnJob;
-    row.awaitingUser = inst.awaitingUser ?? null;
-    row.awaitingUserSource = inst.awaitingUserSource ?? null;
-    row.instanceTemp = !!inst.temp;
-    row.autoResumeAt = inst.autoResumeAt ?? null;
-    row.queuedCount = inst.queuedCount ?? 0;
-    if (inst.title) row.title = inst.title;
-    if (!row.firstPrompt && inst.firstPrompt) row.firstPrompt = inst.firstPrompt;
-    row.lastActivity = Math.max(row.lastActivity ?? 0, inst.lastResponseAt ?? inst.createdAt ?? 0);
-    row.live = isLiveStatus(inst.status);
+    const row = bySid.get(inst.sessionId) ?? conductorRowFromDisk({ sessionId: inst.sessionId }, false);
+    overlayInstance(row, inst);
     bySid.set(inst.sessionId, row);
   }
   const all = [...bySid.values()];
@@ -236,10 +247,35 @@ export function conductorTitle(row: { title?: string | null; firstPrompt?: strin
   return { text: sessionLabel(row), untitled: !(row.title ?? '').trim() };
 }
 
-// A conductor's live workers, nested ones included (they carry the same root
-// owner).
-export function workersOf<T extends { ownerSessionId?: string | null }>(conductorSid: string, instances: readonly T[]): T[] {
-  return instances.filter(i => i.ownerSessionId === conductorSid);
+// A section lead's conductor row: its conducted `.conduct` disk row (or the
+// no-disk-row placeholder) overlaid with its instance, as deriveConductors
+// builds a top-level conductor's.
+export function sectionLeadRow(inst: InstanceFields & { sessionId: string }, conductRows: readonly ConductRow[]): ConductorRow {
+  const r = conductRows.find(c => c?.sessionId === inst.sessionId && c.conducted);
+  const row = r ? conductorRowFromDisk({ ...r, sessionId: inst.sessionId }, true) : conductorRowFromDisk({ sessionId: inst.sessionId }, false);
+  overlayInstance(row, inst);
+  return row;
+}
+
+// Who owns a worker, nearest first: the instance that spawned it when that is
+// a live section lead (conducted, in `.conduct`, with a session), else the
+// root owner the server reports.
+export function directOwnerOf(inst: InstanceFields, instances: readonly InstanceFields[]): string | null {
+  const spawner = inst.callerInstanceId ? instances.find(i => i.id === inst.callerInstanceId) : undefined;
+  if (spawner && spawner.project === CONDUCT_PROJECT && spawner.conducted && isLiveStatus(spawner.status) && spawner.sessionId) return spawner.sessionId;
+  return inst.ownerSessionId ?? null;
+}
+
+// directOwnerOf for a live owned instance only: null wherever the server
+// reports no owner, so a dead worker of a live section lead is nobody's.
+export function liveDirectOwnerOf(inst: InstanceFields, instances: readonly InstanceFields[]): string | null {
+  return inst.ownerSessionId ? directOwnerOf(inst, instances) : null;
+}
+
+// A conductor's live direct workers: a live section lead's workers belong to
+// the section lead, not to its lead.
+export function workersOf<T extends InstanceFields>(conductorSid: string, instances: readonly T[]): T[] {
+  return instances.filter(i => liveDirectOwnerOf(i, instances) === conductorSid);
 }
 
 // The distinct projects a set of workers sits in, sorted.
@@ -247,7 +283,7 @@ export function conductorProjects(workers: readonly { project: string }[]): stri
   return [...new Set(workers.map(w => w.project))].sort((a, b) => a.localeCompare(b));
 }
 
-// A conductor's chips: one per project it has a live owned worker in (live,
+// A conductor's chips: one per project it has a live direct worker in (live,
 // by name), then one per other project it has ever spawned into (idle, newest
 // spawn first). An idle project that is no longer registered is dropped.
 // Each chip carries `worktrees`, the recorded worktree names of its project's
@@ -276,15 +312,17 @@ export function placeKey(inst: { project: string; worktree?: { worktreeName?: st
   return inst.worktree?.worktreeName ? `${inst.project}:${inst.worktree.worktreeName}` : inst.project;
 }
 
-// place key → Set of the owners of the live conducted instances there.
-export function ownersByPlace(instances: readonly InstanceFields[]): Map<string, Set<string>> {
+// place key → Set of the owners of the instances there, as `ownerOf` names
+// them; an instance it maps to null has none.
+export function ownersByPlace(instances: readonly InstanceFields[], ownerOf: (i: InstanceFields) => string | null): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   for (const i of instances) {
-    if (!i.ownerSessionId) continue;
+    const owner = ownerOf(i);
+    if (!owner) continue;
     const k = placeKey(i);
     let set = out.get(k);
     if (!set) { set = new Set(); out.set(k, set); }
-    set.add(i.ownerSessionId);
+    set.add(owner);
   }
   return out;
 }

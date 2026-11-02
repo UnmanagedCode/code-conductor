@@ -8,7 +8,7 @@ import { uiStore } from '@/app/ui';
 import { chooseOption } from '@/test/radixSelect';
 import { routeFetch } from '@/test/routeFetch';
 import { formatAgo } from '@/lib/time';
-import { A, ALPHA, conductor, el, hand, openOf, proj, seed, worker, wt } from '@/test/sidebarFleet';
+import { A, ALPHA, conductor, el, hand, openOf, proj, sectionLeadFleet, seed, worker, wt } from '@/test/sidebarFleet';
 import {
   bandOf, filterInput, isOpen, marksIn, rowIds, rowsRoute, sessionsToggleOf, settleSearch, shownProjects, typeFilter,
   worktreesToggleOf,
@@ -386,6 +386,19 @@ describe('the conductor scope', () => {
     chooseOption(trigger(), ALPHA);
     await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(el('[data-filter-empty]')).toBeTruthy(); // A owns nothing named lint
+  });
+});
+
+describe('the conductor scope and a section lead', () => {
+  it("a lead's scope and a query still find a session in a project only its section lead's worker is in", async () => {
+    // Invariant: the text search's project scope under a conductor filter is filterProjects — chip projects plus the projects of the owner's root-owned live instances — so a section lead's worker's project matches with no spawn history.
+    seed(sectionLeadFleet());
+    sidebarStore.set({ collapsedSessions: [], expandedWorktrees: [], expandedWorkspaces: [], expandedConductors: [], inactiveOpen: false, filter: 'L' });
+    routeFetch({ 'GET /api/projects/alpha/sessions': rowsRoute([]), 'GET /api/projects/beta/sessions': rowsRoute([]) });
+    renderSidebar();
+    await search('sw');
+    expect(shownProjects()).toEqual(['beta']);
+    expect(rowIds('beta')).toEqual(['SW']);
   });
 });
 

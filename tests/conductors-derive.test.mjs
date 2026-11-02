@@ -145,14 +145,18 @@ test('conductorTitle prefers the title, falls back to the first prompt flagged u
 });
 
 test('workersOf counts only live instances owned by that conductor', () => {
+  // Invariant: a conductor's workers are the instances whose live direct owner is it; a live section lead's worker is the section lead's, not the root's.
   const instances = [
     inst({ id: 'w1', sessionId: 'w1', ownerSessionId: 'A' }),
-    inst({ id: 'w2', sessionId: 'w2', ownerSessionId: 'A', project: 'q' }), // nested worker: same root owner
+    inst({ id: 'w2', sessionId: 'w2', ownerSessionId: 'A', project: 'q' }), // nested worker of an ordinary worker: same root owner
     inst({ id: 'h', sessionId: 'h', ownerSessionId: null }),                 // hand-spawned
     inst({ id: 'd', sessionId: 'd', ownerSessionId: null, status: 'exited', conducted: true }), // dead
     inst({ id: 'b', sessionId: 'b', ownerSessionId: 'B' }),                  // another conductor
+    inst({ id: 'i-SL', sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'A' }), // a live section lead of A
+    inst({ id: 'sw', sessionId: 'sw', conducted: true, ownerSessionId: 'A', callerInstanceId: 'i-SL' }), // the section lead's worker
   ];
-  assert.deepEqual(M.workersOf('A', instances).map(i => i.id), ['w1', 'w2']);
+  assert.deepEqual(M.workersOf('A', instances).map(i => i.id), ['w1', 'w2', 'i-SL']);
+  assert.deepEqual(M.workersOf('SL', instances).map(i => i.id), ['sw']);
 });
 
 test('conductorProjects is the sorted distinct projects of live owned workers', () => {
@@ -229,11 +233,28 @@ test('worktreeOwnership is none / single / mixed over all owners in the place', 
     inst({ project: 'p', worktree: { worktreeName: 'mix' }, ownerSessionId: 'B' }),
     inst({ project: 'p', worktree: { worktreeName: 'hand' }, ownerSessionId: null }),
     inst({ project: 'p', ownerSessionId: 'C' }),
-  ]);
+  ], i => i.ownerSessionId ?? null);
   assert.deepEqual(M.worktreeOwnership(owners.get('p:solo')), { kind: 'single', owner: 'A' });
   assert.deepEqual(M.worktreeOwnership(owners.get('p:mix')), { kind: 'mixed' });
   assert.deepEqual(M.worktreeOwnership(owners.get('p:hand')), { kind: 'none' });
   assert.deepEqual([...owners.get('p')], ['C'], 'the main checkout is keyed by the bare project');
+});
+
+test('ownersByPlace buckets by the owner function it is given: the root owner and the direct owner differ at the same place', () => {
+  // Invariant: ownersByPlace reads owners only through its owner function, skipping an instance it maps to null.
+  const instances = [
+    inst({ id: 'i-SL', sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L' }),
+    inst({ id: 'lw', project: 'p', worktree: { worktreeName: 'wt' }, conducted: true, ownerSessionId: 'L' }),
+    inst({ id: 'sw', project: 'p', worktree: { worktreeName: 'wt' }, conducted: true, ownerSessionId: 'L', callerInstanceId: 'i-SL' }),
+    inst({ id: 'h', project: 'p', worktree: { worktreeName: 'wt' }, ownerSessionId: null }),
+  ];
+  const root = M.ownersByPlace(instances, i => i.ownerSessionId ?? null);
+  const direct = M.ownersByPlace(instances, i => M.liveDirectOwnerOf(i, instances));
+  assert.deepEqual([...root.get('p:wt')], ['L']);
+  assert.deepEqual([...direct.get('p:wt')].sort(), ['L', 'SL']);
+  assert.deepEqual(M.worktreeOwnership(root.get('p:wt')), { kind: 'single', owner: 'L' });
+  assert.deepEqual(M.worktreeOwnership(direct.get('p:wt')), { kind: 'mixed' });
+  assert.equal(M.ownersByPlace(instances, () => null).size, 0);
 });
 
 test('stageText is verbatim and opaque', () => {
@@ -361,4 +382,61 @@ test('projectLabel renames only the conductor project', () => {
   assert.equal(M.projectLabel(M.CONDUCT_PROJECT), M.CONDUCTOR_LABEL);
   assert.equal(M.projectLabel('.conduct'), 'Conductor');
   assert.equal(M.projectLabel('demo'), 'demo');
+});
+
+// Invariant: the direct owner is the spawner exactly when it is a live, conducted `.conduct` instance with a session; otherwise the root owner.
+test('directOwnerOf is a live conducted .conduct spawner with a session, else the root owner', () => {
+  const sl = (o = {}) => inst({ id: 'i-SL', sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L', ...o });
+  const sw = (o = {}) => inst({ id: 'sw', sessionId: 'sw', conducted: true, ownerSessionId: 'L', callerInstanceId: 'i-SL', ...o });
+  assert.equal(M.directOwnerOf(sw(), [sl(), sw()]), 'SL', 'a live section lead');
+  const toRoot = {
+    'an exited spawner': [sl({ status: 'exited' })],
+    'a crashed spawner': [sl({ status: 'crashed' })],
+    'a conducted spawner outside .conduct': [sl({ project: 'p' })],
+    'a non-conducted .conduct spawner': [sl({ conducted: false })],
+    'a spawner with no session': [sl({ sessionId: null })],
+    'a caller id that names no instance': [sl({ id: 'i-other' })],
+  };
+  for (const [why, spawners] of Object.entries(toRoot)) assert.equal(M.directOwnerOf(sw(), [...spawners, sw()]), 'L', why);
+  assert.equal(M.directOwnerOf(sw({ callerInstanceId: undefined }), [sl()]), 'L', 'no caller');
+  assert.equal(M.directOwnerOf(sw({ callerInstanceId: null }), [sl()]), 'L', 'a null caller');
+  assert.equal(M.directOwnerOf(sw({ callerInstanceId: 'i-gone', ownerSessionId: null }), []), null, 'no spawner and no owner');
+});
+
+// Invariant: liveDirectOwnerOf is null whenever the server reports no owner (a dead or hand-spawned instance), and directOwnerOf otherwise.
+test('liveDirectOwnerOf is null without a reported owner, even with a live section-lead spawner', () => {
+  const sl = inst({ id: 'i-SL', sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L' });
+  const dead = inst({ id: 'sw', sessionId: 'sw', conducted: true, status: 'exited', ownerSessionId: null, callerInstanceId: 'i-SL' });
+  assert.equal(M.directOwnerOf(dead, [sl, dead]), 'SL', 'the ungated rule still names the section lead');
+  assert.equal(M.liveDirectOwnerOf(dead, [sl, dead]), null);
+  const live = { ...dead, status: 'idle', ownerSessionId: 'L' };
+  assert.equal(M.liveDirectOwnerOf(live, [sl, live]), 'SL');
+  const plain = inst({ id: 'lw', conducted: true, ownerSessionId: 'L' });
+  assert.equal(M.liveDirectOwnerOf(plain, [sl, plain]), 'L');
+});
+
+// Invariant: a section lead's row is its conducted disk row (when listed) overlaid with its instance, as a top-level conductor's is.
+test('sectionLeadRow overlays the instance on the section lead\'s conducted disk row', () => {
+  const sl = inst({
+    id: 'i-SL', sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L', title: 'Live title', firstPrompt: 'inst prompt',
+    displayStatus: 'busy', awaitingUser: 'plan', awaitingUserSource: 'tool', awaitingWake: true, waitingOnJob: true,
+    temp: true, autoResumeAt: 77, queuedCount: 2, lastResponseAt: 500,
+  });
+  const disk = [
+    { sessionId: 'other', conducted: true, title: 'nope', lastActivity: 9 },
+    { sessionId: 'SL', conducted: true, title: 'Disk title', firstPrompt: 'disk prompt', lastActivity: 900 },
+  ];
+  const row = M.sectionLeadRow(sl, disk);
+  assert.deepEqual(row, {
+    sessionId: 'SL', title: 'Live title', firstPrompt: 'disk prompt', lastActivity: 900, onDisk: true,
+    instanceId: 'i-SL', instanceStatus: 'idle', instanceDisplayStatus: 'busy', instanceAwaitingWake: true, instanceWaitingOnJob: true,
+    awaitingUser: 'plan', awaitingUserSource: 'tool', instanceTemp: true, autoResumeAt: 77, queuedCount: 2, live: true,
+  });
+  const bare = M.sectionLeadRow({ ...sl, title: null }, []);
+  assert.equal(bare.onDisk, false);
+  assert.equal(bare.title, null);
+  assert.equal(bare.firstPrompt, 'inst prompt');
+  assert.equal(bare.lastActivity, 500);
+  assert.equal(M.sectionLeadRow({ ...sl, title: null }, disk).title, 'Disk title', 'the disk title stands when the instance has none');
+  assert.equal(M.sectionLeadRow({ ...sl, status: 'exited' }, disk).live, false);
 });

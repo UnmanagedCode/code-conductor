@@ -1,5 +1,5 @@
-import { ChevronRightIcon, SparklesIcon } from 'lucide-react';
-import { conductorTitle, hasSessionId, isLiveConductor, sessionFromInstance, stageText, workersOf, type ConductorChip, type ConductorRow } from '@shared/conductors';
+import { ChevronRightIcon } from 'lucide-react';
+import { conductorTitle, hasSessionId, isLiveConductor, sectionLeadRow, sessionFromInstance, stageText, workersOf, type ConductorChip, type ConductorRow } from '@shared/conductors';
 import { conductorColor } from '@shared/conductorColor';
 import { cn } from '@/lib/utils';
 import type { Instance, Project, Worktree } from '@/state/types';
@@ -34,26 +34,23 @@ function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel
   );
 }
 
-/** The heading over a lead's section leads, in place of the conductor project's folder row. */
-function SectionLeadsHead() {
-  return (
-    <div className="flex min-h-8 items-center gap-1 rounded-md pr-1" data-project-row={CONDUCT_PROJECT}>
-      <span className="flex size-6 shrink-0 items-center justify-center text-primary"><SparklesIcon className="size-4" /></span>
-      <span className="min-w-0 flex-1 truncate text-sm font-medium">Section leads</span>
-    </div>
-  );
-}
-
 /**
- * A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees.
+ * A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees; then each live
+ * section lead it spawned, as a nested conductor block, most recently active first. The conductor project gets no
+ * project group: its live workers are those section leads.
  * A project row carries its ⋮ only when the project list holds its record, and a worktree row only when that project lists it.
  */
-function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips: ConductorChip[] }) {
+function ConductorTree({ m, sid, chips, nested }: { m: SidebarModel; sid: string; chips: ConductorChip[]; nested: boolean }) {
+  const ui = useSidebarUi();
   const workers = workersOf(sid, m.instances);
   const byName = new Map(m.projects.map((p) => [p.name, p]));
+  const leads = workers.filter((w) => w.project === CONDUCT_PROJECT).filter(hasSessionId)
+    .map((w) => ({ c: sectionLeadRow(w, m.conductRows), stage: stageText(w) }))
+    .filter(({ c }) => c.live)
+    .sort((a, b) => (b.c.lastActivity ?? 0) - (a.c.lastActivity ?? 0));
   return (
-    <ul className="space-y-0.5 py-1 pl-1" data-conductor-tree>
-      {chips.map((chip) => {
+    <ul className={cn('space-y-0.5 py-1 pl-1', nested && 'ml-3')} data-conductor-tree>
+      {chips.filter((ch) => ch.project !== CONDUCT_PROJECT).map((chip) => {
         const full = byName.get(chip.project);
         const p: Project = full ?? ({ name: chip.project, worktrees: [] } as unknown as Project);
         const mine = workers.filter((w) => w.project === chip.project);
@@ -70,12 +67,10 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
         const names = [...byWt.keys(), ...recorded].sort((a, b) => a.localeCompare(b));
         return (
           <li key={chip.project}>
-            {chip.project === CONDUCT_PROJECT ? <SectionLeadsHead /> : (
-              <ProjectRow
-                project={p}
-                menu={full && <ProjectMenu project={full} instanceCount={m.instances.filter((i) => i.project === full.name).length} />}
-              />
-            )}
+            <ProjectRow
+              project={p}
+              menu={full && <ProjectMenu project={full} instanceCount={m.instances.filter((i) => i.project === full.name).length} />}
+            />
             {direct.length > 0 && <WorkerList m={m} workers={direct} projectName={chip.project} worktreeName={null} />}
             {names.length > 0 && (
               <ul className="ml-3 space-y-px border-l border-sidebar-border pl-1.5">
@@ -95,11 +90,15 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
           </li>
         );
       })}
+      {leads.map(({ c, stage }) => (
+        <ConductorBlock key={c.sessionId} m={m} c={c} open={ui.expandedConductors.includes(c.sessionId)} nested stage={stage} />
+      ))}
     </ul>
   );
 }
 
-function ConductorBlock({ m, c, open }: { m: SidebarModel; c: ConductorRow; open: boolean }) {
+/** A conductor's block; `nested` is a live section lead's, in its lead's tree: no chip row, and `stage` under its title. */
+function ConductorBlock({ m, c, open, nested = false, stage = null }: { m: SidebarModel; c: ConductorRow; open: boolean; nested?: boolean; stage?: string | null }) {
   const sid: string = c.sessionId;
   const { text, untitled } = conductorTitle(c);
   const chips = chipsOf(sid, m.instances, m.spawns, m.registered);
@@ -143,12 +142,17 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: ConductorRow; open
           <ChevronRightIcon className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
         </button>
         {/* No handler of its own: Enter and Space click it, and the click bubbles to the row's. */}
-        <button type="button" title={sid} aria-label={rowName(text, dotTitle(dot), null, unread)} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 self-stretch py-1 text-left outline-none" data-row-open>
+        <button type="button" title={sid} aria-label={rowName(text, dotTitle(dot), stage, unread)} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 self-stretch py-1 text-left outline-none" data-row-open>
           <Dot {...dot} />
-          <span className={cn('min-w-[2em] flex-1 truncate', untitled && 'text-muted-foreground italic', active && 'text-foreground',
-            // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
-            unread > 0 && 'font-semibold')}>
-            {text}
+          <span className="flex min-w-[2em] flex-1 flex-col">
+            <span className={cn('truncate', untitled && 'italic',
+              // A section lead reads as a conducted row, as SessionRow colours one.
+              nested ? 'text-info' : untitled && 'text-muted-foreground', active && 'text-foreground',
+              // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
+              unread > 0 && 'font-semibold')}>
+              {text}
+            </span>
+            {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
           </span>
           <Ago ms={c.lastActivity} />
           <UnreadPill n={unread} />
@@ -163,7 +167,7 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: ConductorRow; open
           }} />
         )}
       </div>
-      <div className="flex flex-wrap gap-1 pt-0.5 pb-1.5 pl-8" data-chips>
+      {!nested && <div className="flex flex-wrap gap-1 pt-0.5 pb-1.5 pl-8" data-chips>
         {chips.length === 0
           ? <span className="text-[11px] text-muted-foreground/70 italic">no live workers</span>
           : chips.map((ch) => (
@@ -178,8 +182,8 @@ function ConductorBlock({ m, c, open }: { m: SidebarModel; c: ConductorRow; open
               {ch.project}
             </span>
           ))}
-      </div>
-      {open && <ConductorTree m={m} sid={sid} chips={chips} />}
+      </div>}
+      {open && <ConductorTree m={m} sid={sid} chips={chips} nested={nested} />}
     </li>
   );
 }
