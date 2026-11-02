@@ -73,6 +73,15 @@ describe('owner chip', () => {
     expect(vi.mocked(selectInstance).mock.calls).toEqual([[lead.id, { push: true, userGesture: true }]]);
   });
 
+  // Invariant: a worker spawned by an ordinary conducted worker links to the root conductor, not to its spawner.
+  it('a worker spawned by an ordinary worker shows `Back to <root conductor>`', () => {
+    const mid = { ...f.w2, sessionId: 'w-mid', id: 'i-w-mid', title: 'Wmid', ownerSessionId: C1 };
+    seedWorkerFleet(f, [mid]);
+    show({ ...f.w1, callerInstanceId: mid.id });
+    expect(back(C1_LABEL)).not.toBeNull();
+    expect(back('Wmid')).toBeNull();
+  });
+
   it('C1, H show no chip; WU shows `Conducted worker` and no Back button; WA shows the chip with no button', () => {
     show(f.w1);
     expect(chip()).not.toBeNull(); // premise: this render path does show one
