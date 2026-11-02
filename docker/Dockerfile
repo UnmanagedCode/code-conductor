@@ -32,8 +32,9 @@ RUN sh /tmp/setup-user.sh && rm /tmp/setup-user.sh
 # containers don't have to. Its npm global prefix belongs to CC_UID/CC_GID:
 # `claude update` and the CLI's auto-updater reinstall through `npm install -g`
 # into `npm -g config get prefix` and refuse when that prefix is not writable.
-# ENV, not a global npmrc: sudo's env_reset drops it, so root's npm keeps
-# /usr/local and can never write root-owned files into this prefix.
+# ENV, not a global npmrc: sudo's env_reset drops it, so root's npm under sudo
+# keeps /usr/local and cannot write root-owned files into this prefix. `docker
+# exec -u root` keeps the image env and can: root must not run `npm -g` here.
 ENV NPM_CONFIG_PREFIX=/opt/npm-global
 ENV PATH=${NPM_CONFIG_PREFIX}/bin:${PATH}
 RUN install -d -o "$USER_UID" -g "$USER_GID" "$NPM_CONFIG_PREFIX" \
