@@ -217,7 +217,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 | `error gathering device information … "/dev/fuse"` at `make up`, or `FUSE_UNAVAILABLE: /dev/fuse is missing …` | The **host** has no `/dev/fuse` — `modprobe fuse` there. Nothing in the image or the `-f` chain can supply it. |
 | `FUSE_UNAVAILABLE: … fusectl …` | Host kernel; no package fixes it. `modprobe fuse` on the host where FUSE is a module, otherwise run that System elsewhere. |
 | `FUSE_UNAVAILABLE: …` naming any other binary or header | `CC_WITH_SYSTEMS=1` was not set for the **build** — an `-f compose.systems.yaml` alone gives the runtime deltas and an image with no FUSE packages. |
-| `Can't auto-update: npm global folder isn't writable` | The container runs an image built without the user-owned prefix; rebuild (`make up` builds). Meanwhile `docker compose exec conductor sudo claude update` (with `CC_WITH_SUDO=0`: `docker compose exec -u root conductor npm install -g @anthropic-ai/claude-code@latest`). |
+| `Error: Insufficient permissions to install update` from `claude update`, or `Can't auto-update: npm global folder isn't writable` in the CLI's diagnostics | The container runs an image built without the user-owned prefix; rebuild (`make up` builds). Meanwhile `docker compose exec conductor sudo claude update` (with `CC_WITH_SUDO=0`: `docker compose exec -u root conductor npm install -g @anthropic-ai/claude-code@latest`). |
 | Port already in use | Change `CC_PORT` in `.env`. |
 | Health banner at boot | Same readiness codes as native boots (`src/health.ts`) — missing `claude` CLI or credentials. The server starts anyway. |
 | GPU absent for ollama | Install nvidia-container-toolkit on the host, or run ollama CPU-only. |
