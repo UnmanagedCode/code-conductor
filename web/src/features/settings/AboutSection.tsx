@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ExternalLinkIcon, RefreshCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { LogoMark } from '@/components/logo/Logo';
+import { LogoLockup } from '@/components/logo/Logo';
 import { performRestart } from '@/features/sidebar/restart';
 import { createStore, useStore } from '@/state/createStore';
 import { SettingsCard, Status, LogBox, type StatusLine } from './ui';
@@ -82,12 +82,9 @@ export function AboutSection() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <LogoMark className="size-16 shrink-0" />
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">Code Conductor</h2>
-          <p className="text-sm text-muted-foreground">Orchestrate multiple Claude Code CLI instances across projects from one browser tab.</p>
-        </div>
+      <div className="space-y-2">
+        <h2><LogoLockup className="block h-auto w-64 max-w-full" /></h2>
+        <p className="text-sm text-muted-foreground">Orchestrate multiple Claude Code CLI instances across projects from one browser tab.</p>
       </div>
       <SettingsCard
         title="Version"

@@ -1,14 +1,14 @@
 // The logo's renderers on the real arts: only a blinking mark animates, and only
-// its cursor; no variant ships a <style>; the pictures are named. Knockout
+// its cursor; no variant (the lockup included) ships a <style>; the pictures are named. Knockout
 // structure is pinned on a synthetic art in logoArt.test.tsx.
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
-import { LogoMark, LogoSmall, LogoTile, Wordmark } from './Logo';
+import { LogoLockup, LogoMark, LogoSmall, LogoTile, Wordmark } from './Logo';
 
 /** Every element under `root` (itself included) whose class names an animation. */
 const animated = (root: Element) => [root, ...root.querySelectorAll('*')].filter((e) => /\banimate-/.test(e.getAttribute('class') ?? ''));
 const VARIANTS = [
-  ['a still mark', <LogoMark />], ['the tile', <LogoTile />], ['the small mark', <LogoSmall />], ['the wordmark', <Wordmark />],
+  ['a still mark', <LogoMark />], ['the tile', <LogoTile />], ['the small mark', <LogoSmall />], ['the wordmark', <Wordmark />], ['the lockup', <LogoLockup />],
 ] as const;
 
 describe('Logo', () => {
@@ -37,9 +37,9 @@ describe('Logo', () => {
   });
 
   it('each picture is an image named Code Conductor; the wordmark is decorative', () => {
-    // Invariant: the mark, tile and small mark are role=img named "Code Conductor"; the wordmark is hidden, its container carrying the text.
-    const { container } = render(<><LogoMark /><LogoTile /><LogoSmall /><Wordmark /></>);
-    for (const name of ['mark', 'tile', 'small']) {
+    // Invariant: the mark, tile, small mark and lockup are role=img named "Code Conductor"; the wordmark is hidden, its container carrying the text.
+    const { container } = render(<><LogoMark /><LogoTile /><LogoSmall /><LogoLockup /><Wordmark /></>);
+    for (const name of ['mark', 'tile', 'small', 'lockup']) {
       const svg = container.querySelector(`svg[data-logo="${name}"]`)!;
       expect(svg.getAttribute('role'), name).toBe('img');
       expect(svg.getAttribute('aria-label'), name).toBe('Code Conductor');

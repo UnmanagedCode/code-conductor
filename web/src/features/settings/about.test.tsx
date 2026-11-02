@@ -11,6 +11,7 @@ vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () =>
 import { performRestart } from '@/features/sidebar/restart';
 import { appStore } from '@/state/app';
 import { AboutSection, selfUpdateStore } from './AboutSection';
+import { LogoMark, Wordmark } from '@/components/logo/Logo';
 import { PluginsSection, pluginsStore } from './PluginsSection';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { LibraryEntry } from './pluginLogic';
@@ -54,15 +55,26 @@ describe('About', () => {
     expect(notice.getByText(/§13/)).toBeTruthy();
   });
 
-  it('shows the logo mark, still even while the socket is open', () => {
-    // Invariant: About's logo is the full mark and never blinks; only the landing and empty chat follow the connection.
+  it('shows the full lockup — mark and wordmark — as its heading, still even while the socket is open', () => {
+    // Invariant: About's logo is the lockup, which draws the whole mark and the whole wordmark, names the h2, and never blinks.
     act(() => appStore.set({ connection: 'open' }));
     mockFetch({ ...PLUGIN_ROUTES, 'GET /api/settings/self-update': () => available });
     const { container } = render(<AboutSection />);
-    const mark = container.querySelector('svg[data-logo="mark"]');
-    expect(mark).not.toBeNull();
-    expect(mark!.querySelector('[data-logo-cursor]'), 'fixture check: the cursor is drawn').not.toBeNull();
-    expect(mark!.querySelectorAll('[class*="animate-"]').length).toBe(0);
+    const h2 = screen.getByRole('heading', { level: 2, name: 'Code Conductor' });
+    const lockup = h2.querySelector('svg[data-logo="lockup"]');
+    expect(lockup).not.toBeNull();
+    expect(lockup!.querySelector('[data-logo-cursor]'), 'fixture check: the cursor is drawn').not.toBeNull();
+    // Painted shapes only: a mask's own shape is a cut-out, not drawing.
+    const painted = (root: Element) => new Set([...root.querySelectorAll('path,rect')].filter((e) => !e.closest('mask')).map((e) => e.getAttribute('d')));
+    const lockupPainted = painted(lockup!);
+    const parts = render(<><LogoMark /><Wordmark /></>).container;
+    for (const part of ['mark', 'wordmark']) {
+      const drawn = painted(parts.querySelector(`svg[data-logo="${part}"]`)!);
+      expect(drawn.size, `fixture check: the ${part} paints shapes`).toBeGreaterThan(0);
+      for (const d of drawn) expect(lockupPainted.has(d), `the lockup draws the ${part}'s shape`).toBe(true);
+    }
+    expect([h2, ...h2.querySelectorAll('*')].filter((e) => /\banimate-/.test(e.getAttribute('class') ?? '')), 'nothing in the heading animates').toEqual([]);
+    expect(container.querySelectorAll('[data-logo-cursor].animate-cursor-blink').length).toBe(0);
   });
 
   // Each self-update status maps to its own wording, and Update is offered for an available fast-forward alone; a failed check says why.

@@ -3,7 +3,7 @@
 // carries a <style>, and only a blinking mark carries an animation class.
 import * as React from 'react';
 import {
-  APP_INKS, knockoutTree, MARK, SMALL16, TILE, viewBoxRect, WORDMARK, type Art, type KnockoutNode, type LogoElement,
+  APP_INKS, knockoutTree, LOCKUP, MARK, SMALL16, TILE, viewBoxRect, WORDMARK, type Art, type KnockoutNode, type LogoElement,
 } from './logoArt';
 
 const BLINK = 'animate-cursor-blink motion-reduce:animate-none';
@@ -19,7 +19,7 @@ function Shape({ el, fill, blink }: { el: LogoElement; fill: string; blink?: boo
 }
 
 function LogoSvg({ art, name, blink = false, className }: {
-  art: Art; name: 'mark' | 'tile' | 'small' | 'wordmark'; blink?: boolean; className?: string;
+  art: Art; name: 'mark' | 'tile' | 'small' | 'wordmark' | 'lockup'; blink?: boolean; className?: string;
 }) {
   const id = React.useId();
   const { masks, tree } = knockoutTree(art.elements);
@@ -54,6 +54,11 @@ function LogoSvg({ art, name, blink = false, className }: {
 /** The full mark. `blink` animates the cursor; motion-reduce stills it. */
 export function LogoMark({ blink = false, className }: { blink?: boolean; className?: string }) {
   return <LogoSvg art={MARK} name="mark" blink={blink} className={className} />;
+}
+
+/** The mark and wordmark together, never animated: Settings → About. */
+export function LogoLockup({ className }: { className?: string }) {
+  return <LogoSvg art={LOCKUP} name="lockup" className={className} />;
 }
 
 /** The sidebar header's tile. */
