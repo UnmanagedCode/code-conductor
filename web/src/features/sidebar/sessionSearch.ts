@@ -110,9 +110,10 @@ function pump() {
 }
 
 /**
- * Frees `request`'s slot if it still holds it; false when it was already released. The identity check is a
- * defence: a released request's settle can run after a newer request for the same key took the slot (planned
- * by the signal bump inside `ensureSessions`' own settle), and must not free that one.
+ * Frees `request`'s slot if it still holds it; false when it was already released. The identity check is
+ * defensive and unreachable today: a key is never planned while its load is in progress, so a fresh request for
+ * the same key settles and frees its own slot before a released request's settle runs, which then finds the
+ * slot empty. It stays so a settle can never free a slot some other request holds.
  */
 function free(place: PlaceRef, request: Request) {
   if (inFlight.get(place.key) !== request) return false;

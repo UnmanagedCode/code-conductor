@@ -443,8 +443,9 @@ describe('the session loader', () => {
     // Pins: rows held for a place come from a fetch that started at or after the change; no second request starts for a key still loading.
     seedPlaces(['p1']);
     const first = held<RouteAnswer>();
+    const second = held<RouteAnswer>();
     let n = 0;
-    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-new', 'alpha new')] }) });
+    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : second.answer) });
     renderSidebar();
     await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); }); // the request is released, still loading
@@ -454,6 +455,12 @@ describe('the session loader', () => {
     expect(sessionGets(calls)).toHaveLength(1);
     first.release({ json: [disk('d-old', 'alpha old')] });
     await flush(); await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(2);
+    // While the refetch is outstanding the pre-change rows are neither cached nor held, so nothing lists them.
+    expect(rowIds('p1')).toEqual([]);
+    expect(document.body.textContent).not.toContain('alpha old');
+    second.release({ json: [disk('d-new', 'alpha new')] });
+    await flush(); await flush();
     expect(sessionGets(calls)).toHaveLength(2);
     expect(rowIds('p1')).toEqual(['d-new']);
     // The new rows are the ones held: a wipe at the unchanged fingerprint refetches nothing and keeps them listed.
