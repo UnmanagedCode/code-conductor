@@ -34,10 +34,6 @@ function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel
   );
 }
 
-/**
- * A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees.
- * A project row carries its ⋮ only when the project list holds its record, and a worktree row only when that project lists it.
- */
 /** The heading over a lead's section leads, in place of the conductor project's folder row. */
 function SectionLeadsHead() {
   return (
@@ -48,6 +44,10 @@ function SectionLeadsHead() {
   );
 }
 
+/**
+ * A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees.
+ * A project row carries its ⋮ only when the project list holds its record, and a worktree row only when that project lists it.
+ */
 function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips: ConductorChip[] }) {
   const workers = workersOf(sid, m.instances);
   const byName = new Map(m.projects.map((p) => [p.name, p]));

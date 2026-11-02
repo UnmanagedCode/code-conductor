@@ -160,7 +160,7 @@ export function isTopLevelConductor(s: { project: string; conducted?: boolean | 
 const byActivityDesc = (a: ConductorRow, b: ConductorRow) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
 
 // Every top-level conductor — the non-archived, non-conducted `.conduct` disk rows unioned with the
-// `.conduct` instances, keyed by sessionId — split into live (an instance in a
+// non-conducted `.conduct` instances, keyed by sessionId — split into live (an instance in a
 // live status) and inactive (disk-only, or an exited/crashed instance, which
 // keeps its instanceId so opening it behaves as it does for any dead session).
 // A conductor with a listed instance is placed by that instance whatever its

@@ -32,6 +32,14 @@ describe('workerOwnerOf', () => {
     expect(ownerOf(g, plain)).toMatchObject({ kind: 'owned', sessionId: C1, label: C1_LABEL, target: { kind: 'select', instanceId: f.c1.id } });
   });
 
+  // Invariant: only a live section-lead spawner is the owner; an exited one is skipped and the worker resolves to the root conductor.
+  it('a worker whose section-lead spawner has exited resolves to the root conductor', () => {
+    const f = fleet();
+    const lead = { ...f.c2, conducted: true, ownerSessionId: C1, status: 'exited' };
+    const sub = { ...f.w1, callerInstanceId: lead.id };
+    expect(ownerOf({ ...f, c2: lead }, sub)).toMatchObject({ kind: 'owned', sessionId: C1, label: C1_LABEL, target: { kind: 'select', instanceId: f.c1.id } });
+  });
+
   it('a live conducted worker resolves its owner\'s label and instance; C1 and C2 workers resolve differently', () => {
     const f = fleet();
     const o1 = ownerOf(f, f.w1);
