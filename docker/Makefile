@@ -70,7 +70,7 @@ endif
 ifneq ($(CC_BASE_IMAGE),)
 export CC_BASE_IMAGE
 endif
-.PHONY: build up down logs restart mount login login/tailscale login/ollama base-image
+.PHONY: build up down logs restart start stop mount login login/tailscale login/ollama base-image
 
 # No-op unless CC_BASE_IMAGE_FILE is set. $(error) inside a recipe expands only
 # when that recipe is about to run, so the conflict is fatal for build/up and
@@ -106,6 +106,14 @@ logs:
 
 restart:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) restart conductor
+
+# start/stop act on the existing conductor container without rebuilding or
+# recreating it (make up rebuilds; make down removes it).
+start:
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) start conductor
+
+stop:
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) stop conductor
 
 # Bind-mount a host directory into the RUNNING conductor container (no
 # restart): make PROJECT=/x/y/project [ARGS=-r] mount. Needs host root, so
