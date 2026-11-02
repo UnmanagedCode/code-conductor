@@ -218,6 +218,18 @@ test('pluginDataDir refuses a non-slug id', async () => {
   }
 });
 
+test('pluginDataDir stays absolute under a relative PROJECTS_ROOT', () => {
+  const prev = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = 'rel-root-does-not-exist'; // unresolvable root is used raw, so only path.resolve makes it absolute
+  try {
+    const got = pluginDataDir('some-plugin');
+    assert.ok(path.isAbsolute(got));
+    assert.equal(got, path.join(process.cwd(), 'rel-root-does-not-exist', '.code-conductor', 'plugins', 'data', 'some-plugin'));
+  } finally {
+    if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev;
+  }
+});
+
 test('running plugin flags stale once its checkout moves past the started-at sha; restart picks it up', async () => {
   const env = await makePluginRoot();
   const host = createPluginHost();
