@@ -4,7 +4,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { CLOSE_TITLES } from '@shared/closeAction';
-import { blockOf, conductor, el, hand, inactiveGroup, proj, sectionLeadFleet, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
+import { barOf, blockOf, conductor, conductorDotOf, conductorOpenOf, conductorRowOf, el, hand, inactiveGroup, proj, sectionLeadFleet, seed, treeOf, worker, wt, type Fleet } from '@/test/sidebarFleet';
+import { conductorColor } from '@shared/conductorColor';
 import { pickProjectMenuItem, pickWorktreeMenuItem } from '@/test/rowMenu';
 
 const selectInstance = vi.fn();
@@ -49,7 +50,8 @@ function chipsOf(sid: string) {
     placeholder: box.textContent !== chips.map((c) => c.textContent).join(''),
   };
 }
-const caretOf = (sid: string) => within(blockOf(sid)).getByRole('button', { name: 'Show workers' });
+/** The caret in a block's own row: an expanded block also holds its nested section leads' carets. */
+const caretOf = (sid: string) => within(conductorRowOf(sid)).getByRole('button', { name: 'Show workers' });
 const expand = (sid: string) => { fireEvent.click(caretOf(sid)); return treeOf(sid)!; };
 /** The tree's rows in document order: `project:<name>`, `worktree:<name>` or `worker:<sid>`. */
 const treeRows = (sid: string) => [...treeOf(sid)!.querySelectorAll('[data-project-row], [data-worktree-row], [data-session-row]')].map((n) => {
@@ -559,58 +561,135 @@ describe('row menus in the conductor tree', () => {
 });
 
 describe('section leads', () => {
-  const setup = async () => {
-    seed(sectionLeadFleet());
+  /** Seeds the section-lead fleet, edited by `edit`, and renders the sidebar. */
+  const setup = async (edit: (f: Fleet) => void = () => {}) => {
+    const f = sectionLeadFleet();
+    edit(f);
+    seed(f);
     renderSidebar();
     await settle();
   };
+  const patch = (f: Fleet, sid: string, over: Record<string, any>) => {
+    f.instances = f.instances.map((i) => (i.sessionId === sid ? { ...i, ...over } : i));
+  };
 
   it('the Conductors tab\'s top-level blocks are exactly the non-conducted conductors', async () => {
-    // Invariant: a section lead (conducted, in .conduct) gets no block of its own, and its disk row makes no Inactive group.
+    // Invariant: a section lead (conducted, in .conduct) gets no top-level block; its block exists only inside its lead's tree, and its disk row makes no Inactive group.
     await setup();
-    const sids = [...document.querySelectorAll('[data-conductor-list] [data-conductor]')].map((e) => e.getAttribute('data-conductor'));
-    expect(sids).toEqual(['L', 'H']);
-    expect(blockOf('SL')).toBeNull();
+    expand('L');
+    const top = [...document.querySelectorAll('[data-conductor-list] > ul > [data-conductor]')].map((e) => e.getAttribute('data-conductor'));
+    expect(top).toEqual(['L', 'H']);
+    expect(treeOf('L')!.contains(blockOf('SL'))).toBe(true);
     expect(inactiveGroup()).toBeNull();
   });
 
-  it('the section lead is reachable as an ordinary worker row in its lead\'s tree', async () => {
-    // Invariant: the section lead is a worker row under the lead's .conduct group that opens its session and has no workers caret.
+  it('a live section lead is a conductor block in its lead\'s tree: its own colour bar, a collapsed caret, and a click opens it', async () => {
+    // Invariant: the nested block carries conductorColor(SL), starts collapsed with no tree, opens the section lead's instance on click, and the section lead has no worker row anywhere.
     await setup();
-    const tree = expand('L');
-    const row = projectItem(tree, '.conduct')!.querySelector('[data-session-row="SL"]') as HTMLElement;
-    expect(row).not.toBeNull();
-    expect(row.querySelector('[data-row-open]')).not.toBeNull();
-    expect(within(row).queryByRole('button', { name: 'Show workers' })).toBeNull();
-    fireEvent.click(row.querySelector('[data-row]') as HTMLElement);
+    expect(blockOf('SL')).toBeNull();
+    expand('L');
+    expect(barOf(blockOf('SL'))).toEqual({ bar: true, color: conductorColor('SL') });
+    expect(caretOf('SL').getAttribute('aria-expanded')).toBe('false');
+    expect(treeOf('SL')).toBeNull();
+    fireEvent.click(conductorRowOf('SL'));
     expect(selectInstance.mock.calls[0][0]).toBe('i-SL');
+    expect(document.querySelector('[data-session-row="SL"]')).toBeNull();
   });
 
-  it('the section lead\'s own worker stays reachable in the lead\'s tree', async () => {
-    // Invariant: workers carrying the root owner sit under their own projects in the lead's tree, a section lead's included.
+  it('the lead\'s tree has no .conduct row and no Section leads heading, and the section lead\'s block follows the lead\'s project groups', async () => {
+    // Invariant: the conductor project draws no project group in a lead's tree; the nested section-lead blocks come after every project group.
     await setup();
     const tree = expand('L');
+    expect(tree.querySelector('[data-project-row=".conduct"]')).toBeNull();
+    expect(tree.textContent).not.toContain('Section leads');
+    expect(tree.lastElementChild).toBe(blockOf('SL'));
+    const alpha = projectItem(tree, 'alpha')!;
+    expect(alpha.compareDocumentPosition(blockOf('SL')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('the nested block has no chip row; the lead keeps .conduct and drops its section lead\'s project', async () => {
+    // Invariant: a nested block renders no chips; the lead's live chips are the projects of its live direct workers (its section lead's .conduct, not the section lead's worker's project), and spawn history adds that project back as idle.
+    await setup();
+    expand('L');
+    expect(blockOf('SL').querySelector('[data-chips]')).toBeNull();
+    expect(chipsOf('L').chips).toEqual(['.conduct:live', 'alpha:live']);
+  });
+
+  it('the lead shows its section lead\'s project as idle once its spawn history records it', async () => {
+    // Invariant: a project only the section lead's worker is live in is an idle chip on the lead, from root-keyed spawn history.
+    await setup((f) => { f.conductorSpawns = { L: [{ project: 'beta', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }] }; });
+    expect(chipsOf('L').chips).toEqual(['.conduct:live', 'alpha:live', 'beta:idle']);
+  });
+
+  it('a section lead\'s worker nests under the section lead\'s block, never under the lead\'s projects', async () => {
+    // Invariant: a worker whose spawner is the live section lead belongs to the section lead's tree; the lead's tree lists only its direct workers.
+    await setup();
+    const tree = expand('L');
+    expect(workerRows(projectItem(tree, 'alpha')!)).toEqual(['LW']);
+    expect(document.querySelector('[data-session-row="SW"]')).toBeNull();
+    expand('SL');
+    expect(treeRows('SL')).toEqual(['project:beta', 'worker:SW']);
+  });
+
+  it('the nested tree groups by project, main checkout, then worktree', async () => {
+    // Invariant: a section lead's tree is the same project → main-checkout workers → worktree → workers tree a top-level conductor's is.
+    await setup((f) => {
+      f.projects = [proj('alpha'), proj('beta', { isGitRepo: true, worktrees: [wt('wt-b')] })];
+      f.instances.push({ ...worker('SW2', 'L', 'beta', 'wt-b', { callerInstanceId: 'i-SL' }), lastResponseAt: 10 });
+    });
+    expand('L');
+    expand('SL');
+    expect(treeRows('SL')).toEqual(['project:beta', 'worker:SW', 'worktree:wt-b', 'worker:SW2']);
+  });
+
+  it('the subtitle shows an equal playbook and stage once, in the block\'s row and its accessible name', async () => {
+    // Invariant: the nested block shows its stageText (`section-lead` once) under its title and once in its open button's aria-label; a top-level block has no stage line.
+    await setup();
+    expand('L');
+    expect(conductorRowOf('SL').querySelector('[data-stage]')?.textContent).toBe('section-lead');
+    expect(conductorOpenOf('SL').getAttribute('aria-label')!.split('section-lead').length).toBe(2);
+    expect(conductorRowOf('L').querySelector('[data-stage]')).toBeNull();
+  });
+
+  it('the section lead\'s block takes its dot from its instance', async () => {
+    // Invariant: the nested block is overlaid from the section lead's instance, so an ask it raises shows as needs-you on its dot.
+    await setup((f) => patch(f, 'SL', { awaitingUser: 'question' }));
+    expand('L');
+    expect(conductorDotOf('SL').getAttribute('data-needs-you')).toBe('true');
+  });
+
+  it('with its section lead exited, the section lead\'s block goes and its worker sits back under the lead\'s projects', async () => {
+    // Invariant: only a live section lead is a direct owner; once it exits, its worker falls back to the root owner's tree.
+    await setup((f) => patch(f, 'SL', { status: 'exited', ownerSessionId: null }));
+    const tree = expand('L');
+    expect(blockOf('SL')).toBeNull();
     expect(workerRows(projectItem(tree, 'beta')!)).toContain('SW');
-    expect(workerRows(projectItem(tree, 'alpha')!)).toContain('LW');
   });
 
-  it('the .conduct group heading reads "Section leads", never the raw project', async () => {
-    // Invariant: the heading over a lead's section leads is "Section leads", with no .conduct text and no commit-history action.
-    await setup();
+  it('a worker whose caller is an ordinary conducted worker stays under the lead', async () => {
+    // Invariant: a spawner outside .conduct is no direct owner, so its worker stays in the root owner's tree.
+    await setup((f) => patch(f, 'SW', { callerInstanceId: 'i-LW' }));
     const tree = expand('L');
-    expect((tree.querySelector('[data-project-row="alpha"]') as HTMLElement).textContent).toBe('alpha');
-    const head = tree.querySelector('[data-project-row=".conduct"]') as HTMLElement;
-    expect(head.textContent).toBe('Section leads');
-    expect(head.textContent).not.toContain('.conduct');
-    expect(within(head).queryByRole('button', { name: 'Commit history' })).toBeNull();
+    expect(workerRows(projectItem(tree, 'beta')!)).toEqual(['SW']);
+    expand('SL');
+    expect(treeRows('SL')).toEqual([]);
   });
 
-  it('the subtitle shows an equal playbook and stage once, in the row and its accessible name', async () => {
-    // Invariant: a section lead's row reads `section-lead` once in its subtitle and in the open button's aria-label.
-    await setup();
+  it('a worker whose caller is a top-level conductor stays under the lead', async () => {
+    // Invariant: a non-conducted .conduct spawner is no direct owner, so its worker stays in the root owner's tree.
+    await setup((f) => patch(f, 'SW', { callerInstanceId: 'i-H' }));
     const tree = expand('L');
-    const row = tree.querySelector('[data-session-row="SL"]') as HTMLElement;
-    expect(row.querySelector('[data-stage]')?.textContent).toBe('section-lead');
-    expect((row.querySelector('[data-row-open]') as HTMLElement).getAttribute('aria-label')!.split('section-lead').length).toBe(2);
+    expect(workerRows(projectItem(tree, 'beta')!)).toEqual(['SW']);
+    expand('SL');
+    expect(treeRows('SL')).toEqual([]);
+  });
+
+  it('a dead section-lead worker is in no tree', async () => {
+    // Invariant: direct ownership is live-only — a dead worker of a live section lead is in neither the section lead's tree nor the lead's.
+    await setup((f) => patch(f, 'SW', { status: 'exited', ownerSessionId: null }));
+    expand('L');
+    expand('SL');
+    expect(treeRows('SL')).toEqual([]);
+    expect(document.querySelector('[data-session-row="SW"]')).toBeNull();
   });
 });

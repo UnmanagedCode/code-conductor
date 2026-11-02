@@ -8,7 +8,7 @@ import type { Instance, Project, Worktree } from '@/state/types';
 import { openWorkspaceDialog } from '@/features/dialogs/api';
 import { Button } from '@/components/ui/button';
 import {
-  chipsOf, filterOwner, groupProjects, mergeLive, placeKeyOf, scopeSessionRows, scopeShowsMain, scopeShowsProject,
+  chipsOf, filterOwner, filterProjects, groupProjects, mergeLive, placeKeyOf, scopeSessionRows, scopeShowsMain, scopeShowsProject,
   scopeWorktrees, sessionSections, sessionsTotal, type ScopeCtx, type SessionItem,
 } from './derive';
 import {
@@ -70,7 +70,7 @@ function useProjectsTextFilter(m: SidebarModel, ui: { filter: string }): TextFil
     if (tokens.length === 0) return { active: false, query, tokens, match: null, hits: new Map(), collapsed };
     const scope = scopeOf(m, ui);
     const owner = filterOwner(ui.filter);
-    const ownedProjects = new Set(owner ? chipsOf(owner, m.instances, m.spawns, m.registered).map((c) => c.project) : []);
+    const ownedProjects = owner ? filterProjects(owner, m.instances, m.spawns, m.registered) : new Set<string>();
     const directOf = (p: Project) => m.directByProject.get(p.name) ?? [];
     const worktreesOf = (p: Project): Worktree[] => (Array.isArray(p.worktrees) ? p.worktrees : []);
     const match = searchTree({
@@ -177,7 +177,7 @@ function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
       worktreeName={worktreeName}
       activeId={ctx.m.activeId}
       unread={ctx.m.unread.get(s.sessionId) ?? 0}
-      showOwner={showOwner}
+      owner={showOwner ? ctx.m.rowOwner(s) : null}
       ownerTitle={ctx.m.ownerTitle}
       highlight={ctx.tf.active ? ctx.tf.tokens : undefined}
     />
@@ -254,7 +254,7 @@ function WorktreeItem({ ctx, project, wt }: { ctx: Ctx; project: Project; wt: an
   const live = ctx.m.byWorktree.get(key) ?? [];
   const narrowed = ctx.tf.hits.get(key);
   const total = narrowed ? narrowed.length : sessionsTotal({ key, liveInstances: live, summary: wt.sessions }, sessionsCache);
-  const own = worktreeOwnership(ctx.m.owners.get(key));
+  const own = worktreeOwnership(ctx.m.barOwners.get(key));
   const forced = !!ctx.tf.match?.forced.sessions.has(key);
   const open = openUnder(ctx.tf, `s:${key}`, forced, !ctx.ui.collapsedSessions.includes(key));
   const toggle = foldUnder(ctx.tf, `s:${key}`, forced, () => setSessionsOpen(key, !open));
@@ -341,7 +341,7 @@ export function ProjectsList({ m }: { m: SidebarModel }) {
     return <div className="px-3 py-6 text-center text-sm text-muted-foreground">No projects yet</div>;
   }
   const owner = filterOwner(ui.filter);
-  const ownedProjects = new Set(owner ? chipsOf(owner, m.instances, m.spawns, m.registered).map((c) => c.project) : []);
+  const ownedProjects = owner ? filterProjects(owner, m.instances, m.spawns, m.registered) : new Set<string>();
   const scope = scopeOf(m, ui);
   const visible = (p: Project) => (tf.match
     ? tf.match.projects.has(p.name)

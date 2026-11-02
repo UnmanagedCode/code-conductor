@@ -1,7 +1,7 @@
 // Pure derivations behind the sidebar tree: merging disk session lists with
 // live instances, workspace grouping, the Projects-lens filter, and the
 // reveal-on-select target. No React, no DOM.
-import { conductorChips, hasSessionId, isTopLevelConductor, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
+import { conductorChips, hasSessionId, isTopLevelConductor, liveDirectOwnerOf, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
 import type { ConductorsSplit, SpawnedProject } from '@shared/conductors';
 import type { Instance, Project, Worktree } from '@/state/types';
 
@@ -101,6 +101,18 @@ export const filterOwner = (filter: Filter) => (filter && filter !== 'hand' ? fi
 
 export function chipsOf(sid: string, instances: Instance[], spawns: Record<string, SpawnedProject[]>, registered: Set<string>) {
   return conductorChips({ workers: workersOf(sid, instances), spawned: spawns[sid] ?? [], registered });
+}
+
+/**
+ * The projects a conductor filter lists: the owner's chip projects (its direct workers' and its spawn history's) plus
+ * the project of every live instance it is the root owner of, so a section lead's worker's project stays listed
+ * whatever spawn history has recorded yet.
+ */
+export function filterProjects(owner: string, instances: Instance[], spawns: Record<string, SpawnedProject[]>, registered: Set<string>): Set<string> {
+  return new Set([
+    ...chipsOf(owner, instances, spawns, registered).map((c) => c.project),
+    ...instances.filter((i) => i.ownerSessionId === owner).map((i) => i.project),
+  ]);
 }
 
 /** Filter options: All, Hand-spawned, each conductor with a chip, then other live owners. */
@@ -224,21 +236,27 @@ export type RevealTarget = {
   worktreesOf: string | null;
   sessionsKey: string | null;
   conductor: string | null;
+  /** The live section lead whose block holds the selection, inside `conductor`'s tree. */
+  sectionLead: string | null;
   inactive: boolean;
   filter: Filter | null;
 };
 
 /** What a selection opens in both lenses, and the filter it switches to when the current one hides it. */
-export function revealTarget({ inst, projects, conductors, filter }: {
-  inst: Instance; projects: Project[]; conductors: ConductorsSplit; filter: Filter;
+export function revealTarget({ inst, instances, projects, conductors, filter }: {
+  inst: Instance; instances: Instance[]; projects: Project[]; conductors: ConductorsSplit; filter: Filter;
 }): RevealTarget {
-  const t: RevealTarget = { workspace: null, worktreesOf: null, sessionsKey: null, conductor: null, inactive: false, filter: null };
+  const t: RevealTarget = { workspace: null, worktreesOf: null, sessionsKey: null, conductor: null, sectionLead: null, inactive: false, filter: null };
   const isConductor = isTopLevelConductor(inst);
   const conductorSid = isConductor ? inst.sessionId : inst.ownerSessionId;
   const inInactive = conductors.inactive.some((c) => c.sessionId === conductorSid);
   if (conductorSid && (inInactive || conductors.live.some((c) => c.sessionId === conductorSid))) {
     if (!isConductor) t.conductor = conductorSid;
     if (inInactive) t.inactive = true;
+  }
+  if (!isConductor) {
+    const direct = liveDirectOwnerOf(inst, instances);
+    if (direct && direct !== inst.ownerSessionId) t.sectionLead = direct;
   }
   const p = isConductor ? null : projects.find((q) => q.name === inst.project);
   if (p) {

@@ -6,8 +6,9 @@ import { uiStore } from '@/app/ui';
 import { closeProjectMenu, openProjectMenu, openWorktreeMenu, projectMenuItems } from '@/test/rowMenu';
 import {
   A, ALPHA, BRAVO, C, COLOUR, FLEET_UI, NO_BAR, barOf, conductor, disk, fleet, headOf, labelOf, openOf, proj, projectRowOf, rowOf,
-  seed, seedFleet, worker, wt,
+  seed, seedFleet, sectionLeadFleet, worker, wt, type Fleet,
 } from '@/test/sidebarFleet';
+import { conductorColor } from '@shared/conductorColor';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -222,6 +223,72 @@ describe('Projects-lens ownership colour', () => {
       ['New session in this worktree', null], ['Remove worktree…', null],
     ]);
     await closeProjectMenu();
+  });
+});
+
+describe('section-lead owner colour', () => {
+  const SL_COLOUR = conductorColor('SL');
+  const L_COLOUR = conductorColor('L');
+  if (SL_COLOUR === L_COLOUR) throw new Error('section-lead owner colour: L and SL must differ');
+  /** The section-lead fleet with `beta` a git project holding worktree wt-b, open in the tree; `edit` adjusts it before seeding. */
+  const setup = async (edit: (f: Fleet) => void = () => {}) => {
+    const f = sectionLeadFleet();
+    f.projects = [proj('alpha'), proj('beta', { isGitRepo: true, worktrees: [wt('wt-b')] })];
+    edit(f);
+    seed(f);
+    act(() => sidebarStore.set({ expandedWorktrees: ['beta'] }));
+    renderSidebar();
+    await settle();
+  };
+  const move = (f: Fleet, sid: string, over: Record<string, any>) => {
+    f.instances = f.instances.map((i) => (i.sessionId === sid ? { ...i, ...over } : i));
+  };
+
+  it("a section lead's main-checkout worker carries the section lead's bar and names it; the lead's worker keeps the lead's", async () => {
+    // Invariant: a main-checkout row is coloured and named by its live direct owner — the section lead that spawned it — not by the root owner.
+    await setup();
+    expect(barOf(rowOf('SW'))).toEqual({ bar: true, color: SL_COLOUR });
+    expect(openOf('SW').title).toMatch(/\nconductor: Section$/);
+    expect(barOf(rowOf('LW'))).toEqual({ bar: true, color: L_COLOUR });
+    expect(openOf('LW').title).toMatch(/\nconductor: Lead$/);
+  });
+
+  it("a worktree held only by a section lead's worker carries the section lead's bar on its head, not on the row", async () => {
+    // Invariant: a worktree's single owner is its workers' direct owner, drawn on the head only.
+    await setup((f) => move(f, 'SW', { worktree: { worktreeName: 'wt-b' } }));
+    expect(barOf(headOf('wt-b'))).toEqual({ bar: true, color: SL_COLOUR });
+    expect(headOf('wt-b').getAttribute('title')).toBe('conductor: Section');
+    expect(barOf(rowOf('SW'))).toEqual(NO_BAR);
+  });
+
+  it("a worktree holding the lead's and the section lead's workers is mixed, each row in its direct owner's colour", async () => {
+    // Invariant: worktree ownership counts direct owners, so a lead's worker beside its section lead's worker makes the head mixed (plain) and each row carries its own direct owner's bar.
+    await setup((f) => {
+      move(f, 'SW', { worktree: { worktreeName: 'wt-b' } });
+      f.instances.push({ ...worker('LW2', 'L', 'beta', 'wt-b'), lastResponseAt: 10 });
+    });
+    expect(barOf(headOf('wt-b'))).toEqual(NO_BAR);
+    expect(barOf(rowOf('SW'))).toEqual({ bar: true, color: SL_COLOUR });
+    expect(barOf(rowOf('LW2'))).toEqual({ bar: true, color: L_COLOUR });
+  });
+
+  it("with the section lead exited, its worker falls back to the lead's colour", async () => {
+    // Invariant: only a live section lead is a direct owner; once it exits, the row carries the root owner's colour and name.
+    await setup((f) => move(f, 'SL', { status: 'exited', ownerSessionId: null }));
+    expect(barOf(rowOf('SW'))).toEqual({ bar: true, color: L_COLOUR });
+    expect(openOf('SW').title).toMatch(/\nconductor: Lead$/);
+  });
+
+  it("the conductor filter still scopes by root owner: filtering L keeps the section lead's worker and its worktree", async () => {
+    // Invariant: the conductor filter scopes by the root owner — the section lead's worker, its worktree and its project stay listed under the lead's filter.
+    await setup((f) => move(f, 'SW', { worktree: { worktreeName: 'wt-b' } }));
+    act(() => sidebarStore.set({ filter: 'L' }));
+    await settle();
+    expect(projectRowOf('beta')).not.toBeNull();
+    expect(headOf('wt-b')).not.toBeNull();
+    expect(rowOf('SW')).not.toBeNull();
+    expect(rowOf('LW')).not.toBeNull();
+    expect(rowOf('HS')).toBeNull();
   });
 });
 

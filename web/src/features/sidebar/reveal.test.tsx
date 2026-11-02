@@ -11,7 +11,7 @@ import { uiStore } from '@/app/ui';
 import { emit } from '@/app/events';
 import { chooseOption } from '@/test/radixSelect';
 import {
-  A, ALPHA, B, FLEET_UI, blockOf, conductorRowOf, disk, el, fleet, projectRowOf, rowOf, seed, seedFleet, worker, wt,
+  A, ALPHA, B, FLEET_UI, blockOf, conductorRowOf, disk, el, fleet, projectRowOf, rowOf, sectionLeadFleet, seed, seedFleet, treeOf, worker, wt,
   type Fleet,
 } from '@/test/sidebarFleet';
 
@@ -230,6 +230,18 @@ describe('Conductors lens', () => {
     select(null);
     expect(sidebarStore.get()).toEqual(before);
     expect(caretOf(A).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it("selecting a section lead's worker expands the lead and the section lead", async () => {
+    // Invariant: a worker whose live direct owner is a section lead reveals both its lead's block and the section lead's nested block, and its row renders highlighted inside the section lead's tree.
+    seedFleet(sectionLeadFleet());
+    renderSidebar();
+    await settle();
+    select('i-SW');
+    expect(sidebarStore.get().expandedConductors).toEqual(expect.arrayContaining(['L', 'SL']));
+    expect(sidebarStore.get().expandedConductors).not.toContain('H');
+    const row = treeOf('SL')!.querySelector('[data-session-row="SW"] > [data-row]') as HTMLElement;
+    expect(row.getAttribute('data-active')).toBe('true');
   });
 
   it('a selection whose instance is not listed yet is revealed once it appears, and only once', async () => {
