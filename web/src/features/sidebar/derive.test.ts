@@ -116,6 +116,16 @@ describe('revealTarget', () => {
     expect(revealTarget({ inst: w, projects, conductors, filter: '' })).toMatchObject({ conductor: 'cond', inactive: true });
     expect(revealTarget({ inst: c, projects, conductors, filter: '' })).toMatchObject({ conductor: null, inactive: true, sessionsKey: null });
   });
+  it('selecting a section lead expands its lead\'s tree; a top-level conductor opens no bubble', () => {
+    // Invariant: a conducted .conduct session reveals as a worker of its lead; a non-conducted one is a conductor and reveals nothing.
+    const L = inst({ sessionId: 'L', project: '.conduct' });
+    const H = inst({ sessionId: 'H', project: '.conduct', conducted: false, ownerSessionId: null });
+    const SL = inst({ sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L' });
+    const conductors = deriveConductors({ conductRows: [], instances: [L, SL, H] });
+    expect(revealTarget({ inst: SL, projects, conductors, filter: '' })).toMatchObject({ conductor: 'L', inactive: false, sessionsKey: null, workspace: null, filter: null });
+    expect(revealTarget({ inst: L, projects, conductors, filter: '' }).conductor).toBeNull();
+    expect(revealTarget({ inst: H, projects, conductors, filter: '' }).conductor).toBeNull();
+  });
   it('switches a filter that hides the row: to the owner, Hand-spawned, or All', () => {
     const conductors = { live: [], inactive: [] };
     const owned = inst({ sessionId: 'w', project: 'api', ownerSessionId: 'cond', conducted: true });

@@ -53,6 +53,7 @@ export type InstanceFields = {
 export type ConductRow = {
   sessionId?: string | null;
   archived?: boolean;
+  conducted?: boolean;
   title?: string | null;
   firstPrompt?: string | null;
   lastActivity?: number;
@@ -151,10 +152,15 @@ export function sessionFromInstance<I extends InstanceFields>(inst: I): Instance
   };
 }
 
+/** A conductor of its own: a conductor-project session no conductor spawned. A section lead (conducted, in `.conduct`) is a worker. */
+export function isTopLevelConductor(s: { project: string; conducted?: boolean | null }): boolean {
+  return s.project === CONDUCT_PROJECT && !s.conducted;
+}
+
 const byActivityDesc = (a: ConductorRow, b: ConductorRow) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
 
-// Every conductor — the non-archived `.conduct` disk rows unioned with the
-// `.conduct` instances, keyed by sessionId — split into live (an instance in a
+// Every top-level conductor — the non-archived, non-conducted `.conduct` disk rows unioned with the
+// non-conducted `.conduct` instances, keyed by sessionId — split into live (an instance in a
 // live status) and inactive (disk-only, or an exited/crashed instance, which
 // keeps its instanceId so opening it behaves as it does for any dead session).
 // A conductor with a listed instance is placed by that instance whatever its
@@ -164,7 +170,7 @@ const byActivityDesc = (a: ConductorRow, b: ConductorRow) => (b.lastActivity ?? 
 export function deriveConductors({ conductRows = [], instances = [] }: { conductRows?: readonly ConductRow[]; instances?: readonly InstanceFields[] } = {}): ConductorsSplit {
   const bySid = new Map<string, ConductorRow>();
   for (const r of conductRows) {
-    if (!r?.sessionId || r.archived) continue;
+    if (!r?.sessionId || r.archived || r.conducted) continue;
     bySid.set(r.sessionId, {
       sessionId: r.sessionId,
       title: r.title ?? null,
@@ -190,7 +196,8 @@ export function deriveConductors({ conductRows = [], instances = [] }: { conduct
     });
   }
   for (const inst of instances) {
-    if (inst.project !== CONDUCT_PROJECT || !inst.sessionId) continue;
+    if (!inst.sessionId || inst.project !== CONDUCT_PROJECT) continue;
+    if (!isTopLevelConductor(inst)) { bySid.delete(inst.sessionId); continue; }
     // The instance fields after onDisk are placeholders, in the order the
     // assignments below write them.
     const row: ConductorRow = bySid.get(inst.sessionId) ?? {
@@ -304,8 +311,8 @@ export function ownerLabel(sid: string, { conductors, instances = [] }: {
   return `${String(sid).slice(0, 8)}…`;
 }
 
-// A worker's playbook binding as one line, verbatim; null when unbound.
+// A worker's playbook binding as one line, verbatim; a stage named as its playbook shows once; null when unbound.
 export function stageText(s: { playbook?: string | null; stage?: string | null }): string | null {
-  const parts = [s.playbook, s.stage].filter(Boolean);
+  const parts = s.playbook && s.playbook === s.stage ? [s.playbook] : [s.playbook, s.stage].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : null;
 }

@@ -7,7 +7,7 @@ import { uiStore } from '@/app/ui';
 import { entryReason, needsYouTitle } from '@shared/needsYou';
 import { chooseOption } from '@/test/radixSelect';
 import {
-  conductor, conductorRowOf, hand, proj, seed, stripEntryOf, stripGroups, stripHeadCounts, stripLabelOf, stripSids, worker,
+  conductor, conductorRowOf, hand, proj, sectionLeadFleet, seed, stripEntryOf, stripGroups, stripHeadCounts, stripLabelOf, stripSids, worker,
 } from '@/test/sidebarFleet';
 
 const selectInstance = vi.fn();
@@ -329,5 +329,17 @@ describe('live changes', () => {
     expect(stripHeadCounts('waiting')).toEqual([1]);
     expect(stripHeadCounts('running')).toEqual([1]);
     expect(stripHeadCounts('finished')).toEqual([1, 1]);
+  });
+});
+
+describe('section leads and the strip', () => {
+  it('lists the top-level conductors and hand sessions, never the section lead or any worker', async () => {
+    // Invariant: the strip population is the non-conducted .conduct sessions plus hand sessions; a busy section lead and the workers are absent.
+    const f = sectionLeadFleet();
+    seed({ ...f, instances: f.instances.map((i: any) => (i.sessionId === 'SL' ? { ...i, status: 'turn' } : i)) });
+    renderSidebar();
+    await settle();
+    const all = stripGroups().flatMap((g) => stripSids(g!));
+    expect([...all].sort()).toEqual(['H', 'HS', 'L']);
   });
 });

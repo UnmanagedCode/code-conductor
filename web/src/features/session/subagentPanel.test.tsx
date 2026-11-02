@@ -43,6 +43,16 @@ describe('workers panel', () => {
     expect(row(/job w-half/).textContent).not.toContain('solo-pb');
   });
 
+  it('the pill shows an equal playbook and stage once and an unequal pair in full', () => {
+    // Invariant: the binding pill reads `section-lead` for an equal pair and `relay · review` for an unequal one.
+    mount([
+      worker('w-same', { playbook: 'section-lead', stage: 'section-lead' }),
+      worker('w-diff', { playbook: 'relay', stage: 'review' }),
+    ]);
+    expect(row(/job w-same/).querySelector('[title^="playbook"]')?.textContent).toBe('section-lead');
+    expect(row(/job w-diff/).querySelector('[title^="playbook"]')?.textContent).toBe('relay · review');
+  });
+
   it('a stage change updates the label in place with no duplicate', () => {
     // Invariant: the row shows the current stage only, one label per worker.
     const r = mount([worker('w1', { playbook: 'gatelab', stage: 'draft' })]);

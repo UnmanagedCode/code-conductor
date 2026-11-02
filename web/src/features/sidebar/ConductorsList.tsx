@@ -1,4 +1,4 @@
-import { ChevronRightIcon } from 'lucide-react';
+import { ChevronRightIcon, SparklesIcon } from 'lucide-react';
 import { conductorTitle, hasSessionId, isLiveConductor, sessionFromInstance, stageText, workersOf, type ConductorChip, type ConductorRow } from '@shared/conductors';
 import { conductorColor } from '@shared/conductorColor';
 import { cn } from '@/lib/utils';
@@ -34,6 +34,16 @@ function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel
   );
 }
 
+/** The heading over a lead's section leads, in place of the conductor project's folder row. */
+function SectionLeadsHead() {
+  return (
+    <div className="flex min-h-8 items-center gap-1 rounded-md pr-1" data-project-row={CONDUCT_PROJECT}>
+      <span className="flex size-6 shrink-0 items-center justify-center text-primary"><SparklesIcon className="size-4" /></span>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">Section leads</span>
+    </div>
+  );
+}
+
 /**
  * A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees.
  * A project row carries its ⋮ only when the project list holds its record, and a worktree row only when that project lists it.
@@ -60,10 +70,12 @@ function ConductorTree({ m, sid, chips }: { m: SidebarModel; sid: string; chips:
         const names = [...byWt.keys(), ...recorded].sort((a, b) => a.localeCompare(b));
         return (
           <li key={chip.project}>
-            <ProjectRow
-              project={p}
-              menu={full && <ProjectMenu project={full} instanceCount={m.instances.filter((i) => i.project === full.name).length} />}
-            />
+            {chip.project === CONDUCT_PROJECT ? <SectionLeadsHead /> : (
+              <ProjectRow
+                project={p}
+                menu={full && <ProjectMenu project={full} instanceCount={m.instances.filter((i) => i.project === full.name).length} />}
+              />
+            )}
             {direct.length > 0 && <WorkerList m={m} workers={direct} projectName={chip.project} worktreeName={null} />}
             {names.length > 0 && (
               <ul className="ml-3 space-y-px border-l border-sidebar-border pl-1.5">

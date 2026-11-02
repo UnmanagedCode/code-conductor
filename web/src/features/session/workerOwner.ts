@@ -1,10 +1,10 @@
-// Who owns a conducted worker, as the web UI can tell it: the header's owner chip and Alt+ArrowUp,
+// Who owns a conducted worker (a section lead included), as the web UI can tell it: the header's owner chip and Alt+ArrowUp,
 // and the composer's accent, placeholder and first-send check, all read one resolution.
 import { useMemo } from 'react';
 import { useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
-import { CONDUCT_PROJECT, deriveConductors, ownerLabel } from '@shared/conductors';
+import { CONDUCT_PROJECT, deriveConductors, isLiveStatus, ownerLabel } from '@shared/conductors';
 import { selectInstance } from '@/app/controller';
 import { resumeSession } from '@/app/sessionActions';
 import { promptSendable } from '@/features/composer/send';
@@ -19,8 +19,10 @@ export type WorkerOwner =
 const NONE: WorkerOwner = { kind: 'none' };
 
 export function workerOwnerOf(inst: Instance, { instances, conductRows }: { instances: readonly Instance[]; conductRows: readonly any[] }): WorkerOwner {
-  if (!inst.conducted || inst.project === CONDUCT_PROJECT) return NONE;
-  const sessionId = inst.ownerSessionId;
+  if (!inst.conducted) return NONE;
+  // The server reports the root conductor as `ownerSessionId`; a live section lead that spawned this worker is the nearer owner.
+  const spawner = inst.callerInstanceId ? instances.find((i) => i.id === inst.callerInstanceId) : undefined;
+  const sessionId = spawner && spawner.project === CONDUCT_PROJECT && spawner.conducted && isLiveStatus(spawner.status) && spawner.sessionId ? spawner.sessionId : inst.ownerSessionId;
   if (!sessionId) return { kind: 'unknown' };
   const conductors = deriveConductors({ conductRows, instances });
   const label = ownerLabel(sessionId, { conductors, instances });
