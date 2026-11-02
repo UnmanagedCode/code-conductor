@@ -13,10 +13,6 @@
 ARG BASE_IMAGE=node:24-trixie
 FROM ${BASE_IMAGE}
 
-# The claude CLI is needed at session-spawn time; install it into the image so
-# containers don't have to.
-RUN npm install -g @anthropic-ai/claude-code
-
 # ── The account the container runs as (compose's `user:`) ────────────────
 ARG USER_NAME=node
 ARG USER_UID=1000
@@ -31,6 +27,19 @@ RUN if [ "$WITH_SUDO" = "1" ]; then apt-get update \
 # The account reconcile runs either way; only the sudoers rule is gated.
 COPY setup-user.sh /tmp/setup-user.sh
 RUN sh /tmp/setup-user.sh && rm /tmp/setup-user.sh
+
+# The claude CLI is needed at session-spawn time; install it into the image so
+# containers don't have to. Its npm global prefix is owned by CC_UID/CC_GID, so
+# `claude update` and the auto-updater can reinstall it without sudo.
+ENV NPM_CONFIG_PREFIX=/opt/npm-global
+ENV PATH=${NPM_CONFIG_PREFIX}/bin:${PATH}
+RUN install -d -o "$USER_UID" -g "$USER_GID" "$NPM_CONFIG_PREFIX" \
+ && npm install -g @anthropic-ai/claude-code \
+ && chown -R "$USER_UID:$USER_GID" "$NPM_CONFIG_PREFIX" \
+ && printf '%s\n' \
+      "export NPM_CONFIG_PREFIX=$NPM_CONFIG_PREFIX" \
+      "case \":\$PATH:\" in *\":$NPM_CONFIG_PREFIX/bin:\"*) ;; *) export PATH=\"$NPM_CONFIG_PREFIX/bin:\$PATH\" ;; esac" \
+      > /etc/profile.d/cc-npm-global.sh
 
 # WORKDIR is the PROJECTS ROOT, not the cc checkout, so `docker exec` /
 # `docker compose exec` land in the projects dir by default. The entrypoint

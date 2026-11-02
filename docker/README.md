@@ -42,7 +42,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_UID` / `CC_GID` | `1000` / `1000` | The ids `CC_USER` carries; set to the owner of `CC_PROJECTS_DIR`. The build moves `CC_USER` onto them, creating the account if absent, and fails naming the holder if another account holds `CC_UID` or another group holds `CC_GID` — except that a new account simply joins the group already holding `CC_GID`. |
 | `CC_HOME_DIR` | `<root>/.cc-home` | Container `$HOME` — credentials, transcripts, `.claude.json`, `.gitconfig`, npm cache. |
 | `CC_TZ` | `UTC` | Container timezone. |
-| `CC_BASE_IMAGE` | `node:24-trixie` | Docker base image (passed to the build as `BASE_IMAGE`). Must provide Node ≥ 24 (cc's engines requirement); the claude CLI installs via npm on whatever base is chosen. An older base is fine **except** with `CC_WITH_CLAUDE_CODE_PROXY=1` — the proxy's prebuilt binary is dynamically linked and needs GLIBC ≥ 2.39 (`node:24-bookworm` ships 2.36, trixie 2.41). Second suite caveat: `docker-cli` exists from trixie onward only, so on bookworm/bullseye `CC_WITH_DOCKER=1` falls back to the bulkier `docker.io` — see the size table below. |
+| `CC_BASE_IMAGE` | `node:24-trixie` | Docker base image (passed to the build as `BASE_IMAGE`). Must provide Node ≥ 24 (cc's engines requirement); the claude CLI installs via npm into the user-owned prefix `/opt/npm-global` on whatever base is chosen. An older base is fine **except** with `CC_WITH_CLAUDE_CODE_PROXY=1` — the proxy's prebuilt binary is dynamically linked and needs GLIBC ≥ 2.39 (`node:24-bookworm` ships 2.36, trixie 2.41). Second suite caveat: `docker-cli` exists from trixie onward only, so on bookworm/bullseye `CC_WITH_DOCKER=1` falls back to the bulkier `docker.io` — see the size table below. |
 | `CC_BASE_IMAGE_FILE` | *(empty)* | A Dockerfile the Makefile pre-builds into `code-conductor-base:local` and feeds to the service build as its base. Build context is the **directory containing** the file (that directory's own `.dockerignore` applies, not `docker/.dockerignore`); a relative path resolves against `docker/`. Setting it together with `CC_BASE_IMAGE` fails `make build`/`make up`. **Makefile only.** |
 | `CC_DOCKER_GID` | `${CC_GID}` | Gid of the **host** docker socket, added to `CC_USER`'s groups when `CC_WITH_DOCKER=1`. See "Docker from inside the container". |
 | `CC_COMPOSE_EXTRA` | *(empty)* | Extra compose file(s) chained **last**, so they override the built-in chain. Space-separated and **unquoted** (make keeps quote characters literally); paths relative to `docker/`. **Makefile only.** |
@@ -59,6 +59,7 @@ Make variables: `CC_GPU`, `CC_MOUNT`, `DOCKER`, `DOCKER_COMPOSE`, `CC_REPO_TARGE
 | `${CC_PROJECTS_DIR}` (required) | `/workspaces/projects` | Projects root: user projects, worktrees, cc's store `.code-conductor/`, `.conduct/`. |
 | The tree containing `docker/` | `${CC_REPO_TARGET}` — `/workspaces/code-conductor` (default) or `/workspaces/projects/code-conductor` | The running cc checkout, served in place. |
 | *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data, `.tailscale` (tailscaled state / node key). |
+| *(image, not a mount)* | `/opt/npm-global` | The claude CLI's npm global prefix, owned by `CC_UID:CC_GID`; `NPM_CONFIG_PREFIX` and `PATH` point at it. A rebuild replaces it. |
 | *(override file, chained by `CC_WITH_DOCKER=1`)* `/var/run/docker.sock` | `/var/run/docker.sock` | Optional: docker usable from inside the container. Containers you run from inside then get `HOST_PROJECTS_DIR` = the host path you set in `CC_PROJECTS_DIR` — use it as the `-v` source for their mounts (bind sources resolve on the HOST, not in this container). |
 | *(manual, post-boot)* any host dir | `/workspaces/<basename>` | One-off extra bind via `make PROJECT=… mount` (`docker/cc-mount.py`) — see "Mounting an extra host directory" below. Not visible to `docker inspect .Mounts`; gone on container restart. |
 
@@ -198,6 +199,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 - `docker compose exec conductor <cmd>` lands in the projects root (`WORKDIR` is `/workspaces/projects`, not the checkout) — convenient for poking at projects. The entrypoint `cd`s into the checkout itself before exec'ing.
 - **Don't run cc's self-update from a worktree checkout** — its `.git` is a file, not a directory.
 - `HOST=0.0.0.0` is set unconditionally.
+- `claude update`, the CLI's auto-updater and Settings → claude update work as `CC_USER` without sudo. An in-container update lasts until the next image rebuild.
 
 ## Persistence
 
