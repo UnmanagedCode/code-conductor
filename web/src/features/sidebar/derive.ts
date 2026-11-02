@@ -3,7 +3,7 @@
 // reveal-on-select target. No React, no DOM.
 import { CONDUCT_PROJECT, conductorChips, hasSessionId, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
 import type { ConductorsSplit, SpawnedProject } from '@shared/conductors';
-import type { Instance, Project } from '@/state/types';
+import type { Instance, Project, Worktree } from '@/state/types';
 
 /** A row of a Sessions subnode: a disk row with any live instance overlaid. */
 export type SessionItem = {
@@ -129,14 +129,65 @@ export function filterShows(filter: Filter, inst: Instance) {
   return filter === 'hand' ? !inst.conducted : true;
 }
 
+/** What a scope needs from the model to decide what it shows. */
+export type ScopeCtx = { filter: Filter; owners: Map<string, Set<string>>; byWorktree: Map<string, Instance[]> };
+
+/** A place's rows under the scope: an owner's (live) rows, or the non-conducted ones for Hand. */
+export function scopeSessionRows<T extends SessionItem>(rows: T[], filter: Filter): T[] {
+  const owner = filterOwner(filter);
+  return rows.filter((s) => (owner ? s.ownerSessionId === owner : filter === 'hand' ? !s.conducted : true));
+}
+
+const worktreeHasHand = (project: string, wt: Worktree, byWorktree: ScopeCtx['byWorktree']) =>
+  hasHandSession({ liveInstances: byWorktree.get(placeKeyOf(project, wt.worktreeName)) ?? [], summary: wt.sessions as { handCount?: number } | undefined });
+
+/** The worktrees of `project` the scope lists. */
+export function scopeWorktrees({ project, worktrees, filter, owners, byWorktree }: ScopeCtx & { project: Project; worktrees: Worktree[] }): Worktree[] {
+  const owner = filterOwner(filter);
+  if (owner) return worktrees.filter((wt) => owners.get(placeKeyOf(project.name, wt.worktreeName))?.has(owner));
+  if (filter === 'hand') return worktrees.filter((wt) => worktreeHasHand(project.name, wt, byWorktree));
+  return worktrees;
+}
+
+/** Whether the scope lists a project at all. `ownedProjects` is the owner's chip projects. */
+export function scopeShowsProject({ project, direct, filter, byWorktree, ownedProjects }: ScopeCtx & {
+  project: Project; direct: Instance[]; ownedProjects: Set<string>;
+}): boolean {
+  if (filterOwner(filter)) return ownedProjects.has(project.name);
+  if (filter !== 'hand') return true;
+  const worktrees: Worktree[] = Array.isArray(project.worktrees) ? project.worktrees : [];
+  return hasHandSession({ liveInstances: direct, summary: project.sessions })
+    || worktrees.some((wt) => worktreeHasHand(project.name, wt, byWorktree));
+}
+
+/** Whether the scope shows a project's main-checkout Sessions group and its Worktrees group. `total` is the unscoped session count. */
+export function scopeShowsMain({ project, direct, total, filter, owners, byWorktree }: ScopeCtx & {
+  project: Project; direct: Instance[]; total: number;
+}): { sessions: boolean; worktrees: boolean } {
+  const worktrees: Worktree[] = Array.isArray(project.worktrees) ? project.worktrees : [];
+  const owner = filterOwner(filter);
+  if (owner) {
+    return {
+      sessions: direct.some((i) => i.ownerSessionId === owner),
+      worktrees: worktrees.some((wt) => owners.get(placeKeyOf(project.name, wt.worktreeName))?.has(owner)),
+    };
+  }
+  if (filter === 'hand') {
+    return { sessions: hasHandSession({ liveInstances: direct, summary: project.sessions }), worktrees: worktrees.some((wt) => worktreeHasHand(project.name, wt, byWorktree)) };
+  }
+  return { sessions: total > 0, worktrees: worktrees.length > 0 };
+}
+
 export type ProjectGroup = { workspace: string; members: Project[]; count: number };
 
 /**
  * Workspaces (sorted, empty ones kept) then unassigned projects, both narrowed
  * by `visible`. A workspace whose members are all hidden by an active filter drops out.
  */
-export function groupProjects({ projects, workspaces, visible, filtering }: {
+export function groupProjects({ projects, workspaces, visible, filtering, keep }: {
   projects: Project[]; workspaces: string[]; visible: (p: Project) => boolean; filtering: boolean;
+  /** A workspace that stays listed with no visible member (a name hit of the text filter). */
+  keep?: (workspace: string) => boolean;
 }): { groups: ProjectGroup[]; unassigned: Project[] } {
   const byWorkspace = new Map<string, Project[]>();
   const unassigned: Project[] = [];
@@ -154,7 +205,7 @@ export function groupProjects({ projects, workspaces, visible, filtering }: {
       const all = byWorkspace.get(workspace)!;
       return { workspace, members: all.filter(visible), count: all.length };
     })
-    .filter((g) => !filtering || g.members.length > 0);
+    .filter((g) => !filtering || g.members.length > 0 || !!keep?.(g.workspace));
   return { groups, unassigned: unassigned.filter(visible) };
 }
 

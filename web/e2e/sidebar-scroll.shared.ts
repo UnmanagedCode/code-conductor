@@ -65,7 +65,7 @@ export async function onlyListScrollsFlow({ page, cc }: Ctx): Promise<void> {
     const body = root.locator('[data-sidebar-body]');
     const strip = root.locator('[data-strip]');
     const tabs = root.getByRole('tablist');
-    const filter = root.locator('[data-filter]');
+    const filter = root.locator('[data-filter-row]');
     await expect(strip.locator('[data-strip-entry]'), 'fixture check: the strip has the session').toHaveCount(1);
     const m = await body.evaluate((e) => ({ scroll: e.scrollHeight, client: e.clientHeight, top: e.scrollTop }));
     expect(m.scroll, `fixture check: the list overflows its body ${JSON.stringify(m)}`).toBeGreaterThan(m.client);
