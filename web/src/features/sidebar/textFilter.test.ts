@@ -34,6 +34,21 @@ describe('highlightRanges', () => {
     expect(highlightRanges('ABC', ['b'])).toEqual([[1, 2]]);
     expect(highlightRanges('abc', ['z'])).toEqual([]);
   });
+  it('marks overlapping occurrences of one token', () => {
+    // Pins: the scan resumes one character after a hit, so overlapping occurrences are found and merged.
+    expect(highlightRanges('aaa', ['aa'])).toEqual([[0, 3]]);
+  });
+
+  it('keeps the outer end when a range is contained in another', () => {
+    // Pins: merging takes the larger end, so a contained range never shortens the outer one.
+    expect(highlightRanges('abcd', ['abcd', 'bc'])).toEqual([[0, 4]]);
+  });
+
+  it('merges the same whichever order the tokens come in', () => {
+    // Pins: ranges are sorted by start before merging.
+    expect(highlightRanges('abcd', ['bcd', 'abc'])).toEqual([[0, 4]]);
+    expect(highlightRanges('abcd', ['abc', 'bcd'])).toEqual([[0, 4]]);
+  });
 });
 
 const row = (sessionId: string, firstPrompt: string, over: Partial<SessionItem> = {}): SessionItem => ({ sessionId, firstPrompt, lastActivity: 1, ...over });

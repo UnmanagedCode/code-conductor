@@ -88,6 +88,31 @@ describe('/', () => {
     expect(document.activeElement).not.toBe(filterInput());
   });
 
+  it('is not blocked by a menu open inside the sidebar itself', () => {
+    // Pins: only a dialog or menu outside the sidebar blocks the shortcut (the drawer's own dialog contains the sidebar and must not).
+    renderSidebar();
+    const menu = document.createElement('div');
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('data-state', 'open');
+    document.querySelector('[data-sidebar]')!.append(menu);
+    appended.push(menu);
+    expect(press(document.body, { key: '/' })).toBe(false);
+    expect(document.activeElement).toBe(filterInput());
+  });
+
+  it('is a one-shot request: a copy that mounts later is not focused by an earlier press', () => {
+    // Pins: the first active input to take the request consumes it, so a later mount does not steal focus.
+    renderSidebar();
+    press(document.body, { key: '/' });
+    const first = filterInput();
+    expect(document.activeElement).toBe(first);
+    render(<TooltipProvider><AppSidebar mobile /></TooltipProvider>);
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('[data-filter-input]')];
+    expect(inputs).toHaveLength(2);
+    expect(document.activeElement).toBe(first);
+    expect(document.activeElement).not.toBe(inputs[1]);
+  });
+
   it('ignores a keydown something else already prevented', () => {
     // Pins: a prevented `/` belongs to whoever prevented it.
     renderSidebar();

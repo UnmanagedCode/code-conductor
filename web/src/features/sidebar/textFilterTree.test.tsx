@@ -250,6 +250,43 @@ describe('a narrowed place\'s Sessions summary', () => {
   });
 });
 
+describe('a narrowed place', () => {
+  it('summarises its last activity as the newest of its matching rows, not of the place or of the last row listed', async () => {
+    // Pins: `last` is the maximum over the matching rows (the newest is listed first, so the last row is the older one).
+    const HOUR = 3_600_000;
+    const older = Date.now() - 5 * HOUR;
+    const newer = Date.now() - 60_000;
+    seed({
+      projects: [proj('api', { sessions: { count: 3, archivedCount: 0, handCount: 3, lastActivity: Date.now() - 30_000 } })],
+      workspaces: [],
+      instances: [],
+    });
+    sidebarStore.set({ collapsedSessions: ['api'], expandedWorktrees: [], expandedWorkspaces: [], filter: '' });
+    routeFetch({ 'GET /api/projects/api/sessions': rowsRoute([disk('d-a', 'login audit', older), disk('d-b', 'fix login bug', newer), disk('d-c', 'docs pass', Date.now() - 30_000)]) });
+    renderSidebar();
+    await search('login');
+    expect(rowIds('api')).toEqual(['d-b', 'd-a']);
+    expect(summaryOf('api')).toContain('Sessions (2)');
+    expect(summaryOf('api')).toContain(`last ${formatAgo(newer)}`);
+    expect(summaryOf('api')).not.toContain(formatAgo(older));
+    expect(summaryOf('api')).not.toMatch(/\d+s ago/);
+  });
+
+  it('lists only the matching rows of a worktree narrowed by session hits', async () => {
+    // Pins: a worktree narrowed by session hits shows its matching rows alone, not every row it holds.
+    seed({
+      projects: [proj('web', { isGitRepo: true, worktrees: [wt('feat', { sessions: summary(2, 4) })] })],
+      workspaces: [],
+      instances: [],
+    });
+    sidebarStore.set({ collapsedSessions: ['web:feat'], expandedWorktrees: [], expandedWorkspaces: [], filter: '' });
+    routeFetch({ 'GET /api/projects/web/worktrees/feat/sessions': rowsRoute([disk('d-hit', 'login page', 4), disk('d-miss', 'unrelated work', 3)]) });
+    renderSidebar();
+    await search('login');
+    expect(rowIds('web:feat')).toEqual(['d-hit']);
+  });
+});
+
 describe('an empty workspace', () => {
   it('stays listed when its name matches, and is not listed for another query or under a scope', async () => {
     // Pins: a workspace-name hit keeps an empty band without a scope, and only then.
