@@ -161,7 +161,7 @@ export function scopeWorktrees({ project, worktrees, filter, owners, byWorktree 
   return worktrees;
 }
 
-/** Whether the scope lists a project at all. `ownedProjects` is the owner's chip projects. */
+/** Whether the scope lists a project at all. `ownedProjects` is the owner's `filterProjects`: its chip projects plus the projects of its root-owned live instances. */
 export function scopeShowsProject({ project, direct, filter, byWorktree, ownedProjects }: ScopeCtx & {
   project: Project; direct: Instance[]; ownedProjects: Set<string>;
 }): boolean {

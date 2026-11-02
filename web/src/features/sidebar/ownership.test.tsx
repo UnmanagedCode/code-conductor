@@ -279,6 +279,23 @@ describe('section-lead owner colour', () => {
     expect(openOf('SW').title).toMatch(/\nconductor: Lead$/);
   });
 
+  it('a dead worker of a live section lead carries no owner colour and names no conductor', async () => {
+    // Invariant: a session row's owner is the live-gated direct owner — a worker with no reported owner is nobody's, even while the section lead that spawned it is live.
+    await setup((f) => move(f, 'SW', { status: 'exited', ownerSessionId: null }));
+    expect(rowOf('SW')).not.toBeNull();
+    expect(barOf(rowOf('SW'))).toEqual(NO_BAR);
+    expect(openOf('SW').title).not.toContain('conductor:');
+    expect(barOf(rowOf('LW'))).toEqual({ bar: true, color: L_COLOUR });
+  });
+
+  it("a worktree whose only worker is a live section lead's dead worker has no owner on its head", async () => {
+    // Invariant: the worktree-head owner map is live-gated — a dead worker of a live section lead adds no owner to its place.
+    await setup((f) => move(f, 'SW', { worktree: { worktreeName: 'wt-b' }, status: 'exited', ownerSessionId: null }));
+    expect(headOf('wt-b')).not.toBeNull();
+    expect(barOf(headOf('wt-b'))).toEqual(NO_BAR);
+    expect(headOf('wt-b').hasAttribute('title')).toBe(false);
+  });
+
   it("the conductor filter still scopes by root owner: filtering L keeps the section lead's worker and its worktree", async () => {
     // Invariant: the conductor filter scopes by the root owner — the section lead's worker, its worktree and its project stay listed under the lead's filter.
     await setup((f) => move(f, 'SW', { worktree: { worktreeName: 'wt-b' } }));
