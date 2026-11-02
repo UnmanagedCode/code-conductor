@@ -138,7 +138,21 @@ const worktree = q.get('ccWorktree'); // null for a project item
 
 Unknown top-level keys are rejected. Every `inputSchema` must stay inside the conductor's `validateArgs` subset — a **flat** `type:"object"` schema (per-property `type`/`enum`/`minLength`/`maxLength`/`pattern`/`minimum`/`maximum`/`items.type`; boolean `additionalProperties` accepted and ignored). `$ref`/`oneOf`/`anyOf`/`allOf`/`not` and nested object `properties` are rejected at manifest load, so an unvalidatable schema can never register. Invalid ⇒ state `invalid`, listed with errors, never startable.
 
-Child env: `$PORT` (conductor-allocated; default your own port when absent so the plugin stays standalone-runnable), `CONDUCTOR_PLUGIN_ID`, `CONDUCTOR_URL` (`http://127.0.0.1:<conductor-port>`), `PROJECTS_ROOT` (the conductor's *resolved* projects root — injected explicitly, so it carries the default even when the conductor's own env never set the var), `CONDUCTOR_PROJECT_DIR` (the conductor's own running checkout dir, holding its `server.ts`/`package.json` — may be outside `PROJECTS_ROOT`). No fixed-port option in v1.
+Child env:
+
+- `$PORT` — conductor-allocated; default your own port when absent so the plugin stays standalone-runnable.
+- `CONDUCTOR_PLUGIN_ID`.
+- `CONDUCTOR_URL` — `http://127.0.0.1:<conductor-port>`.
+- `PROJECTS_ROOT` — the conductor's *resolved* projects root, injected explicitly, so it carries the default even when the conductor's own env never set the var.
+- `CONDUCTOR_PROJECT_DIR` — the conductor's own running checkout dir, holding its `server.ts`/`package.json`; may be outside `PROJECTS_ROOT`.
+- `CONDUCTOR_PLUGIN_DATA_DIR` — the plugin's own data dir, `<PROJECTS_ROOT>/.code-conductor/plugins/data/<id>` (`pluginDataDir`, `src/plugins/store.ts`).
+  - `<id>` is the manifest `id`, not the repo or project dir name.
+  - The value is absolute, belongs to this plugin alone, and is the same at every start while the projects root and the `id` are unchanged; changing the `id` changes the dir.
+  - cc never creates, reads, writes, moves or deletes it (not on stop, disable, update or uninstall), so it and its parent may not exist: create it with the mode you need, e.g. `fs.mkdir(dir, {recursive: true, mode: 0o700})`.
+  - Moving any legacy data in is the plugin's job.
+  - Library `postClone`/`postPull` hooks do not receive it (they are not backend starts).
+
+No fixed-port option in v1.
 
 **Discovery rules.** The manifest is read from each project's main checkout **through that project's System** (`readManifest(system, dir)`) — a manifest and its fragment files are files in a project tree, and a bare local read against a remote project's path does not no-op, it reads cc's OWN file at that path and registers a plugin that is not there. A project whose System cannot be reached contributes no plugin and is warned about, never silently read locally — and when the store holds an **enabled** plugin record for that project, the catalog is additionally flagged **degraded**, because the manifest was never read and cc therefore cannot vouch for the absence of that plugin's conventions. The flag is computed live against the store (never latched into a stored boolean), so it clears at the next **Rescan** — or the moment that plugin is disabled. When the main checkout has **no manifest file at all**, the project's worktrees (sorted by name) are checked and the first **valid** manifest wins — so a plugin whose manifest exists only in an unmerged worktree (first-time plugin-ification) can bootstrap. Rows carry `manifestSource: {type:"main"} | {type:"worktree", name}`; enabling a worktree-sourced plugin defaults `activeVersion` to that worktree. A present-but-invalid main manifest keeps its `invalid` state (never masked by a worktree), and `POST /api/plugins/:id/version {type:"main"}` is refused with 400 while the main checkout lacks a valid matching manifest.
 
@@ -495,7 +509,7 @@ Two edges, both deliberate:
 4. `<script src="/pluginBridge.js"></script>` (blocking, first in `<head>`) and `<link rel="stylesheet" href="/pluginTheme.css">` in the frontend, and routing that survives the bridge's history contract: `pushState` is demoted to `replaceState`, and a hash change adds a joint history entry (the bridge reports routes for you; [docs/plugin-ui.md](plugin-ui.md) → Routing).
 5. A `healthPath` endpoint (any HTTP response counts as alive).
 6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas. Return `{result}` for structured data; return `{text, meta?}` when the tool's output is prose/diff/file content that should reach the caller un-escaped (omit `meta` and send one string to get exactly one block; `text` wins if both are sent; `meta` alone, without `text`, is dropped).
-7. Expect to be killed at any time (Doze) and restarted lazily — persist state, start fast.
+7. Expect to be killed at any time (Doze) and restarted lazily — persist state under `$CONDUCTOR_PLUGIN_DATA_DIR` (see Child env above), never in the projects root; start fast.
 8. A `frontend.keepAlive` page stays up while its backend crashes and is lazily restarted under it — reconnect rather than assume the backend it loaded against. (An explicit Restart, Update or version switch from Settings → Plugins evicts the page; the next entry loads it afresh.)
 9. If a convention's fragment depends on something its `scaffold` facet sets up, **word the fragment to degrade gracefully** when the scaffold step wasn't run — the picked convention may land in a project where the setup directive was never carried out (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one").
 10. A UI follows the host contract in [docs/plugin-ui.md](plugin-ui.md): relative URLs, cc's theme followed live, cc's session width followed through `--cc-session-width` if the page caps its width, servable after the Library entry's `postClone`/`postPull` hook has run. Stack, build tool and tests are the plugin's own.

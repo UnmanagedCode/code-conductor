@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from '../projects.ts';
+import { isSlug } from '../identifiers.ts';
 import type { ManifestSource } from './manifest.ts';
 
 // The plugin host's persistence collaborator: the two JSON files under
@@ -10,6 +11,10 @@ import type { ManifestSource } from './manifest.ts';
 //
 //   registry.json  {plugins: {<id>: {project, enabled, activeVersion, autoStart}}}
 //   runtime.json   {<id>: {pid, pgid, port, startedAt, gitHead}}
+//   data/<id>/     plugin-owned; handed to that plugin's backend as
+//                  CONDUCTOR_PLUGIN_DATA_DIR (`pluginDataDir`), never read or
+//                  written by the store. It sits under its own `data/` subdir
+//                  because a plugin id may equal a host entry name such as `library`.
 //
 // Reads hand out SHALLOW COPIES and every mutator writes. That is the point of
 // the boundary, not a convention on top of it: after the split no code outside
@@ -42,6 +47,14 @@ export interface PluginStoreDeps {
   // leaves the signal sent. Signalling from the one save path rather than at
   // each mutator's call site is what makes the set provably complete.
   onRegistryChange: () => void;
+}
+
+// A plugin's data dir. Recomputed per call (follows `PROJECTS_ROOT`) and absolute
+// even for a relative root. The id is slug-guarded here so traversal-safety does
+// not rest on callers. The host never creates or touches the dir.
+export function pluginDataDir(id: string): string {
+  if (!isSlug(id)) throw new Error(`pluginDataDir: '${id}' is not a valid plugin id`);
+  return path.resolve(orchStoreRoot(), 'plugins', 'data', id);
 }
 
 export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
