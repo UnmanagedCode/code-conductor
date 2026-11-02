@@ -9,6 +9,7 @@ import { themeStore } from '@/app/theme';
 import { ConfirmHost, ToastHost } from '@/ui/feedback';
 import { TOAST_EDGE_GAP } from '@/ui/toastLayout';
 import { AppSidebar } from '@/features/sidebar/AppSidebar';
+import { keepFilterEscape } from '@/features/sidebar/FilterBar';
 import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
 import { dockModeStore } from '@/features/views/dock';
@@ -58,7 +59,7 @@ export function App() {
           <AppSidebar />
         </div>
         <Sheet open={sidebarOpen} onOpenChange={(o) => uiStore.set({ sidebarOpen: o })}>
-          <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 md:hidden" onOpenAutoFocus={focusContent}>
+          <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 md:hidden" onOpenAutoFocus={focusContent} onEscapeKeyDown={keepFilterEscape}>
             <SheetTitle className="sr-only">Navigation</SheetTitle>
             <AppSidebar mobile />
           </SheetContent>

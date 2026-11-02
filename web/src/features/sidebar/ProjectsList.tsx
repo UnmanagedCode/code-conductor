@@ -4,17 +4,22 @@ import { useSignal } from '@/state/createStore';
 import { worktreeOwnership } from '@shared/conductors';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
-import type { Instance, Project } from '@/state/types';
+import type { Instance, Project, Worktree } from '@/state/types';
 import { openWorkspaceDialog } from '@/features/dialogs/api';
+import { Button } from '@/components/ui/button';
 import {
-  chipsOf, filterOwner, groupProjects, hasHandSession, mergeLive, placeKeyOf, sessionSections, sessionsTotal,
-  type SessionItem,
+  chipsOf, filterOwner, groupProjects, mergeLive, placeKeyOf, scopeSessionRows, scopeShowsMain, scopeShowsProject,
+  scopeWorktrees, sessionSections, sessionsTotal, type ScopeCtx, type SessionItem,
 } from './derive';
 import {
   ensureSessions, sessionsCache, sessionsError, sessionsSignal, sessionsStatus, setSessionsOpen, setWorkspaceOpen,
   setWorktreesOpen, useAgoTick, useSidebarUi,
 } from './state';
 import { Hint, IconAction, ProjectRow, SessionRow, WorktreeHead } from './rows';
+import { Highlight } from './Highlight';
+import { heldRowsOf, searchCovers, useSearchPending, useSearchVersion } from './sessionSearch';
+import { searchTree, tokensOf, type ProjectMatch, type TreeMatch } from './textFilter';
+import { clearQuery, toggleForced, useTextFilter } from './textFilterState';
 import { ProjectMenu } from './ProjectMenu';
 import { WorktreeMenu } from './WorktreeMenu';
 import type { SidebarModel } from './useSidebarModel';
@@ -35,7 +40,72 @@ export function Chevron({ open, onToggle, label }: { open: boolean; onToggle: ()
 
 export const ChevronSpacer = () => <span className="size-6 shrink-0" />;
 
-type Ctx = { m: SidebarModel; ui: ReturnType<typeof useSidebarUi> };
+type Ctx = { m: SidebarModel; ui: ReturnType<typeof useSidebarUi>; tf: TextFilter };
+
+/** The text filter as the tree reads it: inactive, or the classification of the tree plus the rows each narrowed place keeps. */
+type TextFilter = {
+  active: boolean;
+  query: string;
+  tokens: string[];
+  match: TreeMatch | null;
+  /** Narrowed place key → its matching rows. A place absent here shows all its rows. */
+  hits: Map<string, SessionItem[]>;
+  collapsed: string[];
+};
+
+const scopeOf = (m: SidebarModel, ui: { filter: string }): ScopeCtx => ({ filter: ui.filter, owners: m.owners, byWorktree: m.byWorktree });
+
+/** The scope-visible, non-archived rows of a place, from the cache or what the search holds, with live instances overlaid. */
+function placeRows(m: SidebarModel, filter: string, project: string, worktree: string | null): SessionItem[] {
+  const key = placeKeyOf(project, worktree);
+  const live = (worktree ? m.byWorktree.get(key) : m.directByProject.get(project)) ?? [];
+  return scopeSessionRows(mergeLive(sessionsCache.get(key) ?? heldRowsOf(key) ?? [], live), filter).filter((s) => !s.archived);
+}
+
+function useProjectsTextFilter(m: SidebarModel, ui: { filter: string }): TextFilter {
+  const { query, collapsed } = useTextFilter();
+  const version = useSearchVersion();
+  const tokens = React.useMemo(() => tokensOf(query), [query]);
+  return React.useMemo(() => {
+    if (tokens.length === 0) return { active: false, query, tokens, match: null, hits: new Map(), collapsed };
+    const scope = scopeOf(m, ui);
+    const owner = filterOwner(ui.filter);
+    const ownedProjects = new Set(owner ? chipsOf(owner, m.instances, m.spawns, m.registered).map((c) => c.project) : []);
+    const directOf = (p: Project) => m.directByProject.get(p.name) ?? [];
+    const worktreesOf = (p: Project): Worktree[] => (Array.isArray(p.worktrees) ? p.worktrees : []);
+    const match = searchTree({
+      tokens,
+      projects: m.projects,
+      workspaces: m.workspaces,
+      showsProject: (p) => scopeShowsProject({ ...scope, project: p, direct: directOf(p), ownedProjects }),
+      mainShown: (p) => scopeShowsMain({ ...scope, project: p, direct: directOf(p), total: sessionsTotal({ key: p.name, liveInstances: directOf(p), summary: p.sessions }, sessionsCache) }).sessions,
+      worktreesOf: (p) => scopeWorktrees({ ...scope, project: p, worktrees: worktreesOf(p) }),
+      rowsOf: (project, worktree) => placeRows(m, ui.filter, project, worktree),
+    });
+    const hits = new Map<string, SessionItem[]>();
+    const keep = (project: string, worktree: string | null, ids: Set<string>) =>
+      hits.set(placeKeyOf(project, worktree), placeRows(m, ui.filter, project, worktree).filter((r) => ids.has(r.sessionId)));
+    for (const [name, pm] of match.projects) {
+      if (pm.kind !== 'narrowed') continue;
+      if (pm.main) keep(name, null, pm.main);
+      for (const [wt, hit] of pm.worktrees) if (hit.kind === 'narrowed') keep(name, wt, hit.sessions);
+    }
+    return { active: true, query, tokens, match, hits, collapsed };
+    // `version`: the search's held rows changed.
+  }, [tokens, query, collapsed, m, ui.filter, m.cacheVersion, version]);
+}
+
+/** A group's open state: the user's, or while the filter has force-opened it, its own transient one. */
+const openUnder = (tf: TextFilter, key: string, forced: boolean, userOpen: boolean) => (tf.active && forced ? !tf.collapsed.includes(key) : userOpen);
+/** A group's fold action: the filter's transient toggle for a force-opened group, else the user's. */
+const foldUnder = (tf: TextFilter, key: string, forced: boolean, user: () => void) => () => { if (tf.active && forced) toggleForced(key); else user(); };
+
+/** A narrowed place's summary, from its matching rows only. */
+const hitSummary = (rows: SessionItem[]): SessionsSummary => ({
+  total: rows.length,
+  live: rows.filter((r) => r.instanceId).length,
+  last: rows.reduce((max, r) => Math.max(max, r.lastActivity ?? 0), 0) || undefined,
+});
 
 /** The workspace tier: a full-width, opaque, sticky band (it bleeds over the list wrapper's px-2 in AppSidebar). */
 const BAND = 'sticky top-0 z-10 -mx-2 flex h-8 items-center gap-1.5 border-y border-sidebar-border bg-sidebar-accent pr-3 pl-2';
@@ -79,11 +149,14 @@ function useSessionRows({ ctx, project, worktreeName, liveInstances, load }: {
 }) {
   useSignal(sessionsSignal);
   const key = placeKeyOf(project, worktreeName);
-  React.useEffect(() => { if (load) void ensureSessions(project, worktreeName); }, [load, project, worktreeName, ctx.m.cacheVersion]);
+  // While the text filter holds this place's list (under its current fingerprint) the tree need not fetch it again.
+  const covered = ctx.tf.active && searchCovers(key);
+  React.useEffect(() => { if (load && !covered) void ensureSessions(project, worktreeName); }, [load, covered, project, worktreeName, ctx.m.cacheVersion]);
   const status = sessionsStatus(key);
-  const owner = filterOwner(ctx.ui.filter);
-  const rows = mergeLive(sessionsCache.get(key) ?? [], liveInstances)
-    .filter((s) => (owner ? s.ownerSessionId === owner : ctx.ui.filter === 'hand' ? !s.conducted : true));
+  const narrowTo = ctx.tf.hits.get(key);
+  const narrowIds = narrowTo ? new Set(narrowTo.map((r) => r.sessionId)) : null;
+  const rows = scopeSessionRows(mergeLive(sessionsCache.get(key) ?? (ctx.tf.active ? heldRowsOf(key) : null) ?? [], liveInstances), ctx.ui.filter)
+    .filter((s) => !narrowIds || narrowIds.has(s.sessionId));
   const { normal, temp, conducted } = sessionSections(rows);
   // One visible group goes unlabelled and the summary names it; two or more label Temp and Conducted.
   const shown = [normal, temp, conducted].filter((g) => g.length > 0).length;
@@ -106,6 +179,7 @@ function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
       unread={ctx.m.unread.get(s.sessionId) ?? 0}
       showOwner={showOwner}
       ownerTitle={ctx.m.ownerTitle}
+      highlight={ctx.tf.active ? ctx.tf.tokens : undefined}
     />
   );
   const label = (kind: 'temp' | 'conducted', name: string, n: number) => (
@@ -152,12 +226,13 @@ function SessionsLabel({ summary, placeKey, noun }: { summary: SessionsSummary; 
 function SessionsGroup({ ctx, project, liveInstances, summary }: {
   ctx: Ctx; project: string; liveInstances: Instance[]; summary: SessionsSummary;
 }) {
-  const open = !ctx.ui.collapsedSessions.includes(project);
+  const forced = !!ctx.tf.match?.forced.sessions.has(project);
+  const open = openUnder(ctx.tf, `s:${project}`, forced, !ctx.ui.collapsedSessions.includes(project));
   const data = useSessionRows({ ctx, project, worktreeName: null, liveInstances, load: open });
   const name = `${data.noun} (${summary.total})${summary.live > 0 ? ` · ${summary.live} live` : ''}`;
   return (
     <div className={RAIL} data-project-sessions={project}>
-      <GroupToggle open={open} onToggle={() => setSessionsOpen(project, !open)} label={name}>
+      <GroupToggle open={open} onToggle={foldUnder(ctx.tf, `s:${project}`, forced, () => setSessionsOpen(project, !open))} label={name}>
         <SessionsLabel summary={summary} placeKey={data.key} noun={data.noun} />
       </GroupToggle>
       {open && <SessionRowsList ctx={ctx} project={project} worktreeName={null} data={data} showOwner />}
@@ -177,9 +252,12 @@ function SessionsMeta({ summary }: { summary: SessionsSummary }) {
 function WorktreeItem({ ctx, project, wt }: { ctx: Ctx; project: Project; wt: any }) {
   const key = placeKeyOf(project.name, wt.worktreeName);
   const live = ctx.m.byWorktree.get(key) ?? [];
-  const total = sessionsTotal({ key, liveInstances: live, summary: wt.sessions }, sessionsCache);
+  const narrowed = ctx.tf.hits.get(key);
+  const total = narrowed ? narrowed.length : sessionsTotal({ key, liveInstances: live, summary: wt.sessions }, sessionsCache);
   const own = worktreeOwnership(ctx.m.owners.get(key));
-  const open = !ctx.ui.collapsedSessions.includes(key);
+  const forced = !!ctx.tf.match?.forced.sessions.has(key);
+  const open = openUnder(ctx.tf, `s:${key}`, forced, !ctx.ui.collapsedSessions.includes(key));
+  const toggle = foldUnder(ctx.tf, `s:${key}`, forced, () => setSessionsOpen(key, !open));
   return (
     <li>
       <WorktreeHead
@@ -187,8 +265,9 @@ function WorktreeItem({ ctx, project, wt }: { ctx: Ctx; project: Project; wt: an
         wt={wt}
         owner={own.kind === 'single' ? own.owner : null}
         ownerTitle={ctx.m.ownerTitle}
-        chevron={total > 0 ? <Chevron open={open} label="Sessions" onToggle={() => setSessionsOpen(key, !open)} /> : <ChevronSpacer />}
+        chevron={total > 0 ? <Chevron open={open} label="Sessions" onToggle={toggle} /> : <ChevronSpacer />}
         menu={<WorktreeMenu project={project} worktree={wt.worktreeName} />}
+        highlight={ctx.tf.active ? ctx.tf.tokens : undefined}
       />
       {total > 0 && open && (
         <SessionsList
@@ -197,26 +276,25 @@ function WorktreeItem({ ctx, project, wt }: { ctx: Ctx; project: Project; wt: an
           worktreeName={wt.worktreeName}
           liveInstances={live}
           showOwner={own.kind !== 'single'}
-          summary={{ total, live: live.length, last: wt.sessions?.lastActivity }}
+          summary={narrowed ? hitSummary(narrowed) : { total, live: live.length, last: wt.sessions?.lastActivity }}
         />
       )}
     </li>
   );
 }
 
-function WorktreeGroup({ ctx, project, worktrees }: { ctx: Ctx; project: Project; worktrees: any[] }) {
+function WorktreeGroup({ ctx, project, worktrees, match }: { ctx: Ctx; project: Project; worktrees: any[]; match?: ProjectMatch }) {
   const owner = filterOwner(ctx.ui.filter);
+  const forced = !!ctx.tf.match?.forced.worktreeGroups.has(project.name);
   // A conductor filter force-opens the group without recording it as the user's choice.
-  const open = owner ? true : ctx.ui.expandedWorktrees.includes(project.name);
-  const listed = owner
-    ? worktrees.filter((wt) => ctx.m.owners.get(placeKeyOf(project.name, wt.worktreeName))?.has(owner))
-    : ctx.ui.filter === 'hand'
-      ? worktrees.filter((wt) => hasHandSession({ liveInstances: ctx.m.byWorktree.get(placeKeyOf(project.name, wt.worktreeName)) ?? [], summary: wt.sessions }))
-      : worktrees;
+  const open = owner ? true : openUnder(ctx.tf, `wt:${project.name}`, forced, ctx.ui.expandedWorktrees.includes(project.name));
+  const scoped = scopeWorktrees({ ...scopeOf(ctx.m, ctx.ui), project, worktrees });
+  const listed = match?.kind === 'narrowed' ? scoped.filter((wt) => match.worktrees.has(wt.worktreeName)) : scoped;
+  const toggle = foldUnder(ctx.tf, `wt:${project.name}`, forced, () => setWorktreesOpen(project.name, !open));
   return (
     <div className={RAIL} data-worktrees={project.name}>
-      <GroupToggle open={open} onToggle={() => { if (!owner) setWorktreesOpen(project.name, !open); }}>
-        Worktrees ({worktrees.length})
+      <GroupToggle open={open} onToggle={() => { if (!owner) toggle(); }}>
+        Worktrees ({ctx.tf.active ? listed.length : worktrees.length})
       </GroupToggle>
       {open && <ul className="space-y-px">{listed.map((wt) => <WorktreeItem key={wt.worktreeName} ctx={ctx} project={project} wt={wt} />)}</ul>}
     </div>
@@ -227,17 +305,14 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
   const direct = ctx.m.directByProject.get(p.name) ?? [];
   const worktrees: any[] = Array.isArray(p.worktrees) ? p.worktrees : [];
   const owner = filterOwner(ctx.ui.filter);
-  const total = sessionsTotal({ key: p.name, liveInstances: direct, summary: p.sessions }, sessionsCache);
-  let showSessions = total > 0;
-  let showWorktrees = worktrees.length > 0;
-  if (owner) {
-    showSessions = direct.some((i) => i.ownerSessionId === owner);
-    showWorktrees = worktrees.some((wt) => ctx.m.owners.get(placeKeyOf(p.name, wt.worktreeName))?.has(owner));
-  } else if (ctx.ui.filter === 'hand') {
-    showSessions = hasHandSession({ liveInstances: direct, summary: p.sessions });
-    showWorktrees = worktrees.some((wt) => hasHandSession({ liveInstances: ctx.m.byWorktree.get(placeKeyOf(p.name, wt.worktreeName)) ?? [], summary: wt.sessions }));
-  }
-  const summary = { total, live: direct.length, last: p.sessions?.lastActivity };
+  const pm = ctx.tf.match?.projects.get(p.name);
+  const narrowed = pm?.kind === 'narrowed' ? pm : null;
+  const mainHits = ctx.tf.hits.get(p.name);
+  const total = narrowed ? (mainHits?.length ?? 0) : sessionsTotal({ key: p.name, liveInstances: direct, summary: p.sessions }, sessionsCache);
+  const shown = scopeShowsMain({ ...scopeOf(ctx.m, ctx.ui), project: p, direct, total });
+  const showSessions = narrowed ? !!narrowed.main : shown.sessions;
+  const showWorktrees = narrowed ? narrowed.worktrees.size > 0 : shown.worktrees;
+  const summary = narrowed && mainHits ? hitSummary(mainHits) : { total, live: direct.length, last: p.sessions?.lastActivity };
   const allInstances = ctx.m.instances.filter((i) => i.project === p.name);
   return (
     <li data-project={p.name}>
@@ -246,47 +321,60 @@ export function ProjectItem({ ctx, project: p }: { ctx: Ctx; project: Project })
         liveCount={direct.length}
         meta={showSessions ? <SessionsMeta summary={summary} /> : null}
         menu={<ProjectMenu project={p} instanceCount={allInstances.length} />}
+        highlight={ctx.tf.active ? ctx.tf.tokens : undefined}
       />
       {showSessions && <SessionsGroup ctx={ctx} project={p.name} liveInstances={direct} summary={summary} />}
-      {!showSessions && worktrees.length === 0 && !owner && (
-        <div className="ml-2 py-0.5 text-xs text-muted-foreground/80 italic">No sessions yet · start one from ⋮</div>
+      {!showSessions && worktrees.length === 0 && !owner && !narrowed && (
+        <div className="ml-2 py-0.5 text-xs text-muted-foreground italic">No sessions yet · start one from ⋮</div>
       )}
-      {showWorktrees && <WorktreeGroup ctx={ctx} project={p} worktrees={worktrees} />}
+      {showWorktrees && <WorktreeGroup ctx={ctx} project={p} worktrees={worktrees} match={pm} />}
     </li>
   );
 }
 
 export function ProjectsList({ m }: { m: SidebarModel }) {
   const ui = useSidebarUi();
-  const ctx = { m, ui };
+  const tf = useProjectsTextFilter(m, ui);
+  const searching = useSearchPending();
+  const ctx = { m, ui, tf };
   if (m.projects.length === 0) {
     return <div className="px-3 py-6 text-center text-sm text-muted-foreground">No projects yet</div>;
   }
   const owner = filterOwner(ui.filter);
   const ownedProjects = new Set(owner ? chipsOf(owner, m.instances, m.spawns, m.registered).map((c) => c.project) : []);
-  const hasHand = (p: Project) =>
-    hasHandSession({ liveInstances: m.directByProject.get(p.name) ?? [], summary: p.sessions })
-    || (Array.isArray(p.worktrees) ? p.worktrees : []).some((wt: any) =>
-      hasHandSession({ liveInstances: m.byWorktree.get(placeKeyOf(p.name, wt.worktreeName)) ?? [], summary: wt.sessions }));
-  const visible = (p: Project) => (owner ? ownedProjects.has(p.name) : ui.filter === 'hand' ? hasHand(p) : true);
-  const { groups, unassigned } = groupProjects({ projects: m.projects, workspaces: m.workspaces, visible, filtering: !!ui.filter });
+  const scope = scopeOf(m, ui);
+  const visible = (p: Project) => (tf.match
+    ? tf.match.projects.has(p.name)
+    : scopeShowsProject({ ...scope, project: p, direct: m.directByProject.get(p.name) ?? [], ownedProjects }));
+  const { groups, unassigned } = groupProjects({
+    projects: m.projects, workspaces: m.workspaces, visible, filtering: !!ui.filter || tf.active,
+    keep: (w) => !ui.filter && !!tf.match?.workspaces.has(w),
+  });
+  const hl = tf.active ? tf.tokens : undefined;
   return (
     <div className="space-y-2" data-project-list>
+      {searching && tf.active && (
+        <div role="status" data-filter-pending className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
+          <LoaderCircleIcon className="size-3 animate-spin" /> Searching sessions…
+        </div>
+      )}
       {groups.map((g) => {
-        const open = ui.expandedWorkspaces.includes(g.workspace);
+        const forced = !!tf.match?.forced.workspaces.has(g.workspace);
+        const open = openUnder(tf, `ws:${g.workspace}`, forced, ui.expandedWorkspaces.includes(g.workspace));
+        const toggle = foldUnder(tf, `ws:${g.workspace}`, forced, () => setWorkspaceOpen(g.workspace, !open));
         return (
           <section key={g.workspace} data-workspace={g.workspace}>
             <div className={cn(BAND, 'group/row')} data-workspace-band={g.workspace}>
               <button
                 type="button"
                 aria-expanded={open}
-                onClick={() => setWorkspaceOpen(g.workspace, !open)}
+                onClick={toggle}
                 className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground/80 hover:text-foreground"
               >
                 <ChevronRightIcon className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
                 <LayersIcon className="size-3.5 shrink-0 text-muted-foreground" data-workspace-icon />
-                <span className="truncate text-xs font-semibold tracking-wider uppercase">{g.workspace}</span>
-                <span className="text-[11px] text-muted-foreground tabular-nums">({g.count})</span>
+                <span className="truncate text-xs font-semibold tracking-wider uppercase"><Highlight text={g.workspace} tokens={hl} /></span>
+                <span className="text-[11px] text-muted-foreground tabular-nums">({tf.active ? g.members.length : g.count})</span>
               </button>
               <IconAction label={`Edit workspace ${g.workspace}`} onClick={() => openWorkspaceDialog(g.workspace)} className="opacity-0 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
                 <PencilIcon className="size-3" />
@@ -312,9 +400,14 @@ export function ProjectsList({ m }: { m: SidebarModel }) {
           <ul className={groups.length > 0 ? BANDED_LIST : 'space-y-0.5'}>{unassigned.map((p) => <ProjectItem key={p.name} ctx={ctx} project={p} />)}</ul>
         </section>
       )}
-      {groups.length === 0 && unassigned.length === 0 && (
+      {groups.length === 0 && unassigned.length === 0 && (tf.active ? (
+        <div data-filter-empty className="flex flex-col items-center gap-2 px-3 py-4 text-center text-xs text-muted-foreground">
+          <span>No matches for '{tf.query.trim()}'</span>
+          <Button variant="outline" size="sm" onClick={clearQuery}>Clear filter</Button>
+        </div>
+      ) : (
         <div className="px-3 py-4 text-center text-xs text-muted-foreground">Nothing matches this filter</div>
-      )}
+      ))}
     </div>
   );
 }

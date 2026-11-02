@@ -18,6 +18,7 @@ import { openProjectRemoteDialog } from '@/features/dialogs/api';
 import { openCommits } from '@/features/views/api';
 import { dotState, type SessionItem } from './derive';
 import { useAgoTick } from './state';
+import { Highlight } from './Highlight';
 
 /** The owner bar: a 3px left bar in the conductor's colour. */
 export function ownerStyle(owner: string | null | undefined): React.CSSProperties | undefined {
@@ -147,9 +148,9 @@ export function rowName(label: string, status: string, stage: string | null, unr
   return [label, status, stage, unread > 0 ? `${unread} unread` : null].filter(Boolean).join(', ');
 }
 
-export function SessionRow({ session, projectName, worktreeName, activeId, unread, showOwner = false, showDelete = true, stage = null, ownerTitle }: {
+export function SessionRow({ session, projectName, worktreeName, activeId, unread, showOwner = false, showDelete = true, stage = null, ownerTitle, highlight }: {
   session: SessionItem; projectName: string; worktreeName: string | null; activeId: string | null; unread: number;
-  showOwner?: boolean; showDelete?: boolean; stage?: string | null; ownerTitle?: (sid: string) => string;
+  showOwner?: boolean; showDelete?: boolean; stage?: string | null; ownerTitle?: (sid: string) => string; highlight?: string[];
 }) {
   const label = sessionLabel(session);
   const status = session.instanceDisplayStatus ?? session.instanceStatus ?? 'offline';
@@ -193,7 +194,7 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
           <Dot status={status} awaitingWake={session.instanceAwaitingWake} waitingOnJob={session.instanceWaitingOnJob} />
           <span className="flex min-w-[2em] flex-1 flex-col">
             {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
-            <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}>{label}</span>
+            <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}><Highlight text={label} tokens={highlight} /></span>
             {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
           </span>
           <Ago ms={session.lastActivity} />
@@ -248,8 +249,8 @@ function worktreeTitle(ms: { ahead: number; behind: number }, base: string | und
 // ── Project row ──────────────────────────────────────────────────────────
 
 /** A project's sidebar row; `menu` is its ⋮, which the lens passes only where the project's full record resolves. */
-export function ProjectRow({ project: p, liveCount = 0, meta, menu }: {
-  project: Project; liveCount?: number; meta?: React.ReactNode; menu?: React.ReactNode;
+export function ProjectRow({ project: p, liveCount = 0, meta, menu, highlight }: {
+  project: Project; liveCount?: number; meta?: React.ReactNode; menu?: React.ReactNode; highlight?: string[];
 }) {
   const remote = !!p.system && p.system !== 'local';
   const unreachable = (p.systemUnreachable as string | null) || null;
@@ -267,7 +268,7 @@ export function ProjectRow({ project: p, liveCount = 0, meta, menu }: {
       ) : (
         <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground"><FolderIcon className="size-4" /></span>
       )}
-      <span className="min-w-0 flex-1 truncate text-sm font-medium" title={p.path}>{p.name}</span>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium" title={p.path}><Highlight text={p.name} tokens={highlight} /></span>
       {ms && ms.upstream && ((ms.ahead ?? 0) > 0 || (ms.behind ?? 0) > 0) && (
         <AheadBehind ahead={ms.ahead} behind={ms.behind} title={upstreamTitle(ms as any)} />
       )}
@@ -302,8 +303,8 @@ export function ProjectRow({ project: p, liveCount = 0, meta, menu }: {
 // ── Worktree head ────────────────────────────────────────────────────────
 
 /** A worktree's sidebar row; `menu` is its ⋮, which the lens passes only where the project lists the worktree. */
-export function WorktreeHead({ project, wt, owner = null, ownerTitle, dim = false, chevron, menu }: {
-  project: string; wt: Worktree; owner?: string | null; ownerTitle?: (sid: string) => string; dim?: boolean; chevron?: React.ReactNode; menu?: React.ReactNode;
+export function WorktreeHead({ project, wt, owner = null, ownerTitle, dim = false, chevron, menu, highlight }: {
+  project: string; wt: Worktree; owner?: string | null; ownerTitle?: (sid: string) => string; dim?: boolean; chevron?: React.ReactNode; menu?: React.ReactNode; highlight?: string[];
 }) {
   const ms = wt.mergeStatus;
   return (
@@ -318,7 +319,7 @@ export function WorktreeHead({ project, wt, owner = null, ownerTitle, dim = fals
         <GitBranchIcon className="size-3.5" />
       </IconAction>
       <span className="min-w-0 truncate font-mono text-xs" title={`${wt.branch ?? ''}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}`}>
-        {wt.worktreeName}
+        <Highlight text={wt.worktreeName} tokens={highlight} />
       </span>
       {ms && <AheadBehind ahead={ms.ahead} behind={ms.behind} title={worktreeTitle(ms, wt.baseBranch)} />}
       {wt.locked === true && (

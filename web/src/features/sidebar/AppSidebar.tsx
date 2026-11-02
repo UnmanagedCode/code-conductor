@@ -5,7 +5,6 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -21,11 +20,13 @@ import { openCosts, openSettings } from '@/features/views/api';
 import { AppSwitcher } from '@/features/views/AppSwitcher';
 import { NotifyToggle } from '@/features/notifications/NotifyToggle';
 import { cn } from '@/lib/utils';
+import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { RESIZE_HANDLE_CLASS, useResizableWidth } from '@/lib/useResizableWidth';
-import { filterOwner, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH_STORAGE_KEY } from './derive';
-import { lensScrollOf, setFilter, setLensScroll, useSidebarUi } from './state';
+import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH_STORAGE_KEY } from './derive';
+import { lensScrollOf, setLensScroll } from './state';
 import { useSidebarModel } from './useSidebarModel';
-import { Hint, OWNER_BAR, ownerStyle } from './rows';
+import { Hint } from './rows';
+import { FilterBar, useSlashToFocus } from './FilterBar';
 import { Strip } from './Strip';
 import { ProjectsList } from './ProjectsList';
 import { ConductorsList } from './ConductorsList';
@@ -35,6 +36,8 @@ import { scrollActiveIntoView } from './reveal';
 // Side-effect import: loading reveal installs its selection subscriptions, whether or not a binding above stays used.
 import './reveal';
 import './filterFallback';
+// Side-effect import: the session-list loader the text filter drives.
+import './sessionSearch';
 
 function HeaderButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -52,25 +55,6 @@ const TITLE = <><Wordmark className="mb-0.5 block h-3 w-auto" /><span className=
 function liveSummary(n: number) {
   if (n === 0) return 'All quiet';
   return `${n} agent${n === 1 ? '' : 's'} playing`;
-}
-
-function FilterRow({ m }: { m: ReturnType<typeof useSidebarModel> }) {
-  const ui = useSidebarUi();
-  const owner = filterOwner(ui.filter);
-  return (
-    <div className={cn('mx-3 mt-2 rounded-md', owner && OWNER_BAR, owner && 'pl-[3px]')} style={ownerStyle(owner)} data-filter={ui.filter || 'all'}>
-      <Select value={ui.filter || 'all'} onValueChange={(v) => setFilter(v === 'all' ? '' : v)}>
-        <SelectTrigger size="sm" className="w-full bg-background/60 text-xs" aria-label="Filter by conductor">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {m.options.map((o) => (
-            <SelectItem key={o.value || 'all'} value={o.value || 'all'} className="text-xs">{o.label}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
 }
 
 export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
@@ -92,6 +76,10 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
   const { width, live, handleProps } = useResizableWidth({
     storageKey: SIDEBAR_WIDTH_STORAGE_KEY, min: SIDEBAR_MIN_WIDTH, max: SIDEBAR_MAX_WIDTH, defaultWidth: SIDEBAR_DEFAULT_WIDTH, edge: 'right', label: 'Resize sidebar',
   });
+  // The desktop copy is hidden below `md` and never takes `/`; the drawer copy exists only while the drawer is open.
+  const wide = useMediaQuery(WIDE_QUERY);
+  const filterActive = mobile || wide;
+  useSlashToFocus(filterActive, rootRef);
   const liveCount = m.instances.filter((i) => i.status === 'turn' || i.displayStatus === 'running').length;
 
   const go = (fn: () => void) => () => { closeSidebarOnMobile(); fn(); };
@@ -167,7 +155,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
         </DropdownMenu>
       </div>
 
-      {lens === 'projects' && <FilterRow m={m} />}
+      {lens === 'projects' && <FilterBar m={m} active={filterActive} />}
 
       <div ref={bodyRef} onScroll={(e) => setLensScroll(lens, e.currentTarget.scrollTop)} className="min-h-24 flex-1 overflow-y-auto overscroll-contain pb-3" data-sidebar-body>
         <div className="mt-2 px-2">
