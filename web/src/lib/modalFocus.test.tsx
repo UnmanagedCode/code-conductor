@@ -145,3 +145,33 @@ describe('the opening focus of Dialog and Sheet', () => {
     expect(document.activeElement?.textContent).toBe('Archive');
   });
 });
+
+describe('the focus return of a modal that mounts already open', () => {
+  // Invariant: the opener is the control focused when the modal mounts, so closing returns focus to it, not to the page.
+  it('a dialog that mounts already open returns focus on close to the control focused when it mounted', async () => {
+    pointer();
+    function Host({ mounted, open }: { mounted: boolean; open: boolean }) {
+      return (
+        <>
+          <button data-testid="opener">Opener</button>
+          {mounted && (
+            <Dialog open={open}>
+              <DialogContent><DialogTitle>Late</DialogTitle><DialogDescription>Mounted open</DialogDescription><button>OK</button></DialogContent>
+            </Dialog>
+          )}
+        </>
+      );
+    }
+    const settle = () => act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+    const r = render(<Host mounted={false} open />);
+    const opener = document.querySelector<HTMLElement>('[data-testid="opener"]')!;
+    await act(async () => { opener.focus(); });
+    await act(async () => { r.rerender(<Host mounted open />); });
+    await settle();
+    expect(document.querySelector('[role="dialog"]'), 'fixture check: the dialog is open').not.toBeNull();
+    await act(async () => { r.rerender(<Host mounted open={false} />); });
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+});

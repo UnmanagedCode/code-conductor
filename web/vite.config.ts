@@ -22,16 +22,16 @@ export default defineConfig({
   build: {
     outDir: path.join(here, 'dist'),
     emptyOutDir: true,
-    // Served from the local machine, with the full-page views already in lazy
-    // chunks; the entry (React + Radix + the session view) is past Vite's default
-    // warning size, and every boot-time rebuild would print the warning.
+    // Served from the local machine, with the full-page views and the dialogs in
+    // lazy chunks; the entry (React + Radix + the session view) is past Vite's
+    // default warning size, and every boot-time rebuild would print the warning.
     chunkSizeWarningLimit: 800,
     rolldownOptions: {
       output: {
         codeSplitting: {
-          // The logo's art data (the outlined wordmark above all) is large, and the
-          // entry chunk is at its budget; the logo gets its own chunk, still
-          // statically imported, so the page preloads it with the entry.
+          // The logo's art data (the outlined wordmark above all) is large; the
+          // logo gets its own chunk, still statically imported, so the page
+          // preloads it with the entry.
           groups: [{ name: 'logo-art', test: /[\\/]components[\\/]logo[\\/]logoArt\.ts$/ }],
         },
       },

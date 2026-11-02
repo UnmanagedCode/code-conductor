@@ -37,6 +37,21 @@ const iconLinks = (html: string) => [...html.matchAll(/<link\b[^>]*\brel="(?:ico
   href: tag.match(/\bhref="([^"]*)"/)?.[1], sizes: tag.match(/\bsizes="([^"]*)"/)?.[1] ?? null,
 }));
 
+/**
+ * The chunks `entry` reaches by static import, itself included: `from"./x.js"` and bare `import"./x.js"` edges,
+ * never the dynamic `import("./x.js")`. `read` returns a chunk's text by file name.
+ */
+function staticClosure(entry: string, read: (file: string) => string): Set<string> {
+  const closure = new Set<string>();
+  const visit = (file: string) => {
+    if (closure.has(file)) return;
+    closure.add(file);
+    for (const m of read(file).matchAll(/(?:\bfrom\s*|\bimport\s*)["']\.\/([^"']+\.js)["']/g)) visit(m[1]!);
+  };
+  visit(entry);
+  return closure;
+}
+
 beforeAll(async () => {
   first = await ensureWebBuild({ log, distDir });
 }, 120_000);
@@ -90,6 +105,20 @@ describe('ensureWebBuild', () => {
     expect(log.log.mock.calls.map((c) => String(c[0])).filter((w) => /chunks are larger than/.test(w))).toEqual([]);
   });
 
+  it('the entry and the chunks it statically imports carry no dialog code; a lazy chunk does', () => {
+    // Invariant: the dialogs stay out of the boot JS. `data-dialog` is the dialogs' e2e hook and occurs only in dialog modules.
+    const assets = path.join(distDir, 'assets');
+    const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
+    const entry = html.match(/<script\b[^>]*\btype="module"[^>]*\bsrc="\/assets\/([^"]+\.js)"/)?.[1];
+    expect(entry, 'fixture check: index.html loads a module entry').toBeTruthy();
+    const closure = staticClosure(entry!, (f) => fs.readFileSync(path.join(assets, f), 'utf8'));
+    const hasDialog = (f: string) => fs.readFileSync(path.join(assets, f), 'utf8').includes('data-dialog');
+    expect([...closure].filter(hasDialog)).toEqual([]);
+    // Positive control: without a chunk that holds the marker, a minifier renaming it would make the check vacuous.
+    const outside = fs.readdirSync(assets).filter((f) => f.endsWith('.js') && !closure.has(f));
+    expect(outside.filter(hasDialog).length, 'fixture check: a lazy chunk carries the dialogs').toBeGreaterThan(0);
+  });
+
   it('every URL in index.html is root-absolute: the entry chunk, the manifest and every icon link', () => {
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
     expect(html).toMatch(/src="\/assets\/[^"]+\.js"/);
@@ -138,6 +167,32 @@ describe('ensureWebBuild', () => {
     const purposes = manifest.icons.flatMap((i: { purpose?: string }) => (i.purpose ?? 'any').split(/\s+/));
     expect(purposes).toEqual(expect.arrayContaining(['any', 'maskable']));
     expect(manifest.icons.filter((i: { src: string }) => i.src.startsWith('/'))).toEqual([]);
+  });
+});
+
+describe('staticClosure', () => {
+  // Invariant: the boot closure follows `from"./x.js"` and bare `import"./x.js"` edges and skips dynamic `import("./x.js")`, so a dialog marker reachable only through a bare edge is still found.
+  const chunks: Record<string, string> = {
+    'entry.js': 'import{a}from"./a.js";import"./bare.js";const L=()=>import("./lazy.js");',
+    'a.js': 'export const a=1;',
+    'bare.js': 'import"./deep.js";',
+    'deep.js': 'const x="data-dialog";',
+    'lazy.js': 'const y="data-dialog";',
+  };
+  const read = (f: string) => chunks[f]!;
+
+  it('follows from-edges and bare import edges transitively, and skips dynamic imports', () => {
+    expect([...staticClosure('entry.js', read)].sort()).toEqual(['a.js', 'bare.js', 'deep.js', 'entry.js']);
+  });
+
+  it('a marker reachable only through a bare import edge is in the closure', () => {
+    const marked = [...staticClosure('entry.js', read)].filter((f) => read(f).includes('data-dialog'));
+    expect(marked).toEqual(['deep.js']);
+  });
+
+  it('a cycle between chunks terminates', () => {
+    const cyc: Record<string, string> = { 'a.js': 'import"./b.js";', 'b.js': 'import{x}from"./a.js";' };
+    expect([...staticClosure('a.js', (f) => cyc[f]!)].sort()).toEqual(['a.js', 'b.js']);
   });
 });
 

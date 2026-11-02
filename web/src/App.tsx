@@ -12,7 +12,7 @@ import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
 import { dockModeStore } from '@/features/views/dock';
-import { DialogsHost } from '@/features/dialogs/DialogsHost';
+import { LazyDialogsHost } from '@/features/dialogs/LazyDialogsHost';
 import { focusContent } from '@/lib/modalFocus';
 
 // Full-page views load on first use; the session view is the app's landing page.
@@ -73,7 +73,7 @@ export function App() {
           <PluginView />
         </div>
       </div>
-      <DialogsHost />
+      <LazyDialogsHost />
       <ConfirmHost />
       <ToastHost theme={theme} position="top-right" offset={TOAST_OFFSET_DESKTOP} mobileOffset={TOAST_OFFSET} richColors closeButton />
     </TooltipProvider>
