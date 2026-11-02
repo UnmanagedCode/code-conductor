@@ -95,11 +95,11 @@ describe('LazyDialogsHost', () => {
   });
 
   it('a failed load keeps the app up: an open before or after the failure is closed with an error toast', async () => {
-    // Invariant: a chunk that fails to load is logged once, leaves the app mounted, closes any open slot (before or after the failure) with an error toast, and is not retried.
+    // Invariant: a chunk that fails to load (under StrictMode's double effect) is logged once, leaves the app mounted, closes any open slot (before or after the failure) with exactly one error toast each, and is not retried.
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const d = deferred();
     const Host = lazyDialogsHost(d.load);
-    render(<><p>app</p><Host /></>);
+    render(<StrictMode><p>app</p><Host /></StrictMode>);
     act(() => openRenameDialog('s1', 'Old title'));
     await d.fail(new Error('chunk 404'));
     await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
