@@ -95,8 +95,8 @@ export function sessionsStatus(key: string): 'ready' | 'loading' | 'error' | 'id
 }
 export const sessionsError = (key: string) => errors.get(key) ?? null;
 
-/** Fetch a place's session list once; concurrent calls coalesce. `signal` aborts the request this call starts (a coalesced call's own signal is not used). */
-export function ensureSessions(project: string, worktree: string | null, signal?: AbortSignal): Promise<void> {
+/** Fetch a place's session list once; concurrent calls coalesce. */
+export function ensureSessions(project: string, worktree: string | null): Promise<void> {
   const key = placeKeyOf(project, worktree);
   if (sessionsCache.has(key)) return Promise.resolve();
   const pending = loading.get(key);
@@ -105,7 +105,7 @@ export function ensureSessions(project: string, worktree: string | null, signal?
   if (errors.has(key)) return Promise.resolve();
   const p = (async () => {
     try {
-      const rows = await (signal ? loadSessions(project, worktree, signal) : loadSessions(project, worktree));
+      const rows = await loadSessions(project, worktree);
       sessionsCache.set(key, Array.isArray(rows) ? rows : []);
     } catch (e: any) {
       errors.set(key, e?.message ?? String(e));

@@ -43,11 +43,11 @@ export async function promoteSession({ projectName, instanceId, preview }: { pro
   }
 }
 
-export function loadSessions(projectName: string, worktreeName?: string | null, signal?: AbortSignal) {
+export function loadSessions(projectName: string, worktreeName?: string | null) {
   const url = worktreeName
     ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions`
     : `/api/projects/${encodeURIComponent(projectName)}/sessions`;
-  return apiFetch(url, signal ? { signal } : undefined);
+  return apiFetch(url);
 }
 
 export async function resumeSession({

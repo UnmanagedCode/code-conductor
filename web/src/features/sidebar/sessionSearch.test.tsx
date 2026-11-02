@@ -304,7 +304,8 @@ describe('the session loader', () => {
     const names = placeNames(5);
     seedPlaces(names);
     const hung = names.slice(0, 4);
-    const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => (hung.includes(n) ? held<RouteAnswer>().answer : { json: [] })])));
+    const gates = new Map(hung.map((n) => [n, held<RouteAnswer>()]));
+    const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => (gates.has(n) ? gates.get(n)!.answer : { json: [] })])));
     renderSidebar();
     await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(urls(calls)).toEqual(hung.map((n) => `/api/projects/${n}/sessions`));
@@ -316,6 +317,9 @@ describe('the session loader', () => {
     await flush(); await flush();
     expect(urls(calls)).toContain('/api/projects/p5/sessions');
     expect(document.querySelector('[data-filter-pending]')).toBeNull();
+    // The hung requests are never cancelled, so end them here: the cache's in-flight latch outlives the test.
+    for (const g of gates.values()) g.release({ json: [] });
+    await flush(); await flush();
   });
 
   it('lets the new search record a place whose load from an ended search settles into it', async () => {
@@ -374,5 +378,64 @@ describe('the session loader', () => {
     await typeFilter('x');
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS - 1); });
     expect(document.querySelector('[data-filter-pending]')).toBeNull();
+  });
+
+  it('releasing a slot cancels nothing and latches no error: a group that coalesced onto the request gets its real result', async () => {
+    // Pins: the loader's timeout only stops counting the request; an open group sharing it shows Loading, never an error, then the real rows.
+    seedPlaces(['p1']);
+    const gate = held<RouteAnswer>();
+    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => gate.answer });
+    renderSidebar();
+    await typeFilter('p1'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(sessionGets(calls)).toHaveLength(1);
+    await act(async () => { sessionsToggleOf('p1')!.click(); }); // the user opens the group: its load coalesces onto the loader's
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
+    await flush(); await flush();
+    expect(el('[data-sessions="p1"]').textContent).toContain('Loading');
+    expect(document.body.textContent).not.toContain("Couldn't load");
+    gate.release({ json: [disk('d-1', 'one')] });
+    await flush(); await flush();
+    expect(rowIds('p1')).toEqual(['d-1']);
+    expect(document.body.textContent).not.toContain("Couldn't load");
+    expect(sessionGets(calls)).toHaveLength(1);
+  });
+
+  it('uses the rows of a request that settles after its slot was released, with no extra request', async () => {
+    // Pins: a late settle after release still lands: the place matches once its rows arrive, and nothing is fetched again.
+    seedPlaces(['p1']);
+    const gate = held<RouteAnswer>();
+    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => gate.answer });
+    renderSidebar();
+    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
+    await flush(); await flush();
+    expect(document.querySelector('[data-filter-pending]')).toBeNull();
+    expect(rowIds('p1')).toEqual([]);
+    gate.release({ json: [disk('d-1', 'alpha one')] });
+    await flush(); await flush();
+    expect(rowIds('p1')).toEqual(['d-1']);
+    expect(sessionGets(calls)).toHaveLength(1);
+  });
+
+  it('a late settle after release frees no second slot: counted outstanding requests stay within the cap', async () => {
+    // Pins: releasing and then settling a request frees its slot once, so queued loads never run more than the cap at a time.
+    const names = placeNames(10);
+    seedPlaces(names);
+    const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
+    const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
+    renderSidebar();
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
+    await flush(); await flush();
+    expect(urls(calls)).toEqual(names.slice(0, 8).map((n) => `/api/projects/${n}/sessions`)); // p1..p4 released, p5..p8 counted
+    for (const n of ['p1', 'p2']) gates.get(n)!.release({ json: [] }); // late settles of released requests
+    await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(8);
+    gates.get('p5')!.release({ json: [] });
+    await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(9);
+    for (const g of gates.values()) g.release({ json: [] });
+    await flush(); await flush(); await flush();
   });
 });

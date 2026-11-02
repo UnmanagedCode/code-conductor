@@ -15,9 +15,10 @@ import { tokensOf } from './textFilter';
 
 export const SESSION_SEARCH_DEBOUNCE_MS = 250;
 export const SESSION_SEARCH_CONCURRENCY = 4;
-/** A loader request still running after this long is aborted and its slot freed. */
+/** A loader request still unsettled after this long stops counting toward the cap; the request itself keeps running. */
 export const SESSION_SEARCH_TIMEOUT_MS = 30_000;
 
+type Request = { mine: number };
 export type PlaceRef = { project: string; worktree: string | null; key: string; fp: string };
 type Summary = { count?: number; handCount?: number; lastActivity?: number } | undefined;
 
@@ -50,7 +51,8 @@ export function planLoads({ projects, filter, attempted, skip = () => false }: {
 const held = new Map<string, { fp: string; rows: any[] }>();
 const attempted = new Map<string, string>();
 let queue: PlaceRef[] = [];
-const inFlight = new Set<string>();
+/** Requests the loader started and still counts toward the cap, by place key. A request is dropped on settling or on its timeout. */
+const inFlight = new Map<string, Request>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 /** True once the debounce has fired in this search session. */
 let started = false;
@@ -92,28 +94,41 @@ function pump() {
   while (inFlight.size < SESSION_SEARCH_CONCURRENCY && queue.length > 0) {
     const place = queue.shift()!;
     if (inFlight.has(place.key)) continue;
-    inFlight.add(place.key);
-    const mine = epoch;
-    // Bounded: a request that never settles (a hung server) must not hold its slot for every later search.
-    const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(), SESSION_SEARCH_TIMEOUT_MS);
-    const timedOut = new Promise<void>((resolve) => abort.signal.addEventListener('abort', () => resolve(), { once: true }));
-    void Promise.race([ensureSessions(place.project, place.worktree, abort.signal), timedOut]).then(() => {
+    const request: Request = { mine: epoch };
+    inFlight.set(place.key, request);
+    // Not aborted: the request keeps running and lands in the cache through `ensureSessions`; the loader only stops counting it.
+    const timeout = setTimeout(() => release(place, request), SESSION_SEARCH_TIMEOUT_MS);
+    void ensureSessions(place.project, place.worktree).then(() => {
       clearTimeout(timeout);
-      settle(place, mine);
+      settle(place, request);
     });
   }
   updatePending();
 }
 
-/** `place.fp` is the fingerprint the load started under; `mine` the search session that started it. */
-function settle(place: PlaceRef, mine: number) {
+/** Frees `request`'s slot if it still holds it; false when it was already released. */
+function free(place: PlaceRef, request: Request) {
+  if (inFlight.get(place.key) !== request) return false;
   inFlight.delete(place.key);
+  return true;
+}
+
+/** A request unsettled past the timeout: stop counting it, treat its place as attempted, and let the queue move on. */
+function release(place: PlaceRef, request: Request) {
+  if (!free(place, request)) return;
+  attempted.set(place.key, place.fp);
+  if (active() && started) replan();
+  else pump();
+}
+
+/** `place.fp` is the fingerprint the load started under; `request.mine` the search session that started it. A settle after its release only holds rows. */
+function settle(place: PlaceRef, request: Request) {
+  free(place, request);
   if (currentFp(place.key) !== place.fp) {
     // The place changed while its load was in flight, so what it returned may predate the change: refetch rather than hold it.
     attempted.delete(place.key);
     invalidateSessions(place.key);
-  } else if (mine === epoch) {
+  } else if (request.mine === epoch) {
     const rows = sessionsCache.get(place.key);
     if (rows) held.set(place.key, { fp: place.fp, rows });
     attempted.set(place.key, place.fp);
@@ -135,7 +150,7 @@ function endSession() {
   timer = null;
   started = false;
   queue = [];
-  // `inFlight` stays: those requests are still outstanding and keep their slots until they settle.
+  // `inFlight` stays: those requests are still outstanding and keep their slots until they settle or time out.
   held.clear();
   attempted.clear();
   searchStore.set((s) => ({ pending: false, version: s.version + 1 }));
@@ -158,6 +173,7 @@ function onQueryChange() {
 /** Forgets every search session (tests). */
 export function resetSessionSearch() {
   endSession();
+  inFlight.clear();
   prevQuery = '';
   fpCache = null;
 }
