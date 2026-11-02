@@ -29,12 +29,8 @@ COPY setup-user.sh /tmp/setup-user.sh
 RUN sh /tmp/setup-user.sh && rm /tmp/setup-user.sh
 
 # The claude CLI is needed at session-spawn time; install it into the image so
-# containers don't have to. Its npm global prefix belongs to CC_UID/CC_GID:
-# `claude update` and the CLI's auto-updater reinstall through `npm install -g`
-# into `npm -g config get prefix` and refuse when that prefix is not writable.
-# ENV, not a global npmrc: sudo's env_reset drops it, so root's npm under sudo
-# keeps /usr/local and cannot write root-owned files into this prefix. `docker
-# exec -u root` keeps the image env and can: root must not run `npm -g` here.
+# containers don't have to. Its npm global prefix is owned by CC_UID/CC_GID, so
+# `claude update` and the auto-updater can reinstall it without sudo.
 ENV NPM_CONFIG_PREFIX=/opt/npm-global
 ENV PATH=${NPM_CONFIG_PREFIX}/bin:${PATH}
 RUN install -d -o "$USER_UID" -g "$USER_GID" "$NPM_CONFIG_PREFIX" \
