@@ -7,6 +7,7 @@ import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { peekTaskTracker, trackerSignal } from '@/app/trackers';
 import { selectInstance, send } from '@/app/controller';
+import { stageText } from '@shared/conductors';
 import { runLabel, waitingOn } from '@shared/needsYou';
 import { readablePrompt } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
@@ -84,7 +85,7 @@ export function SubagentPanel({ inst }: { inst: Instance }) {
                     (awaiting || s === 'turn' || s === 'running') && 'animate-spin text-primary',
                     s === 'idle' && 'text-success', s === 'crashed' && 'text-destructive', s === 'exited' && 'text-muted-foreground')} />
                   <span className="min-w-0 flex-1 truncate">{workerLabel(w)}</span>
-                  {w.playbook && w.stage && <span className="shrink-0 rounded bg-plan/12 px-1.5 text-[11px] text-plan" title={`playbook ${w.playbook}, stage ${w.stage}`}>{w.playbook} · {w.stage}</span>}
+                  {w.playbook && w.stage && <span className="shrink-0 rounded bg-plan/12 px-1.5 text-[11px] text-plan" title={`playbook ${w.playbook}, stage ${w.stage}`}>{stageText(w)}</span>}
                 </button>
               </li>
             );

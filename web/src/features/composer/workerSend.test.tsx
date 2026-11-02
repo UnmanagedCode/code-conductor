@@ -57,6 +57,12 @@ describe('placeholder', () => {
     expect(turn).toContain('steer');
   });
 
+  it('a section lead\'s composer reads as its lead\'s worker', () => {
+    // Invariant: a conducted conductor-project session names its lead in the placeholder like any owned worker.
+    mount({ ...f.c2, conducted: true, ownerSessionId: C1 });
+    expect(box().placeholder).toBe(`Message ${f.c2.title} · worker of ${C1_LABEL}…`);
+  });
+
   it('WU and the unchanged sessions', () => {
     const { unmount } = mount(f.wu);
     expect(box().placeholder).toContain('Wunk');

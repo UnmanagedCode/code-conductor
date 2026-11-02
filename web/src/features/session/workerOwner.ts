@@ -1,4 +1,4 @@
-// Who owns a conducted worker, as the web UI can tell it: the header's owner chip and Alt+ArrowUp,
+// Who owns a conducted worker (a section lead included), as the web UI can tell it: the header's owner chip and Alt+ArrowUp,
 // and the composer's accent, placeholder and first-send check, all read one resolution.
 import { useMemo } from 'react';
 import { useStore } from '@/state/createStore';
@@ -19,7 +19,7 @@ export type WorkerOwner =
 const NONE: WorkerOwner = { kind: 'none' };
 
 export function workerOwnerOf(inst: Instance, { instances, conductRows }: { instances: readonly Instance[]; conductRows: readonly any[] }): WorkerOwner {
-  if (!inst.conducted || inst.project === CONDUCT_PROJECT) return NONE;
+  if (!inst.conducted) return NONE;
   const sessionId = inst.ownerSessionId;
   if (!sessionId) return { kind: 'unknown' };
   const conductors = deriveConductors({ conductRows, instances });

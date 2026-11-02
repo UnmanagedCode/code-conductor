@@ -241,3 +241,10 @@ test('held → Waiting → ask cleared emits one waiting and no finished', () =>
   assert.deepEqual(kinds(t.observe([cond('C', ask)])), ['waiting:C']);
   assert.deepEqual(t.observe([cond('C', { liveTurnEnds: 2, liveAsks: 1 })]), []);
 });
+
+// Invariant: a section lead entering Finished raises no transition; the lead does.
+test('a section lead finishing a turn notifies nothing; its lead does', () => {
+  const sl = (o = {}) => cond('SL', { conducted: true, ownerSessionId: 'L', ...o });
+  const t = seen([cond('L', { status: 'turn' }), sl({ status: 'turn' })]);
+  assert.deepEqual(kinds(t.observe([cond('L', { liveTurnEnds: 1 }), sl({ liveTurnEnds: 1 })])), ['finished:L']);
+});

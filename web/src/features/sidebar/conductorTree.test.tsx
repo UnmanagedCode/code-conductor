@@ -4,7 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { CLOSE_TITLES } from '@shared/closeAction';
-import { blockOf, conductor, el, hand, inactiveGroup, proj, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
+import { blockOf, conductor, el, hand, inactiveGroup, proj, sectionLeadFleet, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
 import { pickProjectMenuItem, pickWorktreeMenuItem } from '@/test/rowMenu';
 
 const selectInstance = vi.fn();
@@ -555,5 +555,62 @@ describe('row menus in the conductor tree', () => {
     await settle();
     fireEvent.click(projectRowIn(expand('A'), 'p').querySelector('[data-system-pill]') as HTMLElement);
     expect(dialogStore.get().projectRemote).toEqual({ project: p });
+  });
+});
+
+describe('section leads', () => {
+  const setup = async () => {
+    seed(sectionLeadFleet());
+    renderSidebar();
+    await settle();
+  };
+
+  it('the Conductors tab\'s top-level blocks are exactly the non-conducted conductors', async () => {
+    // Invariant: a section lead (conducted, in .conduct) gets no block of its own, and its disk row makes no Inactive group.
+    await setup();
+    const sids = [...document.querySelectorAll('[data-conductor-list] [data-conductor]')].map((e) => e.getAttribute('data-conductor'));
+    expect(sids).toEqual(['L', 'H']);
+    expect(blockOf('SL')).toBeNull();
+    expect(inactiveGroup()).toBeNull();
+  });
+
+  it('the section lead is reachable as an ordinary worker row in its lead\'s tree', async () => {
+    // Invariant: the section lead is a worker row under the lead's .conduct group that opens its session and has no workers caret.
+    await setup();
+    const tree = expand('L');
+    const row = projectItem(tree, '.conduct')!.querySelector('[data-session-row="SL"]') as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(row.querySelector('[data-row-open]')).not.toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Show workers' })).toBeNull();
+    fireEvent.click(row.querySelector('[data-row]') as HTMLElement);
+    expect(selectInstance.mock.calls[0][0]).toBe('i-SL');
+  });
+
+  it('the section lead\'s own worker stays reachable in the lead\'s tree', async () => {
+    // Invariant: workers carrying the root owner sit under their own projects in the lead's tree, a section lead's included.
+    await setup();
+    const tree = expand('L');
+    expect(workerRows(projectItem(tree, 'beta')!)).toContain('SW');
+    expect(workerRows(projectItem(tree, 'alpha')!)).toContain('LW');
+  });
+
+  it('the .conduct group heading reads "Section leads", never the raw project', async () => {
+    // Invariant: the heading over a lead's section leads is "Section leads", with no .conduct text and no commit-history action.
+    await setup();
+    const tree = expand('L');
+    expect((tree.querySelector('[data-project-row="alpha"]') as HTMLElement).textContent).toBe('alpha');
+    const head = tree.querySelector('[data-project-row=".conduct"]') as HTMLElement;
+    expect(head.textContent).toBe('Section leads');
+    expect(head.textContent).not.toContain('.conduct');
+    expect(within(head).queryByRole('button', { name: 'Commit history' })).toBeNull();
+  });
+
+  it('the subtitle shows an equal playbook and stage once, in the row and its accessible name', async () => {
+    // Invariant: a section lead's row reads `section-lead` once in its subtitle and in the open button's aria-label.
+    await setup();
+    const tree = expand('L');
+    const row = tree.querySelector('[data-session-row="SL"]') as HTMLElement;
+    expect(row.querySelector('[data-stage]')?.textContent).toBe('section-lead');
+    expect((row.querySelector('[data-row-open]') as HTMLElement).getAttribute('aria-label')!.split('section-lead').length).toBe(2);
   });
 });

@@ -301,3 +301,17 @@ test('a non-idle session with waitingOnJob never reads "on a job"', () => {
   assert.equal(N.needsYouTitle(e({ awaitingUser: 'plan', awaitingUserSource: 'tool' })), 'waiting on you (plan approval) · on a job');
   assert.equal(N.stripGroupOf({ live: true, status: 'idle', awaitingWake: false, waitingOnJob: true, awaitingUser: null }), 'running');
 });
+
+// Invariant: the strip population excludes a section lead in every run state and keeps the lead and a hand session.
+test('a section lead is in no strip group in any run state; the lead and a hand session are', () => {
+  for (const status of ['idle', 'turn']) {
+    const g = strip([
+      cond('L'),
+      handInst('HS', { status: 'turn' }),
+      cond('SL', { conducted: true, ownerSessionId: 'L', status }),
+    ]);
+    assert.deepEqual(groupOf(g, 'SL'), [], `section lead (${status}) is listed nowhere`);
+    assert.deepEqual(groupOf(g, 'L').length, 1, 'the lead is listed');
+    assert.deepEqual(groupOf(g, 'HS').length, 1, 'the hand session is listed');
+  }
+});

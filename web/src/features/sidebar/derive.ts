@@ -1,7 +1,7 @@
 // Pure derivations behind the sidebar tree: merging disk session lists with
 // live instances, workspace grouping, the Projects-lens filter, and the
 // reveal-on-select target. No React, no DOM.
-import { CONDUCT_PROJECT, conductorChips, hasSessionId, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
+import { conductorChips, hasSessionId, isTopLevelConductor, ownerLabel, sessionFromInstance, workersOf, isLiveStatus } from '@shared/conductors';
 import type { ConductorsSplit, SpawnedProject } from '@shared/conductors';
 import type { Instance, Project, Worktree } from '@/state/types';
 
@@ -233,7 +233,7 @@ export function revealTarget({ inst, projects, conductors, filter }: {
   inst: Instance; projects: Project[]; conductors: ConductorsSplit; filter: Filter;
 }): RevealTarget {
   const t: RevealTarget = { workspace: null, worktreesOf: null, sessionsKey: null, conductor: null, inactive: false, filter: null };
-  const isConductor = inst.project === CONDUCT_PROJECT;
+  const isConductor = isTopLevelConductor(inst);
   const conductorSid = isConductor ? inst.sessionId : inst.ownerSessionId;
   const inInactive = conductors.inactive.some((c) => c.sessionId === conductorSid);
   if (conductorSid && (inInactive || conductors.live.some((c) => c.sessionId === conductorSid))) {

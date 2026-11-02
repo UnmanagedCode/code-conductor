@@ -138,3 +138,29 @@ export const stripLabelOf = (sid: string) => stripEntryOf(sid).querySelector('[d
 /** The buttons in a strip entry's row other than the entry itself: its × and nothing else. */
 export const stripClosesOf = (sid: string) => [...el(`[data-strip-entry="${sid}"]`).querySelectorAll('button')].filter((b) => b !== stripEntryOf(sid));
 export const stripBadgeOf = (sid: string) => stripEntryOf(sid).querySelector('[data-resume-badge]') as HTMLElement | null;
+
+// Section leads (conducted sessions in `.conduct`)
+export const sectionLead = (sid: string, owner: string, over: Record<string, any> = {}): any =>
+  worker(sid, owner, '.conduct', null, { playbook: 'section-lead', stage: 'section-lead', ...over });
+
+/**
+ * A lead (L), a hand-launched conductor (H), a section lead (SL) of L, an ordinary worker of L (LW), the section
+ * lead's own worker (SW, which the server reports under the root owner L) and a hand session (HS).
+ */
+export function sectionLeadFleet(): Fleet {
+  const instances = [
+    conductor('L', { title: 'Lead' }),
+    conductor('H', { temp: false, firstPrompt: 'hand conductor' }),
+    sectionLead('SL', 'L', { title: 'Section' }),
+    worker('LW', 'L', 'alpha'),
+    worker('SW', 'L', 'beta', null, { callerInstanceId: 'i-SL' }),
+    hand('HS', 'alpha'),
+  ].map((i, n) => ({ ...i, lastResponseAt: 1000 - n }));
+  return {
+    projects: [proj('alpha'), proj('beta')],
+    workspaces: [],
+    instances,
+    conductSessions: [{ sessionId: 'SL', firstPrompt: 'section brief', lastActivity: 300, conducted: true }],
+    conductorSpawns: {},
+  };
+}

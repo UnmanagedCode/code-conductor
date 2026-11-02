@@ -243,6 +243,39 @@ test('stageText is verbatim and opaque', () => {
   assert.equal(M.stageText({}), null);
 });
 
+// Invariant: deriveConductors lists exactly the non-conducted `.conduct` sessions.
+test('a conducted .conduct session (a section lead) is no conductor; a non-conducted one with no owner still is', () => {
+  const { live, inactive } = M.deriveConductors({
+    conductRows: [
+      { sessionId: 'SL', conducted: true, lastActivity: 3 },
+      { sessionId: 'X', conducted: true, lastActivity: 2 },
+      { sessionId: 'D', lastActivity: 1 },
+    ],
+    instances: [
+      inst({ id: 'iL', project: '.conduct', sessionId: 'L', createdAt: 9 }),
+      inst({ id: 'iH', project: '.conduct', sessionId: 'H', conducted: false, ownerSessionId: null, createdAt: 8 }),
+      inst({ id: 'iSL', project: '.conduct', sessionId: 'SL', conducted: true, ownerSessionId: 'L', createdAt: 7 }),
+      inst({ id: 'iW', project: 'p', sessionId: 'W', conducted: true, ownerSessionId: 'L' }),
+      inst({ id: 'iSW', project: 'q', sessionId: 'SW', conducted: true, ownerSessionId: 'L' }),
+    ],
+  });
+  assert.deepEqual(live.map(c => c.sessionId), ['L', 'H']);
+  assert.deepEqual(inactive.map(c => c.sessionId), ['D']);
+  // An exited conducted instance whose disk row lacks `conducted` is placed by the instance: in neither group.
+  const dead = M.deriveConductors({
+    conductRows: [{ sessionId: 'E', lastActivity: 1 }],
+    instances: [inst({ id: 'iE', project: '.conduct', sessionId: 'E', status: 'exited', conducted: true, ownerSessionId: null })],
+  });
+  assert.deepEqual([...dead.live, ...dead.inactive].map(c => c.sessionId), []);
+});
+
+// Invariant: an equal pair renders once; an unequal pair renders both, verbatim.
+test('stageText shows a playbook and its same-named stage once', () => {
+  assert.equal(M.stageText({ playbook: 'section-lead', stage: 'section-lead' }), 'section-lead');
+  assert.equal(M.stageText({ playbook: 'freeform', stage: 'freeform' }), 'freeform');
+  assert.equal(M.stageText({ playbook: 'relay', stage: 'review' }), 'relay · review');
+});
+
 test('ownerLabel prefers a conductor title, then a live instance label, then the sid prefix', () => {
   const conductors = { live: [{ sessionId: 'A', title: 'Alpha' }], inactive: [] };
   const instances = [inst({ sessionId: 'H', firstPrompt: 'hand  owner' })];
