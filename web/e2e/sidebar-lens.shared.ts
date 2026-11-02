@@ -183,8 +183,8 @@ export async function filterMenuAlignFlow({ page, cc }: Ctx): Promise<void> {
   };
   const expectAligned = ({ bar, col, menu }: Awaited<ReturnType<typeof measure>>) => {
     expect(bar.width > 0 && bar.height > 0 && menu.width > 0 && menu.height > 0, 'fixture check: the rects are real').toBe(true);
-    expect(Math.abs(menu.left - bar.left), 'the menu starts at the bar\'s left edge').toBeLessThanOrEqual(1);
-    expect(Math.abs(menu.right - bar.right), 'the menu ends at the bar\'s right edge').toBeLessThanOrEqual(1);
+    expect(Math.abs(menu.left - bar.left), 'the menu starts at the bar\'s left edge').toBeLessThan(0.5);
+    expect(Math.abs(menu.right - bar.right), 'the menu ends at the bar\'s right edge').toBeLessThan(0.5);
     expect(menu.top, 'the menu opens below the bar').toBeGreaterThanOrEqual(bar.bottom - 1);
     expect(menu.right, 'the menu stays inside the column').toBeLessThanOrEqual(col + 1);
   };
