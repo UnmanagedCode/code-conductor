@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginHost } from '../src/plugins/registry.ts';
+import { pluginDataDir } from '../src/plugins/store.ts';
 import { pidAlive } from '../src/plugins/ports.ts';
 import { readProjectRecord, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir, createProject, orchStoreRoot } from '../src/projects.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
@@ -181,6 +182,38 @@ test('started plugin backend receives PROJECTS_ROOT (resolved) + CONDUCTOR_PROJE
     assert.equal(childEnv.conductorProjectDir, selfProjectDir());
   } finally {
     await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('started plugin backend receives CONDUCTOR_PLUGIN_DATA_DIR keyed by manifest id, under the store, not created by cc', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  const prev = process.env.CONDUCTOR_PLUGIN_DATA_DIR;
+  process.env.CONDUCTOR_PLUGIN_DATA_DIR = '/decoy'; // cc's own inherited env must not leak through
+  try {
+    await env.addPluginProject('aplug'); // project dir name differs from the manifest id
+    await host.enable('fake-plugin');
+    await host.ensureStarted('fake-plugin');
+    const { port } = host.runtimeInfo('fake-plugin');
+    const childEnv = await (await fetch(`http://127.0.0.1:${port}/env`)).json();
+    // Hand-typed: this is the protocol value plugin repos depend on.
+    assert.equal(childEnv.pluginDataDir, path.join(env.root, '.code-conductor', 'plugins', 'data', 'fake-plugin'));
+    assert.ok(path.isAbsolute(childEnv.pluginDataDir));
+    await assert.rejects(fs.stat(path.join(env.root, '.code-conductor', 'plugins', 'data')), { code: 'ENOENT' });
+  } finally {
+    if (prev === undefined) delete process.env.CONDUCTOR_PLUGIN_DATA_DIR; else process.env.CONDUCTOR_PLUGIN_DATA_DIR = prev;
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('pluginDataDir refuses a non-slug id', async () => {
+  const env = await makePluginRoot();
+  try {
+    for (const bad of ['..', '.', 'a/b', '', 'Library']) assert.throws(() => pluginDataDir(bad), undefined, `id '${bad}'`);
+    assert.ok(pluginDataDir('library').endsWith(path.join('plugins', 'data', 'library')));
+  } finally {
     await env.restore();
   }
 });

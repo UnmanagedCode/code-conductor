@@ -14,7 +14,7 @@ import { hostPlatform, type Platform } from '../platform/index.ts';
 import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { createContributions, type PluginPlacement } from './contributions.ts';
-import { createPluginStore, type PersistedPluginRecord } from './store.ts';
+import { createPluginStore, pluginDataDir, type PersistedPluginRecord } from './store.ts';
 import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
@@ -535,10 +535,12 @@ export function createPluginHost(opts: {
       // explicitly (not via inheritance): a plugin reads projectsRoot()'s
       // authoritative value even in the default case where the conductor's own
       // env never set PROJECTS_ROOT, and locates the conductor even when its
-      // checkout lives outside projectsRoot().
+      // checkout lives outside projectsRoot(). The plugin's store data dir is
+      // handed over the same way, keyed by the verified manifest id.
       const env: Record<string, string> = {
         PROJECTS_ROOT: projectsRoot(),
         CONDUCTOR_PROJECT_DIR: selfProjectDir(),
+        CONDUCTOR_PLUGIN_DATA_DIR: pluginDataDir(id),
         ...(serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {}),
       };
       let rec;
