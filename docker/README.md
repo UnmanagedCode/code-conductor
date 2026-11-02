@@ -13,7 +13,7 @@ set -a; . ./.env; set +a     # put CC_PROJECTS_DIR in the shell (compose reads .
 mkdir -p "$CC_PROJECTS_DIR"  # OUTSIDE the cc repo, writable by CC_UID/CC_GID
 make up                      # = docker compose -f compose.yaml up -d --build
 make login                   # sign in inside the container: `claude auth login` (credentials persist; or Settings → Account in the web UI)
-open http://127.0.0.1:8787   # logs: make logs · stop: make down
+open http://127.0.0.1:8787   # logs: make logs · start/stop/restart: make start|stop|restart · remove: make down
 ```
 
 Optional stacks:
