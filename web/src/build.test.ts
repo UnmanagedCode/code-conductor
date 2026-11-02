@@ -90,6 +90,28 @@ describe('ensureWebBuild', () => {
     expect(log.log.mock.calls.map((c) => String(c[0])).filter((w) => /chunks are larger than/.test(w))).toEqual([]);
   });
 
+  it('the entry and the chunks it statically imports carry no dialog code; a lazy chunk does', () => {
+    // Invariant: the dialogs stay out of the boot JS. `data-dialog` is the dialogs' e2e hook and occurs only in dialog modules.
+    const assets = path.join(distDir, 'assets');
+    const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
+    const entry = html.match(/<script\b[^>]*\btype="module"[^>]*\bsrc="\/assets\/([^"]+\.js)"/)?.[1];
+    expect(entry, 'fixture check: index.html loads a module entry').toBeTruthy();
+    const closure = new Set<string>();
+    const visit = (file: string) => {
+      if (closure.has(file)) return;
+      closure.add(file);
+      const code = fs.readFileSync(path.join(assets, file), 'utf8');
+      // Static imports only: `from"./x.js"` and bare `import"./x.js"`, never `import("./x.js")`.
+      for (const m of code.matchAll(/(?:\bfrom\s*|\bimport\s*)["']\.\/([^"']+\.js)["']/g)) visit(m[1]!);
+    };
+    visit(entry!);
+    const hasDialog = (f: string) => fs.readFileSync(path.join(assets, f), 'utf8').includes('data-dialog');
+    expect([...closure].filter(hasDialog)).toEqual([]);
+    // Positive control: without a chunk that holds the marker, a minifier renaming it would make the check vacuous.
+    const outside = fs.readdirSync(assets).filter((f) => f.endsWith('.js') && !closure.has(f));
+    expect(outside.filter(hasDialog).length, 'fixture check: a lazy chunk carries the dialogs').toBeGreaterThan(0);
+  });
+
   it('every URL in index.html is root-absolute: the entry chunk, the manifest and every icon link', () => {
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
     expect(html).toMatch(/src="\/assets\/[^"]+\.js"/);

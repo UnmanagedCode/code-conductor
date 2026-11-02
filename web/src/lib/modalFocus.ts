@@ -39,13 +39,13 @@ function returnTarget(opener: HTMLElement | null): HTMLElement | null {
 }
 
 /**
- * Focus return for a modal shown while `open`: the opener is read on the render that opens it, while an
- * opening menu item still holds focus. `register` is the content's ref; `onCloseAutoFocus` focuses the
- * opener unless something else already took focus (a selection focusing the composer, the next modal).
+ * Focus return for a modal shown while `open`: the opener is read on the render that opens it (or on the mount, when
+ * it mounts open), while an opening menu item still holds focus. `register` is the content's ref;
+ * `onCloseAutoFocus` focuses the opener unless something else already took focus (a selection focusing the composer, the next modal).
  */
 export function useReturnFocus(open: boolean) {
   const [wasOpen, setWasOpen] = React.useState(open);
-  const [opener, setOpener] = React.useState<HTMLElement | null>(null);
+  const [opener, setOpener] = React.useState<HTMLElement | null>(() => (open ? openerOf(document.activeElement) : null));
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) setOpener(openerOf(document.activeElement));
