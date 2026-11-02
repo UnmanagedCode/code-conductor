@@ -180,6 +180,50 @@ describe('what a narrowed project lists', () => {
   });
 });
 
+describe('a scope without a query', () => {
+  const opsMembers = () => [...document.querySelectorAll('[data-workspace="Ops"] [data-project-row]')].map((e) => e.getAttribute('data-project-row'));
+  const settle = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+  it('Hand lists only the Ops members with hand sessions, and the band still counts all three', async () => {
+    // Pins: the band count is unfiltered by a scope; only the text filter changes it.
+    world(); calls();
+    sidebarStore.set({ expandedWorkspaces: ['Acme', 'Ops'] });
+    renderSidebar();
+    chooseOption(trigger(), 'Hand-spawned only');
+    await settle();
+    expect(opsMembers()).toEqual(['api', 'web']);
+    expect(bandOf('Ops')!.textContent).toContain('(3)');
+  });
+
+  it('a conductor scope lists only the Ops member it holds, and the band still counts all three', async () => {
+    // Pins: the same for an owner scope.
+    world([conductor(A, { title: ALPHA }), worker('wa-w', A, 'api')]); calls();
+    sidebarStore.set({ expandedWorkspaces: ['Acme', 'Ops'] });
+    renderSidebar();
+    chooseOption(trigger(), ALPHA);
+    await settle();
+    expect(opsMembers()).toEqual(['api']);
+    expect(bandOf('Ops')!.textContent).toContain('(3)');
+  });
+});
+
+describe('a project the scope hides', () => {
+  it('is never matched, by its own name or through its workspace', async () => {
+    // Pins: the scope decides which projects can match at all; a name or workspace hit does not bring a hidden one back.
+    world(); calls();
+    sidebarStore.set({ expandedWorkspaces: ['Acme', 'Ops'] });
+    renderSidebar();
+    chooseOption(trigger(), 'Hand-spawned only');
+    await search('billing');
+    expect(el('[data-filter-empty]')).toBeTruthy();
+    await search('ops');
+    expect(shownProjects()).toEqual(['api', 'web']);
+    chooseOption(trigger(), 'All sessions');
+    await search('billing');
+    expect(shownProjects()).toEqual(['billing']);
+  });
+});
+
 describe('an empty workspace', () => {
   it('stays listed when its name matches, and is not listed for another query or under a scope', async () => {
     // Pins: a workspace-name hit keeps an empty band without a scope, and only then.
@@ -220,6 +264,19 @@ describe('transient collapses of filter-opened groups', () => {
     await act(async () => { fireEvent.click(bandOf('Ops')!); });
     expect(isOpen(bandOf('Ops'))).toBe(false);
     await clearWithX();
+    await search('login');
+    expect(isOpen(bandOf('Ops'))).toBe(true);
+  });
+
+  it('an all-whitespace query counts as empty: it forgets the collapse as clearing does', async () => {
+    // Pins: whitespace alone is "no query", so retyping after it finds the transient collapses reset.
+    world(); calls();
+    renderSidebar();
+    await search('login');
+    await act(async () => { fireEvent.click(bandOf('Ops')!); });
+    expect(isOpen(bandOf('Ops'))).toBe(false);
+    await typeFilter('   ');
+    expect(shownProjects()).toEqual(['shop', 'tools']);
     await search('login');
     expect(isOpen(bandOf('Ops'))).toBe(true);
   });

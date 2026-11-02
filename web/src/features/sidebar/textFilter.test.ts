@@ -123,4 +123,12 @@ describe('searchTree', () => {
     // Owner scope shows only the owner's rows: `lint` is nobody's.
     expect(run('lint', 'cond-a').projects.size).toBe(0);
   });
+
+  it('a project the scope hides is never matched, by its own name or through its workspace', () => {
+    // `api` has only a conducted worktree session: hidden under Hand, matchable by name or workspace under All.
+    expect(run('api', 'hand').projects.has('api')).toBe(false);
+    expect(run('ops', 'hand').projects.has('api')).toBe(false);
+    expect(run('api').projects.get('api')).toEqual({ kind: 'whole' });
+    expect(run('ops').projects.get('api')).toEqual({ kind: 'whole' });
+  });
 });

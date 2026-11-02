@@ -15,6 +15,8 @@ import { tokensOf } from './textFilter';
 
 export const SESSION_SEARCH_DEBOUNCE_MS = 250;
 export const SESSION_SEARCH_CONCURRENCY = 4;
+/** A loader request still running after this long is aborted and its slot freed. */
+export const SESSION_SEARCH_TIMEOUT_MS = 30_000;
 
 export type PlaceRef = { project: string; worktree: string | null; key: string; fp: string };
 type Summary = { count?: number; handCount?: number; lastActivity?: number } | undefined;
@@ -92,7 +94,14 @@ function pump() {
     if (inFlight.has(place.key)) continue;
     inFlight.add(place.key);
     const mine = epoch;
-    void ensureSessions(place.project, place.worktree).then(() => settle(place, mine));
+    // Bounded: a request that never settles (a hung server) must not hold its slot for every later search.
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), SESSION_SEARCH_TIMEOUT_MS);
+    const timedOut = new Promise<void>((resolve) => abort.signal.addEventListener('abort', () => resolve(), { once: true }));
+    void Promise.race([ensureSessions(place.project, place.worktree, abort.signal), timedOut]).then(() => {
+      clearTimeout(timeout);
+      settle(place, mine);
+    });
   }
   updatePending();
 }

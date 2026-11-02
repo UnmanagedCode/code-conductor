@@ -18,7 +18,7 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions } = await import('./state');
 const { resetTextFilter } = await import('./textFilterState');
-const { resetSessionSearch, SESSION_SEARCH_DEBOUNCE_MS, SESSION_SEARCH_CONCURRENCY } = await import('./sessionSearch');
+const { resetSessionSearch, SESSION_SEARCH_DEBOUNCE_MS, SESSION_SEARCH_CONCURRENCY, SESSION_SEARCH_TIMEOUT_MS } = await import('./sessionSearch');
 
 const summary = (count: number, handCount = count, lastActivity = 1) => ({ count, archivedCount: 0, handCount, lastActivity });
 const urls = (calls: RoutedCall[]) => sessionGets(calls).map((c) => c.url);
@@ -297,5 +297,82 @@ describe('the session loader', () => {
     await act(async () => { invalidateSessions(); });
     await typeFilter('needle l'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(1);
+  });
+
+  it('releases the slots of requests from an ended search that never settle, so the next search loads and its hint clears', async () => {
+    // Pins: a slot held by a request from an ended search is freed within a bounded time even if that request hangs.
+    const names = placeNames(5);
+    seedPlaces(names);
+    const hung = names.slice(0, 4);
+    const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => (hung.includes(n) ? held<RouteAnswer>().answer : { json: [] })])));
+    renderSidebar();
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(urls(calls)).toEqual(hung.map((n) => `/api/projects/${n}/sessions`));
+    await typeFilter(''); await flush();
+    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    expect(urls(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
+    expect(document.querySelector('[data-filter-pending]')).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
+    await flush(); await flush();
+    expect(urls(calls)).toContain('/api/projects/p5/sessions');
+    expect(document.querySelector('[data-filter-pending]')).toBeNull();
+  });
+
+  it('lets the new search record a place whose load from an ended search settles into it', async () => {
+    // Pins: a stale settle re-plans, so its place is recorded for the new search (a later wipe at an unchanged fingerprint refetches nothing).
+    seedPlaces(['p1']);
+    const first = held<RouteAnswer>();
+    let n = 0;
+    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-1', 'alpha one')] }) });
+    renderSidebar();
+    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter(''); await flush();
+    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS); // the new search is running; p1's old request still holds its slot
+    expect(sessionGets(calls)).toHaveLength(1);
+    first.release({ json: [disk('d-1', 'alpha one')] });
+    await flush(); await flush();
+    await act(async () => { invalidateSessions(); }); // a wipe with the fingerprint unchanged
+    await flush(); await flush();
+    expect(sessionGets(calls)).toHaveLength(1);
+    expect(rowIds('p1')).toEqual(['d-1']);
+  });
+
+  it('holds nothing for a new search from a response that arrives before that search has started loading', async () => {
+    // Pins: a response from an ended search is neither held nor recorded as attempted for the current one, so the new search fetches the place itself.
+    seedPlaces(['p1']);
+    const first = held<RouteAnswer>();
+    let n = 0;
+    const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-1', 'alpha one')] }) });
+    renderSidebar();
+    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter(''); await flush();
+    await typeFilter('alpha');
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS - 1); }); // the new search is still debouncing
+    first.release({ json: [disk('d-1', 'alpha one')] });
+    await flush(); await flush();
+    await act(async () => { invalidateSessions(); });
+    await settleSearch(1);
+    expect(sessionGets(calls)).toHaveLength(2);
+    expect(rowIds('p1')).toEqual(['d-1']);
+  });
+
+  it('shows the searching hint while the debounce is armed with work planned', async () => {
+    // Pins: pending covers the debounce window when a place is waiting to load.
+    seedPlaces(['p1']);
+    routeFetch({ 'GET /api/projects/': rowsRoute([]) });
+    renderSidebar();
+    await typeFilter('x');
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS - 1); });
+    expect(document.querySelector('[data-filter-pending]')).toBeTruthy();
+  });
+
+  it('shows no searching hint while the debounce is armed with nothing to load', async () => {
+    // Pins: the hint needs planned work; a place with no sessions plans none.
+    seedPlaces(['q1'], () => ({ sessions: summary(0) }));
+    routeFetch({ 'GET /api/projects/': rowsRoute([]) });
+    renderSidebar();
+    await typeFilter('x');
+    await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS - 1); });
+    expect(document.querySelector('[data-filter-pending]')).toBeNull();
   });
 });
