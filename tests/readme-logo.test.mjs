@@ -63,11 +63,12 @@ test("every image the README's logo picture names exists and is a static, self-c
 });
 
 test("the dark source names the dark-palette file, the light source and the img fallback the light-palette file", () => {
-  // Invariant: each source's file is drawn in the ink of the scheme its media names (read from PALETTES), and the <img> fallback is the light file; swapped srcsets or one palette written into both files fail.
+  // Invariant: each source's file is drawn in the ink of the scheme its media names (read from PALETTES), and the <img> fallback is the light file; swapped srcsets or one palette written into both files fail. The face is white in both palettes, so the light file is told apart by its light ink (the baton), which the dark file lacks.
   const inkOf = (file) => {
     const svg = fs.readFileSync(path.join(ROOT, file), 'utf8');
     const has = (palette) => svg.includes(`fill="${PALETTES[palette].ink}"`);
-    return has('light') === has('dark') ? 'neither or both' : has('dark') ? 'dark' : 'light';
+    if (has('light')) return 'light';
+    return has('dark') ? 'dark' : 'neither';
   };
   assert.notEqual(PALETTES.light.ink, PALETTES.dark.ink, 'fixture check: the palettes\' ink differs');
   const sourceFor = (scheme) => {

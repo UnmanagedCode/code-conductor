@@ -1,9 +1,10 @@
 // The logo's renderers on the real arts: only a blinking mark animates, and only
 // its cursor; no variant (the lockup included) ships a <style>; the pictures are named. Knockout
 // structure is pinned on a synthetic art in logoArt.test.tsx.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import { LogoLockup, LogoMark, LogoSmall, LogoTile, Wordmark } from './Logo';
+import { MARK } from './logoArt';
 
 /** Every element under `root` (itself included) whose class names an animation. */
 const animated = (root: Element) => [root, ...root.querySelectorAll('*')].filter((e) => /\banimate-/.test(e.getAttribute('class') ?? ''));
@@ -34,6 +35,26 @@ describe('Logo', () => {
     const { container } = render(<>{VARIANTS.map(([name, el]) => <div key={name}>{el}</div>)}<LogoMark blink /></>);
     expect(container.querySelectorAll('svg[data-logo]').length, 'fixture check: every variant renders').toBe(VARIANTS.length + 1);
     expect(container.querySelectorAll('style').length).toBe(0);
+  });
+
+  describe('the terminal face', () => {
+    afterEach(() => document.documentElement.classList.remove('dark'));
+
+    it.each(['light', 'dark'])('is white in %s mode, in every picture that draws it', (theme) => {
+      // Invariant: the face (the screen, the one element with ink "screen") is filled #ffffff whatever the theme; the theme's ink never reaches it.
+      if (theme === 'dark') document.documentElement.classList.add('dark');
+      const faces = MARK.elements.filter((el) => el.ink === 'screen');
+      expect(faces.length, 'fixture check: the mark has one face').toBe(1);
+      const d = faces[0].attrs.d;
+      const { container } = render(<><LogoMark /><LogoTile /><LogoSmall /><LogoLockup /></>);
+      const svgs = container.querySelectorAll('svg[data-logo]');
+      expect(svgs.length, 'fixture check: every picture renders').toBe(4);
+      for (const svg of svgs) {
+        const drawn = svg.querySelectorAll(`path[d="${d}"]`);
+        expect(drawn.length, `${svg.getAttribute('data-logo')} draws the face once`).toBe(1);
+        expect(drawn[0].getAttribute('fill'), svg.getAttribute('data-logo') ?? '').toBe('#ffffff');
+      }
+    });
   });
 
   it('each picture is an image named Code Conductor; the wordmark is decorative', () => {
