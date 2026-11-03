@@ -4,7 +4,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import { LogoLockup, LogoMark, LogoSmall, LogoTile, Wordmark } from './Logo';
-import { MARK } from './logoArt';
 
 /** Every element under `root` (itself included) whose class names an animation. */
 const animated = (root: Element) => [root, ...root.querySelectorAll('*')].filter((e) => /\banimate-/.test(e.getAttribute('class') ?? ''));
@@ -40,19 +39,23 @@ describe('Logo', () => {
   describe('the terminal face', () => {
     afterEach(() => document.documentElement.classList.remove('dark'));
 
-    it.each(['light', 'dark'])('is white in %s mode, in every picture that draws it', (theme) => {
-      // Invariant: the face (the screen, the one element with ink "screen") is filled #ffffff whatever the theme; the theme's ink never reaches it.
+    /** The shapes a picture paints: the knockout masks' shapes are never drawn. */
+    const painted = (svg: Element) => [...svg.querySelectorAll('path, rect')].filter((e) => !e.closest('mask'));
+    const white = (svg: Element) => painted(svg).filter((e) => e.getAttribute('fill') === '#ffffff');
+
+    it.each(['light', 'dark'])('is white in the sidebar tile and the theme ink in the other app pictures, in %s mode', (theme) => {
+      // Invariant: the tile alone draws its face #ffffff; the mark, the lockup and the small mark draw that same face in the theme's ink and nothing in white, whatever the theme.
       if (theme === 'dark') document.documentElement.classList.add('dark');
-      const faces = MARK.elements.filter((el) => el.ink === 'screen');
-      expect(faces.length, 'fixture check: the mark has one face').toBe(1);
-      const d = faces[0].attrs.d;
-      const { container } = render(<><LogoMark /><LogoTile /><LogoSmall /><LogoLockup /></>);
-      const svgs = container.querySelectorAll('svg[data-logo]');
-      expect(svgs.length, 'fixture check: every picture renders').toBe(4);
-      for (const svg of svgs) {
-        const drawn = svg.querySelectorAll(`path[d="${d}"]`);
-        expect(drawn.length, `${svg.getAttribute('data-logo')} draws the face once`).toBe(1);
-        expect(drawn[0].getAttribute('fill'), svg.getAttribute('data-logo') ?? '').toBe('#ffffff');
+      const { container } = render(<><LogoTile /><LogoMark /><LogoLockup /><LogoSmall /></>);
+      const picture = (name: string) => container.querySelector(`svg[data-logo="${name}"]`)!;
+      const [face] = white(picture('tile'));
+      expect(white(picture('tile')).length, 'fixture check: the tile draws one white shape, its face').toBe(1);
+      const d = face.getAttribute('d');
+      for (const name of ['mark', 'lockup', 'small']) {
+        expect(white(picture(name)), `${name} draws nothing white`).toEqual([]);
+        const drawn = picture(name).querySelectorAll(`path[d="${d}"]`);
+        expect(drawn.length, `${name} draws the face once`).toBe(1);
+        expect(drawn[0].getAttribute('fill'), name).toBe('var(--logo-ink)');
       }
     });
   });

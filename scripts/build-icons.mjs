@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { artToSvgString, FAV32_BORDER, iconSvg, lockupSvg, pwaIconSvg, PWA_BACKGROUND, SMALL16 } from '../web/src/components/logo/logoArt.ts';
+import { artToSvgString, FAV16, FAV32_BORDER, iconSvg, lockupSvg, pwaIconSvg, PWA_BACKGROUND } from '../web/src/components/logo/logoArt.ts';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'public');
 
@@ -16,7 +16,7 @@ const DOCS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs
 const icon = iconSvg();
 /** [file, size, svg text, check] — `size` is the PNG's width and height. */
 const PNGS = [
-  ['favicon-16.png', 16, artToSvgString(SMALL16, { palette: 'light', size: 16 }), 'favicon'],
+  ['favicon-16.png', 16, artToSvgString(FAV16, { palette: 'light', size: 16 }), 'favicon'],
   ['favicon-32.png', 32, artToSvgString(FAV32_BORDER, { palette: 'light', size: 32 }), 'favicon'],
   ['icon-192.png', 192, icon, 'any'],
   ['icon-512.png', 512, icon, 'any'],

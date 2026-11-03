@@ -30,13 +30,13 @@ export type Art = {
 
 export type Palette = 'light' | 'dark';
 
-/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER's ring. `screen` is the terminal face: white in both palettes, so the static files and the app agree, except the 32px favicon, whose face is `ink` (FAV32_BORDER). */
+/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER's ring; `screen` is the white face of the tile and FAV16, the same in both palettes. */
 export const PALETTES: Record<Palette, Record<Ink, string>> = {
   light: { coral: '#f07456', deep: '#c8482c', ink: '#15171c', inverse: '#ffffff', screen: '#ffffff', tile: '#f7e5de' },
   dark: { coral: '#f07456', deep: '#c8482c', ink: '#ffffff', inverse: '#15171c', screen: '#ffffff', tile: '#291812' },
 };
 
-/** The inks the app's arts use: coral never changes, the face is white in both themes, the rest follow the theme. */
+/** The inks the app's arts use: coral never changes, `screen` (the tile's face) is white in both themes, the rest follow the theme. */
 export const APP_INKS: Partial<Record<Ink, string>> = {
   coral: PALETTES.light.coral,
   deep: PALETTES.light.deep,
@@ -68,7 +68,9 @@ const BODY = path(BODY_D, 'coral');
 /** The body with the screen as a second subpath, for the sizes that drop the screen ring. */
 const BODY_WITH_SCREEN = path(BODY_D + SCREEN_D, 'coral');
 const SCREEN_RING_KO = ko('M2 10A4 4 0 0 1 6 6L34 6A4 4 0 0 1 38 10L38 24A4 4 0 0 1 34 28L6 28A4 4 0 0 1 2 24Z');
-const SCREEN = path(SCREEN_D, 'screen');
+const SCREEN = path(SCREEN_D, 'ink');
+/** The same face in white, drawn only by the tile and the 16px favicon. */
+const WHITE_SCREEN = path(SCREEN_D, 'screen');
 const GLYPHS = [
   path('M14.5 12L10.75 12A3.75 3.75 0 0 0 7 15.75L7 18.25A3.75 3.75 0 0 0 10.75 22L14.5 22L14.5 19.5L10.75 19.5A1.25 1.25 0 0 1 9.5 18.25L9.5 15.75A1.25 1.25 0 0 1 10.75 14.5L14.5 14.5Z', 'coral'),
   path('M24.5 12L20.75 12A3.75 3.75 0 0 0 17 15.75L17 18.25A3.75 3.75 0 0 0 20.75 22L24.5 22L24.5 19.5L20.75 19.5A1.25 1.25 0 0 1 19.5 18.25L19.5 15.75A1.25 1.25 0 0 1 20.75 14.5L24.5 14.5Z', 'coral'),
@@ -90,8 +92,8 @@ const BATON = path('M42.75 4.5L42.75 -7.25A1.25 1.25 0 0 1 44 -8.5L44 -8.5A1.25 
 /** The prompt, legs, arm and baton: everything drawn over the screen. */
 const overScreen = (cursor: LogoElement) => [...GLYPHS, cursor, ...FRONT_LEGS, ARM, BATON];
 const OVER_SCREEN = overScreen(CURSOR);
-/** The small sizes' layers: no screen ring, the screen cut into the body. */
-const SMALL_LAYERS = [...BACK_LEGS, BAND_KO, BODY_WITH_SCREEN, SCREEN, ...OVER_SCREEN];
+/** The small sizes' layers around `face`: no screen ring, the screen cut into the body. */
+const smallLayers = (face: LogoElement) => [...BACK_LEGS, BAND_KO, BODY_WITH_SCREEN, face, ...OVER_SCREEN];
 
 /** The full mark: landing, empty chat, About. */
 export const MARK: Art = {
@@ -99,17 +101,22 @@ export const MARK: Art = {
   elements: [...BACK_LEGS, BAND_KO, BODY, SCREEN_RING_KO, SCREEN, ...overScreen({ ...CURSOR, cursor: true })],
 };
 
-/** The 16px design: the Apps menu and favicon-16. */
-export const SMALL16: Art = {
+const small16 = (face: LogoElement): Art => ({
   viewBox: '0 0 16 16',
-  elements: under('translate(2.256 2.325) scale(0.273504)', SMALL_LAYERS),
-};
+  elements: under('translate(2.256 2.325) scale(0.273504)', smallLayers(face)),
+});
 
-/** The sidebar header's tile. */
+/** The 16px design: the Apps menu. */
+export const SMALL16: Art = small16(SCREEN);
+
+/** The 16px favicon: the 16px design with the white face. */
+export const FAV16: Art = small16(WHITE_SCREEN);
+
+/** The sidebar header's tile, its face white. */
 export const TILE: Art = {
   viewBox: '0 0 32 32',
   base: [{ tag: 'rect', attrs: { width: '32', height: '32', rx: '8' }, ink: 'tile' }],
-  elements: under('translate(7.385 7.487) scale(0.410256)', SMALL_LAYERS),
+  elements: under('translate(7.385 7.487) scale(0.410256)', smallLayers(WHITE_SCREEN)),
 };
 
 const FAV32_TRANSFORM = 'translate(4.513 4.65) scale(0.547009)';
@@ -120,7 +127,6 @@ export const FAV32_BORDER: Art = {
   elements: [
     ...under(FAV32_TRANSFORM, [...BACK_LEGS, BAND_KO, BODY]),
     { tag: 'rect', attrs: { x: '6', y: '8', width: '19', height: '12', 'shape-rendering': 'crispEdges' }, ink: 'inverse' },
-    // The dark face, not the white screen: the 32px favicon keeps it dark inside its white ring.
     { tag: 'rect', attrs: { x: '7', y: '9', width: '17', height: '10', 'shape-rendering': 'crispEdges' }, ink: 'ink' },
     ...under(FAV32_TRANSFORM, OVER_SCREEN),
   ],
