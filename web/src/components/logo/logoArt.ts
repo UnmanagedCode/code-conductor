@@ -8,7 +8,7 @@
 // backdrop shows through. knockoutTree turns each one into an SVG mask over what
 // was drawn before it, so the gaps are transparent on any surface.
 
-export type Ink = 'coral' | 'deep' | 'ink' | 'inverse' | 'tile';
+export type Ink = 'coral' | 'deep' | 'ink' | 'inverse' | 'screen' | 'tile';
 
 export type LogoElement = {
   tag: 'path' | 'rect';
@@ -30,17 +30,18 @@ export type Art = {
 
 export type Palette = 'light' | 'dark';
 
-/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER, a static file. */
+/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER, a static file. `screen` is the face: the static files keep it theme-following, the app pins it (APP_INKS). */
 export const PALETTES: Record<Palette, Record<Ink, string>> = {
-  light: { coral: '#f07456', deep: '#c8482c', ink: '#15171c', inverse: '#ffffff', tile: '#f7e5de' },
-  dark: { coral: '#f07456', deep: '#c8482c', ink: '#ffffff', inverse: '#15171c', tile: '#291812' },
+  light: { coral: '#f07456', deep: '#c8482c', ink: '#15171c', inverse: '#ffffff', screen: '#15171c', tile: '#f7e5de' },
+  dark: { coral: '#f07456', deep: '#c8482c', ink: '#ffffff', inverse: '#15171c', screen: '#ffffff', tile: '#291812' },
 };
 
-/** The inks the app's arts use: coral never changes, the rest follow the theme. */
+/** The inks the app's arts use: coral never changes, the face is white in both themes, the rest follow the theme. */
 export const APP_INKS: Partial<Record<Ink, string>> = {
   coral: PALETTES.light.coral,
   deep: PALETTES.light.deep,
   ink: 'var(--logo-ink)',
+  screen: '#ffffff',
   tile: 'var(--logo-tile)',
 };
 
@@ -67,7 +68,7 @@ const BODY = path(BODY_D, 'coral');
 /** The body with the screen as a second subpath, for the sizes that drop the screen ring. */
 const BODY_WITH_SCREEN = path(BODY_D + SCREEN_D, 'coral');
 const SCREEN_RING_KO = ko('M2 10A4 4 0 0 1 6 6L34 6A4 4 0 0 1 38 10L38 24A4 4 0 0 1 34 28L6 28A4 4 0 0 1 2 24Z');
-const SCREEN = path(SCREEN_D, 'ink');
+const SCREEN = path(SCREEN_D, 'screen');
 const GLYPHS = [
   path('M14.5 12L10.75 12A3.75 3.75 0 0 0 7 15.75L7 18.25A3.75 3.75 0 0 0 10.75 22L14.5 22L14.5 19.5L10.75 19.5A1.25 1.25 0 0 1 9.5 18.25L9.5 15.75A1.25 1.25 0 0 1 10.75 14.5L14.5 14.5Z', 'coral'),
   path('M24.5 12L20.75 12A3.75 3.75 0 0 0 17 15.75L17 18.25A3.75 3.75 0 0 0 20.75 22L24.5 22L24.5 19.5L20.75 19.5A1.25 1.25 0 0 1 19.5 18.25L19.5 15.75A1.25 1.25 0 0 1 20.75 14.5L24.5 14.5Z', 'coral'),
