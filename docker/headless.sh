@@ -14,13 +14,35 @@ set -uo pipefail
 die() { echo "headless: $*" >&2; exit 2; }
 # The physical path of an existing directory, or nothing.
 canon_dir() { (cd "$1" 2>/dev/null && pwd -P); }
+# A value as written in docker/.env: make's .env parsing keeps a surrounding
+# quote pair and the whitespace before an inline comment, so strip surrounding
+# whitespace, then one matching '…' or "…" pair. The prompt text is never
+# normalised — it reaches cc verbatim.
+norm() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  if [ "${#v}" -ge 2 ]; then
+    case "$v" in
+      \"*\") v="${v:1:${#v}-2}" ;;
+      \'*\') v="${v:1:${#v}-2}" ;;
+    esac
+  fi
+  printf '%s' "$v"
+}
+for var in CC_HEADLESS_PROJECTS_DIR CC_PROJECTS_DIR CC_HEADLESS_HOME CC_HEADLESS_PORT CC_BIND CC_URL_HOST PROMPT_FILE MODE DOCKER_COMPOSE; do
+  printf -v "$var" '%s' "$(norm "${!var:-}")"
+done
 
 run_dir_in="${CC_HEADLESS_PROJECTS_DIR:-}"
 [ -n "$run_dir_in" ] || die "CC_HEADLESS_PROJECTS_DIR is required: the projects root for this run, a directory of its own outside CC_PROJECTS_DIR"
 run_dir="$(canon_dir "$run_dir_in")" || die "CC_HEADLESS_PROJECTS_DIR ($run_dir_in) is not an existing directory"
 [ -n "$run_dir" ] || die "CC_HEADLESS_PROJECTS_DIR ($run_dir_in) is not an existing directory"
 
-if [ -n "${CC_PROJECTS_DIR:-}" ] && main_dir="$(canon_dir "$CC_PROJECTS_DIR")" && [ -n "$main_dir" ]; then
+# Never skipped: a CC_PROJECTS_DIR that is set must resolve, or the run is refused.
+if [ -n "$CC_PROJECTS_DIR" ]; then
+  main_dir="$(canon_dir "$CC_PROJECTS_DIR")"
+  [ -n "$main_dir" ] || die "CC_PROJECTS_DIR ($CC_PROJECTS_DIR) is not an existing directory; fix it in docker/.env or unset it"
   [ "$run_dir" = "$main_dir" ] && die "CC_HEADLESS_PROJECTS_DIR ($run_dir) is the main projects dir; give the run a projects root of its own"
   case "$run_dir/" in "${main_dir%/}"/*) die "CC_HEADLESS_PROJECTS_DIR ($run_dir) is inside the main projects dir ($main_dir); give the run a projects root outside it" ;; esac
   case "$main_dir/" in "${run_dir%/}"/*) die "CC_HEADLESS_PROJECTS_DIR ($run_dir) contains the main projects dir ($main_dir); give the run a projects root outside it" ;; esac
@@ -31,12 +53,16 @@ prompt_file="${PROMPT_FILE:-}"
 [ -n "$prompt" ] && [ -n "$prompt_file" ] && die "give PROMPT or PROMPT_FILE, not both"
 [ -n "$prompt" ] || [ -n "$prompt_file" ] || die "give PROMPT or PROMPT_FILE (PROMPT_FILE=- reads stdin)"
 
-home="${CC_HEADLESS_HOME:-}"
+home="$CC_HEADLESS_HOME"
+home_var=CC_HEADLESS_HOME
 if [ -z "$home" ]; then
-  [ -n "${CC_PROJECTS_DIR:-}" ] || die "set CC_HEADLESS_HOME (the \$HOME holding the claude login) or CC_PROJECTS_DIR (whose .cc-home is the default)"
+  [ -n "$CC_PROJECTS_DIR" ] || die "set CC_HEADLESS_HOME (the \$HOME holding the claude login) or CC_PROJECTS_DIR (whose .cc-home is the default)"
   home="${CC_PROJECTS_DIR%/}/.cc-home"
+  home_var='$CC_PROJECTS_DIR/.cc-home'
 fi
-home_dir="$(canon_dir "$home")" && [ -n "$home_dir" ] && home="$home_dir"
+home_dir="$(canon_dir "$home")"
+[ -n "$home_dir" ] || die "$home_var ($home) is not an existing directory; it is the run's \$HOME and must hold the claude login"
+home="$home_dir"
 
 run_args=(run --rm -T -v "$home:/workspaces/cc-home")
 if [ -n "$prompt" ]; then
@@ -54,7 +80,8 @@ fi
 if [ -n "${CC_HEADLESS_PORT:-}" ]; then
   bind="${CC_BIND:-127.0.0.1}"
   url_host="${CC_URL_HOST:-}"
-  [ -n "$url_host" ] || { [ "$bind" = "0.0.0.0" ] && url_host=127.0.0.1 || url_host="$bind"; }
+  [ -n "$url_host" ] || url_host="$bind"
+  [ "$url_host" = "0.0.0.0" ] && url_host=127.0.0.1
   run_args+=(-p "$bind:$CC_HEADLESS_PORT:8787")
   echo "headless: also published at http://$url_host:$CC_HEADLESS_PORT" >&2
 fi

@@ -174,5 +174,12 @@ headless: export CC_BIND := $(CC_BIND)
 headless: export CC_URL_HOST := $(CC_URL_HOST)
 headless: export DOCKER_COMPOSE := $(DOCKER_COMPOSE)
 headless: export COMPOSE_FILES := $(COMPOSE_FILES)
+# Silent recipe and no Entering/Leaving lines, so stdout is cc's alone
+# (`make headless | jq`). The directory lines of `make -C` are decided at parse
+# time, so the flag is set there — only when `headless` is a goal, leaving
+# every other target's output as it was.
+ifneq ($(filter headless,$(MAKECMDGOALS)),)
+MAKEFLAGS += --no-print-directory
+endif
 headless:
-	./headless.sh
+	@./headless.sh
