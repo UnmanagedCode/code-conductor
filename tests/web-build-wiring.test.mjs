@@ -53,6 +53,14 @@ test('start() hands its buildWeb and syncDeps, its root lock, its headless flag 
   assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
 });
 
+test('start() takes its supervised flag from takeRestartSupervisor(), before it acquires the root lock', async () => {
+  const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
+  const body = src.slice(src.indexOf('export async function start('));
+  const lines = body.split('\n').map((l) => l.trim());
+  assert.deepEqual(lines.filter((l) => l.startsWith('const supervised')), ['const supervised = takeRestartSupervisor();']);
+  assert.ok(body.indexOf('takeRestartSupervisor()') < body.indexOf('acquireRootLock('), 'read before the lock is taken');
+});
+
 // The boot build is guarded against the boot commit, and the build and its
 // guard hash ONE inputs value, so they cannot judge different trees.
 test('start() builds the web UI with bootSwapGuard, over the same inputs it hands the build', async () => {

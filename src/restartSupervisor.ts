@@ -46,8 +46,12 @@ export interface SuperviseOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
-  // The server gets its own process group, so a terminal ^C reaches it once, via
-  // this supervisor, never twice.
+  // The server gets its own process group, so a terminal's group-wide signals
+  // (^C, ^\) never reach it directly: only the supervisor's forward does.
+  // Known limitation: on a TTY this supervisor sits in init's foreground group,
+  // so it gets ^C both directly and via init's forward, and forwards it twice
+  // (a headless run treats a second signal as "end now"). The docker deployment
+  // allocates no TTY, so this has no effect there.
   spawnOptions?: SpawnOptions;
   signals?: SignalSource;
   kill?: (pid: number, signal: NodeJS.Signals) => void;
