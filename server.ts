@@ -39,7 +39,7 @@ import { setMergeHookVarsProvider } from './src/worktrees.ts';
 import { hostSecurityHeaders } from './src/securityHeaders.ts';
 import { createUpgradeOriginGuard } from './src/upgradeOrigin.ts';
 import { createTerminalEndpoint } from './src/hostTerminal.ts';
-import { acquireRootLock, RootLockHeldError, ROOT_LOCK_HELD_EXIT, type RootLock } from './src/rootLock.ts';
+import { acquireRootLock, RootLockHeldError, RootLockUnreadableError, ROOT_LOCK_HELD_EXIT, type RootLock } from './src/rootLock.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -411,7 +411,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   start(entryStartOptions(process.env)).then(({ port, host }) => {
     console.log(`code-conductor listening on http://${host}:${port}`);
   }).catch(e => {
-    if (e instanceof RootLockHeldError) {
+    if (e instanceof RootLockHeldError || e instanceof RootLockUnreadableError) {
       console.error(e.message);
       process.exit(ROOT_LOCK_HELD_EXIT);
     }

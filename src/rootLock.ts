@@ -24,7 +24,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Platform } from './platform/index.ts';
 import type { RootLockSock, SocketAddress } from './platform/platform.ts';
-import { mintLockToken, publishLockFileSync, releaseLockSync, stageLockFileSync } from './storeLock.ts';
+import { LINK_PROBE_PREFIX, mintLockToken, prepareLockFileSync, releaseLockSync } from './storeLock.ts';
 
 export const ROOT_LOCK_DIRNAME = 'server-lock';
 // Internal, restart parent → child: the offer that lets the child take the
@@ -34,7 +34,8 @@ export const ROOT_LOCK_HANDOVER_ENV = 'CC_ROOT_LOCK_HANDOVER';
 // sized for Termux's throttled module load.
 export const ROOT_LOCK_HANDOVER_WAIT_MS = Number(process.env.CC_ROOT_LOCK_HANDOVER_WAIT_MS) || 120_000;
 
-// The exit code of a server refused because another holds its projects root.
+// The exit code of a server refused because another holds its projects root,
+// or because the root's lock record cannot be read.
 export const ROOT_LOCK_HELD_EXIT = 7;
 
 const PROBE_TIMEOUT_MS = 2000;
@@ -43,6 +44,8 @@ const ACQUIRE_ATTEMPTS = 50;
 const TOKEN_ATTEMPTS = 5;
 const ADOPTION_POLL_MS = 100;
 const GEN_FILE = /^([1-9]\d*)\.json$/;
+// A generation record staged for publishing (storeLock's `<lock>.tmp-<hex>`).
+const STAGED_GEN_FILE = /^[1-9]\d*\.json\.tmp-/;
 
 export interface RootLockRecord {
   v: 1;
@@ -59,7 +62,6 @@ export interface RootLock {
   // Offer the next generation to a replacement presenting `next`. False when
   // the record is no longer ours.
   offerHandover(next: string): boolean;
-  withdrawHandover(): void;
   // Resolves true once a higher generation exists or our record no longer
   // carries our token, false on the timeout or when `signal` aborts.
   awaitAdoption(opts: { timeoutMs: number; signal?: AbortSignal }): Promise<boolean>;
@@ -78,6 +80,19 @@ export class RootLockHeldError extends Error {
   }
 }
 
+// A top record nothing can parse. It may be a live holder's, mid-create on a
+// filesystem without hard links, so it is never superseded: boot stops until
+// someone who knows no server runs deletes it.
+export class RootLockUnreadableError extends Error {
+  readonly code = 'ROOT_LOCK_UNREADABLE';
+  readonly lockPath: string;
+  constructor(root: string, lockPath: string) {
+    super(`the projects-root lock record ${lockPath} cannot be read; if no code-conductor server is running on ${root}, delete it and start again`);
+    this.name = 'RootLockUnreadableError';
+    this.lockPath = lockPath;
+  }
+}
+
 interface Log { warn: (...args: unknown[]) => void }
 
 function errCode(e: unknown): string | undefined {
@@ -90,9 +105,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// A test seam: runs between staging a generation's record and publishing it,
-// the window a starved or preempted creator sits in.
-export interface AcquireHooks { beforePublish?: (gen: number) => Promise<void> }
+// Test seams. `beforePublish` runs between preparing a generation's record and
+// publishing it — the window a starved or preempted creator sits in;
+// `beforeListen` between a socket path's last probe and its bind.
+export interface AcquireHooks {
+  beforePublish?: (gen: number) => Promise<void>;
+  beforeListen?: (address: string) => Promise<void>;
+}
 
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -143,9 +162,8 @@ function readRaw(file: string): string | 'missing' {
   }
 }
 
-// A record is published whole (a hard link) and rewritten whole (a rename),
-// so a reader never sees one half-written: an unparseable record is
-// corruption, not a holder mid-create, and names no socket to probe.
+// 'bad' is a record nothing can parse: corruption, or — where the filesystem has
+// no hard links — a holder's record caught between its create and its write.
 function readRecord(file: string): RootLockRecord | 'missing' | 'bad' {
   const raw = readRaw(file);
   if (raw === 'missing') return 'missing';
@@ -190,14 +208,24 @@ export async function probeHolder(rec: RootLockRecord, lockDir: string, platform
 interface Listener { sock: RootLockSock; server: net.Server; addr: SocketAddress }
 interface Holder extends Listener { token: string; token8: string }
 
-// Listen at `sock`, or 'taken' when something already answers there. A path is
-// never unlinked while a listener answers on it: a token that collided with a
-// live holder's must not take that holder's socket away.
-async function listenOn(lockDir: string, sock: RootLockSock, platform: Platform): Promise<Listener | 'taken'> {
+// Listen at `sock`, or 'taken' when something already answers there.
+//
+// What holds: a file at our path is unlinked only after a probe found no
+// listener answering on it, and the path is probed again after the unlink, so
+// a listener that bound in between makes the path 'taken'; one that binds after
+// that second probe makes our bind fail EADDRINUSE, also 'taken'. What does
+// not: a listener that binds between the first probe and the unlink loses its
+// file to it. Only two holders minting tokens with one sha256 prefix
+// (`token8`) can share a path, and tokens carry 8 random bytes.
+async function listenOn(lockDir: string, sock: RootLockSock, platform: Platform, hooks: AcquireHooks): Promise<Listener | 'taken'> {
   const addr = platform.socketConnectPath(lockDir, sock);
   try {
     if (await probeAddress(addr.path) === 'alive') { addr.release(); return 'taken'; }
-    if (sock.kind !== 'pipe') fs.rmSync(addr.path, { force: true });
+    if (sock.kind !== 'pipe') {
+      fs.rmSync(addr.path, { force: true });
+      if (await probeAddress(addr.path) === 'alive') { addr.release(); return 'taken'; }
+    }
+    await hooks.beforeListen?.(addr.path);
     const server = net.createServer((s) => { s.on('error', () => {}); s.destroy(); });
     try {
       await new Promise<void>((resolve, reject) => {
@@ -221,19 +249,19 @@ async function listenOn(lockDir: string, sock: RootLockSock, platform: Platform)
   }
 }
 
-async function listenHolder(lockDir: string, mintToken: () => string, platform: Platform, log: Log): Promise<Holder> {
+async function listenHolder(lockDir: string, mintToken: () => string, platform: Platform, log: Log, hooks: AcquireHooks): Promise<Holder> {
   for (let i = 0; i < TOKEN_ATTEMPTS; i++) {
     const token = mintToken();
     const token8 = tokenHash8(token);
     const sock = platform.rootLockEndpoint(lockDir, token8);
     let l: Listener | 'taken';
     try {
-      l = await listenOn(lockDir, sock, platform);
+      l = await listenOn(lockDir, sock, platform, hooks);
     } catch (e) {
       if (sock.kind !== 'store') throw e;
       const fallback = platform.rootLockEndpoint(lockDir, token8, { storeUsable: false });
       log.warn(`root lock: ${lockDir} cannot hold a socket (${errCode(e) ?? String(e)}); listening at ${fallback.kind === 'tmp' ? fallback.path : fallback.name} instead — a server in another container sharing this projects root will not see this one`);
-      l = await listenOn(lockDir, fallback, platform);
+      l = await listenOn(lockDir, fallback, platform, hooks);
     }
     if (l !== 'taken') return { ...l, token, token8 };
   }
@@ -261,7 +289,9 @@ function writeAtomicSync(file: string, content: string, token8: string): void {
 // Drop every generation below ours whose holder is dead, with its socket file.
 // One whose socket still answers is left alone — a contender between its
 // publish and its confirm, or a restarting parent waiting to exit; each removes
-// its own record.
+// its own record. An unparseable one below ours cannot be the lock (ours is the
+// confirmed highest): at most a contender's mid-create record, which backs off
+// at its confirm. It is dropped, so it never surfaces as the top later.
 async function collectBelow(lockDir: string, mine: number, platform: Platform): Promise<void> {
   for (const g of listGens(lockDir)) {
     if (g >= mine) continue;
@@ -273,6 +303,16 @@ async function collectBelow(lockDir: string, mine: number, platform: Platform): 
     if (rec === 'bad' || rec.sock.kind === 'pipe') continue;
     const addr = platform.socketConnectPath(lockDir, rec.sock);
     try { fs.rmSync(addr.path, { force: true }); } finally { addr.release(); }
+  }
+}
+
+// Drop staged generation records and link-probe files from the lock dir. A
+// live creator's staged record belongs to a contender that will be refused:
+// its publish fails ENOENT, and its next pass meets us. A live link probe
+// retries (storeLock's probeLinks).
+function sweepStaging(lockDir: string): void {
+  for (const name of fs.readdirSync(lockDir)) {
+    if (STAGED_GEN_FILE.test(name) || name.startsWith(LINK_PROBE_PREFIX)) fs.rmSync(path.join(lockDir, name), { force: true });
   }
 }
 
@@ -290,7 +330,7 @@ export async function acquireRootLock({
   delete env[ROOT_LOCK_HANDOVER_ENV];
   // Listen BEFORE any record names us: a record is probe-able from the moment
   // it exists, so no contender can read a fresh one as dead.
-  const holder = await listenHolder(lockDir, mintToken, platform, log);
+  const holder = await listenHolder(lockDir, mintToken, platform, log, hooks);
   const { token, token8 } = holder;
   const record = (handoverTo: string | null): string =>
     JSON.stringify({ v: 1, pid: process.pid, token, sock: holder.sock, handoverTo } satisfies RootLockRecord);
@@ -300,19 +340,28 @@ export async function acquireRootLock({
       if (top !== undefined) {
         const rec = readRecord(genPath(lockDir, top));
         if (rec === 'missing') continue; // released under us — look again
+        if (rec === 'bad') throw new RootLockUnreadableError(root, genPath(lockDir, top));
         // A live top refuses us — unless it offered its successor to us. The
         // offer only skips this refusal; the generation is taken below like any.
-        const offered = rec !== 'bad' && handover !== null && rec.handoverTo === handover;
-        if (rec !== 'bad' && !offered && await probeHolder(rec, lockDir, platform) === 'alive') {
+        const offered = handover !== null && rec.handoverTo === handover;
+        if (!offered && await probeHolder(rec, lockDir, platform) === 'alive') {
           throw new RootLockHeldError(root, rec.pid, genPath(lockDir, top));
         }
       }
       const mine = (top ?? 0) + 1;
-      const staged = stageLockFileSync(genPath(lockDir, mine), record(null));
+      const pending = prepareLockFileSync(genPath(lockDir, mine), record(null));
       try { await hooks.beforePublish?.(mine); }
-      catch (e) { fs.rmSync(staged, { force: true }); throw e; }
+      catch (e) { pending.abandon(); throw e; }
+      let published: boolean;
+      try { published = pending.publish(); }
+      catch (e) {
+        // Our staged record was swept by a server that took the root meanwhile:
+        // look again, and meet it.
+        if (errCode(e) === 'ENOENT') continue;
+        throw e;
+      }
       // Taken by a contender that judged the same top: look again, and meet it.
-      if (!publishLockFileSync(staged, genPath(lockDir, mine))) continue;
+      if (!published) continue;
       // A contender that published a lower generation backs off here; the next
       // pass probes the higher one, which listened before it existed.
       if (maxGen(listGens(lockDir)) !== mine) {
@@ -320,6 +369,7 @@ export async function acquireRootLock({
         continue;
       }
       await collectBelow(lockDir, mine, platform);
+      sweepStaging(lockDir);
       return holdLock(lockDir, mine, token, token8, holder, record);
     }
     throw new Error(`root lock: could not settle ${lockDir} after ${ACQUIRE_ATTEMPTS} attempts`);
@@ -353,7 +403,6 @@ function holdLock(
   const lock: RootLock = {
     dir, gen, token,
     offerHandover: (next) => rewrite(next),
-    withdrawHandover: () => { rewrite(null); },
     async awaitAdoption({ timeoutMs, signal }) {
       const deadline = Date.now() + timeoutMs;
       for (;;) {

@@ -241,10 +241,9 @@ export async function spawnReplacementAndExit({
     log.log?.(`restart: spawned replacement pid=${child.pid}; exiting current pid=${process.pid}`);
   } catch (e) {
     log.error?.('restart: spawn failed', e);
-    if (handingOver) {
-      try { rootLock?.withdrawHandover(); }
-      catch (we) { log.warn?.('restart: could not withdraw the projects-root lock offer', we); }
-    }
+    // Networking is already down, so this process serves nothing: let the next
+    // server that starts take the root (releasing also drops the offer).
+    if (handingOver) rootLock?.releaseSync();
     // No replacement — don't exit, or the user is left with a dead app.
     return;
   }

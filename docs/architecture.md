@@ -831,7 +831,7 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   ├── pending-temp-cleanup.json            # transient — temp-cleanup manifest (normal restart); swept+unlinked on boot
 │   ├── server-lock/                         # the projects-root lock (src/rootLock.ts) — see "The projects-root lock"
 │   │   ├── <gen>.json                       # one record per generation; the highest present is the lock
-│   │   ├── <gen>.json.tmp-<hex>             # a record staged for publishing (transient)
+│   │   ├── <gen>.json.tmp-<hex>             # a record staged for publishing (transient; swept on acquire)
 │   │   └── <token8>.sock                    # a holder's listening socket (POSIX, `store` endpoint)
 │   ├── systems/<systemId>/
 │   │   └── retired-session-roots-<ms>/     # ONLY on an install upgraded past the FUSE-union geometry:
@@ -944,15 +944,16 @@ Orchestrator state stays in the central store; the only cc-written file inside a
 ## The projects-root lock
 `src/rootLock.ts`. At most one cc server runs on a projects root. `start()` (`server.ts`) calls `acquireRootLock({storeDir, platform})` **first**, before `measureBootCommit`, `runMigrations` and every sweep, and releases it if the rest of the boot throws. So a refused server never consumes the holder's `pending-resume.json` / `pending-temp-cleanup.json`, never runs the session-tmp `rm -rf` or the FUSE sweep, and never adopts or prunes plugins.
 
-- **Refusal.** `RootLockHeldError` (`code: 'ROOT_LOCK_HELD'`, `holderPid`, `lockPath`), message `another code-conductor server (pid <N>) holds the projects root <root> (<lockDir>/<gen>.json); refusing to start`. The `server.ts` entry prints it to stderr and exits **`ROOT_LOCK_HELD_EXIT` (7)**; any other boot failure still exits 1. The refusal is immediate: a contender never waits for a live holder.
+- **Refusal.** `RootLockHeldError` (`code: 'ROOT_LOCK_HELD'`, `holderPid`, `lockPath`), message `another code-conductor server (pid <N>) holds the projects root <root> (<lockDir>/<gen>.json); refusing to start`; or `RootLockUnreadableError` (`code: 'ROOT_LOCK_UNREADABLE'`, `lockPath`) when the top record cannot be parsed, message `the projects-root lock record <lockDir>/<gen>.json cannot be read; if no code-conductor server is running on <root>, delete it and start again`. The `server.ts` entry prints either to stderr and exits **`ROOT_LOCK_HELD_EXIT` (7)**; any other boot failure still exits 1. The refusal is immediate: a contender never waits for a live holder.
 - **Scope: one kernel.** It protects servers on the same kernel: the host and its containers, and Docker Desktop containers among themselves (one VM kernel). It does **not** protect a root shared across machines (NFS), or between a macOS host process and a Docker Desktop container — a socket file may not connect across that share, so a live holder can read as dead. Keeping those runs apart is the caller's job.
 
 **Layout** — `<store>/server-lock/` (`ROOT_LOCK_DIRNAME`):
 
 | Entry | What |
 |---|---|
-| `<gen>.json` | A record per generation, `gen` a positive integer (`/^[1-9]\d*\.json$/`). The highest one present is the lock. Published whole by `stageLockFileSync` + `publishLockFileSync` (`src/storeLock.ts`, the create `withLock` uses too); rewritten whole for an offer (`<gen>.json.tmp-<token8>` + rename, EPERM/EBUSY retried on Windows). |
-| `<gen>.json.tmp-<hex>` | A record staged for publishing; never a generation. Removed by the publish either way; only a creator killed between the two steps leaves one. |
+| `<gen>.json` | A record per generation, `gen` a positive integer (`/^[1-9]\d*\.json$/`). The highest one present is the lock. Created exclusively by `prepareLockFileSync(…).publish()` (`src/storeLock.ts`, the create `withLock` uses too — see Creating a lockfile); rewritten whole for an offer (`<gen>.json.tmp-<token8>` + rename, EPERM/EBUSY retried on Windows). |
+| `<gen>.json.tmp-<hex>` | A record staged for publishing (hard-link mode only); never a generation. The publish removes it either way; a successful acquire **sweeps** every one in the lock dir, so one left by a killed creator does not stay. A live creator whose staged record is swept gets `ENOENT` from its publish, looks again, meets the new holder and is refused. |
+| `.cc-link-probe-<hex>`, `….link` | `storeLock`'s hard-link capability probe (`LINK_PROBE_PREFIX`); removed by the probe, swept like the above. A probe whose file is swept mid-probe retries. |
 | `<token8>.sock` | A holder's listening socket for a `store` endpoint. `token8` = first 8 hex chars of sha256 of the holder's token. |
 
 **Record (v1):** `{v: 1, pid, token, sock, handoverTo}`.
@@ -961,7 +962,23 @@ Orchestrator state stays in the central store; the only cc-written file inside a
 - `sock` — `{kind:'store', name}` (relative to the lock dir; `.`/`..` make the record unparseable), `{kind:'tmp', path}` or `{kind:'pipe', name}`.
 - `handoverTo` — the offer a restart replacement presents to take the next generation over this live holder; `null` otherwise.
 
-**Publishing.** A record is written to a uniquely named staging file, then hard-linked to `<gen>.json` (`linkSync`; `EEXIST` is the exclusivity test), then the staging file is removed. A reader therefore never sees a created-but-unwritten record however long the creator is starved, and an offer rewrite is a rename. **The store's filesystem must support hard links** (NTFS, ext4, f2fs, APFS do); `withLock` shares this requirement.
+**Creating a lockfile** (`src/storeLock.ts`, shared by the root lock and `withLock`). The mode is probed once per directory — keyed by its realpath, cached for the process, and logged once: a temp file in the dir is `linkSync`ed to a second unique temp name (so `EEXIST` cannot occur), then both are removed.
+
+| Probe outcome | Mode | Create |
+|---|---|---|
+| link succeeds | **link** | write a uniquely named staging file, `linkSync` it to the lock path (`EEXIST` → taken), remove the staging file. A reader never sees a created-but-unwritten lockfile, however long the creator is starved. |
+| `EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS` (FAT/exFAT, Android shared storage) — and `EXDEV`, with an extra warning | **in place** | `openSync(path, 'wx')` + `writeSync` + `closeSync` (`EEXIST` → taken; a failed write removes what it created). Never a rename. A reader can see the file empty for a moment, and **a crash between the create and the write leaves an empty lockfile that must be deleted by hand.** |
+| any other code (`EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `ENOENT`, `ENOTDIR`, `ENAMETOOLONG`, `EMLINK`, `EIO`…) | — | propagates; nothing is cached, the next create probes again |
+
+Both readers are safe with the in-place window without agreeing on a mode: `withLock` never reclaims a record without a pid (it waits it out), and the root lock treats **every** unparseable record as held, on every filesystem.
+
+**`withLock`'s files** (`src/storeLock.ts`; beside each locked data file, e.g. `<store>/sessions.json`):
+
+| File | What |
+|---|---|
+| `<data>.lock` | `{pid, ts, token}`. Reclaimed only when `pid` is dead; a record without a pid (an in-place create caught mid-write) is waited out, never stolen — past `ORCH_STORE_LOCK_RETRY_MAX` retries the acquire throws `storeLock: could not acquire …`, so an empty lockfile a crash left fails every write until it is deleted. Release is token-checked. |
+| `<data>.lock.tmp-<hex>` | A lockfile staged for publishing (link mode). **Not swept**: a live waiter's staged file could be one. A creator killed between staging and publishing leaves it behind. |
+| `<data>.lock.reclaim` | The dead-owner reclaim marker, created with the same create. Only its holder may unlink `<data>.lock`, and only while that still holds exactly the record judged dead — so two waiters on one dead owner can never delete each other's fresh lock. A marker whose own `pid` is dead is cleared (only while unchanged); two waiters clearing one such stale marker at the same instant can both reclaim, which needs a reclaimer to die inside a few synchronous calls and is not closed. A live marker is respected (the waiter backs off, bounded by `ORCH_STORE_LOCK_RETRY_MAX`). |
 
 **Why no pid liveness.** A record's pid means nothing to a reader in another pid namespace (two containers on one bind-mounted store, a host and a container): it reads as absent (→ "dead") or as the reader's own pid, and either would steal a live lock. `withLock`'s pid-liveness reclaim (`isProcessAlive`) stays as it is — its holders are this host's own short critical sections.
 
@@ -975,7 +992,7 @@ Orchestrator state stays in the central store; the only cc-written file inside a
 | POSIX, longer, no `/proc` (macOS) | `tmp`: `<os.tmpdir()>/cc-root-<sha16>-<token8>.sock`. |
 | A store that refuses a socket (listen fails with anything but `EADDRINUSE`: FAT, some FUSE mounts) | falls back to `tmp`, with one warning that a server in another container on this root will not see this one. |
 
-**Listening.** The holder first probes its own address: if something answers there (a token that collided with a live holder's), it mints a fresh token and tries again (`TOKEN_ATTEMPTS`, then it throws) — **a path a listener answers on is never unlinked**. Otherwise it removes a leftover file at that path and listens with `readableAll`/`writableAll` (a contender running as another uid can still probe); `EADDRINUSE` at listen also means "taken". The server is unref'd and destroys every accepted connection.
+**Listening.** The holder probes its own address; if something answers (a token that collided with a live holder's), the path is "taken". Otherwise it removes the leftover file at that path, probes again (answering → "taken"), and listens with `readableAll`/`writableAll` (a contender running as another uid can still probe); `EADDRINUSE` from the bind is "taken" too. A "taken" path mints a fresh token and tries again (`TOKEN_ATTEMPTS`, then it throws). **What holds:** a file is unlinked only after a probe found nothing answering on it, and a listener that binds after the unlink makes the path "taken" (by the second probe or by the bind). **What does not:** a listener that binds between the first probe and the unlink loses its file. Only two holders whose tokens share a sha256 prefix (`token8`) can meet on a path, and tokens carry 8 random bytes. The server is unref'd and destroys every accepted connection.
 
 **Probe** — `probeHolder(rec, lockDir, platform)`: one `net.connect`, bounded by `PROBE_TIMEOUT_MS`.
 
@@ -987,24 +1004,25 @@ Orchestrator state stays in the central store; the only cc-written file inside a
 
 The kernel completes a unix-socket connect into the listen backlog without the holder's event loop running, so a holder starved for minutes (Termux) still probes alive; nothing is evicted on age. When the holder dies by any means, `SIGKILL` and a host reboot included, nothing listens on the recorded socket and the next probe reads dead at once — no exit handler is needed, and the lock never consults time.
 
-**An unparseable record** (empty, malformed, a `.`/`..` socket name) cannot be a holder mid-create — publishing and rewriting are atomic — so it is corruption: it names no socket to probe, is superseded like a dead one, and is collected. No re-read delay applies.
+**An unparseable top record** (empty, malformed, a `.`/`..` socket name) is treated as **held**: `RootLockUnreadableError`, exit 7, the record left in place. In in-place mode it can be a live holder's record between its create and its write, and superseding it would make two holders. In link mode it can only be corruption, but the rule is the same on every filesystem, so two processes never need to agree on a mode. **The cost:** a corrupted record — or, in in-place mode, one left empty by a crash — blocks every boot on that root until a person deletes it.
 
 **Acquire** — `acquireRootLock({storeDir, platform, env, log, mintToken, hooks})` (`mintToken` and `hooks.beforePublish` are test seams):
 1. `mkdir -p` the lock dir. Read and delete `env.CC_ROOT_LOCK_HANDOVER` (`ROOT_LOCK_HANDOVER_ENV`), so it never reaches a CLI or plugin env.
 2. Mint a token and **listen first** (Listening above), so any record naming us is probe-able from the moment it exists.
 3. Up to `ACQUIRE_ATTEMPTS` passes:
-   - Read the top generation's record. It probes **alive** → close our listener, throw `RootLockHeldError` — **unless it offers its successor to us** (`handover` set and `rec.handoverTo === handover`). The offer only skips this refusal; nothing is rewritten into a lock.
-   - Stage `<top+1>.json` and publish it (`EEXIST` → next pass, which meets whoever published it). **Confirm** it is still the highest; if not, unlink ours and take another pass (which probes the higher one alive and refuses).
-   - **Collect**: for every `<g>.json` below ours whose socket does **not** answer (or that is unparseable), unlink it and its socket file. One that answers stays — a contender between its publish and its confirm, or a restarting parent waiting to exit; each removes its own.
+   - Read the top generation's record. Unparseable → close our listener, throw `RootLockUnreadableError`. It probes **alive** → close our listener, throw `RootLockHeldError` — **unless it offers its successor to us** (`handover` set and `rec.handoverTo === handover`). The offer only skips this refusal; nothing is rewritten into a lock.
+   - Prepare `<top+1>.json` and publish it (`EEXIST` → next pass, which meets whoever published it; `ENOENT` — our staged record was swept by a new holder — likewise). **Confirm** it is still the highest; if not, unlink ours and take another pass (which probes the higher one alive and refuses).
+   - **Collect**: for every `<g>.json` below ours whose socket does **not** answer, or that is unparseable (below the confirmed top it can at most be a contender's mid-create record, which backs off at its confirm), unlink it and its socket file. One that answers stays — a contender between its publish and its confirm, or a restarting parent waiting to exit; each removes its own.
+   - **Sweep** the lock dir's staged records and link-probe files.
 4. Install a `process.on('exit')` handler running `releaseSync()`.
 
 Every holder, a restart's replacement included, takes the lock by an exclusive publish and a confirm. A contender that judged a generation dead and was then preempted can only lose that publish to whoever took the next generation, and meets it alive on its next pass — so there is never a second holder, and a dead generation is never resurrected.
 
-**`RootLock`** — `{dir, gen, token, offerHandover(next), withdrawHandover(), awaitAdoption({timeoutMs, signal}), releaseSync()}`. `awaitAdoption` resolves true once a higher generation exists or our record no longer carries our token. `releaseSync()` (the exit handler; boot failures, `start()` included; the restart parent) unlinks `<gen>.json` only while it still carries our token, closes the listener and removes our own socket file. A signal death skips it; the probe self-heals.
+**`RootLock`** — `{dir, gen, token, offerHandover(next), awaitAdoption({timeoutMs, signal}), releaseSync()}`. `awaitAdoption` resolves true once a higher generation exists or our record no longer carries our token. `releaseSync()` (the exit handler; boot failures, `start()` included; the restart parent) unlinks `<gen>.json` only while it still carries our token, closes the listener and removes our own socket file. A signal death skips it; the probe self-heals.
 
 **Restart handover** (`spawnReplacementAndExit`, `src/restart.ts`; `RelaunchOptions.rootLock` → `runRestart({rootLock})` → `spawnAndExit({log, rootLock})`):
 1. `next = mintLockToken()`; `offerHandover(next)` writes `handoverTo: next` into our record **before** the spawn. If the offer throws or finds the record no longer ours, the lock is **released** instead (`releaseSync`) and the child is spawned without an offer and boots like any server — the relaunch is already committed, and one gap beats a process serving nothing.
-2. Spawn with `CC_ROOT_LOCK_HANDOVER=next` in the child's env only. A spawn that throws → `withdrawHandover()`, keep the process.
+2. Spawn with `CC_ROOT_LOCK_HANDOVER=next` in the child's env only. A spawn that throws → `releaseSync()` (which drops the offer too) and keep the process — its networking is already down, so the next server started takes the root.
 3. `awaitAdoption({timeoutMs: CC_ROOT_LOCK_HANDOVER_WAIT_MS, signal})` polls every `ADOPTION_POLL_MS` until the child has published the next generation, the child exits, or the wait runs out; meanwhile our lock socket keeps answering (the HTTP server is already closed). A failure reading the record is logged and treated as "not adopted".
 4. `exit(0)`, never sooner than 50 ms after the spawn; the exit handler removes our own, now lower, record.
 
@@ -1012,8 +1030,8 @@ Every holder, a restart's replacement included, takes the lock by an exclusive p
 |---|---|---|
 | offer written, child booting | the parent's, listening | alive → refused |
 | child published `<gen+1>` | the child's, listening before it existed | alive → refused |
-| the child died before publishing; the parent's wait ran out and it exited | the parent's, closed | dead → publishes `<gen+1>` (a correct self-heal) |
-| the parent exited on its timeout; the child and a third server both judge its generation | the parent's, closed | both race to publish `<gen+1>`: exactly one wins, the other meets it alive and is refused (the child exits 7) |
+| the child died before publishing; the parent's wait ran out and it exited cleanly | none — the parent's exit handler removed its record | an empty lock dir → publishes generation 1 |
+| the parent died by a signal while offering (no exit handler ran) | the parent's, closed, still offering | dead → publishes `<gen+1>`. A child presenting the offer may race it: exactly one holder results, and the other meets it alive and is refused |
 
 The replacement reads `pending-resume.json` / `pending-temp-cleanup.json` only after it holds the lock (`acquireRootLock` runs first in `start()`), so a resume restart carries over exactly as without the lock.
 

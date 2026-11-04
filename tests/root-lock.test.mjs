@@ -10,13 +10,14 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  acquireRootLock, probeHolder, parseRootLockRecord, RootLockHeldError,
+  acquireRootLock, probeHolder, parseRootLockRecord, RootLockHeldError, RootLockUnreadableError,
   ROOT_LOCK_DIRNAME, ROOT_LOCK_HANDOVER_ENV, ROOT_LOCK_HELD_EXIT,
 } from '../src/rootLock.ts';
 import { hostPlatform } from '../src/platform/index.ts';
 import { createPosixPlatform } from '../src/platform/posix.ts';
 import { createWin32Platform } from '../src/platform/win32.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { LINK_PROBE_PREFIX } from '../src/storeLock.ts';
 
 const HOLDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'rootLockHolder.mjs');
 const QUIET = { warn() {} };
@@ -164,8 +165,8 @@ test('concurrent contenders on a fresh root: exactly one holds', async (t) => {
   }
 });
 
-// A record is only ever published or rewritten whole, so an unreadable one is
-// corruption: it names no socket to probe and is superseded.
+// An unreadable top record is never superseded — on a filesystem without hard
+// links it can be a live holder's, caught between its create and its write.
 const SOCK_BASE = { v: 1, pid: 1, token: 't', handoverTo: null };
 for (const [label, body] of [
   ['empty', ''],
@@ -173,13 +174,18 @@ for (const [label, body] of [
   ['`.` store-socket', JSON.stringify({ ...SOCK_BASE, sock: { kind: 'store', name: '.' } })],
   ['`..` store-socket', JSON.stringify({ ...SOCK_BASE, sock: { kind: 'store', name: '..' } })],
 ]) {
-  test(`an ${label} top record is superseded, and collected without error`, async (t) => {
+  test(`an ${label} top record refuses the boot with RootLockUnreadableError and is left in place`, async (t) => {
     const root = await freshRoot(t);
     fs.mkdirSync(lockDirOf(root), { recursive: true });
-    fs.writeFileSync(path.join(lockDirOf(root), '1.json'), body);
-    const lock = await acquire(t, root);
-    assert.equal(lock.gen, 2);
-    assert.deepEqual(genFiles(root), ['2.json']);
+    const file = path.join(lockDirOf(root), '1.json');
+    fs.writeFileSync(file, body);
+    await assert.rejects(
+      acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET }),
+      (e) => e instanceof RootLockUnreadableError && e.code === 'ROOT_LOCK_UNREADABLE' && e.lockPath === file && e.message.includes(file),
+    );
+    assert.deepEqual(genFiles(root), ['1.json']);
+    assert.equal(fs.readFileSync(file, 'utf8'), body);
+    assert.deepEqual(fs.readdirSync(lockDirOf(root)).filter((n) => n.endsWith('.sock')), [], 'the refused contender closed its socket');
   });
 }
 
@@ -288,9 +294,11 @@ test('handover: the offered replacement publishes the next generation over its l
   await assert.rejects(acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET }), RootLockHeldError);
 });
 
-// The record a parent leaves when its handover wait runs out and it exits:
-// still offering T2, naming a socket nothing listens on any more.
-async function deadOfferingParent(t, root) {
+// The record a parent leaves when it dies by a signal while offering T2: still
+// offering, naming a socket nothing listens on any more. (A clean exit —
+// including one on the handover wait's timeout — runs the exit handler, which
+// removes the record.)
+async function signalKilledOfferingParent(t, root) {
   const parent = await acquire(t, root);
   parent.offerHandover('T2');
   const file = path.join(lockDirOf(root), `${parent.gen}.json`);
@@ -306,9 +314,9 @@ const onceBeforePublish = (fn) => {
   return { beforePublish: async (gen) => { if (!done) { done = true; await fn(gen); } } };
 };
 
-test('handover race: a third server that supersedes the dead offering parent while the child is preempted wins alone', async (t) => {
+test('handover race: a third server that supersedes the signal-killed offering parent while the child is preempted holds alone', async (t) => {
   const root = await freshRoot(t);
-  const parentGen = await deadOfferingParent(t, root);
+  const parentGen = await signalKilledOfferingParent(t, root);
   let third;
   // The child has read the offer and staged its record when it is preempted;
   // the third server judges the parent dead and takes the root meanwhile.
@@ -325,7 +333,7 @@ test('handover race: a third server that supersedes the dead offering parent whi
 
 test('handover race: a child that publishes first holds alone; the third server meets it', async (t) => {
   const root = await freshRoot(t);
-  const parentGen = await deadOfferingParent(t, root);
+  const parentGen = await signalKilledOfferingParent(t, root);
   // The third server judged the dead parent too, and is preempted with its record staged.
   let child;
   const third = acquireRootLock({
@@ -337,19 +345,25 @@ test('handover race: a child that publishes first holds alone; the third server 
   assert.deepEqual(genFiles(root), [`${child.gen}.json`]);
 });
 
-test('a starved creator\'s staged record is invisible: a contender takes the root, and the creator then meets it', async (t) => {
+const stagedFiles = (root) => fs.readdirSync(lockDirOf(root)).filter((n) => n.includes('.tmp-'));
+
+test('a starved creator\'s staged record is invisible and swept: a contender takes the root, and the creator then meets it', async (t) => {
   const root = await freshRoot(t);
   let contender;
   let seenWhilePaused;
+  let stagedAfterContender;
   const creator = acquireRootLock({
     storeDir: storeOf(root), platform: hostPlatform, log: QUIET,
     hooks: onceBeforePublish(async () => {
       seenWhilePaused = genFiles(root);
       contender = await acquire(t, root);
+      stagedAfterContender = stagedFiles(root);
     }),
   });
+  // Its publish fails ENOENT (the record was swept); it looks again and is refused.
   await assert.rejects(creator, RootLockHeldError);
   assert.deepEqual(seenWhilePaused, [], 'a staged record is no generation');
+  assert.deepEqual(stagedAfterContender, [], 'the new holder swept the creator\'s staged record');
   assert.equal(contender.gen, 1);
   assert.deepEqual(genFiles(root), ['1.json']);
   assert.deepEqual(fs.readdirSync(lockDirOf(root)).filter((n) => n.includes('.tmp-')), [], 'no staging file is left behind');
@@ -380,6 +394,39 @@ test('a contender whose every minted token collides gives up without touching th
   assert.equal(await probeHolder(readRec(root, holder.gen), lockDirOf(root), hostPlatform), 'alive');
 });
 
+test('a successful acquire sweeps leftover staged records and link-probe files from the lock dir', async (t) => {
+  const root = await freshRoot(t);
+  fs.mkdirSync(lockDirOf(root), { recursive: true });
+  for (const n of ['4.json.tmp-deadbeef', `${LINK_PROBE_PREFIX}cafe`, `${LINK_PROBE_PREFIX}cafe.link`]) {
+    fs.writeFileSync(path.join(lockDirOf(root), n), '');
+  }
+  const lock = await acquire(t, root);
+  const left = fs.readdirSync(lockDirOf(root)).sort();
+  assert.deepEqual(left, [`${lock.gen}.json`, readRec(root, lock.gen).sock.name].sort());
+});
+
+test('a socket path that a listener takes between the last probe and the bind is \'taken\': the contender mints again and proceeds', async (t) => {
+  const root = await freshRoot(t);
+  const minted = ['FIRST', 'SECOND'];
+  const blocker = net.createServer((s) => s.destroy());
+  t.after(() => blocker.close());
+  let blocked;
+  const lock = await acquire(t, root, {
+    mintToken: () => minted.shift(),
+    hooks: {
+      beforeListen: async (address) => {
+        if (blocked) return;
+        blocked = address;
+        await new Promise((resolve) => blocker.listen(address, resolve));
+      },
+    },
+  });
+  assert.deepEqual(minted, [], 'a second token was minted');
+  assert.equal(lock.gen, 1);
+  assert.notEqual(path.join(lockDirOf(root), readRec(root, 1).sock.name), blocked, 'it holds at the second token\'s path');
+  assert.equal(await connectOnce(blocked), 'connected', 'the other listener keeps its socket');
+});
+
 test('collection keeps a lower generation whose socket still answers', async (t) => {
   const root = await freshRoot(t);
   const low = await acquire(t, root);
@@ -392,15 +439,18 @@ test('collection keeps a lower generation whose socket still answers', async (t)
   assert.equal(readRec(root, 1).token, low.token);
 });
 
-test('handover: a withdrawn offer is refused while the holder lives', async (t) => {
+test('handover: a token the live holder never offered is refused', async (t) => {
   const root = await freshRoot(t);
   const parent = await acquire(t, root);
   parent.offerHandover('T2');
-  parent.withdrawHandover();
-  assert.equal(readRec(root, parent.gen).handoverTo, null);
   await assert.rejects(
-    acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, env: { [ROOT_LOCK_HANDOVER_ENV]: 'T2' }, log: QUIET }),
+    acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, env: { [ROOT_LOCK_HANDOVER_ENV]: 'T3' }, log: QUIET }),
     RootLockHeldError,
+  );
+  await assert.rejects(
+    acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET }),
+    RootLockHeldError,
+    'nor is a contender presenting none',
   );
   assert.equal(await parent.awaitAdoption({ timeoutMs: 150 }), false, 'nobody adopted');
 });

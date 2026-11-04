@@ -218,7 +218,6 @@ function stubLock(order, { offer = () => true } = {}) {
     lock: {
       offerHandover(next) { order.push(['offer', next]); return offer(); },
       releaseSync() { order.push(['release']); },
-      withdrawHandover() { order.push(['withdraw']); },
       async awaitAdoption(opts) { order.push(['await', opts.timeoutMs]); return adopted; },
     },
   };
@@ -250,7 +249,7 @@ test('spawnReplacementAndExit: the offer precedes the spawn, the child carries t
   assert.deepEqual(order.at(-1), ['exit', 0]);
 });
 
-test('spawnReplacementAndExit: a spawn that throws withdraws the offer and does not exit', async () => {
+test('spawnReplacementAndExit: a spawn that throws releases the lock (dropping the offer) and does not exit', async () => {
   const order = [];
   const { lock } = stubLock(order);
   await spawnReplacementAndExit({
@@ -259,7 +258,7 @@ test('spawnReplacementAndExit: a spawn that throws withdraws the offer and does 
     exit: (code) => order.push(['exit', code]),
   });
   await new Promise((r) => setTimeout(r, 80));
-  assert.deepEqual(order.map(([k]) => k), ['offer', 'spawn', 'withdraw']);
+  assert.deepEqual(order.map(([k]) => k), ['offer', 'spawn', 'release']);
 });
 
 for (const [label, offer] of [

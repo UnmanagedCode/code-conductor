@@ -165,3 +165,14 @@ test('start() releases the root lock when a boot step after the acquire throws',
   t.after(() => lock.releaseSync());
   assert.equal(lock.gen, 1);
 });
+
+test('an unreadable lock record refuses a server with exit 7, naming the record to delete', async (t) => {
+  const home = await freshHome(t);
+  fs.mkdirSync(lockDirOf(home), { recursive: true });
+  const record = path.join(lockDirOf(home), '1.json');
+  fs.writeFileSync(record, '');
+  const refused = spawnServer(t, home);
+  assert.equal((await refused.exited).code, 7, `stderr=${refused.out.stderr}`);
+  assert.ok(refused.out.stderr.includes(record), refused.out.stderr);
+  assert.equal(fs.readFileSync(record, 'utf8'), '', 'the record is left for a person to judge');
+});
