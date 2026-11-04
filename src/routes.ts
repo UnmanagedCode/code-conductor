@@ -31,6 +31,7 @@ import { buildPluginApi } from './plugins/api.ts';
 import type { PluginHostApiLike, PluginLibraryApiLike } from './plugins/api.ts';
 import { buildPlaybookApi } from './playbookApi.ts';
 import { runRestart, type RestartPhase } from './restart.ts';
+import type { RootLock } from './rootLock.ts';
 import { withMaintenanceLock, type RelaunchPrep } from './relaunchPrep.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
 import { applyClaudeUpdate } from './claudeUpdate.ts';
@@ -327,7 +328,9 @@ interface ServerCtx {
 export interface RelaunchOptions {
   flags: { buildWeb: boolean; syncDeps: boolean };
   prep?: RelaunchPrep;
-  spawnAndExit?: () => void;
+  spawnAndExit?: () => void | Promise<void>;
+  // The projects-root lock this server holds; a restart hands it to the replacement.
+  rootLock?: RootLock | null;
 }
 
 // Body-patch shapes for /settings/models/prefs. The setters own validation
@@ -429,6 +432,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         flags: relaunch.flags,
         prep: relaunch.prep,
         spawnAndExit: relaunch.spawnAndExit,
+        rootLock: relaunch.rootLock,
         onChunk: (phase: RestartPhase, text: string) => write({ type: 'chunk', phase, text }),
         onCommit: () => { write({ type: 'result', ok: true }); res.end(); },
       });

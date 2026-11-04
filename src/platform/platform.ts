@@ -12,6 +12,18 @@ export type SpawnRole = 'child' | 'group' | 'daemon';
 export type KillSignal = 'SIGTERM' | 'SIGKILL';
 export interface ChildHandle { pid?: number | null; kill(signal?: NodeJS.Signals): unknown }
 
+// Where a projects-root lock holder listens (src/rootLock.ts), as its record
+// stores it: `store` is a socket file in the lock dir, named relative to it so
+// a reader that mounts the store at another path still finds it; `tmp` an
+// absolute socket path; `pipe` a Windows named pipe.
+export type RootLockSock =
+  | { kind: 'store'; name: string }
+  | { kind: 'tmp'; path: string }
+  | { kind: 'pipe'; name: string };
+// An address to listen or connect on. `release` frees what the address borrows
+// (an open directory fd); call it once the socket is closed or the connect is done.
+export interface SocketAddress { path: string; release(): void }
+
 // A flag marks a feature this host can run; when off, the feature is hidden and refused.
 export interface PlatformCapabilities { remoteSystems: boolean; fuseUnion: boolean; voice: boolean }
 
@@ -42,4 +54,11 @@ export interface Platform {
   // user's login shell — or null where cc has no pty helper for this host, and
   // `LocalSystem.openTerminal` refuses PTY_UNAVAILABLE.
   terminalShell(): string[] | null;
+  // Where a root-lock holder whose token hashes to `token8` listens. `store`
+  // whenever the store can hold the socket; `storeUsable: false` (a store that
+  // refused a socket) asks for the fallback.
+  rootLockEndpoint(lockDir: string, token8: string, opts?: { storeUsable?: boolean }): RootLockSock;
+  // The address THIS process reaches a recorded endpoint at — to listen on its
+  // own, or to probe another holder's.
+  socketConnectPath(lockDir: string, sock: RootLockSock): SocketAddress;
 }

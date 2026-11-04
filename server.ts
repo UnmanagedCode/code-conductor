@@ -39,6 +39,7 @@ import { setMergeHookVarsProvider } from './src/worktrees.ts';
 import { hostSecurityHeaders } from './src/securityHeaders.ts';
 import { createUpgradeOriginGuard } from './src/upgradeOrigin.ts';
 import { createTerminalEndpoint } from './src/hostTerminal.ts';
+import { acquireRootLock, RootLockHeldError, RootLockUnreadableError, ROOT_LOCK_HELD_EXIT, type RootLock } from './src/rootLock.ts';
 
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
@@ -243,6 +244,24 @@ export async function start({
   recordBootCommit?: boolean; checkoutRoot?: string;
 } = {}) {
   warnIfNodeUnsupported();
+  // One server per projects root, taken BEFORE anything reads or rewrites the
+  // root: a refused server must not consume the holder's restart manifests,
+  // sweep its session-tmp dirs or FUSE mounts, or touch its plugins.
+  const rootLock = await acquireRootLock({ storeDir: orchStoreRoot(), platform });
+  try {
+    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot });
+  } catch (e) {
+    rootLock.releaseSync();
+    throw e;
+  }
+}
+
+async function startHolding(rootLock: RootLock, {
+  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot,
+}: {
+  port: number; host: string; platform: Platform; buildWeb: boolean; syncDeps: boolean; webBuild?: () => Promise<unknown>;
+  recordBootCommit: boolean; checkoutRoot: string;
+}) {
   // What this process runs, measured first: the boot below regenerates files
   // in every project, this checkout included. Never throws.
   let bootCommit: BootCommit | undefined;
@@ -289,7 +308,7 @@ export async function start({
   // unlinks pending-resume.json, which names the sessions it must keep.
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps } } });
+  const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)
@@ -384,7 +403,7 @@ export async function start({
   checkClaudeReadiness({ platform })
     .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
     .catch((e) => process.stderr.write(`claude readiness check failed: ${errText(e)}\n`));
-  return { server, instances, wss, pluginHost, port: addr.port, host: addr.address, bootCommit };
+  return { server, instances, wss, pluginHost, port: addr.port, host: addr.address, bootCommit, rootLock };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -392,6 +411,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   start(entryStartOptions(process.env)).then(({ port, host }) => {
     console.log(`code-conductor listening on http://${host}:${port}`);
   }).catch(e => {
+    if (e instanceof RootLockHeldError || e instanceof RootLockUnreadableError) {
+      console.error(e.message);
+      process.exit(ROOT_LOCK_HELD_EXIT);
+    }
     console.error('failed to start:', e);
     process.exit(1);
   });

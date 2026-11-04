@@ -10,6 +10,7 @@ import path from 'node:path';
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import type { ChildHandle, KillSignal, Platform } from './platform.ts';
+import { lockDirHash, NO_RELEASE } from './rootLockAddress.ts';
 
 const w = path.win32;
 
@@ -170,6 +171,18 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
     // implementation: no local terminals here (docs/windows.md).
     terminalShell() {
       return null;
+    },
+
+    // A named pipe: the namespace is machine-global, a vanished listener
+    // answers ENOENT, and no shared-kernel container exists to reach a file.
+    rootLockEndpoint(lockDir, token8) {
+      let real = lockDir;
+      try { real = d.realpathNative(lockDir); } catch { /* not there yet: hash the spelling */ }
+      return { kind: 'pipe', name: `\\\\.\\pipe\\cc-root-${lockDirHash(real)}-${token8}` };
+    },
+    socketConnectPath(lockDir, sock) {
+      const p = sock.kind === 'store' ? w.join(lockDir, sock.name) : sock.kind === 'tmp' ? sock.path : sock.name;
+      return { path: p, release: NO_RELEASE };
     },
   };
 }

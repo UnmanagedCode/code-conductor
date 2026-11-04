@@ -199,6 +199,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 - `docker compose exec conductor <cmd>` lands in the projects root (`WORKDIR` is `/workspaces/projects`, not the checkout) — convenient for poking at projects. The entrypoint `cd`s into the checkout itself before exec'ing.
 - **Don't run cc's self-update from a worktree checkout** — its `.git` is a file, not a directory.
 - `HOST=0.0.0.0` is set unconditionally.
+- **One cc server per projects root.** Two containers on one projects dir, or a container and a cc on the host using that same dir, refuse each other: the second exits **7** naming the holder's pid (README → Key defaults). This holds across containers and the host on one kernel, and among Docker Desktop containers (one VM kernel); it does **not** cover a macOS host process sharing a projects dir with a Docker Desktop container. Under `restart: unless-stopped` a refused container keeps restarting and refusing until the holder stops; the next restart then takes the root. A holder killed any way (`make down`, a crash, `kill -9`) frees the root at once.
 - `claude update`, the CLI's auto-updater and Settings → claude update work as `CC_USER` without sudo. An in-container update lasts until the next image rebuild.
 
 ## Persistence
@@ -212,6 +213,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 | `FATAL (cc-entrypoint): the cc checkout is not mounted at …` | Repo bind mount missing or `CC_REPO_TARGET`/`CC_MOUNT` misconfigured. |
 | `FATAL (cc-entrypoint): … is inside a git repository` | `CC_PROJECTS_DIR` sits inside a git tree (`.git` present at some ancestor — file or directory). Move it outside the repo; cc refuses such store placements. |
 | `FATAL (cc-entrypoint): the projects root … is not writable` | uid mismatch — `chown` the dir to `CC_UID:CC_GID` (find them: `stat -c '%u %g' <dir>`). |
+| `another code-conductor server (pid <N>) holds the projects root …; refusing to start` (exit 7, restart loop) | Another cc — a second container or a host `npm start` — runs on the same `CC_PROJECTS_DIR`. Stop one of them. |
 | `WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket` | The `compose.docker.yaml` override isn't in the `-f` list — the Makefile chains it automatically from `CC_WITH_DOCKER=1`; raw compose must add `-f compose.docker.yaml` itself. |
 | `error gathering device information … "/dev/fuse"` at `make up`, or `FUSE_UNAVAILABLE: /dev/fuse is missing …` | The **host** has no `/dev/fuse` — `modprobe fuse` there. Nothing in the image or the `-f` chain can supply it. |
 | `FUSE_UNAVAILABLE: … fusectl …` | Host kernel; no package fixes it. `modprobe fuse` on the host where FUSE is a module, otherwise run that System elsewhere. |

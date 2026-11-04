@@ -47,10 +47,10 @@ test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1
   }
 });
 
-test('start() hands its buildWeb and syncDeps to createServer as the restart route\'s relaunch flags', async () => {
+test('start() hands its buildWeb and syncDeps, and its root lock, to createServer as the restart route\'s relaunch options', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const body = src.slice(src.indexOf('export async function start('));
-  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps } } })']);
+  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock } })']);
 });
 
 // The boot build is guarded against the boot commit, and the build and its
@@ -102,6 +102,7 @@ async function startWith(buildWeb) {
       server.closeAllConnections?.();
       await new Promise((r) => server.close(r));
       await settleSessionWrites();
+      booted.rootLock.releaseSync();
       for (const [k, v] of Object.entries(prev)) {
         if (v !== undefined) process.env[k] = v;
         else if (k === 'PROJECTS_ROOT') process.env[k] = SAFE.projectsRoot;

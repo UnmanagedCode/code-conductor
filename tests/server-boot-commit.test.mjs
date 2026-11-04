@@ -120,6 +120,7 @@ async function boot(setup) {
         server.closeAllConnections?.();
         await new Promise((r) => server.close(r));
         await settleSessionWrites();
+        booted.rootLock.releaseSync();
       },
       async close() { await this.stop(); restore(); await rmrf(home); },
     };
