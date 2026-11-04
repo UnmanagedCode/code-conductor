@@ -47,10 +47,10 @@ test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1
   }
 });
 
-test('start() hands its buildWeb and syncDeps, and its root lock, to createServer as the restart route\'s relaunch options', async () => {
+test('start() hands its buildWeb and syncDeps, its root lock and its headless flag, to createServer as the restart route\'s relaunch options', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const body = src.slice(src.indexOf('export async function start('));
-  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock } })']);
+  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless } })']);
 });
 
 // The boot build is guarded against the boot commit, and the build and its
@@ -65,11 +65,17 @@ test('start() builds the web UI with bootSwapGuard, over the same inputs it hand
   ]);
 });
 
-test('server.ts\'s entry block starts the server with exactly start(entryStartOptions(process.env))', async () => {
+// The ordinary boot passes entryStartOptions through untouched; the headless
+// boot (src/headless/entry.ts) spreads it and turns both steps off, since a
+// headless run never writes into a checkout another server may run from.
+test('server.ts\'s entry block starts the server with exactly start(entryStartOptions(process.env)), or headless with both steps off', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const entry = /^if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) \{\n([\s\S]*?)^\}$/m.exec(src);
   assert.ok(entry, 'premise: the entry block is found');
-  assert.deepEqual(entry[1].match(/\bstart\([^)]*\)?\)?/g), ['start(entryStartOptions(process.env))']);
+  assert.deepEqual(entry[1].match(/\bstart\((?:\{[^}]*\}|[^)]*\)?)\)/g), [
+    'start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true })',
+    'start(entryStartOptions(process.env))',
+  ]);
 });
 
 // A real in-process start() on port 0 against a throwaway store, with the web
