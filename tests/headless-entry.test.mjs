@@ -132,6 +132,10 @@ for (const [kase, reason, code, error, sessionId] of [
   ['stray-throw', 'conductor_error', 3, /a stray throw/, 'root-session'],
   ['runner-throws', 'conductor_error', 3, /listener wiring failed/, 'root-session'],
   ['signal-then-throw', 'signal', 130, /SIGINT/, 'root-session'],
+  // The runner is still waiting on the interrupt, so only the entry's
+  // catch-all can report the signal.
+  ['signal-then-stray', 'signal', 130, /SIGINT.*a stray throw after the signal/, 'root-session'],
+  ['stray-rejection', 'conductor_error', 3, /a stray rejection/, 'root-session'],
 ]) {
   test(`an unexpected failure (${kase}) still writes one ${reason} object and exits ${code}`, async (t) => {
     const home = await freshHome(t);
@@ -150,7 +154,7 @@ for (const [kase, reason, code, error, sessionId] of [
 // Node keeps a signal's default action suppressed while any listener exists,
 // so once the result is written none of the entry's may remain. The harness
 // records the counts at the moment the result is written.
-for (const kase of ['completes', 'boot-throws', 'stray-throw', 'signal-then-throw']) {
+for (const kase of ['completes', 'boot-throws', 'stray-throw', 'stray-rejection', 'signal-then-throw', 'signal-then-stray']) {
   test(`once the result is written (${kase}), no SIGINT/SIGTERM listener remains`, async (t) => {
     const home = await freshHome(t);
     const r = await harness(t, home, kase);

@@ -971,14 +971,26 @@ test('cost-tracking: flushCostWrites waits for a pending append and resolves onc
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.5 }) });
     let flushed = false;
     const flush = flushCostWrites().then(() => { flushed = true; });
-    await new Promise((r) => setTimeout(r, 100));
-    assert.equal(flushed, false, 'the append is still blocked, so the flush has not resolved');
+    // The reader is what unblocks the append, so it is opened on every path —
+    // a failing assertion below must not leave the write blocked and the suite
+    // waiting out its deadline.
     let data = '';
-    const { createReadStream } = await import('node:fs');
-    const reader = createReadStream(costsPath(), { encoding: 'utf8' });
-    reader.on('data', (c) => { data += c; });
-    await flush;
-    await new Promise((r) => (reader.readableEnded ? r() : reader.once('end', r)));
+    let reader = null;
+    const openReader = async () => {
+      if (reader) return;
+      const { createReadStream } = await import('node:fs');
+      reader = createReadStream(costsPath(), { encoding: 'utf8' });
+      reader.on('data', (c) => { data += c; });
+    };
+    const bounded = (p, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`timed out: ${what}`)), 5_000).unref())]);
+    try {
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(flushed, false, 'the append is still blocked, so the flush has not resolved');
+    } finally {
+      await openReader();
+    }
+    await bounded(flush, 'the flush after the reader opened');
+    await bounded(new Promise((r) => (reader.readableEnded ? r() : reader.once('end', r))), 'the row reaching the reader');
     const rows = data.split('\n').filter(Boolean).map((l) => JSON.parse(l));
     assert.equal(rows.length, 1);
     assert.equal(rows[0].sessionId, 'sess-fifo');
