@@ -152,4 +152,5 @@ test('a cost read that fails on a signal: still one signal object, exit 130', as
   const res = onlyJson(out.stdout);
   assert.equal(res.reason, 'signal');
   assert.equal(res.costUsd, null);
+  assert.equal(out.stderr.match(/reading the run's cost failed/g)?.length, 1, 'the failed read is logged once');
 });

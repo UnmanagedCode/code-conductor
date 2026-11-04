@@ -31,6 +31,25 @@ export interface RunHeadlessInput {
   mode: HeadlessMode;
   clock?: { now(): number };
   signals?: SignalSource;
+  // Handed the run's handle synchronously, before the spawn starts.
+  expose?: (handle: RunHandle) => void;
+}
+
+// The root's session facts so far: null until the root is spawned.
+export interface RunFacts {
+  sessionId: string | null;
+  text: string | null;
+  durationMs: number;
+}
+
+// What the entry's catch-all reads (src/headless/entry.ts) to keep a result's
+// session facts, and the first signal's cost read (null until a signal).
+export interface RunHandle {
+  facts(): RunFacts | null;
+  signalCostRead(): Promise<number | null> | null;
+  // Stop listening (signals, manager events) without resolving: the entry has
+  // written a result of its own.
+  detach(): void;
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -41,22 +60,24 @@ function lastText(root: InstanceLike): string | null {
   return msgs.at(-1)?.text ?? null;
 }
 
-// The root plus its spawned tree, from costs.jsonl (claude-backend turns only).
-// Best-effort: a failed read costs the result its costUsd, nothing else.
-async function rolledCost(root: InstanceLike | null): Promise<number | null> {
-  const sid = root?.sessionId;
-  if (!sid) return null;
-  try {
-    await flushCostWrites();
-    return (await getSessionStats(sid)).rolled.cost_usd;
-  } catch (e) {
-    console.warn(`headless: reading the run's cost failed, costUsd is null: ${errText(e)}`);
-    return null;
-  }
-}
-
-export function runHeadless({ instances, prompt, mode, clock = Date, signals = process }: RunHeadlessInput): Promise<HeadlessResult> {
+export function runHeadless({ instances, prompt, mode, clock = Date, signals = process, expose }: RunHeadlessInput): Promise<HeadlessResult> {
   const t0 = clock.now();
+  // The root plus its spawned tree, from costs.jsonl (claude-backend turns
+  // only). Best-effort: a failed read costs the result its costUsd, nothing
+  // else, and is logged once per run however many reads fail.
+  let costWarned = false;
+  const rolledCost = async (r: InstanceLike | null): Promise<number | null> => {
+    const sid = r?.sessionId;
+    if (!sid) return null;
+    try {
+      await flushCostWrites();
+      return (await getSessionStats(sid)).rolled.cost_usd;
+    } catch (e) {
+      if (!costWarned) console.warn(`headless: reading the run's cost failed, costUsd is null: ${errText(e)}`);
+      costWarned = true;
+      return null;
+    }
+  };
   let root: InstanceLike | null = null;
   let ending = false;
   let delivered = false;
@@ -65,6 +86,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
   let signalled: NodeJS.Signals | null = null;
   // The cost as read when the first signal arrived, once that read finished — what a second signal reports.
   let firstSignalCost: number | null = null;
+  let firstSignalRead: Promise<number | null> | null = null;
   let resolveResult!: (r: HeadlessResult) => void;
   const result = new Promise<HeadlessResult>((r) => { resolveResult = r; });
 
@@ -80,13 +102,17 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
 
   const clearSettle = () => { if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; } };
 
-  const deliver = (r: HeadlessResult) => {
-    if (delivered) return;
-    delivered = true;
+  function detach(): void {
     clearSettle();
     instances.off('status', onStatus);
     instances.off('subscription_changed', evaluate);
     for (const s of SIGNALS) signals.off(s, onSignal);
+  }
+
+  const deliver = (r: HeadlessResult) => {
+    if (delivered) return;
+    delivered = true;
+    detach();
     resolveResult(r);
   };
 
@@ -166,7 +192,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     signalled = signal;
     clearSettle();
     const r = root;
-    void rolledCost(r).then((c) => { firstSignalCost = c; });
+    firstSignalRead = rolledCost(r).then((c) => { firstSignalCost = c; return c; });
     void (async () => {
       if (r) {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -181,6 +207,11 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
   }
 
   for (const s of SIGNALS) signals.on(s, onSignal);
+  expose?.({
+    facts: () => (root ? { sessionId: root.sessionId ?? null, text: lastText(root), durationMs: clock.now() - t0 } : null),
+    signalCostRead: () => firstSignalRead,
+    detach,
+  });
 
   void (async () => {
     let spawned: InstanceLike;

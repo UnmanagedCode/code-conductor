@@ -113,7 +113,7 @@ test('an unreadable top lock record: exit 7, a root_held object naming the recor
 const HARNESS = path.join(__dirname, 'headlessEntryHarness.mjs');
 function harness(t, home, kase) {
   const child = spawn(process.execPath, [HARNESS, kase, '--', '--prompt', 'hello'], {
-    env: { ...process.env, HOME: home, PROJECTS_ROOT: rootOf(home), CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects') },
+    env: { ...process.env, HOME: home, PROJECTS_ROOT: rootOf(home), CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects'), ORCH_IDLE_DRAIN_SETTLE_MS: '20' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const out = { stdout: '', stderr: '' };
@@ -124,12 +124,14 @@ function harness(t, home, kase) {
 }
 
 // One catch-all owns the output: whatever rejects or throws, the run still
-// writes exactly one object, its reason from how far the run got.
-for (const [kase, reason, code, error] of [
-  ['boot-throws', 'boot_failed', 1, /boom at boot/],
-  ['stray-throw', 'conductor_error', 3, /a stray throw/],
-  ['runner-throws', 'conductor_error', 3, /listener wiring failed/],
-  ['signal-then-throw', 'signal', 130, /SIGINT/],
+// writes exactly one object, its reason from how far the run got — and once
+// the root exists, its session facts (the harness's fake root is
+// `root-session`). Before the spawn there are none.
+for (const [kase, reason, code, error, sessionId] of [
+  ['boot-throws', 'boot_failed', 1, /boom at boot/, null],
+  ['stray-throw', 'conductor_error', 3, /a stray throw/, 'root-session'],
+  ['runner-throws', 'conductor_error', 3, /listener wiring failed/, 'root-session'],
+  ['signal-then-throw', 'signal', 130, /SIGINT/, 'root-session'],
 ]) {
   test(`an unexpected failure (${kase}) still writes one ${reason} object and exits ${code}`, async (t) => {
     const home = await freshHome(t);
@@ -139,6 +141,21 @@ for (const [kase, reason, code, error] of [
     assert.equal(res.reason, reason);
     assert.equal(res.exitCode, code);
     assert.match(res.error, error);
+    assert.equal(res.sessionId, sessionId);
+    assert.equal(typeof res.durationMs, sessionId ? 'number' : 'object', 'a duration once the root exists, null before');
+    assert.equal(res.text, sessionId ? 'fake root text' : null);
+  });
+}
+
+// Node keeps a signal's default action suppressed while any listener exists,
+// so once the result is written none of the entry's may remain. The harness
+// records the counts at the moment the result is written.
+for (const kase of ['completes', 'boot-throws', 'stray-throw', 'signal-then-throw']) {
+  test(`once the result is written (${kase}), no SIGINT/SIGTERM listener remains`, async (t) => {
+    const home = await freshHome(t);
+    const r = await harness(t, home, kase);
+    onlyJson(r.stdout);
+    assert.match(r.stderr, /^LISTENERS SIGINT=0 SIGTERM=0$/m, r.stderr);
   });
 }
 

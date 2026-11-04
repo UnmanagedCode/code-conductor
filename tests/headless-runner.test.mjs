@@ -63,6 +63,7 @@ const stdinTexts = async (p) => (await userStdinLines(p)).map(textOf);
 // Start a run; the root's launch reads `scenario` and records its stdin.
 // `root()` waits for the conduct-project instance the runner spawned.
 async function start({ scenario, mode = 'code', prompt = 'do the thing', signals = new EventEmitter(), clock } = {}) {
+  let handle;
   const rootLog = path.join(home, 'root-stdin.jsonl');
   const created = [];
   const realCreate = server.instances.create.bind(server.instances);
@@ -70,13 +71,13 @@ async function start({ scenario, mode = 'code', prompt = 'do the thing', signals
   let run;
   let settled = false;
   await withLaunchEnv(scenario, rootLog, async () => {
-    run = runHeadless({ instances: server.instances, prompt, mode, signals, ...(clock ? { clock } : {}) });
+    run = runHeadless({ instances: server.instances, prompt, mode, signals, expose: (h) => { handle = h; }, ...(clock ? { clock } : {}) });
     await waitFor(() => [...server.instances.byId.values()].some((i) => i.project === CONDUCT_PROJECT_NAME && i.proc));
   });
   delete server.instances.create;
   run.then(() => { settled = true; });
   const root = [...server.instances.byId.values()].find((i) => i.project === CONDUCT_PROJECT_NAME);
-  return { run, root, rootLog, created, signals, settled: () => settled };
+  return { run, root, rootLog, created, signals, handle, settled: () => settled };
 }
 
 async function spawnWorker(root, scenario, log, { project = 'demo' } = {}) {
@@ -284,11 +285,14 @@ test('a second signal reports the cost read at the first signal once that read h
   await waitFor(() => r.root.status === 'turn');
   r.root.interrupt = () => new Promise(() => {});
   r.signals.emit('SIGTERM', 'SIGTERM');
-  await sleep(SETTLE_MS);
+  const early = r.handle.signalCostRead();
+  assert.ok(early, 'the first signal started its cost read');
+  const cost = await early;
   r.signals.emit('SIGTERM', 'SIGTERM');
   const result = await r.run;
   assert.equal(result.reason, 'signal');
-  assert.equal(typeof result.costUsd, 'number', 'the first signal\'s read had finished');
+  assert.equal(typeof cost, 'number');
+  assert.equal(result.costUsd, cost, 'the first signal\'s finished read');
 });
 
 test('a second signal in the same tick as the first reports costUsd null', async () => {
@@ -358,4 +362,24 @@ test('the settle timer re-checks quiescence when it fires', async () => {
   f.status({ status: 'idle' });
   const result = await f.run;
   assert.equal(result.reason, 'completed');
+});
+
+test('the run handle reports no facts before the spawn, the root\'s once it exists', async () => {
+  let handle;
+  const signals = new EventEmitter();
+  const rootLog = path.join(home, 'root-stdin.jsonl');
+  let run;
+  await withLaunchEnv(ROOT_GATED, rootLog, async () => {
+    run = runHeadless({ instances: server.instances, prompt: 'p', mode: 'code', signals, expose: (h) => { handle = h; } });
+    assert.equal(handle.facts(), null, 'nothing spawned yet');
+    assert.equal(handle.signalCostRead(), null, 'no signal yet');
+    await waitFor(() => handle.facts() !== null);
+  });
+  const root = [...server.instances.byId.values()].find((i) => i.project === CONDUCT_PROJECT_NAME);
+  await waitFor(() => handle.facts().text === 'Dispatching.');
+  const facts = handle.facts();
+  assert.equal(facts.sessionId, root.sessionId);
+  assert.equal(typeof facts.durationMs, 'number');
+  signals.emit('SIGINT', 'SIGINT');
+  await run;
 });

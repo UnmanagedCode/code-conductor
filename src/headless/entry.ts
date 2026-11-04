@@ -7,7 +7,7 @@
 
 import os from 'node:os';
 import { readHeadlessPrompt, HEADLESS_SYNOPSIS, type HeadlessArgs } from './args.ts';
-import { runHeadless } from './runner.ts';
+import { runHeadless, type RunFacts, type RunHandle } from './runner.ts';
 import { EXIT_CODES, bareResult, formatResult, signalExitCode, type HeadlessResult } from './result.ts';
 import { RootLockHeldError, RootLockUnreadableError } from '../rootLock.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
@@ -43,6 +43,10 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
   const finish = (r: HeadlessResult): void => {
     if (written) return;
     written = true;
+    // Node suppresses a signal's default action while any listener exists; once
+    // the result is out, a signal must kill the process again, so none of the
+    // entry's may outlive this (the runner removes its own when it delivers).
+    for (const s of ['SIGINT', 'SIGTERM'] as const) { process.off(s, recordSignal); process.off(s, onEarlySignal); }
     writeOut(formatResult(r), () => process.exit(r.exitCode));
   };
 
@@ -51,21 +55,29 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
   // whether the runner has started.
   let signalSeen: NodeJS.Signals | null = null;
   let running = false;
-  const recordSignal = (signal: NodeJS.Signals): void => { signalSeen ??= signal; };
+  let run: RunHandle | null = null;
+  function recordSignal(signal: NodeJS.Signals): void { signalSeen ??= signal; }
   // Until the runner takes over, a signal ends the run with no root to interrupt.
-  const onEarlySignal = (signal: NodeJS.Signals): void => {
+  function onEarlySignal(signal: NodeJS.Signals): void {
     finish(bareResult('signal', `interrupted by ${signal}`, signalExitCode(signal)));
-  };
+  }
   for (const s of ['SIGINT', 'SIGTERM'] as const) { process.on(s, recordSignal); process.on(s, onEarlySignal); }
 
   // The one catch-all that owns the output: whatever throws or rejects, from
   // here or from anything else in the process, still writes one result object.
+  // Once the root exists the result keeps its session facts (costUsd stays
+  // null: the read is async and the run is already failing).
   const fail = (e: unknown): void => {
     console.error('headless: unexpected failure:', e);
     const why = errText(e);
-    if (signalSeen) finish(bareResult('signal', `interrupted by ${signalSeen}; then: ${why}`, signalExitCode(signalSeen)));
-    else if (running) finish(bareResult('conductor_error', `the headless run failed: ${why}`, EXIT_CODES.conductor_error));
-    else finish(bareResult('boot_failed', `failed to start: ${why}`, EXIT_CODES.boot_failed));
+    let r: HeadlessResult;
+    if (signalSeen) r = bareResult('signal', `interrupted by ${signalSeen}; then: ${why}`, signalExitCode(signalSeen));
+    else if (running) r = bareResult('conductor_error', `the headless run failed: ${why}`, EXIT_CODES.conductor_error);
+    else r = bareResult('boot_failed', `failed to start: ${why}`, EXIT_CODES.boot_failed);
+    let facts: RunFacts | null = null;
+    try { facts = run?.facts() ?? null; } catch { /* the facts are best-effort here */ }
+    try { run?.detach(); } catch { /* finish removes the entry's own listeners regardless */ }
+    finish(facts ? { ...r, ...facts } : r);
   };
   process.on('uncaughtException', fail);
   process.on('unhandledRejection', fail);
@@ -106,6 +118,6 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
     if (!boot.instances) { finish(bareResult('boot_failed', 'the server booted without an instance manager', EXIT_CODES.boot_failed)); return; }
     for (const s of ['SIGINT', 'SIGTERM'] as const) process.off(s, onEarlySignal);
     running = true;
-    finish(await runHeadless({ instances: boot.instances, prompt: prompt.text, mode: args.mode }));
+    finish(await runHeadless({ instances: boot.instances, prompt: prompt.text, mode: args.mode, expose: (h) => { run = h; } }));
   }
 }
