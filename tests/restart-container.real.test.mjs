@@ -3,12 +3,15 @@
 // with `RUN_DOCKER_RESTART=1`, which needs a working docker daemon and the
 // image (`CC_DOCKER_IMAGE`, default code-conductor:local).
 //
-//   RUN_DOCKER_RESTART=1 CC_DOCKER='sudo -n docker' node tests/run.mjs tests/restart-container.real.test.mjs
+//   RUN_DOCKER_RESTART=1 CC_DOCKER='sudo -n docker' CC_TEST_FILE_KILL_MS=900000 CC_TEST_RUN_CAP_MS=1200000 \
+//     node tests/run.mjs tests/restart-container.real.test.mjs
 //
 // Every container is a throwaway `cc-restart-proof-<pid>-<case>` run with
-// `--init` and this checkout's entrypoint (a /tmp copy of the committed tree),
-// which reproduces compose's tini → entrypoint chain without an image rebuild.
+// `--init` and this checkout's entrypoint (the committed tree, copied into a docker
+// volume), which reproduces compose's tini → entrypoint chain without an image rebuild.
 // No host port is published: every HTTP call is a `docker exec … node -e fetch`.
+// The harness's 90 s per-file watchdog is shorter than this file: run it with
+// CC_TEST_FILE_KILL_MS=900000 CC_TEST_RUN_CAP_MS=1200000.
 // The helper below refuses any docker argument naming the live `code-conductor`
 // container.
 import { test, after } from 'node:test';
@@ -47,28 +50,46 @@ const allLogs = (ctr) => new Promise((resolve) => {
 const inspect = async (ctr) => JSON.parse(await docker('inspect', ctr))[0];
 
 const containers = [];
-let stageDir = null;
+const volumes = [];
+let repoVolume = null;
 
-function stage() {
-  if (stageDir) return stageDir;
+// The daemon may not share this process's filesystem (a nested one), so nothing
+// is bind-mounted from the host: trees are copied into named volumes with
+// `docker cp`, which streams from this side.
+async function populate(volume, srcDir) {
+  volumes.push(volume);
+  const loader = `${volume}-loader`;
+  containers.push(loader);
+  await docker('volume', 'create', volume);
+  await docker('create', '--name', loader, '-v', `${volume}:/v`, '--entrypoint', 'true', IMAGE);
+  await docker('cp', `${srcDir}/.`, `${loader}:/v/`);
+  await docker('rm', loader);
+  // The proof containers run as `node`; the copied tree is owned by whoever copied it.
+  await docker('run', '--rm', '-v', `${volume}:/v`, '--entrypoint', 'chmod', IMAGE, '-R', 'a+rwX', '/v');
+}
+
+async function stageRepo() {
+  if (repoVolume) return repoVolume;
   const dir = mkdtempSync('cc-restart-proof-');
-  stageDir = dir;
   const repo = path.join(dir, 'repo');
-  const files = execFileSyncLines('git', ['ls-files', '-z'], REPO);
-  for (const f of files) {
+  for (const f of spawnSyncStdout('git', ['ls-files', '-z'], REPO).split('\0').filter(Boolean)) {
     const src = path.join(REPO, f);
     if (!fs.existsSync(src)) continue;
     fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true });
     fs.cpSync(src, path.join(repo, f));
   }
   fs.cpSync(path.join(REPO, 'node_modules'), path.join(repo, 'node_modules'), { recursive: true, dereference: true });
-  fs.mkdirSync(path.join(dir, 'stub-bin'));
-  fs.writeFileSync(path.join(dir, 'stub-bin', 'tailscaled'),
+  // A stand-in tailscaled the entrypoint starts detached (CC_WITH_TAILSCALE=1).
+  fs.mkdirSync(path.join(repo, '.stub-bin'));
+  fs.writeFileSync(path.join(repo, '.stub-bin', 'tailscaled'),
     '#!/bin/sh\necho $$ > /workspaces/projects/.stub.pid\nexec sleep infinity\n', { mode: 0o755 });
-  return dir;
-}
-function execFileSyncLines(cmd, args, cwd) {
-  return spawnSyncStdout(cmd, args, cwd).split('\0').filter(Boolean);
+  fs.chmodSync(path.join(repo, 'docker', 'entrypoint.sh'), 0o755);
+  const volume = `${PREFIX}-repo`;
+  await populate(volume, repo);
+  const seen = await docker('run', '--rm', '-v', `${volume}:/r`, '--entrypoint', 'ls', IMAGE, '/r/server.ts', '/r/docker/entrypoint.sh');
+  assert.match(seen, /server\.ts/, 'precondition: the staged checkout is in the volume');
+  repoVolume = volume;
+  return volume;
 }
 function spawnSyncStdout(cmd, args, cwd) {
   const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 64 << 20 });
@@ -76,41 +97,41 @@ function spawnSyncStdout(cmd, args, cwd) {
   return r.stdout;
 }
 
-// A fresh projects root per container, with the fake plugin enabled + auto-start.
-function makeRoot(name, { plugin = true } = {}) {
-  const root = path.join(stage(), `root-${name}`);
-  fs.mkdirSync(root, { recursive: true });
+// A fresh projects root per container, in its own volume; the fake plugin is
+// enabled with auto-start unless `plugin` is false. `files` adds relative paths.
+async function makeRoot(name, { plugin = true, files = {} } = {}) {
+  const dir = mkdtempSync('cc-restart-proof-root-');
   if (plugin) {
-    fs.cpSync(FAKE_PLUGIN_DIR, path.join(root, 'autoplug'), { recursive: true });
-    const dir = path.join(root, '.code-conductor', 'plugins');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'registry.json'), JSON.stringify({
+    fs.cpSync(FAKE_PLUGIN_DIR, path.join(dir, 'autoplug'), { recursive: true });
+    const reg = path.join(dir, '.code-conductor', 'plugins');
+    fs.mkdirSync(reg, { recursive: true });
+    fs.writeFileSync(path.join(reg, 'registry.json'), JSON.stringify({
       plugins: { 'fake-plugin': { project: 'autoplug', enabled: true, activeVersion: { type: 'main' }, autoStart: true } },
     }));
   }
-  return root;
+  for (const [rel, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  }
+  const volume = `${PREFIX}-root-${name}`;
+  await populate(volume, dir);
+  return volume;
 }
-function chmodAll(dir) { spawnSyncStdout('chmod', ['-R', 'a+rwX', dir], REPO); }
 
 let imagePath = null;
-async function runArgs(name, root, { policy = 'no', detach = true, extra = [], tail = [] } = {}) {
-  const dir = stage();
-  chmodAll(dir);
+async function runArgs(name, rootVolume, { policy = 'no', detach = true, extra = [], tail = [] } = {}) {
+  const repo = await stageRepo();
   imagePath ??= (await docker('run', '--rm', '--entrypoint', 'printenv', IMAGE, 'PATH')).trim();
-  const seen = await docker('run', '--rm', '-v', `${dir}:/stage`, '--entrypoint', 'ls', IMAGE, '/stage/repo/server.ts')
-    .catch((e) => e.stderr ?? String(e));
-  assert.match(seen, /server\.ts/, `precondition: the docker daemon cannot see ${dir} — it does not share this process's filesystem`);
   const ctr = `${PREFIX}-${name}`;
   containers.push(ctr);
   const args = [
     'run', ...(detach ? ['-d'] : ['--rm', '-i']), '--name', ctr, '--init', '--restart', policy, '--user', 'node',
     '--entrypoint', '/workspaces/code-conductor/docker/entrypoint.sh',
-    '-v', `${path.join(dir, 'repo')}:/workspaces/code-conductor`,
-    '-v', `${root}:/workspaces/projects`,
-    '-v', `${path.join(dir, 'stub-bin')}:/stub-bin:ro`,
+    '-v', `${repo}:/workspaces/code-conductor`,
+    '-v', `${rootVolume}:/workspaces/projects`,
     '-e', 'HOST=0.0.0.0', '-e', 'PORT=8787', '-e', 'PROJECTS_ROOT=/workspaces/projects',
     '-e', 'REPO_DIR=/workspaces/code-conductor', '-e', 'CC_SKIP_WEB_BUILD=1',
-    '-e', 'CC_WITH_TAILSCALE=1', '-e', `PATH=/stub-bin:${imagePath}`,
+    '-e', 'CC_WITH_TAILSCALE=1', '-e', `PATH=/workspaces/code-conductor/.stub-bin:${imagePath}`,
     ...extra, IMAGE, ...tail,
   ];
   return { ctr, args };
@@ -118,6 +139,7 @@ async function runArgs(name, root, { policy = 'no', detach = true, extra = [], t
 
 after(async () => {
   for (const c of containers) await docker('rm', '-f', c).catch(() => {});
+  for (const v of volumes) await docker('volume', 'rm', '-f', v).catch(() => {});
 });
 
 const FETCH = (method, urlPath, body) => `
@@ -145,9 +167,8 @@ const pluginRow = async (ctr) => JSON.parse(await http(ctr, 'GET', '/api/plugins
 let main = null; // case 1's container, reused by case 2
 
 test('an in-app restart keeps the container, its service and the plugin backend, and relaunches only the server', { skip: !ENABLED, timeout: 600_000 }, async () => {
-  const root = makeRoot('main');
+  const root = await makeRoot('main');
   const { ctr, args } = await runArgs('main', root, { policy: 'unless-stopped' });
-  chmodAll(root);
   await docker(...args);
   main = ctr;
   await waitHealthy(ctr);
@@ -203,9 +224,8 @@ test('docker stop reaches the server at once: exit 143, inside the timeout', { s
 });
 
 test('a crashed server ends the container and the restart policy brings it back', { skip: !ENABLED, timeout: 300_000 }, async () => {
-  const root = makeRoot('crash', { plugin: false });
+  const root = await makeRoot('crash', { plugin: false });
   const { ctr, args } = await runArgs('crash', root, { policy: 'unless-stopped' });
-  chmodAll(root);
   await docker(...args);
   const first = await waitHealthy(ctr);
   const before = await inspect(ctr);
@@ -222,12 +242,8 @@ test('a crashed server ends the container and the restart policy brings it back'
 });
 
 test('a persistent boot failure ends the container once and does not spin', { skip: !ENABLED, timeout: 180_000 }, async () => {
-  const root = makeRoot('fail', { plugin: false });
-  const lockDir = path.join(root, '.code-conductor', ROOT_LOCK_DIRNAME);
-  fs.mkdirSync(lockDir, { recursive: true });
-  fs.writeFileSync(path.join(lockDir, '1.json'), 'garbage');
+  const root = await makeRoot('fail', { plugin: false, files: { [`.code-conductor/${ROOT_LOCK_DIRNAME}/1.json`]: 'garbage' } });
   const { ctr, args } = await runArgs('fail', root, { policy: 'no' });
-  chmodAll(root);
   await docker(...args);
   await waitFor('the container to exit', async () => (await inspect(ctr)).State.Running ? null : true);
   const state = (await inspect(ctr)).State;
@@ -236,8 +252,7 @@ test('a persistent boot failure ends the container once and does not spin', { sk
 });
 
 test('a headless run passes its exit code and clean stdout through the supervisor', { skip: !ENABLED, timeout: 180_000 }, async () => {
-  const root = makeRoot('headless', { plugin: false });
-  chmodAll(root);
+  const root = await makeRoot('headless', { plugin: false });
   const { args } = await runArgs('headless', root, {
     detach: false, extra: ['-e', 'CC_SKIP_DEPS_SYNC=1'], tail: ['--prompt', 'x', '--mode', 'bogus'],
   });
