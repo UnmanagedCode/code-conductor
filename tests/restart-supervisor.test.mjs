@@ -137,7 +137,22 @@ test('superviseServer: spawnOptions reach spawn, so the server can be given its 
 });
 
 const runSupervisor = (dir, mode, extra = []) => spawn(process.execPath, [SUPERVISE, process.execPath, FIXTURE, dir, mode, ...extra], { stdio: ['pipe', 'pipe', 'pipe'] });
-const exited = (child) => new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+const WAIT_MS = 15_000;
+// Race `promise` against a deadline that fails the test and takes the supervisor
+// down (its SIGTERM is forwarded to the server it started), so a supervisor that
+// never starts or never ends cannot hang the file until the harness kills it.
+function within(child, promise, what) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 1000).unref();
+      reject(new Error(`timed out after ${WAIT_MS} ms waiting for ${what}`));
+    }, WAIT_MS);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+const exited = (child) => within(child, new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))), 'the supervisor to exit');
 
 test('supervise.mjs, real processes: exit 75 relaunches once with identical argv, this supervisor as parent and marker, and stdin intact', async () => {
   const dir = mkdtempSync('cc-supervisor-');
@@ -156,7 +171,7 @@ test('supervise.mjs, real processes: exit 75 relaunches once with identical argv
 test('supervise.mjs, real processes: a SIGTERM to the supervisor reaches the server exactly once and the supervisor mirrors its exit', async () => {
   const dir = mkdtempSync('cc-supervisor-');
   const child = runSupervisor(dir, 'signal');
-  await new Promise((resolve) => child.stdout.on('data', (d) => { if (/ready/.test(String(d))) resolve(); }));
+  await within(child, new Promise((resolve) => child.stdout.on('data', (d) => { if (/ready/.test(String(d))) resolve(); })), 'the server to print ready');
   child.kill('SIGTERM');
   const end = await exited(child);
   assert.equal(end.code, 0);
