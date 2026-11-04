@@ -362,9 +362,13 @@ export interface InstanceManagerLike {
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
+  off(event: 'status', cb: (summary: InstanceSummary) => void): void;
+  off(event: 'subscription_changed', cb: () => void): void;
   // Resume-restart surface (src/resumeRestart.ts).
   conductedSubtreeOf(rootId: string): SubtreeRow[];
   isIdleCaller(instanceId: string): boolean;
+  // The headless completion predicate (src/headless/runner.ts).
+  isTreeQuiescent(rootId: string): boolean;
   suspendWakes(): void;
   resumeWakes(): void;
   shutdownForResumeSync(): void;

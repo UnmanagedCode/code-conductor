@@ -5,6 +5,7 @@
 // The created instance is selected as soon as the create answers; the project
 // lists refresh behind it.
 import { apiFetch } from '@shared/http';
+import { newConductorSpawnBody } from '@shared/newConductor';
 import { createStore } from '@/state/createStore';
 import { adoptInstance, refreshProjects, selectInstance } from '@/app/controller';
 import { beginGesture, gestureOvertaken } from '@/app/gestures';
@@ -21,7 +22,7 @@ export async function startConducting() {
     const inst = await apiFetch<Instance>('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true }),
+      body: JSON.stringify(newConductorSpawnBody('code')),
     });
     adoptInstance(inst);
     if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });

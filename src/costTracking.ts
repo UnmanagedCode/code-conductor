@@ -27,6 +27,12 @@ function serialize(fn: () => Promise<void>): void {
   writeChain = writeChain.then(fn, fn).catch(() => {});
 }
 
+// Resolves once every append queued so far has landed (the chain never
+// rejects). The headless runner awaits it before reading a session's cost.
+export function flushCostWrites(): Promise<void> {
+  return writeChain;
+}
+
 // Append one built row to an already-resolved path. mkdir stays per-write: the
 // store dir is absent before the first row and can be removed underneath us.
 async function writeCostRow(p: string, row: CostRow): Promise<void> {

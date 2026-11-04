@@ -1,0 +1,154 @@
+{
+ "_comment": "Headless worker, gated: 'work' opens a turn that never ends on its own; the next prompt ends it.",
+ "events": [
+  {
+   "type": "system",
+   "subtype": "init",
+   "session_id": "$SID",
+   "cwd": "$CWD",
+   "model": "claude-sonnet-4-6",
+   "permissionMode": "$MODE"
+  }
+ ],
+ "turns": [
+  {
+   "on": {
+    "type": "prompt",
+    "text": "work"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_w1",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Working."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_w1",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Working."
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_w2",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Worker done."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_w2",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Worker done."
+       }
+      ]
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0001,
+     "is_error": false
+    }
+   ]
+  }
+ ]
+}

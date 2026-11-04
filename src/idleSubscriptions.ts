@@ -104,7 +104,7 @@ export const DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS = Math.floor(DEFAULT_SUBSCRIBE_TI
 // no turn is coming. 5s is enormous headroom over that ms-scale gap (even
 // under heavy device throttle — the gap is process-local, never API-bound)
 // while still waking ~360x sooner than the 30-min heartbeat would report.
-const IDLE_DRAIN_SETTLE_MS = Number(process.env.ORCH_IDLE_DRAIN_SETTLE_MS) || 5_000;
+export const IDLE_DRAIN_SETTLE_MS = Number(process.env.ORCH_IDLE_DRAIN_SETTLE_MS) || 5_000;
 
 // An ARMED wake for a single caller→target pair: the repeating heartbeat and the
 // window it repeats on (kept so setIdleTimeout can re-arm a running one).
@@ -378,7 +378,7 @@ export class IdleSubscriptionHub {
     // Same shape and same reason as rotationPending — the flag lives on the
     // Instance and is set in the send_prompt handler before the abort is even
     // armed, so this defer is independent of listener registration order.
-    if (this._targetDefers(target)) return;
+    if (this.targetDefers(target)) return;
     // Still waiting on its own workers, with nothing for the owner: hold. The
     // entries and their heartbeats stay armed for a later decision point.
     if (this._holds(target)) return;
@@ -386,8 +386,9 @@ export class IdleSubscriptionHub {
   }
 
   // The target-side defer reasons _onTurnEnd documents: a wake decided now would
-  // report this target one turn early.
-  _targetDefers(target: InstanceLike): boolean {
+  // report this target one turn early. Also a "turn still coming" clause of the
+  // headless completion predicate (InstanceManager.isTreeQuiescent).
+  targetDefers(target: InstanceLike): boolean {
     return target.activeAgentTaskCount > 0 || target.taskNotificationPending
       || target.rotationPending || target.steerPending;
   }
@@ -410,7 +411,7 @@ export class IdleSubscriptionHub {
       if (seen.has(t) || !callers.has(x)) continue;
       const ti = this.manager.byId.get(t);
       if (!ti || this._goneForGood(t)) continue;
-      if (ti.status !== 'idle' || this._targetDefers(ti) || !this._holding.has(t)) return true;
+      if (ti.status !== 'idle' || this.targetDefers(ti) || !this._holding.has(t)) return true;
       seen.add(t);
       if (this._waitsOnWork(t, seen)) return true;
     }
@@ -459,7 +460,7 @@ export class IdleSubscriptionHub {
     if (this._suspended || !this._holding.has(x)) return;
     const ti = this.manager.byId.get(x);
     if (!ti?.proc || ti.status !== 'idle' || !this.subscribers.get(x)?.size) return;
-    if (this._targetDefers(ti) || this._holds(ti)) return;
+    if (this.targetDefers(ti) || this._holds(ti)) return;
     this._consume(x, { announce: true });
   }
 
@@ -641,6 +642,25 @@ export class IdleSubscriptionHub {
     if (spawner) out.add(spawner);
     out.delete(targetInstanceId);
     return [...out].filter(id => this.manager.byId.get(id) != null);
+  }
+
+  // Every instance in byId that `rootId` owns transitively — its spawned and
+  // dispatched-to sessions, theirs, and so on — excluding the root. Ownership can
+  // be mutual, so the walk keeps a visited set. Read by the headless completion
+  // predicate (InstanceManager.isTreeQuiescent).
+  ownedTreeOf(rootId: string): string[] {
+    const seen = new Set<string>([rootId]);
+    const out: string[] = [];
+    const queue = [rootId];
+    for (let owner = queue.shift(); owner !== undefined; owner = queue.shift()) {
+      for (const id of this.manager.byId.keys()) {
+        if (seen.has(id) || !this.ownersOf(id).includes(owner)) continue;
+        seen.add(id);
+        out.push(id);
+        queue.push(id);
+      }
+    }
+    return out;
   }
 
   // Record that `caller` dispatched to `target` — called by every turn-starting

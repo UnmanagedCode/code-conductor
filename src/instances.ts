@@ -5307,6 +5307,28 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return jobWaiters([...this.byId.values()], id => this._idleHub.ownersOf(id));
   }
 
+  // Is the tree rooted at `rootId` finished — the headless run's completion
+  // predicate (src/headless/runner.ts)? The root is live, idle, has ended at
+  // least one turn and holds no tool ask; and it and every session it owns
+  // transitively (ownedTreeOf) is idle with no turn still coming on it: no
+  // armed, held, in-flight or deferred wake as a caller (isIdleCaller), no
+  // target-side defer, no running background job. An exited or crashed session
+  // does not block — its exit is itself a wake to its owner, which the owner's
+  // isIdleCaller covers.
+  isTreeQuiescent(rootId: string): boolean {
+    const root = this.byId.get(rootId);
+    if (!root?.proc || root.status !== 'idle') return false;
+    const facts = root.summary();
+    if ((facts.liveTurnEnds ?? 0) < 1 || facts.awaitingUserSource === 'tool') return false;
+    const jobWaiting = this._jobWaiters();
+    for (const id of [rootId, ...this._idleHub.ownedTreeOf(rootId)]) {
+      const x = this.byId.get(id);
+      if (!x || (isDeadStatus(x.status) && !x.relaunching)) continue;
+      if (x.status !== 'idle' || this.isIdleCaller(id) || this._idleHub.targetDefers(x) || jobWaiting.has(id)) return false;
+    }
+    return true;
+  }
+
   // list() minus the hidden pristine conductors: what every list PAYLOAD serves
   // (GET /api/instances, list_sessions, describe_session). Lifecycle code keeps
   // list() or byId, so teardown and the restart drain still see them.

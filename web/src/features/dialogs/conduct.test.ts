@@ -13,6 +13,7 @@ import { startConducting } from './conduct';
 import { adoptInstance, refreshProjects, selectInstance } from '@/app/controller';
 import { toast } from '@/ui/feedback';
 import { routeFetch } from '@/test/routeFetch';
+import { newConductorSpawnBody } from '@shared/newConductor';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -27,6 +28,7 @@ describe('Conduct', () => {
     const writes = calls.filter((c) => c.method !== 'GET');
     expect(writes.map((c) => `${c.method} ${c.url}`)).toEqual(['POST /api/instances']);
     expect(writes[0].body).toEqual({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true });
+    expect(writes[0].body).toEqual(newConductorSpawnBody('code'));
     expect(adoptInstance).toHaveBeenCalledWith({ id: 'i9', sessionId: 's9' });
     expect(selectInstance).toHaveBeenCalledWith('i9', { userGesture: true, gesture: expect.any(Number) });
   });

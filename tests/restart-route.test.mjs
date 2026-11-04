@@ -128,3 +128,26 @@ test('with no server context wired the route answers 202 and prepares nothing', 
   assert.deepEqual(await res.json(), { ok: true });
   assert.equal(touched, false);
 });
+
+test('a headless server refuses a restart 409 RESTART_DISABLED_HEADLESS and runs no step', async (t) => {
+  const touched = [];
+  const prep = {
+    drift: () => { touched.push('drift'); return null; },
+    installDeps: async () => { touched.push('installDeps'); },
+    stageWeb: async () => { touched.push('stageWeb'); },
+  };
+  const w = wired(prep);
+  const s = await serve({ ...w.opts, relaunch: { ...w.opts.relaunch, headless: true } });
+  t.after(s.close);
+  for (const body of [{}, { resume: true }]) {
+    const res = await restart(s.base, body);
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { error: 'restart is disabled in headless mode', code: 'RESTART_DISABLED_HEADLESS' });
+  }
+  assert.deepEqual(touched, []);
+  assert.deepEqual(w.spawned, []);
+  // The refusal takes no maintenance lock: a non-headless restart right after it runs.
+  const after = await serve(wired(inSync()).opts);
+  t.after(after.close);
+  assert.deepEqual((await lines(await restart(after.base))).at(-1), { type: 'result', ok: true });
+});
