@@ -1,0 +1,314 @@
+// The projects-root lock (src/rootLock.ts): one holder per root, judged by its
+// socket alone — never by pid or age — plus generation supersession, the
+// endpoint choice per host, and the restart handover's lock half.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  acquireRootLock, probeHolder, parseRootLockRecord, RootLockHeldError,
+  ROOT_LOCK_DIRNAME, ROOT_LOCK_HANDOVER_ENV, ROOT_LOCK_HELD_EXIT,
+} from '../src/rootLock.ts';
+import { hostPlatform } from '../src/platform/index.ts';
+import { createPosixPlatform } from '../src/platform/posix.ts';
+import { createWin32Platform } from '../src/platform/win32.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
+
+const HOLDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'rootLockHolder.mjs');
+const QUIET = { warn() {} };
+
+async function freshRoot(t) {
+  const root = await mkdtemp('root-lock-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+const storeOf = (root) => path.join(root, '.code-conductor');
+const lockDirOf = (root) => path.join(storeOf(root), ROOT_LOCK_DIRNAME);
+const genFiles = (root) => fs.readdirSync(lockDirOf(root)).filter((n) => /^\d+\.json$/.test(n)).sort();
+const readRec = (root, gen) => parseRootLockRecord(fs.readFileSync(path.join(lockDirOf(root), `${gen}.json`), 'utf8'));
+
+async function acquire(t, root, opts = {}) {
+  const lock = await acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET, ...opts });
+  t.after(() => lock.releaseSync());
+  return lock;
+}
+
+function connectOnce(address) {
+  return new Promise((resolve) => {
+    const s = net.connect({ path: address });
+    s.once('connect', () => { s.destroy(); resolve('connected'); });
+    s.once('error', (e) => resolve(e.code));
+  });
+}
+
+function spawnHolder(t, root, args = []) {
+  const child = spawn(process.execPath, [HOLDER, root, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const out = { stdout: '', stderr: '' };
+  child.stdout.setEncoding('utf8').on('data', (c) => { out.stdout += c; });
+  child.stderr.setEncoding('utf8').on('data', (c) => { out.stderr += c; });
+  const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+  });
+  const waitFor = async (re, timeout = 20_000) => {
+    const start = Date.now();
+    for (;;) {
+      const m = re.exec(out.stdout);
+      if (m) return m;
+      if (child.exitCode !== null || child.signalCode !== null || Date.now() - start > timeout) {
+        throw new Error(`holder never printed ${re}\nstdout=${out.stdout}\nstderr=${out.stderr}`);
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+  return { child, out, exited, waitFor };
+}
+
+async function killHolder(h, signal) {
+  h.child.kill(signal);
+  await h.exited;
+}
+
+test('a fresh root: generation 1 names a socket that accepts a connection', async (t) => {
+  const root = await freshRoot(t);
+  const lock = await acquire(t, root);
+  assert.equal(lock.gen, 1);
+  assert.deepEqual(genFiles(root), ['1.json']);
+  const rec = readRec(root, 1);
+  assert.equal(rec.token, lock.token);
+  assert.equal(rec.pid, process.pid);
+  assert.equal(rec.handoverTo, null);
+  const addr = hostPlatform.socketConnectPath(lockDirOf(root), rec.sock);
+  try { assert.equal(await connectOnce(addr.path), 'connected'); } finally { addr.release(); }
+});
+
+test('a live holder is refused whatever pid its record names — pid plays no part', async (t) => {
+  const root = await freshRoot(t);
+  const h = spawnHolder(t, root);
+  await h.waitFor(/HELD 1\n/);
+  const file = path.join(lockDirOf(root), '1.json');
+  const original = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // As a reader in another pid namespace sees it: no such pid, or our own.
+  for (const pid of [2 ** 22 - 1, process.pid]) {
+    fs.writeFileSync(file, JSON.stringify({ ...original, pid }));
+    await assert.rejects(
+      acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET }),
+      (e) => e instanceof RootLockHeldError && e.code === 'ROOT_LOCK_HELD' && e.holderPid === pid,
+      `pid ${pid}`,
+    );
+  }
+  assert.deepEqual(genFiles(root), ['1.json'], 'a refused contender leaves no generation behind');
+});
+
+test('a holder whose event loop is starved still probes alive', async (t) => {
+  const root = await freshRoot(t);
+  const h = spawnHolder(t, root, ['--busy-ms', '3000']);
+  await h.waitFor(/HELD 1\n/);
+  const until = Number((await h.waitFor(/BUSY-UNTIL (\d+)\n/))[1]);
+  await assert.rejects(acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET }), RootLockHeldError);
+  assert.ok(Date.now() < until, 'the refusal came while the holder was still blocked');
+});
+
+for (const signal of ['SIGTERM', 'SIGKILL']) {
+  test(`a holder killed by ${signal} is superseded at once; its generation and socket are collected`, async (t) => {
+    const root = await freshRoot(t);
+    const h = spawnHolder(t, root);
+    await h.waitFor(/HELD 1\n/);
+    const deadSock = path.join(lockDirOf(root), readRec(root, 1).sock.name);
+    await killHolder(h, signal);
+    assert.ok(fs.existsSync(deadSock), 'a signal death runs no exit handler: the socket file stays');
+    const lock = await acquire(t, root);
+    assert.equal(lock.gen, 2);
+    assert.deepEqual(genFiles(root), ['2.json']);
+    assert.ok(!fs.existsSync(deadSock), 'the dead holder\'s socket file is collected');
+  });
+}
+
+test('after a reboot the last record names a socket nothing listens on: taken at the next generation without delay', async (t) => {
+  const root = await freshRoot(t);
+  const first = spawnHolder(t, root);
+  await first.waitFor(/HELD 1\n/);
+  await killHolder(first, 'SIGKILL');
+  const second = spawnHolder(t, root);
+  await second.waitFor(/HELD 2\n/);
+  const sockFile = path.join(lockDirOf(root), readRec(root, 2).sock.name);
+  await killHolder(second, 'SIGKILL');
+  assert.ok(fs.existsSync(sockFile), 'the socket file survives the holder');
+  const started = Date.now();
+  const lock = await acquire(t, root);
+  // Well under the probe's 2 s doubt timeout: a refused connect is an answer.
+  assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
+  assert.equal(lock.gen, 3);
+});
+
+test('concurrent contenders on a fresh root: exactly one holds', async (t) => {
+  const N = 4;
+  for (let round = 0; round < 20; round++) {
+    await t.test(`round ${round}`, async (st) => {
+      const root = await freshRoot(st);
+      const hs = Array.from({ length: N }, () => spawnHolder(st, root, ['--wait-go']));
+      await Promise.all(hs.map((h) => h.waitFor(/READY\n/)));
+      for (const h of hs) h.child.stdin.write('go\n');
+      const outcomes = await Promise.all(hs.map((h) => h.waitFor(/(HELD \d+|REFUSED \d+)\n/).then((m) => m[1])));
+      const held = outcomes.filter((o) => o.startsWith('HELD'));
+      assert.equal(held.length, 1, `outcomes: ${outcomes.join(', ')}`);
+      const refused = hs.filter((_, i) => outcomes[i].startsWith('REFUSED'));
+      for (const h of refused) assert.equal((await h.exited).code, ROOT_LOCK_HELD_EXIT);
+      const holder = hs[outcomes.indexOf(held[0])];
+      assert.equal(readRec(root, Number(held[0].split(' ')[1])).pid, holder.child.pid);
+    });
+  }
+});
+
+for (const [label, body] of [['empty', ''], ['unparseable', '{"v":1,"pid":']]) {
+  test(`an ${label} top record is read as dead after the re-reads`, async (t) => {
+    const root = await freshRoot(t);
+    fs.mkdirSync(lockDirOf(root), { recursive: true });
+    fs.writeFileSync(path.join(lockDirOf(root), '1.json'), body);
+    const lock = await acquire(t, root);
+    assert.equal(lock.gen, 2);
+    assert.deepEqual(genFiles(root), ['2.json']);
+  });
+}
+
+test('probeHolder: a recorded socket that refuses is dead, one that accepts is alive', async (t) => {
+  const root = await freshRoot(t);
+  const lock = await acquire(t, root);
+  const rec = readRec(root, lock.gen);
+  assert.equal(await probeHolder(rec, lockDirOf(root), hostPlatform), 'alive');
+  assert.equal(await probeHolder({ ...rec, sock: { kind: 'store', name: 'nobody.sock' } }, lockDirOf(root), hostPlatform), 'dead');
+});
+
+// ── Endpoint choice ────────────────────────────────────────────────────────
+
+async function longRoot(t) {
+  const root = await freshRoot(t);
+  const deep = path.join(root, 'a'.repeat(60), 'b'.repeat(60));
+  fs.mkdirSync(deep, { recursive: true });
+  return deep;
+}
+
+test('endpoint: a short store path listens in the store', async (t) => {
+  const root = await freshRoot(t);
+  const platform = createPosixPlatform();
+  assert.equal(platform.rootLockEndpoint(lockDirOf(root), 'abcd1234').kind, 'store');
+});
+
+test('endpoint: a long Linux store path still listens in the store, reached through /proc/self/fd', async (t) => {
+  if (!fs.existsSync('/proc/self/fd')) { t.skip('no /proc on this host'); return; }
+  const root = await longRoot(t);
+  const platform = createPosixPlatform({ procFd: () => true });
+  assert.equal(platform.rootLockEndpoint(lockDirOf(root), 'abcd1234').kind, 'store');
+  const lock = await acquire(t, root, { platform });
+  const rec = readRec(root, lock.gen);
+  assert.equal(rec.sock.kind, 'store');
+  const addr = platform.socketConnectPath(lockDirOf(root), rec.sock);
+  try {
+    assert.match(addr.path, /^\/proc\/self\/fd\/\d+\//);
+    assert.equal(await connectOnce(addr.path), 'connected');
+  } finally { addr.release(); }
+  await assert.rejects(acquireRootLock({ storeDir: storeOf(root), platform, log: QUIET }), RootLockHeldError);
+});
+
+test('endpoint: a long store path with no /proc listens in tmp', async (t) => {
+  const root = await longRoot(t);
+  const tmp = await freshRoot(t);
+  const platform = createPosixPlatform({ procFd: () => false, tmpdir: () => tmp });
+  const lock = await acquire(t, root, { platform });
+  const rec = readRec(root, lock.gen);
+  assert.equal(rec.sock.kind, 'tmp');
+  assert.equal(path.dirname(rec.sock.path), tmp);
+  const addr = platform.socketConnectPath(lockDirOf(root), rec.sock);
+  try { assert.equal(await connectOnce(addr.path), 'connected'); } finally { addr.release(); }
+  await assert.rejects(acquireRootLock({ storeDir: storeOf(root), platform, log: QUIET }), RootLockHeldError);
+});
+
+test('endpoint: a store that cannot hold a socket falls back to tmp, with a warning', async (t) => {
+  const root = await freshRoot(t);
+  const tmp = await freshRoot(t);
+  const base = createPosixPlatform({ tmpdir: () => tmp });
+  // A store whose socket address cannot be bound (its directory is missing).
+  const platform = {
+    ...base,
+    socketConnectPath: (lockDir, sock) => (sock.kind === 'store'
+      ? { path: path.join(lockDir, 'missing-dir', sock.name), release() {} }
+      : base.socketConnectPath(lockDir, sock)),
+  };
+  const warnings = [];
+  const lock = await acquireRootLock({ storeDir: storeOf(root), platform, log: { warn: (m) => warnings.push(m) } });
+  t.after(() => lock.releaseSync());
+  const rec = readRec(root, lock.gen);
+  assert.equal(rec.sock.kind, 'tmp');
+  assert.equal(warnings.length, 1);
+  assert.equal(await connectOnce(rec.sock.path), 'connected');
+});
+
+test('endpoint: Windows listens on a named pipe keyed by the lock dir and token', () => {
+  const platform = createWin32Platform({ realpathNative: (p) => p });
+  const sock = platform.rootLockEndpoint('C:\\p\\.code-conductor\\server-lock', 'abcd1234');
+  assert.equal(sock.kind, 'pipe');
+  assert.match(sock.name, /^\\\\\.\\pipe\\cc-root-[0-9a-f]{16}-abcd1234$/);
+  const other = platform.rootLockEndpoint('C:\\q\\.code-conductor\\server-lock', 'abcd1234');
+  assert.notEqual(other.name, sock.name, 'two roots never share a pipe');
+  assert.equal(platform.socketConnectPath('C:\\p', sock).path, sock.name);
+});
+
+// ── Handover and release ───────────────────────────────────────────────────
+
+test('handover: an offered token adopts the same generation; the old holder then leaves the record', async (t) => {
+  const root = await freshRoot(t);
+  const parent = await acquire(t, root);
+  assert.equal(parent.offerHandover('T2'), true);
+  assert.equal(readRec(root, parent.gen).handoverTo, 'T2');
+  const env = { [ROOT_LOCK_HANDOVER_ENV]: 'T2', OTHER: 'x' };
+  const child = await acquire(t, root, { env });
+  assert.equal(child.gen, parent.gen);
+  assert.equal(child.token, 'T2');
+  assert.deepEqual(env, { OTHER: 'x' }, 'the handover token is consumed from the env');
+  const rec = readRec(root, child.gen);
+  assert.equal(rec.token, 'T2');
+  assert.equal(rec.handoverTo, null);
+  assert.equal(await parent.awaitAdoption({ timeoutMs: 1000 }), true);
+  parent.releaseSync();
+  assert.equal(readRec(root, child.gen).token, 'T2', 'the parent\'s release leaves the child\'s record');
+  assert.equal(await probeHolder(rec, lockDirOf(root), hostPlatform), 'alive', 'the child still answers after the parent closed');
+});
+
+test('handover: a withdrawn offer is refused while the holder lives', async (t) => {
+  const root = await freshRoot(t);
+  const parent = await acquire(t, root);
+  parent.offerHandover('T2');
+  parent.withdrawHandover();
+  assert.equal(readRec(root, parent.gen).handoverTo, null);
+  await assert.rejects(
+    acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, env: { [ROOT_LOCK_HANDOVER_ENV]: 'T2' }, log: QUIET }),
+    RootLockHeldError,
+  );
+  assert.equal(await parent.awaitAdoption({ timeoutMs: 150 }), false, 'nobody adopted');
+});
+
+test('awaitAdoption stops waiting when its signal aborts', async (t) => {
+  const root = await freshRoot(t);
+  const lock = await acquire(t, root);
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 50);
+  const started = Date.now();
+  assert.equal(await lock.awaitAdoption({ timeoutMs: 60_000, signal: ac.signal }), false);
+  assert.ok(Date.now() - started < 5000);
+});
+
+test('releaseSync removes our record and our socket file', async (t) => {
+  const root = await freshRoot(t);
+  const lock = await acquire(t, root);
+  const sockFile = path.join(lockDirOf(root), readRec(root, lock.gen).sock.name);
+  assert.ok(fs.existsSync(sockFile));
+  lock.releaseSync();
+  assert.deepEqual(genFiles(root), []);
+  assert.ok(!fs.existsSync(sockFile));
+  const next = await acquire(t, root);
+  assert.equal(next.gen, 1);
+});

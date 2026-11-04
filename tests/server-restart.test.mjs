@@ -19,6 +19,9 @@ import { promises as fs } from 'node:fs';
 import { waitForBanner } from './serverBanner.mjs';
 import { flaggedIdsIn } from './sessionFacts.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { probeHolder, parseRootLockRecord, ROOT_LOCK_DIRNAME, ROOT_LOCK_HELD_EXIT } from '../src/rootLock.ts';
+import { readFileSync, readdirSync } from 'node:fs';
+import { hostPlatform } from '../src/platform/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -299,4 +302,89 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
     await fs.readFile(path.join(storeDir, 'sessions.json'), 'utf8'),
   );
   assert.ok(flaggedIdsIn(sessions, 'archived').has(sid), 'session must be archived after sweep');
+});
+
+// The top generation's record under a projects root's lock dir.
+function topRecord(lockDir) {
+  const gens = readdirSync(lockDir).map((n) => /^(\d+)\.json$/.exec(n)).filter(Boolean).map((m) => Number(m[1]));
+  const gen = Math.max(...gens);
+  return { gen, rec: parseRootLockRecord(readFileSync(path.join(lockDir, `${gen}.json`), 'utf8')) };
+}
+
+test('a restart hands the projects-root lock over with no window: never dead, adopted before the parent exits', async (t) => {
+  const port = await getFreePort();
+  const tmpHome = await mkdtemp('orch-restart-lock-');
+  const lockDir = path.join(tmpHome, 'project', '.code-conductor', ROOT_LOCK_DIRNAME);
+  await fs.mkdir(path.join(tmpHome, 'project'), { recursive: true });
+  await fs.mkdir(path.join(tmpHome, '.claude', 'projects'), { recursive: true });
+
+  const captured = { stdout: '', stderr: '' };
+  const child = spawnServer(port, tmpHome);
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (c) => { captured.stdout += c; });
+  child.stderr.on('data', (c) => { captured.stderr += c; });
+  let grandchildPid = null;
+  const third = { child: null };
+  let sampling = true;
+  t.after(async () => {
+    sampling = false;
+    if (grandchildPid) { try { process.kill(grandchildPid, 'SIGTERM'); } catch {} }
+    if (!child.killed) { try { child.kill('SIGTERM'); } catch {} }
+    try { third.child?.kill('SIGKILL'); } catch {}
+    await new Promise(r => setTimeout(r, 100));
+    if (grandchildPid) { try { process.kill(grandchildPid, 'SIGKILL'); } catch {} }
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  });
+
+  await waitForBanner(captured, port);
+  assert.equal(topRecord(lockDir).rec.pid, child.pid, 'the booted server holds the root');
+
+  // Sample the lock every 20 ms through the whole restart.
+  const verdicts = [];
+  const sampler = (async () => {
+    while (sampling) {
+      const { rec } = topRecord(lockDir);
+      verdicts.push(rec ? await probeHolder(rec, lockDir, hostPlatform) : 'unparseable');
+      await new Promise(r => setTimeout(r, 20));
+    }
+  })();
+
+  // Ownership check before the destructive POST — see the first test.
+  assert.equal(child.exitCode, null, 'our child must still be alive');
+  assert.equal(child.signalCode, null, 'our child must not have been signal-killed');
+  assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
+
+  const atExit = new Promise((resolve) => child.once('exit', (code) => resolve({ code, top: topRecord(lockDir) })));
+  const res = await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' });
+  await res.text();
+  let exitTimer;
+  const exited = await Promise.race([atExit, new Promise(r => { exitTimer = setTimeout(() => r('timeout'), 60_000); })]);
+  clearTimeout(exitTimer);
+  assert.notEqual(exited, 'timeout', `original server did not exit\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
+  const m = captured.stdout.match(/restart: spawned replacement pid=(\d+)/);
+  assert.ok(m, `no restart pid log\nstdout=${captured.stdout}`);
+  grandchildPid = Number(m[1]);
+  assert.equal(exited.code, 0);
+  assert.equal(exited.top.rec.pid, grandchildPid, 'when the parent exits, the record already names the replacement');
+  assert.equal(exited.top.rec.handoverTo, null);
+
+  await waitForBanner(captured, port, { nth: 2, timeout: 20_000 });
+
+  // A third server on the root is refused by the replacement.
+  third.child = spawn(process.execPath, [SERVER_TS], {
+    cwd: path.dirname(SERVER_TS),
+    env: { ...process.env, HOME: tmpHome, PORT: '0', HOST: '127.0.0.1', PROJECTS_ROOT: path.join(tmpHome, 'project'), CLAUDE_PROJECTS_ROOT: path.join(tmpHome, '.claude', 'projects') },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let thirdErr = '';
+  third.child.stderr.setEncoding('utf8').on('data', (c) => { thirdErr += c; });
+  const thirdCode = await new Promise((resolve) => third.child.once('exit', resolve));
+  assert.equal(thirdCode, ROOT_LOCK_HELD_EXIT, thirdErr);
+  assert.match(thirdErr, new RegExp(`pid ${grandchildPid}\\b`));
+
+  sampling = false;
+  await sampler;
+  assert.ok(verdicts.length >= 5, `sampled ${verdicts.length} times`);
+  assert.deepEqual(verdicts.filter((v) => v !== 'alive'), [], 'the lock never read dead through the restart');
 });

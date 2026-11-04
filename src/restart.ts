@@ -25,6 +25,8 @@ import { retireSegments } from './sessionLineage.ts';
 import { drainToIdle, finishDrain, abortDrain } from './resumeRestart.ts';
 import { relaunchPrep, type RelaunchPrep } from './relaunchPrep.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
+import { ROOT_LOCK_HANDOVER_ENV, ROOT_LOCK_HANDOVER_WAIT_MS, type RootLock } from './rootLock.ts';
+import { mintLockToken } from './storeLock.ts';
 
 // The InstanceManager surface the plain restart path reads. Every method is
 // optional because runTempCleanup/teardownInstances guard each call (the
@@ -147,7 +149,7 @@ export interface RestartCtx {
  * `syncDeps` the dependency check.
  */
 export async function runRestart({
-  mode, ctx, flags, prep = relaunchPrep, onChunk = () => {}, onCommit, spawnAndExit = spawnReplacementAndExit,
+  mode, ctx, flags, prep = relaunchPrep, onChunk = () => {}, onCommit, spawnAndExit = spawnReplacementAndExit, rootLock = null,
 }: {
   mode: 'plain' | 'resume';
   ctx: RestartCtx;
@@ -155,7 +157,9 @@ export async function runRestart({
   prep?: RelaunchPrep;
   onChunk?: (phase: RestartPhase, text: string) => void;
   onCommit?: () => void;
-  spawnAndExit?: (opts: { log?: RestartLog }) => void;
+  spawnAndExit?: (opts: { log?: RestartLog; rootLock?: RootLock | null }) => void | Promise<void>;
+  // The projects-root lock this server holds, handed over to the replacement.
+  rootLock?: RootLock | null;
 }): Promise<void> {
   const log = ctx.log ?? console;
   const drift = flags.syncDeps ? prep.drift() : null;
@@ -187,29 +191,53 @@ export async function runRestart({
     onCommit?.();
     teardownNetworking(ctx);
   }
-  spawnAndExit({ log });
+  await spawnAndExit({ log, rootLock });
 }
 
 // Spawn a detached replacement node process (same execPath + argv + cwd + env)
-// and exit this one after a short delay so the response just ended can flush.
-// The child's listen-with-retry (server.ts) handles the EADDRINUSE race while
-// our socket releases.
-export function spawnReplacementAndExit({ log = console }: { log?: RestartLog } = {}): void {
+// and exit this one. The child's listen-with-retry (server.ts) handles the
+// EADDRINUSE race while our socket releases.
+//
+// With a root lock the lock is handed over, never dropped: the offer is
+// written into our record BEFORE the spawn, and this process — whose lock
+// socket keeps answering — exits only once the child has adopted the record
+// (or the wait runs out). Exiting first would leave a record naming a dead
+// socket, and a third server could take the root in that gap.
+export async function spawnReplacementAndExit({
+  log = console, rootLock = null, spawnChild = spawn, exit = (code: number) => process.exit(code),
+  handoverWaitMs = ROOT_LOCK_HANDOVER_WAIT_MS,
+}: {
+  log?: RestartLog; rootLock?: RootLock | null;
+  spawnChild?: typeof spawn; exit?: (code: number) => void; handoverWaitMs?: number;
+} = {}): Promise<void> {
   const args = [process.argv[1], ...process.argv.slice(2)];
+  const next = rootLock ? mintLockToken() : null;
+  if (rootLock && next) rootLock.offerHandover(next);
+  const childExited = new AbortController();
   try {
-    const child = spawn(process.execPath, args, {
+    const child = spawnChild(process.execPath, args, {
       ...hostPlatform.spawnOptions('daemon'),
       stdio: 'inherit',
       cwd: process.cwd(),
-      env: process.env,
+      env: next ? { ...process.env, [ROOT_LOCK_HANDOVER_ENV]: next } : process.env,
     });
+    child.once('exit', () => childExited.abort());
     child.unref();
     log.log?.(`restart: spawned replacement pid=${child.pid}; exiting current pid=${process.pid}`);
   } catch (e) {
     log.error?.('restart: spawn failed', e);
+    rootLock?.withdrawHandover();
     // No replacement — don't exit, or the user is left with a dead app.
     return;
   }
 
-  setTimeout(() => process.exit(0), 50);
+  const minExit = new Promise<void>(r => setTimeout(r, 50));
+  if (rootLock) {
+    // The relaunch is committed: whatever the wait reports, this process exits.
+    const adopted = await rootLock.awaitAdoption({ timeoutMs: handoverWaitMs, signal: childExited.signal })
+      .catch((e: unknown) => { log.warn?.('restart: reading the projects-root lock failed', e); return false; });
+    if (!adopted) log.warn?.('restart: the replacement did not adopt the projects-root lock; exiting anyway');
+  }
+  await minExit;
+  exit(0);
 }

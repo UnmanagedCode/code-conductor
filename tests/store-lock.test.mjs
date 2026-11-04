@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { withLock } from '../src/storeLock.ts';
+import { withLock, createLockFileSync, releaseLockSync, mintLockToken } from '../src/storeLock.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -235,6 +235,48 @@ test('withLock fails closed when the acquire loop exits without a token', async 
     assert.match(out, /REJECTED:storeLock: acquire loop exited without a token/, `withLock must reject (got: ${out})`);
     assert.match(out, /FNRAN:false/, `fn must not run when no token was acquired (got: ${out})`);
     await assert.rejects(fs.stat(sentinelFile), { code: 'ENOENT' }, 'fn must not have written the sentinel');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── The sync create/release the projects-root lock shares (src/rootLock.ts) ──
+
+test('createLockFileSync creates a complete record, and returns false on an existing file without touching it', async () => {
+  const dir = await tmpDir();
+  try {
+    const lockPath = path.join(dir, 'x.lock');
+    assert.equal(createLockFileSync(lockPath, '{"token":"a"}'), true);
+    assert.equal(await fs.readFile(lockPath, 'utf8'), '{"token":"a"}');
+    assert.equal(createLockFileSync(lockPath, '{"token":"b"}'), false);
+    assert.equal(await fs.readFile(lockPath, 'utf8'), '{"token":"a"}', 'the holder\'s record is untouched');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('createLockFileSync throws on a failure other than EEXIST', async () => {
+  const dir = await tmpDir();
+  try {
+    assert.throws(() => createLockFileSync(path.join(dir, 'no-such-dir', 'x.lock'), '{}'), { code: 'ENOENT' });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('releaseLockSync removes only a lockfile carrying our token; a successor\'s survives', async () => {
+  const dir = await tmpDir();
+  try {
+    const lockPath = path.join(dir, 'x.lock');
+    const mine = mintLockToken();
+    const successor = mintLockToken();
+    assert.notEqual(mine, successor, 'every minted token is unique');
+    createLockFileSync(lockPath, JSON.stringify({ pid: process.pid, token: successor }));
+    releaseLockSync(lockPath, mine);
+    assert.equal(JSON.parse(await fs.readFile(lockPath, 'utf8')).token, successor, 'a successor\'s lock survives');
+    releaseLockSync(lockPath, successor);
+    await assert.rejects(fs.stat(lockPath), { code: 'ENOENT' }, 'our own lock is removed');
+    assert.doesNotThrow(() => releaseLockSync(lockPath, successor), 'releasing a vanished lock is a no-op');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

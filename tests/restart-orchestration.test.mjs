@@ -7,7 +7,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { freshProjectsRoot } from './helpers.mjs';
-import { runRestart } from '../src/restart.ts';
+import { runRestart, spawnReplacementAndExit } from '../src/restart.ts';
+import { ROOT_LOCK_HANDOVER_ENV } from '../src/rootLock.ts';
+import { EventEmitter } from 'node:events';
 import { resumeManifestPath, clearResumeManifest } from '../src/resumeManifest.ts';
 import { RESTART_ABORTED_LEAD } from '../shared/injectedTurns.ts';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
@@ -189,4 +191,72 @@ test('flags turn steps off', async (t) => {
     await drifted.run('plain', { instances: plainInstances(drifted.order) }, { buildWeb: false, syncDeps: true });
     assert.deepEqual(drifted.order, ['drift', 'teardownInstances', 'installDeps', 'commit', ...NETWORK_DOWN, 'spawn']);
   });
+});
+
+// ── The projects-root lock handover (src/rootLock.ts) ────────────────────────
+
+test('runRestart hands its root lock to spawnAndExit', async () => {
+  const rootLock = { marker: 'the lock' };
+  let seen;
+  await runRestart({
+    mode: 'plain', flags: { buildWeb: false, syncDeps: false },
+    prep: { drift: () => null, installDeps: async () => {}, stageWeb: async () => {} },
+    ctx: { log: QUIET },
+    rootLock,
+    spawnAndExit: (opts) => { seen = opts.rootLock; },
+  });
+  assert.equal(seen, rootLock);
+});
+
+// A RootLock stub recording every call into `order`; awaitAdoption resolves
+// when the test calls `adopt()`.
+function stubLock(order) {
+  let adopt;
+  const adopted = new Promise((r) => { adopt = r; });
+  return {
+    adopt: () => adopt(true),
+    lock: {
+      offerHandover(next) { order.push(['offer', next]); return true; },
+      withdrawHandover() { order.push(['withdraw']); },
+      async awaitAdoption(opts) { order.push(['await', opts.timeoutMs]); return adopted; },
+    },
+  };
+}
+
+test('spawnReplacementAndExit: the offer precedes the spawn, the child carries the token, the exit waits for the adoption', async () => {
+  const order = [];
+  const { lock, adopt } = stubLock(order);
+  let childEnv;
+  const spawnChild = (_cmd, _args, opts) => {
+    order.push(['spawn']);
+    childEnv = opts.env;
+    return Object.assign(new EventEmitter(), { pid: 4242, unref() {} });
+  };
+  const exited = new Promise((resolve) => {
+    void spawnReplacementAndExit({
+      log: QUIET, rootLock: lock, spawnChild, handoverWaitMs: 1234,
+      exit: (code) => { order.push(['exit', code]); resolve(); },
+    });
+  });
+  await new Promise((r) => setTimeout(r, 120));
+  assert.deepEqual(order.map(([k]) => k), ['offer', 'spawn', 'await'], 'no exit before the adoption');
+  const offered = order[0][1];
+  assert.equal(childEnv[ROOT_LOCK_HANDOVER_ENV], offered);
+  assert.equal(process.env[ROOT_LOCK_HANDOVER_ENV], undefined, 'the token goes to the child only');
+  assert.deepEqual(order[2], ['await', 1234]);
+  adopt();
+  await exited;
+  assert.deepEqual(order.at(-1), ['exit', 0]);
+});
+
+test('spawnReplacementAndExit: a spawn that throws withdraws the offer and does not exit', async () => {
+  const order = [];
+  const { lock } = stubLock(order);
+  await spawnReplacementAndExit({
+    log: QUIET, rootLock: lock,
+    spawnChild: () => { order.push(['spawn']); throw new Error('EAGAIN'); },
+    exit: (code) => order.push(['exit', code]),
+  });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(order.map(([k]) => k), ['offer', 'spawn', 'withdraw']);
 });

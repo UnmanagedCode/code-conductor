@@ -21,8 +21,12 @@
 // Release is ownership-checked: a process removes the lockfile only if it still
 // carries that process's unique token, so it can never delete a successor's
 // lock (which, after a dead-owner reclaim, would collapse mutual exclusion).
+//
+// The projects-root lock (src/rootLock.ts) shares the token minting, the
+// one-block create and the token-checked release, but NOT the pid-liveness
+// reclaim: its holders can live in another pid namespace.
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, openSync, writeSync, closeSync, readFileSync, unlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 // Bounded wait for a live owner to release. Env-tunable so tests can drive the
@@ -77,47 +81,65 @@ export function isProcessAlive(pid: number): boolean {
 
 let tokenCounter = 0;
 
+// A token unique to this acquire: no other process, and no other acquire in
+// this one, can mint the same string. The projects-root lock (src/rootLock.ts)
+// mints its tokens here too.
+export function mintLockToken(): string {
+  return `${process.pid}-${Date.now()}-${tokenCounter++}`;
+}
+
+// Create `lockPath` exclusively and write `content` into it, in ONE synchronous
+// block: a process starved between an open and a write can then never leave a
+// created-but-empty lockfile for a reader to judge. False when the file already
+// exists; any other failure throws (after removing a file this call created).
+export function createLockFileSync(lockPath: string, content: string): boolean {
+  let fd: number;
+  // 'wx' = O_WRONLY | O_CREAT | O_EXCL — atomic, throws EEXIST if held
+  try { fd = openSync(lockPath, 'wx'); }
+  catch (e) {
+    if (errCode(e) === 'EEXIST') return false;
+    throw e;
+  }
+  try {
+    writeSync(fd, content);
+  } catch (e) {
+    closeSync(fd);
+    rmSync(lockPath, { force: true });
+    throw e;
+  }
+  closeSync(fd);
+  return true;
+}
+
 // Acquire the lock; returns a unique ownership token to hand back to releaseLock.
 async function acquireLock(lockPath: string): Promise<string> {
-  const token = `${process.pid}-${Date.now()}-${tokenCounter++}`;
+  const token = mintLockToken();
   for (let attempt = 0; attempt <= LOCK_RETRY_MAX; attempt++) {
+    if (createLockFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token }))) return token;
+    // Lock already held — reclaim ONLY if the owner is gone (dead PID). A
+    // live owner is respected no matter how old/slow (see file header).
     try {
-      // 'wx' = O_WRONLY | O_CREAT | O_EXCL — atomic, throws EEXIST if held
-      const fh = await fs.open(lockPath, 'wx');
-      try {
-        await fh.writeFile(JSON.stringify({ pid: process.pid, ts: Date.now(), token }));
-      } finally {
-        await fh.close();
+      const raw = await fs.readFile(lockPath, 'utf8');
+      const record = parseLockRecord(raw);
+      if (record?.pid !== undefined && !isProcessAlive(record.pid)) {
+        // Race: two waiters may both decide to reclaim simultaneously; the
+        // unlink that loses is harmless (ENOENT swallowed).
+        await fs.unlink(lockPath).catch(() => {});
+        continue; // retry immediately after clearing the dead owner's lock
       }
-      return token; // acquired
-    } catch (e) {
-      if (errCode(e) !== 'EEXIST') throw e;
-
-      // Lock already held — reclaim ONLY if the owner is gone (dead PID). A
-      // live owner is respected no matter how old/slow (see file header).
-      try {
-        const raw = await fs.readFile(lockPath, 'utf8');
-        const record = parseLockRecord(raw);
-        if (record?.pid !== undefined && !isProcessAlive(record.pid)) {
-          // Race: two waiters may both decide to reclaim simultaneously; the
-          // unlink that loses is harmless (ENOENT swallowed).
-          await fs.unlink(lockPath).catch(() => {});
-          continue; // retry immediately after clearing the dead owner's lock
-        }
-      } catch {
-        // Lock file disappeared or is unreadable — just retry.
-      }
-
-      if (attempt >= LOCK_RETRY_MAX) {
-        throw new Error(
-          `storeLock: could not acquire ${path.basename(lockPath)} after ${LOCK_RETRY_MAX} retries (owner still alive)`,
-        );
-      }
-
-      // Exponential backoff with jitter (spread set in the sleep call below)
-      const base = LOCK_RETRY_BASE_MS * Math.pow(1.5, attempt);
-      await sleep(Math.min(base * (0.8 + 0.4 * Math.random()), 500));
+    } catch {
+      // Lock file disappeared or is unreadable — just retry.
     }
+
+    if (attempt >= LOCK_RETRY_MAX) {
+      throw new Error(
+        `storeLock: could not acquire ${path.basename(lockPath)} after ${LOCK_RETRY_MAX} retries (owner still alive)`,
+      );
+    }
+
+    // Exponential backoff with jitter (spread set in the sleep call below)
+    const base = LOCK_RETRY_BASE_MS * Math.pow(1.5, attempt);
+    await sleep(Math.min(base * (0.8 + 0.4 * Math.random()), 500));
   }
   // The dead-owner reclaim on the FINAL retry iteration (attempt ===
   // LOCK_RETRY_MAX) falls out of the loop and lands here. That path is
@@ -131,18 +153,30 @@ async function acquireLock(lockPath: string): Promise<string> {
   throw new Error('storeLock: acquire loop exited without a token');
 }
 
-// Remove the lockfile only if we still own it (token match). After a dead-owner
-// reclaim a successor may now hold the lock under a fresh token; this prevents
-// us from deleting theirs.
+// The one release rule: a lockfile is ours to remove only while it still
+// carries our token. After a dead-owner reclaim a successor may hold the lock
+// under a fresh token; this keeps us from deleting theirs.
+function ownsLock(raw: string, token: string): boolean {
+  return parseLockRecord(raw)?.token === token;
+}
+
 async function releaseLock(lockPath: string, token: string): Promise<void> {
   try {
-    const raw = await fs.readFile(lockPath, 'utf8');
-    const record = parseLockRecord(raw);
-    if (record?.token !== token) return; // not ours anymore — leave it
+    if (!ownsLock(await fs.readFile(lockPath, 'utf8'), token)) return; // not ours anymore — leave it
   } catch {
     return; // gone or unreadable — nothing to release
   }
   await fs.unlink(lockPath).catch(() => {});
+}
+
+// releaseLock for a caller that cannot await — a `process.on('exit')` handler.
+export function releaseLockSync(lockPath: string, token: string): void {
+  try {
+    if (!ownsLock(readFileSync(lockPath, 'utf8'), token)) return;
+  } catch {
+    return;
+  }
+  try { unlinkSync(lockPath); } catch { /* already gone */ }
 }
 
 // Acquire an exclusive advisory lock scoped to `dataFile`, run `fn()`, then
