@@ -18,6 +18,7 @@
 | `HOST` / `PORT` | Bind address / port (default `127.0.0.1` / `8787`). |
 | `CC_SKIP_WEB_BUILD` | `=1` skips the web build — at boot and before a restart: `server.ts`'s entry block calls `start(entryStartOptions(process.env))`, whose `buildWeb` is false only for exactly `1`, so `/` serves whatever `web/dist` already holds (or the building page) and `runRestart` stages nothing. `tests/run.mjs` sets it, so the `node server.ts` children the suite spawns never build `web/dist` concurrently. |
 | `CC_SKIP_DEPS_SYNC` | `=1` skips the dependency check and install before a restart (`syncDeps` from `entryStartOptions`, false only for exactly `1`). `tests/run.mjs` sets it, so a test that restarts a `node server.ts` child never installs into the shared `node_modules`, whatever `package.json` its branch carries. |
+| `CC_ROOT_LOCK_HANDOVER_WAIT_MS` | How long a restarting server waits for its replacement to adopt the projects-root lock before it exits anyway (`ROOT_LOCK_HANDOVER_WAIT_MS`, `src/rootLock.ts`; default 120 000, sized for Termux's throttled module load). See [The projects-root lock](#the-projects-root-lock). |
 | `CC_NPM_INSTALL_CMD` | The shell command `ensureDependencies` (`src/relaunchPrep.ts`) runs to install, for a restart and for self-update (default `npm install`, never `npm ci`: no lock is tracked). A test seam. |
 | `CC_DEV_SERVER` | The server `npm run dev:web` proxies `/api`, `/ws` and `/plugins` to (default `http://127.0.0.1:8787`; `web/vite.config.ts`). |
 | `CC_ISOLATED_ROOT` | Root of `npm run start:isolated`'s sandbox: `<root>/projects` is its `PROJECTS_ROOT`, `<root>/claude-config` its `CLAUDE_CONFIG_DIR` (default `${TMPDIR:-/tmp}/cc-isolated`; `scripts/run-isolated.sh`, which also requires `PORT`). |
@@ -593,7 +594,7 @@
   - **Order.** `drift = flags.syncDeps ? prep.drift() : null`. In sync: `prep.stageWeb` first, before anything is touched. **plain**: `teardownInstances` (`runTempCleanup`, `stopLiveSync`, fire-and-forget `shutdown`), then on drift `prep.installDeps` + `prep.stageWeb`, then `onCommit`, `teardownNetworking` (terminate WS clients, close the WSS and the http server), `spawnAndExit`. **resume**: `drainToIdle`, then on drift install + stage — a failure there runs `abortDrain` and rethrows, with networking still up — then `onCommit`, `teardownNetworking`, `finishDrain` (manifest + `shutdownForResumeSync`), `spawnAndExit`.
   - **What holds about the install.** In resume mode `node_modules` changes only once every turn has ended: the drain's soft interrupt lands at a block edge, so a session's in-flight tool call (an `npm test`, a Playwright run) still finishes during the drain, and installing then would hand it a broken tree whose red result survives into its resumed context. In plain mode the sessions are being torn down when the install starts — not necessarily gone: where `softSigterm` holds (POSIX), `stopLiveSync` is a no-op and `shutdown` is fire-and-forget, so a session can still be exiting — and they are never resumed, so whatever such a session sees is discarded with it. Cost: in resume mode an install or build failure is found after turns were wound down (`abortDrain` hands them back). With dependencies in sync, every failure is found before any session is touched, in both modes. **Not covered:** `run_in_background` shells and processes outside cc that use the tree.
   - **Failure** throws; nothing after the failed step runs and nothing is spawned. `onCommit` marks the point after which the relaunch can no longer be refused; the route answers its client there. `onChunk(phase, text)` streams `deps` (the drift found), `npm`, `build` and `drain`.
-  - `spawnReplacementAndExit()` spawns a detached child with the same argv/env/cwd and exits ~50 ms later; the child's listen-with-retry handles `EADDRINUSE`. If the spawn throws it does not exit.
+  - `spawnReplacementAndExit({log, rootLock})` spawns a detached child with the same argv/env/cwd and exits; the child's listen-with-retry handles `EADDRINUSE`. If the spawn throws it does not exit. With a root lock it hands the lock over first and exits only once the child adopted it (or `CC_ROOT_LOCK_HANDOVER_WAIT_MS` ran out), never before ~50 ms — [The projects-root lock](#the-projects-root-lock) → Restart handover.
   - `runTempCleanup({instances, log})` (exported separately so it's unit-testable) handles temp cleanup in two parts: (1) live-attached temps via `InstanceManager.shutdownTempSync()`, which SIGKILLs every live temp claude (SIGTERM would let it flush a final line that re-creates the `O_APPEND|O_CREAT` jsonl), reaps each pid, and deletes the jsonl's `subagents/` dir; (2) crash-orphaned temps — temp segments in the session store with no live instance, found via `orphanedTempIdsSync()` (`src/sessionStore.ts`, a sync read) diffed against the live snapshot — retired directly in one write (`retireSegments`, no placement on record so no dir to clean). Both groups are folded into one `<store>/pending-temp-cleanup.json` manifest write (cwd-less for orphaned entries) so the next boot's `sweepPendingTempCleanup` can retry anything the fire-and-forget store write didn't land in time for (manifest unlinked per successful sweep). "Restart + Resume" (`resumeRestart.ts`) never calls `runTempCleanup` — temps are carried over there instead.
 - **src/gitLive.ts** — shared git-subprocess helpers for the paths that pull/fetch a managed checkout: `runGitLive(args, cwd, {timeoutMs, onChunk})` (streamed spawn, detached process-group timeout/kill, resolves `{code,stdout,stderr}`, never rejects), `fetchOriginBounded(cwd)` (bounded best-effort `git fetch` for update-detection, `NO_PROMPT_GIT_ENV` so private-repo auth fails fast). Imported by both `plugins/library.ts` and `selfUpdate.ts` — one implementation, no per-surface drift.
 - **src/depsDrift.ts** — `dependencyDrift(repoRoot)` → `null` or `{reason}` naming the first offender. Reads `<repoRoot>/package.json` and the packages on disk; never `package-lock.json` nor npm's hidden lockfile. No `package.json` ⇒ `null`; an unparseable one ⇒ `package.json is unreadable: …`. Offenders, first one wins, in this order:
@@ -828,6 +829,9 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   ├── migrated-backup-0039/               # ONLY on an install upgraded past the unified store: the per-session files migrations/0039 merged into sessions.json, moved aside (a `-<ms>` suffix on a name clash)
 │   ├── pending-resume.json                  # transient — "Resume after restart" manifest; written on drain, read+unlinked on boot
 │   ├── pending-temp-cleanup.json            # transient — temp-cleanup manifest (normal restart); swept+unlinked on boot
+│   ├── server-lock/                         # the projects-root lock (src/rootLock.ts) — see "The projects-root lock"
+│   │   ├── <gen>.json                       # one record per generation; the highest present is the lock
+│   │   └── <token8>.sock                    # a holder's listening socket (POSIX, `store` endpoint)
 │   ├── systems/<systemId>/
 │   │   └── retired-session-roots-<ms>/     # ONLY on an install upgraded past the FUSE-union geometry:
 │   │                                       # the pre-union local session roots, MOVED ASIDE by
@@ -935,6 +939,79 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 A project is a RECORD. Nothing under the projects root is listed because it is there — which is what lets the root hold container directories, cc's own dotfolders and a worktree area without any of them surfacing as a project, and what lets a project's tree live anywhere else instead. A record cc cannot parse still lists, with an empty path and a `degraded` reason.
 
 Orchestrator state stays in the central store; the only cc-written file inside a project tree is every project's tracked, app-regenerated `CONVENTIONS.md` (`src/projectClaudeMd.ts`) — imported by its `CLAUDE.md` and committed with the project (its line-1 marker is the self-describing source of truth). That holds for an adopted target too, git repo or not: it is written at adopt time, on every sweep and by an **Edit conventions…** save (on any project), landing in the user's own tree — as an uncommitted change where that tree is a repo. Creation also makes the tree a git repo (`git init`, when git can) and commits what it scaffolded — that `.git/` is git's own, not cc-written state. Adoption commits nothing. No per-project `.gitignore` plumbing.
+
+## The projects-root lock
+`src/rootLock.ts`. At most one cc server runs on a projects root. `start()` (`server.ts`) calls `acquireRootLock({storeDir, platform})` **first**, before `measureBootCommit`, `runMigrations` and every sweep, and releases it if the rest of the boot throws. So a refused server never consumes the holder's `pending-resume.json` / `pending-temp-cleanup.json`, never runs the session-tmp `rm -rf` or the FUSE sweep, and never adopts or prunes plugins.
+
+- **Refusal.** `RootLockHeldError` (`code: 'ROOT_LOCK_HELD'`, `holderPid`, `lockPath`), message `another code-conductor server (pid <N>) holds the projects root <root> (<lockDir>/<gen>.json); refusing to start`. The `server.ts` entry prints it to stderr and exits **`ROOT_LOCK_HELD_EXIT` (7)**; any other boot failure still exits 1. The refusal is immediate: a contender never waits for a live holder.
+- **Scope: one kernel.** It protects servers on the same kernel: the host and its containers, and Docker Desktop containers among themselves (one VM kernel). It does **not** protect a root shared across machines (NFS), or between a macOS host process and a Docker Desktop container — a socket file may not connect across that share, so a live holder can read as dead. Keeping those runs apart is the caller's job.
+
+**Layout** — `<store>/server-lock/` (`ROOT_LOCK_DIRNAME`):
+
+| Entry | What |
+|---|---|
+| `<gen>.json` | A record per generation, `gen` a positive integer (`/^[1-9]\d*\.json$/`). The highest one present is the lock. Written whole by `createLockFileSync` (`src/storeLock.ts`, one synchronous open+write+close); rewritten atomically (`<gen>.json.tmp-<token8>` + rename, EPERM/EBUSY retried on Windows). |
+| `<token8>.sock` | A holder's listening socket for a `store` endpoint. `token8` = first 8 hex chars of sha256 of the holder's token, so the path is unique per holder. |
+
+**Record (v1):** `{v: 1, pid, token, sock, handoverTo}`.
+- `pid` — for messages only. It is never checked.
+- `token` — `mintLockToken()` (`src/storeLock.ts`); release is token-checked (`releaseLockSync`).
+- `sock` — `{kind:'store', name}` (relative to the lock dir), `{kind:'tmp', path}` or `{kind:'pipe', name}`.
+- `handoverTo` — a token a restart replacement may adopt this generation under; `null` otherwise.
+
+**Why no pid liveness.** A record's pid means nothing to a reader in another pid namespace (two containers on one bind-mounted store, a host and a container): it reads as absent (→ "dead") or as the reader's own pid, and either would steal a live lock. `withLock`'s pid-liveness reclaim (`isProcessAlive`) stays as it is — its holders are this host's own short critical sections.
+
+**Endpoint** — `Platform.rootLockEndpoint(lockDir, token8, {storeUsable})` picks where the holder listens; `Platform.socketConnectPath(lockDir, sock)` gives the address THIS process listens or connects at (`{path, release}`; `release` closes a borrowed directory fd).
+
+| Host | Endpoint |
+|---|---|
+| win32 | `pipe`: `\\.\pipe\cc-root-<sha256(realpath lockDir)[:16]>-<token8>` — machine-global, a vanished listener answers `ENOENT`. |
+| POSIX, `<lockDir>/<token8>.sock` ≤ `SOCK_PATH_MAX` (103) bytes (`src/platform/rootLockAddress.ts`) | `store`, at that path. |
+| POSIX, longer, `/proc/self/fd` exists (Linux, Android) | `store`, reached as `/proc/self/fd/<dirfd>/<token8>.sock` through an fd on the lock dir that the holder keeps open. Each reader resolves `name` against its OWN lock-dir path, so a container mounting the store elsewhere still finds it. |
+| POSIX, longer, no `/proc` (macOS) | `tmp`: `<os.tmpdir()>/cc-root-<sha16>-<token8>.sock`. |
+| A store that refuses a socket (listen fails with anything but `EADDRINUSE`: FAT, some FUSE mounts) | falls back to `tmp`, with one warning that a server in another container on this root will not see this one. |
+
+The holder listens with `readableAll`/`writableAll` (a contender running as another uid can still probe), unrefs the server, and destroys every accepted connection.
+
+**Probe** — `probeHolder(rec, lockDir, platform)`: one `net.connect`, bounded by `PROBE_TIMEOUT_MS`.
+
+| Outcome | Verdict |
+|---|---|
+| connected | alive |
+| `ECONNREFUSED`, `ENOENT` | dead |
+| timeout, `EAGAIN` (full backlog), `EACCES`, `ENOTSUP`, any other error | alive |
+| top record empty or unparseable after `BAD_RECORD_REREADS` re-reads `BAD_RECORD_REREAD_MS` apart | dead |
+
+The kernel completes a unix-socket connect into the listen backlog without the holder's event loop running, so a holder starved for minutes (Termux) still probes alive; nothing is evicted on age. When the holder dies by any means, `SIGKILL` and a host reboot included, nothing listens on the recorded socket and the next probe reads dead at once — no exit handler is needed, and the lock never consults time.
+
+**Acquire** — `acquireRootLock({storeDir, platform, env, log})`:
+1. `mkdir -p` the lock dir. Read and delete `env.CC_ROOT_LOCK_HANDOVER` (`ROOT_LOCK_HANDOVER_ENV`), so it never reaches a CLI or plugin env.
+2. `token = handover ?? mintLockToken()`. **Listen first**, so any record naming us is probe-able from the moment it exists.
+3. Up to `ACQUIRE_ATTEMPTS` passes: read the top generation's record.
+   - **Adopt** — `handover` set and `rec.handoverTo === handover`: rewrite that record with our pid, socket, token and `handoverTo: null`; held at the same `gen`.
+   - top probes **alive** → close our listener, throw `RootLockHeldError`.
+   - else create `<top+1>.json` (O_EXCL; `EEXIST` → next pass). **Confirm** it is still the highest; if not, unlink ours and take another pass (which probes the higher one alive and refuses).
+   - **Collect**: unlink every `<g>.json` below ours, and each one's socket file whose probe is dead.
+4. Install a `process.on('exit')` handler running `releaseSync()`.
+
+A dead holder's generation is superseded, never deleted by a contender before its own is confirmed, so two contenders reclaiming at once cannot unlink each other's fresh lock. At most one contender creates a given generation (O_EXCL), and a new top was listening before it existed.
+
+**`RootLock`** — `{dir, gen, token, offerHandover(next), withdrawHandover(), awaitAdoption({timeoutMs, signal}), releaseSync()}`. `releaseSync()` (the exit handler; boot failures; the restart parent) unlinks `<gen>.json` only while it still carries our token, closes the listener and removes our own socket file. A signal death skips it; the probe self-heals.
+
+**Restart handover** (`spawnReplacementAndExit`, `src/restart.ts`; `RelaunchOptions.rootLock` → `runRestart({rootLock})` → `spawnAndExit({log, rootLock})`):
+1. `next = mintLockToken()`; `offerHandover(next)` writes `handoverTo: next` into our record **before** the spawn.
+2. Spawn with `CC_ROOT_LOCK_HANDOVER=next` in the child's env only. A spawn that throws → `withdrawHandover()`, keep serving.
+3. `awaitAdoption({timeoutMs: CC_ROOT_LOCK_HANDOVER_WAIT_MS, signal})` polls our record every `ADOPTION_POLL_MS` until it no longer carries our token, the child exits, or the wait runs out; meanwhile our lock socket keeps answering (the HTTP server is already closed).
+4. `exit(0)`, never sooner than 50 ms after the spawn.
+
+| Point in the restart | The record's socket | A third server sees |
+|---|---|---|
+| offer written, child booting | the parent's, listening | alive → refused |
+| child adopted | the child's, listening before the rewrite | alive → refused |
+| the child died before adopting; the parent's wait ran out and it exited | the parent's, closed | dead → a new generation (a correct self-heal) |
+| the child adopts after the parent's timeout exit | `handoverTo` still matches | the child adopts — unless a third server already superseded the generation, which the child then probes alive and exits 7 |
+
+The replacement reads `pending-resume.json` / `pending-temp-cleanup.json` only after it has adopted the lock (`acquireRootLock` runs first in `start()`), so a resume restart carries over exactly as without the lock.
 
 ## What `fileBridge` carried, and where it has to land again
 
@@ -1197,7 +1274,7 @@ Test **files run in parallel** (node:test `isolation:'process'` — one child pr
    - **Window B**, `teardownNetworking`'s `server.close()` (`src/restart.ts`, before the replacement spawns) → the replacement's banner: **254 ms**, and it is not test-side at all — a competing bind took the port on its **first attempt, 2 ms after** the parent's `restart: spawned replacement pid=` log. No test change narrows it. Tracked separately.
    - So the conversion narrows **window A — the larger of the two (median 268 ms vs B's 254) — by ~2.4×** (268 → 111–114 ms). **Two different ratios, do not conflate them:** the per-file aggregate falls only **~1.43×** (2 tests × each window: 536 + 508 = ~1044 ms → 224 + 508 = ~732 ms), because window B is untouched and carries 508 of the remaining 732 ms. That is **~0.022% → ~0.016% collision per suite run** (~261 ephemeral binds per run over ~30–60 s against 28232 free ports, `/proc/sys/net/ipv4/ip_local_port_range`) — that denominator is an **upper bound**: leaked fixture listeners held 12 of those ports on the measuring box. It does not move the rate. The kernel never hands out a port already in `LISTEN`, so an orphan holding *P* removes a candidate rather than causing an `EADDRINUSE`; 12 of 28232 shrinks the pool by 0.042%. The reason to decline is not that A is the smaller window — it is the larger — but that a production window **nearly as large** survives untouchable from a test while the machinery reads as "window closed". Declined on those numbers; do not re-open without new ones.
    - What makes ~0.022% acceptable is rule 2: forced contention on either window ends at `waitForBanner` rejecting (`child never printed listening banner #<n> for port <p>`), and in both forced runs the stranger received **zero** requests. The cost of a collision is this file timing out, never another file's process.
-   - Dead alternative: spawning with `PORT=0` and reading the bound port back from the banner would close window A entirely, but `spawnReplacementAndExit` passes `env: process.env` (`src/restart.ts`), so the replacement inherits `PORT=0`, binds a *different* port, and destroys the same-port invariant.
+   - Dead alternative: spawning with `PORT=0` and reading the bound port back from the banner would close window A entirely, but `spawnReplacementAndExit` passes the parent's own env (`src/restart.ts`), so the replacement inherits `PORT=0`, binds a *different* port, and destroys the same-port invariant.
 2. **Never trust the port as identity.** Readiness on a spawned `server.ts` waits for that child's own stdout banner `code-conductor listening on http://<host>:<port>`, printed from the address it actually *bound* — never an HTTP probe a stranger answers just as happily. The rule lives once in **`tests/serverBanner.mjs`** (`waitForBanner(captured, port, {nth})`; the restart replacement inherits the same stdout, so its banner is occurrence #2) and is imported by every test that waits on a `server.ts` child. Additionally, never send a destructive request to a port whose owner you have not established: `server-restart.test.mjs` asserts the port is still `EADDRINUSE` immediately before each restart POST.
 
 `tests/restart-port-identity.test.mjs` is the regression guard — a decoy `node:http` server answers the old probe while the real child cannot bind, and the test asserts that `waitForBanner` (the same import the restart tests use, which is what makes the guard cover them) rejects rather than reporting ready.
