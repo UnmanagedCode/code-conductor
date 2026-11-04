@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # code-conductor container entrypoint. Pre-flight checks turn environment
 # problems into actionable FATALs instead of EACCES stack traces, repairs
-# npm deps in the bind-mounted checkout if needed, then execs conductor.sh
-# (what `npm start` runs).
+# npm deps in the bind-mounted checkout if needed, then execs the restart
+# supervisor around conductor.sh (what `npm start` runs).
 set -euo pipefail
 
 PROJECTS_ROOT="${PROJECTS_ROOT:-/workspaces/projects}"
@@ -104,7 +104,7 @@ if [ "${CC_WITH_TAILSCALE:-0}" = "1" ]; then
   fi
 fi
 
-# ── Deps, then exec ──────────────────────────────────────────────────────
+# ── Deps, then exec the supervisor ──────────────────────────────────────────────────────
 cd "$REPO_DIR"
 
 if ! node docker/deps-complete.mjs; then
@@ -122,4 +122,6 @@ if ! node docker/deps-complete.mjs; then
   fi
 fi
 
-exec ./conductor.sh "$@"
+# The supervisor relaunches only the server when an in-app restart asks for it
+# (exit 75); any other server exit ends the supervisor, hence the container.
+exec node docker/supervise.mjs ./conductor.sh "$@"

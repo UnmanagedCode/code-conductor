@@ -1,5 +1,6 @@
 // The relaunch behind POST /api/admin/restart. Spawns a detached child node
-// process with the same argv/env/cwd and exits this one, so editing server code
+// process with the same argv/env/cwd and exits this one (under a restart
+// supervisor it exits with the supervisor's relaunch code instead), so editing server code
 // + clicking the sidebar's "Restart server" button reloads everything without
 // the user having to ctrl+C in their shell.
 //
@@ -25,6 +26,7 @@ import { retireSegments } from './sessionLineage.ts';
 import { drainToIdle, finishDrain, abortDrain } from './resumeRestart.ts';
 import { relaunchPrep, type RelaunchPrep } from './relaunchPrep.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
+import { SUPERVISED_RESTART_EXIT } from './restartSupervisor.ts';
 import { ROOT_LOCK_HANDOVER_ENV, ROOT_LOCK_HANDOVER_WAIT_MS, type RootLock } from './rootLock.ts';
 import { mintLockToken } from './storeLock.ts';
 
@@ -149,7 +151,7 @@ export interface RestartCtx {
  * `syncDeps` the dependency check.
  */
 export async function runRestart({
-  mode, ctx, flags, prep = relaunchPrep, onChunk = () => {}, onCommit, spawnAndExit = spawnReplacementAndExit, rootLock = null,
+  mode, ctx, flags, prep = relaunchPrep, onChunk = () => {}, onCommit, spawnAndExit = spawnReplacementAndExit, rootLock = null, supervised = false,
 }: {
   mode: 'plain' | 'resume';
   ctx: RestartCtx;
@@ -157,9 +159,11 @@ export async function runRestart({
   prep?: RelaunchPrep;
   onChunk?: (phase: RestartPhase, text: string) => void;
   onCommit?: () => void;
-  spawnAndExit?: (opts: { log?: RestartLog; rootLock?: RootLock | null }) => void | Promise<void>;
+  spawnAndExit?: (opts: { log?: RestartLog; rootLock?: RootLock | null; supervised?: boolean }) => void | Promise<void>;
   // The projects-root lock this server holds, handed over to the replacement.
   rootLock?: RootLock | null;
+  // A restart supervisor relaunches this server: exit for it instead of spawning.
+  supervised?: boolean;
 }): Promise<void> {
   const log = ctx.log ?? console;
   const drift = flags.syncDeps ? prep.drift() : null;
@@ -191,7 +195,20 @@ export async function runRestart({
     onCommit?.();
     teardownNetworking(ctx);
   }
-  await spawnAndExit({ log, rootLock });
+  await spawnAndExit({ log, rootLock, supervised });
+}
+
+// The supervised relaunch: release the projects-root lock and exit with the
+// code the supervisor relaunches on (src/restartSupervisor.ts). No offer and no
+// adoption wait: this process is gone before the replacement starts, so two
+// servers never hold the root at once.
+export async function exitToSupervisor({
+  log = console, rootLock = null, exit = (code: number) => process.exit(code),
+}: { log?: RestartLog; rootLock?: RootLock | null; exit?: (code: number) => void } = {}): Promise<void> {
+  rootLock?.releaseSync();
+  log.log?.(`restart: exiting pid=${process.pid} with ${SUPERVISED_RESTART_EXIT} for the restart supervisor to relaunch`);
+  await new Promise<void>(r => setTimeout(r, 50));
+  exit(SUPERVISED_RESTART_EXIT);
 }
 
 // Spawn a detached replacement node process (same execPath + argv + cwd + env)
@@ -210,11 +227,12 @@ export async function runRestart({
 // that one gap open rather than leaving no app at all.
 export async function spawnReplacementAndExit({
   log = console, rootLock = null, spawnChild = spawn, exit = (code: number) => process.exit(code),
-  handoverWaitMs = ROOT_LOCK_HANDOVER_WAIT_MS,
+  handoverWaitMs = ROOT_LOCK_HANDOVER_WAIT_MS, supervised = false,
 }: {
-  log?: RestartLog; rootLock?: RootLock | null;
+  log?: RestartLog; rootLock?: RootLock | null; supervised?: boolean;
   spawnChild?: typeof spawn; exit?: (code: number) => void; handoverWaitMs?: number;
 } = {}): Promise<void> {
+  if (supervised) return exitToSupervisor({ log, rootLock, exit });
   const args = [process.argv[1], ...process.argv.slice(2)];
   let next: string | null = null;
   if (rootLock) {

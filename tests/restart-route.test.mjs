@@ -129,6 +129,33 @@ test('with no server context wired the route answers 202 and prepares nothing', 
   assert.equal(touched, false);
 });
 
+test('relaunch.supervised reaches spawnAndExit\'s options, and defaults to false', async (t) => {
+  const seen = [];
+  const mk = (extra) => ({
+    ...wired(inSync()).opts,
+    relaunch: { flags: { buildWeb: true, syncDeps: true }, prep: inSync(), spawnAndExit: (o) => seen.push(o.supervised), ...extra },
+  });
+  const a = await serve(mk({ supervised: true }));
+  t.after(a.close);
+  await lines(await restart(a.base));
+  const b = await serve(mk({}));
+  t.after(b.close);
+  await lines(await restart(b.base));
+  assert.deepEqual(seen, [true, false]);
+});
+
+test('a headless supervised server still refuses a restart 409 and calls nothing', async (t) => {
+  const touched = [];
+  const w = wired(inSync({ drift: () => { touched.push('drift'); return null; } }));
+  const s = await serve({ ...w.opts, relaunch: { ...w.opts.relaunch, headless: true, supervised: true } });
+  t.after(s.close);
+  const res = await restart(s.base);
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).code, 'RESTART_DISABLED_HEADLESS');
+  assert.deepEqual(touched, []);
+  assert.deepEqual(w.spawned, []);
+});
+
 test('a headless server refuses a restart 409 RESTART_DISABLED_HEADLESS and runs no step', async (t) => {
   const touched = [];
   const prep = {

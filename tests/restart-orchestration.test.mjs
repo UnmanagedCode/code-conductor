@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { freshProjectsRoot } from './helpers.mjs';
 import { runRestart, spawnReplacementAndExit } from '../src/restart.ts';
+import { SUPERVISED_RESTART_EXIT } from '../src/restartSupervisor.ts';
 import { ROOT_LOCK_HANDOVER_ENV } from '../src/rootLock.ts';
 import { EventEmitter } from 'node:events';
 import { resumeManifestPath, clearResumeManifest } from '../src/resumeManifest.ts';
@@ -283,5 +284,42 @@ for (const [label, offer] of [
     assert.deepEqual(order.map(([k]) => k), ['offer', 'release', 'spawn', 'exit'], 'released before the spawn; no adoption wait');
     assert.equal(childEnv[ROOT_LOCK_HANDOVER_ENV], undefined, 'the child boots like any server');
     assert.deepEqual(order.at(-1), ['exit', 0]);
+  });
+}
+
+// ── The supervised relaunch (src/restartSupervisor.ts) ───────────────────────
+
+test('spawnReplacementAndExit supervised: releases the lock then exits SUPERVISED_RESTART_EXIT, with no offer, no await and no spawn', async () => {
+  const order = [];
+  const { lock } = stubLock(order);
+  await spawnReplacementAndExit({
+    log: QUIET, rootLock: lock, supervised: true,
+    spawnChild: () => { throw new Error('a supervised restart must not spawn'); },
+    exit: (code) => order.push(['exit', code]),
+  });
+  assert.deepEqual(order, [['release'], ['exit', SUPERVISED_RESTART_EXIT]]);
+});
+
+test('spawnReplacementAndExit supervised: without a root lock it still exits SUPERVISED_RESTART_EXIT and spawns nothing', async () => {
+  const exits = [];
+  await spawnReplacementAndExit({
+    log: QUIET, supervised: true,
+    spawnChild: () => { throw new Error('a supervised restart must not spawn'); },
+    exit: (code) => exits.push(code),
+  });
+  assert.deepEqual(exits, [SUPERVISED_RESTART_EXIT]);
+});
+
+for (const [label, extra, want] of [['hands supervised:true on', { supervised: true }, true], ['defaults supervised to false', {}, false]]) {
+  test(`runRestart ${label} to spawnAndExit`, async () => {
+    let seen;
+    await runRestart({
+      mode: 'plain', flags: { buildWeb: false, syncDeps: false },
+      prep: { drift: () => null, installDeps: async () => {}, stageWeb: async () => {} },
+      ctx: { log: QUIET },
+      spawnAndExit: (opts) => { seen = opts.supervised; },
+      ...extra,
+    });
+    assert.equal(seen, want);
   });
 }

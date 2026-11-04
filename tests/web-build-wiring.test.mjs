@@ -47,10 +47,10 @@ test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1
   }
 });
 
-test('start() hands its buildWeb and syncDeps, its root lock and its headless flag, to createServer as the restart route\'s relaunch options', async () => {
+test('start() hands its buildWeb and syncDeps, its root lock, its headless flag and whether a restart supervisor launched it, to createServer as the restart route\'s relaunch options', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const body = src.slice(src.indexOf('export async function start('));
-  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless } })']);
+  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
 });
 
 // The boot build is guarded against the boot commit, and the build and its
