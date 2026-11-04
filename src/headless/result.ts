@@ -30,8 +30,9 @@ export interface HeadlessResult {
   error: string | null;
 }
 
-// A result for a run that never spawned its root (usage, boot, a signal during boot).
-export function unspawnedResult(reason: Exclude<HeadlessReason, 'completed' | 'conductor_error'>, error: string, exitCode: number): HeadlessResult {
+// A result carrying no session facts: a run that never spawned its root (usage,
+// boot, a signal during boot), or the entry's catch-all.
+export function bareResult(reason: Exclude<HeadlessReason, 'completed'>, error: string, exitCode: number): HeadlessResult {
   return { reason, exitCode, sessionId: null, text: null, costUsd: null, durationMs: null, error };
 }
 

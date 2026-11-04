@@ -89,3 +89,10 @@ for (const [name, source, opts] of [
     assert.equal(r.kind, 'usage', JSON.stringify(r));
   });
 }
+
+test('a stdin that fails mid-read is a usage error, not a throw', async () => {
+  const stdin = new Readable({ read() { this.destroy(new Error('EIO: stdin went away')); } });
+  const r = await readHeadlessPrompt({ file: '-' }, { readFile: noFile, stdin });
+  assert.equal(r.kind, 'usage');
+  assert.match(r.message, /stdin.*EIO/);
+});

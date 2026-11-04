@@ -109,3 +109,61 @@ test('an unreadable top lock record: exit 7, a root_held object naming the recor
   assert.equal(res.exitCode, 7);
   assert.ok(res.error.includes(file), res.error);
 });
+
+const HARNESS = path.join(__dirname, 'headlessEntryHarness.mjs');
+function harness(t, home, kase) {
+  const child = spawn(process.execPath, [HARNESS, kase, '--', '--prompt', 'hello'], {
+    env: { ...process.env, HOME: home, PROJECTS_ROOT: rootOf(home), CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects') },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const out = { stdout: '', stderr: '' };
+  child.stdout.setEncoding('utf8').on('data', (c) => { out.stdout += c; });
+  child.stderr.setEncoding('utf8').on('data', (c) => { out.stderr += c; });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  return new Promise((resolve) => child.once('close', (code) => resolve({ code, ...out })));
+}
+
+// One catch-all owns the output: whatever rejects or throws, the run still
+// writes exactly one object, its reason from how far the run got.
+for (const [kase, reason, code, error] of [
+  ['boot-throws', 'boot_failed', 1, /boom at boot/],
+  ['stray-throw', 'conductor_error', 3, /a stray throw/],
+  ['runner-throws', 'conductor_error', 3, /listener wiring failed/],
+  ['signal-then-throw', 'signal', 130, /SIGINT/],
+]) {
+  test(`an unexpected failure (${kase}) still writes one ${reason} object and exits ${code}`, async (t) => {
+    const home = await freshHome(t);
+    const r = await harness(t, home, kase);
+    assert.equal(r.code, code, r.stderr);
+    const res = onlyJson(r.stdout);
+    assert.equal(res.reason, reason);
+    assert.equal(res.exitCode, code);
+    assert.match(res.error, error);
+  });
+}
+
+test('a signal while the prompt is still being read from stdin writes a signal object', async (t) => {
+  const home = await freshHome(t);
+  const child = spawn(process.execPath, [SERVER_TS, '--prompt-file', '-'], {
+    cwd: home,
+    env: { ...process.env, HOME: home, PORT: '0', HOST: '127.0.0.1', PROJECTS_ROOT: rootOf(home), CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects') },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  const out = { stdout: '', stderr: '' };
+  child.stdout.setEncoding('utf8').on('data', (c) => { out.stdout += c; });
+  child.stderr.setEncoding('utf8').on('data', (c) => { out.stderr += c; });
+  const closed = new Promise((resolve) => child.once('close', (code) => resolve(code)));
+  const start = Date.now();
+  while (!/reading the prompt from stdin/.test(out.stderr)) {
+    assert.ok(Date.now() - start < 30_000, `never started reading stdin: ${out.stderr}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  child.kill('SIGINT');
+  const code = await closed;
+  assert.equal(code, 130, out.stderr);
+  const res = onlyJson(out.stdout);
+  assert.equal(res.reason, 'signal');
+  assert.equal(res.exitCode, 130);
+  assert.equal(fs.existsSync(lockDirOf(home)), false, 'nothing booted');
+});

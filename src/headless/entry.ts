@@ -8,7 +8,7 @@
 import os from 'node:os';
 import { readHeadlessPrompt, HEADLESS_SYNOPSIS, type HeadlessArgs } from './args.ts';
 import { runHeadless } from './runner.ts';
-import { EXIT_CODES, formatResult, signalExitCode, unspawnedResult, type HeadlessResult } from './result.ts';
+import { EXIT_CODES, bareResult, formatResult, signalExitCode, type HeadlessResult } from './result.ts';
 import { RootLockHeldError, RootLockUnreadableError } from '../rootLock.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
@@ -45,40 +45,67 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
     written = true;
     writeOut(formatResult(r), () => process.exit(r.exitCode));
   };
-  const usage = (message: string): void => {
-    process.stderr.write(`${message}\n${HEADLESS_SYNOPSIS}\n`);
-    finish(unspawnedResult('usage_error', message, EXIT_CODES.usage_error));
+
+  // How far the run got, for the catch-all below: the first signal seen (the
+  // runner handles signals itself once it runs; this only records), and
+  // whether the runner has started.
+  let signalSeen: NodeJS.Signals | null = null;
+  let running = false;
+  const recordSignal = (signal: NodeJS.Signals): void => { signalSeen ??= signal; };
+  // Until the runner takes over, a signal ends the run with no root to interrupt.
+  const onEarlySignal = (signal: NodeJS.Signals): void => {
+    finish(bareResult('signal', `interrupted by ${signal}`, signalExitCode(signal)));
   };
+  for (const s of ['SIGINT', 'SIGTERM'] as const) { process.on(s, recordSignal); process.on(s, onEarlySignal); }
 
-  if (args.kind === 'usage') { usage(args.message); return; }
-  const prompt = await readHeadlessPrompt(args.source);
-  if (prompt.kind === 'usage') { usage(prompt.message); return; }
-
-  // A signal during boot ends the run with no root to interrupt.
-  const onBootSignal = (signal: NodeJS.Signals): void => {
-    finish(unspawnedResult('signal', `interrupted by ${signal}`, signalExitCode(signal)));
+  // The one catch-all that owns the output: whatever throws or rejects, from
+  // here or from anything else in the process, still writes one result object.
+  const fail = (e: unknown): void => {
+    console.error('headless: unexpected failure:', e);
+    const why = errText(e);
+    if (signalSeen) finish(bareResult('signal', `interrupted by ${signalSeen}; then: ${why}`, signalExitCode(signalSeen)));
+    else if (running) finish(bareResult('conductor_error', `the headless run failed: ${why}`, EXIT_CODES.conductor_error));
+    else finish(bareResult('boot_failed', `failed to start: ${why}`, EXIT_CODES.boot_failed));
   };
-  process.on('SIGINT', onBootSignal);
-  process.on('SIGTERM', onBootSignal);
+  process.on('uncaughtException', fail);
+  process.on('unhandledRejection', fail);
 
-  let boot: HeadlessBoot;
   try {
-    boot = await start();
+    await main();
   } catch (e) {
-    if (e instanceof RootLockHeldError || e instanceof RootLockUnreadableError) {
-      console.error(e.message);
-      finish(unspawnedResult('root_held', e.message, EXIT_CODES.root_held));
-    } else {
-      console.error('failed to start:', e);
-      finish(unspawnedResult('boot_failed', `failed to start: ${errText(e)}`, EXIT_CODES.boot_failed));
-    }
-    return;
+    fail(e);
   }
-  if (written) return;
-  console.log(`code-conductor listening on http://${boot.host}:${boot.port}`);
-  for (const line of headlessUiLines(boot.host, boot.port)) console.log(line);
-  process.off('SIGINT', onBootSignal);
-  process.off('SIGTERM', onBootSignal);
-  if (!boot.instances) { finish(unspawnedResult('boot_failed', 'the server booted without an instance manager', EXIT_CODES.boot_failed)); return; }
-  finish(await runHeadless({ instances: boot.instances, prompt: prompt.text, mode: args.mode }));
+
+  async function main(): Promise<void> {
+    const usage = (message: string): void => {
+      process.stderr.write(`${message}\n${HEADLESS_SYNOPSIS}\n`);
+      finish(bareResult('usage_error', message, EXIT_CODES.usage_error));
+    };
+    if (args.kind === 'usage') { usage(args.message); return; }
+    if ('file' in args.source && args.source.file === '-') console.error('headless: reading the prompt from stdin');
+    const prompt = await readHeadlessPrompt(args.source);
+    if (written) return;
+    if (prompt.kind === 'usage') { usage(prompt.message); return; }
+
+    let boot: HeadlessBoot;
+    try {
+      boot = await start();
+    } catch (e) {
+      if (e instanceof RootLockHeldError || e instanceof RootLockUnreadableError) {
+        console.error(e.message);
+        finish(bareResult('root_held', e.message, EXIT_CODES.root_held));
+      } else {
+        console.error('failed to start:', e);
+        finish(bareResult('boot_failed', `failed to start: ${errText(e)}`, EXIT_CODES.boot_failed));
+      }
+      return;
+    }
+    if (written) return;
+    console.log(`code-conductor listening on http://${boot.host}:${boot.port}`);
+    for (const line of headlessUiLines(boot.host, boot.port)) console.log(line);
+    if (!boot.instances) { finish(bareResult('boot_failed', 'the server booted without an instance manager', EXIT_CODES.boot_failed)); return; }
+    for (const s of ['SIGINT', 'SIGTERM'] as const) process.off(s, onEarlySignal);
+    running = true;
+    finish(await runHeadless({ instances: boot.instances, prompt: prompt.text, mode: args.mode }));
+  }
 }

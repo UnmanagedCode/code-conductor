@@ -197,3 +197,36 @@ test('ownedTreeOf terminates on mutual ownership and never lists the root', asyn
   assert.equal(r.instances.isTreeQuiescent('R'), true);
   await r.teardown();
 });
+
+// A temp section lead leaves byId the moment its CLI exits (and remove() drops
+// any lead), taking its ownership edges with it; its workers still carry the
+// root's durable attribution (rootOwnerSessionId, set at create), and a busy one
+// must still block.
+test('a grandchild whose section lead left byId still blocks while mid-turn', async () => {
+  const r = rig();
+  const R = r.mk('R');
+  const C = r.mk('C', { conducted: true, rootOwnerSessionId: 'R-s' });
+  const G = r.mk('G', { conducted: true, rootOwnerSessionId: 'R-s' });
+  r.own(R, C); r.own(C, G);
+  r.start(G);
+  r.instances.byId.delete(C.id);
+  r.instances._purgeIdleFor(C.id);
+  assert.deepEqual(r.hub.ownedTreeOf('R'), [], 'fixture check: the ownership walk no longer reaches G');
+  assert.equal(r.instances.isTreeQuiescent('R'), false);
+  r.end(G);
+  await tick();
+  assert.equal(R.status, 'idle', 'nobody is left to wake');
+  assert.equal(r.instances.isTreeQuiescent('R'), true, 'idle once the grandchild is');
+  await r.teardown();
+});
+
+test('root attribution counts only conducted sessions attributed to this root', async () => {
+  const r = rig();
+  r.mk('R');
+  r.mk('X', { conducted: true, rootOwnerSessionId: 'other-root-s', status: 'turn' });
+  r.mk('N', { conducted: false, rootOwnerSessionId: 'R-s', status: 'turn' });
+  assert.equal(r.instances.isTreeQuiescent('R'), true);
+  r.mk('W', { conducted: true, rootOwnerSessionId: 'R-s', status: 'turn' });
+  assert.equal(r.instances.isTreeQuiescent('R'), false);
+  await r.teardown();
+});

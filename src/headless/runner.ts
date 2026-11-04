@@ -42,11 +42,17 @@ function lastText(root: InstanceLike): string | null {
 }
 
 // The root plus its spawned tree, from costs.jsonl (claude-backend turns only).
+// Best-effort: a failed read costs the result its costUsd, nothing else.
 async function rolledCost(root: InstanceLike | null): Promise<number | null> {
   const sid = root?.sessionId;
   if (!sid) return null;
-  await flushCostWrites();
-  return (await getSessionStats(sid)).rolled.cost_usd;
+  try {
+    await flushCostWrites();
+    return (await getSessionStats(sid)).rolled.cost_usd;
+  } catch (e) {
+    console.warn(`headless: reading the run's cost failed, costUsd is null: ${errText(e)}`);
+    return null;
+  }
 }
 
 export function runHeadless({ instances, prompt, mode, clock = Date, signals = process }: RunHeadlessInput): Promise<HeadlessResult> {
@@ -56,6 +62,9 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
   let delivered = false;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let answeredAsks = 0;
+  let signalled: NodeJS.Signals | null = null;
+  // The cost as read when the first signal arrived, once that read finished — what a second signal reports.
+  let firstSignalCost: number | null = null;
   let resolveResult!: (r: HeadlessResult) => void;
   const result = new Promise<HeadlessResult>((r) => { resolveResult = r; });
 
@@ -81,6 +90,15 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     resolveResult(r);
   };
 
+  // Anything the runner's own async paths throw: the run still ends, as a
+  // signal if one was seen.
+  const failRun = (e: unknown) => {
+    ending = true;
+    const error = `the headless run failed: ${errText(e)}`;
+    if (signalled) deliver(snapshot('signal', signalExitCode(signalled), `interrupted by ${signalled}; then ${error}`, firstSignalCost));
+    else deliver(snapshot('conductor_error', EXIT_CODES.conductor_error, error, null));
+  };
+
   // The one terminal path for everything but a repeated signal.
   const end = async (reason: Exclude<HeadlessReason, 'signal'>, error: string | null) => {
     if (ending) return;
@@ -98,8 +116,10 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
   function onSettle(): void {
     settleTimer = null;
     if (!root || ending || !instances.isTreeQuiescent(root.id)) return;
-    if (root.summary().lastTurnError === true) void end('conductor_error', "the root conductor's last turn ended in an error");
-    else void end('completed', null);
+    const done = root.summary().lastTurnError === true
+      ? end('conductor_error', "the root conductor's last turn ended in an error")
+      : end('completed', null);
+    done.catch(failRun);
   }
 
   const send = (text: string) => root!.promptOrQueueSteer(text, [], { author: 'human' })
@@ -110,7 +130,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     const asks = s.liveAsks ?? 0;
     if (s.awaitingUserSource !== 'tool' || asks <= answeredAsks) return;
     answeredAsks = asks;
-    if (s.awaitingUser === 'question') { void send(HEADLESS_QUESTION_ANSWER); return; }
+    if (s.awaitingUser === 'question') { send(HEADLESS_QUESTION_ANSWER).catch(failRun); return; }
     if (s.awaitingUser !== 'plan') return;
     // The plan the auto-approve rule did not take (code mode, or out of plan
     // mode): approved as the UI's Approve does.
@@ -119,13 +139,13 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
       try { if (r.mode === 'plan') await r.setMode('bypassPermissions'); }
       catch (e) { await end('conductor_error', `approving the root conductor's plan failed: ${errText(e)}`); return; }
       await send(buildApprovePrompt(undefined));
-    })();
+    })().catch(failRun);
   }
 
   function rootDied(status: string): void {
     const cause = root?.sessionId ? instances.exitCauseFor(root.sessionId) : null;
     const detail = cause ? ` (code ${cause.code}, signal ${cause.signal}${cause.stderrTail ? `; stderr: ${cause.stderrTail.trim()}` : ''})` : '';
-    void end('conductor_error', `the root conductor ${status} before the run completed${detail}`);
+    end('conductor_error', `the root conductor ${status} before the run completed${detail}`).catch(failRun);
   }
 
   function onStatus(s: InstanceSummary): void {
@@ -141,10 +161,12 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     const exitCode = signalExitCode(signal);
     const error = `interrupted by ${signal}`;
     // A second signal, or one landing while the run is already ending: now.
-    if (ending) { deliver(snapshot('signal', exitCode, error, null)); return; }
+    if (ending) { deliver(snapshot('signal', exitCode, error, firstSignalCost)); return; }
     ending = true;
+    signalled = signal;
     clearSettle();
     const r = root;
+    void rolledCost(r).then((c) => { firstSignalCost = c; });
     void (async () => {
       if (r) {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -155,7 +177,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
         clearTimeout(timer);
       }
       deliver(snapshot('signal', exitCode, error, await rolledCost(r)));
-    })();
+    })().catch(failRun);
   }
 
   for (const s of SIGNALS) signals.on(s, onSignal);
@@ -183,7 +205,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
       return;
     }
     evaluate();
-  })();
+  })().catch(failRun);
 
   return result;
 }

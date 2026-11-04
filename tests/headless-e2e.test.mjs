@@ -108,3 +108,48 @@ test('mid-run, the restart route refuses 409; SIGINT then exits 130 with a signa
   assert.match(res.error, /SIGINT/);
   assert.equal(res.text, 'Dispatching.');
 });
+
+// A cost read that fails (here costs.jsonl turned into a directory once the
+// root is busy) costs the result its costUsd and nothing else.
+async function runWithBrokenCosts(t, finishRun) {
+  const home = await freshHome(t);
+  const run = headless(t, home, fx('scenario-headless-root-gated.json'), ['--prompt', 'stay busy']);
+  const port = Number((await until(() => BANNER.exec(run.out.stderr), 'the listening banner'))[1]);
+  const base = `http://127.0.0.1:${port}`;
+  const row = await until(async () => {
+    const rows = await (await fetch(`${base}/api/instances`)).json();
+    return rows.find((r) => r.project === '.conduct' && r.status === 'turn');
+  }, 'the root mid-turn');
+  const costs = path.join(home, 'project', '.code-conductor', 'costs.jsonl');
+  fs.rmSync(costs, { recursive: true, force: true });
+  fs.mkdirSync(costs);
+  await finishRun({ run, base, row });
+  const { code } = await run.closed;
+  return { code, out: run.out };
+}
+
+test('a cost read that fails on completion: still one completed object, costUsd null, the failure on stderr', async (t) => {
+  const { code, out } = await runWithBrokenCosts(t, async ({ base, row }) => {
+    // send_prompt with no caller is the user's own send; it ends the open root turn.
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_prompt', arguments: { sessionId: row.sessionId, text: 'wrap up' } } }),
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(code, 0, out.stderr);
+  const res = onlyJson(out.stdout);
+  assert.equal(res.reason, 'completed');
+  assert.equal(res.costUsd, null);
+  assert.equal(res.text, 'Waiting on the worker.');
+  assert.match(out.stderr, /reading the run's cost failed/);
+});
+
+test('a cost read that fails on a signal: still one signal object, exit 130', async (t) => {
+  const { code, out } = await runWithBrokenCosts(t, async ({ run }) => { run.child.kill('SIGINT'); });
+  assert.equal(code, 130, out.stderr);
+  const res = onlyJson(out.stdout);
+  assert.equal(res.reason, 'signal');
+  assert.equal(res.costUsd, null);
+});

@@ -72,7 +72,8 @@ export async function readHeadlessPrompt(
     text = source.prompt;
   } else if (source.file === '-') {
     const chunks: Buffer[] = [];
-    for await (const c of stdin) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c)));
+    try { for await (const c of stdin) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))); }
+    catch (e) { return { kind: 'usage', message: `cannot read the prompt from stdin: ${(e as Error).message}` }; }
     text = Buffer.concat(chunks).toString('utf8');
   } else {
     try { text = await readFile(source.file); }

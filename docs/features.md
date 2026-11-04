@@ -409,12 +409,12 @@ Run one conductor session with no browser and no person attached: `node server.t
 
 | Ends when | `reason` |
 |---|---|
-| The root and every session it owns, transitively, stay idle for the idle-drain settle window (`IDLE_DRAIN_SETTLE_MS`, `src/idleSubscriptions.ts`; env `ORCH_IDLE_DRAIN_SETTLE_MS`) with no turn still coming — see below | `completed` |
+| The root and every session in its tree (everything it owns transitively, and every worker spawned under it at any depth, even one whose section lead is gone) stay idle for the idle-drain settle window (`IDLE_DRAIN_SETTLE_MS`, `src/idleSubscriptions.ts`; env `ORCH_IDLE_DRAIN_SETTLE_MS`) with no turn still coming — see below | `completed` |
 | …the same, but the root's last turn ended in an error | `conductor_error` (the text is still reported) |
 | The root exits or crashes first, or its spawn or first prompt fails | `conductor_error` |
 | `SIGINT` / `SIGTERM`: the root's turn is force-interrupted (bounded by `INTERRUPT_WAIT_MS`, `src/headless/runner.ts`), then the run ends. A second signal ends it at once | `signal` |
 
-Each reason's exit code: [protocol.md](protocol.md) → Headless run result.
+Anything else that fails still writes the one object: `signal` once a signal arrived, else `conductor_error` once the run started, else `boot_failed`. Each reason's exit code: [protocol.md](protocol.md) → Headless run result.
 
 "Nothing still coming" means: the root has ended at least one turn and holds no tool ask; and neither it nor any session it owns is mid-turn, waiting on a wake (armed, held, in flight or deferred), deferring one (a live background agent, a pending task notification, a rotation, a parked steer) or running a background Bash job. So "spawn a worker and end the turn" is not completion: the root's wake on that worker keeps it waiting, and a section lead idle on its own worker holds the root's wake the same way. An exited or crashed worker does not block — its exit is a wake to its owner.
 
@@ -422,7 +422,7 @@ Each reason's exit code: [protocol.md](protocol.md) → Headless run result.
 
 **Limits.**
 - A context renewal or compaction of the root may drop the first-turn fragment; the canned answer and the plan approval still hold.
-- The result's `costUsd` counts claude-backend turns only (as `costs.jsonl` does).
+- The result's `costUsd` counts claude-backend turns only (as `costs.jsonl` does), and is null when the cost read fails.
 - A projects root shared with a running server is refused, not shared; give each run a root of its own ([architecture.md](architecture.md) → Provisioning a projects root). Two runs on two roots may share one `$HOME`.
 
 ### MCP interface

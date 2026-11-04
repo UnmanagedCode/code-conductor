@@ -79,13 +79,13 @@ async function start({ scenario, mode = 'code', prompt = 'do the thing', signals
   return { run, root, rootLog, created, signals, settled: () => settled };
 }
 
-async function spawnWorker(root, scenario, log) {
-  await api(server.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+async function spawnWorker(root, scenario, log, { project = 'demo' } = {}) {
+  await api(server.baseUrl, 'POST', '/api/projects', { name: project });
   return withLaunchEnv(scenario, log, async () => {
     const res = await fetch(`${server.baseUrl}/mcp?caller=${encodeURIComponent(root.id)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'demo', mode: 'bypassPermissions', playbook: 'freeform', stage: 'freeform' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project, mode: 'bypassPermissions', playbook: 'freeform', stage: 'freeform' } } }),
     });
     const body = await res.json();
     assert.ok(body.result && !body.result.isError, JSON.stringify(body));
@@ -154,6 +154,28 @@ test('a worker spawn is not completion: the run resolves only after the worker\'
   const rootIn = await stdinTexts(r.rootLog);
   assert.equal(rootIn.length, 3);
   assert.ok(rootIn[2].includes(worker.sessionId), 'the third root prompt is the worker\'s wake');
+});
+
+test('a grandchild whose section lead was removed still holds the run until it is idle', async () => {
+  const r = await start({ scenario: ROOT_GATED });
+  await waitFor(() => r.root.status === 'turn');
+  const lead = await spawnWorker(r.root, WORKER_GATED, path.join(home, 'lead-stdin.jsonl'));
+  const grandchild = await spawnWorker(lead, WORKER_GATED, path.join(home, 'grandchild-stdin.jsonl'), { project: 'demo2' });
+  assert.equal(grandchild.rootOwnerSessionId, r.root.sessionId, 'fixture check: durable root attribution at depth 2');
+  await grandchild.promptOrQueueSteer('work');
+  await waitFor(() => grandchild.status === 'turn');
+  await server.instances.remove(lead.id);
+  assert.equal(server.instances.get(lead.id), undefined, 'fixture check: the lead left byId');
+  await r.root.promptOrQueueSteer('continue', [], { author: 'human' });
+  await waitFor(() => r.root.status === 'idle' && r.root.liveTurnEnds === 1);
+  assert.equal(server.instances.isTreeQuiescent(r.root.id), false);
+  await sleep(SETTLE_MS * 4);
+  assert.equal(r.settled(), false, 'no result while the grandchild is mid-turn');
+  await grandchild.promptOrQueueSteer('finish');
+  await waitFor(() => grandchild.status === 'idle');
+  const result = await r.run;
+  assert.equal(result.reason, 'completed');
+  assert.equal(result.text, 'Waiting on the worker.');
 });
 
 test('a root AskUserQuestion gets the canned answer, once', async () => {
@@ -255,4 +277,27 @@ test('a second signal ends the run at once, without waiting on the interrupt', a
   const result = await r.run;
   assert.equal(result.reason, 'signal');
   assert.equal(result.exitCode, 143);
+});
+
+test('a second signal reports the cost read at the first signal once that read has finished', async () => {
+  const r = await start({ scenario: ROOT_GATED });
+  await waitFor(() => r.root.status === 'turn');
+  r.root.interrupt = () => new Promise(() => {});
+  r.signals.emit('SIGTERM', 'SIGTERM');
+  await sleep(SETTLE_MS);
+  r.signals.emit('SIGTERM', 'SIGTERM');
+  const result = await r.run;
+  assert.equal(result.reason, 'signal');
+  assert.equal(typeof result.costUsd, 'number', 'the first signal\'s read had finished');
+});
+
+test('a second signal in the same tick as the first reports costUsd null', async () => {
+  const r = await start({ scenario: ROOT_GATED });
+  await waitFor(() => r.root.status === 'turn');
+  r.root.interrupt = () => new Promise(() => {});
+  r.signals.emit('SIGTERM', 'SIGTERM');
+  r.signals.emit('SIGTERM', 'SIGTERM');
+  const result = await r.run;
+  assert.equal(result.reason, 'signal');
+  assert.equal(result.costUsd, null);
 });

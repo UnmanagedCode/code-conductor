@@ -498,7 +498,7 @@ Mounted after `/api`, `/mcp` and `/plugins` (`server.ts`), so they never shadow 
 | anything else | **404** (Express's default, carrying the headers above). Nothing in `shared/` is served |
 
 ## Headless run result
-A headless run (`node server.ts --prompt …`, [features.md](features.md) → Headless mode) writes **exactly one JSON object, on one line, to stdout** — on every outcome, usage errors included — and exits with its `exitCode`. Everything else the process prints goes to stderr. Built by `formatResult` (`src/headless/result.ts`).
+A headless run (`node server.ts --prompt …`, [features.md](features.md) → Headless mode) writes **exactly one JSON object, on one line, to stdout** — on every outcome, usage errors and unexpected failures included — and exits with its `exitCode`. Everything else the process prints goes to stderr. Built by `formatResult` (`src/headless/result.ts`).
 
 ```json
 {"reason":"completed","exitCode":0,"sessionId":"…","text":"…","costUsd":0.0123,"durationMs":84211,"error":null}
@@ -510,7 +510,7 @@ A headless run (`node server.ts --prompt …`, [features.md](features.md) → He
 | `exitCode` | number | The process's exit code (table below). |
 | `sessionId` | string \| null | The root conductor's public session id; null when the root was never spawned. |
 | `text` | string \| null | The root's last top-level assistant text (the last message with text in its event ring); null when it has none. |
-| `costUsd` | number \| null | `getSessionStats(sessionId).rolled.cost_usd` (`src/costTracking.ts`) after the pending cost appends flush: the root plus its spawned tree, claude-backend turns only. Null when the root was never spawned, and on a second signal. |
+| `costUsd` | number \| null | `getSessionStats(sessionId).rolled.cost_usd` (`src/costTracking.ts`) after the pending cost appends flush: the root plus its spawned tree, claude-backend turns only. Null when the root was never spawned, and when the read fails (logged to stderr). On a second signal: the cost as read when the first signal arrived if that read has finished, else null. |
 | `durationMs` | number \| null | From the root's spawn to the result; null when the root was never spawned. |
 | `error` | string \| null | Why, for every reason but `completed`: the usage message, the lock refusal (naming the holder pid, or the unreadable record), the boot error, the root's exit or failed step, the signal. |
 
