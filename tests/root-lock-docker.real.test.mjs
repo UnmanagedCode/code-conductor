@@ -16,12 +16,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { acquireRootLock, RootLockHeldError, ROOT_LOCK_DIRNAME, ROOT_LOCK_HELD_EXIT } from '../src/rootLock.ts';
 import { hostPlatform } from '../src/platform/index.ts';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const ENABLED = process.env.RUN_DOCKER_ROOT_LOCK === '1';
 const DOCKER = (process.env.CC_DOCKER ?? 'docker').split(/\s+/);
@@ -44,7 +44,7 @@ const run = (argv) => new Promise((resolve, reject) => {
 const docker = (...args) => run([...DOCKER, ...args]);
 
 function stageApp(t) {
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-root-lock-docker-'));
+  const stage = mkdtempSync('cc-root-lock-docker-');
   t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
   for (const f of FILES) {
     fs.mkdirSync(path.dirname(path.join(stage, 'app', f)), { recursive: true });
