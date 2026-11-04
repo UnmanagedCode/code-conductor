@@ -9,7 +9,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { RootLockHeldError, ROOT_LOCK_DIRNAME, ROOT_LOCK_HELD_EXIT } from '../src/rootLock.ts';
+import { acquireRootLock, RootLockHeldError, ROOT_LOCK_DIRNAME, ROOT_LOCK_HELD_EXIT } from '../src/rootLock.ts';
+import { hostPlatform } from '../src/platform/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -95,7 +96,8 @@ test('a second server on a held root exits 7 naming the holder; the first keeps 
 
   const second = spawnServer(t, home);
   const { code } = await second.exited;
-  assert.equal(code, ROOT_LOCK_HELD_EXIT, `stderr=${second.out.stderr}`);
+  assert.equal(code, 7, `the documented refusal exit code\nstderr=${second.out.stderr}`);
+  assert.equal(ROOT_LOCK_HELD_EXIT, 7);
   assert.match(second.out.stderr, new RegExp(`pid ${first.child.pid}\\b`));
   assert.ok(second.out.stderr.includes(path.join(lockDirOf(home), '1.json')), second.out.stderr);
   assert.equal((await health(port)).pid, first.child.pid, 'the holder still answers');
@@ -145,4 +147,21 @@ test("a refused server leaves the holder's restart manifests and session-tmp dir
   const refused = spawnServer(t, home);
   assert.equal((await refused.exited).code, ROOT_LOCK_HELD_EXIT, `stderr=${refused.out.stderr}`);
   for (const [name, p] of Object.entries(planted)) assert.ok(fs.existsSync(p), `${name} survives: ${p}`);
+});
+
+test('start() releases the root lock when a boot step after the acquire throws', async (t) => {
+  const home = await freshHome(t);
+  const { start } = await import('../server.ts');
+  const prev = { PROJECTS_ROOT: process.env.PROJECTS_ROOT, CLAUDE_PROJECTS_ROOT: process.env.CLAUDE_PROJECTS_ROOT };
+  process.env.PROJECTS_ROOT = rootOf(home);
+  process.env.CLAUDE_PROJECTS_ROOT = path.join(home, '.claude', 'projects');
+  t.after(() => Object.assign(process.env, prev));
+  // An out-of-range port: the boot runs through migrations, sweeps and
+  // createServer, and the listen — its last step — throws.
+  await assert.rejects(start({ port: -1, host: '127.0.0.1', buildWeb: false, syncDeps: false }), { code: 'ERR_SOCKET_BAD_PORT' });
+  assert.ok(fs.existsSync(path.join(rootOf(home), '.conduct')), 'the boot got past the acquire before it failed');
+  assert.deepEqual(fs.readdirSync(lockDirOf(home)), [], 'no record and no socket of ours is left');
+  const lock = await acquireRootLock({ storeDir: path.dirname(lockDirOf(home)), platform: hostPlatform, log: { warn() {} } });
+  t.after(() => lock.releaseSync());
+  assert.equal(lock.gen, 1);
 });

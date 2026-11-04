@@ -311,7 +311,11 @@ function topRecord(lockDir) {
   return { gen, rec: parseRootLockRecord(readFileSync(path.join(lockDir, `${gen}.json`), 'utf8')) };
 }
 
-test('a restart hands the projects-root lock over with no window: never dead, adopted before the parent exits', async (t) => {
+// What this test pins: the replacement holds the lock before the original
+// exits, and a third server is refused afterwards. The 20 ms probe sampling is
+// steady-state evidence only — it cannot prove the absence of a window; the
+// interleavings are pinned deterministically in tests/root-lock.test.mjs.
+test('a restart hands the projects-root lock over: the replacement holds it before the parent exits; sampled probes stay alive', async (t) => {
   const port = await getFreePort();
   const tmpHome = await mkdtemp('orch-restart-lock-');
   const lockDir = path.join(tmpHome, 'project', '.code-conductor', ROOT_LOCK_DIRNAME);
@@ -386,5 +390,5 @@ test('a restart hands the projects-root lock over with no window: never dead, ad
   sampling = false;
   await sampler;
   assert.ok(verdicts.length >= 5, `sampled ${verdicts.length} times`);
-  assert.deepEqual(verdicts.filter((v) => v !== 'alive'), [], 'the lock never read dead through the restart');
+  assert.deepEqual(verdicts.filter((v) => v !== 'alive'), [], 'no sample read the lock dead through the restart');
 });

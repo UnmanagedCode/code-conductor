@@ -210,13 +210,14 @@ test('runRestart hands its root lock to spawnAndExit', async () => {
 
 // A RootLock stub recording every call into `order`; awaitAdoption resolves
 // when the test calls `adopt()`.
-function stubLock(order) {
+function stubLock(order, { offer = () => true } = {}) {
   let adopt;
   const adopted = new Promise((r) => { adopt = r; });
   return {
     adopt: () => adopt(true),
     lock: {
-      offerHandover(next) { order.push(['offer', next]); return true; },
+      offerHandover(next) { order.push(['offer', next]); return offer(); },
+      releaseSync() { order.push(['release']); },
       withdrawHandover() { order.push(['withdraw']); },
       async awaitAdoption(opts) { order.push(['await', opts.timeoutMs]); return adopted; },
     },
@@ -260,3 +261,28 @@ test('spawnReplacementAndExit: a spawn that throws withdraws the offer and does 
   await new Promise((r) => setTimeout(r, 80));
   assert.deepEqual(order.map(([k]) => k), ['offer', 'spawn', 'withdraw']);
 });
+
+for (const [label, offer] of [
+  ['throws', () => { throw Object.assign(new Error('EROFS'), { code: 'EROFS' }); }],
+  ['finds the record no longer ours', () => false],
+]) {
+  test(`spawnReplacementAndExit: an offer that ${label} releases the lock, relaunches without a handover and still exits`, async () => {
+    const order = [];
+    const { lock } = stubLock(order, { offer });
+    let childEnv;
+    const spawnChild = (_cmd, _args, opts) => {
+      order.push(['spawn']);
+      childEnv = opts.env;
+      return Object.assign(new EventEmitter(), { pid: 4242, unref() {} });
+    };
+    await new Promise((resolve) => {
+      void spawnReplacementAndExit({
+        log: QUIET, rootLock: lock, spawnChild,
+        exit: (code) => { order.push(['exit', code]); resolve(); },
+      });
+    });
+    assert.deepEqual(order.map(([k]) => k), ['offer', 'release', 'spawn', 'exit'], 'released before the spawn; no adoption wait');
+    assert.equal(childEnv[ROOT_LOCK_HANDOVER_ENV], undefined, 'the child boots like any server');
+    assert.deepEqual(order.at(-1), ['exit', 0]);
+  });
+}

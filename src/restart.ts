@@ -200,9 +200,14 @@ export async function runRestart({
 //
 // With a root lock the lock is handed over, never dropped: the offer is
 // written into our record BEFORE the spawn, and this process — whose lock
-// socket keeps answering — exits only once the child has adopted the record
-// (or the wait runs out). Exiting first would leave a record naming a dead
-// socket, and a third server could take the root in that gap.
+// socket keeps answering — exits only once the child has taken the next
+// generation (or the wait runs out). Exiting first would leave a record naming
+// a dead socket, and a third server could take the root in that gap.
+//
+// The relaunch is committed by now (networking is down), so an offer that
+// cannot be written must not strand a process serving nothing: the lock is
+// released instead and the child takes the root like any boot, which leaves
+// that one gap open rather than leaving no app at all.
 export async function spawnReplacementAndExit({
   log = console, rootLock = null, spawnChild = spawn, exit = (code: number) => process.exit(code),
   handoverWaitMs = ROOT_LOCK_HANDOVER_WAIT_MS,
@@ -211,8 +216,18 @@ export async function spawnReplacementAndExit({
   spawnChild?: typeof spawn; exit?: (code: number) => void; handoverWaitMs?: number;
 } = {}): Promise<void> {
   const args = [process.argv[1], ...process.argv.slice(2)];
-  const next = rootLock ? mintLockToken() : null;
-  if (rootLock && next) rootLock.offerHandover(next);
+  let next: string | null = null;
+  if (rootLock) {
+    const offer = mintLockToken();
+    try {
+      if (rootLock.offerHandover(offer)) next = offer;
+      else log.warn?.('restart: the projects-root lock record is no longer ours; relaunching without a handover');
+    } catch (e) {
+      log.warn?.('restart: could not offer the projects-root lock to the replacement; releasing it instead', e);
+    }
+    if (!next) rootLock.releaseSync();
+  }
+  const handingOver = rootLock !== null && next !== null;
   const childExited = new AbortController();
   try {
     const child = spawnChild(process.execPath, args, {
@@ -226,13 +241,16 @@ export async function spawnReplacementAndExit({
     log.log?.(`restart: spawned replacement pid=${child.pid}; exiting current pid=${process.pid}`);
   } catch (e) {
     log.error?.('restart: spawn failed', e);
-    rootLock?.withdrawHandover();
+    if (handingOver) {
+      try { rootLock?.withdrawHandover(); }
+      catch (we) { log.warn?.('restart: could not withdraw the projects-root lock offer', we); }
+    }
     // No replacement — don't exit, or the user is left with a dead app.
     return;
   }
 
   const minExit = new Promise<void>(r => setTimeout(r, 50));
-  if (rootLock) {
+  if (rootLock && handingOver) {
     // The relaunch is committed: whatever the wait reports, this process exits.
     const adopted = await rootLock.awaitAdoption({ timeoutMs: handoverWaitMs, signal: childExited.signal })
       .catch((e: unknown) => { log.warn?.('restart: reading the projects-root lock failed', e); return false; });

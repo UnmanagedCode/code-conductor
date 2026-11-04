@@ -26,7 +26,8 @@
 // one-block create and the token-checked release, but NOT the pid-liveness
 // reclaim: its holders can live in another pid namespace.
 
-import { promises as fs, openSync, writeSync, closeSync, readFileSync, unlinkSync, rmSync } from 'node:fs';
+import { promises as fs, writeFileSync, linkSync, readFileSync, unlinkSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 // Bounded wait for a live owner to release. Env-tunable so tests can drive the
@@ -81,34 +82,48 @@ export function isProcessAlive(pid: number): boolean {
 
 let tokenCounter = 0;
 
-// A token unique to this acquire: no other process, and no other acquire in
-// this one, can mint the same string. The projects-root lock (src/rootLock.ts)
-// mints its tokens here too.
+// A token unique to this acquire. The pid, time and counter alone repeat
+// across pid namespaces — every container's node can be pid 1, booting in the
+// same millisecond — so the token carries CSPRNG bytes too. The
+// projects-root lock (src/rootLock.ts) mints its tokens here.
 export function mintLockToken(): string {
-  return `${process.pid}-${Date.now()}-${tokenCounter++}`;
+  return `${process.pid}-${Date.now()}-${tokenCounter++}-${randomBytes(8).toString('hex')}`;
 }
 
-// Create `lockPath` exclusively and write `content` into it, in ONE synchronous
-// block: a process starved between an open and a write can then never leave a
-// created-but-empty lockfile for a reader to judge. False when the file already
-// exists; any other failure throws (after removing a file this call created).
-export function createLockFileSync(lockPath: string, content: string): boolean {
-  let fd: number;
-  // 'wx' = O_WRONLY | O_CREAT | O_EXCL — atomic, throws EEXIST if held
-  try { fd = openSync(lockPath, 'wx'); }
-  catch (e) {
+// A lockfile is published whole: its content goes to a uniquely named staging
+// file first, and a hard link puts it at `lockPath` in one atomic step, failing
+// EEXIST when the name is taken. A reader can therefore never see a
+// created-but-unwritten lockfile, however long the creator is starved between
+// the two calls. Needs a filesystem with hard links (NTFS, ext4, APFS, f2fs…).
+export function stageLockFileSync(lockPath: string, content: string): string {
+  const staged = `${lockPath}.tmp-${randomBytes(6).toString('hex')}`;
+  try {
+    writeFileSync(staged, content, { flag: 'wx' });
+  } catch (e) {
+    rmSync(staged, { force: true });
+    throw e;
+  }
+  return staged;
+}
+
+// Link `staged` to `lockPath`; false when `lockPath` exists. The staging file
+// is removed either way.
+export function publishLockFileSync(staged: string, lockPath: string): boolean {
+  try {
+    linkSync(staged, lockPath);
+    return true;
+  } catch (e) {
     if (errCode(e) === 'EEXIST') return false;
     throw e;
+  } finally {
+    rmSync(staged, { force: true });
   }
-  try {
-    writeSync(fd, content);
-  } catch (e) {
-    closeSync(fd);
-    rmSync(lockPath, { force: true });
-    throw e;
-  }
-  closeSync(fd);
-  return true;
+}
+
+// Create `lockPath` exclusively with `content`. False when it already exists;
+// any other failure throws.
+export function createLockFileSync(lockPath: string, content: string): boolean {
+  return publishLockFileSync(stageLockFileSync(lockPath, content), lockPath);
 }
 
 // Acquire the lock; returns a unique ownership token to hand back to releaseLock.

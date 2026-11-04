@@ -164,8 +164,16 @@ test('concurrent contenders on a fresh root: exactly one holds', async (t) => {
   }
 });
 
-for (const [label, body] of [['empty', ''], ['unparseable', '{"v":1,"pid":']]) {
-  test(`an ${label} top record is read as dead after the re-reads`, async (t) => {
+// A record is only ever published or rewritten whole, so an unreadable one is
+// corruption: it names no socket to probe and is superseded.
+const SOCK_BASE = { v: 1, pid: 1, token: 't', handoverTo: null };
+for (const [label, body] of [
+  ['empty', ''],
+  ['unparseable', '{"v":1,"pid":'],
+  ['`.` store-socket', JSON.stringify({ ...SOCK_BASE, sock: { kind: 'store', name: '.' } })],
+  ['`..` store-socket', JSON.stringify({ ...SOCK_BASE, sock: { kind: 'store', name: '..' } })],
+]) {
+  test(`an ${label} top record is superseded, and collected without error`, async (t) => {
     const root = await freshRoot(t);
     fs.mkdirSync(lockDirOf(root), { recursive: true });
     fs.writeFileSync(path.join(lockDirOf(root), '1.json'), body);
@@ -259,23 +267,129 @@ test('endpoint: Windows listens on a named pipe keyed by the lock dir and token'
 
 // ── Handover and release ───────────────────────────────────────────────────
 
-test('handover: an offered token adopts the same generation; the old holder then leaves the record', async (t) => {
+test('handover: the offered replacement publishes the next generation over its live parent; the parent then removes its own', async (t) => {
   const root = await freshRoot(t);
   const parent = await acquire(t, root);
   assert.equal(parent.offerHandover('T2'), true);
   assert.equal(readRec(root, parent.gen).handoverTo, 'T2');
   const env = { [ROOT_LOCK_HANDOVER_ENV]: 'T2', OTHER: 'x' };
   const child = await acquire(t, root, { env });
-  assert.equal(child.gen, parent.gen);
-  assert.equal(child.token, 'T2');
-  assert.deepEqual(env, { OTHER: 'x' }, 'the handover token is consumed from the env');
+  assert.equal(child.gen, parent.gen + 1);
+  assert.notEqual(child.token, 'T2', 'the offer authorises; the child holds under its own token');
+  assert.deepEqual(env, { OTHER: 'x' }, 'the offer is consumed from the env');
   const rec = readRec(root, child.gen);
-  assert.equal(rec.token, 'T2');
+  assert.equal(rec.token, child.token);
   assert.equal(rec.handoverTo, null);
+  assert.deepEqual(genFiles(root), ['1.json', '2.json'], 'the live parent\'s record is not collected');
   assert.equal(await parent.awaitAdoption({ timeoutMs: 1000 }), true);
   parent.releaseSync();
-  assert.equal(readRec(root, child.gen).token, 'T2', 'the parent\'s release leaves the child\'s record');
+  assert.deepEqual(genFiles(root), ['2.json'], 'the parent removes its own record');
   assert.equal(await probeHolder(rec, lockDirOf(root), hostPlatform), 'alive', 'the child still answers after the parent closed');
+  await assert.rejects(acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET }), RootLockHeldError);
+});
+
+// The record a parent leaves when its handover wait runs out and it exits:
+// still offering T2, naming a socket nothing listens on any more.
+async function deadOfferingParent(t, root) {
+  const parent = await acquire(t, root);
+  parent.offerHandover('T2');
+  const file = path.join(lockDirOf(root), `${parent.gen}.json`);
+  const left = fs.readFileSync(file, 'utf8');
+  parent.releaseSync();
+  fs.writeFileSync(file, left);
+  return parent.gen;
+}
+
+// Run `fn` once, at the first publish of the acquire it is passed to.
+const onceBeforePublish = (fn) => {
+  let done = false;
+  return { beforePublish: async (gen) => { if (!done) { done = true; await fn(gen); } } };
+};
+
+test('handover race: a third server that supersedes the dead offering parent while the child is preempted wins alone', async (t) => {
+  const root = await freshRoot(t);
+  const parentGen = await deadOfferingParent(t, root);
+  let third;
+  // The child has read the offer and staged its record when it is preempted;
+  // the third server judges the parent dead and takes the root meanwhile.
+  const child = acquireRootLock({
+    storeDir: storeOf(root), platform: hostPlatform, log: QUIET, env: { [ROOT_LOCK_HANDOVER_ENV]: 'T2' },
+    hooks: onceBeforePublish(async () => { third = await acquire(t, root); }),
+  });
+  await assert.rejects(child, RootLockHeldError, 'the child meets the third server\'s live generation and is refused');
+  assert.equal(third.gen, parentGen + 1);
+  assert.deepEqual(genFiles(root), [`${third.gen}.json`], 'one record, the third server\'s');
+  assert.equal(readRec(root, third.gen).token, third.token);
+  assert.equal(await probeHolder(readRec(root, third.gen), lockDirOf(root), hostPlatform), 'alive');
+});
+
+test('handover race: a child that publishes first holds alone; the third server meets it', async (t) => {
+  const root = await freshRoot(t);
+  const parentGen = await deadOfferingParent(t, root);
+  // The third server judged the dead parent too, and is preempted with its record staged.
+  let child;
+  const third = acquireRootLock({
+    storeDir: storeOf(root), platform: hostPlatform, log: QUIET,
+    hooks: onceBeforePublish(async () => { child = await acquire(t, root, { env: { [ROOT_LOCK_HANDOVER_ENV]: 'T2' } }); }),
+  });
+  await assert.rejects(third, RootLockHeldError);
+  assert.equal(child.gen, parentGen + 1);
+  assert.deepEqual(genFiles(root), [`${child.gen}.json`]);
+});
+
+test('a starved creator\'s staged record is invisible: a contender takes the root, and the creator then meets it', async (t) => {
+  const root = await freshRoot(t);
+  let contender;
+  let seenWhilePaused;
+  const creator = acquireRootLock({
+    storeDir: storeOf(root), platform: hostPlatform, log: QUIET,
+    hooks: onceBeforePublish(async () => {
+      seenWhilePaused = genFiles(root);
+      contender = await acquire(t, root);
+    }),
+  });
+  await assert.rejects(creator, RootLockHeldError);
+  assert.deepEqual(seenWhilePaused, [], 'a staged record is no generation');
+  assert.equal(contender.gen, 1);
+  assert.deepEqual(genFiles(root), ['1.json']);
+  assert.deepEqual(fs.readdirSync(lockDirOf(root)).filter((n) => n.includes('.tmp-')), [], 'no staging file is left behind');
+});
+
+test('a token that collides with a live holder\'s never takes its socket: the contender mints another and is refused', async (t) => {
+  const root = await freshRoot(t);
+  const holder = await acquire(t, root, { mintToken: () => 'SAME' });
+  const rec = readRec(root, holder.gen);
+  const holderSock = path.join(lockDirOf(root), rec.sock.name);
+  const minted = ['SAME', 'OTHER'];
+  await assert.rejects(
+    acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET, mintToken: () => minted.shift() }),
+    RootLockHeldError,
+  );
+  assert.deepEqual(minted, [], 'the colliding token was replaced');
+  assert.ok(fs.existsSync(holderSock), 'the holder\'s socket file survives');
+  assert.equal(await probeHolder(readRec(root, holder.gen), lockDirOf(root), hostPlatform), 'alive');
+});
+
+test('a contender whose every minted token collides gives up without touching the holder', async (t) => {
+  const root = await freshRoot(t);
+  const holder = await acquire(t, root, { mintToken: () => 'SAME' });
+  await assert.rejects(
+    acquireRootLock({ storeDir: storeOf(root), platform: hostPlatform, log: QUIET, mintToken: () => 'SAME' }),
+    /minted tokens each named a socket/,
+  );
+  assert.equal(await probeHolder(readRec(root, holder.gen), lockDirOf(root), hostPlatform), 'alive');
+});
+
+test('collection keeps a lower generation whose socket still answers', async (t) => {
+  const root = await freshRoot(t);
+  const low = await acquire(t, root);
+  // A dead higher generation above the live one (as left by a crashed replacement).
+  fs.writeFileSync(path.join(lockDirOf(root), '2.json'),
+    JSON.stringify({ v: 1, pid: 1, token: 'dead', sock: { kind: 'store', name: 'dead.sock' }, handoverTo: null }));
+  const lock = await acquire(t, root);
+  assert.equal(lock.gen, 3);
+  assert.deepEqual(genFiles(root), ['1.json', '3.json'], 'the dead generation goes, the answering one stays');
+  assert.equal(readRec(root, 1).token, low.token);
 });
 
 test('handover: a withdrawn offer is refused while the holder lives', async (t) => {

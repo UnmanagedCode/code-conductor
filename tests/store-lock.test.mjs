@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { withLock, createLockFileSync, releaseLockSync, mintLockToken } from '../src/storeLock.ts';
+import { withLock, createLockFileSync, releaseLockSync, mintLockToken, stageLockFileSync, publishLockFileSync } from '../src/storeLock.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -277,6 +277,29 @@ test('releaseLockSync removes only a lockfile carrying our token; a successor\'s
     releaseLockSync(lockPath, successor);
     await assert.rejects(fs.stat(lockPath), { code: 'ENOENT' }, 'our own lock is removed');
     assert.doesNotThrow(() => releaseLockSync(lockPath, successor), 'releasing a vanished lock is a no-op');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('mintLockToken carries CSPRNG bytes beyond pid, time and counter', () => {
+  const tails = [mintLockToken(), mintLockToken()].map((tok) => tok.split('-').at(-1));
+  for (const tail of tails) assert.match(tail, /^[0-9a-f]{16}$/);
+  assert.notEqual(tails[0], tails[1]);
+});
+
+test('a staged lockfile is invisible at its path until published; publishing a taken path fails and cleans up', async () => {
+  const dir = await tmpDir();
+  try {
+    const lockPath = path.join(dir, 'x.lock');
+    const staged = stageLockFileSync(lockPath, '{"token":"a"}');
+    await assert.rejects(fs.stat(lockPath), { code: 'ENOENT' }, 'nothing at the lock path while staged');
+    assert.equal(publishLockFileSync(staged, lockPath), true);
+    assert.equal(await fs.readFile(lockPath, 'utf8'), '{"token":"a"}', 'published whole');
+    const second = stageLockFileSync(lockPath, '{"token":"b"}');
+    assert.equal(publishLockFileSync(second, lockPath), false);
+    assert.equal(await fs.readFile(lockPath, 'utf8'), '{"token":"a"}');
+    assert.deepEqual(await fs.readdir(dir), ['x.lock'], 'no staging file survives a publish or a refusal');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
