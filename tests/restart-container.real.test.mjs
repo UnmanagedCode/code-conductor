@@ -109,6 +109,8 @@ async function makeRoot(name, { plugin = true, files = {} } = {}) {
       plugins: { 'fake-plugin': { project: 'autoplug', enabled: true, activeVersion: { type: 'main' }, autoStart: true } },
     }));
   }
+  // Never empty: docker copies the image's directory (and its permissions) into an empty volume on first mount.
+  fs.writeFileSync(path.join(dir, '.keep'), '');
   for (const [rel, text] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
     fs.writeFileSync(path.join(dir, rel), text);
