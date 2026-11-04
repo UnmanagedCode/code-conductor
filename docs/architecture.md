@@ -832,6 +832,7 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   ├── server-lock/                         # the projects-root lock (src/rootLock.ts) — see "The projects-root lock"
 │   │   ├── <gen>.json                       # one record per generation; the highest present is the lock
 │   │   ├── <gen>.json.tmp-<hex>             # a record staged for publishing (transient; swept on acquire)
+│   │   ├── <gen>.json.offer-<token8>        # an offer rewrite's temp (transient); a crash mid-offer can leave one, and nothing sweeps it
 │   │   └── <token8>.sock                    # a holder's listening socket (POSIX, `store` endpoint)
 │   ├── systems/<systemId>/
 │   │   └── retired-session-roots-<ms>/     # ONLY on an install upgraded past the FUSE-union geometry:

@@ -273,9 +273,16 @@ async function listenHolder(lockDir: string, mintToken: () => string, platform: 
 // process has open for a moment, so EPERM/EBUSY are retried.
 // The temp carries its own suffix (`.offer-`), never the staging shape, so a new
 // holder's sweep can never take an offer in flight.
-function writeAtomicSync(file: string, content: string, token8: string): void {
+// `writeFile` is a test seam (a write that fails after creating the temp).
+type WriteFileSync = (file: string, content: string) => void;
+function writeAtomicSync(file: string, content: string, token8: string, writeFile: WriteFileSync): void {
   const tmp = `${file}.offer-${token8}`;
-  fs.writeFileSync(tmp, content);
+  // Nothing sweeps an offer temp, so a failed write must not leave one.
+  try { writeFile(tmp, content); }
+  catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
   for (let i = 0; ; i++) {
     try { fs.renameSync(tmp, file); return; }
     catch (e) {
@@ -320,10 +327,10 @@ function sweepStaging(lockDir: string): void {
 }
 
 export async function acquireRootLock({
-  storeDir, platform, env = process.env, log = console, mintToken = mintLockToken, hooks = {},
+  storeDir, platform, env = process.env, log = console, mintToken = mintLockToken, hooks = {}, writeFile = fs.writeFileSync,
 }: {
   storeDir: string; platform: Platform; env?: NodeJS.ProcessEnv; log?: Log;
-  mintToken?: () => string; hooks?: AcquireHooks;
+  mintToken?: () => string; hooks?: AcquireHooks; writeFile?: WriteFileSync;
 }): Promise<RootLock> {
   const lockDir = path.join(storeDir, ROOT_LOCK_DIRNAME);
   const root = path.dirname(storeDir);
@@ -373,7 +380,7 @@ export async function acquireRootLock({
       }
       await collectBelow(lockDir, mine, platform);
       sweepStaging(lockDir);
-      return holdLock(lockDir, mine, token, token8, holder, record);
+      return holdLock(lockDir, mine, token, token8, holder, record, writeFile);
     }
     throw new Error(`root lock: could not settle ${lockDir} after ${ACQUIRE_ATTEMPTS} attempts`);
   } catch (e) {
@@ -390,7 +397,7 @@ function closeListener(l: Listener): void {
 
 function holdLock(
   dir: string, gen: number, token: string, token8: string, listener: Listener,
-  record: (handoverTo: string | null) => string,
+  record: (handoverTo: string | null) => string, writeFile: WriteFileSync,
 ): RootLock {
   const file = genPath(dir, gen);
   const ours = (): boolean => {
@@ -399,7 +406,7 @@ function holdLock(
   };
   const rewrite = (handoverTo: string | null): boolean => {
     if (!ours()) return false;
-    writeAtomicSync(file, record(handoverTo), token8);
+    writeAtomicSync(file, record(handoverTo), token8, writeFile);
     return true;
   };
   let released = false;

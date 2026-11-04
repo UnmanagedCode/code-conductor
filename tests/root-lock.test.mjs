@@ -442,6 +442,19 @@ test('collection keeps a lower generation whose socket still answers', async (t)
   assert.equal(readRec(root, 1).token, low.token);
 });
 
+test('an offer whose temp write fails after creating the file leaves no offer temp, and the error propagates', async (t) => {
+  const root = await freshRoot(t);
+  const lock = await acquire(t, root, {
+    writeFile: (file) => {
+      fs.writeFileSync(file, '{"v":1,');
+      throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    },
+  });
+  assert.throws(() => lock.offerHandover('T2'), { code: 'ENOSPC' });
+  assert.deepEqual(fs.readdirSync(lockDirOf(root)).filter((n) => n.includes('.offer-')), []);
+  assert.equal(readRec(root, lock.gen).handoverTo, null, 'the record is unchanged');
+});
+
 test('handover: a token the live holder never offered is refused', async (t) => {
   const root = await freshRoot(t);
   const parent = await acquire(t, root);
