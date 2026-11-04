@@ -384,6 +384,47 @@
 
   **Unknown owner.** A live conducted worker has `ownerSessionId: null` (the `unknown` owner above: neutral chip, no accent, no send check) when it (1) was resumed from a stored session through the UI — a sidebar session-row click, Settings → Archived, or a `#session=` anchor / notification click / Back or Forward onto an unlisted session, including an anchor restore after a restart that runs before its conductor re-spawns it; (2) was spawned through MCP `spawn_instance` whose `?caller=` is absent or names no live instance; or (3) was spawned by a worker in state 1 or 2. The header **Resume**, a conductor's `spawn_instance({resume})` after a restart and crash recovery keep the owner. A temp worker that exits leaves the list; a promoted one stays listed `exited`/`crashed` with a null owner and a disabled composer.
 
+### Headless mode
+Run one conductor session with no browser and no person attached: `node server.ts --prompt <text>` boots cc as usual, runs one **New conductor** session until it and everything it owns are done, prints one JSON object on stdout and exits. Modules: `src/headless/` ([architecture.md](architecture.md) → Headless mode); the JSON and exit codes: [protocol.md](protocol.md) → Headless run result; docker: [docker/README.md](../docker/README.md) → Headless runs.
+
+**Flags** (`src/headless/args.ts`). Any one of the three anywhere in argv makes the run headless; an argv with none of them boots the ordinary server and ignores the rest.
+
+| Flag | Value |
+|---|---|
+| `--prompt <text>` / `--prompt=<text>` | The prompt, verbatim. |
+| `--prompt-file <path>` / `--prompt-file=<path>` | Read the prompt from a file; `-` reads all of stdin. |
+| `--mode code\|plan` / `--mode=…` | Default `code`. `plan` starts the root in plan mode with **Auto-approve plan** on. |
+
+**Usage errors** — a `usage_error` object and a synopsis on stderr, before anything boots (no projects-root lock, no migrations): both prompt flags; neither (a `--mode` alone); a flag repeated; a flag with no value (`--prompt` last, or `--prompt=`); a `--mode` other than `code`/`plan`; any other argument once a headless flag is present; an unreadable `--prompt-file`; a prompt that is empty once trimmed.
+
+**What runs.**
+- Boot is the ordinary one minus the web build and the dependency sync (as `CC_SKIP_WEB_BUILD=1 CC_SKIP_DEPS_SYNC=1`), so a headless run never writes into a checkout another server may be running from. The web UI serves whatever `web/dist` already holds, and answers for the whole run: stderr names it (`headless: UI at http://<addr>:<port>`, one line per non-internal IPv4 for a wildcard `HOST` — in a container that is its own IP).
+- The projects-root lock applies: a root another server holds is refused (`root_held`), naming the holder.
+- The root is spawned with the same body New conductor posts (`shared/newConductor.ts`: a pristine temp session in `.conduct` on the Conductor role, `bypassPermissions` in code mode), plus `autoApprovePlan` in plan mode — for the root only; its workers and section leads never get it.
+- The root's first prompt is a short headless fragment (`HEADLESS_FRAGMENT`, `src/headless/fragment.ts`) followed by a blank line and your prompt. The fragment tells the root that nobody will answer, to decide instead of asking and state each assumption, that its workers' plans and questions are its own to decide, and that its last message is the run's output.
+- **Asks, the root's only.** A root **AskUserQuestion** gets one canned answer per ask (`HEADLESS_QUESTION_ANSWER`: decide yourself, state the assumption, continue). A root **ExitPlanMode** plan that Auto-approve did not take (code mode, or after the root left plan mode) is approved as the UI's Approve does. A text ask (a final message ending in `?` or an offer) is neither answered nor waited on — it is the result. Workers and section leads route their asks to their owners exactly as in the UI.
+- **Restart is refused** — `POST /api/admin/restart` answers `409 RESTART_DISABLED_HEADLESS`, so Settings → About's restart and self-update's follow-up restart fail; nothing replaces the process.
+
+**When it ends.**
+
+| Ends when | `reason` |
+|---|---|
+| The root and every session in its tree (everything it owns transitively, and every worker spawned under it at any depth, even one whose section lead is gone) stay idle for the idle-drain settle window (`IDLE_DRAIN_SETTLE_MS`, `src/idleSubscriptions.ts`; env `ORCH_IDLE_DRAIN_SETTLE_MS`) with no turn still coming — see below | `completed` |
+| …the same, but the root's last turn ended in an error | `conductor_error` (the text is still reported) |
+| The root exits or crashes first, or its spawn or first prompt fails | `conductor_error` |
+| `SIGINT` / `SIGTERM`: the root's turn is force-interrupted (bounded by `INTERRUPT_WAIT_MS`, `src/headless/runner.ts`), then the run ends. A second signal ends it at once | `signal` |
+
+Anything else that fails still writes the one object: `signal` once a signal arrived, else `conductor_error` once the run started, else `boot_failed`. Each reason's exit code: [protocol.md](protocol.md) → Headless run result.
+
+"Nothing still coming" means: the root has ended at least one turn and holds no tool ask; and neither it nor any session it owns is mid-turn, waiting on a wake (armed, held, in flight or deferred), deferring one (a live background agent, a pending task notification, a rotation, a parked steer) or running a background Bash job. So "spawn a worker and end the turn" is not completion: the root's wake on that worker keeps it waiting, and a section lead idle on its own worker holds the root's wake the same way. An exited or crashed worker does not block — its exit is a wake to its owner.
+
+**State is left as is.** The exit tears nothing down: no session cleanup, no worktree removal; temp sessions, worktrees and transcripts stay as a normal cc death leaves them, and the next server on that root boots over them as after any crash. Plugin backends are detached and nothing calls `stopAll`, so outside docker they keep running after the run — the next boot on that root adopts them; kill them yourself if you throw the root away. In docker, `--rm` takes them down with the container.
+
+**Limits.**
+- A context renewal or compaction of the root may drop the first-turn fragment; the canned answer and the plan approval still hold.
+- The result's `costUsd` counts claude-backend turns only (as `costs.jsonl` does), and is null when the cost read fails.
+- A projects root shared with a running server is refused, not shared; give each run a root of its own ([architecture.md](architecture.md) → Provisioning a projects root). Two runs on two roots may share one `$HOME`.
+
 ### MCP interface
 Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0); tools exposed as `mcp__code-conductor__*`. Auto-registered on every spawn via `--mcp-config` (opt out with `ORCH_DISABLE_MCP_AUTOREGISTER=1`). No auth — localhost-only.
 

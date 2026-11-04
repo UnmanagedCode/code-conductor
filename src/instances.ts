@@ -5307,6 +5307,43 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return jobWaiters([...this.byId.values()], id => this._idleHub.ownersOf(id));
   }
 
+  // Is the tree rooted at `rootId` finished — the headless run's completion
+  // predicate (src/headless/runner.ts)? The root is live, idle, has ended at
+  // least one turn and holds no tool ask; and it and every session in its tree
+  // is idle with no turn still coming on it: no
+  // armed, held, in-flight or deferred wake as a caller (isIdleCaller), no
+  // target-side defer, no running background job. An exited or crashed session
+  // does not block — its exit is itself a wake to its owner, which the owner's
+  // isIdleCaller covers.
+  //
+  // The tree is every conducted session carrying the root's durable attribution
+  // (rootOwnerSessionId, fixed at create) plus everything those and the root own
+  // transitively (ownedTreeOf). The ownership walk alone is not enough: a section
+  // lead that leaves byId (a temp one's exit, a remove) takes its ownership edges
+  // with it, while its workers may still be mid-turn.
+  isTreeQuiescent(rootId: string): boolean {
+    const root = this.byId.get(rootId);
+    if (!root?.proc || root.status !== 'idle') return false;
+    const facts = root.summary();
+    if ((facts.liveTurnEnds ?? 0) < 1 || facts.awaitingUserSource === 'tool') return false;
+    const jobWaiting = this._jobWaiters();
+    const seeds = [rootId];
+    for (const inst of this.byId.values()) {
+      if (inst.conducted && root.sessionId && inst.rootOwnerSessionId === root.sessionId) seeds.push(inst.id);
+    }
+    const tree = new Set<string>();
+    for (const seed of seeds) {
+      tree.add(seed);
+      for (const id of this._idleHub.ownedTreeOf(seed)) tree.add(id);
+    }
+    for (const id of tree) {
+      const x = this.byId.get(id);
+      if (!x || (isDeadStatus(x.status) && !x.relaunching)) continue;
+      if (x.status !== 'idle' || this.isIdleCaller(id) || this._idleHub.targetDefers(x) || jobWaiting.has(id)) return false;
+    }
+    return true;
+  }
+
   // list() minus the hidden pristine conductors: what every list PAYLOAD serves
   // (GET /api/instances, list_sessions, describe_session). Lifecycle code keeps
   // list() or byId, so teardown and the restart drain still see them.

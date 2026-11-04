@@ -952,3 +952,52 @@ test('GET /api/costs/summary returns aggregated data when rows exist', async () 
     await close();
   }
 });
+
+// flushCostWrites resolves only once every queued append has landed. The
+// pending write is real: costs.jsonl is a FIFO, so the append's open blocks
+// until a reader opens the other end.
+test('cost-tracking: flushCostWrites waits for a pending append and resolves once the row has landed', { skip: process.platform === 'win32' && 'no mkfifo' }, async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+  try {
+    const { initCostTracking, costsPath, flushCostWrites } = await import('../src/costTracking.ts');
+    await fs.mkdir(path.dirname(costsPath()), { recursive: true });
+    const { spawnSync } = await import('node:child_process');
+    assert.equal(spawnSync('mkfifo', [costsPath()]).status, 0, 'fixture check: the FIFO exists');
+    const emitter = new EventEmitter();
+    emitter.get = () => fakeInst({ sessionId: 'sess-fifo' });
+    initCostTracking(emitter);
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.5 }) });
+    let flushed = false;
+    const flush = flushCostWrites().then(() => { flushed = true; });
+    // The reader is what unblocks the append, so it is opened on every path —
+    // a failing assertion below must not leave the write blocked and the suite
+    // waiting out its deadline.
+    let data = '';
+    let reader = null;
+    const openReader = async () => {
+      if (reader) return;
+      const { createReadStream } = await import('node:fs');
+      reader = createReadStream(costsPath(), { encoding: 'utf8' });
+      reader.on('data', (c) => { data += c; });
+    };
+    const bounded = (p, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`timed out: ${what}`)), 5_000).unref())]);
+    try {
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(flushed, false, 'the append is still blocked, so the flush has not resolved');
+    } finally {
+      await openReader();
+    }
+    await bounded(flush, 'the flush after the reader opened');
+    await bounded(new Promise((r) => (reader.readableEnded ? r() : reader.once('end', r))), 'the row reaching the reader');
+    const rows = data.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].sessionId, 'sess-fifo');
+    assert.ok(Math.abs(rows[0].cost_usd - 0.5) < 1e-9);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});

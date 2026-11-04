@@ -70,7 +70,7 @@ endif
 ifneq ($(CC_BASE_IMAGE),)
 export CC_BASE_IMAGE
 endif
-.PHONY: build up down logs restart start stop mount login login/tailscale login/ollama base-image
+.PHONY: build up down logs restart start stop mount login login/tailscale login/ollama base-image headless
 
 # No-op unless CC_BASE_IMAGE_FILE is set. $(error) inside a recipe expands only
 # when that recipe is about to run, so the conflict is fatal for build/up and
@@ -156,3 +156,31 @@ login/tailscale:
 # One-time sign-in to ollama's hosted service; needs CC_WITH_OLLAMA=1.
 login/ollama:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor ollama login
+
+# One headless cc run in a throwaway container, on a projects root of its own:
+#   make headless CC_HEADLESS_PROJECTS_DIR=/abs/dir PROMPT='…' | PROMPT_FILE=path|- [MODE=plan]
+# A thin wrapper over docker/headless.sh, which holds the logic and exits with
+# cc's exact code; make itself collapses any failure to 2 (the JSON on stdout
+# carries the real `exitCode`). PROMPT is passed through $(value …) so make
+# never expands a `$` in the prompt text. See docker/README.md → Headless runs.
+headless: export CC_HEADLESS_PROMPT = $(value PROMPT)
+headless: export PROMPT_FILE := $(value PROMPT_FILE)
+headless: export MODE := $(value MODE)
+headless: export CC_HEADLESS_PROJECTS_DIR := $(value CC_HEADLESS_PROJECTS_DIR)
+headless: export CC_HEADLESS_HOME := $(value CC_HEADLESS_HOME)
+headless: export CC_HEADLESS_PORT := $(value CC_HEADLESS_PORT)
+headless: export CC_PROJECTS_DIR := $(CC_PROJECTS_DIR)
+headless: export CC_BIND := $(CC_BIND)
+headless: export CC_URL_HOST := $(CC_URL_HOST)
+headless: export DOCKER_COMPOSE := $(DOCKER_COMPOSE)
+headless: export COMPOSE_FILES := $(COMPOSE_FILES)
+# Silent recipe and no Entering/Leaving lines, so stdout is cc's alone
+# (`make headless | jq`). The directory lines of `make -C` are decided at parse
+# time, so the flag is set there, when `headless` is one of the goals: an
+# invocation without `headless` keeps its directory lines, while a combined one
+# (`make -C docker build headless`) loses them for every goal in it.
+ifneq ($(filter headless,$(MAKECMDGOALS)),)
+MAKEFLAGS += --no-print-directory
+endif
+headless:
+	@./headless.sh
