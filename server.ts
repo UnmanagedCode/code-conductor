@@ -39,6 +39,7 @@ import { setMergeHookVarsProvider } from './src/worktrees.ts';
 import { hostSecurityHeaders } from './src/securityHeaders.ts';
 import { createUpgradeOriginGuard } from './src/upgradeOrigin.ts';
 import { createTerminalEndpoint } from './src/hostTerminal.ts';
+import { takeRestartSupervisor } from './src/restartSupervisor.ts';
 import { acquireRootLock, RootLockHeldError, RootLockUnreadableError, ROOT_LOCK_HELD_EXIT, type RootLock } from './src/rootLock.ts';
 import { parseHeadlessArgs } from './src/headless/args.ts';
 import { headlessMain } from './src/headless/entry.ts';
@@ -251,9 +252,10 @@ export async function start({
   // One server per projects root, taken BEFORE anything reads or rewrites the
   // root: a refused server must not consume the holder's restart manifests,
   // sweep its session-tmp dirs or FUSE mounts, or touch its plugins.
+  const supervised = takeRestartSupervisor();
   const rootLock = await acquireRootLock({ storeDir: orchStoreRoot(), platform });
   try {
-    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless });
+    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised });
   } catch (e) {
     rootLock.releaseSync();
     throw e;
@@ -261,10 +263,10 @@ export async function start({
 }
 
 async function startHolding(rootLock: RootLock, {
-  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless,
+  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised,
 }: {
   port: number; host: string; platform: Platform; buildWeb: boolean; syncDeps: boolean; webBuild?: () => Promise<unknown>;
-  recordBootCommit: boolean; checkoutRoot: string; headless: boolean;
+  recordBootCommit: boolean; checkoutRoot: string; headless: boolean; supervised: boolean;
 }) {
   // What this process runs, measured first: the boot below regenerates files
   // in every project, this checkout included. Never throws.
@@ -312,7 +314,7 @@ async function startHolding(rootLock: RootLock, {
   // unlinks pending-resume.json, which names the sessions it must keep.
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless } });
+  const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)

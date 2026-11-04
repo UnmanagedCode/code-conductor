@@ -334,6 +334,8 @@ export interface RelaunchOptions {
   rootLock?: RootLock | null;
   // A headless run (src/headless/): nothing may replace this process.
   headless?: boolean;
+  // A restart supervisor relaunches this server (src/restartSupervisor.ts).
+  supervised?: boolean;
 }
 
 // Body-patch shapes for /settings/models/prefs. The setters own validation
@@ -412,7 +414,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   });
 
   // Self-respawn the orchestrator (runRestart, src/restart.ts): prepare, tear
-  // down, spawn a detached replacement, exit. `resume:true` drains live turns
+  // down, spawn a detached replacement, exit — or, under a restart supervisor,
+  // release the root lock and exit for the supervisor to relaunch. `resume:true` drains live turns
   // and resurrects them after (carrying temps over); otherwise a plain restart
   // (temps archived). Streams NDJSON like the self-update below: chunks per
   // phase, then one result line — `ok:true` once the relaunch is committed and
@@ -441,6 +444,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         prep: relaunch.prep,
         spawnAndExit: relaunch.spawnAndExit,
         rootLock: relaunch.rootLock,
+        supervised: relaunch.supervised,
         onChunk: (phase: RestartPhase, text: string) => write({ type: 'chunk', phase, text }),
         onCommit: () => { write({ type: 'result', ok: true }); res.end(); },
       });

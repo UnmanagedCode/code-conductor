@@ -80,7 +80,7 @@ test("the entrypoint runs the probe from the checkout and, only when it fails, r
   // The entrypoint's deps block as shipped: from its heading up to the exec.
   const script = fs.readFileSync(ENTRYPOINT, 'utf8');
   const start = script.indexOf('# ── Deps, then exec');
-  const end = script.indexOf('exec ./conductor.sh');
+  const end = script.indexOf('exec node docker/supervise.mjs');
   assert.ok(start !== -1 && end > start, 'fixture check: the deps block is found');
   const block = script.slice(start, end);
 
@@ -115,4 +115,9 @@ test("the entrypoint runs the probe from the checkout and, only when it fails, r
   const passed = exec(full, { CC_SKIP_DEPS_SYNC: '1' });
   assert.equal(passed.status, 0, passed.stderr);
   assert.equal(passed.npm, null);
+});
+
+test('the entrypoint ends by exec-ing the restart supervisor around conductor.sh', () => {
+  const last = fs.readFileSync(ENTRYPOINT, 'utf8').split('\n').filter((l) => l.trim() !== '').at(-1);
+  assert.equal(last, 'exec node docker/supervise.mjs ./conductor.sh "$@"');
 });
