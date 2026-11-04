@@ -108,6 +108,11 @@ fi
 cd "$REPO_DIR"
 
 if ! node docker/deps-complete.mjs; then
+  # A headless run (docker/headless.sh) shares this checkout with a live main
+  # service, so it never installs into it.
+  if [ "${CC_SKIP_DEPS_SYNC:-0}" = "1" ]; then
+    fatal "node_modules incomplete in the shared checkout — run \`make up\` once first"
+  fi
   echo "node_modules incomplete — installing runtime deps" >&2
   # A git-worktree checkout can have a BROKEN node_modules symlink from the
   # host; drop the symlink only, never a real directory.

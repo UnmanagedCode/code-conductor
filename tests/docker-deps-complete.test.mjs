@@ -76,7 +76,7 @@ test('a dependency directory with no package.json in it (an interrupted install)
   assert.equal(r.status, 1, `stderr: ${r.stderr}`);
 });
 
-test("the entrypoint runs the probe from the checkout and, only when it fails, runs npm install --omit=dev", (t) => {
+test("the entrypoint runs the probe from the checkout and, only when it fails, runs npm install --omit=dev — or, under CC_SKIP_DEPS_SYNC=1, stops", (t) => {
   // The entrypoint's deps block as shipped: from its heading up to the exec.
   const script = fs.readFileSync(ENTRYPOINT, 'utf8');
   const start = script.indexOf('# ── Deps, then exec');
@@ -91,14 +91,28 @@ test("the entrypoint runs the probe from the checkout and, only when it fails, r
   const full = checkout({ a: '1.0.0', b: '2.0.0' });
   t.after(() => { for (const d of [stubs, partial, full]) fs.rmSync(d, { recursive: true, force: true }); });
 
-  const run = (repoDir) => {
+  const exec = (repoDir, env = {}) => {
     fs.rmSync(npmLog, { force: true });
     const r = spawnSync('bash', ['-c', `set -euo pipefail\nfatal() { echo "FATAL $*" >&2; exit 1; }\nREPO_DIR=${JSON.stringify(repoDir)}\n${block}`], {
-      encoding: 'utf8', env: { ...process.env, PATH: `${stubs}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}` },
+      encoding: 'utf8', env: { ...process.env, CC_SKIP_DEPS_SYNC: '', ...env, PATH: `${stubs}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}` },
     });
+    return { ...r, npm: fs.existsSync(npmLog) ? fs.readFileSync(npmLog, 'utf8').trim() : null };
+  };
+  const run = (repoDir) => {
+    const r = exec(repoDir);
     assert.equal(r.status, 0, r.stderr);
-    return fs.existsSync(npmLog) ? fs.readFileSync(npmLog, 'utf8').trim() : null;
+    return r.npm;
   };
   assert.match(run(partial) ?? '', /^install --omit=dev\b/, 'a missing dependency installs the runtime deps');
   assert.equal(run(full), null, 'a complete node_modules installs nothing');
+
+  // A headless run (CC_SKIP_DEPS_SYNC=1) shares the checkout with the main
+  // service: an incomplete node_modules is fatal, never repaired.
+  const refused = exec(partial, { CC_SKIP_DEPS_SYNC: '1' });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /FATAL node_modules incomplete in the shared checkout — run `make up` once first/);
+  assert.equal(refused.npm, null, 'nothing installed');
+  const passed = exec(full, { CC_SKIP_DEPS_SYNC: '1' });
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.equal(passed.npm, null);
 });
