@@ -24,7 +24,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Platform } from './platform/index.ts';
 import type { RootLockSock, SocketAddress } from './platform/platform.ts';
-import { LINK_PROBE_PREFIX, mintLockToken, prepareLockFileSync, releaseLockSync } from './storeLock.ts';
+import { LINK_PROBE_PREFIX, STAGED_SUFFIX_HEX, mintLockToken, prepareLockFileSync, releaseLockSync } from './storeLock.ts';
 
 export const ROOT_LOCK_DIRNAME = 'server-lock';
 // Internal, restart parent → child: the offer that lets the child take the
@@ -44,8 +44,9 @@ const ACQUIRE_ATTEMPTS = 50;
 const TOKEN_ATTEMPTS = 5;
 const ADOPTION_POLL_MS = 100;
 const GEN_FILE = /^([1-9]\d*)\.json$/;
-// A generation record staged for publishing (storeLock's `<lock>.tmp-<hex>`).
-const STAGED_GEN_FILE = /^[1-9]\d*\.json\.tmp-/;
+// A generation record staged for publishing — exactly storeLock's
+// `<lock>.tmp-<hex>` shape, so nothing else in the lock dir matches.
+const STAGED_GEN_FILE = new RegExp(`^[1-9]\\d*\\.json\\.tmp-[0-9a-f]{${STAGED_SUFFIX_HEX * 2}}$`);
 
 export interface RootLockRecord {
   v: 1;
@@ -270,8 +271,10 @@ async function listenHolder(lockDir: string, mintToken: () => string, platform: 
 
 // Replace `file` atomically. Windows refuses a rename onto a file another
 // process has open for a moment, so EPERM/EBUSY are retried.
+// The temp carries its own suffix (`.offer-`), never the staging shape, so a new
+// holder's sweep can never take an offer in flight.
 function writeAtomicSync(file: string, content: string, token8: string): void {
-  const tmp = `${file}.tmp-${token8}`;
+  const tmp = `${file}.offer-${token8}`;
   fs.writeFileSync(tmp, content);
   for (let i = 0; ; i++) {
     try { fs.renameSync(tmp, file); return; }

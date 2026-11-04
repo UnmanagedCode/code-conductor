@@ -394,15 +394,18 @@ test('a contender whose every minted token collides gives up without touching th
   assert.equal(await probeHolder(readRec(root, holder.gen), lockDirOf(root), hostPlatform), 'alive');
 });
 
-test('a successful acquire sweeps leftover staged records and link-probe files from the lock dir', async (t) => {
+test('a successful acquire sweeps leftover staged records and link-probe files from the lock dir, and nothing else', async (t) => {
   const root = await freshRoot(t);
   fs.mkdirSync(lockDirOf(root), { recursive: true });
-  for (const n of ['4.json.tmp-deadbeef', `${LINK_PROBE_PREFIX}cafe`, `${LINK_PROBE_PREFIX}cafe.link`]) {
+  for (const n of ['4.json.tmp-0123456789ab', `${LINK_PROBE_PREFIX}cafe`, `${LINK_PROBE_PREFIX}cafe.link`]) {
     fs.writeFileSync(path.join(lockDirOf(root), n), '');
   }
+  // An offer rewrite's temp, and a `.tmp-` name not of the staging shape, are not staged records.
+  const keep = ['3.json.offer-abcd1234', '5.json.tmp-abcd1234'];
+  for (const n of keep) fs.writeFileSync(path.join(lockDirOf(root), n), '');
   const lock = await acquire(t, root);
   const left = fs.readdirSync(lockDirOf(root)).sort();
-  assert.deepEqual(left, [`${lock.gen}.json`, readRec(root, lock.gen).sock.name].sort());
+  assert.deepEqual(left, [`${lock.gen}.json`, readRec(root, lock.gen).sock.name, ...keep].sort());
 });
 
 test('a socket path that a listener takes between the last probe and the bind is \'taken\': the contender mints again and proceeds', async (t) => {

@@ -127,12 +127,23 @@ const DEFAULT_DEPS: LockFsDeps = { link: linkSync, log: console };
 
 const createModes = new Map<string, CreateMode>();
 
+// A probe failure that is not an answer, named for the directory — the probe's
+// own temp file may never have existed. Same `code`, the original as `cause`.
+function probeFailure(dir: string, step: 'write' | 'link', e: unknown): Error {
+  const code = errCode(e);
+  return Object.assign(
+    new Error(`storeLock: cannot create lockfiles in ${dir}: the hard-link probe's ${step} failed (${code ?? String(e)})`, { cause: e }),
+    { code },
+  );
+}
+
 function probeLinks(dir: string, deps: LockFsDeps): CreateMode {
   for (let attempt = 0; ; attempt++) {
     const source = path.join(dir, `${LINK_PROBE_PREFIX}${randomBytes(6).toString('hex')}`);
     // A second unique name, so the probe itself can never meet EEXIST.
     const target = `${source}.link`;
-    writeFileSync(source, '', { flag: 'wx' });
+    try { writeFileSync(source, '', { flag: 'wx' }); }
+    catch (e) { throw probeFailure(dir, 'write', e); }
     try {
       deps.link(source, target);
       return 'link';
@@ -145,7 +156,7 @@ function probeLinks(dir: string, deps: LockFsDeps): CreateMode {
       }
       // A sweep of this dir (the root lock's) can take the probe file mid-probe.
       if (code === 'ENOENT' && !existsSync(source) && attempt < PROBE_RETRIES) continue;
-      throw e;
+      throw probeFailure(dir, 'link', e);
     } finally {
       rmSync(source, { force: true });
       rmSync(target, { force: true });
@@ -164,9 +175,12 @@ function createModeFor(dir: string, deps: LockFsDeps): CreateMode {
   return mode;
 }
 
+// The staging file's suffix: `.tmp-` and 12 hex chars (STAGED_SUFFIX_HEX bytes).
+export const STAGED_SUFFIX_HEX = 6;
+
 // Write `content` to a staging file beside `lockPath`; returns its path.
 export function stageLockFileSync(lockPath: string, content: string): string {
-  const staged = `${lockPath}.tmp-${randomBytes(6).toString('hex')}`;
+  const staged = `${lockPath}.tmp-${randomBytes(STAGED_SUFFIX_HEX).toString('hex')}`;
   try {
     writeFileSync(staged, content, { flag: 'wx' });
   } catch (e) {

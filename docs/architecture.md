@@ -951,8 +951,8 @@ Orchestrator state stays in the central store; the only cc-written file inside a
 
 | Entry | What |
 |---|---|
-| `<gen>.json` | A record per generation, `gen` a positive integer (`/^[1-9]\d*\.json$/`). The highest one present is the lock. Created exclusively by `prepareLockFileSync(…).publish()` (`src/storeLock.ts`, the create `withLock` uses too — see Creating a lockfile); rewritten whole for an offer (`<gen>.json.tmp-<token8>` + rename, EPERM/EBUSY retried on Windows). |
-| `<gen>.json.tmp-<hex>` | A record staged for publishing (hard-link mode only); never a generation. The publish removes it either way; a successful acquire **sweeps** every one in the lock dir, so one left by a killed creator does not stay. A live creator whose staged record is swept gets `ENOENT` from its publish, looks again, meets the new holder and is refused. |
+| `<gen>.json` | A record per generation, `gen` a positive integer (`/^[1-9]\d*\.json$/`). The highest one present is the lock. Created exclusively by `prepareLockFileSync(…).publish()` (`src/storeLock.ts`, the create `withLock` uses too — see Creating a lockfile); rewritten whole for an offer (`<gen>.json.offer-<token8>` + rename, EPERM/EBUSY retried on Windows — a suffix the sweep never matches). |
+| `<gen>.json.tmp-<hex>` | A record staged for publishing (hard-link mode only); never a generation. The publish removes it either way; a successful acquire **sweeps** every one in the lock dir (exactly this shape, `STAGED_GEN_FILE`), so one left by a killed creator does not stay. A live creator whose staged record is swept gets `ENOENT` from its publish, looks again, meets the new holder and is refused. |
 | `.cc-link-probe-<hex>`, `….link` | `storeLock`'s hard-link capability probe (`LINK_PROBE_PREFIX`); removed by the probe, swept like the above. A probe whose file is swept mid-probe retries. |
 | `<token8>.sock` | A holder's listening socket for a `store` endpoint. `token8` = first 8 hex chars of sha256 of the holder's token. |
 
@@ -967,18 +967,19 @@ Orchestrator state stays in the central store; the only cc-written file inside a
 | Probe outcome | Mode | Create |
 |---|---|---|
 | link succeeds | **link** | write a uniquely named staging file, `linkSync` it to the lock path (`EEXIST` → taken), remove the staging file. A reader never sees a created-but-unwritten lockfile, however long the creator is starved. |
-| `EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS` (FAT/exFAT, Android shared storage) — and `EXDEV`, with an extra warning | **in place** | `openSync(path, 'wx')` + `writeSync` + `closeSync` (`EEXIST` → taken; a failed write removes what it created). Never a rename. A reader can see the file empty for a moment, and **a crash between the create and the write leaves an empty lockfile that must be deleted by hand.** |
-| any other code (`EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `ENOENT`, `ENOTDIR`, `ENAMETOOLONG`, `EMLINK`, `EIO`…) | — | propagates; nothing is cached, the next create probes again |
+| a code in `NO_LINKS` (`src/storeLock.ts`; FAT/exFAT, Android shared storage) — and `EXDEV`, with an extra warning | **in place** | `openSync(path, 'wx')` + `writeSync` + `closeSync` (`EEXIST` → taken; a failed write removes what it created). Never a rename. A reader can see the file empty for a moment, and **a crash between the create and the write leaves an empty lockfile that must be deleted by hand.** |
+| any other code — or the probe's own write failing | — | propagates with the same `code`, rethrown naming the directory (`storeLock: cannot create lockfiles in <dir>: …`, the original as `cause`); nothing is cached, the next create probes again. A probe whose source file vanished (`ENOENT`, swept mid-probe) retries instead. |
 
-Both readers are safe with the in-place window without agreeing on a mode: `withLock` never reclaims a record without a pid (it waits it out), and the root lock treats **every** unparseable record as held, on every filesystem.
+Both readers are safe with the in-place window without agreeing on a mode: `withLock` never reclaims a record without a pid (it waits it out), and the root lock treats an unparseable **top** record as held, on every filesystem (an unparseable record below the top is collected — see Acquire).
 
 **`withLock`'s files** (`src/storeLock.ts`; beside each locked data file, e.g. `<store>/sessions.json`):
 
 | File | What |
 |---|---|
-| `<data>.lock` | `{pid, ts, token}`. Reclaimed only when `pid` is dead; a record without a pid (an in-place create caught mid-write) is waited out, never stolen — past `ORCH_STORE_LOCK_RETRY_MAX` retries the acquire throws `storeLock: could not acquire …`, so an empty lockfile a crash left fails every write until it is deleted. Release is token-checked. |
+| `<data>.lock` | `{pid, ts, token}`. Reclaimed only when `pid` is dead; a record without a pid (an in-place create caught mid-write) is waited out, never stolen — past `ORCH_STORE_LOCK_RETRY_MAX` retries the acquire throws `storeLock: could not acquire …`, so an empty lockfile a crash left (in-place mode, killed between the create and the write) fails every write until it is deleted. Release is token-checked. |
 | `<data>.lock.tmp-<hex>` | A lockfile staged for publishing (link mode). **Not swept**: a live waiter's staged file could be one. A creator killed between staging and publishing leaves it behind. |
-| `<data>.lock.reclaim` | The dead-owner reclaim marker, created with the same create. Only its holder may unlink `<data>.lock`, and only while that still holds exactly the record judged dead — so two waiters on one dead owner can never delete each other's fresh lock. A marker whose own `pid` is dead is cleared (only while unchanged); two waiters clearing one such stale marker at the same instant can both reclaim, which needs a reclaimer to die inside a few synchronous calls and is not closed. A live marker is respected (the waiter backs off, bounded by `ORCH_STORE_LOCK_RETRY_MAX`). |
+| `.cc-link-probe-<hex>`, `….link` | The create-mode probe's temp files (`LINK_PROBE_PREFIX`). **Not swept** here: a probe killed mid-probe leaves them behind. |
+| `<data>.lock.reclaim` | The dead-owner reclaim marker, created with the same create. Only its holder may unlink `<data>.lock`, and only while that still holds exactly the record judged dead — so two waiters on one dead owner can never delete each other's fresh lock. A marker whose own `pid` is dead is cleared (only while unchanged); two waiters clearing one such stale marker at the same instant can both reclaim, which needs a reclaimer to die inside a few synchronous calls and is not closed. A live marker is respected (the waiter backs off, bounded by `ORCH_STORE_LOCK_RETRY_MAX`). **An empty marker** — in-place mode, a reclaimer killed between its create and its write — has no pid, so it is never cleared: like an empty `<data>.lock`, it blocks every reclaim (and so `withLock`, once its owner is dead) until it is deleted. |
 
 **Why no pid liveness.** A record's pid means nothing to a reader in another pid namespace (two containers on one bind-mounted store, a host and a container): it reads as absent (→ "dead") or as the reader's own pid, and either would steal a live lock. `withLock`'s pid-liveness reclaim (`isProcessAlive`) stays as it is — its holders are this host's own short critical sections.
 
@@ -1006,7 +1007,7 @@ The kernel completes a unix-socket connect into the listen backlog without the h
 
 **An unparseable top record** (empty, malformed, a `.`/`..` socket name) is treated as **held**: `RootLockUnreadableError`, exit 7, the record left in place. In in-place mode it can be a live holder's record between its create and its write, and superseding it would make two holders. In link mode it can only be corruption, but the rule is the same on every filesystem, so two processes never need to agree on a mode. **The cost:** a corrupted record — or, in in-place mode, one left empty by a crash — blocks every boot on that root until a person deletes it.
 
-**Acquire** — `acquireRootLock({storeDir, platform, env, log, mintToken, hooks})` (`mintToken` and `hooks.beforePublish` are test seams):
+**Acquire** — `acquireRootLock({storeDir, platform, env, log, mintToken, hooks})` (`mintToken`, `hooks.beforePublish` and `hooks.beforeListen` are test seams):
 1. `mkdir -p` the lock dir. Read and delete `env.CC_ROOT_LOCK_HANDOVER` (`ROOT_LOCK_HANDOVER_ENV`), so it never reaches a CLI or plugin env.
 2. Mint a token and **listen first** (Listening above), so any record naming us is probe-able from the moment it exists.
 3. Up to `ACQUIRE_ATTEMPTS` passes:

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { withLock, createLockFileSync, releaseLockSync, mintLockToken, stageLockFileSync, publishLockFileSync, LINK_PROBE_PREFIX } from '../src/storeLock.ts';
-import { linkSync } from 'node:fs';
+import { linkSync, rmSync } from 'node:fs';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -342,7 +342,9 @@ for (const code of ['EACCES', 'EROFS', 'ENOSPC', 'EIO', 'EMLINK']) {
     try {
       const { deps } = recordingLog();
       const lockPath = path.join(dir, 'x.lock');
-      assert.throws(() => createLockFileSync(lockPath, '{}', deps(linkFailing(code))), { code });
+      assert.throws(() => createLockFileSync(lockPath, '{}', deps(linkFailing(code))), (e) =>
+        e.code === code && e.message.includes(dir) && e.message.includes(code)
+        && !e.message.includes(LINK_PROBE_PREFIX) && e.cause?.message === `link ${code}`);
       assert.deepEqual(await fs.readdir(dir), [], 'nothing created, no probe file left');
       assert.equal(createLockFileSync(lockPath, '{"token":"a"}', deps(linkSync)), true, 'the next create probes again');
       assert.deepEqual(await fs.readdir(dir), ['x.lock'], 'and publishes by link');
@@ -477,6 +479,42 @@ test('two waiters reclaiming one dead owner: the later reclaim never deletes the
     assert.ok(lockWhileBReclaimed !== null, 'A\'s lock survived B\'s reclaim');
     assert.notEqual(JSON.parse(lockWhileBReclaimed).token, 'dead');
   } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a probe file swept mid-probe (link fails ENOENT, source gone) is retried, and the retry selects a mode', async () => {
+  const dir = await tmpDir();
+  try {
+    const { log, deps } = recordingLog();
+    let calls = 0;
+    const d = deps((a, b) => {
+      calls++;
+      if (calls === 1) {
+        rmSync(a); // as a root-lock sweep would
+        throw Object.assign(new Error('link ENOENT'), { code: 'ENOENT' });
+      }
+      linkSync(a, b);
+    });
+    assert.equal(createLockFileSync(path.join(dir, 'x.lock'), '{"token":"a"}', d), true);
+    assert.equal(calls, 3, 'probe, probe again, publish');
+    assert.equal(log.info.length, 1, 'the retry chose the link mode');
+    assert.deepEqual(await fs.readdir(dir), ['x.lock']);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a store the probe cannot write to fails naming the directory and the code, not a probe file', async (t) => {
+  if (process.getuid?.() === 0) { t.skip('root ignores directory permissions'); return; }
+  const dir = await tmpDir();
+  try {
+    await fs.chmod(dir, 0o555);
+    assert.throws(() => createLockFileSync(path.join(dir, 'x.lock'), '{}'), (e) =>
+      e.code === 'EACCES' && e.message.includes(dir) && e.message.includes('EACCES')
+      && !e.message.includes(LINK_PROBE_PREFIX) && e.cause?.code === 'EACCES');
+  } finally {
+    await fs.chmod(dir, 0o755);
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
