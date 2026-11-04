@@ -301,3 +301,61 @@ test('a second signal in the same tick as the first reports costUsd null', async
   assert.equal(result.reason, 'signal');
   assert.equal(result.costUsd, null);
 });
+
+// The runner against a fake manager whose state the test drives directly:
+// status events at will, and a quiescence the test flips without an event.
+function fakeRun() {
+  const instances = new EventEmitter();
+  const sent = [];
+  let quiet = false;
+  const root = {
+    id: 'fake-root', sessionId: 'fake-root-s', status: 'idle', mode: 'bypassPermissions',
+    ringSnapshot: () => [], summary: () => ({ id: 'fake-root', status: 'idle', lastTurnError: false }),
+    promptOrQueueSteer: async (text) => { sent.push(text); },
+    interrupt: async () => {},
+  };
+  Object.assign(instances, {
+    create: async () => root,
+    isTreeQuiescent: () => quiet,
+    exitCauseFor: () => null,
+  });
+  let settled = false;
+  const run = runHeadless({ instances, prompt: 'p', mode: 'code', signals: new EventEmitter() });
+  run.then(() => { settled = true; });
+  return {
+    instances, root, sent, run, settled: () => settled,
+    setQuiet: (v) => { quiet = v; },
+    status: (over = {}) => instances.emit('status', { id: root.id, status: 'turn', ...over }),
+  };
+}
+const canned = (sent) => sent.filter((t) => t === HEADLESS_QUESTION_ANSWER).length;
+
+test('the canned answer goes out once per ask, however many status events carry it', async () => {
+  const f = fakeRun();
+  await waitFor(() => f.sent.length === 1, { timeout: 2_000 });
+  const ask = (liveAsks) => f.status({ awaitingUser: 'question', awaitingUserSource: 'tool', liveAsks });
+  for (let i = 0; i < 4; i++) ask(1);
+  await sleep(SETTLE_MS);
+  assert.equal(canned(f.sent), 1, 'one ask, one answer');
+  for (let i = 0; i < 3; i++) ask(2);
+  await sleep(SETTLE_MS);
+  assert.equal(canned(f.sent), 2, 'a second ask, exactly one more');
+  f.setQuiet(true);
+  f.status({ status: 'idle' });
+  await f.run;
+});
+
+test('the settle timer re-checks quiescence when it fires', async () => {
+  const f = fakeRun();
+  await waitFor(() => f.sent.length === 1, { timeout: 2_000 });
+  f.setQuiet(true);
+  f.instances.emit('subscription_changed', { targetId: 'x' });
+  // The tree goes busy inside the window with no event the runner evaluates on.
+  f.setQuiet(false);
+  await sleep(SETTLE_MS * 4);
+  assert.equal(f.settled(), false, 'the timer fired on a busy tree and did not complete the run');
+  f.setQuiet(true);
+  f.status({ status: 'idle' });
+  const result = await f.run;
+  assert.equal(result.reason, 'completed');
+});

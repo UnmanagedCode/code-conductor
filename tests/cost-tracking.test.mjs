@@ -952,3 +952,40 @@ test('GET /api/costs/summary returns aggregated data when rows exist', async () 
     await close();
   }
 });
+
+// flushCostWrites resolves only once every queued append has landed. The
+// pending write is real: costs.jsonl is a FIFO, so the append's open blocks
+// until a reader opens the other end.
+test('cost-tracking: flushCostWrites waits for a pending append and resolves once the row has landed', { skip: process.platform === 'win32' && 'no mkfifo' }, async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+  try {
+    const { initCostTracking, costsPath, flushCostWrites } = await import('../src/costTracking.ts');
+    await fs.mkdir(path.dirname(costsPath()), { recursive: true });
+    const { spawnSync } = await import('node:child_process');
+    assert.equal(spawnSync('mkfifo', [costsPath()]).status, 0, 'fixture check: the FIFO exists');
+    const emitter = new EventEmitter();
+    emitter.get = () => fakeInst({ sessionId: 'sess-fifo' });
+    initCostTracking(emitter);
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.5 }) });
+    let flushed = false;
+    const flush = flushCostWrites().then(() => { flushed = true; });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(flushed, false, 'the append is still blocked, so the flush has not resolved');
+    let data = '';
+    const { createReadStream } = await import('node:fs');
+    const reader = createReadStream(costsPath(), { encoding: 'utf8' });
+    reader.on('data', (c) => { data += c; });
+    await flush;
+    await new Promise((r) => (reader.readableEnded ? r() : reader.once('end', r)));
+    const rows = data.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].sessionId, 'sess-fifo');
+    assert.ok(Math.abs(rows[0].cost_usd - 0.5) < 1e-9);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
