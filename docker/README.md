@@ -192,6 +192,32 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 
 **Two of those the image cannot provide.** `/dev/fuse` needs the device passthrough (the same flag chains it — the entrypoint warns at boot if the `-f` is missing), and `fusectl` is a property of the **host kernel**. A green build can therefore still refuse at spawn time on a host whose kernel lacks fusectl support.
 
+## Headless runs
+
+One headless cc run ([docs/features.md](../docs/features.md) → Headless mode) in a throwaway container, beside a live `make up` service:
+
+```bash
+mkdir -p /abs/headless-root   # a projects root of its own (see below)
+make headless CC_HEADLESS_PROJECTS_DIR=/abs/headless-root PROMPT='summarise the repo'
+make headless CC_HEADLESS_PROJECTS_DIR=/abs/headless-root PROMPT_FILE=task.md MODE=plan
+some-command | make headless CC_HEADLESS_PROJECTS_DIR=/abs/headless-root PROMPT_FILE=-
+```
+
+It is `docker compose run --rm -T conductor --prompt …` (`docker/headless.sh`): cc's one JSON result object on stdout, every log line on stderr, the container removed when the run ends.
+
+| Variable | Meaning |
+|---|---|
+| `CC_HEADLESS_PROJECTS_DIR` | **Required.** Host projects root for the run, bound at `/workspaces/projects` in place of `CC_PROJECTS_DIR` (and given to `HOST_PROJECTS_DIR`). Must exist; refused (exit 2) when it **is**, sits **inside**, or **contains** `CC_PROJECTS_DIR`, compared by real path. Same entrypoint rules as the main one (writable by `CC_UID`/`CC_GID`, not inside a git tree). A fresh root has default settings, no plugins and no projects — carrying them over: [docs/architecture.md](../docs/architecture.md) → Provisioning a projects root. |
+| `PROMPT` / `PROMPT_FILE` | Exactly one (exit 2 otherwise). `PROMPT` reaches cc verbatim — make never expands a `$` in it. `PROMPT_FILE` is a host file, mounted read-only at `/run/cc-prompt`; `PROMPT_FILE=-` reads stdin. A relative path resolves against the directory make or the script runs from (`docker/` for `make -C docker`). |
+| `MODE` | `code` (default) or `plan`, passed through; cc validates it. |
+| `CC_HEADLESS_HOME` | Host `$HOME` for the run, bound at `/workspaces/cc-home`. Default `$CC_PROJECTS_DIR/.cc-home` — the main service's, so the run uses its claude login. **An install with a custom `CC_HOME_DIR` must set this.** The login must already exist there. |
+| `CC_HEADLESS_PORT` | Optional. Publishes the run's web UI on `${CC_BIND}:<port>` (stderr names the URL). Unset publishes nothing. |
+
+- **Exit codes.** `docker/headless.sh` exits with cc's exact code (the table in [docs/protocol.md](../docs/protocol.md) → Headless run result); `make headless` collapses every failure to make's own 2. Either way the JSON's `exitCode` carries cc's. Call the script directly when you need the code: it reads the same variables, with the prompt text as `CC_HEADLESS_PROMPT` instead of `PROMPT`, plus `CC_PROJECTS_DIR`, `CC_BIND`, `DOCKER_COMPOSE` and `COMPOSE_FILES` (default `-f compose.yaml`) from its environment.
+- **The web UI during the run.** stderr names `headless: UI at http://<container-ip>:8787` — reachable from a Linux docker host without publishing anything. `compose run` drops the service's `restart:` and publishes none of its ports unless `CC_HEADLESS_PORT` asks.
+- **Off in the run:** tailscale (`CC_WITH_TAILSCALE=0` — a second `tailscaled` on the shared `$HOME/.tailscale` would fight the main node) and the dependency install (`CC_SKIP_DEPS_SYNC=1`: the checkout is shared with the main service, so an incomplete `node_modules` is fatal — run `make up` once first). cc's own headless boot skips the web build too; it serves the existing `web/dist`.
+- **Caveats.** The container IP is reachable from anything on that docker network, and cc's API is unauthenticated. One run per projects root: a second on the same `CC_HEADLESS_PROJECTS_DIR` is refused (exit 7) while the first lives.
+
 ## Behavior notes
 
 - The container's dep repair runs `npm install --omit=dev` whenever `node_modules` does not satisfy `package.json` — a declared dependency missing or outside its range, a package a dependency needs missing, or a top-level package nothing declared reaches (a removed dependency) (`docker/deps-complete.mjs`, a wrapper over `dependencyDrift` in `src/depsDrift.ts`, the rule cc's own restart and self-update use). Dev dependencies count only when a dev-only one is on disk, so an `--omit=dev` install reads as complete. It may create `node_modules/` in the **host checkout**. It is gitignored; a worktree's broken `node_modules` symlink is removed (the symlink only) before reinstalling.
@@ -214,6 +240,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 | `FATAL (cc-entrypoint): … is inside a git repository` | `CC_PROJECTS_DIR` sits inside a git tree (`.git` present at some ancestor — file or directory). Move it outside the repo; cc refuses such store placements. |
 | `FATAL (cc-entrypoint): the projects root … is not writable` | uid mismatch — `chown` the dir to `CC_UID:CC_GID` (find them: `stat -c '%u %g' <dir>`). |
 | `another code-conductor server (pid <N>) holds the projects root …; refusing to start` (exit 7, restart loop) | Another cc — a second container or a host `npm start` — runs on the same `CC_PROJECTS_DIR`. Stop one of them. |
+| ``FATAL (cc-entrypoint): node_modules incomplete in the shared checkout — run `make up` once first`` | A `make headless` run never installs into the checkout the main service runs from. `make up` (or `npm install` in the checkout) once, then rerun. |
 | `WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket` | The `compose.docker.yaml` override isn't in the `-f` list — the Makefile chains it automatically from `CC_WITH_DOCKER=1`; raw compose must add `-f compose.docker.yaml` itself. |
 | `error gathering device information … "/dev/fuse"` at `make up`, or `FUSE_UNAVAILABLE: /dev/fuse is missing …` | The **host** has no `/dev/fuse` — `modprobe fuse` there. Nothing in the image or the `-f` chain can supply it. |
 | `FUSE_UNAVAILABLE: … fusectl …` | Host kernel; no package fixes it. `modprobe fuse` on the host where FUSE is a module, otherwise run that System elsewhere. |
