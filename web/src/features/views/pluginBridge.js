@@ -26,7 +26,8 @@
 //
 // Session width (not a message): cc's committed session-column width is
 // mirrored as `--cc-session-width` on this page's <html> — `<n>px`, or `none`
-// under Full — when the script runs and on every change. It is unset
+// under Full or while the page is docked in cc's side pane — when the script
+// runs and on every change. It is unset
 // standalone or under an unreadable parent, so `var(--cc-session-width,
 // <fallback>)` applies.
 //

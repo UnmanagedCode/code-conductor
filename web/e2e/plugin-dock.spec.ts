@@ -1,7 +1,7 @@
 import { test } from './harness/fixtures.ts';
 import {
   KEEP, PLAIN, collapseFlow, dragClampFlow, fullExitFlow, installProbes, keyboardFlow, narrowWindowFlow, noReloadFlow, persistFlow, phoneFlow, pluginLinkFlow, internalLinkFlow, sessionHandleCoexistFlow, sessionWidthFlow,
-  toastClearsToggleFlow, toggleGeometryFlow, barSwitcherFitsFlow,
+  toastClearsToggleFlow, toggleGeometryFlow, barSwitcherFitsFlow, dockWidthFlow,
 } from './plugin-dock.shared.ts';
 
 // Its own cc with two probe plugins, one keep-alive and one plain.
@@ -19,6 +19,7 @@ test('Collapse parks the split as a rail at the edge, widening the session, keep
 test('the bar\'s switcher never squeezes or covers its controls with a long name at the dock\'s floor, and the page holds one switcher in every mode', barSwitcherFitsFlow);
 test('a reload restores the split plugin at its width and the page\'s own route, checked in the switcher, off the URL', persistFlow);
 test('a session width holds beside the dock', sessionWidthFlow);
+test('a docked plugin page fills the side pane whatever the session width, and the full view follows the setting', dockWidthFlow);
 test('the session handles stay clear of the dock and sidebar handles and the scrollbar, and each grab moves only its own box', sessionHandleCoexistFlow);
 test('below md the plugin view is full-page whatever the remembered mode, with no toggle', phoneFlow);
 test('a toast sits below the strip and never covers its toggle or Close', toastClearsToggleFlow);

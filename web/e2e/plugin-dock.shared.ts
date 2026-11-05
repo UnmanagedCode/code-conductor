@@ -10,9 +10,9 @@
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { api, spawnSession } from './harness/api.ts';
-import { installProbePlugin, probeFrame, readProbe, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
+import { installProbePlugin, probeFrame, readProbe, readWidth, widthIs, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
-import { dragSessionHandle, dragToLimit, parkPointer, sessionHandle, setWidth } from './session-width.shared.ts';
+import { dragSessionHandle, dragToLimit, parkPointer, sessionHandle, setWidth, widthToggle } from './session-width.shared.ts';
 import { SESSION_WIDTH_GUTTER, SESSION_WIDTH_SNAPS } from '../src/app/sessionWidthScale.ts';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from '../src/features/views/dockLayout.ts';
 import { RESIZE_KEY_STEP } from '../src/lib/useResizableWidth.ts';
@@ -614,6 +614,46 @@ export async function sessionWidthFlow({ page, cc }: Args): Promise<void> {
   await dragToLimit(page);
   const limit = await leftOfColumn('Limit');
   expect(Math.abs(limit.width - ((await room()) - 2 * SESSION_WIDTH_GUTTER)), 'the limit leaves a gutter clear per side').toBeLessThanOrEqual(0.5);
+}
+
+export async function dockWidthFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: a page in the side pane (split or rail) carries --cc-session-width none whatever the setting, from its head's parse on; the full view carries the setting; each mode change and each setting change reaches the live page.
+  desktopOnly();
+  await onSession(page, cc, 'dock-width');
+  await page.evaluate((v) => localStorage.setItem('code-conductor:session-column', v), JSON.stringify({ width: 896, full: false }));
+  await page.reload();
+  await dockSplit(page, KEEP);
+  await widthIs(page, KEEP.id, 'none', 'docked under Resizable');
+
+  // A reload restores the split, so the page's head is parsed while docked.
+  await page.reload();
+  await expect(column(page), 'fixture check: split restored').toHaveAttribute('data-dock-mode', 'split');
+  await loaded(page, KEEP.id, 'reloaded docked');
+  expect((await readWidth(page, KEEP.id))!.atParse, 'none when its head was parsed in the side pane').toBe('none');
+  await widthIs(page, KEEP.id, 'none', 'reloaded docked');
+
+  await toggle(page, 'Expand to full view').click();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'full');
+  await widthIs(page, KEEP.id, '896px', 'expanded under Resizable');
+  await toggle(page, 'Dock to side').click();
+  await expectSplit(page, 'docked again');
+  await widthIs(page, KEEP.id, 'none', 'docked again');
+
+  await header(page).getByRole('button', { name: 'Collapse plugin dock', exact: true }).click();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'rail');
+  await widthIs(page, KEEP.id, 'none', 'in the rail');
+  await column(page).getByRole('button', { name: 'Expand plugin dock', exact: true }).click();
+  await expectSplit(page, 'out of the rail');
+  await widthIs(page, KEEP.id, 'none', 'out of the rail');
+
+  await widthToggle(page).click();
+  await expect(widthToggle(page), 'fixture check: Full on').toHaveAccessibleName('Session width: Full');
+  await widthIs(page, KEEP.id, 'none', 'docked under Full');
+  await toggle(page, 'Expand to full view').click();
+  await expect(column(page)).toHaveAttribute('data-dock-mode', 'full');
+  await widthIs(page, KEEP.id, 'none', 'expanded under Full');
+  await widthToggle(page).click();
+  await widthIs(page, KEEP.id, '896px', 'expanded, Full off');
 }
 
 export async function sessionHandleCoexistFlow({ page, cc }: Args): Promise<void> {
