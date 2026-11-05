@@ -15,6 +15,7 @@ import {
   api, bootServer, freshProjectsRoot, rmrf, registerLocalProject, waitFor,
 } from './helpers.mjs';
 import { createWorktree, getWorktree, worktreeLandingRecorded, clearWorktreeLandings } from '../src/worktrees.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { LANDING_RENEW_NUDGE } from '../src/mcp/handlers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -218,7 +219,7 @@ test('a delete clears the landing: a re-created same-name worktree is not nudged
 // returns the logged lines. The server and these helpers all spawn from process.env.
 async function gitCallsDuring(fn) {
   const real = (await new Promise((res, rej) => execFile('sh', ['-c', 'command -v git'], (e, o) => e ? rej(e) : res(o)))).trim();
-  const dir = await fs.mkdtemp(path.join(home, 'gitshim-'));
+  const dir = await mkdtemp('cc-gitshim-');
   const log = path.join(dir, 'calls.log');
   await fs.writeFile(path.join(dir, 'git'), `#!/bin/sh\necho "$*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
   const savedPath = process.env.PATH;
