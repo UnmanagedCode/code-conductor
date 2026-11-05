@@ -14,6 +14,7 @@ import {
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
+  getConductorIdleNudge, IDLE_NUDGE_MIN_MINUTES, IDLE_NUDGE_MAX_MINUTES,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend, defaultSpawnBinding, getRoleBinding, setRoleBinding,
@@ -404,6 +405,36 @@ test('POST /api/settings/models/prefs saves conductorCompactWindow without clobb
       assert.equal(g.body.conductorCompactWindow.value, 400);
     });
   }
+});
+
+// ── conductorIdleNudge ──────────────────────────────────────────────────
+// INVARIANT: the idle-renewal nudge is off at 55 min on a fresh install, and the
+// payload carries the server's bounds so the client never restates them.
+test('GET /api/settings/models includes conductorIdleNudge off at 55 min, with the server\'s bounds', async () => {
+  const r = await api(baseUrl, 'GET', '/api/settings/models');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.conductorIdleNudge,
+    { enabled: false, value: 55, min: IDLE_NUDGE_MIN_MINUTES, max: IDLE_NUDGE_MAX_MINUTES });
+});
+
+// INVARIANT: a save clamps to the bounds on write, persists, and leaves sibling prefs alone.
+// One test, no subtests: the root beforeEach gives every subtest a fresh root.
+test('POST /api/settings/models/prefs clamps and persists conductorIdleNudge without clobbering siblings', async () => {
+  await api(baseUrl, 'POST', '/api/settings/models/prefs', {
+    onOverage: 'stop', conductorCompactWindow: { enabled: true, value: 400 },
+  });
+  for (const [sent, want] of [[5, IDLE_NUDGE_MIN_MINUTES], [75, IDLE_NUDGE_MAX_MINUTES], [30, 30]]) {
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
+      conductorIdleNudge: { enabled: true, value: sent },
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual([r.body.conductorIdleNudge.enabled, r.body.conductorIdleNudge.value], [true, want], `${sent} → ${want}`);
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.deepEqual([g.body.conductorIdleNudge.enabled, g.body.conductorIdleNudge.value], [true, want], `${sent} → ${want} persisted`);
+    assert.equal(g.body.onOverage, 'stop');
+    assert.deepEqual(g.body.conductorCompactWindow, { enabled: true, value: 400 });
+  }
+  assert.deepEqual(getConductorIdleNudge(), { enabled: true, value: 30 });
 });
 
 // ── binding shape: no window key, per-binding or global ──────────────────

@@ -10,6 +10,7 @@
 // ancestors', and schedules one notification. Components memoize on `rev`.
 
 import { parseWakeCallback } from '@shared/wakeCallback';
+import { parseIdleRenewNudge } from '@shared/idleRenewNudge';
 import { parseRenewSeed } from '@shared/renewSeed';
 import { parseForwardFrame, splitForwardedMessages } from '@shared/forwardFrame';
 import { promptOrigin } from '@shared/promptOrigin';
@@ -73,7 +74,7 @@ export type AssistantNode = Base & {
   /** The open action group, while the machinery run continues. */
   openGroup: GroupNode | null;
 };
-export type UserVariant = 'plain' | 'wake' | 'renew' | 'forward' | 'answer';
+export type UserVariant = 'plain' | 'wake' | 'idle-nudge' | 'renew' | 'forward' | 'answer';
 export type UserNode = Base & {
   type: 'user';
   variant: UserVariant;
@@ -84,6 +85,7 @@ export type UserNode = Base & {
   transcribed: boolean;
   skill: { name: string; text: string } | null;
   wake: { summary: string; body: string | null } | null;
+  idleNudge: { summary: string; body: string } | null;
   renew: { text: string } | null;
   forward: { payload: string; count: number } | null;
   answer: { questions: any[]; answers: any[] | null } | null;
@@ -91,7 +93,7 @@ export type UserNode = Base & {
   userIndex: number | null;
   segmentId: string | null;
   origin: string;
-  /** The prompt's view, and its fold (skill, wake, renew or forward) with the fold body's view. */
+  /** The prompt's view, and its fold (skill, wake, idle nudge, renew or forward) with the fold body's view. */
   reader: { view: TextView; foldOpen: boolean; foldView: TextView };
 };
 /**
@@ -1106,23 +1108,25 @@ export class ConversationModel {
     const skill = ev.skillLoad ? { name: ev.skillLoad.skill ?? 'skill', text } : null;
     const wakeParsed = skill ? null : parseWakeCallback(text);
     const wake = wakeParsed ? { summary: wakeParsed.summary, body: wakeParsed.body ?? null } : null;
-    const renew = skill || wake ? null : parseRenewSeed(text) ? { text } : null;
-    const fwd = skill || wake || renew ? null : parseForwardFrame(text);
+    const idleNudge = skill || wake ? null : parseIdleRenewNudge(text);
+    const injectedFold = !!(skill || wake || idleNudge);
+    const renew = injectedFold ? null : parseRenewSeed(text) ? { text } : null;
+    const fwd = injectedFold || renew ? null : parseForwardFrame(text);
     const forward = fwd ? { payload: fwd.payload, count: splitForwardedMessages(fwd.payload).length } : null;
     if (fwd) text = fwd.instruction;
-    const qa = skill || wake || renew || forward ? null : ev.questionAnswer ?? null;
-    const transcribed = !skill && !wake && !renew && !forward && text.startsWith(TRANSCRIBED_PREFIX);
+    const qa = injectedFold || renew || forward ? null : ev.questionAnswer ?? null;
+    const transcribed = !injectedFold && !renew && !forward && text.startsWith(TRANSCRIBED_PREFIX);
     if (transcribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
     const answerQuestions = qa ? normalizeQuestions(qa.questions) : [];
     const answer = qa ? { questions: answerQuestions, answers: parseCanonicalUserQuestionAnswers(answerQuestions, text) } : null;
-    const hasUserText = !!answer || (!skill && !wake && !renew && text.length > 0);
-    const variant: UserVariant = wake ? 'wake' : renew ? 'renew' : forward ? 'forward' : answer ? 'answer' : 'plain';
+    const hasUserText = !!answer || (!injectedFold && !renew && text.length > 0);
+    const variant: UserVariant = wake ? 'wake' : idleNudge ? 'idle-nudge' : renew ? 'renew' : forward ? 'forward' : answer ? 'answer' : 'plain';
 
     const node = this.make<UserNode>({
       type: 'user', variant, rawText: evText,
-      displayText: !skill && !wake && !renew ? text : '',
-      transcribed, skill, wake, renew, forward, answer,
+      displayText: !injectedFold && !renew ? text : '',
+      transcribed, skill, wake, idleNudge, renew, forward, answer,
       attachments: Array.isArray(ev.attachments) ? ev.attachments : [],
       userIndex: Number.isInteger(ev.userIndex) ? ev.userIndex as number : null,
       segmentId: this.segmentId,

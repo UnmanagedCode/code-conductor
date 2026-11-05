@@ -414,6 +414,7 @@ export interface InstanceManagerLike {
   removeAllForProject(projectName: string): Promise<number>;
   reevaluateOverageResumes(): void;
   syncOveragePolicy(): void;
+  syncIdleRenewNudge(): void;
   forceUsageTick(): Promise<unknown>;
   // Restart surface (src/restart.ts / resumeRestart.ts) — the restart route
   // passes the manager to runRestart, whose plain path reads the

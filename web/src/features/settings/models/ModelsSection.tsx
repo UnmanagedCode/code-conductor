@@ -476,6 +476,25 @@ function ConductorSessionCard({ data }: { data: ModelsPayload }) {
   );
 }
 
+function ConductorIdleNudgeCard({ data }: { data: ModelsPayload }) {
+  const n = data.conductorIdleNudge;
+  const [value, setValue] = React.useState(n?.value ?? 0);
+  React.useEffect(() => { if (n) setValue(n.value); }, [n?.value]);
+  if (!n) return null;
+  const save = (enabled: boolean, v: number) => void savePrefs({ conductorIdleNudge: { enabled, value: v } }, 'Update', false);
+  return (
+    <SettingsCard
+      title="Idle renewal nudge"
+      description="Shortly before an idle top-level conductor's prompt cache expires, ask it once whether to renew its context, so your next message lands on a small fresh context instead of paying to re-cache a large one. Workers and section leads are never nudged. Off by default."
+      action={<Switch checked={n.enabled} aria-label="Idle renewal nudge" onCheckedChange={(on) => save(on, value)} />}
+    >
+      {n.enabled && (
+        <RangeField id="idle-nudge-minutes" label="Nudge after" min={n.min} max={n.max} step={1} value={value} format={(v) => `${v} min`} onInput={setValue} onCommit={(v) => save(true, v)} />
+      )}
+    </SettingsCard>
+  );
+}
+
 function DebugDefaultCard() {
   const [on, setOn] = React.useState<boolean | null>(null);
   React.useEffect(() => {
@@ -539,6 +558,7 @@ export function ModelsSection() {
           <CustomModelsCard data={data} />
           <div className="grid gap-6 @2xl:grid-cols-2">
             <ConductorSessionCard data={data} />
+            <ConductorIdleNudgeCard data={data} />
             <DebugDefaultCard />
             <TaskToolsCard />
           </div>

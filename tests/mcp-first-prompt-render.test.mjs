@@ -20,6 +20,7 @@ import { readablePrompt } from '../shared/promptPreview.ts';
 import { backgroundJobsNote } from '../src/backgroundJobs.ts';
 import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../shared/forwardFrame.ts';
 import { buildRenewSeed } from '../shared/renewSeed.ts';
+import { buildIdleRenewNudge } from '../shared/idleRenewNudge.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 const SID = '3f2a8c11-77b2-4c1e-9a2f-5d6e7f801234';
@@ -219,6 +220,16 @@ test('a renewed segment whose file opens with the CLI\'s /clear head renders as 
   await expectOnEverySurface(t, [...CLEAR_HEAD, userTurn(buildRenewSeed({ summary: 'Implementing the migration.' }))], {
     live: 'title —   first Context renewed',
     inactive: 'Context renewed',
+  });
+});
+
+// The stored head is cut at FIRST_PROMPT_CAP, which falls inside the nudge's
+// instruction body (past its body separator), so this pins that a cut head —
+// marker, summary, separator and part of the body — is still named.
+test('an idle-renewal nudge first prompt renders as its name, never the [[cc: marker', async t => {
+  await expectOnEverySurface(t, [userTurn(buildIdleRenewNudge(55))], {
+    live: 'title —   first ⏰ Idle-renewal nudge',
+    inactive: '⏰ Idle-renewal nudge',
   });
 });
 

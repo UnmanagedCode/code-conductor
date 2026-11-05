@@ -65,6 +65,7 @@ import {
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
+  getConductorIdleNudge, setConductorIdleNudge, IDLE_NUDGE_MIN_MINUTES, IDLE_NUDGE_MAX_MINUTES,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
@@ -1897,6 +1898,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     return { backends: getBackends(), claudeFamilies: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
+      // The bounds ride along so the client never restates them.
+      conductorIdleNudge: { ...getConductorIdleNudge(), min: IDLE_NUDGE_MIN_MINUTES, max: IDLE_NUDGE_MAX_MINUTES },
       tiers: CAPABILITY_TIERS,
       tierBackend,
       tierEffort,
@@ -1928,12 +1931,16 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { onOverage, overageThreshold, conductorCompactWindow,
+      const { onOverage, overageThreshold, conductorCompactWindow, conductorIdleNudge,
               tierEnabled, defaultSpawnTier, tierBackend, roleBackend,
               tierEffort, roleEffort } = body;
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
       if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold as ThresholdPatch);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow as ThresholdPatch);
+      if (conductorIdleNudge !== undefined) {
+        await setConductorIdleNudge(conductorIdleNudge as ThresholdPatch);
+        instances?.syncIdleRenewNudge();
+      }
       if (tierEnabled !== undefined) {
         if (!tierEnabled || typeof tierEnabled !== 'object' || !isKnownTier((tierEnabled as TierEnabledPatch).tier)) {
           return res.status(400).json({ error: 'tierEnabled.tier must be a known capability tier' });
