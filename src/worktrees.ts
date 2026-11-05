@@ -79,6 +79,11 @@ export interface WorktreeMeta {
   // through listWorktrees / getWorktree / requireWorktree: an instance's
   // `inst.worktree` is a snapshot taken at spawn and goes stale.
   locked?: true;
+  // Set once a merge of this worktree into its base succeeded. Absent means no
+  // landing is recorded — the canonical shape, never written `false`. Its
+  // writer is mergeWorktreeIntoParent (so REST and MCP merges both record it);
+  // its reader is worktreeWorkLanded.
+  landed?: true;
   createdAt: string;
 }
 
@@ -1191,6 +1196,16 @@ export async function getWorktreeMergeStatus(system: System, meta: WorktreeMeta)
   return parseAheadBehind(system, meta.parentPath, meta.baseBranch, meta.branch);
 }
 
+// True when a merge of this worktree is on record AND the branch has no commits
+// left ahead of its base — work committed after the landing is not "landed".
+// An unreadable comparison (ahead null) is false. Read it BEFORE removeWorktree
+// deletes the branch.
+export async function worktreeWorkLanded(projectName: string, meta: WorktreeMeta): Promise<boolean> {
+  if (meta.landed !== true) return false;
+  const status = await getWorktreeMergeStatus(await resolveSystem(projectName), meta);
+  return status.ahead === 0;
+}
+
 export interface UpstreamStatus extends MergeStatus {
   upstream: string | null;
 }
@@ -1431,6 +1446,13 @@ export async function mergeWorktreeIntoParent(
     };
   }
   const newHead = await runGit(system, meta.parentPath, ['rev-parse', 'HEAD']);
+  // The merge has landed whatever happens to the record, so a failed write is
+  // logged and never turns this result into a failure.
+  try {
+    await updateMeta(projectName, meta.worktreeName, m => ({ ...m, landed: true }));
+  } catch (err) {
+    console.warn(`[worktrees] could not record the landing of '${meta.worktreeName}' in '${projectName}':`, err);
+  }
   // 8. Fast-forward the worktree's own branch up to the merge commit. The
   //    worktree branch is one of that commit's two parents, so it's always
   //    an ancestor of the new HEAD — --ff-only can't fail on divergence.
