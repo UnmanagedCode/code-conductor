@@ -58,7 +58,7 @@ export function sessionWidthKey(s: SessionWidthState): string {
   return s.full ? 'full' : String(s.width);
 }
 
-/** The CSS value plugin pages see as `--cc-session-width`: the width in px, or `none` under Full. */
+/** The setting as a CSS width: the width in px, or `none` under Full. `startPluginSessionWidth` decides what plugin pages see as `--cc-session-width`. */
 export function sessionWidthCss(s: SessionWidthState): string {
   return s.full ? 'none' : `${s.width}px`;
 }

@@ -3,9 +3,9 @@
 // whose width is its mode — hidden, a split beside the transcript, or the whole
 // row — with its one mode toggle in the column's bar, the handle's clamps and
 // reset, a window too narrow for a split, and the one frame host never moving,
-// so no mode change reloads a page.
+// so no mode change reloads a page; and the session width each mode tells a page.
 import '@/test/browserHash';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
 
 vi.mock('@/app/controller', () => ({
@@ -25,6 +25,8 @@ import {
 } from './test/pluginHost';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
 import { DOCK_WIDTH_STORAGE_KEY, dockStore, readDockState } from './dock';
+import { startPluginSessionWidth } from './pluginSessionWidth';
+import { setSessionFull, setSessionWidth } from '@/app/sessionWidth';
 
 const ANCHOR = '#session=sess-1';
 /** The fixture width: not the dock's default. */
@@ -322,6 +324,98 @@ describe('a narrow window', () => {
     emitWidth(WIDE);
     await settle();
     expect(now()).toBe(W);
+  });
+});
+
+describe('the session width a plugin page is told', () => {
+  /** What cc publishes for the bridge to copy into the page as --cc-session-width. */
+  const told = () => document.documentElement.getAttribute('data-cc-session-width');
+  const mode = () => column()!.dataset.dockMode;
+  /** The setting: 896px Resizable, or Full. */
+  const setting = (full: boolean) => { setSessionWidth(896); setSessionFull(full); };
+
+  // The stores are module singletons; one publisher serves the whole file.
+  beforeAll(() => { startPluginSessionWidth(); });
+
+  it('docked in the side pane, a plugin is told none under Resizable', async () => {
+    // Invariant: the split pane never caps its page, so a docked page fills the pane.
+    setting(false);
+    await mountApp();
+    await dockSplit('alpha');
+    expect(mode(), 'fixture check: split').toBe('split');
+    expect(told()).toBe('none');
+  });
+
+  it('docked in the side pane, a plugin is told none under Full', async () => {
+    // Invariant: the docked value does not depend on the Full flag (the other half of the first test).
+    setting(true);
+    await mountApp();
+    await dockSplit('alpha');
+    expect(mode(), 'fixture check: split').toBe('split');
+    expect(told()).toBe('none');
+  });
+
+  it('in full view a plugin follows Resizable', async () => {
+    // Invariant: the full view publishes the committed width.
+    setting(false);
+    await mountApp();
+    await go('#plugin/alpha/');
+    expect(mode(), 'fixture check: full').toBe('full');
+    expect(told()).toBe('896px');
+  });
+
+  it('in full view a plugin follows Full', async () => {
+    // Invariant: the full view publishes none under Full.
+    setting(true);
+    await mountApp();
+    await go('#plugin/alpha/');
+    expect(mode(), 'fixture check: full').toBe('full');
+    expect(told()).toBe('none');
+  });
+
+  it('Expand to full view and Dock to side switch it live', async () => {
+    // Invariant: the column's own mode toggle republishes, with the same frame (no reload to pick it up).
+    setting(false);
+    await mountApp();
+    await dockSplit('alpha');
+    expect(told(), 'docked').toBe('none');
+    await pressColumn('Expand to full view');
+    expect(mode(), 'fixture check: expanded').toBe('full');
+    expect(told(), 'expanded').toBe('896px');
+    await pressColumn('Dock to side');
+    expect(mode(), 'fixture check: docked again').toBe('split');
+    expect(told(), 'docked again').toBe('none');
+  });
+
+  it('collapsed to the rail it stays none, and expanding the dock keeps none', async () => {
+    // Invariant: a page parked behind the rail is not resized, in either direction.
+    setting(false);
+    await mountApp();
+    await dockSplit('alpha');
+    await pressColumn('Collapse plugin dock');
+    expect(mode(), 'fixture check: rail').toBe('rail');
+    expect(told(), 'rail').toBe('none');
+    await pressColumn('Expand plugin dock');
+    expect(mode(), 'fixture check: split again').toBe('split');
+    expect(told(), 'split again').toBe('none');
+  });
+
+  it('a split too narrow to fit, shown full, follows the setting; widening docks it to none again', async () => {
+    // Invariant: a split shown over the session fills the whole row, so it counts as the full view.
+    setting(false);
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(WIDE);
+    await dockSplit('alpha');
+    expect(told(), 'docked').toBe('none');
+    emitWidth(DOCK_PANEL_MIN_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH - 1);
+    await settle();
+    expect(mode(), 'fixture check: shown full').toBe('full');
+    expect(told(), 'shown full').toBe('896px');
+    emitWidth(WIDE);
+    await settle();
+    expect(mode(), 'fixture check: split again').toBe('split');
+    expect(told(), 'split again').toBe('none');
   });
 });
 

@@ -8,7 +8,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
 import { spawnSession } from './harness/api.ts';
-import { installProbePlugin, probeFrame, readProbe, readTheme, readWidth, type FrameTheme, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
+import { installProbePlugin, probeFrame, readProbe, readTheme, readWidth, widthIs, type FrameTheme, type Probe, type ProbePlugin } from './harness/pluginProbe.ts';
 import { next } from './flows/ui.ts';
 import { widthToggle } from './session-width.shared.ts';
 import { sessionWidthCss } from '../src/app/sessionWidthScale.ts';
@@ -239,12 +239,9 @@ export async function themeFlow({ page }: Args): Promise<void> {
 // ── session width ────────────────────────────────────────────────────────
 
 const COLUMN_KEY = 'code-conductor:session-column';
-/** Polls until plugin `id`'s computed `--cc-session-width` is `want`. */
-const widthIs = (page: Page, id: string, want: string, what: string) => expect.poll(async () => (await readWidth(page, id).catch(() => null))?.computed ?? null,
-  { message: `${what}: ${id}'s --cc-session-width is ${want}` }).toBe(want);
 
 export async function widthFlow({ page }: Args): Promise<void> {
-  // Invariant: a plugin page carries the session width setting (px, or none under Full) on its <html> when its head is parsed, and follows every change live, shown or hidden.
+  // Invariant: a plugin page in the full view carries the session width setting (px, or none under Full) on its <html> when its head is parsed, and follows every change live, shown or hidden.
   test.skip(test.info().project.name !== 'desktop', 'the width control is a desktop-layout feature');
   const set = { width: 896, full: false };
   await next.open(page);

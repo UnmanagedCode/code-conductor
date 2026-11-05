@@ -42,7 +42,9 @@ Load both in the page's `<head>`:
 
 ## Follow the session width
 
-- **Cap the content width with `var(--cc-session-width, <fallback>)`.** Embedded, the bridge sets `--cc-session-width` on the page's `<html>` to cc's committed session-column width: `<n>px`, or `none` under Full.
+- **Cap the content width with `var(--cc-session-width, <fallback>)`.** Embedded, the bridge sets `--cc-session-width` on the page's `<html>` to cc's committed session-column width: `<n>px`, or `none` under Full **or while the page is in cc's side pane** (the dock's split, or its collapsed rail).
+- So a docked page fills the pane; only the full view caps it. The value changes live when the user docks or expands the page.
+- A hidden page keeps the value of where it was last shown: `none` if it was docked, else the setting, followed live.
 - It applies this when it runs, before first paint, and again on every change, including while the page is hidden. A handle drag updates the page on release.
 - Example: `max-width: var(--cc-session-width, 48rem)`.
 - **Never read cc's `localStorage`.** The property is the contract.

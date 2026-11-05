@@ -72,3 +72,7 @@ export async function readWidth(page: Page, id: string): Promise<FrameWidth | nu
     computed: getComputedStyle(document.documentElement).getPropertyValue('--cc-session-width').trim(),
   }));
 }
+
+/** Polls until plugin `id`'s computed `--cc-session-width` is `want`. */
+export const widthIs = (page: Page, id: string, want: string, what: string) => expect.poll(async () => (await readWidth(page, id).catch(() => null))?.computed ?? null,
+  { message: `${what}: ${id}'s --cc-session-width is ${want}` }).toBe(want);
