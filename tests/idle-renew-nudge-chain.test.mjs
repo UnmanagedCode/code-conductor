@@ -4,7 +4,9 @@
 // other turn counts, however it interleaves with a chain. A bare Instance with
 // a stub proc, driven through prompt()/clearContext() and _handleStdoutLine.
 // The unread (turn-mark) half is pinned end to end in idle-renew-nudge.test.mjs,
-// where the session has a store record.
+// where the session has a store record. Also the per-instance overage fact the
+// nudge's overage skip reads (`overageReportedNow`), derived from live
+// rate_limit_events.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -171,4 +173,29 @@ test('a chain turn that ends asking sets awaitingUser without bumping liveAsks',
   await real.prompt('status?');
   endTurn(real, 'Should I renew now?');
   assert.deepEqual([real.summary().awaitingUser, real.summary().liveAsks], ['question', 1]);
+});
+
+// ── the overage fact (`overageReportedNow`) ─────────────────────────────────
+
+const rateLimit = (info) => line({ type: 'system', subtype: 'rate_limit_event', uuid: `rl-${++msgN}`, rate_limit_info: info });
+const overageInfo = (resetsAt) => ({ status: 'rejected', rateLimitType: 'five_hour', overageStatus: 'allowed', isUsingOverage: true, resetsAt });
+
+// INVARIANT: an overage rate_limit_event holds the fact until its reset, a
+// non-overage event clears it, and one naming no reset holds it indefinitely.
+test('overageReportedNow follows the live rate_limit_events', () => {
+  const inst = makeInstance();
+  const resetSecs = 1_900_000_000;
+  const resetMs = resetSecs * 1000;
+  assert.equal(inst.overageReportedNow(resetMs - 1), false, 'premise: no event, no overage');
+
+  feed(inst, rateLimit(overageInfo(resetSecs)));
+  assert.equal(inst.overageReportedNow(resetMs - 1), true, 'before the reset');
+  assert.equal(inst.overageReportedNow(resetMs), false, 'at the reset');
+  assert.equal(inst.overageReportedNow(resetMs + 60_000), false, 'after the reset');
+
+  feed(inst, rateLimit({ status: 'allowed', rateLimitType: 'five_hour', isUsingOverage: false, resetsAt: resetSecs }));
+  assert.equal(inst.overageReportedNow(resetMs - 1), false, 'a non-overage event clears it');
+
+  feed(inst, rateLimit(overageInfo(undefined)));
+  assert.equal(inst.overageReportedNow(Number.MAX_SAFE_INTEGER), true, 'no reset named: holds indefinitely');
 });

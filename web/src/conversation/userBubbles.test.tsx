@@ -3,7 +3,7 @@ import { fireEvent, within } from '@testing-library/react';
 import { buildWakeStub, markPlainStub, WAKE_CALLBACK_MARKER } from '@shared/wakeCallback';
 import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '@shared/renewSeed';
 import { buildForwardFrame } from '@shared/forwardFrame';
-import { buildIdleRenewNudge, IDLE_NUDGE_MARKER, parseIdleRenewNudge } from '@shared/idleRenewNudge';
+import { buildIdleRenewNudge, IDLE_NUDGE_BODY_SEP, IDLE_NUDGE_MARKER } from '@shared/idleRenewNudge';
 import { ConversationModel, type UserNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 
@@ -129,11 +129,14 @@ describe('wake-callback bubbles', () => {
 
 describe('idle-renewal nudge bubbles', () => {
   const NUDGE = buildIdleRenewNudge(55);
-  const { summary, body } = parseIdleRenewNudge(NUDGE)!;
+  // Split by hand, not by the parser under test.
+  const sep = NUDGE.indexOf(IDLE_NUDGE_BODY_SEP);
+  const summary = NUDGE.slice(IDLE_NUDGE_MARKER.length, sep);
+  const body = NUDGE.slice(sep + IDLE_NUDGE_BODY_SEP.length);
 
   // Invariant: a nudge renders as one closed fold titled with its summary — no
   // user-text bubble, never the marker, origin synthetic — whose body is the
-  // exact instruction the model was sent.
+  // exact instruction the model was sent, from its first line to its last.
   it('folds the instruction under its summary; no user text, no marker, synthetic origin', async () => {
     const { bubble } = await echo(NUDGE);
     expect(bubble.getAttribute('data-variant')).toBe('idle-nudge');
@@ -147,7 +150,11 @@ describe('idle-renewal nudge bubbles', () => {
     expect(bubble.textContent).not.toContain(IDLE_NUDGE_MARKER);
     await expand(fold);
     fireEvent.click(within(fold as HTMLElement).getByRole('button', { name: 'Show raw text' }));
-    expect(fold.querySelector('[data-view="raw"]')!.textContent).toBe(body);
+    const raw = fold.querySelector('[data-view="raw"]')!.textContent!;
+    expect(raw).toBe(body);
+    expect(raw.startsWith('This turn was sent by CodeConductor, not the user.')).toBe(true);
+    expect(raw.endsWith('- **Otherwise**, end this turn now with no tool calls and no text.')).toBe(true);
+    expect(fold.querySelector('[data-fold-title]')!.textContent).toBe('Idle-renewal nudge: you have been idle 55 min; this session\'s prompt cache expires after 60 min of idleness.');
   });
 });
 

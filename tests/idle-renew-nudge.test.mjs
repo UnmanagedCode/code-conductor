@@ -236,6 +236,8 @@ test('a changed threshold applies to a running stretch', () => {
   lowered.setting.value = 20;
   lowered.ctl.tick();
   assert.equal(a.sent.length, 1, 'lowered below the elapsed time: fires');
+  assert.match(parseIdleRenewNudge(a.sent[0].text).summary, /idle 30 min/, 'names the elapsed minutes, not the threshold');
+  assert.doesNotMatch(a.sent[0].text, /idle 20 min/);
 
   const raised = rig({ value: 20 });
   const b = raised.add('c1');
@@ -258,6 +260,23 @@ test('no nudge while suspended; it fires after resume', () => {
   assert.equal(inst.sent.length, 0);
   r.ctl.resume();
   assert.equal(r.timers.live().length, 1, 'resume restarts it');
+  r.ctl.tick();
+  assert.equal(inst.sent.length, 1);
+});
+
+// INVARIANT: a relaunch (no proc, exited, relaunching) keeps an unspent stretch,
+// which fires once the relaunch lands.
+test('a stretch survives a relaunch window and fires after it completes', () => {
+  const r = rig();
+  const inst = r.add('c1');
+  r.turnEnd('c1');
+  r.advance(THRESHOLD * MIN);
+  Object.assign(inst, { proc: null, status: 'exited', relaunching: true });
+  r.ctl.tick();
+  assert.equal(inst.sent.length, 0, 'no send mid-relaunch');
+  assert.equal(r.timers.live().length, 1, 'the stretch is still unspent, so the sweep keeps running');
+  Object.assign(inst, { proc: {}, status: 'idle', relaunching: false });
+  r.advance(MIN);
   r.ctl.tick();
   assert.equal(inst.sent.length, 1);
 });

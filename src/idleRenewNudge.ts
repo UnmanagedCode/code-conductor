@@ -95,7 +95,12 @@ export class IdleRenewNudgeController {
     for (const [id, s] of this.#stretches) {
       if (s.spent || now - s.since < thresholdMs) continue;
       const inst = this.#deps.manager.byId.get(id);
-      if (!inst || !inst.proc || isDeadStatus(inst.status)) { this.#stretches.delete(id); continue; }
+      if (!inst) { this.#stretches.delete(id); continue; }
+      // Before the drop: a relaunch (model switch, crash respawn) passes through
+      // no proc and a dead status on the same Instance, and the stretch it keeps
+      // is still owed its nudge once the relaunch lands.
+      if (inst.relaunching) continue;
+      if (!inst.proc || isDeadStatus(inst.status)) { this.#stretches.delete(id); continue; }
       // Overage before the busy check: a queued overage message also reads as
       // busy (renewalDeferredBy), but it means the cache is already cold.
       if (this.#inOverage(inst, now)) { s.spent = true; continue; }

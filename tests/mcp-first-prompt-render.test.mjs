@@ -223,8 +223,9 @@ test('a renewed segment whose file opens with the CLI\'s /clear head renders as 
   });
 });
 
-// The stored head is cut at FIRST_PROMPT_CAP, before the nudge's body
-// separator, so this also pins that a cut head is still named.
+// The stored head is cut at FIRST_PROMPT_CAP, which falls inside the nudge's
+// instruction body (past its body separator), so this pins that a cut head —
+// marker, summary, separator and part of the body — is still named.
 test('an idle-renewal nudge first prompt renders as its name, never the [[cc: marker', async t => {
   await expectOnEverySurface(t, [userTurn(buildIdleRenewNudge(55))], {
     live: 'title —   first ⏰ Idle-renewal nudge',
