@@ -451,6 +451,44 @@ describe('Models → Conductor session', () => {
   });
 });
 
+describe('Models → Idle renewal nudge', () => {
+  const sw = () => screen.getByRole('switch', { name: 'Idle renewal nudge' });
+  const slider = () => screen.queryByLabelText('Nudge after') as HTMLInputElement | null;
+  const withNudge = (n: { enabled: boolean; value: number }): ModelsPayload => ({ ...PICK, conductorIdleNudge: { ...n, min: 12, max: 48 } });
+
+  // Invariant: off by default with no slider; switching on saves the stored minutes, and the slider's bounds are the payload's, not the client's.
+  it('starts off with no slider; switching on saves the stored minutes and shows the slider at the payload bounds', async () => {
+    const calls = mockFetch({
+      'GET /api/settings/spawn': () => ({}),
+      'POST /api/settings/models/prefs': (c) => withNudge(c.body.conductorIdleNudge),
+    });
+    show(withNudge({ enabled: false, value: 40 }));
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    expect(slider()).toBeNull();
+    fireEvent.click(sw());
+    await waitFor(() => expect(slider()).not.toBeNull());
+    expect(prefsBodies(calls)).toEqual([{ conductorIdleNudge: { enabled: true, value: 40 } }]);
+    const s = slider()!;
+    expect([s.value, s.min, s.max]).toEqual(['40', '12', '48']);
+  });
+
+  // Invariant: committing the slider saves its value with the nudge still enabled; switching off saves enabled false.
+  it('committing the slider saves the new minutes; switching off saves it disabled and hides the slider', async () => {
+    const calls = mockFetch({
+      'GET /api/settings/spawn': () => ({}),
+      'POST /api/settings/models/prefs': (c) => withNudge(c.body.conductorIdleNudge),
+    });
+    show(withNudge({ enabled: true, value: 40 }));
+    fireEvent.change(slider()!, { target: { value: '30' } });
+    fireEvent.pointerUp(slider()!);
+    await waitFor(() => expect(prefsBodies(calls)).toHaveLength(1));
+    expect(prefsBodies(calls)[0]).toEqual({ conductorIdleNudge: { enabled: true, value: 30 } });
+    fireEvent.click(sw());
+    await waitFor(() => expect(slider()).toBeNull());
+    expect(prefsBodies(calls)[1]).toEqual({ conductorIdleNudge: { enabled: false, value: 30 } });
+  });
+});
+
 describe('Models → page actions', () => {
   // Invariant: the Cost dashboard has one entry point (the sidebar ≡ menu); the Models page carries no button to it.
   it('the Models page has no Cost dashboard button', () => {

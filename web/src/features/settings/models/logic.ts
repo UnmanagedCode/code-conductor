@@ -21,6 +21,8 @@ export type ModelsPayload = {
   onOverage?: 'none' | 'stop' | 'stop-resume';
   overageThreshold?: { enabled: boolean; value: number };
   conductorCompactWindow?: { enabled: boolean; value: number };
+  // The bounds are the server's (src/appSettings.ts).
+  conductorIdleNudge?: { enabled: boolean; value: number; min: number; max: number };
   [k: string]: unknown;
 };
 

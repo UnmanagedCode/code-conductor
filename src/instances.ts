@@ -80,6 +80,7 @@ import {
 import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
 import { applySessionTitle, forkTitle } from './sessionTitles.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
+import { IdleRenewNudgeController, type NudgeTimers } from './idleRenewNudge.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance, materializeCurrentConduct } from './conduct.ts';
 import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // The DEFAULT is imported rather than restated: a second copy of the level this
@@ -90,7 +91,7 @@ import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // applied at the ingress boundaries — the spawn route and the WS toggle — not here.
 import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbooks.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getTaskToolsEnabled, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getConductorIdleNudge, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getTaskToolsEnabled, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { ConductorReadNudge, readNudgeEvent } from './conductorReadNudge.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
@@ -110,6 +111,7 @@ import { CacheEstimator } from './cacheEstimate.ts';
 import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from '../shared/planApproval.ts';
 import { firstPromptHead, sessionLabel } from '../shared/promptPreview.ts';
+import { parseRenewSeed } from '../shared/renewSeed.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope, measureSegmentEchoOffset, type SeqEvent } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.ts';
@@ -785,6 +787,24 @@ export class Instance extends EventEmitter implements InstanceLike {
   //   cleared, handoff summary lost, conductor hearing only heartbeats. Which is
   //   exactly the outcome the interlock exists to prevent.
   _renewing: boolean;
+  // Idle-renewal nudge chain (src/idleRenewNudge.ts). A chain turn is the
+  // nudge itself, or the `/clear` and reseed of a renewal a chain turn armed;
+  // its end bumps no attention counter (liveTurnEnds, lastTurnError, unread,
+  // liveAsks) while awaitingUser state is still tracked. Every turn start
+  // defaults to real (_setStatus); only prompt({idleNudge}), clearContext() and a
+  // reseed under the latch mark one, and any real prompt() clears both flags.
+  //   `_turnNudgeChain`        — the current turn is a chain turn.
+  //   `_lastTurnEndNudgeChain` — that flag, snapshotted at the last turn_end.
+  //   `_renewalNudgeChain`     — the pending renewal was armed by a chain turn,
+  //                              latched at each turn_end while renewalPending.
+  _turnNudgeChain: boolean;
+  _lastTurnEndNudgeChain: boolean;
+  _renewalNudgeChain: boolean;
+  // Epoch ms until which the last live rate_limit_event reported overage use
+  // (+Infinity when it named no reset; 0 once one reports none). The only
+  // server-side record of overage under `onOverage: 'none'`, read by the
+  // idle-renewal nudge, which must not send into an overage-TTL cache.
+  _overageReportedUntilMs: number;
   // TRUE while this instance is between an old proc (killed, or already dead)
   // and the confirmed launch() that replaces it. Opened by the relaunch window
   // (_beginRelaunch: rewind, prune, restart model switch) and by
@@ -1004,6 +1024,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._lineageError = null;
     this._rotation = null;
     this._renewing = false;
+    this._turnNudgeChain = false;
+    this._lastTurnEndNudgeChain = false;
+    this._renewalNudgeChain = false;
+    this._overageReportedUntilMs = 0;
     this._relaunching = false;
     this.lastRotatedAt = null;
     this.rotationReason = null;
@@ -1762,6 +1786,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // prompt-initiated (prompt() → _setStatus) and unprompted (message_start
     // flips idle→turn) turns.
     if (next === 'turn') {
+      // Every turn starts real; prompt() and clearContext() mark a nudge-chain
+      // turn after this transition (see `_turnNudgeChain`).
+      this._turnNudgeChain = false;
       this._modelSwitchFailure = null;
       this._turnFirstReqCacheRead = null;
       this._turnFirstReqCacheCreation = null;
@@ -1893,7 +1920,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (!replayed && !this.conducted) {
       for (const fact of this._liveAsk.feed(wrapped)) {
         const next = reduceAsk(this._awaitingUser, fact);
-        if (next && !this._awaitingUser) this.liveAsks += 1;
+        // A nudge-chain re-ask keeps its state but bumps no counter.
+        if (next && !this._awaitingUser && !this._turnNudgeChain) this.liveAsks += 1;
         this._setAwaitingUser(next);
       }
     }
@@ -3031,15 +3059,20 @@ export class Instance extends EventEmitter implements InstanceLike {
         // cross-turn comparison. A turn with no requests leaves P unchanged.
         if (this._turnLastReqPrefix !== null) this._prevTurnPrefix = this._turnLastReqPrefix;
         this.lastResponseAt = Date.now();
-        // A turn a commanded stop interrupted is not a turn finishing.
-        if (!this._stopInterruptedTurn) {
+        // The turn whose end fires a renewal's `/clear`, and that `/clear`'s own
+        // turn, hand their origin to the next turn of the renewal.
+        if (this.renewalPending) this._renewalNudgeChain = this._turnNudgeChain;
+        this._lastTurnEndNudgeChain = this._turnNudgeChain;
+        // A turn a commanded stop interrupted is not a turn finishing, and a
+        // nudge-chain turn is not one the user asked for.
+        if (!this._stopInterruptedTurn && !this._turnNudgeChain) {
           this.liveTurnEnds += 1;
           this.lastTurnError = !!ev.isError;
         }
         // Every real turn end counts toward unread, whoever started the turn.
         // Tracked so a read after this turn sees the new count.
         const sid = this.sessionId;
-        if (sid) {
+        if (sid && !this._turnNudgeChain) {
           trackLineageWrite(recordTurnEnd(sid).then(m => this.setTurnMarks(m), (e) => {
             console.error(`instances: recordTurnEnd ${sid} failed: ${(e as Error).message}`);
           }));
@@ -3161,6 +3194,12 @@ export class Instance extends EventEmitter implements InstanceLike {
       // throttles re-emits within a run; it's reset at spawn() and by the
       // resume controller on cancel/skip. The trip fires on the always-on
       // `isUsingOverage` hard flag OR the optional usage threshold (any window).
+      if (ev.kind === 'system' && ev.subtype === 'rate_limit_event') {
+        const info = (ev.data as { rate_limit_info?: unknown } | null | undefined)?.rate_limit_info;
+        const resetSecs = parseResetEpochSecs(info) ?? parseResetEpochSecs(ev.data);
+        this._overageReportedUntilMs = !isOverageEvent(ev.data) ? 0
+          : resetSecs === null ? Number.POSITIVE_INFINITY : resetSecs * 1000;
+      }
       if (ev.kind === 'system' && ev.subtype === 'rate_limit_event'
           && !this._overageHandled && this._isOverageTrip(ev.data)) {
         this._overageHandled = true;
@@ -3385,7 +3424,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // conductor (an MCP send). Recorded only on a CONDUCTED worker, as a trailing
   // marker block on the line and on the echo (src/promptAuthor.ts); omitted for a
   // server- or CLI-injected prompt, which has no author.
-  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote, author }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor } = {}): Promise<void> {
+  // `idleNudge` marks the turn as the idle-renewal nudge (see `_turnNudgeChain`).
+  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote, author, idleNudge = false }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor; idleNudge?: boolean } = {}): Promise<void> {
     // A rewind/prune is rewriting this session's jsonl. The `!this.proc`
     // check below already rejects for most of that window (the subprocess is
     // killed first), but not for the sliver between the caller's idle check and
@@ -3532,6 +3572,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // docs/architecture.md.
     const note = midTurnNote ?? ((annotateIfMidTurn && this.status === 'turn') ? MID_TURN_NOTE : null);
     if (note) content.unshift({ type: 'text', text: note });
+    // A reseed continues a nudge chain only under the latch; anything else
+    // sent is real and breaks the chain.
+    const chain = idleNudge || (this._renewalNudgeChain && parseRenewSeed(safeText) !== null);
+    if (!chain) this._renewalNudgeChain = false;
+    const wasTurn = this.status === 'turn';
     this._sendRaw({
       type: 'user',
       message: { role: 'user', content },
@@ -3550,6 +3595,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // which is why this clear is not redundant with it.
     this._turnForceAborted = false;
     this._setStatus('turn');
+    // A real message steered into a chain turn makes it real.
+    this._turnNudgeChain = wasTurn ? (this._turnNudgeChain && chain) : chain;
   }
 
   // Drive a server-managed `/clear` on this session: send the slash command on
@@ -3569,6 +3616,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       parent_tool_use_id: null,
     });
     this._setStatus('turn');
+    this._turnNudgeChain = this._renewalNudgeChain;
   }
 
   // True while a rotation is in flight. Read by IdleSubscriptionHub's defer gate
@@ -3604,7 +3652,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Open / close the renewal window. Separate from beginRotation because the
   // reseed has to be inside it and the hub's defer has to be outside it.
   beginRenewal(): void { this._renewing = true; }
-  endRenewal(): void { this._renewing = false; }
+  endRenewal(): void { this._renewing = false; this._renewalNudgeChain = false; }
+
+  // Whether the last turn to end was a nudge-chain turn (see `_turnNudgeChain`).
+  get lastTurnEndWasNudgeChain(): boolean { return this._lastTurnEndNudgeChain; }
+
+  // Whether the last live rate_limit_event put this session in overage at `now`.
+  overageReportedNow(now: number): boolean { return now < this._overageReportedUntilMs; }
 
   // Refuse a destructive rewrite while ANY context rotation is in flight here.
   // Reads the UNION of the two flags — see the `_renewing` field declaration for
@@ -5049,6 +5103,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   pristine: PristineTracker;
   pristineTimers: PristineTimers;
   pristineGraceMs: number;
+  // The idle-renewal nudge's clock and sweep timers (src/idleRenewNudge.ts),
+  // read at use time so a test can swap them on a live manager.
+  idleNudgeNow: () => number;
+  idleNudgeTimers: NudgeTimers;
   _resuming: Map<string, Promise<Instance>>;
   // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
   // whatever string the caller passed, and normalizing it to the public id means an
@@ -5073,6 +5131,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _idleHub: IdleSubscriptionHub;
   _overageResume: OverageResumeController;
   _sessionRenew: SessionRenewController;
+  _idleRenewNudge: IdleRenewNudgeController;
   _usageMonitor: UsageOverageMonitor;
   _overageActive: boolean;
   _overageResetsAt: number | null;
@@ -5141,6 +5200,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // handoff summary. Keyed by instanceId so it tracks the caller across the
     // backing-id rotation `/clear` performs. See src/sessionRenew.ts.
     this._sessionRenew = new SessionRenewController(this);
+    // The idle-renewal nudge (opt-in): one turn per idle stretch asking a
+    // top-level conductor to renew before its prompt cache expires.
+    this.idleNudgeNow = () => Date.now();
+    this.idleNudgeTimers = {
+      setInterval: (fn, ms) => setInterval(fn, ms),
+      clearInterval: (h) => clearInterval(h as NodeJS.Timeout),
+    };
+    this._idleRenewNudge = new IdleRenewNudgeController({
+      manager: this,
+      now: () => this.idleNudgeNow(),
+      timers: () => this.idleNudgeTimers,
+      setting: getConductorIdleNudge,
+    });
     // Server-side usage poller: a second, equal-footing source for the overage
     // auto-stop. The stream `rate_limit_event` only reports near Anthropic's own
     // ~90% threshold, so a LOW configured threshold (e.g. 25%) is invisible to
@@ -5155,6 +5227,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // an armed renewal.
     this.on('event', (e: { id: string; ev: UiEvent | null; replayed?: boolean }) => { if (!e.replayed) this._idleHub.onEvent(e); });
     this.on('event', (e: { id: string; ev: UiEvent | null; replayed?: boolean }) => { if (!e.replayed) this._sessionRenew.onEvent(e); });
+    this.on('event', (e: { id: string; ev: UiEvent | null; replayed?: boolean }) => { if (!e.replayed) this._idleRenewNudge.onEvent(e); });
     // Global overage auto-stop state. The decision moved off the per-Instance
     // handler (which can't reach the idle-wake graph) up to here:
     // `_overageActive` is a one-shot guard held from the first trip until the
@@ -5196,8 +5269,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Stop every wake delivery — the resume-restart drain's, so no session it
   // winds down starts another turn on the way out — until resumeWakes(), which
   // an aborted restart calls (abortDrain, src/resumeRestart.ts).
-  suspendWakes(): void { this._idleHub.suspend(); }
-  resumeWakes(): void { this._idleHub.resume(); }
+  suspendWakes(): void { this._idleHub.suspend(); this._idleRenewNudge.suspend(); }
+  resumeWakes(): void { this._idleHub.resume(); this._idleRenewNudge.resume(); }
+  // Settings → Models saved the idle-renewal nudge: start or stop its sweep.
+  syncIdleRenewNudge(): void { this._idleRenewNudge.sync(); }
   // Sibling to _idleSubscriberSnapshot, but caller-indexed and sessionId-shaped
   // — which targets THIS instanceId OWNS, i.e. whose next turn will wake it.
   // Used by the renewal state block (src/sessionRenew.ts) to enumerate the
@@ -6445,6 +6520,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         this._cancelAutoResume(inst.id);
         this.byId.delete(id);
         this._purgeIdleFor(id);
+        this._idleRenewNudge.purge(id);
         this.pristine.forget(id);
         this.emit('list_changed');
       }
@@ -7143,6 +7219,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);
     this._sessionRenew.purge(id);
+    this._idleRenewNudge.purge(id);
     this.pristine.forget(id);
     this.emit('list_changed');
   }
@@ -7169,6 +7246,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       this.byId.delete(i.id);
       this._cancelAutoResume(i.id);
       this._purgeIdleFor(i.id, { removing });
+      this._idleRenewNudge.purge(i.id);
     }));
     if (victims.length > 0) this.emit('list_changed');
     return victims.length;
@@ -7178,6 +7256,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
     this._usageMonitor.stop();
     this._overageResume.clearAll();
+    this._idleRenewNudge.clearAll();
     const all = [...this.byId.values()];
     this.byId.clear();
     for (const i of all) this.pristine.forget(i.id);
@@ -7286,6 +7365,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // preserving the transcript for `--resume` on boot.
   shutdownForResumeSync(): void {
     this._usageMonitor.stop();
+    this._idleRenewNudge.clearAll();
     const live: Instance[] = [];
     for (const inst of this.byId.values()) {
       if (!inst.proc) continue;

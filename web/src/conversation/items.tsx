@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
+  AlarmClockIcon, ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
   CodeXmlIcon, FileTextIcon, GitForkIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
   RotateCcwIcon, ShrinkIcon, TriangleAlertIcon, TypeIcon,
 } from 'lucide-react';
@@ -265,6 +265,11 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
       {node.wake && (node.wake.body
         ? <Folded kind="wake" multiline icon={<BellIcon className="size-4" />} title={node.wake.summary} {...fold}>{() => <FoldedBody text={node.wake!.body!} render={() => <WakeBody body={node.wake!.body!} />} {...body} />}</Folded>
         : <div className="flex items-start gap-2 rounded-xl border bg-card px-3 py-2 text-sm whitespace-pre-line wrap-anywhere text-muted-foreground" data-wake-plain><BellIcon className="mt-0.5 size-4 shrink-0" />{node.wake.summary}</div>)}
+      {node.idleNudge && (
+        <Folded kind="idle-nudge" multiline icon={<AlarmClockIcon className="size-4" />} title={node.idleNudge.summary} {...fold}>
+          {() => <FoldedBody text={node.idleNudge!.body} {...body} />}
+        </Folded>
+      )}
       {node.renew && (
         <Folded kind="renew" icon={<RecycleIcon className="size-4" />} title="Context renewed · handoff summary" tone="info" {...fold}>
           {() => <FoldedBody text={node.renew!.text} render={() => <RenewBody text={node.renew!.text} />} {...body} />}
@@ -277,10 +282,10 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
       )}
     </>
   );
-  const injected = node.variant === 'wake' || node.variant === 'renew' || !!node.skill;
+  const injected = node.variant === 'wake' || node.variant === 'idle-nudge' || node.variant === 'renew' || !!node.skill;
   return (
     <div className="group/user flex flex-col gap-1.5" data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
-      {(node.skill || node.wake || node.renew || node.forward) && <div className="space-y-2" data-user-folds>{folded}</div>}
+      {(node.skill || node.wake || node.idleNudge || node.renew || node.forward) && <div className="space-y-2" data-user-folds>{folded}</div>}
       {node.answer ? (
         <div className={cn(USER_BUBBLE, 'bg-info/8 border-r-info/60')}>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-info" data-answer-head>

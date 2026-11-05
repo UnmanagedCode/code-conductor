@@ -1,5 +1,5 @@
 // A session's first prompt as it is stored and as its label shows it. A prompt
-// the server or the CLI wrote — a wake-callback stub, a `send_prompt({forward})`
+// the server or the CLI wrote — a wake-callback stub, an idle-renewal nudge, a `send_prompt({forward})`
 // frame, a `renew_session` seed, a local command's head records — is rendered
 // by name (a forward by its instruction's first line) rather than by its raw
 // marker, frame or tag text; a person's prompt is the text as is. Also the
@@ -12,6 +12,7 @@
 // DOM-free: the server imports it too.
 
 import { parseWakeCallback } from './wakeCallback.ts';
+import { IDLE_NUDGE_NAME, parseIdleRenewNudge } from './idleRenewNudge.ts';
 import { FORWARD_FRAME_FOOTER, FORWARD_FRAME_HEADER, parseForwardFrame } from './forwardFrame.ts';
 import { RENEW_SEED_PREAMBLE } from './renewSeed.ts';
 
@@ -63,6 +64,7 @@ export function readablePrompt(firstPrompt: unknown): string {
   const text = typeof firstPrompt === 'string' ? firstPrompt : '';
   const wake = parseWakeCallback(text);
   if (wake) return `Wake: ${wake.summary}`;
+  if (parseIdleRenewNudge(text)) return IDLE_NUDGE_NAME;
   if (text.startsWith(FORWARD_TAIL)) return firstLine(text.slice(FORWARD_TAIL.length)) || FORWARD_NAME;
   if (text.startsWith(FORWARD_LEAD)) return FORWARD_NAME;
   if (text.startsWith(RENEW_LEAD) || text.startsWith(LOCAL_COMMAND_CAVEAT)) return 'Context renewed';

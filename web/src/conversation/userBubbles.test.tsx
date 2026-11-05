@@ -3,6 +3,7 @@ import { fireEvent, within } from '@testing-library/react';
 import { buildWakeStub, markPlainStub, WAKE_CALLBACK_MARKER } from '@shared/wakeCallback';
 import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '@shared/renewSeed';
 import { buildForwardFrame } from '@shared/forwardFrame';
+import { buildIdleRenewNudge, IDLE_NUDGE_MARKER, parseIdleRenewNudge } from '@shared/idleRenewNudge';
 import { ConversationModel, type UserNode } from './model';
 import { flush, noActions, renderModel } from './renderModel';
 
@@ -123,6 +124,30 @@ describe('wake-callback bubbles', () => {
     fireEvent.click(within(fold as HTMLElement).getByRole('button', { name: 'Copy text' }));
     await flush();
     expect(copied).toEqual([PAYLOAD]);
+  });
+});
+
+describe('idle-renewal nudge bubbles', () => {
+  const NUDGE = buildIdleRenewNudge(55);
+  const { summary, body } = parseIdleRenewNudge(NUDGE)!;
+
+  // Invariant: a nudge renders as one closed fold titled with its summary — no
+  // user-text bubble, never the marker, origin synthetic — whose body is the
+  // exact instruction the model was sent.
+  it('folds the instruction under its summary; no user text, no marker, synthetic origin', async () => {
+    const { bubble } = await echo(NUDGE);
+    expect(bubble.getAttribute('data-variant')).toBe('idle-nudge');
+    expect(bubble.getAttribute('data-prompt-origin')).toBe('synthetic');
+    const folds = bubble.querySelectorAll('[data-fold]');
+    expect(folds).toHaveLength(1);
+    const fold = folds[0];
+    expect(fold.getAttribute('data-state')).toBe('closed');
+    expect(fold.querySelector('[data-fold-title]')!.textContent).toBe(summary);
+    expect(bubble.querySelector('[data-user-text]')).toBeNull();
+    expect(bubble.textContent).not.toContain(IDLE_NUDGE_MARKER);
+    await expand(fold);
+    fireEvent.click(within(fold as HTMLElement).getByRole('button', { name: 'Show raw text' }));
+    expect(fold.querySelector('[data-view="raw"]')!.textContent).toBe(body);
   });
 });
 

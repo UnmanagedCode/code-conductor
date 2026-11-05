@@ -132,7 +132,7 @@ export function buildRenewRequest({ directive }: { directive?: string | null } =
 // background work — so reaching this refusal means it asked without waiting for the
 // wake, and the honest answer is to wait for it. A subset copy of this predicate in
 // either place is the drift the extraction prevents.
-export function renewalDeferredBy(inst: InstanceLike): 'overage-queue' | 'subagents' | 'task-notification' | null {
+export function renewalDeferredBy(inst: Pick<InstanceLike, '_overageQueue' | 'activeAgentTaskCount' | 'taskNotificationPending'>): 'overage-queue' | 'subagents' | 'task-notification' | null {
   if ((inst._overageQueue?.length ?? 0) > 0) return 'overage-queue';
   if (inst.activeAgentTaskCount > 0) return 'subagents';
   if (inst.taskNotificationPending) return 'task-notification';

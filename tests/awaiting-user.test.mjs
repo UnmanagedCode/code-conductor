@@ -16,6 +16,7 @@ import {
   IDENTITY_SUMMARY, LiveAskFacts, askFactsOfEvent,
 } from '../src/awaitingUser.ts';
 import { buildWakeStub, markPlainStub } from '../shared/wakeCallback.ts';
+import { buildIdleRenewNudge } from '../shared/idleRenewNudge.ts';
 import { buildRenewSeed } from '../shared/renewSeed.ts';
 import { formatUserQuestionAnswers } from '../shared/userQuestionAnswers.ts';
 import { buildRenewRequest } from '../src/sessionRenew.ts';
@@ -65,6 +66,7 @@ test('classifyUserTurn: the output of every injected-turn builder classifies inj
   const cases = {
     'wake stub': buildWakeStub({ targetSessionId: 'abcd1234', payloadText: 'worker output' }),
     'plain wake stub (heartbeat / stale / interrupted)': markPlainStub('session abcd1234 did NOT finish'),
+    'idle-renewal nudge': buildIdleRenewNudge(55),
     'renew request': buildRenewRequest(),
     'renew request with a directive': buildRenewRequest({ directive: 'keep the roster short' }),
     'renew reseed': buildRenewSeed({ summary: '## Live work roster\n- none', stateBlock: 'state' }),

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { promptOrigin, isPinEligible, isInjectedUserTurn } from '../shared/promptOrigin.ts';
 import { classifyUserTurn } from '../src/awaitingUser.ts';
 import { buildWakeStub, markPlainStub } from '../shared/wakeCallback.ts';
+import { buildIdleRenewNudge } from '../shared/idleRenewNudge.ts';
 import { buildRenewSeed } from '../shared/renewSeed.ts';
 import { formatUserQuestionAnswers, isQuestionAnswerShape } from '../shared/userQuestionAnswers.ts';
 import { buildForwardFrame, FORWARD_FRAME_HEADER } from '../shared/forwardFrame.ts';
@@ -49,6 +50,7 @@ const NOTICES = {
   'overage preamble QUEUED_ONLY_RESUME_TEXT': QUEUED_ONLY_RESUME_TEXT,
   'overage resume, stopped': buildCombinedResumeText([], 'stopped'),
   'overage resume, idle-parked + conductor clauses': buildCombinedResumeText([], 'idle-parked', { droppedCallbacks: true }),
+  'idle-renewal nudge': buildIdleRenewNudge(55),
   'renew request': buildRenewRequest(),
   'renew request with a directive': buildRenewRequest({ directive: 'keep the roster short' }),
   'renew request lead alone': RENEW_REQUEST_LEAD,

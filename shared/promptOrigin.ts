@@ -23,6 +23,7 @@
 // DOM-free: src/awaitingUser.ts imports this module directly.
 
 import { WAKE_CALLBACK_MARKER } from './wakeCallback.ts';
+import { IDLE_NUDGE_MARKER } from './idleRenewNudge.ts';
 import { parseRenewSeed } from './renewSeed.ts';
 import { FORWARD_FRAME_HEADER, parseForwardFrame } from './forwardFrame.ts';
 import { parsePlanDecision } from './planApproval.ts';
@@ -58,6 +59,7 @@ export function isInjectedUserTurn(ev: PromptOriginEvent): boolean {
   if (ev.cliInjected === true) return true;
   const text = typeof ev.text === 'string' ? ev.text : '';
   if (text.startsWith(WAKE_CALLBACK_MARKER)) return true;
+  if (text.startsWith(IDLE_NUDGE_MARKER)) return true;
   if (parseRenewSeed(text) !== null) return true;
   if (text.startsWith(RENEW_REQUEST_LEAD)) return true;
   if (text.startsWith(FORWARD_FRAME_HEADER)) return true;

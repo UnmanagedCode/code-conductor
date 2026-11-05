@@ -46,6 +46,8 @@ interface StoredSettings {
     customRoles?: unknown;
     conductorCompactWindowEnabled?: unknown;
     conductorCompactWindowK?: unknown;
+    conductorIdleNudgeEnabled?: unknown;
+    conductorIdleNudgeMinutes?: unknown;
     overageThresholdEnabled?: unknown;
     overageThresholdPct?: unknown;
   };
@@ -1370,6 +1372,48 @@ export async function setConductorCompactWindow(input: { enabled: unknown; value
       ...(cur.models || {}),
       conductorCompactWindowEnabled: !!enabled,
       conductorCompactWindowK:       snapped,
+    },
+  };
+  await writeSettings(next);
+  return { enabled: !!enabled, value: snapped };
+}
+
+// Models group: the idle-renewal nudge (src/idleRenewNudge.ts) — when enabled,
+// an idle top-level conductor is asked once per idle stretch, this many minutes
+// in, whether to renew its context before the prompt cache expires. Off by
+// default — strictly opt-in. Clamped on write only, like the settings beside it.
+// The floor keeps ordinary pauses from being nudged into renewal decisions; the
+// ceiling stays under PROMPT_CACHE_TTL_MINUTES by more than one sweep cadence
+// (IDLE_NUDGE_SWEEP_MS), so the nudge's first request reads a still-warm cache.
+export const IDLE_NUDGE_MIN_MINUTES     = 10;
+export const IDLE_NUDGE_MAX_MINUTES     = 59;
+const IDLE_NUDGE_DEFAULT_MINUTES = 55;
+
+function snapIdleNudgeMinutes(n: number): number {
+  return Math.max(IDLE_NUDGE_MIN_MINUTES, Math.min(IDLE_NUDGE_MAX_MINUTES, Math.round(n)));
+}
+
+export function getConductorIdleNudge(): { enabled: boolean; value: number } {
+  const s = loadSync();
+  const storedEnabled = s.models?.conductorIdleNudgeEnabled;
+  const storedMinutes = s.models?.conductorIdleNudgeMinutes;
+  return {
+    enabled: typeof storedEnabled === 'boolean' ? storedEnabled : false,
+    value: typeof storedMinutes === 'number' && Number.isFinite(storedMinutes) ? storedMinutes : IDLE_NUDGE_DEFAULT_MINUTES,
+  };
+}
+
+export async function setConductorIdleNudge(input: { enabled: unknown; value: unknown }): Promise<{ enabled: boolean; value: number }> {
+  const { enabled, value } = input;
+  const n = Number(value);
+  const snapped = snapIdleNudgeMinutes(Number.isFinite(n) ? n : IDLE_NUDGE_DEFAULT_MINUTES);
+  const cur  = loadSync();
+  const next = {
+    ...cur,
+    models: {
+      ...(cur.models || {}),
+      conductorIdleNudgeEnabled: !!enabled,
+      conductorIdleNudgeMinutes: snapped,
     },
   };
   await writeSettings(next);
