@@ -495,6 +495,17 @@ function ConductorIdleNudgeCard({ data }: { data: ModelsPayload }) {
   );
 }
 
+function LandingRenewNudgeCard({ data }: { data: ModelsPayload }) {
+  if (typeof data.landingRenewNudge !== 'boolean') return null;
+  return (
+    <SettingsCard
+      title="Landing renewal nudge"
+      description="When a conductor deletes a worktree whose work has landed, the delete_worktree result reminds it to consider renewing its context. Workers, unlanded worktrees and deletes from this UI never nudge. Off by default."
+      action={<Switch checked={data.landingRenewNudge} aria-label="Landing renewal nudge" onCheckedChange={(on) => void savePrefs({ landingRenewNudge: on }, 'Update', false)} />}
+    />
+  );
+}
+
 function DebugDefaultCard() {
   const [on, setOn] = React.useState<boolean | null>(null);
   React.useEffect(() => {
@@ -559,6 +570,7 @@ export function ModelsSection() {
           <div className="grid gap-6 @2xl:grid-cols-2">
             <ConductorSessionCard data={data} />
             <ConductorIdleNudgeCard data={data} />
+            <LandingRenewNudgeCard data={data} />
             <DebugDefaultCard />
             <TaskToolsCard />
           </div>

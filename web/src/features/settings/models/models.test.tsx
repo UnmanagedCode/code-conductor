@@ -489,6 +489,30 @@ describe('Models → Idle renewal nudge', () => {
   });
 });
 
+describe('Models → Landing renewal nudge', () => {
+  const sw = () => screen.getByRole('switch', { name: 'Landing renewal nudge' });
+
+  // Invariant: the switch reflects the payload boolean; toggling saves landingRenewNudge only.
+  it('reflects the payload boolean and saves the toggle as landingRenewNudge', async () => {
+    const calls = mockFetch({
+      'GET /api/settings/spawn': () => ({}),
+      'POST /api/settings/models/prefs': (c) => ({ ...PICK, landingRenewNudge: c.body.landingRenewNudge }),
+    });
+    show({ ...PICK, landingRenewNudge: false });
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(sw());
+    await waitFor(() => expect(prefsBodies(calls)).toEqual([{ landingRenewNudge: true }]));
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('true'));
+  });
+
+  // Invariant: a payload without the field renders no card.
+  it('renders no card when the payload lacks the field', () => {
+    mockFetch({ 'GET /api/settings/spawn': () => ({}) });
+    show(PICK);
+    expect(screen.queryByRole('switch', { name: 'Landing renewal nudge' })).toBeNull();
+  });
+});
+
 describe('Models → page actions', () => {
   // Invariant: the Cost dashboard has one entry point (the sidebar ≡ menu); the Models page carries no button to it.
   it('the Models page has no Cost dashboard button', () => {

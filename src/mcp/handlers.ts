@@ -36,7 +36,7 @@ import {
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree, requireWorktree, unknownWorktreeMessage,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
   worktreeDirtyLines, runGit,
-  listDependentWorktrees, dependentsRefusal, worktreeLockedRefusal, resolveProjectCwd,
+  listDependentWorktrees, dependentsRefusal, worktreeLockedRefusal, resolveProjectCwd, worktreeWorkLanded,
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
@@ -55,7 +55,7 @@ import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } fr
 import { composeProjectConventionsDocWithMeta, creationSelection, placementDisclosure, slugsOf } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
-import { getTierBackend, resolveRoleBackend, isResolvableRole, backendsForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
+import { getTierBackend, resolveRoleBackend, isResolvableRole, backendsForModel, defaultSpawnBinding, getDefaultSpawnTier, getLandingRenewNudge } from '../appSettings.ts';
 import {
   textPayload, textResult, type TextPayload, MCP_RESULT_CHAR_BUDGET, MCP_BODY_BUDGET, utf8Prefix, payloadChars,
 } from './content.ts';
@@ -2046,7 +2046,28 @@ export async function createWorktree(
   return toMcpWorktree(await fsCreateWorktree(project, { baseWorktree, name, lock }));
 }
 
-export async function deleteWorktree({ project, worktree, force = false }: { project: string; worktree: string; force?: boolean }, { instances }: McpCtx) {
+// Rides on a delete_worktree result (opt-in setting). Points at renew_session's
+// own description rather than the Context renewal convention, which can be off.
+export const LANDING_RENEW_NUDGE =
+  "This worktree's work has landed. Once this landing's cleanup is done, decide whether to renew_session — its description says when.";
+
+// The nudge text for a delete, or null. Never throws: the check must not be
+// able to change the delete's outcome, and an unreadable check is no nudge.
+async function landingRenewNudge(
+  project: string, wt: WorktreeMeta | null, { instances, callerId }: McpCtx,
+): Promise<string | null> {
+  try {
+    if (!getLandingRenewNudge() || !wt || !instances || !callerId) return null;
+    if (!isConductorInstance(instances.liveForSession(callerId))) return null;
+    return (await worktreeWorkLanded(project, wt)) ? LANDING_RENEW_NUDGE : null;
+  } catch (err) {
+    console.warn(`[mcp] landing renewal nudge check failed for '${project}':`, err);
+    return null;
+  }
+}
+
+export async function deleteWorktree({ project, worktree, force = false }: { project: string; worktree: string; force?: boolean }, ctx: McpCtx) {
+  const { instances } = ctx;
   // Resolve ONCE, up front, and thread the canonical name through every
   // consumer below: idsForWorktree and listDependentWorktrees are exact
   // in-memory compares, so a bare slug would silently see no attached
@@ -2110,8 +2131,9 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
   if (force && running.length > 0) {
     await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
   }
+  const renewNudge = await landingRenewNudge(project, wt, ctx);
   await removeWorktree(project, wtName, { force });
-  return { project, worktree: wtName };
+  return renewNudge ? { project, worktree: wtName, renewNudge } : { project, worktree: wtName };
 }
 
 export async function syncWorktree({ project, worktree }: { project: string; worktree: string }) {

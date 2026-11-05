@@ -14,7 +14,7 @@ import {
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
-  getConductorIdleNudge, IDLE_NUDGE_MIN_MINUTES, IDLE_NUDGE_MAX_MINUTES,
+  getConductorIdleNudge, IDLE_NUDGE_MIN_MINUTES, IDLE_NUDGE_MAX_MINUTES, getLandingRenewNudge,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend, defaultSpawnBinding, getRoleBinding, setRoleBinding,
@@ -435,6 +435,39 @@ test('POST /api/settings/models/prefs clamps and persists conductorIdleNudge wit
     assert.deepEqual(g.body.conductorCompactWindow, { enabled: true, value: 400 });
   }
   assert.deepEqual(getConductorIdleNudge(), { enabled: true, value: 30 });
+});
+
+// ── landingRenewNudge ───────────────────────────────────────────────────
+// INVARIANT: the landing renewal nudge is off on a fresh install.
+test('GET /api/settings/models includes landingRenewNudge false on a fresh install', async () => {
+  const r = await api(baseUrl, 'GET', '/api/settings/models');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.landingRenewNudge, false);
+  assert.equal(getLandingRenewNudge(), false);
+});
+
+// INVARIANT: a boolean save persists (GET + getter) and leaves sibling prefs alone.
+test('POST /api/settings/models/prefs persists landingRenewNudge without clobbering siblings', async () => {
+  await api(baseUrl, 'POST', '/api/settings/models/prefs', {
+    onOverage: 'stop', conductorIdleNudge: { enabled: true, value: 30 },
+  });
+  const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { landingRenewNudge: true });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.landingRenewNudge, true);
+  const g = await api(baseUrl, 'GET', '/api/settings/models');
+  assert.equal(g.body.landingRenewNudge, true);
+  assert.equal(g.body.onOverage, 'stop');
+  assert.deepEqual([g.body.conductorIdleNudge.enabled, g.body.conductorIdleNudge.value], [true, 30]);
+  assert.equal(getLandingRenewNudge(), true);
+});
+
+// INVARIANT: a non-boolean is refused 400 and the stored value is unchanged.
+test('POST /api/settings/models/prefs refuses a non-boolean landingRenewNudge and writes nothing', async () => {
+  await api(baseUrl, 'POST', '/api/settings/models/prefs', { landingRenewNudge: true });
+  const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { landingRenewNudge: 'yes' });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /landingRenewNudge must be a boolean/);
+  assert.equal(getLandingRenewNudge(), true);
 });
 
 // ── binding shape: no window key, per-binding or global ──────────────────

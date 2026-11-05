@@ -65,7 +65,7 @@ import {
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
-  getConductorIdleNudge, setConductorIdleNudge, IDLE_NUDGE_MIN_MINUTES, IDLE_NUDGE_MAX_MINUTES,
+  getConductorIdleNudge, setConductorIdleNudge, getLandingRenewNudge, setLandingRenewNudge, IDLE_NUDGE_MIN_MINUTES, IDLE_NUDGE_MAX_MINUTES,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
@@ -1900,6 +1900,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       conductorCompactWindow: getConductorCompactWindow(),
       // The bounds ride along so the client never restates them.
       conductorIdleNudge: { ...getConductorIdleNudge(), min: IDLE_NUDGE_MIN_MINUTES, max: IDLE_NUDGE_MAX_MINUTES },
+      landingRenewNudge: getLandingRenewNudge(),
       tiers: CAPABILITY_TIERS,
       tierBackend,
       tierEffort,
@@ -1931,7 +1932,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { onOverage, overageThreshold, conductorCompactWindow, conductorIdleNudge,
+      const { onOverage, overageThreshold, conductorCompactWindow, conductorIdleNudge, landingRenewNudge,
               tierEnabled, defaultSpawnTier, tierBackend, roleBackend,
               tierEffort, roleEffort } = body;
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
@@ -1940,6 +1941,12 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       if (conductorIdleNudge !== undefined) {
         await setConductorIdleNudge(conductorIdleNudge as ThresholdPatch);
         instances?.syncIdleRenewNudge();
+      }
+      if (landingRenewNudge !== undefined) {
+        if (typeof landingRenewNudge !== 'boolean') {
+          return res.status(400).json({ error: 'landingRenewNudge must be a boolean' });
+        }
+        await setLandingRenewNudge(landingRenewNudge);
       }
       if (tierEnabled !== undefined) {
         if (!tierEnabled || typeof tierEnabled !== 'object' || !isKnownTier((tierEnabled as TierEnabledPatch).tier)) {

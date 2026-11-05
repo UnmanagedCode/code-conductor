@@ -9,6 +9,7 @@ import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
 import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
+import { forgetWorktreeLandings } from './worktreeLandings.ts';
 import { isSessionId } from './identifiers.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import {
@@ -1369,6 +1370,7 @@ export async function deleteProject(
 // tracks, so all of it goes with the project. Always LOCAL, on every branch:
 // the store is cc's own, wherever the tree lives.
 export async function removeProjectStoreDir(name: string): Promise<void> {
+  forgetWorktreeLandings(name);
   try { await fs.rm(projectStoreDir(name), { recursive: true, force: true }); }
   catch { /* best-effort */ }
   markProjectsChanged();

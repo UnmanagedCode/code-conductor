@@ -23,6 +23,7 @@ export type ModelsPayload = {
   conductorCompactWindow?: { enabled: boolean; value: number };
   // The bounds are the server's (src/appSettings.ts).
   conductorIdleNudge?: { enabled: boolean; value: number; min: number; max: number };
+  landingRenewNudge?: boolean;
   [k: string]: unknown;
 };
 
