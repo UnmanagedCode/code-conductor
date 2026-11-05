@@ -19,6 +19,7 @@ import {
 import { withLock } from './storeLock.ts';
 import { markProjectsChanged } from './projectsChanged.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
+import { recordWorktreeLanding, worktreeLandingRecorded, forgetWorktreeLanding } from './worktreeLandings.ts';
 import { getSystem } from './appSettings.ts';
 import {
   transcriptCollisionReason, transcriptCwdCollision,
@@ -1191,35 +1192,12 @@ export async function getWorktreeMergeStatus(system: System, meta: WorktreeMeta)
   return parseAheadBehind(system, meta.parentPath, meta.baseBranch, meta.branch);
 }
 
-// Which worktrees have had a successful merge into their base, held in server
-// memory only: a restart between merge and delete drops the record, which costs
-// that one landing renewal nudge and nothing else. Keyed by project + name and
-// valued with the worktree's `createdAt`, so an entry names that specific
-// worktree and a same-name successor never matches it; dropWorktreeStoreEntry
-// (every removal path) deletes the entry as well. Writer:
-// mergeWorktreeIntoParent's ok:true path, so REST and MCP merges both record.
-const landedWorktrees = new Map<string, string>();
-const landedKey = (projectName: string, worktreeName: string) => `${projectName}\0${worktreeName}`;
-
-function recordWorktreeLanding(projectName: string, meta: WorktreeMeta): void {
-  landedWorktrees.set(landedKey(projectName, meta.worktreeName), meta.createdAt);
-}
-
-export function worktreeLandingRecorded(projectName: string, meta: WorktreeMeta): boolean {
-  return landedWorktrees.get(landedKey(projectName, meta.worktreeName)) === meta.createdAt;
-}
-
-// Test reset: forgets every recorded landing.
-export function clearWorktreeLandings(): void {
-  landedWorktrees.clear();
-}
-
 // True when a merge of this worktree is on record AND the branch has no commits
 // left ahead of its base — work committed after the landing is not "landed".
 // An unreadable comparison (ahead null) is false. Read it BEFORE removeWorktree
 // deletes the branch.
 export async function worktreeWorkLanded(projectName: string, meta: WorktreeMeta): Promise<boolean> {
-  if (!worktreeLandingRecorded(projectName, meta)) return false;
+  if (!worktreeLandingRecorded(projectName, meta.worktreeName, meta.createdAt)) return false;
   const status = await getWorktreeMergeStatus(await resolveSystem(projectName), meta);
   return status.ahead === 0;
 }
@@ -1464,7 +1442,7 @@ export async function mergeWorktreeIntoParent(
     };
   }
   const newHead = await runGit(system, meta.parentPath, ['rev-parse', 'HEAD']);
-  recordWorktreeLanding(projectName, meta);
+  recordWorktreeLanding(projectName, meta.worktreeName, meta.createdAt);
   // 8. Fast-forward the worktree's own branch up to the merge commit. The
   //    worktree branch is one of that commit's two parents, so it's always
   //    an ancestor of the new HEAD — --ff-only can't fail on divergence.
@@ -1756,7 +1734,7 @@ async function checkoutIsProtectable(system: System, wt: WorktreeMeta): Promise<
 // The central-store entry for one worktree (metadata + attachments + debug).
 // cc's own, always local.
 async function dropWorktreeStoreEntry(projectName: string, worktreeName: string): Promise<void> {
-  landedWorktrees.delete(landedKey(projectName, worktreeName));
+  forgetWorktreeLanding(projectName, worktreeName);
   try { await fs.rm(worktreeStoreDir(projectName, worktreeName), { recursive: true, force: true }); }
   catch { /* best-effort */ }
   markProjectsChanged();

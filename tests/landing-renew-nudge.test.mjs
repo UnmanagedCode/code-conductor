@@ -14,7 +14,11 @@ import { fileURLToPath } from 'node:url';
 import {
   api, bootServer, freshProjectsRoot, rmrf, registerLocalProject, waitFor,
 } from './helpers.mjs';
-import { createWorktree, getWorktree, worktreeLandingRecorded, clearWorktreeLandings } from '../src/worktrees.ts';
+import { createWorktree, getWorktree, worktreeWorkLanded } from '../src/worktrees.ts';
+import {
+  recordWorktreeLanding, worktreeLandingRecorded, forgetWorktreeLandings, clearWorktreeLandings,
+} from '../src/worktreeLandings.ts';
+import { removeProjectStoreDir } from '../src/projects.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { LANDING_RENEW_NUDGE } from '../src/mcp/handlers.ts';
 
@@ -73,7 +77,10 @@ async function callTool(name, args, { caller } = {}) {
 }
 
 const setNudge = (on) => api(baseUrl, 'POST', '/api/settings/models/prefs', { landingRenewNudge: on });
-const recorded = async (name) => worktreeLandingRecorded('demo', await getWorktree('demo', name));
+const recorded = async (name) => {
+  const meta = await getWorktree('demo', name);
+  return worktreeLandingRecorded('demo', meta.worktreeName, meta.createdAt);
+};
 
 async function spawnIdle(project) {
   const r = await api(baseUrl, 'POST', '/api/instances', { project, temp: true, mode: 'bypassPermissions' });
@@ -209,7 +216,7 @@ test('a delete clears the landing: a re-created same-name worktree is not nudged
   const { wt } = await fixture({ merge: true });
   assert.equal(await recorded(wt.worktreeName), true, 'precondition');
   assert.equal((await del(wt, caller)).renewNudge, LANDING_RENEW_NUDGE);
-  assert.equal(worktreeLandingRecorded('demo', wt), false, 'the delete cleared the entry');
+  assert.equal(worktreeLandingRecorded('demo', wt.worktreeName, wt.createdAt), false, 'the delete cleared the entry');
   const again = await createWorktree('demo', { name: 'job' });
   await commitFile(again.worktreePath, 'next.txt', 'next\n', 'new work');
   assert.deepEqual(await del(again, caller), expected(again));
@@ -246,4 +253,44 @@ test('on: the same delete runs the ahead/behind comparison (shim control)', asyn
   const { wt } = await fixture({ merge: true });
   const calls = await gitCallsDuring(() => del(wt, caller));
   assert.equal(aheadCountCalls(calls).length, 1);
+});
+
+// INVARIANT: a recorded landing matches only the worktree with the recorded
+// createdAt — a same-name meta with another createdAt is not landed while the
+// stale entry is still present.
+test('a landing matches only the recorded createdAt, while the entry is present', () => {
+  recordWorktreeLanding('demo', 'job', '2026-01-01T00:00:00.000Z');
+  assert.equal(worktreeLandingRecorded('demo', 'job', '2026-01-01T00:00:00.000Z'), true);
+  assert.equal(worktreeLandingRecorded('demo', 'job', '2026-02-02T00:00:00.000Z'), false);
+});
+
+// INVARIANT: worktreeWorkLanded rejects a same-name meta of a different worktree
+// (other createdAt) even though a landing for that name is recorded and ahead is 0.
+test('worktreeWorkLanded is false for a same-name worktree with another createdAt', async () => {
+  const { wt } = await fixture({ merge: true });
+  const meta = await getWorktree('demo', wt.worktreeName);
+  assert.equal(await worktreeWorkLanded('demo', meta), true, 'control: the recorded worktree is landed');
+  assert.equal(await worktreeWorkLanded('demo', { ...meta, createdAt: '1999-01-01T00:00:00.000Z' }), false);
+});
+
+// INVARIANT: forgetting a project's landings drops that project's entries only
+// (a name-prefix of another project does not collide).
+test('forgetWorktreeLandings drops one project\'s entries and leaves the others', () => {
+  recordWorktreeLanding('demo', 'a', 't');
+  recordWorktreeLanding('demo', 'b', 't');
+  recordWorktreeLanding('demo2', 'a', 't');
+  forgetWorktreeLandings('demo');
+  assert.deepEqual(
+    [worktreeLandingRecorded('demo', 'a', 't'), worktreeLandingRecorded('demo', 'b', 't'), worktreeLandingRecorded('demo2', 'a', 't')],
+    [false, false, true],
+  );
+});
+
+// INVARIANT: wiping a project's store subtree (adopt-replace, library rollback,
+// project delete all go through removeProjectStoreDir) forgets its landings.
+test('removeProjectStoreDir forgets the project\'s landings', async () => {
+  const { wt } = await fixture({ merge: true });
+  assert.equal(await recorded(wt.worktreeName), true, 'precondition');
+  await removeProjectStoreDir('demo');
+  assert.equal(worktreeLandingRecorded('demo', wt.worktreeName, wt.createdAt), false);
 });
