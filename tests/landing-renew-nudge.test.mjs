@@ -1,6 +1,6 @@
 // The landing renewal nudge: a conductor's MCP delete_worktree of a worktree
 // whose work landed carries `renewNudge` on its result when the opt-in setting
-// is on. "Landed" = the persisted `landed` record (written by a successful
+// is on. "Landed" = the in-memory landing record (set by a successful
 // merge) AND no commits left ahead of the base, measured before removal.
 //
 // One top-level test per row: the root afterEach shuts instances down around
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import {
   api, bootServer, freshProjectsRoot, rmrf, registerLocalProject, waitFor,
 } from './helpers.mjs';
-import { createWorktree, getWorktree } from '../src/worktrees.ts';
+import { createWorktree, getWorktree, worktreeLandingRecorded, clearWorktreeLandings } from '../src/worktrees.ts';
 import { LANDING_RENEW_NUDGE } from '../src/mcp/handlers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,7 +24,7 @@ let ctx, baseUrl, instances, home, projectsRoot;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });
 after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot } = await freshProjectsRoot()); });
-afterEach(async () => { await instances.shutdown(); await rmrf(home); });
+afterEach(async () => { await instances.shutdown(); clearWorktreeLandings(); await rmrf(home); });
 
 function git(cwd, ...args) {
   return new Promise((resolve, reject) => {
@@ -72,7 +72,7 @@ async function callTool(name, args, { caller } = {}) {
 }
 
 const setNudge = (on) => api(baseUrl, 'POST', '/api/settings/models/prefs', { landingRenewNudge: on });
-const metaOf = (name) => getWorktree('demo', name);
+const recorded = async (name) => worktreeLandingRecorded('demo', await getWorktree('demo', name));
 
 async function spawnIdle(project) {
   const r = await api(baseUrl, 'POST', '/api/instances', { project, temp: true, mode: 'bypassPermissions' });
@@ -100,30 +100,30 @@ async function fixture({ commits = 1, merge = false } = {}) {
 const del = (wt, caller) => callTool('delete_worktree', { project: 'demo', worktree: wt.worktreeName }, { caller });
 const expected = (wt) => ({ project: 'demo', worktree: wt.worktreeName });
 
-// INVARIANT: a successful merge records `landed: true` on the worktree.
-test('a successful merge records landed on the worktree record', async () => {
+// INVARIANT: a successful merge records the landing in the in-memory set.
+test('a successful merge records the landing', async () => {
   const { wt } = await fixture();
-  assert.equal((await metaOf(wt.worktreeName)).landed, undefined, 'precondition: absent before the merge');
+  assert.equal(await recorded(wt.worktreeName), false, 'precondition: absent before the merge');
   const m = await callTool('merge_worktree', { project: 'demo', worktree: wt.worktreeName });
   assert.equal(m.ok, true);
-  assert.equal((await metaOf(wt.worktreeName)).landed, true);
+  assert.equal(await recorded(wt.worktreeName), true);
 });
 
 // INVARIANT: a refused merge (nothing to merge) records nothing.
-test('a refused merge on a zero-commit worktree leaves landed absent', async () => {
+test('a refused merge on a zero-commit worktree records no landing', async () => {
   const { wt } = await fixture({ commits: 0 });
   const m = await callTool('merge_worktree', { project: 'demo', worktree: wt.worktreeName });
   assert.equal(m.code, 'NOTHING_TO_MERGE');
-  assert.equal((await metaOf(wt.worktreeName)).landed, undefined);
+  assert.equal(await recorded(wt.worktreeName), false);
 });
 
 // INVARIANT: a refused merge (dirty parent) records nothing.
-test('a refused merge on a dirty parent leaves landed absent', async () => {
+test('a refused merge on a dirty parent records no landing', async () => {
   const { repoPath, wt } = await fixture();
   await fs.writeFile(path.join(repoPath, 'README.md'), 'dirty\n');
   const m = await callTool('merge_worktree', { project: 'demo', worktree: wt.worktreeName });
   assert.equal(m.code, 'PARENT_DIRTY');
-  assert.equal((await metaOf(wt.worktreeName)).landed, undefined);
+  assert.equal(await recorded(wt.worktreeName), false);
 });
 
 // INVARIANT: setting on + conductor caller + landed worktree → renewNudge carries the constant.
@@ -198,4 +198,51 @@ test('on, REST DELETE of a landed worktree: response has no renewNudge', async (
   const r = await api(baseUrl, 'DELETE', `/api/projects/demo/worktrees/${encodeURIComponent(wt.worktreeName)}`);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal('renewNudge' in r.body, false);
+});
+
+// INVARIANT: removing a worktree clears its landing, so a same-name successor with a
+// new commit is never nudged on its predecessor's merge.
+test('a delete clears the landing: a re-created same-name worktree is not nudged', async () => {
+  await setNudge(true);
+  const caller = await conductor();
+  const { wt } = await fixture({ merge: true });
+  assert.equal(await recorded(wt.worktreeName), true, 'precondition');
+  assert.equal((await del(wt, caller)).renewNudge, LANDING_RENEW_NUDGE);
+  assert.equal(worktreeLandingRecorded('demo', wt), false, 'the delete cleared the entry');
+  const again = await createWorktree('demo', { name: 'job' });
+  await commitFile(again.worktreePath, 'next.txt', 'next\n', 'new work');
+  assert.deepEqual(await del(again, caller), expected(again));
+});
+
+// Runs fn with a `git` shim first on PATH that logs each invocation's argv, and
+// returns the logged lines. The server and these helpers all spawn from process.env.
+async function gitCallsDuring(fn) {
+  const real = (await new Promise((res, rej) => execFile('sh', ['-c', 'command -v git'], (e, o) => e ? rej(e) : res(o)))).trim();
+  const dir = await fs.mkdtemp(path.join(home, 'gitshim-'));
+  const log = path.join(dir, 'calls.log');
+  await fs.writeFile(path.join(dir, 'git'), `#!/bin/sh\necho "$*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${savedPath}`;
+  try { await fn(); } finally { process.env.PATH = savedPath; }
+  return (await fs.readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+}
+const aheadCountCalls = (calls) => calls.filter(c => c.includes('rev-list') && c.includes('--left-right'));
+
+// INVARIANT: with the setting off, delete_worktree makes no landing check (no ahead/behind git call).
+test('off: a landed delete by a conductor runs no ahead/behind comparison', async () => {
+  const caller = await conductor();
+  const { wt } = await fixture({ merge: true });
+  const calls = await gitCallsDuring(() => del(wt, caller));
+  assert.ok(calls.length > 0, 'the shim observed the delete\'s own git calls');
+  assert.deepEqual(aheadCountCalls(calls), []);
+});
+
+// Positive control for the row above: the same fixture with the setting on is seen
+// running the comparison, so the shim can tell the two apart.
+test('on: the same delete runs the ahead/behind comparison (shim control)', async () => {
+  await setNudge(true);
+  const caller = await conductor();
+  const { wt } = await fixture({ merge: true });
+  const calls = await gitCallsDuring(() => del(wt, caller));
+  assert.equal(aheadCountCalls(calls).length, 1);
 });
