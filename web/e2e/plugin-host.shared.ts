@@ -241,7 +241,7 @@ export async function themeFlow({ page }: Args): Promise<void> {
 const COLUMN_KEY = 'code-conductor:session-column';
 
 export async function widthFlow({ page }: Args): Promise<void> {
-  // Invariant: a plugin page carries the session width setting (px, or none under Full) on its <html> when its head is parsed, and follows every change live, shown or hidden.
+  // Invariant: a plugin page in the full view carries the session width setting (px, or none under Full) on its <html> when its head is parsed, and follows every change live, shown or hidden.
   test.skip(test.info().project.name !== 'desktop', 'the width control is a desktop-layout feature');
   const set = { width: 896, full: false };
   await next.open(page);
