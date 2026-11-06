@@ -27,7 +27,7 @@ import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';
 import {
-  archiveSession, closeSession, forkActiveSession, performProjectDelete, promoteSession, respawnActive, resumeSession, rewindActiveSession,
+  archiveSession, closeSession, forkActiveSession, performProjectDelete, promoteSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
 } from './sessionActions';
 
 type Call = { url: string; method: string; body: any };
@@ -420,3 +420,81 @@ describe('an automatic resume and a session picked while it runs', () => {
     expect(await run(409, 'picked')).toEqual([]);
   });
 });
+
+describe('restoring a session', () => {
+  // Invariant: restore, then mark the session lists stale once, then resume where it ran.
+  it('un-archives, marks the session lists stale exactly once, then resumes at its worktree', async () => {
+    stubFetch(() => ({ body: { id: 'new' } }));
+    const stale: unknown[] = [];
+    const off = on('sessionsStale', (p) => stale.push(p));
+    try {
+      await restoreSession({ projectName: 'p', worktreeName: 'wt', sessionId: 's1' });
+    } finally { off(); }
+    expect(calls).toEqual([
+      { url: '/api/projects/p/worktrees/wt/sessions/s1/restore', method: 'POST', body: undefined },
+      { url: '/api/instances', method: 'POST', body: { project: 'p', resume: 's1', worktree: 'wt' } },
+    ]);
+    expect(stale).toEqual([null]);
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('new', { userGesture: true, gesture: expect.any(Number) });
+  });
+
+  // A refused restore toasts the server's own reason, and one with no server the one unreachable message; neither resumes nor marks anything stale.
+  it('a refused or unreachable restore toasts why and neither resumes nor marks stale', async () => {
+    const stale: unknown[] = [];
+    const off = on('sessionsStale', (p) => stale.push(p));
+    try {
+      stubFetch(() => ({ status: 500, body: { error: 'transcript locked by s7' } }));
+      await restoreSession({ projectName: 'p', worktreeName: null, sessionId: 's1' });
+      stubFetch(() => new TypeError('Failed to fetch'));
+      await restoreSession({ projectName: 'p', worktreeName: null, sessionId: 's1' });
+    } finally { off(); }
+    expect(toasts).toEqual([['error', 'Restore failed', 'transcript locked by s7'], ['error', 'Restore failed', SERVER_UNREACHABLE_MESSAGE]]);
+    expect(calls.map((c) => c.url)).toEqual(['/api/projects/p/sessions/s1/restore', '/api/projects/p/sessions/s1/restore']);
+    expect(stale).toEqual([]);
+    expect(controller.selectInstance).not.toHaveBeenCalled();
+  });
+});
+
+describe('closing an ended pane', () => {
+  const endedPane = (sessionId: string) => appStore.set({
+    activeId: `ended:${sessionId}`, instances: [],
+    ended: { id: `ended:${sessionId}`, project: 'p', sessionId, status: 'exited', mode: 'plan', ended: { source: 'session', worktreeName: null } },
+  });
+
+  // Invariant: archiving the session an ended pane shows closes that pane (and drops its anchor); archiving another leaves it.
+  it('archiving the ended pane\'s session closes it; archiving another session leaves it', async () => {
+    stubFetch(() => ({ body: {} }));
+    history.replaceState(null, '', '/#session=s-other');
+    endedPane('s-shown');
+    await archiveSession({ projectName: 'p', sessionId: 's-other' });
+    expect(appStore.get().activeId).toBe('ended:s-shown');
+    expect(appStore.get().ended?.sessionId).toBe('s-shown');
+
+    history.replaceState(null, '', '/#session=s-shown');
+    await archiveSession({ projectName: 'p', sessionId: 's-shown' });
+    expect(appStore.get().activeId).toBeNull();
+    expect(appStore.get().ended).toBeNull();
+    expect(location.hash).toBe('');
+  });
+});
+
+describe('restoring a session already listed', () => {
+  // Invariant: only a LIVE listed instance of the session is selected instead of resuming; a dead one is resumed through.
+  it('a listed but exited instance of the session is not selected: the restore and the resume go through', async () => {
+    stubFetch(() => ({ body: { id: 'new' } }));
+    appStore.set({ instances: [{ id: 'old', sessionId: 's1', project: 'p', status: 'exited', mode: 'x' }] });
+    await restoreSession({ projectName: 'p', worktreeName: null, sessionId: 's1' });
+    expect(calls.map((c) => c.url)).toEqual(['/api/projects/p/sessions/s1/restore', '/api/instances']);
+    expect(controller.selectInstance).toHaveBeenCalledTimes(1);
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('new', expect.anything());
+  });
+
+  it('control: a listed live instance of the session is selected, with no request', async () => {
+    stubFetch(() => ({ body: { id: 'new' } }));
+    appStore.set({ instances: [{ id: 'live', sessionId: 's1', project: 'p', status: 'idle', mode: 'x' }] });
+    await restoreSession({ projectName: 'p', worktreeName: null, sessionId: 's1' });
+    expect(calls).toEqual([]);
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('live', { userGesture: true });
+  });
+});
+

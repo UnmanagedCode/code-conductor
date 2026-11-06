@@ -1,6 +1,7 @@
 // Which projects each root owner has ever had a worker spawned into, and the
 // worktrees those workers ran in, derived from the spawn-time facts
-// `markConducted` records (`parent` / `project` / `worktree`).
+// recorded on each session (`parent` by `markConducted`, `project` / `worktree`
+// by `setSessionPlace`).
 // A read-only consumer of the session store: everything goes through
 // `loadSessions()`, nothing here writes.
 

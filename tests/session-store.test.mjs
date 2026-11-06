@@ -18,7 +18,7 @@ const store = await import('../src/sessionStore.ts');
 const {
   loadSessions, loadSessionsSync, mutateSessions, orphanedTempIdsSync,
   getTitle, setTitle, getSessionMode, setSessionMode, setSegmentTemp, isTemp, setSummary, getSummaries,
-  setSessionBackend, getSessionBackend, markConducted, isConducted, setSegmentArchived, isArchived,
+  setSessionBackend, getSessionBackend, markConducted, setSessionPlace, isConducted, setSegmentArchived, isArchived,
   getTurnMarks, recordTurnEnd, markViewed,
 } = store;
 
@@ -316,7 +316,8 @@ test('session facts and segment flags round-trip in the documented shape', async
   await setTitle(A, '  A title  ');
   await setSessionMode(A, 'plan');
   await setSessionBackend(A, 'ollama');
-  await markConducted(A, { parent: 'cafe0123', project: 'p', worktree: 'wt' });
+  await markConducted(A, { parent: 'cafe0123' });
+  await setSessionPlace(A, { project: 'p', worktree: 'wt' });
   await setSummary(A, 'short', { summary: 'sum', generatedAt: 7, messageCount: 3 });
   await setSegmentTemp(A, true);
   await setSegmentArchived(A, true);
@@ -359,15 +360,35 @@ test('a segment id reads and writes its session\'s facts', async () => {
   assert.equal(sessions[A].mode, 'plan');
 });
 
-test('markConducted patches its extras and never clears one with null', async () => {
+test('markConducted patches its parent and never clears it with null', async () => {
   const root = await freshRoot();
-  await markConducted(A, { parent: 'cafe0123', project: 'p', worktree: 'wt' });
-  await markConducted(A, { parent: null, project: null, worktree: null });
+  await markConducted(A, { parent: 'cafe0123' });
+  await markConducted(A, { parent: null });
   await markConducted(A);
   const rec = (await readJson(storeFile(root))).sessions[A];
-  assert.deepEqual([rec.parent, rec.project, rec.worktree], ['cafe0123', 'p', 'wt']);
-  await markConducted(A, { project: 'q' });
-  assert.equal((await readJson(storeFile(root))).sessions[A].project, 'q');
+  assert.equal(rec.conducted, true);
+  assert.equal(rec.parent, 'cafe0123');
+  await markConducted(A, { parent: 'beef4567' });
+  assert.equal((await readJson(storeFile(root))).sessions[A].parent, 'beef4567');
+});
+
+test('setSessionPlace records project and worktree; equal is a no-op; a null worktree leaves none', async () => {
+  const root = await freshRoot();
+  assert.equal(await setSessionPlace(A, { project: 'p', worktree: 'wt' }), true);
+  let rec = (await readJson(storeFile(root))).sessions[A];
+  assert.deepEqual([rec.project, rec.worktree], ['p', 'wt']);
+  const before = await fs.stat(storeFile(root), { bigint: true });
+  assert.equal(await setSessionPlace(A, { project: 'p', worktree: 'wt' }), true);
+  const after = await fs.stat(storeFile(root), { bigint: true });
+  assert.equal(after.ino, before.ino, 'an equal place renames nothing');
+  assert.equal(after.mtimeNs, before.mtimeNs, 'an equal place writes nothing');
+  assert.equal(await setSessionPlace(A, { project: 'p', worktree: null }), true);
+  assert.ok(!('worktree' in (await readJson(storeFile(root))).sessions[A]), 'a move to the project root drops the worktree');
+  await setSessionPlace(B, { project: 'q', worktree: null });
+  rec = (await readJson(storeFile(root))).sessions[B];
+  assert.equal(rec.project, 'q');
+  assert.ok(!('worktree' in rec), 'a project-root place carries no worktree');
+  assert.equal(await setSessionPlace('', { project: 'p', worktree: null }), false);
 });
 
 test('guards: an empty id, empty backend, or unknown mode refuse and store nothing', async () => {

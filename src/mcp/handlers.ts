@@ -269,7 +269,8 @@ function conductorRowView(
 //   - SESSION_NOT_LIVE: the session is known (in byId, on disk, or by a
 //     recorded exit cause) but has no running process → tell the conductor to
 //     spawn_instance({resume}), or — when its CLI died on its own before writing
-//     a transcript — to spawn a fresh worker.
+//     a transcript, or its worktree was deleted (a resume needs it) — that it
+//     cannot be resumed and to spawn a fresh worker.
 //   - SESSION_UNKNOWN: no such session anywhere.
 // The disk probe (findSessionLocation) runs ONLY on the not-live path, so the
 // hot path stays a pure in-memory lookup.
@@ -284,15 +285,26 @@ async function getInst(instances: InstanceManagerLike | null | undefined, sessio
   const live = instances.liveForSession(sessionId);
   if (live) return { inst: live };
   // Not live — pay for the disk probe only here so the hot path is in-memory.
-  // NOTE: findSessionLocation may not match a session whose worktree is
-  // unregistered; such an edge resolves to SESSION_UNKNOWN rather than
-  // SESSION_NOT_LIVE. Accepted — it never throws.
+  // A session whose worktree was deleted is still located (through its recorded
+  // place) and so is SESSION_NOT_LIVE, but it cannot be resumed: say so.
   // A recorded exit cause makes the session known on its own (a temp worker that
   // died at startup is in neither byId nor on disk), and makes the transcript
   // probe worth paying for even when byId holds it: the advice depends on it.
   const exit = instances.exitCauseFor(sessionId);
-  const held = !!instances.anyForSession(sessionId);
-  const located = (!held || exit) ? !!(await findSessionLocation(sessionId).catch(() => null)) : false;
+  const heldInst = instances.anyForSession(sessionId);
+  const held = !!heldInst;
+  const hit = (!held || exit) ? await findSessionLocation(sessionId).catch(() => null) : null;
+  const located = !!hit;
+  if (held || located) {
+    const project = heldInst?.project ?? hit?.project;
+    const worktree = heldInst ? heldInst.worktree?.worktreeName : hit?.worktreeName;
+    // The listing the resume's requireWorktree reads, so the advice matches what
+    // a resume would do. A listing that fails says nothing either way.
+    const listed = project && worktree
+      ? await fsListWorktrees(project).then(ws => ws.some(w => w.worktreeName === worktree), () => true)
+      : true;
+    if (!listed) return { soft: worktreeGoneRefusal(sessionId, project as string, worktree as string, exit) };
+  }
   if (held || exit || located) return { soft: notLiveRefusal(sessionId, { exit, hasTranscript: located }) };
   return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
     reason: `no session ${sessionId} is known to the orchestrator.` } };
@@ -311,17 +323,16 @@ interface DiskRef { sessionId: string; backingSessionId: string; cwd: string; pl
 //   4.   a dead-but-retained instance still in byId: its own cwd +
 //        backingSessionId are in memory, so no probe is needed.
 //   5.   findSessionLocation: a session with no instance at all (a killed temp
-//        worker, dropped from byId, whose jsonl _archiveTempSession retained).
-//   6.   findOrphanedTranscript: the transcript exists but no registered
-//        project or worktree owns its directory.
+//        worker, dropped from byId, whose jsonl _archiveTempSession retained) —
+//        a deleted worktree's session included, through its recorded place.
+//   6.   findOrphanedTranscript: the transcript exists but neither a registered
+//        project or worktree nor the session's record places it.
 //   7.   nothing anywhere → SESSION_UNKNOWN.
 //
-// NOTE — the same findSessionLocation blind spot getInst records applies here,
-// and step 6 is what catches it: where an addressing tool refuses
-// SESSION_UNKNOWN for a session whose worktree is unregistered, a read refuses
-// SESSION_NOT_LIVE naming that cause. `encodeCwd` is one-way, so the found path
-// cannot be reversed into a cwd and the content genuinely cannot be served —
-// re-registering the worktree is the fix.
+// NOTE — step 6 catches a session findSessionLocation cannot place: a read
+// refuses SESSION_NOT_LIVE naming that cause. `encodeCwd` is one-way, so the
+// found path cannot be reversed into a cwd and the content genuinely cannot be
+// served — re-registering the worktree is the fix.
 //
 // This resolver never READS the file. A transcript that vanishes between probe
 // and read degrades through each call site's existing empty-result path.
@@ -397,6 +408,21 @@ function notLiveRefusal(sessionId: string, { exit = null, hasTranscript = true }
     exit: { code: exit.code, signal: exit.signal, stderrTail: exit.stderrTail },
     reason: `session ${sessionId}'s process exited on its own (${describeExit(exit)}) — `
       + (hasTranscript ? resume : 'it wrote no transcript, so there is nothing to resume — spawn a fresh worker.') };
+}
+
+// A session whose worktree was deleted: not live and not resumable (a resume
+// needs its worktree), but its transcript is still readable. A recorded exit
+// cause rides along and leads the reason, as in notLiveRefusal.
+function worktreeGoneRefusal(sessionId: string, project: string, worktree: string, exit: ExitCause | null): SoftRefusal {
+  const why = `its worktree '${worktree}' of project '${project}' was deleted. `
+    + `Its output is still readable — get_recent_messages / get_transcript({sessionId:"${sessionId}"}), or send_prompt({forward}) — so spawn a fresh worker to continue its work.`;
+  if (!exit) {
+    return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
+      reason: `session ${sessionId} has no running process and cannot be resumed: ${why}` };
+  }
+  return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
+    exit: { code: exit.code, signal: exit.signal, stderrTail: exit.stderrTail },
+    reason: `session ${sessionId}'s process exited on its own (${describeExit(exit)}) and cannot be resumed: ${why}` };
 }
 
 // "exit code 1 — <last stderr line>", for a reason or a rendered row.

@@ -172,6 +172,7 @@ export interface SessionRecord {
   viewedSeq?: number;
   // The caller's public id when a conductor spawned this session.
   parent?: string;
+  // Where the session runs (setSessionPlace), written at every spawn.
   project?: string;
   // The worktree NAME (WorktreeMeta.worktreeName), absent for a project root.
   worktree?: string;
@@ -734,21 +735,38 @@ export async function isConducted(id: string): Promise<boolean> {
   return recordFor(await loadSessions(), id)?.conducted === true;
 }
 
-// Mark conducted and patch the spawn-time facts. A null/absent extra is left as
+// Mark conducted and record who spawned it. A null/absent parent is left as
 // recorded, never cleared.
 export function markConducted(
   id: string | null | undefined,
-  extras: { parent?: string | null; project?: string | null; worktree?: string | null } = {},
+  extras: { parent?: string | null } = {},
 ): Promise<boolean> {
   if (typeof id !== 'string' || !id) return Promise.resolve(false);
-  const patch: Partial<Pick<SessionRecord, 'parent' | 'project' | 'worktree'>> = {};
-  if (extras.parent) patch.parent = extras.parent;
-  if (extras.project) patch.project = extras.project;
-  if (extras.worktree) patch.worktree = extras.worktree;
-  const keys = Object.keys(patch) as Array<keyof typeof patch>;
+  const parent = extras.parent || undefined;
   return sessionWrite('markConducted', id, false,
-    rec => rec.conducted === true && keys.every(k => rec[k] === patch[k]),
-    rec => { rec.conducted = true; Object.assign(rec, patch); return true; }, () => true);
+    rec => rec.conducted === true && (parent === undefined || rec.parent === parent),
+    rec => { rec.conducted = true; if (parent !== undefined) rec.parent = parent; return true; }, () => true);
+}
+
+// Where the session runs: its project and, for a worktree session, the worktree
+// NAME. Written at every spawn, conducted or not — it is how a transcript stays
+// locatable after its worktree's registration is gone (findSessionLocation's
+// recorded-place fallback). A null worktree means the project root: the record
+// then carries no `worktree`.
+export function setSessionPlace(
+  id: string | null | undefined,
+  place: { project: string; worktree: string | null },
+): Promise<boolean> {
+  if (typeof id !== 'string' || !id) return Promise.resolve(false);
+  if (typeof place.project !== 'string' || !place.project) return Promise.resolve(false);
+  const worktree = place.worktree || undefined;
+  return sessionWrite('setSessionPlace', id, false,
+    rec => rec.project === place.project && rec.worktree === worktree,
+    rec => {
+      rec.project = place.project;
+      if (worktree !== undefined) rec.worktree = worktree; else delete rec.worktree;
+      return true;
+    }, () => true);
 }
 
 // Append one model-switch ledger entry to the session's record.

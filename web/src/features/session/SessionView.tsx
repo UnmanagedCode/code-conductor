@@ -15,6 +15,7 @@ import { SessionWidthHandles } from './SessionWidthHandles';
 import { SessionHeader } from './SessionHeader';
 import { SubagentPanel, TaskPanel, TurnIndicator } from './SessionPanels';
 import { UsageChip } from './UsageChip';
+import { EndedBanner } from './EndedBanner';
 import { focusPromptAfterSelect } from './promptFocus';
 
 /** The logo whose cursor blinks while the socket is open and holds still while it (re)connects. */
@@ -76,7 +77,7 @@ export function SessionView() {
           empty={
             <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">
               <LiveMark className="size-24" />
-              <p>No messages yet. Send a prompt to start.</p>
+              <p>{inst.ended ? 'This session has no messages to show.' : 'No messages yet. Send a prompt to start.'}</p>
             </div>
           }
         />
@@ -84,6 +85,7 @@ export function SessionView() {
           <TaskPanel inst={inst} />
           <SubagentPanel inst={inst} />
           <TurnIndicator inst={inst} />
+          {inst.ended && <EndedBanner inst={inst} />}
           <Composer ref={composerRef} inst={inst} usageSlot={<UsageChip inst={inst} />} />
         </div>
         <SessionWidthHandles />

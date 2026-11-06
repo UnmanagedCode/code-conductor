@@ -50,6 +50,10 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
   const [atBottom, setAtBottom] = React.useState(true);
 
   const activeId = inst?.id ?? null;
+  // An ended pane has no instance to serve its attachments: they are addressed by session.
+  const attachmentBase = inst?.ended && inst.sessionId
+    ? `/api/sessions/${encodeURIComponent(inst.sessionId)}/attachments/`
+    : activeId ? `/api/instances/${encodeURIComponent(activeId)}/attachments/` : null;
   const showCallUsage = !!inst?.sessionId && !!callUsage[inst.sessionId];
   const status = inst?.status ?? null;
 
@@ -73,8 +77,8 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
     onRewind: (i, t) => void rewindActiveSession(i, t),
     onFork: (i, t) => void forkActiveSession(i, t),
     resolveAttachmentUrl: (filename) =>
-      activeId && filename ? `/api/instances/${encodeURIComponent(activeId)}/attachments/${encodeURIComponent(filename)}` : null,
-  }), [rewind, fork, activeId]);
+      attachmentBase && filename ? attachmentBase + encodeURIComponent(filename) : null,
+  }), [rewind, fork, attachmentBase]);
 
   // Stick to the bottom while the reader is there; leave them alone otherwise. A cleared
   // transcript (another session, a rewind, a reconnect) starts at the bottom again.

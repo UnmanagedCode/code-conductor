@@ -2776,6 +2776,7 @@ describe('reclaiming a prepared-but-unspawned session', () => {
       _sessionRenew: { purge() {} },
       _idleRenewNudge: { purge() {} },
       pristine: { forget() {} },
+      retired: { capture() {} },
     });
     return mgr;
   };

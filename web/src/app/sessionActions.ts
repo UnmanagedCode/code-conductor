@@ -2,6 +2,7 @@
 // sidebar, the session header, the conversation and the commit-history view.
 import { ApiError, apiFetch } from '@shared/http';
 import { closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
+import { isLiveStatus } from '@shared/conductors';
 import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
 import { appStore, activeInstance } from '@/state/app';
 import { syncRoute } from '@/state/route';
@@ -17,7 +18,7 @@ const activeId = () => appStore.get().activeId;
 /** Closing the active session is no selection; it drops the anchor naming that session, so a reload resumes nothing. */
 function clearActive() {
   const closed = activeInstance(appStore.get())?.sessionId;
-  appStore.set({ activeId: null });
+  appStore.set({ activeId: null, ended: null });
   if (closed && readSessionAnchor() === closed) {
     writeSessionAnchor(null);
     syncRoute();
@@ -83,6 +84,36 @@ export async function resumeSession({
     if (silent) { console.warn('anchor auto-resume failed', e); return; }
     toast.error('Resume failed', e.message);
   }
+}
+
+/** A session's REST base under its project or worktree, plus `suffix`. */
+export function archivedSessionUrl(project: string, worktreeName: string | null | undefined, sessionId: string, suffix: string) {
+  const enc = encodeURIComponent;
+  const base = worktreeName
+    ? `/api/projects/${enc(project)}/worktrees/${enc(worktreeName)}/sessions/${enc(sessionId)}`
+    : `/api/projects/${enc(project)}/sessions/${enc(sessionId)}`;
+  return base + suffix;
+}
+
+/**
+ * Un-archive a session (a no-op when it is not archived), then resume it, which
+ * selects it. A session already live again (resumed elsewhere, or by a restart)
+ * is selected instead: the server refuses a second resume.
+ */
+export async function restoreSession({ projectName, worktreeName, sessionId }: { projectName: string; worktreeName: string | null; sessionId: string }) {
+  const live = instances().find((i) => i.sessionId === sessionId && isLiveStatus(i.status));
+  if (live) {
+    selectInstance(live.id, { userGesture: true });
+    return;
+  }
+  try {
+    await apiFetch(archivedSessionUrl(projectName, worktreeName, sessionId, '/restore'), { method: 'POST' });
+  } catch (e: any) {
+    toast.error('Restore failed', e.message);
+    return;
+  }
+  emit('sessionsStale', null);
+  await resumeSession({ projectName, worktreeName, sessionId });
 }
 
 export async function rewindActiveSession(userMessageIndex: number, text: string) {
@@ -209,7 +240,7 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
       await apiFetch(`${base}?force=1`, { method: 'POST' });
     }
     const inst = instances().find((i) => i.sessionId === sessionId);
-    if (inst && activeId() === inst.id) clearActive();
+    if ((inst && activeId() === inst.id) || showsEnded(sessionId)) clearActive();
     emit('sessionsStale', { project: projectName, worktree: worktreeName ?? null });
     await refreshProjects();
     await refreshInstances();
@@ -217,6 +248,12 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
     toast.error('Could not archive the session', e.message);
   }
 }
+
+/** Whether the pane shows `sessionId` as an ended session (no instance). */
+const showsEnded = (sessionId: string) => {
+  const ended = appStore.get().ended;
+  return !!ended && ended.id === activeId() && ended.sessionId === sessionId;
+};
 
 export async function removeWorktree(project: string, worktreeName: string) {
   const ok = await confirmDialog({

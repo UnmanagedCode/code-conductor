@@ -10,7 +10,7 @@ import {
   listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
   findSessionLocation, projectsBySystem, setProjectRemote, setProjectWorkspace,
   addWorkspace, removeWorkspace, renameWorkspace,
-  summarizeWorkspaces, validateName, placeOf, projectRootPlace, type TranscriptPlacement,
+  summarizeWorkspaces, validateName, placeOf, projectRootPlace, recordedSessionPlace, type TranscriptPlacement,
 } from './projects.ts';
 import { suggestAdoptableDirs } from './projectSuggestions.ts';
 import { conductorSpawnedProjects } from './conductorSpawns.ts';
@@ -42,7 +42,7 @@ import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
 import { projectsOperation } from './projectsChanged.ts';
-import { pageLineageEvents } from './lineagePager.ts';
+import { pageLineageEvents, retiredLineageSource } from './lineagePager.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
 import {
@@ -84,7 +84,7 @@ import { applySessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { applySessionViewed } from './sessionViewed.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { getSummaries, setSummary, isArchived, setSegmentArchived, loadSessions, resolveOwner } from './sessionStore.ts';
-import { resolveBacking } from './sessionLineage.ts';
+import { resolveBacking, publicIdFor } from './sessionLineage.ts';
 import { generateSummary, askSession, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
 import type { ClaudeAuthStatus } from './claudeAuthStatus.ts';
@@ -182,6 +182,30 @@ const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   json: 'application/json; charset=utf-8',
   csv: 'text/csv; charset=utf-8', md: 'text/markdown; charset=utf-8',
 };
+
+// Stream attachment `filename` of a project / worktree (attachmentsDir). 400 for
+// anything but a plain basename (the path-traversal guard), 404 when absent.
+async function sendAttachment(res: express.Response, project: string, worktreeName: string | null, filename: unknown): Promise<void> {
+  const raw = String(filename || '');
+  if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..') || raw !== path.basename(raw)) {
+    throw httpError(400, 'invalid attachment filename');
+  }
+  const abs = path.join(attachmentsDir(project, worktreeName), raw);
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
+  try { stat = await fs.stat(abs); }
+  catch (e) {
+    if (errCode(e) === 'ENOENT') throw httpError(404, 'attachment not found');
+    throw e;
+  }
+  if (!stat.isFile()) throw httpError(404, 'attachment not found');
+  const ext = (raw.split('.').pop() || '').toLowerCase();
+  res.setHeader('Content-Type', CONTENT_TYPE_BY_EXT[ext] ?? 'application/octet-stream');
+  res.setHeader('Content-Length', String(stat.size));
+  // Cache aggressively — the filename includes a timestamp so it's effectively
+  // immutable. Saves a re-fetch on every conversation re-render.
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  createReadStream(abs).pipe(res);
+}
 
 // express types req.body as `any`; every JSON body read routes through here so
 // fields arrive as `unknown` and each handler narrows them with its existing
@@ -957,9 +981,21 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const sid = String(req.params.sid || '');
       assertValidSid(sid);
-      const wt = await requireWorktree(req.params.name, req.params.wt);
       const force = req.query.force === '1' || req.query.force === 'true';
-      await deleteSessionAtCwd({ place: await projectRootPlace(req.params.name, wt.worktreePath), sessionId: sid, force });
+      // A removed worktree's session (Settings → Archived lists them) is
+      // deleted at the place its record names; any other unknown worktree
+      // keeps the WORKTREE_UNKNOWN refusal.
+      let place: TranscriptPlacement;
+      try {
+        const wt = await requireWorktree(req.params.name, req.params.wt);
+        place = await projectRootPlace(req.params.name, wt.worktreePath);
+      } catch (e) {
+        const recorded = (e as { code?: unknown }).code === 'WORKTREE_UNKNOWN'
+          ? await recordedSessionPlace(req.params.name, req.params.wt, sid) : null;
+        if (!recorded) throw e;
+        place = recorded;
+      }
+      await deleteSessionAtCwd({ place, sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -1395,6 +1431,38 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try { res.json(await conductorSpawnedProjects()); } catch (e) { next(e); }
   });
 
+  // An ended session's scroll-back, from disk: the same page shape and the same
+  // walk into older segments as GET /instances/:id/lineage-events, for a
+  // session with no instance (a reopened view). Its cursors are archive indices
+  // of the session's own transcripts, unrelated to any instance's ring seqs.
+  // Responds { sessionId, events, hasMore, segment, nextBefore, pageSegment,
+  // currentSegmentId }; 404 when the session cannot be located.
+  r.get('/sessions/:sessionId/lineage-events', async (req, res, next) => {
+    try {
+      const { sid } = await sidParam(req.params.sessionId);
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw httpError(404, 'session not found');
+      const before = intQueryParam(req.query.before, 'before');
+      const limit = intQueryParam(req.query.limit, 'limit') ?? undefined;
+      const segment = typeof req.query.segment === 'string' && req.query.segment !== '' ? req.query.segment : null;
+      const publicId = await publicIdFor(sid);
+      const source = await retiredLineageSource(publicId, hit.place);
+      res.json({ sessionId: publicId, ...await pageLineageEvents(source, { segment, before, limit }) });
+    } catch (e) { next(e); }
+  });
+
+  // A session's attachment, addressed by session rather than instance (an ended
+  // pane has no live instance): the files live under the place the session ran
+  // in (attachmentsDir), so a deleted worktree's are gone with it — 404.
+  r.get('/sessions/:sessionId/attachments/:filename', async (req, res, next) => {
+    try {
+      const { sid } = await sidParam(req.params.sessionId);
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw httpError(404, 'session not found');
+      await sendAttachment(res, hit.project, hit.worktreeName, req.params.filename);
+    } catch (e) { next(e); }
+  });
+
   r.get('/sessions/:sessionId/locate', async (req, res, next) => {
     try {
       const { sid, backing } = await sidParam(req.params.sessionId);
@@ -1469,9 +1537,14 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // forward (first `limit` events with seq > after). Neither → trailing
     // `limit` events. `limit` clamped by `clampLimit` (default `LIMIT_DEFAULT`, max `LIMIT_MAX`). Responds
     // { id, events, hasMore, nextBefore, trimmedBefore, lastSeq }.
+    //
+    // Both this and lineage-events serve an instance that has left the list
+    // (killed, or an exited temp worker) from its frozen pager while the
+    // manager still holds one (src/retiredPagers.ts) — the pane that was
+    // watching it keeps its cursor space. 404 once that is forgotten.
     r.get('/instances/:id/events', async (req, res, next) => {
       try {
-        const inst = instances.get(req.params.id);
+        const inst = instances.pagerFor(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
         const before = intQueryParam(req.query.before, 'before');
         const after = intQueryParam(req.query.after, 'after');
@@ -1490,7 +1563,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // currentSegmentId }; 400 for a `segment` the walk never hands out.
     r.get('/instances/:id/lineage-events', async (req, res, next) => {
       try {
-        const inst = instances.get(req.params.id);
+        const inst = instances.pagerFor(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
         const before = intQueryParam(req.query.before, 'before');
         const limit = intQueryParam(req.query.limit, 'limit') ?? undefined;
@@ -1708,31 +1781,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
-        const raw = String(req.params.filename || '');
-        // Path-traversal guard: reject anything that isn't a plain basename.
-        if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..') || raw !== path.basename(raw)) {
-          throw httpError(400, 'invalid attachment filename');
-        }
-        const abs = path.join(
-          attachmentsDir(inst.project, inst.worktree?.worktreeName ?? null),
-          raw,
-        );
-        let stat: Awaited<ReturnType<typeof fs.stat>>;
-        try { stat = await fs.stat(abs); }
-        catch (e) {
-          if (errCode(e) === 'ENOENT') throw httpError(404, 'attachment not found');
-          throw e;
-        }
-        if (!stat.isFile()) throw httpError(404, 'attachment not found');
-        const ext = (raw.split('.').pop() || '').toLowerCase();
-        const ctype = CONTENT_TYPE_BY_EXT[ext] ?? 'application/octet-stream';
-        res.setHeader('Content-Type', ctype);
-        res.setHeader('Content-Length', String(stat.size));
-        // Cache aggressively — the filename includes a timestamp so it's
-        // effectively immutable. Saves a re-fetch on every conversation
-        // re-render.
-        res.setHeader('Cache-Control', 'private, max-age=3600');
-        createReadStream(abs).pipe(res);
+        await sendAttachment(res, inst.project, inst.worktree?.worktreeName ?? null, req.params.filename);
       } catch (e) { next(e); }
     });
 

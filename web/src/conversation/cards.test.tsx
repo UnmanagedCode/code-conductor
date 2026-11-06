@@ -656,3 +656,55 @@ describe('cards in an un-acked owned worker', () => {
     expect(localStorage.getItem(WORKER_SEND_ACK_KEY)).toBeNull();
   });
 });
+
+// Invariant: an ended pane (the shown session has no instance) is read-only —
+// its plan and question cards offer no action, and nothing is sent to the dead
+// instance; the same cards on a live pane are enabled.
+describe('cards on an ended pane', () => {
+  const PLAN = { kind: 'plan_request', toolUseId: 'p9', plan: '# Plan', planPath: null };
+  const endedPane = () => appStore.set({
+    activeId: 'iDead', instances: [],
+    ended: { id: 'iDead', project: 'p', sessionId: 's-dead', status: 'exited', mode: 'plan', ended: { source: 'instance', worktreeName: null } },
+  });
+  const planCard = (root: HTMLElement) => root.querySelector('[data-item="plan"]') as HTMLElement;
+
+  it('control: on a live pane the plan card and the question card are enabled', async () => {
+    appStore.set({ activeId: 'inst-1', ended: null });
+    const { root, card } = await show([PLAN, CARD()]);
+    expect((within(planCard(root)).getByRole('button', { name: /Approve/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect(opt(card(), 'Apple').disabled).toBe(false);
+    expect(input(card()).disabled).toBe(false);
+  });
+
+  it('the plan card\'s Approve, Reject and feedback are disabled, and a click sends nothing', async () => {
+    endedPane();
+    try {
+      const { root } = await show([PLAN]);
+      const card = planCard(root);
+      const approve = within(card).getByRole('button', { name: /Approve/ }) as HTMLButtonElement;
+      const reject = within(card).getByRole('button', { name: /Reject/ }) as HTMLButtonElement;
+      expect(approve.disabled).toBe(true);
+      expect(reject.disabled).toBe(true);
+      expect((card.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(true);
+      fireEvent.click(approve);
+      fireEvent.click(reject);
+      await flush();
+      expect(sent).toEqual([]);
+    } finally { appStore.set({ ended: null }); }
+  });
+
+  it('the question card\'s options, field and Send are disabled, and Enter sends nothing', async () => {
+    endedPane();
+    try {
+      const { card } = await show([CARD()]);
+      expect(opt(card(), 'Apple').disabled).toBe(true);
+      expect(input(card()).disabled).toBe(true);
+      expect(sendBtn(card()).disabled).toBe(true);
+      fireEvent.click(opt(card(), 'Apple'));
+      fireEvent.keyDown(input(card()), { key: 'Enter' });
+      fireEvent.click(sendBtn(card()));
+      await flush();
+      expect(sent).toEqual([]);
+    } finally { appStore.set({ ended: null }); }
+  });
+});

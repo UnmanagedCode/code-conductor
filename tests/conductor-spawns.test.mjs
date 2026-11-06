@@ -11,7 +11,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 const tmp = await mkdtemp('cc-conductor-spawns-');
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 
-const { parseSessionsDoc, markConducted, setTitle } = await import('../src/sessionStore.ts');
+const { parseSessionsDoc, markConducted, setSessionPlace, setTitle } = await import('../src/sessionStore.ts');
 const { rootOf, spawnedProjectsByRoot, conductorSpawnedProjects } = await import('../src/conductorSpawns.ts');
 
 let testNo = 0;
@@ -193,7 +193,8 @@ test('conductorSpawnedProjects reads the store: a markConducted write shows up o
   const W = 'dddddddd-0000-4000-8000-000000000004';
   await setTitle(C, 'the conductor');
   assert.deepEqual(await conductorSpawnedProjects(), {});
-  await markConducted(W, { parent: C, project: 'p', worktree: 'wt' });
+  await markConducted(W, { parent: C });
+  await setSessionPlace(W, { project: 'p', worktree: 'wt' });
   const out = await conductorSpawnedProjects();
   assert.deepEqual(Object.keys(out), [C]);
   assert.deepEqual(out[C].map(e => e.project), ['p']);

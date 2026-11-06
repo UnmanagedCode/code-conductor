@@ -1,6 +1,6 @@
 import { createStore } from './createStore';
 import type { Instance, Project, SessionRow } from './types';
-import type { SpawnedProject } from '@shared/conductors';
+import { CONDUCT_PROJECT, type SpawnedProject } from '@shared/conductors';
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting';
 
@@ -18,6 +18,8 @@ export type AppState = {
   /** The pristine conductor this tab started and no list carries yet (app/pristine.ts); never rendered by a list. */
   pristine: Instance | null;
   activeId: string | null;
+  /** The read-only pane's session when `activeId` names no listed instance (Instance.ended); never rendered by a list. */
+  ended: Instance | null;
   /** One-line status in the sidebar footer (resume / restart progress). */
   sidebarStatus: { text: string; warn: boolean } | null;
 };
@@ -32,6 +34,7 @@ export const appStore = createStore<AppState>({
   instances: [],
   pristine: null,
   activeId: null,
+  ended: null,
   sidebarStatus: null,
 });
 
@@ -39,5 +42,23 @@ export const appStore = createStore<AppState>({
 export const findInstance = (s: AppState, id: string): Instance | null =>
   s.instances.find((i) => i.id === id) ?? (s.pristine?.id === id ? s.pristine : null);
 
+/**
+ * Whether `project` is listed and, when `worktreeName` is set, still has that
+ * worktree: where a session can resume. The conductors' `.conduct` project is
+ * never listed but always exists (the server creates it on demand).
+ */
+export const placeExists = (projects: Project[], project: string, worktreeName: string | null): boolean => {
+  if (project === CONDUCT_PROJECT && !worktreeName) return true;
+  const p = projects.find((x) => x.name === project);
+  return !!p && (!worktreeName || p.worktrees.some((w) => w.worktreeName === worktreeName));
+};
+
+/** Whether `project` is listed without `worktreeName`: a worktree known to be deleted (an unlisted project says nothing). */
+export const worktreeRemoved = (projects: Project[], project: string, worktreeName: string | null): boolean => {
+  const p = projects.find((x) => x.name === project);
+  return !!worktreeName && !!p && !p.worktrees.some((w) => w.worktreeName === worktreeName);
+};
+
+/** The selected instance: a listed one, the pristine slot's, else the ended pane's. */
 export const activeInstance = (s: AppState): Instance | null =>
-  (s.activeId && findInstance(s, s.activeId)) || null;
+  (s.activeId && (findInstance(s, s.activeId) ?? (s.ended?.id === s.activeId ? s.ended : null))) || null;

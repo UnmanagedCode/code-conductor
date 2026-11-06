@@ -12,7 +12,7 @@ const FIT_MAX_H = '90dvh';
  * In the overlay a tap on the image toggles fit-to-screen and 1:1; the 1:1 view is centred when it fits and otherwise starts with the tapped spot under the pointer, then pans by scrolling.
  * A tap anywhere outside the image closes it. The fit image is sized from its aspect ratio, so its box is the painted image and has no letterbox band to catch a tap.
  */
-export function ImageZoom({ src, alt, className }: { src: string; alt: string; className?: string }) {
+export function ImageZoom({ src, alt, className, onError }: { src: string; alt: string; className?: string; onError?: () => void }) {
   const [open, setOpen] = React.useState(false);
   const [actual, setActual] = React.useState(false);
   const [ratio, setRatio] = React.useState<number | null>(null);
@@ -50,7 +50,7 @@ export function ImageZoom({ src, alt, className }: { src: string; alt: string; c
   return (
     <>
       <button type="button" onClick={() => { setActual(false); setOpen(true); }} className="block max-w-full cursor-zoom-in" aria-label={`Enlarge ${alt}`}>
-        <img src={src} alt={alt} loading="lazy" className={cn('max-w-full object-contain', className)} />
+        <img src={src} alt={alt} loading="lazy" onError={onError} className={cn('max-w-full object-contain', className)} />
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent

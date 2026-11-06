@@ -7,7 +7,8 @@ import { contributions, hookWarning, metaBits, updateChange, updateWarning, type
 import { playbookOptions, ENFORCEMENT_LABELS } from './ConventionsSection';
 import { describeAuth } from './ClaudeLogin';
 import { describeUpdate } from './AboutSection';
-import { orderGroups, archivedSessionUrl } from './ArchivedSection';
+import { orderGroups } from './ArchivedSection';
+import { archivedSessionUrl } from '@/app/sessionActions';
 import { visibleSections } from './SettingsView';
 
 const data: ModelsPayload = {

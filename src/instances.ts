@@ -5,6 +5,8 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
+import { RetiredPagers } from './retiredPagers.ts';
+import type { LineageSource } from './lineagePager.ts';
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 
@@ -73,7 +75,7 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
-  isConducted, markConducted, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd, errCode,
+  isConducted, markConducted, setSessionPlace, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd, errCode,
   appendModelSwitch, reanchorModelSwitches, getModelSwitchesForSegment,
   type SessionBackendRecord, type TurnMarks, type ModelSwitchEntry,
 } from './sessionStore.ts';
@@ -2529,13 +2531,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // custom-model row is deleted. Runs on every spawn/resume, so a
     // model-unknown record self-heals once this.model holds a real id.
     writes.push(this._recordBackend());
-    // A conducted worker's spawn-time facts: who spawned it and where it runs.
-    // Here, not at the first turn_end, so a worker killed mid-first-turn is
-    // still recorded as conducted.
-    if (this.conducted) {
-      writes.push(markConducted(this.sessionId, {
-        parent: this.parentSessionId, project: this.project, worktree: this.worktree?.worktreeName ?? null,
+    // Where the session runs, for every session: what keeps its transcript
+    // locatable once its worktree is deleted (findSessionLocation).
+    if (this.sessionId) {
+      writes.push(setSessionPlace(this.sessionId, {
+        project: this.project, worktree: this.worktree?.worktreeName ?? null,
       }));
+    }
+    // A conducted worker's spawn-time fact: who spawned it. Here, not at the
+    // first turn_end, so a worker killed mid-first-turn is still recorded as
+    // conducted.
+    if (this.conducted) {
+      writes.push(markConducted(this.sessionId, { parent: this.parentSessionId }));
     }
     // Same reason as the temp flag: this is the first point a fresh spawn has
     // a sessionId to key the mode record on (the constructor runs before the id
@@ -5090,6 +5097,8 @@ export class Instance extends EventEmitter implements InstanceLike {
 
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
+  // Frozen pagers of instances dropped from byId (src/retiredPagers.ts).
+  retired = new RetiredPagers();
   _claudeLauncher: LauncherLike;
   _platform: Platform;
   // How the synchronous stops (shutdownForResumeSync, stopLiveSync) treat live CLIs.
@@ -5472,6 +5481,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       .map(i => ({ backend: i.backend, sessionId: i.sessionId ?? null }));
   }
   get(id: string): Instance | undefined { return this.byId.get(id); }
+
+  // The event pager for an instance id: the live instance, else the frozen copy
+  // taken when it left byId. Read-only routes only — nothing else may address a
+  // retired instance.
+  pagerFor(id: string): LineageSource & { readonly id: string } | undefined {
+    return this.byId.get(id) ?? this.retired.get(id);
+  }
+
   idsForProject(name: string): string[] {
     return [...this.byId.values()].filter(i => i.project === name).map(i => i.id);
   }
@@ -6518,6 +6535,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // (and the badge would outlive the timer). Done while inst is still in
         // byId so cancel can clear its flags + emit the badge-drop status.
         this._cancelAutoResume(inst.id);
+        // Its pager outlives it, for a pane still showing it.
+        this.retired.capture(inst);
         this.byId.delete(id);
         this._purgeIdleFor(id);
         this._idleRenewNudge.purge(id);
@@ -7215,6 +7234,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (inst._redirect) {
       rmSync(sessionTmpDir(inst.id), { recursive: true, force: true });
     }
+    this.retired.capture(inst);
     this.byId.delete(id);
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);
