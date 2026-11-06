@@ -32,7 +32,7 @@ Every `sessionId` / `conductorSessionId` / `forwardSessionId` is a **permanent p
 | Kind | Fields | Writer · trigger |
 |---|---|---|
 | `retire` | `sessionId`, `reason` (`subprocess <status>`) | The manager `status` stream · once per alive→dead edge (`isDeadStatus` in `src/instances.ts`). A repeated dead status (`exited` then `crashed`) is the same death. |
-| `resume` | `sessionId` | The manager `session_relaunched` event · every launch that re-enters an existing session: `spawn_instance({resume})`, a UI resume, `respawn`, a restart restore, and the relaunch inside a prune, rewind or model switch. A fresh session writes none. |
+| `resume` | `sessionId` | The manager `session_relaunched` event · every launch that re-enters an existing session and passes its pre-spawn refusal checks: `spawn_instance({resume})`, a UI resume, `respawn`, a restart restore, and the relaunch inside a prune, rewind or model switch. A fresh session writes none. |
 
 **Activity kinds** (`ACTIVITY_KINDS`, `src/playbookLedger.ts`) — a conductor acting on a worker. They fold to no projection state and carry ids and a tool name only, never prompt text:
 
@@ -43,7 +43,7 @@ Every `sessionId` / `conductorSessionId` / `forwardSessionId` is a **permanent p
 
 ## Semantics for a timeline reader
 
-- **One call event per interaction call.** Each successful conductor call to an interaction tool ends in exactly one `transition` or `interaction`. A refused governed call writes only its `refusal` (under `enforce` no handler runs; under `warn` it proceeds). A handler that throws or soft-refuses (`ok:false`) writes nothing. `spawn_instance` ends in `spawn` or `refusal`, never `interaction`.
+- **One call event per interaction call.** Each successful conductor call to an interaction tool ends in exactly one `transition` or `interaction`. A refused governed call writes only its `refusal` (under `enforce` no handler runs; under `warn` it proceeds). A handler that throws or soft-refuses (`ok:false`) writes nothing. `spawn_instance` never writes `interaction`: it writes `spawn`, `refusal`, or nothing in the bound-session case below.
 - **Calls with no row.** A successful call to a read-only governed tool (`get_recent_messages`, `get_transcript`, `describe_session`, `playbook_state`) writes nothing, and neither does a `spawn_instance` whose result names a session the ledger already holds. Do not read the ledger as a complete log of governed calls.
 - **Lifecycle edges.** `retire` follows a death; `resume` follows a re-entry. A rotation that kills and relaunches the process (prune, rewind, model switch) is a `retire` then a `resume`; an in-place rotation (renew, typed `/clear`) writes neither.
 - **Ordering.**
