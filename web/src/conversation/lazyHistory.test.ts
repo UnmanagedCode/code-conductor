@@ -309,3 +309,45 @@ describe('loadUntil', () => {
     expect(has('old1')).toBe(false);
   });
 });
+
+describe('an ended session', () => {
+  const answer = (status: number) => vi.fn(async () => ({ ok: false, status, json: async () => ({ error: `status ${status}` }) }));
+  function ended(isEnded: boolean, status: number) {
+    vi.stubGlobal('fetch', answer(status));
+    const h = createLazyHistory({ model: new ConversationModel(), getActiveId: () => 'inst1', isEnded: () => isEnded });
+    h.init({ tailStartSeq: 1000 });
+    return h;
+  }
+
+  // Invariant: only a 404 for a session with no instance ends the scroll-back quietly.
+  it('a 404 for an ended session ends the scroll-back with no warning', async () => {
+    const h = ended(true, 404);
+    await h.loadEarlier();
+    expect(h.state().hasMore).toBe(false);
+  });
+
+  it('a 404 for a live instance is still a failure: it warns and keeps the control', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = ended(false, 404);
+    await h.loadEarlier();
+    expect(h.state().hasMore).toBe(true);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('load earlier failed:', expect.objectContaining({ status: 404 }));
+  });
+
+  it('any other failure for an ended session still warns and keeps the control', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = ended(true, 500);
+    await h.loadEarlier();
+    expect(h.state().hasMore).toBe(true);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('load earlier failed:', expect.objectContaining({ status: 500 }));
+  });
+
+  it('pages from the route pageUrl names', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', makeFetch(makePages(1, { hasMore: false }), calls));
+    const h = createLazyHistory({ model: new ConversationModel(), getActiveId: () => 'inst1', pageUrl: () => '/api/sessions/s1/lineage-events' });
+    h.init({ tailStartSeq: 1000 });
+    await h.loadEarlier();
+    expect(calls).toEqual(['/api/sessions/s1/lineage-events?limit=200&before=1000']);
+  });
+});

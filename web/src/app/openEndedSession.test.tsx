@@ -33,13 +33,18 @@ describe('openEndedSession', () => {
       'GET /api/': () => ({ json: [] }),
     });
     const c = await import('./controller');
+    const ws = (await import('@shared/ws')) as unknown as { send: ReturnType<typeof vi.fn> };
     const { appStore } = await import('@/state/app');
+    appStore.set({ instances: [{ id: 'iPrev', project: 'p', sessionId: 's-prev', status: 'idle', mode: 'plan' }] });
+    c.selectInstance('iPrev');
+    ws.send.mockClear();
     const { TooltipProvider } = await import('@/components/ui/tooltip');
     const { SessionView } = await import('@/features/session/SessionView');
     render(<TooltipProvider><SessionView /></TooltipProvider>);
 
     await act(async () => { await c.openEndedSession({ sessionId: 's-x', project: 'p', worktreeName: null, title: 'Old work' }); });
 
+    expect(ws.send.mock.calls, 'the session shown before is unsubscribed, nothing subscribed').toEqual([['unsubscribe', { id: 'iPrev' }]]);
     const lineage = () => calls.filter((x) => x.url.includes('/lineage-events')).map((x) => x.url);
     expect(lineage()).toEqual(['/api/sessions/s-x/lineage-events?limit=200']);
     expect(screen.getByText('NEWEST-REPLY')).toBeTruthy();

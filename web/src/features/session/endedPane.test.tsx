@@ -148,10 +148,9 @@ describe('the ended pane', () => {
 
     const stopped = b.actions.stopSession({ projectName: 'p', instanceId: 'iB', sessionId: 's-b', status: 'idle' });
     await b.flush();
-    await b.land(b.reads.length, []);
+    // The stop's refresh reads the list without B (answering a read twice is a no-op).
+    for (const r of b.reads) await act(async () => { r.release({ json: [] }); });
     await act(async () => { await stopped; });
-    await b.flush();
-    for (let n = 1; n <= b.reads.length; n++) await act(async () => { b.reads[n - 1].release({ json: [] }); });
     await b.flush();
     expect(b.appStore.get().activeId).toBeNull();
     expect(document.querySelector('[data-session-ended]')).toBeNull();

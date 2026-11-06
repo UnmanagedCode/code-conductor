@@ -21,6 +21,7 @@ const GROUPS = [{ project: 'p', sessions: [
 
 async function mount() {
   vi.resetModules();
+  history.replaceState(null, '', '/#settings/archived');
   const resumedInst = { id: 'iR', project: 'p', sessionId: 's-live-wt', status: 'idle', mode: 'plan' };
   const calls = routeFetch({
     'GET /api/archived': () => ({ json: { groups: GROUPS } }),
@@ -33,6 +34,7 @@ async function mount() {
     'GET /api/': () => ({ json: [] }),
   });
   const { appStore } = await import('@/state/app');
+  const { routeStore } = await import('@/state/route');
   const { ArchivedSection } = await import('./ArchivedSection');
   appStore.set({ projects: [P], instances: [], activeId: null, ended: null });
   render(<ArchivedSection />);
@@ -40,7 +42,7 @@ async function mount() {
   const row = (sid: string) => document.querySelector(`[data-session="${sid}"]`) as HTMLElement;
   const buttons = (sid: string) => within(row(sid)).queryAllByRole('button').map((b) => b.textContent?.trim());
   const settle = () => act(async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); });
-  return { appStore, calls, row, buttons, settle };
+  return { appStore, routeStore, calls, row, buttons, settle };
 }
 
 afterEach(() => { vi.restoreAllMocks(); history.replaceState(null, '', '/'); });
@@ -56,6 +58,7 @@ describe('ArchivedSection', () => {
 
   it('Open shows the removed worktree\'s session read-only, by session id', async () => {
     const b = await mount();
+    expect(b.routeStore.get().route.view, 'fixture check: Settings is showing').toBe('settings');
     await act(async () => { fireEvent.click(within(b.row('s-gone-wt')).getByRole('button', { name: 'Open' })); });
     await b.settle();
     expect(b.appStore.get().ended).toMatchObject({
@@ -63,6 +66,7 @@ describe('ArchivedSection', () => {
     });
     expect(b.appStore.get().activeId).toBe('ended:s-gone-wt');
     expect(location.hash).toBe('#session=s-gone-wt');
+    expect(b.routeStore.get().route.view, 'Open leaves Settings for the session view').toBe('session');
     expect(b.calls.some((x) => x.url === '/api/sessions/s-gone-wt/lineage-events?limit=200')).toBe(true);
   });
 

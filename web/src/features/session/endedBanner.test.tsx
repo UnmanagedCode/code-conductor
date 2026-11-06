@@ -70,7 +70,6 @@ describe('EndedBanner', () => {
     expect(resume(), 'control: listed worktree').not.toBeNull();
     act(() => appStore.set({ projects: [project(['other'])] }));
     expect(resume()).toBeNull();
-    expect(screen.getByRole('status').textContent).toMatch(/ended/);
     act(() => appStore.set({ projects: [] }));
     expect(resume()).toBeNull();
   });

@@ -208,21 +208,38 @@ test('GET /api/sessions/:sid/lineage-events walks a deleted worktree\'s two-segm
   } finally { await ctx.close(); }
 });
 
-// 4 — INVARIANT: Settings → Archived lists a session whose worktree is gone,
-// under its project, with the recorded worktree name.
-test('GET /api/archived lists a deleted worktree\'s session with its worktreeName', async () => {
+// 4 — INVARIANT: Settings → Archived lists EVERY session — archived or not —
+// of a worktree that is gone, under its project, with the recorded worktree
+// name; a still-registered worktree keeps listing archived sessions only.
+test('GET /api/archived lists a deleted worktree\'s sessions with its worktreeName; a registered worktree lists archived ones only', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const { sid, publicId, wt } = await workerInWorktree(ctx);
+    const { setSessionPlace } = await import('../src/sessionStore.ts');
+    // A recorded, NOT archived session in the same worktree (a human session
+    // there, say), and one in a worktree that stays registered.
+    const unarchived = randomUUID();
+    await setSessionPlace(unarchived, { project: 'demo', worktree: 'job' });
+    await seedSessionJsonl(localPlace(wt.worktreePath), unarchived, ONE_TURN);
+    const kept = await createWorktree('demo', { name: 'keep' });
+    const keptLive = randomUUID();
+    await setSessionPlace(keptLive, { project: 'demo', worktree: kept.worktreeName });
+    await seedSessionJsonl(localPlace(kept.worktreePath), keptLive, ONE_TURN);
     await kill(ctx, sid);
     await deleteWorktree(ctx, wt);
+
     const r = await api(ctx.baseUrl, 'GET', '/api/archived');
     assert.equal(r.status, 200);
     const group = r.body.groups.find(g => g.project === 'demo');
     assert.ok(group, `no demo group: ${JSON.stringify(r.body)}`);
+    const ids = group.sessions.map(s => s.sessionId);
     const row = group.sessions.find(s => s.sessionId === publicId);
-    assert.ok(row, `the session is listed: ${JSON.stringify(group)}`);
+    assert.ok(row, `the archived session is listed: ${JSON.stringify(group)}`);
     assert.equal(row.worktreeName, 'job');
+    assert.equal(group.sessions.find(s => s.sessionId === unarchived)?.worktreeName, 'job',
+      'a deleted worktree\'s unarchived session is listed too');
+    assert.ok(!ids.includes(keptLive), 'a registered worktree\'s unarchived session is not');
+    assert.equal(new Set(ids).size, ids.length, 'no row twice');
   } finally { await ctx.close(); }
 });
 
@@ -328,5 +345,23 @@ test('DELETE a removed worktree\'s session goes through its recorded place; othe
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
     assert.equal(await exists(backingId), false, 'the recorded session\'s transcript is deleted');
     assert.equal(await exists(unrecorded), true, 'nothing else at that place is');
+  } finally { await ctx.close(); }
+});
+
+// 9 — INVARIANT: the recorded-place fallback walks the session's older segments
+// too, as the registered-place probe does: a session whose current segment's
+// file is gone is still located through an older one.
+test('a deleted worktree\'s session is located through an older segment when its current file is gone', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { sid, publicId, wt } = await workerInWorktree(ctx);
+    await kill(ctx, sid);
+    const { recordRotation } = await import('../src/sessionLineage.ts');
+    await recordRotation(publicId, randomUUID(), 'renew'); // its transcript never written
+    await deleteWorktree(ctx, wt);
+    const r = await api(ctx.baseUrl, 'GET', `/api/sessions/${publicId}/locate`);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.project, 'demo');
+    assert.equal(r.body.worktreeName, 'job');
   } finally { await ctx.close(); }
 });

@@ -5489,11 +5489,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this.byId.get(id) ?? this.retired.get(id);
   }
 
-  // Freeze a leaving instance's pager, for a pane still showing it. One with no
-  // session never had history to page.
-  _retirePager(inst: Instance): void {
-    if (inst.sessionId) this.retired.capture(inst);
-  }
   idsForProject(name: string): string[] {
     return [...this.byId.values()].filter(i => i.project === name).map(i => i.id);
   }
@@ -6540,7 +6535,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // (and the badge would outlive the timer). Done while inst is still in
         // byId so cancel can clear its flags + emit the badge-drop status.
         this._cancelAutoResume(inst.id);
-        this._retirePager(inst);
+        // Its pager outlives it, for a pane still showing it.
+        this.retired.capture(inst);
         this.byId.delete(id);
         this._purgeIdleFor(id);
         this._idleRenewNudge.purge(id);
@@ -7238,7 +7234,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (inst._redirect) {
       rmSync(sessionTmpDir(inst.id), { recursive: true, force: true });
     }
-    this._retirePager(inst);
+    this.retired.capture(inst);
     this.byId.delete(id);
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);

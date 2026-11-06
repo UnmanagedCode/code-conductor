@@ -264,7 +264,6 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
 export function openEndedSession({ sessionId, project, worktreeName, title = null }: { sessionId: string; project: string; worktreeName: string | null; title?: string | null }) {
   const prev = appStore.get().activeId;
   if (prev) send('unsubscribe', { id: prev });
-  subscribe(null);
   const ended: Instance = {
     id: `ended:${sessionId}`, project, sessionId, status: 'exited', displayStatus: 'exited', mode: 'plan', title, worktree: null,
     ended: { source: 'session', worktreeName },
@@ -275,7 +274,6 @@ export function openEndedSession({ sessionId, project, worktreeName, title = nul
   emit('select', { id: ended.id, sessionId, userGesture: false });
   writeSessionAnchor(sessionId);
   syncRoute();
-  closeSidebarOnMobile();
   return lazyHistory.openNewest();
 }
 

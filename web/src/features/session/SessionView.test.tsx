@@ -30,7 +30,7 @@ const inst = (id: string, extra: Partial<Instance> = {}): Instance => ({
 function seed(over: Partial<ReturnType<typeof appStore.get>> = {}) {
   appStore.set({
     connection: 'open', everDropped: false, activeId: null, sidebarStatus: null,
-    projects: [], workspaces: [], conductSessions: [], conductorSpawns: {}, instances: [],
+    projects: [], workspaces: [], conductSessions: [], conductorSpawns: {}, instances: [], ended: null,
     ...over,
   });
 }
@@ -59,6 +59,32 @@ beforeEach(() => {
 });
 
 describe('SessionView', () => {
+  // Invariant: an ended pane's header offers nothing that addresses its (gone)
+  // instance — no Resume (respawn), no Sync in the bar or in ⋮ — while the same
+  // exited instance still listed offers them.
+  it.each([true, false])('an ended instance\'s header has no Resume, Sync or ⋮; a listed exited one has them (wide: %s)', (wide) => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      media: query, matches: wide, onchange: null,
+      addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
+    }));
+    try {
+      const exited = inst('A', { status: 'exited', displayStatus: 'exited', worktree: WORKTREE });
+      seed({ instances: [exited], activeId: 'A' });
+      const r = renderView();
+      expect(screen.getByRole('button', { name: 'Resume' }), 'control: a listed exited session offers Resume').toBeTruthy();
+      if (wide) expect(screen.getByRole('button', { name: 'Sync' }), 'control: Sync in the bar').toBeTruthy();
+      else expect(trigger(), 'control: ⋮ holds Sync').not.toBeNull();
+      r.unmount();
+      seed({ instances: [], ended: { ...exited, ended: { source: 'instance', worktreeName: 'wt-a' } }, activeId: 'A' });
+      renderView();
+      expect(header()).not.toBeNull();
+      expect(document.querySelector('[data-session-ended]')).not.toBeNull();
+      for (const name of ['Resume', 'Sync', 'Session actions']) {
+        expect(within(header()!).queryByRole('button', { name }), name).toBeNull();
+      }
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('an active id with no backing instance renders no header: no ⋮, mode toggle, Sync, Change model or Change effort, and nothing is sent', () => {
     seed({ instances: [inst('A', { worktree: WORKTREE })], activeId: 'A' });
     renderView();
