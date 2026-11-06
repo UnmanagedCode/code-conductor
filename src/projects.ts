@@ -2485,6 +2485,20 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
   return groups;
 }
 
+// Where `sessionId`'s transcripts are when its record places it in worktree
+// `worktreeName` of listed project `projectName` — the place a removed
+// worktree's Settings → Archived row addresses. Null when the record names any
+// other place, or none.
+export async function recordedSessionPlace(
+  projectName: string, worktreeName: string, sessionId: string,
+): Promise<TranscriptPlacement | null> {
+  const { publicIdFor } = await import('./sessionLineage.ts');
+  const rec = (await loadSessions()).byPublic.get(await publicIdFor(sessionId));
+  if (rec?.project !== projectName || rec.worktree !== worktreeName) return null;
+  const proj = (await listProjects({ includeConduct: true })).find(p => p.name === projectName);
+  return proj ? (await recordedPlace(proj, worktreeName)).place : null;
+}
+
 // project name → the distinct worktree names session records place a session
 // in (setSessionPlace). Store reads only.
 async function recordedWorktreesByProject(): Promise<Map<string, Set<string>>> {

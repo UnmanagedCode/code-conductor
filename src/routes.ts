@@ -10,7 +10,7 @@ import {
   listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
   findSessionLocation, projectsBySystem, setProjectRemote, setProjectWorkspace,
   addWorkspace, removeWorkspace, renameWorkspace,
-  summarizeWorkspaces, validateName, placeOf, projectRootPlace, type TranscriptPlacement,
+  summarizeWorkspaces, validateName, placeOf, projectRootPlace, recordedSessionPlace, type TranscriptPlacement,
 } from './projects.ts';
 import { suggestAdoptableDirs } from './projectSuggestions.ts';
 import { conductorSpawnedProjects } from './conductorSpawns.ts';
@@ -957,9 +957,21 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const sid = String(req.params.sid || '');
       assertValidSid(sid);
-      const wt = await requireWorktree(req.params.name, req.params.wt);
       const force = req.query.force === '1' || req.query.force === 'true';
-      await deleteSessionAtCwd({ place: await projectRootPlace(req.params.name, wt.worktreePath), sessionId: sid, force });
+      // A removed worktree's session (Settings → Archived lists them) is
+      // deleted at the place its record names; any other unknown worktree
+      // keeps the WORKTREE_UNKNOWN refusal.
+      let place: TranscriptPlacement;
+      try {
+        const wt = await requireWorktree(req.params.name, req.params.wt);
+        place = await projectRootPlace(req.params.name, wt.worktreePath);
+      } catch (e) {
+        const recorded = (e as { code?: unknown }).code === 'WORKTREE_UNKNOWN'
+          ? await recordedSessionPlace(req.params.name, req.params.wt, sid) : null;
+        if (!recorded) throw e;
+        place = recorded;
+      }
+      await deleteSessionAtCwd({ place, sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });

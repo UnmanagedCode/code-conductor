@@ -293,3 +293,40 @@ test('RetiredPagers forgets the oldest capture past RETIRED_PAGER_CAP', async ()
   assert.ok(pagers.get('inst-1'), 'a recaptured entry moved to the newest end');
   assert.equal(pagers.get('inst-2'), undefined);
 });
+
+// 8 — INVARIANT: a removed worktree's session can be deleted from Settings →
+// Archived through the place its record names, and ONLY that: a request naming
+// another project or another worktree, or a session with no recorded place,
+// keeps the WORKTREE_UNKNOWN refusal and deletes nothing.
+test('DELETE a removed worktree\'s session goes through its recorded place; other names and unrecorded sessions still 404', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { sid, publicId, wt, backingId } = await workerInWorktree(ctx);
+    await makeRealRepo(ctx, 'other');
+    await kill(ctx, sid);
+    const place = localPlace(wt.worktreePath);
+    const unrecorded = randomUUID();
+    await seedSessionJsonl(place, unrecorded, ONE_TURN);
+    await deleteWorktree(ctx, wt);
+    const { sessionFilePath } = await import('../src/projects.ts');
+    const exists = (id) => fs.stat(sessionFilePath(place, id)).then(() => true, () => false);
+    const del = (project, worktree, id) =>
+      api(ctx.baseUrl, 'DELETE', `/api/projects/${project}/worktrees/${worktree}/sessions/${id}`);
+
+    for (const [what, r] of [
+      ['another worktree', await del('demo', 'elsewhere', publicId)],
+      ['another project', await del('other', 'job', publicId)],
+      ['an unrecorded session', await del('demo', 'job', unrecorded)],
+    ]) {
+      assert.equal(r.status, 404, `${what}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.code, 'WORKTREE_UNKNOWN', `${what}: ${JSON.stringify(r.body)}`);
+    }
+    assert.equal(await exists(backingId), true, 'the refused requests deleted nothing');
+    assert.equal(await exists(unrecorded), true);
+
+    const ok = await del('demo', 'job', publicId);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(await exists(backingId), false, 'the recorded session\'s transcript is deleted');
+    assert.equal(await exists(unrecorded), true, 'nothing else at that place is');
+  } finally { await ctx.close(); }
+});
