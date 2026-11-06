@@ -1033,6 +1033,10 @@ export class IdleSubscriptionHub {
     }
     const targetSessionId = opts?.exited?.sessionId
       ?? this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
+    // The id the ledger signal names. Deliberately WITHOUT the instanceId
+    // fallback above: an instanceId is not a public id, so a target that left the
+    // registry with no exited record is not reported at all.
+    const wakeTarget = opts?.exited?.sessionId ?? this.manager.byId.get(targetInstanceId)?.sessionId ?? null;
     // Fold the worker's recent output into the stub ONLY on a real turn_end
     // delivered to an already-idle caller. The heartbeat path and the
     // live mid-turn steering path keep the plain pointer stub. Decided here,
@@ -1073,6 +1077,14 @@ export class IdleSubscriptionHub {
         // clean steering stub (its WAKE_CALLBACK_MARKER still leads the echoed
         // text, so the UI renders the wake bubble unchanged).
         await caller.prompt(stub, [], { internal: true, annotateIfMidTurn: false });
+        // Only a wake that reached the caller. The playbook gate ledgers it; this
+        // module never imports the ledger.
+        if (wakeTarget && typeof caller.sessionId === 'string' && caller.sessionId) {
+          this.manager.emit('wake_delivered', {
+            callerSessionId: caller.sessionId, callerProject: caller.project,
+            targetSessionId: wakeTarget, heartbeat: !!opts?.timedOut,
+          });
+        }
       } catch (err) {
         caller._emitUi({
           kind: 'system', subtype: 'stderr',

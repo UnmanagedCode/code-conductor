@@ -79,19 +79,18 @@ async function spawnDecision(gate) {
   return outcome;
 }
 
-test('a `spawn` move whose RESULT names an already-bound session is ledgered as a `resume`', async () => {
+test('a `spawn` move whose RESULT names an already-bound session appends nothing', async () => {
   const { dir, file, gate } = await tmpLedger(BOUND);
   try {
     const outcome = await spawnDecision(gate);
     // The handler came back with a session the ledger already holds — the
     // divergence: the id the caller passed was unplaceable, the id that came
-    // back is bound.
+    // back is bound. The manager's relaunch stream owns `resume`; this arm
+    // writes neither a second spawn nor a resume.
     await outcome.commit({ sessionId: 'w1', project: 'demo' });
 
     const evs = await readEvents(file);
-    assert.deepEqual(evs.map(e => e.kind), ['spawn', 'transition', 'resume'],
-      'the append must be a resume, not a second spawn');
-    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === 'w1').length, 1);
+    assert.deepEqual(evs.map(e => e.kind), ['spawn', 'transition']);
     const st = foldProjection(evs).bySession.get('w1');
     assert.deepEqual(
       { playbook: st.playbook, stage: st.stage, history: st.stageHistory },
@@ -193,15 +192,15 @@ test('a committed transition emits exactly one playbook_changed, with the new st
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test('the spawn->resume backstop and a refusal both emit no playbook_changed', async () => {
+test('the bound-session spawn backstop and a refusal both emit no playbook_changed', async () => {
   const { dir, gate, emitted } = await tmpLedgerRecording(BOUND);
   try {
-    // Backstop: a `spawn` move whose RESULT names an already-bound session is
-    // ledgered as a `resume`, not a `spawn` — no binding actually changed.
+    // Backstop: a `spawn` move whose RESULT names an already-bound session
+    // appends nothing — no binding actually changed.
     const outcome = await spawnDecision(gate);
     await outcome.commit({ sessionId: 'w1', project: 'demo' });
     assert.equal(emitted.filter(e => e.event === 'playbook_changed').length, 0,
-      'a resume must not emit — nothing about the binding moved');
+      'the backstop must not emit — nothing about the binding moved');
 
     // A refusal: PLAYBOOK_UNKNOWN, recorded but nothing folds.
     const refused = await gate.check({
@@ -213,7 +212,7 @@ test('the spawn->resume backstop and a refusal both emit no playbook_changed', a
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test('two CONCURRENT commits naming the same session write one `spawn` and one `resume`', async () => {
+test('two CONCURRENT commits naming the same session write one `spawn` and nothing else', async () => {
   // INVARIANT: the "already bound?" question is answered INSIDE the serialized
   // append chain, not before it. Asked outside, two commits racing on one
   // sessionId both read "unbound" and both append a `spawn` — and the second one
@@ -228,8 +227,8 @@ test('two CONCURRENT commits naming the same session write one `spawn` and one `
     await Promise.all([a.commit({ sessionId: 'w2', project: 'demo' }), b.commit({ sessionId: 'w2', project: 'demo' })]);
 
     const evs = await readEvents(file);
-    assert.deepEqual(evs.map(e => e.kind), ['spawn', 'transition', 'spawn', 'resume'],
-      'the second commit must fold as a resume, not a second spawn');
+    assert.deepEqual(evs.map(e => e.kind), ['spawn', 'transition', 'spawn'],
+      'the second commit must append nothing, not a second spawn');
     const st = foldProjection(evs).bySession.get('w2');
     assert.deepEqual({ stage: st.stage, history: st.stageHistory }, { stage: 'loose', history: ['loose'] });
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
@@ -349,12 +348,145 @@ test('an empty-string forward.sessionId mints no forwardSessionId key', async ()
   assert.equal(Object.hasOwn(row, 'forwardSessionId'), false);
 });
 
-test('an undeclared self-edge with a forward is still not ledgered', async () => {
-  // INVARIANT: carrying a forward does not make an undeclared self-edge worth a
-  // row — `build` declares no build->build.
-  const { dir, gate, appended } = await tmpLedgerAppends(RUN);
+test('an undeclared self-edge with a forward is ledgered as an interaction, not a transition', async () => {
+  // INVARIANT: `build` declares no build->build, so the call is no `transition`;
+  // it is still a conductor acting on a worker, recorded as one `interaction`
+  // carrying the forward source.
+  const { dir, file, gate, appended } = await tmpLedgerAppends(RUN);
   try {
     await sendPromptCommitted(gate, { sessionId: 'w1', text: 'x', stage: 'build', forward: { sessionId: FORWARD_SOURCE } });
+    assert.equal(appended.length, 1);
+    assert.deepEqual(await lastRow(file), {
+      kind: 'interaction', tool: 'send_prompt', sessionId: 'w1', conductorSessionId: CONDUCTOR_ID,
+      forwardSessionId: FORWARD_SOURCE,
+    });
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+// ── interaction rows ───────────────────────────────────────────────────────
+//
+// Exactly one call event per governed interaction call, after a successful
+// handler: `transition` (a real move or declared self-loop) or `interaction`
+// (everything else). Ids and the tool name only — never the prompt text.
+
+async function committed(gate, toolName, args, result = {}) {
+  const outcome = await gate.check({ toolName, args, callerId: CONDUCTOR_ID });
+  assert.ok(!('refusal' in outcome), `premise: ${toolName} must be allowed; got ${JSON.stringify(outcome.refusal)}`);
+  await outcome.commit?.(result);
+  return outcome;
+}
+
+async function appendedRows(seed, fn) {
+  const { dir, file, gate, appended } = await tmpLedgerAppends(seed);
+  try {
+    await fn(gate);
+    return { appended, rows: (await readEvents(file)).slice(seed.length) };
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+}
+
+test('send_prompt to an untracked worker appends one interaction with exactly the id fields and no prompt text', async () => {
+  const { rows } = await appendedRows(RUN, g => committed(g, 'send_prompt', { sessionId: 'u9', text: 'SECRET-PROMPT-TEXT' }));
+  assert.equal(rows.length, 1);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ['conductorSessionId', 'kind', 'seq', 'sessionId', 'tool', 'ts']);
+  assert.equal(rows[0].kind, 'interaction');
+  assert.equal(rows[0].tool, 'send_prompt');
+  assert.equal(rows[0].sessionId, 'u9');
+  assert.equal(rows[0].conductorSessionId, CONDUCTOR_ID);
+  assert.doesNotMatch(JSON.stringify(rows[0]), /SECRET-PROMPT-TEXT/);
+});
+
+test('an interaction with a forward source adds forwardSessionId', async () => {
+  const { rows } = await appendedRows(RUN, g =>
+    committed(g, 'send_prompt', { sessionId: 'u9', text: 'go', forward: { sessionId: FORWARD_SOURCE } }));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].forwardSessionId, FORWARD_SOURCE);
+});
+
+for (const tool of ['approve_plan', 'reject_plan', 'answer_question', 'interrupt_turn', 'kill_instance']) {
+  test(`${tool} on an untracked worker appends one interaction naming the tool`, async () => {
+    const { rows } = await appendedRows(RUN, g => committed(g, tool, { sessionId: 'u9' }));
+    assert.equal(rows.length, 1);
+    assert.deepEqual({ kind: rows[0].kind, tool: rows[0].tool, sessionId: rows[0].sessionId },
+      { kind: 'interaction', tool, sessionId: 'u9' });
+  });
+}
+
+test('a read-only governed tool appends nothing', async () => {
+  const { appended } = await appendedRows(RUN, g => committed(g, 'get_recent_messages', { sessionId: 'u9' }));
+  assert.equal(appended.length, 0);
+});
+
+test('a tracked worker\'s legal stage move appends one transition and no interaction', async () => {
+  const { rows } = await appendedRows(RUN, g =>
+    committed(g, 'send_prompt', { sessionId: 'w1', text: 'go', stage: 'amend', provenance: { audit: 'a1' } }));
+  assert.deepEqual(rows.map(r => r.kind), ['transition']);
+});
+
+test('a declared self-loop appends one transition only', async () => {
+  const { rows } = await appendedRows(IN_AMEND, g => committed(g, 'send_prompt', { sessionId: 'w1', text: 'round 2', stage: 'amend' }));
+  assert.deepEqual(rows.map(r => r.kind), ['transition']);
+});
+
+test('a handler result of ok:false appends nothing', async () => {
+  const { appended } = await appendedRows(RUN, g => committed(g, 'send_prompt', { sessionId: 'u9', text: 'x' }, { ok: false }));
+  assert.equal(appended.length, 0);
+});
+
+test('a refused call under enforce appends only its refusal', async () => {
+  const { dir, file, gate, appended } = await tmpLedgerAppends(RUN);
+  try {
+    const outcome = await gate.check({
+      toolName: 'spawn_instance', args: { project: 'demo', mode: 'plan' }, callerId: CONDUCTOR_ID,
+    });
+    assert.ok('refusal' in outcome, 'premise: refused');
+    assert.deepEqual(appended.map(e => e.kind), ['refusal']);
+    assert.deepEqual((await readEvents(file)).slice(RUN.length).map(e => e.kind), ['refusal']);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a refused call under warn proceeds with no commit and only its refusal written', async () => {
+  const { dir, appended, gate } = await (async () => {
+    const dir = await mkdtemp('cc-pbcommit-');
+    const file = path.join(dir, 'playbook-ledger.jsonl');
+    await fs.writeFile(file, RUN.map((e, i) => JSON.stringify({ seq: i + 1, ts: '2026-09-06T00:00:00Z', ...e })).join('\n') + '\n');
+    const real = createPlaybookLedger({ file: () => file });
+    const appended = [];
+    const ledger = { ...real, append(ev) { appended.push(ev); return real.append(ev); } };
+    const mgr = stubManagerRecording({ live: ['w1', 'a1'] });
+    const caller = mgr.liveForSession(CONDUCTOR_ID);
+    caller.playbookEnforcement = 'warn';
+    caller._emitUi = () => {};
+    return { dir, appended, gate: createPlaybookGate({ instances: mgr, ledger }) };
+  })();
+  try {
+    const outcome = await gate.check({
+      toolName: 'spawn_instance', args: { project: 'demo', mode: 'plan' }, callerId: CONDUCTOR_ID,
+    });
+    assert.ok(!('refusal' in outcome), 'warn lets the call through');
+    assert.equal(outcome.commit, undefined, 'and carries no commit');
+    assert.deepEqual(appended.map(e => e.kind), ['refusal']);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a non-conductor caller appends nothing', async () => {
+  const { dir, gate, appended } = await tmpLedgerAppends(RUN);
+  try {
+    const outcome = await gate.check({ toolName: 'send_prompt', args: { sessionId: 'u9', text: 'x' }, callerId: 'someone-else' });
+    await outcome.commit?.({});
+    assert.equal(appended.length, 0);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a tracked worker\'s resume decision appends nothing', async () => {
+  // INVARIANT: the manager's relaunch stream owns `resume`, so a successful
+  // spawn_instance({resume}) of a tracked worker commits no row of its own.
+  const { dir, gate, appended } = await tmpLedgerAppends(RUN);
+  try {
+    const outcome = await gate.check({
+      toolName: 'spawn_instance', args: { resume: 'w1' }, callerId: CONDUCTOR_ID, resumeHandle: 'w1',
+    });
+    assert.ok(!('refusal' in outcome), `premise: resume of a tracked worker is allowed; got ${JSON.stringify(outcome.refusal)}`);
+    await outcome.commit?.({ sessionId: 'w1' });
     assert.equal(appended.length, 0);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

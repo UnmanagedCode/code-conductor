@@ -9,6 +9,7 @@ import {
   createPlaybookLedger, ledgerFile, foldProjection, readEvents,
   runMembers, runRootOf, sameRun, liveSessionsInStage, hasEverBeen,
 } from '../src/playbookLedger.ts';
+import * as ledgerModule from '../src/playbookLedger.ts';
 
 async function tmpLedger() {
   const dir = await mkdtemp('cc-pbledger-');
@@ -261,4 +262,55 @@ test('a torn or malformed line is skipped, not thrown — one bad line must not 
     const p = foldProjection(events);
     assert.equal(p.bySession.get('s1').stage, 'implement');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+// ── activity records: written to the file, folded to nothing ───────────────
+
+const STAGE_EVENTS = [
+  { kind: 'spawn', sessionId: 'w1', playbook: 'solo', stage: 'plan' },
+  { kind: 'transition', sessionId: 'w1', from: 'plan', to: 'implement', via: 'approve_plan' },
+];
+const ACTIVITY = [
+  { kind: 'interaction', tool: 'send_prompt', sessionId: 'w1', conductorSessionId: 'c1' },
+  { kind: 'wake', sessionId: 'w1', conductorSessionId: 'c1' },
+];
+
+function plain(p) {
+  return {
+    bySession: [...p.bySession.entries()],
+    enforcement: [...p.enforcement.entries()],
+    parent: [...p.parent.entries()],
+  };
+}
+
+test('interaction and wake rows fold to nothing, yet seq still advances past them', () => {
+  const without = fold(STAGE_EVENTS);
+  const withActivity = fold([...STAGE_EVENTS, ...ACTIVITY]);
+  assert.deepEqual(plain(withActivity), plain(without));
+  assert.equal(withActivity.seq, STAGE_EVENTS.length + ACTIVITY.length);
+});
+
+test('a ledger file holding only the stage kinds loads to the same projection as its fold', async () => {
+  const { dir, file, ledger } = await tmpLedger();
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const events = [
+      ...STAGE_EVENTS,
+      { kind: 'retire', sessionId: 'w1', reason: 'subprocess exited' },
+      { kind: 'resume', sessionId: 'w1' },
+      { kind: 'refusal', tool: 'send_prompt', code: 'X', reason: 'r' },
+      { kind: 'enforcement', conductorSessionId: 'c1', from: null, to: 'warn' },
+    ].map((e, i) => ({ seq: i + 1, ts: '2026-08-05T00:00:00Z', ...e }));
+    await fs.writeFile(file, events.map(e => JSON.stringify(e)).join('\n') + '\n');
+    assert.deepEqual(plain(await ledger.load()), plain(foldProjection(events)));
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('isActivityEvent is true for exactly the ACTIVITY_KINDS', () => {
+  assert.ok(Array.isArray(ledgerModule.ACTIVITY_KINDS), 'ACTIVITY_KINDS is exported');
+  assert.equal(typeof ledgerModule.isActivityEvent, 'function', 'isActivityEvent is exported');
+  const kinds = ['spawn', 'transition', 'retire', 'resume', 'refusal', 'enforcement', 'interaction', 'wake'];
+  const flagged = kinds.filter(kind => ledgerModule.isActivityEvent({ kind, seq: 1, ts: 't' }));
+  assert.deepEqual(flagged.sort(), [...ledgerModule.ACTIVITY_KINDS].sort());
+  assert.ok(flagged.includes('interaction') && flagged.includes('wake'));
 });
