@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlarmClockIcon, ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
-  CodeXmlIcon, FileTextIcon, GitForkIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
+  CodeXmlIcon, FileTextIcon, GitForkIcon, ImageOffIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
   RotateCcwIcon, ShrinkIcon, TriangleAlertIcon, TypeIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -202,6 +202,19 @@ function WakeBody({ body }: { body: string }) {
   );
 }
 
+/** A sent image, or — when its file is gone (a deleted worktree's attachments go with it) — a placeholder rather than a broken image. */
+function AttachedImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = React.useState(false);
+  if (failed) {
+    return (
+      <span className="flex items-center gap-1.5 rounded-lg border bg-card px-2 py-1 text-xs text-muted-foreground" data-attachment-unavailable>
+        <ImageOffIcon className="size-3.5" />{alt} · attachment unavailable
+      </span>
+    );
+  }
+  return <ImageZoom src={src} alt={alt} onError={() => setFailed(true)} className="max-h-48 rounded-xl border" />;
+}
+
 function Attachments({ list, resolve }: { list: any[]; resolve?: (f: string) => string | null }) {
   if (!list.length) return null;
   return (
@@ -211,7 +224,7 @@ function Attachments({ list, resolve }: { list: any[]; resolve?: (f: string) => 
           const src = typeof a.dataBase64 === 'string'
             ? `data:${a.mediaType || 'image/png'};base64,${a.dataBase64}`
             : a.filename && resolve ? resolve(a.filename) : null;
-          if (src) return <ImageZoom key={i} src={src} alt={a.name || 'Attached image'} className="max-h-48 rounded-xl border" />;
+          if (src) return <AttachedImage key={i} src={src} alt={a.name || 'Attached image'} />;
         }
         return (
           <span key={i} className="flex items-center gap-1.5 rounded-lg border bg-card px-2 py-1 text-xs">

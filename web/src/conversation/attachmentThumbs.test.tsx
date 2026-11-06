@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
 
@@ -17,7 +17,7 @@ beforeAll(async () => { S = await serverModules(); });
 afterEach(() => {
   act(() => {
     conversation.clear();
-    appStore.set({ activeId: null, instances: [] });
+    appStore.set({ activeId: null, instances: [], ended: null });
   });
 });
 
@@ -69,5 +69,35 @@ describe('user bubble attachment thumbnails', () => {
     act(() => { for (const e of events) conversation.apply({ ...e, _seq: 1 }); });
     await flush();
     expect(thumbs(r.container)).toHaveLength(0);
+  });
+
+  const replayedImage = () => S.replayPersistedLine({ type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'x\nAttached file: `/d/.code-conductor/p/attachments/pic 9.png`' }] } });
+
+  it('on an ended pane a replayed image loads from the session attachments route, whatever the pane\'s id', async () => {
+    // Invariant: an ended pane has no instance to serve attachments, so they are addressed by its session id.
+    for (const id of ['inst-retired', 'ended:s-gone']) {
+      appStore.set({ activeId: id, instances: [], ended: {
+        id, project: 'p', sessionId: 's-gone', status: 'exited', mode: 'plan', ended: { source: 'instance', worktreeName: null },
+      } });
+      const r = render(<TooltipProvider><ConversationView /></TooltipProvider>);
+      act(() => { for (const e of replayedImage()) conversation.apply({ ...e, _seq: 1 }); });
+      await flush();
+      expect(thumbs(r.container).map((i) => i.getAttribute('src')), id).toEqual([`/api/sessions/s-gone/attachments/${encodeURIComponent('pic 9.png')}`]);
+      r.unmount();
+      act(() => conversation.clear());
+    }
+  });
+
+  it('an image whose file cannot be loaded becomes an "attachment unavailable" placeholder, not a broken image', async () => {
+    // Invariant: a failed load (a deleted worktree's attachments go with it) replaces the image with a placeholder naming it.
+    const r = mountActive();
+    act(() => { for (const e of replayedImage()) conversation.apply({ ...e, _seq: 1 }); });
+    await flush();
+    const [img] = thumbs(r.container);
+    expect(r.container.querySelector('[data-attachment-unavailable]'), 'control: loading, no placeholder').toBeNull();
+    act(() => { fireEvent.error(img); });
+    await flush();
+    expect(thumbs(r.container)).toHaveLength(0);
+    expect(r.container.querySelector('[data-attachment-unavailable]')?.textContent).toContain('pic 9.png');
   });
 });

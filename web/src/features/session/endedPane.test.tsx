@@ -53,6 +53,7 @@ async function boot(lineage: (url: string) => RouteAnswer | Promise<RouteAnswer>
     'GET /api/projects': () => ({ json: [] }),
     'GET /api/workspaces': () => ({ json: [] }),
     'GET /api/conductors/projects': () => ({ json: {} }),
+    'GET /api/sessions/': (_b, url) => lineage(url),
     'GET /api/': () => ({ json: {} }),
     'POST /api/sessions/': () => ({ json: {} }),
   });
@@ -156,4 +157,31 @@ describe('the ended pane', () => {
     expect(document.querySelector('[data-session-ended]')).toBeNull();
     expect(document.querySelector('[data-empty-state]')).not.toBeNull();
   });
+
+  // Invariant: a routine instance-list refresh leaves an ended pane alone — the
+  // same ended entry (source, worktree), still mounted — whether it ended in
+  // place or was reopened from disk.
+  it('a later instance-list refresh keeps the ended pane, after a kill and after a reopen', async () => {
+    const b = await boot(() => ({ json: { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null } }));
+    await b.killA();
+    const ended = b.appStore.get().ended;
+    expect(ended?.ended, 'fixture check: ended in place').toEqual({ source: 'instance', worktreeName: null });
+    const node = b.conv();
+    await b.frame('instances');
+    await b.land(b.reads.length, [b.B]);
+    expect(b.appStore.get().ended).toBe(ended);
+    expect(b.appStore.get().activeId).toBe('iA');
+    expect(b.conv() === node, 'still mounted').toBe(true);
+    expect(document.querySelector('[data-session-ended]')).not.toBeNull();
+
+    await act(async () => { await b.c.openEndedSession({ sessionId: 's-old', project: 'p', worktreeName: 'wt-old' }); });
+    const reopened = b.appStore.get().ended;
+    expect(reopened?.ended, 'fixture check: reopened').toEqual({ source: 'session', worktreeName: 'wt-old' });
+    await b.frame('instances');
+    await b.land(b.reads.length, [b.B]);
+    expect(b.appStore.get().ended).toBe(reopened);
+    expect(b.appStore.get().activeId).toBe('ended:s-old');
+    expect(document.querySelector('[data-session-ended]')).not.toBeNull();
+  });
 });
+

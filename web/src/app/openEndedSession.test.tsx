@@ -61,4 +61,16 @@ describe('openEndedSession', () => {
     expect(screen.getByText('OLDER-PROMPT')).toBeTruthy();
     expect(c.lazyHistory.state().hasMore).toBe(false);
   });
+
+  // Invariant: reopening closes the phone's sidebar drawer, as selectInstance does, so the pane is not left under it.
+  it('closes an open sidebar drawer', async () => {
+    vi.resetModules();
+    routeFetch({ 'GET /api/': () => ({ json: { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null } }) });
+    const c = await import('./controller');
+    const { uiStore } = await import('./ui');
+    uiStore.set({ sidebarOpen: true });
+    await act(async () => { await c.openEndedSession({ sessionId: 's-y', project: 'p', worktreeName: null }); });
+    expect(uiStore.get().sidebarOpen).toBe(false);
+  });
 });
+

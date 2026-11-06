@@ -467,3 +467,32 @@ test('a temp worker that exits on its own still pages its lineage-events by inst
     assert.deepEqual(after.body.events, live.body.events);
   } finally { await ctx.close(); }
 });
+
+// 14 — INVARIANT: an ended session's attachments are served by session id from
+// the place it ran in, behind the same guards as the instance route (a plain
+// basename only; a session that cannot be located 404s) — and a deleted
+// worktree's attachments are gone with its store entry (404, not a crash).
+test('GET /api/sessions/:sid/attachments/:file serves a killed worker\'s attachment; refuses traversal; 404s once the worktree is deleted', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { sid, publicId, wt } = await workerInWorktree(ctx);
+    const { attachmentsDir } = await import('../src/worktrees.ts');
+    const dir = attachmentsDir('demo', wt.worktreeName);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'shot-1.png'), 'PNGBYTES');
+    await kill(ctx, sid);
+
+    const get = (s, f) => fetch(`${ctx.baseUrl}/api/sessions/${s}/attachments/${f}`);
+    const ok = await get(publicId, 'shot-1.png');
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get('content-type'), 'image/png');
+    assert.equal(await ok.text(), 'PNGBYTES');
+    assert.equal((await get(publicId, 'a%5Cb.png')).status, 400, 'a backslash is refused');
+    assert.equal((await get(publicId, 'a..b.png')).status, 400);
+    assert.equal((await get(publicId, 'missing.png')).status, 404);
+    assert.equal((await get(randomUUID(), 'shot-1.png')).status, 404, 'an unlocatable session');
+
+    await deleteWorktree(ctx, wt);
+    assert.equal((await get(publicId, 'shot-1.png')).status, 404, 'deleted with the worktree\'s store entry');
+  } finally { await ctx.close(); }
+});

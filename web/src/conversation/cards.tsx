@@ -8,7 +8,8 @@ import { cn } from '@/lib/utils';
 import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { send } from '@shared/ws';
-import { appStore } from '@/state/app';
+import { appStore, activeInstance } from '@/state/app';
+import { useStore } from '@/state/createStore';
 import { ConversationModel, type PlanNode, type QuestionNode } from './model';
 import { BubbleBody } from './BubbleBody';
 
@@ -21,13 +22,18 @@ function sendCardAnswer(instanceId: string, text: string, onFail: (reason: strin
   send('prompt', { id: instanceId, text }, { ack: true }).catch((e: Error) => onFail(e?.message || 'send failed'));
 }
 
+/** The shown session has no instance (an ended pane): its cards are read-only. */
+const useEnded = () => useStore(appStore, (s) => !!activeInstance(s)?.ended);
+
 export function PlanCard({ node, model }: { node: PlanNode; model: ConversationModel }) {
   const plan: string = typeof node.ev.plan === 'string' ? node.ev.plan : '';
-  const locked = node.autoApproved || !!node.submitted;
+  const ended = useEnded();
+  const locked = node.autoApproved || !!node.submitted || ended;
   const status = node.autoApproved ? 'Auto-approved'
     : node.failedReason ? `Couldn't send: ${node.failedReason}`
     : node.submitted === 'approve' ? 'Approving…'
     : node.submitted === 'reject' ? 'Sending refinement…'
+    : ended ? 'The session has ended'
     : 'Awaiting your decision';
 
   async function decide(decision: 'approve' | 'reject') {
@@ -98,15 +104,18 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
   const multi = node.questions.length > 1;
   const answeredCount = node.answers.filter((a) => a.kind !== 'none').length;
   const noteMode = answer.kind === 'option' || answer.kind === 'multi';
+  const ended = useEnded();
+  const locked = node.submitted || ended;
   const status = node.answered ? 'Answered'
     : node.failedReason ? `Couldn't send: ${node.failedReason}`
     : node.submitted ? 'Sending…'
+    : ended ? 'The session has ended'
     : multi ? `${answeredCount}/${node.questions.length} answered`
     : ready ? 'Ready to send' : 'Pick an option or write your own';
 
   function submit() {
     const id = appStore.get().activeId;
-    if (!id || !ready || node.submitted) return;
+    if (!id || !ready || locked) return;
     model.questionSubmitted(node);
     sendCardAnswer(id, formatUserQuestionAnswers(node.questions, node.answers), (reason) => model.questionSendFailed(node.toolUseId, reason));
   }
@@ -157,7 +166,7 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
               <button
                 key={oi}
                 type="button"
-                disabled={node.submitted}
+                disabled={locked}
                 data-option={opt.label ?? ''}
                 aria-pressed={on}
                 onClick={() => model.questionPick(node, active, opt.label ?? '')}
@@ -183,13 +192,13 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
             if (next !== null) model.questionTab(node, next);
             else submit();
           }}
-          disabled={node.submitted}
+          disabled={locked}
           placeholder={noteMode ? 'Add a note (optional)' : 'Or write your own answer…'}
           data-custom-input={answer.kind === 'custom' ? 'active' : ''}
           className={cn(answer.kind === 'custom' && 'border-primary ring-1 ring-primary/30')}
         />
         <div className="flex justify-end">
-          <Button size="sm" onClick={submit} disabled={!ready || node.submitted}>
+          <Button size="sm" onClick={submit} disabled={!ready || locked}>
             <SendIcon /> {multi ? 'Send all answers' : 'Send answer'}
           </Button>
         </div>

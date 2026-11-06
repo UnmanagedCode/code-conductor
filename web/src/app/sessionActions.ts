@@ -240,7 +240,7 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
       await apiFetch(`${base}?force=1`, { method: 'POST' });
     }
     const inst = instances().find((i) => i.sessionId === sessionId);
-    if (inst && activeId() === inst.id) clearActive();
+    if ((inst && activeId() === inst.id) || showsEnded(sessionId)) clearActive();
     emit('sessionsStale', { project: projectName, worktree: worktreeName ?? null });
     await refreshProjects();
     await refreshInstances();
@@ -248,6 +248,12 @@ export async function archiveSession({ projectName, worktreeName, sessionId, pre
     toast.error('Could not archive the session', e.message);
   }
 }
+
+/** Whether the pane shows `sessionId` as an ended session (no instance). */
+const showsEnded = (sessionId: string) => {
+  const ended = appStore.get().ended;
+  return !!ended && ended.id === activeId() && ended.sessionId === sessionId;
+};
 
 export async function removeWorktree(project: string, worktreeName: string) {
   const ok = await confirmDialog({

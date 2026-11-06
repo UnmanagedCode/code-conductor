@@ -183,6 +183,30 @@ const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   csv: 'text/csv; charset=utf-8', md: 'text/markdown; charset=utf-8',
 };
 
+// Stream attachment `filename` of a project / worktree (attachmentsDir). 400 for
+// anything but a plain basename (the path-traversal guard), 404 when absent.
+async function sendAttachment(res: express.Response, project: string, worktreeName: string | null, filename: unknown): Promise<void> {
+  const raw = String(filename || '');
+  if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..') || raw !== path.basename(raw)) {
+    throw httpError(400, 'invalid attachment filename');
+  }
+  const abs = path.join(attachmentsDir(project, worktreeName), raw);
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
+  try { stat = await fs.stat(abs); }
+  catch (e) {
+    if (errCode(e) === 'ENOENT') throw httpError(404, 'attachment not found');
+    throw e;
+  }
+  if (!stat.isFile()) throw httpError(404, 'attachment not found');
+  const ext = (raw.split('.').pop() || '').toLowerCase();
+  res.setHeader('Content-Type', CONTENT_TYPE_BY_EXT[ext] ?? 'application/octet-stream');
+  res.setHeader('Content-Length', String(stat.size));
+  // Cache aggressively — the filename includes a timestamp so it's effectively
+  // immutable. Saves a re-fetch on every conversation re-render.
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  createReadStream(abs).pipe(res);
+}
+
 // express types req.body as `any`; every JSON body read routes through here so
 // fields arrive as `unknown` and each handler narrows them with its existing
 // runtime guards (or a callee-side validation). A non-object body yields {} —
@@ -1427,6 +1451,18 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     } catch (e) { next(e); }
   });
 
+  // A session's attachment, addressed by session rather than instance (an ended
+  // pane has no live instance): the files live under the place the session ran
+  // in (attachmentsDir), so a deleted worktree's are gone with it — 404.
+  r.get('/sessions/:sessionId/attachments/:filename', async (req, res, next) => {
+    try {
+      const { sid } = await sidParam(req.params.sessionId);
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw httpError(404, 'session not found');
+      await sendAttachment(res, hit.project, hit.worktreeName, req.params.filename);
+    } catch (e) { next(e); }
+  });
+
   r.get('/sessions/:sessionId/locate', async (req, res, next) => {
     try {
       const { sid, backing } = await sidParam(req.params.sessionId);
@@ -1745,31 +1781,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
-        const raw = String(req.params.filename || '');
-        // Path-traversal guard: reject anything that isn't a plain basename.
-        if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..') || raw !== path.basename(raw)) {
-          throw httpError(400, 'invalid attachment filename');
-        }
-        const abs = path.join(
-          attachmentsDir(inst.project, inst.worktree?.worktreeName ?? null),
-          raw,
-        );
-        let stat: Awaited<ReturnType<typeof fs.stat>>;
-        try { stat = await fs.stat(abs); }
-        catch (e) {
-          if (errCode(e) === 'ENOENT') throw httpError(404, 'attachment not found');
-          throw e;
-        }
-        if (!stat.isFile()) throw httpError(404, 'attachment not found');
-        const ext = (raw.split('.').pop() || '').toLowerCase();
-        const ctype = CONTENT_TYPE_BY_EXT[ext] ?? 'application/octet-stream';
-        res.setHeader('Content-Type', ctype);
-        res.setHeader('Content-Length', String(stat.size));
-        // Cache aggressively — the filename includes a timestamp so it's
-        // effectively immutable. Saves a re-fetch on every conversation
-        // re-render.
-        res.setHeader('Cache-Control', 'private, max-age=3600');
-        createReadStream(abs).pipe(res);
+        await sendAttachment(res, inst.project, inst.worktree?.worktreeName ?? null, req.params.filename);
       } catch (e) { next(e); }
     });
 

@@ -77,7 +77,7 @@ export function SessionView() {
           empty={
             <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">
               <LiveMark className="size-24" />
-              <p>No messages yet. Send a prompt to start.</p>
+              <p>{inst.ended ? 'This session has no messages to show.' : 'No messages yet. Send a prompt to start.'}</p>
             </div>
           }
         />

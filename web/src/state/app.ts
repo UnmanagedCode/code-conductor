@@ -1,6 +1,6 @@
 import { createStore } from './createStore';
 import type { Instance, Project, SessionRow } from './types';
-import type { SpawnedProject } from '@shared/conductors';
+import { CONDUCT_PROJECT, type SpawnedProject } from '@shared/conductors';
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting';
 
@@ -42,8 +42,13 @@ export const appStore = createStore<AppState>({
 export const findInstance = (s: AppState, id: string): Instance | null =>
   s.instances.find((i) => i.id === id) ?? (s.pristine?.id === id ? s.pristine : null);
 
-/** Whether `project` is listed and, when `worktreeName` is set, still has that worktree: where a session can resume. */
+/**
+ * Whether `project` is listed and, when `worktreeName` is set, still has that
+ * worktree: where a session can resume. The conductors' `.conduct` project is
+ * never listed but always exists (the server creates it on demand).
+ */
 export const placeExists = (projects: Project[], project: string, worktreeName: string | null): boolean => {
+  if (project === CONDUCT_PROJECT && !worktreeName) return true;
   const p = projects.find((x) => x.name === project);
   return !!p && (!worktreeName || p.worktrees.some((w) => w.worktreeName === worktreeName));
 };

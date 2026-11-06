@@ -73,4 +73,17 @@ describe('EndedBanner', () => {
     act(() => appStore.set({ projects: [] }));
     expect(resume()).toBeNull();
   });
+
+  // Invariant: the conductors' `.conduct` project is never in the projects list
+  // but always exists, so an ended conductor session offers Resume.
+  it('an ended .conduct session offers Resume although no projects list carries .conduct', async () => {
+    vi.resetModules();
+    routeFetch({});
+    const { appStore } = await import('@/state/app');
+    const { EndedBanner } = await import('./EndedBanner');
+    const conductor: Instance = { ...ended, project: '.conduct', ended: { source: 'session', worktreeName: null } };
+    appStore.set({ projects: [project(['wt'])], instances: [], ended: conductor, activeId: 'iA' });
+    render(<EndedBanner inst={conductor} />);
+    expect(resume()).not.toBeNull();
+  });
 });

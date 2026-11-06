@@ -454,3 +454,47 @@ describe('restoring a session', () => {
     expect(controller.selectInstance).not.toHaveBeenCalled();
   });
 });
+
+describe('closing an ended pane', () => {
+  const endedPane = (sessionId: string) => appStore.set({
+    activeId: `ended:${sessionId}`, instances: [],
+    ended: { id: `ended:${sessionId}`, project: 'p', sessionId, status: 'exited', mode: 'plan', ended: { source: 'session', worktreeName: null } },
+  });
+
+  // Invariant: archiving the session an ended pane shows closes that pane (and drops its anchor); archiving another leaves it.
+  it('archiving the ended pane\'s session closes it; archiving another session leaves it', async () => {
+    stubFetch(() => ({ body: {} }));
+    history.replaceState(null, '', '/#session=s-other');
+    endedPane('s-shown');
+    await archiveSession({ projectName: 'p', sessionId: 's-other' });
+    expect(appStore.get().activeId).toBe('ended:s-shown');
+    expect(appStore.get().ended?.sessionId).toBe('s-shown');
+
+    history.replaceState(null, '', '/#session=s-shown');
+    await archiveSession({ projectName: 'p', sessionId: 's-shown' });
+    expect(appStore.get().activeId).toBeNull();
+    expect(appStore.get().ended).toBeNull();
+    expect(location.hash).toBe('');
+  });
+});
+
+describe('restoring a session already listed', () => {
+  // Invariant: only a LIVE listed instance of the session is selected instead of resuming; a dead one is resumed through.
+  it('a listed but exited instance of the session is not selected: the restore and the resume go through', async () => {
+    stubFetch(() => ({ body: { id: 'new' } }));
+    appStore.set({ instances: [{ id: 'old', sessionId: 's1', project: 'p', status: 'exited', mode: 'x' }] });
+    await restoreSession({ projectName: 'p', worktreeName: null, sessionId: 's1' });
+    expect(calls.map((c) => c.url)).toEqual(['/api/projects/p/sessions/s1/restore', '/api/instances']);
+    expect(controller.selectInstance).toHaveBeenCalledTimes(1);
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('new', expect.anything());
+  });
+
+  it('control: a listed live instance of the session is selected, with no request', async () => {
+    stubFetch(() => ({ body: { id: 'new' } }));
+    appStore.set({ instances: [{ id: 'live', sessionId: 's1', project: 'p', status: 'idle', mode: 'x' }] });
+    await restoreSession({ projectName: 'p', worktreeName: null, sessionId: 's1' });
+    expect(calls).toEqual([]);
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('live', { userGesture: true });
+  });
+});
+

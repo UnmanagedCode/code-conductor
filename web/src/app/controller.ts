@@ -274,6 +274,7 @@ export function openEndedSession({ sessionId, project, worktreeName, title = nul
   emit('select', { id: ended.id, sessionId, userGesture: false });
   writeSessionAnchor(sessionId);
   syncRoute();
+  closeSidebarOnMobile();
   return lazyHistory.openNewest();
 }
 
