@@ -2430,7 +2430,7 @@ export interface ArchivedSessionRow {
 // no location, so we enumerate known project + worktree paths and keep the rows
 // listSessionsForCwd already flags as archived (it also reads firstPrompt
 // + title). Used by the Settings → Archived page. Only projects with at
-// least one archived session are returned; sessions are lastActivity-desc.
+// least one listed row are returned; sessions are lastActivity-desc.
 //
 // DELIBERATELY passes no `excludeSessionIds`. The public-id work required that
 // filter to run BEFORE the row projection wherever it is used (both exclusion sets

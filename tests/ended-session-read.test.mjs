@@ -365,3 +365,105 @@ test('a deleted worktree\'s session is located through an older segment when its
     assert.equal(r.body.worktreeName, 'job');
   } finally { await ctx.close(); }
 });
+
+// 10 — INVARIANT: addressing a killed worker whose worktree was deleted refuses
+// SESSION_NOT_LIVE saying it cannot be resumed (its worktree is gone) and that
+// its output is still readable — never advice to resume it, which would be
+// refused WORKTREE_UNKNOWN.
+test('send_prompt to a killed worker whose worktree is deleted says it cannot be resumed and its output is still readable', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { sid, wt } = await workerInWorktree(ctx);
+    await kill(ctx, sid);
+    // Positive control: with the worktree still there, the advice is to resume.
+    const before = unwrap(await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'more' }));
+    assert.equal(before.code, 'SESSION_NOT_LIVE', JSON.stringify(before));
+    assert.match(before.reason, /spawn_instance\(\{resume/);
+
+    await deleteWorktree(ctx, wt);
+    const r = unwrap(await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'more' }));
+    assert.deepEqual(Object.keys(r).sort(), ['code', 'ok', 'reason', 'sessionId']);
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'SESSION_NOT_LIVE');
+    assert.match(r.reason, /cannot be resumed/);
+    assert.match(r.reason, /worktree 'job' of project 'demo' was deleted/);
+    assert.match(r.reason, /get_recent_messages/);
+    assert.match(r.reason, /get_transcript/);
+    assert.doesNotMatch(r.reason, /spawn_instance\(\{resume/);
+  } finally { await ctx.close(); }
+});
+
+// 11 — INVARIANT: the recorded-place fallback resolves under the record's OWN
+// project: with two listed projects, a session recorded in the second is found
+// at that project's worktree path, not the first's.
+test('the recorded-place fallback locates a session under its own project, at that project\'s worktree path', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await makeRealRepo(ctx, 'first');
+    await makeRealRepo(ctx, 'second');
+    const { setSessionPlace } = await import('../src/sessionStore.ts');
+    const { findSessionLocation, getProject } = await import('../src/projects.ts');
+    const { worktreePathFor } = await import('../src/worktrees.ts');
+    const id = randomUUID();
+    await setSessionPlace(id, { project: 'second', worktree: 'gone' });
+    const cwd = worktreePathFor(await getProject('second'), 'gone');
+    assert.notEqual(cwd, worktreePathFor(await getProject('first'), 'gone'), 'fixture check: the two projects\' paths differ');
+    await seedSessionJsonl(localPlace(cwd), id, ONE_TURN);
+    const hit = await findSessionLocation(id);
+    assert.ok(hit, 'located');
+    assert.equal(hit.project, 'second');
+    assert.equal(hit.worktreeName, 'gone');
+    assert.equal(hit.cwd, cwd);
+  } finally { await ctx.close(); }
+});
+
+// 12 — INVARIANT: remove() freezes the pager. A NON-temp instance leaves byId
+// only through remove() (no temp-exit drop), and its lineage-events still page
+// by instance id with the cursor it handed out while live.
+test('a removed non-temp instance\'s lineage-events still page with its live cursor', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await makeRealRepo(ctx, 'demo');
+    const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(spawned.status, 201, JSON.stringify(spawned.body));
+    const { id, sessionId } = spawned.body;
+    const inst = ctx.instances.get(id);
+    assert.equal(inst.temp, false, 'fixture check: not temp');
+    await waitFor(() => inst.status === 'idle');
+    await driveTurn(ctx.instances, sessionId, () => callTool(ctx.baseUrl, 'send_prompt', { sessionId, text: 'go' }));
+    const url = (q) => `/api/instances/${id}/lineage-events${q}`;
+    const head = await api(ctx.baseUrl, 'GET', url('?limit=2'));
+    assert.equal(head.body.hasMore, true, `control: more than one page: ${JSON.stringify(head.body)}`);
+    const cursor = `?limit=2&before=${head.body.nextBefore}`;
+    const live = await api(ctx.baseUrl, 'GET', url(cursor));
+    assert.ok(live.body.events.length > 0);
+
+    const del = await api(ctx.baseUrl, 'DELETE', `/api/instances/${id}`);
+    assert.ok(del.status < 300, JSON.stringify(del.body));
+    assert.equal(ctx.instances.get(id), undefined, 'fixture check: removed from the manager');
+    const after = await api(ctx.baseUrl, 'GET', url(cursor));
+    assert.equal(after.status, 200, JSON.stringify(after.body));
+    assert.deepEqual(after.body.events, live.body.events);
+  } finally { await ctx.close(); }
+});
+
+// 13 — INVARIANT: a temp worker that exits ON ITS OWN (no kill_instance, so no
+// remove()) is dropped by the temp-exit path, which freezes its pager: its
+// instance-id route still pages.
+test('a temp worker that exits on its own still pages its lineage-events by instance id', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { sid, instanceId } = await workerInWorktree(ctx);
+    const url = (q) => `/api/instances/${instanceId}/lineage-events${q}`;
+    const head = await api(ctx.baseUrl, 'GET', url('?limit=2'));
+    assert.equal(head.body.hasMore, true, `control: more than one page: ${JSON.stringify(head.body)}`);
+    const cursor = `?limit=2&before=${head.body.nextBefore}`;
+    const live = await api(ctx.baseUrl, 'GET', url(cursor));
+
+    ctx.instances.get(instanceId).proc.kill('SIGKILL');
+    await waitFor(() => ctx.instances.idsForSession(sid).length === 0);
+    const after = await api(ctx.baseUrl, 'GET', url(cursor));
+    assert.equal(after.status, 200, JSON.stringify(after.body));
+    assert.deepEqual(after.body.events, live.body.events);
+  } finally { await ctx.close(); }
+});
