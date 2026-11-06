@@ -70,10 +70,15 @@ describe('ArchivedSection', () => {
     expect(b.calls.some((x) => x.url === '/api/sessions/s-gone-wt/lineage-events?limit=200')).toBe(true);
   });
 
-  it('Restore un-archives, then resumes at its worktree and selects it', async () => {
+  it('Restore un-archives, then resumes at its worktree and selects it, marking the session lists stale once', async () => {
     const b = await mount();
+    const { on } = await import('@/app/events');
+    const stale: unknown[] = [];
+    const off = on('sessionsStale', (p) => stale.push(p));
     await act(async () => { fireEvent.click(within(b.row('s-live-wt')).getByRole('button', { name: 'Restore' })); });
     await b.settle();
+    off();
+    expect(stale).toEqual([null]);
     const posts = b.calls.filter((x) => x.method === 'POST');
     expect(posts.map((x) => x.url)).toEqual(['/api/projects/p/worktrees/wt/sessions/s-live-wt/restore', '/api/instances']);
     expect(posts[1].body).toEqual({ project: 'p', resume: 's-live-wt', worktree: 'wt' });

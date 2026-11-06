@@ -5,12 +5,15 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { mockFetch } from './test/fetchMock';
 import { routeFetch, held, type RouteAnswer } from '@/test/routeFetch';
 
-vi.mock('@/app/sessionActions', () => ({ resumeSession: vi.fn(async () => {}) }));
+vi.mock('@/app/sessionActions', async (importOriginal) => ({
+  archivedSessionUrl: (await importOriginal<typeof import('@/app/sessionActions')>()).archivedSessionUrl,
+  restoreSession: vi.fn(async () => {}),
+}));
 vi.mock('@/app/controller', () => ({ refreshProjects: vi.fn(async () => {}), refreshInstances: vi.fn(async () => {}) }));
 vi.mock('@/app/models', () => ({ applyModels: vi.fn() }));
 vi.mock('@/features/sidebar/restart', () => ({ performRestart: vi.fn(async () => {}) }));
 
-import { resumeSession } from '@/app/sessionActions';
+import { restoreSession } from '@/app/sessionActions';
 import { refreshInstances, refreshProjects } from '@/app/controller';
 import { applyModels } from '@/app/models';
 import { modelsSettingsStore, loadModelsSettings } from './models/store';
@@ -781,80 +784,44 @@ describe('Models', () => {
 describe('Archived', () => {
   const groups = { groups: [{ project: 'p', sessions: [{ sessionId: 's1', title: 'T1', lastActivity: Date.now() }] }, { project: '.conduct', sessions: [{ sessionId: 's2' }] }] };
 
-  it('Restore restores, then resumes the session; conductor sessions are listed first', async () => {
-    mockFetch({ 'GET /api/archived': () => groups, 'POST /api/projects/p/sessions/s1/restore': () => ({ ok: true }) });
+  it('Restore hands the row to restoreSession; conductor sessions are listed first', async () => {
+    vi.mocked(restoreSession).mockClear();
+    mockFetch({ 'GET /api/archived': () => groups });
     wrap(<ArchivedSection />);
     await screen.findByText('2 archived sessions across 2 projects.');
     const triggers = screen.getAllByRole('button', { expanded: false });
     expect(triggers[0].textContent).toMatch('Conductor');
     fireEvent.click(screen.getByRole('button', { name: /^p/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
-    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith({ projectName: 'p', worktreeName: undefined, sessionId: 's1' }));
+    await waitFor(() => expect(restoreSession).toHaveBeenCalledExactlyOnceWith({ projectName: 'p', worktreeName: null, sessionId: 's1' }));
   });
 
-  it('a failed restore does not resume', async () => {
-    vi.mocked(resumeSession).mockClear();
-    mockFetch({ 'GET /api/archived': () => groups, 'POST /api/projects/p/sessions/s1/restore': () => ({ status: 500, json: { error: 'nope' } }) });
-    wrap(<ArchivedSection />);
-    await screen.findByText(/archived sessions/);
-    fireEvent.click(screen.getByRole('button', { name: /^p/ }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
-    await new Promise((r) => setTimeout(r, 30));
-    expect(resumeSession).not.toHaveBeenCalled();
-  });
-
-  // A refused Restore toasts the server's own reason, and a Restore with no server the one unreachable message; neither resumes.
-  it('a Restore the server refuses shows its reason, and one with no server shows the unreachable message; neither resumes', async () => {
-    vi.mocked(resumeSession).mockClear();
-    const err = vi.spyOn(toast, 'error').mockImplementation(() => '' as any);
-    let n = 0;
-    mockFetch({
-      'GET /api/archived': () => groups,
-      'POST /api/projects/p/sessions/s1/restore': () => {
-        if (++n === 1) return { status: 500, json: { error: 'transcript locked by s7' } };
-        throw new TypeError('Failed to fetch');
-      },
-    });
-    wrap(<ArchivedSection />);
-    await screen.findByText(/archived sessions/);
-    fireEvent.click(screen.getByRole('button', { name: /^p/ }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
-    await waitFor(() => expect(err).toHaveBeenCalledWith('Restore failed', 'transcript locked by s7'));
-    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-    await waitFor(() => expect(err).toHaveBeenCalledWith('Restore failed', SERVER_UNREACHABLE_MESSAGE));
-    expect(err).toHaveBeenCalledTimes(2);
-    expect(resumeSession).not.toHaveBeenCalled();
-    err.mockRestore();
-  });
-
-  // The list refreshes after an archive change run unawaited: a refused one is logged, never an unhandled rejection, and the restore goes on to resume.
-  it('a refused list refresh after a Restore is logged, and the session is still resumed', async () => {
-    vi.mocked(resumeSession).mockClear();
+  // The list refreshes after a Delete run unawaited: a refused one is logged, never an unhandled rejection.
+  it('a refused list refresh after a Delete is logged', async () => {
     vi.mocked(refreshProjects).mockRejectedValueOnce(new Error('projects read refused'));
     vi.mocked(refreshInstances).mockRejectedValueOnce(new Error('instances read refused'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      mockFetch({ 'GET /api/archived': () => groups, 'POST /api/projects/p/sessions/s1/restore': () => ({ ok: true }) });
-      wrap(<ArchivedSection />);
+      mockFetch({ 'GET /api/archived': () => groups, 'DELETE /api/projects/p/sessions/s1': () => ({ ok: true }) });
+      wrap(<><ArchivedSection /><ConfirmHost /></>);
       await screen.findByText(/archived sessions/);
       fireEvent.click(screen.getByRole('button', { name: /^p/ }));
-      fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete permanently' }));
       await waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
       expect(warn.mock.calls).toEqual(expect.arrayContaining([
         ['refreshProjects after an archive change failed:', expect.objectContaining({ message: 'projects read refused' })],
         ['refreshInstances after an archive change failed:', expect.objectContaining({ message: 'instances read refused' })],
       ]));
-      await waitFor(() => expect(resumeSession).toHaveBeenCalledWith({ projectName: 'p', worktreeName: undefined, sessionId: 's1' }));
     } finally {
       warn.mockRestore();
     }
   });
 
-  it('an accepted Restore and an accepted Delete each mark every place\'s session list stale, exactly once', async () => {
-    vi.mocked(resumeSession).mockClear();
+  it('an accepted Delete marks every place\'s session list stale, exactly once; a Restore leaves that to restoreSession', async () => {
+    vi.mocked(restoreSession).mockClear();
     mockFetch({
       'GET /api/archived': () => groups,
-      'POST /api/projects/p/sessions/s1/restore': () => ({ ok: true }),
       'DELETE /api/projects/p/sessions/s1': () => ({ ok: true }),
     });
     const stale: unknown[] = [];
@@ -864,14 +831,15 @@ describe('Archived', () => {
       await screen.findByText(/archived sessions/);
       fireEvent.click(screen.getByRole('button', { name: /^p/ }));
       fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
-      await waitFor(() => expect(resumeSession).toHaveBeenCalled());
-      expect(stale).toEqual([null]);
+      await waitFor(() => expect(restoreSession).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 30));
+      expect(stale).toEqual([]);
 
       fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Delete permanently' }));
-      await waitFor(() => expect(stale).toHaveLength(2));
+      await waitFor(() => expect(stale).toHaveLength(1));
       await new Promise((r) => setTimeout(r, 30));
-      expect(stale).toEqual([null, null]);
+      expect(stale).toEqual([null]);
     } finally {
       off();
     }

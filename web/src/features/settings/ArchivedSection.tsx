@@ -26,7 +26,7 @@ export function orderGroups(groups: ArchivedGroup[]) {
   return list;
 }
 
-/** The sidebar's cached per-scope session lists and the project/instance lists are stale after a restore or delete. */
+/** The sidebar's cached per-scope session lists and the project/instance lists are stale after a delete. */
 function archivedChanged() {
   emit('sessionsStale', null);
   refreshProjects().catch((e) => console.warn('refreshProjects after an archive change failed:', e));
@@ -48,10 +48,10 @@ export function ArchivedSection() {
   }, []);
   React.useEffect(() => { void load(); }, [load]);
 
-  // Jump straight to it: resuming selects it, which leaves Settings.
+  // Jump straight to it: resuming selects it, which leaves Settings. restoreSession
+  // marks the session lists stale and its resume refreshes the lists.
   async function restore(project: string, s: ArchivedSession) {
     await restoreSession({ projectName: project, worktreeName: s.worktreeName ?? null, sessionId: s.sessionId });
-    archivedChanged();
     await load();
   }
 
