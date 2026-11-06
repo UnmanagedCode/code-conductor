@@ -42,7 +42,7 @@ import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
 import { projectsOperation } from './projectsChanged.ts';
-import { pageLineageEvents } from './lineagePager.ts';
+import { pageLineageEvents, retiredLineageSource } from './lineagePager.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
 import {
@@ -84,7 +84,7 @@ import { applySessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { applySessionViewed } from './sessionViewed.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { getSummaries, setSummary, isArchived, setSegmentArchived, loadSessions, resolveOwner } from './sessionStore.ts';
-import { resolveBacking } from './sessionLineage.ts';
+import { resolveBacking, publicIdFor } from './sessionLineage.ts';
 import { generateSummary, askSession, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
 import type { ClaudeAuthStatus } from './claudeAuthStatus.ts';
@@ -1395,6 +1395,26 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try { res.json(await conductorSpawnedProjects()); } catch (e) { next(e); }
   });
 
+  // An ended session's scroll-back, from disk: the same page shape and the same
+  // walk into older segments as GET /instances/:id/lineage-events, for a
+  // session with no instance (a reopened view). Its cursors are archive indices
+  // of the session's own transcripts, unrelated to any instance's ring seqs.
+  // Responds { sessionId, events, hasMore, segment, nextBefore, pageSegment,
+  // currentSegmentId }; 404 when the session cannot be located.
+  r.get('/sessions/:sessionId/lineage-events', async (req, res, next) => {
+    try {
+      const { sid } = await sidParam(req.params.sessionId);
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw httpError(404, 'session not found');
+      const before = intQueryParam(req.query.before, 'before');
+      const limit = intQueryParam(req.query.limit, 'limit') ?? undefined;
+      const segment = typeof req.query.segment === 'string' && req.query.segment !== '' ? req.query.segment : null;
+      const publicId = await publicIdFor(sid);
+      const source = await retiredLineageSource(publicId, hit.place);
+      res.json({ sessionId: publicId, ...await pageLineageEvents(source, { segment, before, limit }) });
+    } catch (e) { next(e); }
+  });
+
   r.get('/sessions/:sessionId/locate', async (req, res, next) => {
     try {
       const { sid, backing } = await sidParam(req.params.sessionId);
@@ -1469,9 +1489,14 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // forward (first `limit` events with seq > after). Neither → trailing
     // `limit` events. `limit` clamped by `clampLimit` (default `LIMIT_DEFAULT`, max `LIMIT_MAX`). Responds
     // { id, events, hasMore, nextBefore, trimmedBefore, lastSeq }.
+    //
+    // Both this and lineage-events serve an instance that has left the list
+    // (killed, or an exited temp worker) from its frozen pager while the
+    // manager still holds one (src/retiredPagers.ts) — the pane that was
+    // watching it keeps its cursor space. 404 once that is forgotten.
     r.get('/instances/:id/events', async (req, res, next) => {
       try {
-        const inst = instances.get(req.params.id);
+        const inst = instances.pagerFor(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
         const before = intQueryParam(req.query.before, 'before');
         const after = intQueryParam(req.query.after, 'after');
@@ -1490,7 +1515,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // currentSegmentId }; 400 for a `segment` the walk never hands out.
     r.get('/instances/:id/lineage-events', async (req, res, next) => {
       try {
-        const inst = instances.get(req.params.id);
+        const inst = instances.pagerFor(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
         const before = intQueryParam(req.query.before, 'before');
         const limit = intQueryParam(req.query.limit, 'limit') ?? undefined;

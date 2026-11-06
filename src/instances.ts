@@ -5,6 +5,8 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
+import { RetiredPagers } from './retiredPagers.ts';
+import type { LineageSource } from './lineagePager.ts';
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 
@@ -5095,6 +5097,8 @@ export class Instance extends EventEmitter implements InstanceLike {
 
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
+  // Frozen pagers of instances dropped from byId (src/retiredPagers.ts).
+  retired = new RetiredPagers();
   _claudeLauncher: LauncherLike;
   _platform: Platform;
   // How the synchronous stops (shutdownForResumeSync, stopLiveSync) treat live CLIs.
@@ -5477,6 +5481,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       .map(i => ({ backend: i.backend, sessionId: i.sessionId ?? null }));
   }
   get(id: string): Instance | undefined { return this.byId.get(id); }
+
+  // The event pager for an instance id: the live instance, else the frozen copy
+  // taken when it left byId. Read-only routes only — nothing else may address a
+  // retired instance.
+  pagerFor(id: string): LineageSource & { readonly id: string } | undefined {
+    return this.byId.get(id) ?? this.retired.get(id);
+  }
+
+  // Freeze a leaving instance's pager, for a pane still showing it. One with no
+  // session never had history to page.
+  _retirePager(inst: Instance): void {
+    if (inst.sessionId) this.retired.capture(inst);
+  }
   idsForProject(name: string): string[] {
     return [...this.byId.values()].filter(i => i.project === name).map(i => i.id);
   }
@@ -6523,6 +6540,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // (and the badge would outlive the timer). Done while inst is still in
         // byId so cancel can clear its flags + emit the badge-drop status.
         this._cancelAutoResume(inst.id);
+        this._retirePager(inst);
         this.byId.delete(id);
         this._purgeIdleFor(id);
         this._idleRenewNudge.purge(id);
@@ -7220,6 +7238,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (inst._redirect) {
       rmSync(sessionTmpDir(inst.id), { recursive: true, force: true });
     }
+    this._retirePager(inst);
     this.byId.delete(id);
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);

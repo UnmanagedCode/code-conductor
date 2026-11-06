@@ -2108,7 +2108,10 @@ export interface SessionLocation {
 // sessionId, and the cwd its transcript was actually found at, by probing the
 // conventional `<transcriptRoot(place)>/<encoded-cwd>/<sid>.jsonl` path against
 // every place every known project + worktree admits. Returns a SessionLocation
-// on hit, null when nothing matches.
+// on hit, null when nothing matches. A worktree session whose worktree is no
+// longer registered is found last, at the place its session record names
+// (recordedPlace) — its `worktreeName` then names a worktree that no longer
+// exists, so a caller that needs the worktree itself must still resolve it.
 // `encodeCwd` is one-way (lossy: '_' and '/' both collapse to '-'), so
 // we can't reverse-map a directory name back to a project — enumerating
 // known paths and probing is the only correct approach.
@@ -2222,14 +2225,7 @@ export async function findSessionLocation(sessionId: string): Promise<SessionLoc
   };
 
   const probe = async (id: string): Promise<SessionLocation | null> => {
-    const holds = async (at: TranscriptPlacement): Promise<boolean> => {
-      try {
-        return (await fs.stat(sessionFilePath(at, id))).isFile();
-      } catch (e) {
-        if (errCode(e) !== 'ENOENT') throw e;
-        return false;
-      }
-    };
+    const holds = (at: TranscriptPlacement): Promise<boolean> => transcriptAt(at, id);
     const first = async (place: SessionPlace, ats: TranscriptPlacement[]) => {
       for (const at of ats) {
         if (await holds(at)) {
@@ -2266,14 +2262,56 @@ export async function findSessionLocation(sessionId: string): Promise<SessionLoc
   // self-pruning here would put a write inside a hot read path and race concurrent
   // readers (the delete path and loadHistory's ENOENT branch own the pruning).
   const { publicIdFor, segmentsFor } = await import('./sessionLineage.ts');
-  const segments = await segmentsFor(await publicIdFor(sessionId));
+  const publicId = await publicIdFor(sessionId);
+  const segments = await segmentsFor(publicId);
+  const olderIds: string[] = [];
   for (let i = segments.length - 1; i >= 0; i--) {
     const id = segments[i].id;
     if (id === backingId || isMintedPublicId(id)) continue;
+    olderIds.push(id);
+  }
+  for (const id of olderIds) {
     const older = await probe(id);
     if (older) return older;
   }
+
+  // RECORDED PLACE. A worktree session whose worktree is no longer registered
+  // (delete_worktree removes the registration, never the transcript) is found
+  // through the place its session record names — so the `worktreeName` this
+  // returns may name a worktree that no longer exists. Only for a listed
+  // project: a deregistered project's sessions stay unlocated.
+  const rec = (await loadSessions()).byPublic.get(publicId);
+  const proj = rec?.worktree ? projects.find(p => p.name === rec.project) : undefined;
+  if (rec?.worktree && proj) {
+    const { cwd, place } = await recordedPlace(proj, rec.worktree);
+    for (const id of [backingId, ...olderIds]) {
+      if (await transcriptAt(place, id)) return { project: proj.name, worktreeName: rec.worktree, cwd, place };
+    }
+  }
   return null;
+}
+
+// Does `place` hold `<id>.jsonl`? Any error but ENOENT throws.
+async function transcriptAt(place: TranscriptPlacement, id: string): Promise<boolean> {
+  try {
+    return (await fs.stat(sessionFilePath(place, id))).isFile();
+  } catch (e) {
+    if (errCode(e) !== 'ENOENT') throw e;
+    return false;
+  }
+}
+
+// Where a worktree's transcripts are, from its NAME alone: the worktree layout
+// is a pure function of project + name (worktreePathFor), so this holds whether
+// or not the worktree is still registered. The one home for that derivation —
+// the recorded-place fallback above and the removed-worktree rows of
+// listArchivedGroupedByProject both read through it.
+export async function recordedPlace(
+  proj: ProjectInfo, worktreeName: string,
+): Promise<{ cwd: string; place: TranscriptPlacement }> {
+  const { worktreePathFor } = await import('./worktrees.ts');
+  const cwd = worktreePathFor(proj, worktreeName);
+  return { cwd, place: placeOf(proj, cwd) };
 }
 
 // Does a transcript for `sessionId` exist ANYWHERE under any transcript root cc
@@ -2290,7 +2328,8 @@ export async function findSessionLocation(sessionId: string): Promise<SessionLoc
 //
 // Callers must reach this only AFTER findSessionLocation has already missed —
 // it costs one readdir plus one stat per encoded-cwd dir, and that miss is
-// itself the proof that no registered project or worktree owns the directory.
+// itself the proof that no registered project or worktree, and no recorded
+// place, owns the directory.
 export async function findOrphanedTranscript(sessionId: string): Promise<string | null> {
   const backingId = await resolveToBackingId(sessionId);
   if (backingId === null) return null;
@@ -2386,7 +2425,8 @@ export interface ArchivedSessionRow {
 }
 
 // List every archived session, grouped by the project (and worktree)
-// that owns it. The archived flag is on a transcript's segment, which records
+// that owns it — plus every session of a worktree that is no longer registered
+// but that a session record still names (recordedPlace). The archived flag is on a transcript's segment, which records
 // no location, so we enumerate known project + worktree paths and keep the rows
 // listSessionsForCwd already flags as archived (it also reads firstPrompt
 // + title). Used by the Settings → Archived page. Only projects with at
@@ -2406,6 +2446,7 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
   // `.conduct` is included here so its archived temp sessions are visible in
   // Settings → Archived — the same opt-in findSessionLocation makes.
   const projects: ProjectInfo[] = await listProjects({ includeConduct: true });
+  const recordedWorktrees = await recordedWorktreesByProject();
 
   const groups: { project: string; sessions: ArchivedSessionRow[] }[] = [];
   for (const proj of projects) {
@@ -2419,12 +2460,20 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
     }
     let wts: WorktreeMeta[] = [];
     try { wts = await loadWorktreesFor(proj.name); } catch { /* not a git repo, skip */ }
-    for (const wt of wts) {
-      const wtRows = (await listSessionsForCwd(placeOf(proj, wt.worktreePath))).filter(s => s.archived);
+    const places: Array<{ name: string; place: TranscriptPlacement; all: boolean }> =
+      wts.map(wt => ({ name: wt.worktreeName, place: placeOf(proj, wt.worktreePath), all: false }));
+    // A REMOVED worktree's sessions: every row, archived or not, since no other
+    // list can show them — its place is gone from the sidebar with it.
+    const listed = new Set(wts.map(wt => wt.worktreeName));
+    for (const name of recordedWorktrees.get(proj.name) ?? []) {
+      if (!listed.has(name)) places.push({ name, place: (await recordedPlace(proj, name)).place, all: true });
+    }
+    for (const { name, place, all } of places) {
+      const wtRows = (await listSessionsForCwd(place)).filter(s => all || s.archived);
       for (const s of wtRows) {
         sessions.push({
           sessionId: s.sessionId, title: s.title, firstPrompt: s.firstPrompt,
-          lastActivity: s.lastActivity, size: s.size, worktreeName: wt.worktreeName,
+          lastActivity: s.lastActivity, size: s.size, worktreeName: name,
         });
       }
     }
@@ -2434,6 +2483,19 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
     }
   }
   return groups;
+}
+
+// project name → the distinct worktree names session records place a session
+// in (setSessionPlace). Store reads only.
+async function recordedWorktreesByProject(): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  for (const rec of (await loadSessions()).byPublic.values()) {
+    if (!rec.project || !rec.worktree) continue;
+    let names = out.get(rec.project);
+    if (!names) out.set(rec.project, names = new Set());
+    names.add(rec.worktree);
+  }
+  return out;
 }
 
 // Lightweight session summary — used by /api/projects to show a count +

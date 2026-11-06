@@ -24,6 +24,7 @@ import type { SessionRedirect } from './systems/toolRedirect.ts';
 import type { TurnMarks } from './sessionStore.ts';
 import type { BackgroundJob } from './backgroundJobs.ts';
 import type { Response } from 'express';
+import type { LineageSource } from './lineagePager.ts';
 import type { PristineTracker } from './pristine.ts';
 
 // One backing segment's claim on the ring's seq space: ring content with
@@ -320,6 +321,9 @@ export interface SubtreeRow {
 export interface InstanceManagerLike {
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
+  // The live instance's pager, else a dropped instance's frozen one
+  // (src/retiredPagers.ts). Read-only event routes only.
+  pagerFor(id: string): LineageSource & { readonly id: string } | undefined;
   // Both session lookups return null (not undefined) on a miss — the impl's
   // `find(...) ?? null` shape, pinned by tests.
   anyForSession(sessionId: string): InstanceLike | null;

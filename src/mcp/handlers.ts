@@ -311,17 +311,16 @@ interface DiskRef { sessionId: string; backingSessionId: string; cwd: string; pl
 //   4.   a dead-but-retained instance still in byId: its own cwd +
 //        backingSessionId are in memory, so no probe is needed.
 //   5.   findSessionLocation: a session with no instance at all (a killed temp
-//        worker, dropped from byId, whose jsonl _archiveTempSession retained).
-//   6.   findOrphanedTranscript: the transcript exists but no registered
-//        project or worktree owns its directory.
+//        worker, dropped from byId, whose jsonl _archiveTempSession retained) —
+//        a deleted worktree's session included, through its recorded place.
+//   6.   findOrphanedTranscript: the transcript exists but neither a registered
+//        project or worktree nor the session's record places it.
 //   7.   nothing anywhere → SESSION_UNKNOWN.
 //
-// NOTE — the same findSessionLocation blind spot getInst records applies here,
-// and step 6 is what catches it: where an addressing tool refuses
-// SESSION_UNKNOWN for a session whose worktree is unregistered, a read refuses
-// SESSION_NOT_LIVE naming that cause. `encodeCwd` is one-way, so the found path
-// cannot be reversed into a cwd and the content genuinely cannot be served —
-// re-registering the worktree is the fix.
+// NOTE — step 6 catches a session findSessionLocation cannot place: a read
+// refuses SESSION_NOT_LIVE naming that cause. `encodeCwd` is one-way, so the
+// found path cannot be reversed into a cwd and the content genuinely cannot be
+// served — re-registering the worktree is the fix.
 //
 // This resolver never READS the file. A transcript that vanishes between probe
 // and read degrades through each call site's existing empty-result path.

@@ -32,9 +32,15 @@ import {
 import { isOuterUserEcho } from './parser.ts';
 import type { UiEvent, UiEventOf } from '../shared/uiEvent.ts';
 import type { InstanceLike, RingSeam } from './instanceTypes.ts';
-import type { TranscriptPlacement } from './projects.ts';
+import { resolveToBackingId, type TranscriptPlacement } from './projects.ts';
 import { chainFor, type LineageSegment } from './sessionLineage.ts';
 import { httpError } from './httpError.ts';
+
+// What the walk reads off an instance: the single-segment pager's source plus
+// the session it belongs to. A live instance, a retired one's frozen copy
+// (src/retiredPagers.ts) and a session with no instance at all
+// (retiredLineageSource) all serve it.
+export type LineageSource = PagerSource & Pick<InstanceLike, 'sessionId'>;
 
 export const NOT_AN_OLDER_SEGMENT = 'segment is not an older segment of this session';
 
@@ -130,7 +136,7 @@ const GAP: UiEvent = { kind: 'history_gap' };
 
 // One page of `inst`'s lineage history. Throws 400 for a `segment` the walk
 // would never hand out (see NOT_AN_OLDER_SEGMENT).
-export async function pageLineageEvents(inst: InstanceLike, q: {
+export async function pageLineageEvents(inst: LineageSource, q: {
   segment?: string | null; before?: number | null; limit?: number;
 }): Promise<LineagePage> {
   // Awaited first: it goes through loadLineage's read barrier behind any kicked
@@ -216,4 +222,23 @@ export async function pageLineageEvents(inst: InstanceLike, q: {
       : { events: [{ ...GAP }], hasMore: false, nextBefore: 0, trimmedBefore: 0, lastSeq: -1 };
     return { page, pageSegment: step.id };
   }
+}
+
+// A session with no instance, as a LineageSource: its current segment's
+// transcript at `place` stands in for the ring (seq = archive index, nothing
+// trimmed, one seam at 0), so pageLineageEvents serves it with the same page
+// shape and the same walk into older segments. Its seqs are archive indices,
+// not the ring seqs a live pane held — a view paging it starts from nothing.
+// A missing current file is an empty ring; the walk still reaches older ones.
+export async function retiredLineageSource(publicId: string, place: TranscriptPlacement): Promise<LineageSource> {
+  const current = await resolveToBackingId(publicId);
+  const flat = (current ? await loadStampedTranscript({ place, sessionId: current }) : null) ?? [];
+  return {
+    sessionId: publicId,
+    backingSessionId: current,
+    transcriptPlace: place,
+    _userEchoCount: flat.filter(e => isOuterUserEcho(e)).length,
+    ring: { trimmedBefore: 0, nextSeq: flat.length, seams: current ? [{ segmentId: current, startSeq: 0 }] : [] },
+    ringSnapshot: () => flat.slice(),
+  };
 }
