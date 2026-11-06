@@ -496,3 +496,66 @@ test('GET /api/sessions/:sid/attachments/:file serves a killed worker\'s attachm
     assert.equal((await get(publicId, 'shot-1.png')).status, 404, 'deleted with the worktree\'s store entry');
   } finally { await ctx.close(); }
 });
+
+// 15 — INVARIANT: a worker whose CLI exited ON ITS OWN keeps its exit cause on
+// every SESSION_NOT_LIVE — the worktree-gone refusal included: `exit` is
+// carried and the reason leads with the cause.
+test('a self-exited worker whose worktree is deleted refuses with its exit cause leading the cannot-resume reason', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { sid, wt, instanceId } = await workerInWorktree(ctx);
+    const inst = ctx.instances.get(instanceId);
+    const line = 'fatal: the CLI fell over';
+    inst.proc.stderr.write(line + '\n');
+    await waitFor(() => inst._stderr.includes(line));
+    inst.proc.kill('SIGKILL');
+    await waitFor(() => ctx.instances.idsForSession(sid).length === 0);
+    assert.ok(ctx.instances.exitCauseFor(inst.sessionId), 'fixture check: an exit cause is recorded');
+    await deleteWorktree(ctx, wt);
+
+    const r = unwrap(await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'more' }));
+    assert.equal(r.code, 'SESSION_NOT_LIVE', JSON.stringify(r));
+    assert.deepEqual(Object.keys(r).sort(), ['code', 'exit', 'ok', 'reason', 'sessionId']);
+    assert.equal(r.exit.signal, 'SIGKILL');
+    assert.match(r.exit.stderrTail, /the CLI fell over/);
+    assert.match(r.reason, /^session \S+'s process exited on its own \(signal SIGKILL — fatal: the CLI fell over\) and cannot be resumed: /);
+    assert.match(r.reason, /worktree 'job' of project 'demo' was deleted/);
+    assert.doesNotMatch(r.reason, /spawn_instance\(\{resume/);
+  } finally { await ctx.close(); }
+});
+
+// 16 — INVARIANT: the cannot-resume refusal follows the listing a resume reads
+// (registrations intersected with `git worktree list`), not the registration
+// alone: a worktree removed by hand and pruned from git, though still
+// registered, gets the cannot-resume refusal — and the resume is indeed refused.
+test('a worktree removed by hand and pruned from git, still registered, gets the cannot-resume refusal its resume bears out', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { sid, wt } = await workerInWorktree(ctx);
+    await kill(ctx, sid);
+    await fs.rm(wt.worktreePath, { recursive: true, force: true });
+    await git(path.join(ctx.projectsRoot, 'demo'), 'worktree', 'prune');
+    const { registeredWorktreeNames } = await import('../src/worktrees.ts');
+    assert.ok((await registeredWorktreeNames('demo')).includes('job'), 'fixture check: still registered');
+
+    const r = unwrap(await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'more' }));
+    assert.equal(r.code, 'SESSION_NOT_LIVE', JSON.stringify(r));
+    assert.match(r.reason, /cannot be resumed/);
+    assert.doesNotMatch(r.reason, /spawn_instance\(\{resume/);
+    const resumed = await callTool(ctx.baseUrl, 'spawn_instance', { resume: sid });
+    assert.equal(JSON.parse(resumed.content[1].text).code, 'WORKTREE_UNKNOWN', 'the resume the refusal rules out is refused');
+  } finally { await ctx.close(); }
+});
+
+// 17 — INVARIANT: the session attachments route validates its session id like
+// every session route: a malformed one is refused 400, before any lookup.
+test('GET /api/sessions/:sid/attachments/:file refuses a malformed session id 400', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const r = await fetch(`${ctx.baseUrl}/api/sessions/not%20a%20sid!/attachments/shot.png`);
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /invalid sessionId/);
+    const ok = await fetch(`${ctx.baseUrl}/api/sessions/${randomUUID()}/attachments/shot.png`);
+    assert.equal(ok.status, 404, 'control: a well-formed unknown id reaches the lookup');
+  } finally { await ctx.close(); }
+});

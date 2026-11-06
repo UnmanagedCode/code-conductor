@@ -35,7 +35,7 @@ import {
   isGitRepo, isGitOwnershipRefusal, hasUnbornHead, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree, requireWorktree, unknownWorktreeMessage,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
-  worktreeDirtyLines, runGit, registeredWorktreeNames,
+  worktreeDirtyLines, runGit,
   listDependentWorktrees, dependentsRefusal, worktreeLockedRefusal, resolveProjectCwd, worktreeWorkLanded,
   type WorktreeMeta,
 } from '../worktrees.ts';
@@ -298,9 +298,12 @@ async function getInst(instances: InstanceManagerLike | null | undefined, sessio
   if (held || located) {
     const project = heldInst?.project ?? hit?.project;
     const worktree = heldInst ? heldInst.worktree?.worktreeName : hit?.worktreeName;
-    if (project && worktree && !(await registeredWorktreeNames(project)).includes(worktree)) {
-      return { soft: worktreeGoneRefusal(sessionId, project, worktree) };
-    }
+    // The listing the resume's requireWorktree reads, so the advice matches what
+    // a resume would do. A listing that fails says nothing either way.
+    const listed = project && worktree
+      ? await fsListWorktrees(project).then(ws => ws.some(w => w.worktreeName === worktree), () => true)
+      : true;
+    if (!listed) return { soft: worktreeGoneRefusal(sessionId, project as string, worktree as string, exit) };
   }
   if (held || exit || located) return { soft: notLiveRefusal(sessionId, { exit, hasTranscript: located }) };
   return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
@@ -408,11 +411,18 @@ function notLiveRefusal(sessionId: string, { exit = null, hasTranscript = true }
 }
 
 // A session whose worktree was deleted: not live and not resumable (a resume
-// needs its worktree), but its transcript is still readable.
-function worktreeGoneRefusal(sessionId: string, project: string, worktree: string): SoftRefusal {
+// needs its worktree), but its transcript is still readable. A recorded exit
+// cause rides along and leads the reason, as in notLiveRefusal.
+function worktreeGoneRefusal(sessionId: string, project: string, worktree: string, exit: ExitCause | null): SoftRefusal {
+  const why = `its worktree '${worktree}' of project '${project}' was deleted. `
+    + `Its output is still readable — get_recent_messages / get_transcript({sessionId:"${sessionId}"}), or send_prompt({forward}) — so spawn a fresh worker to continue its work.`;
+  if (!exit) {
+    return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
+      reason: `session ${sessionId} has no running process and cannot be resumed: ${why}` };
+  }
   return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
-    reason: `session ${sessionId} has no running process and cannot be resumed: its worktree '${worktree}' of project '${project}' was deleted. `
-      + `Its output is still readable — get_recent_messages / get_transcript({sessionId:"${sessionId}"}), or send_prompt({forward}) — so spawn a fresh worker to continue its work.` };
+    exit: { code: exit.code, signal: exit.signal, stderrTail: exit.stderrTail },
+    reason: `session ${sessionId}'s process exited on its own (${describeExit(exit)}) and cannot be resumed: ${why}` };
 }
 
 // "exit code 1 — <last stderr line>", for a reason or a rendered row.
