@@ -11,18 +11,21 @@ import { IdleSubscriptionHub } from '../src/idleSubscriptions.ts';
 function rig({ callerOver = {}, targets = { 't-inst': { sessionId: 'worker-sid' } } } = {}) {
   const emitted = [];
   const prompts = [];
+  // The stub's promise settles a tick AFTER it is called, so an emit that fires
+  // when `prompt` is merely called (fire-and-forget) reads settled === 0.
+  const state = { settled: 0 };
   const caller = {
     proc: {}, status: 'turn', acceptsMidTurnSteering: true,
     sessionId: 'conductor-sid', project: '.conduct',
-    prompt: async (text) => { prompts.push(text); },
+    prompt: async (text) => { prompts.push(text); await new Promise(r => setImmediate(r)); state.settled++; },
     _emitUi() {},
     ...callerOver,
   };
   const byId = new Map([['c-inst', caller], ...Object.entries(targets)]);
-  const manager = { byId, emit: (event, arg) => emitted.push({ event, arg, afterPrompts: prompts.length }), on() {} };
+  const manager = { byId, emit: (event, arg) => emitted.push({ event, arg, settledAtEmit: state.settled }), on() {} };
   const hub = new IdleSubscriptionHub(manager);
   const wakes = () => emitted.filter(e => e.event === 'wake_delivered');
-  const flush = () => new Promise(r => setImmediate(r));
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); };
   return { hub, caller, emitted, wakes, prompts, flush };
 }
 
@@ -34,7 +37,7 @@ test('a delivered wake emits one wake_delivered naming the target session, after
   assert.deepEqual(wakes()[0].arg, {
     callerSessionId: 'conductor-sid', callerProject: '.conduct', targetSessionId: 'worker-sid', heartbeat: false,
   });
-  assert.equal(wakes()[0].afterPrompts, 1, 'emitted only once caller.prompt had been called and resolved');
+  assert.equal(wakes()[0].settledAtEmit, 1, 'emitted only once caller.prompt had RESOLVED, not merely been called');
 });
 
 test('a timed-out wake is flagged heartbeat', async () => {

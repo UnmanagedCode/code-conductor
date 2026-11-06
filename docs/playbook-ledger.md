@@ -27,7 +27,7 @@ Every `sessionId` / `conductorSessionId` / `forwardSessionId` is a **permanent p
 | `refusal` | `sessionId?`, `forwardSessionId?`, `tool`, `code`, `reason` | `check` · a call policy refused, recorded at both levels (under `warn` the call proceeds). |
 | `enforcement` | `conductorSessionId`, `from` (`string \| null`), `to` | The manager `status` stream · a conductor's first observation (`from: null`, a birth) and every change of its level. `to` is a `PLAYBOOK_ENFORCEMENT_MODES` value (`src/playbooks.ts`). |
 
-**Lifecycle kinds** — written for every **conducted** session and for any session a `spawn` row tracks, tracked or not:
+**Lifecycle kinds** — written for every conducted session, and for any session tracked by a `spawn` row:
 
 | Kind | Fields | Writer · trigger |
 |---|---|---|
@@ -43,7 +43,8 @@ Every `sessionId` / `conductorSessionId` / `forwardSessionId` is a **permanent p
 
 ## Semantics for a timeline reader
 
-- **One call event per governed interaction call.** Each successful governed call by a conductor ends in exactly one of `transition`, `interaction` or `refusal`. A refused call under `enforce` runs no handler; under `warn` it proceeds and leaves only its `refusal`. A handler that throws or soft-refuses (`ok:false`) leaves nothing. `spawn_instance` ends in `spawn` or `refusal`, never `interaction`.
+- **One call event per interaction call.** Each successful conductor call to an interaction tool ends in exactly one `transition` or `interaction`. A refused governed call writes only its `refusal` (under `enforce` no handler runs; under `warn` it proceeds). A handler that throws or soft-refuses (`ok:false`) writes nothing. `spawn_instance` ends in `spawn` or `refusal`, never `interaction`.
+- **Calls with no row.** A successful call to a read-only governed tool (`get_recent_messages`, `get_transcript`, `describe_session`, `playbook_state`) writes nothing, and neither does a `spawn_instance` whose result names a session the ledger already holds. Do not read the ledger as a complete log of governed calls.
 - **Lifecycle edges.** `retire` follows a death; `resume` follows a re-entry. A rotation that kills and relaunches the process (prune, rewind, model switch) is a `retire` then a `resume`; an in-place rotation (renew, typed `/clear`) writes neither.
 - **Ordering.**
   - A `kill_instance` `interaction` follows the `retire` its kill produced.
@@ -65,3 +66,4 @@ Additions (a kind, an optional field) are additive. Renaming or removing a kind 
 
 - No row for a death this process never observed (a host reboot).
 - No `wake` row when the woken worker has left the registry with no recorded exit.
+- A `resume` is written when a launch begins, after its pre-spawn refusal checks. A launch that fails afterwards (a failed FUSE mount, an immediate crash) leaves a `resume` followed by a `retire`.

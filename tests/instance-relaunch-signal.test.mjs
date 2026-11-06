@@ -110,4 +110,40 @@ describe('session_relaunched', () => {
     const plainEv = relaunched.find(e => e.sessionId === instances.get(plain.body.id).sessionId);
     assert.equal(plainEv?.conducted, false);
   });
+
+  test('on a resume whose hydrate emits a status, session_relaunched precedes every status for the session', async () => {
+    // INVARIANT: the relaunch is announced before this launch's first `status`.
+    // The transcript ends on an unanswered AskUserQuestion, so the hydrate sets
+    // awaitingUser and emits a status of its own; a listener that marks a session
+    // alive on any status would otherwise swallow the relaunch.
+    const name = await project();
+    const sid = `${(n + 0x200).toString(16).padStart(8, '0')}-2222-3333-4444-555555555555`;
+    const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(path.join(ctx.projectsRoot, name)));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`), [
+      { type: 'user', isSidechain: false, message: { role: 'user', content: [{ type: 'text', text: 'ask me' }] } },
+      { type: 'assistant', isSidechain: false, message: { id: 'm1', role: 'assistant', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't1', name: 'AskUserQuestion', input: { questions: [{ question: 'q' }] } }] } },
+    ].map(l => JSON.stringify(l)).join('\n') + '\n');
+
+    const order = [];
+    const onStatus = s => order.push(['status', s.sessionId, s.awaitingUser]);
+    const onRelaunch = a => order.push(['relaunch', a.sessionId]);
+    instances.on('status', onStatus);
+    instances.on('session_relaunched', onRelaunch);
+    try {
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: name, mode: 'bypassPermissions', resume: sid });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      await idle(r.body.id);
+      await settle();
+      const publicId = instances.get(r.body.id).sessionId;
+      const mine = order.filter(e => e[1] === publicId);
+      assert.ok(mine.some(e => e[0] === 'status' && e[2]), 'premise: the hydrate emitted a status carrying the ask');
+      assert.equal(mine[0][0], 'relaunch', `the relaunch comes first, got ${JSON.stringify(mine.slice(0, 3))}`);
+      assert.equal(mine.filter(e => e[0] === 'relaunch').length, 1);
+    } finally {
+      instances.off('status', onStatus);
+      instances.off('session_relaunched', onRelaunch);
+    }
+  });
 });

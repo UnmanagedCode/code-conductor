@@ -486,7 +486,8 @@ test('a tracked worker\'s resume decision appends nothing', async () => {
       toolName: 'spawn_instance', args: { resume: 'w1' }, callerId: CONDUCTOR_ID, resumeHandle: 'w1',
     });
     assert.ok(!('refusal' in outcome), `premise: resume of a tracked worker is allowed; got ${JSON.stringify(outcome.refusal)}`);
-    await outcome.commit?.({ sessionId: 'w1' });
+    assert.ok(typeof outcome.commit === 'function', 'premise: an allowed resume carries a commit');
+    await outcome.commit({ sessionId: 'w1' });
     assert.equal(appended.length, 0);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
