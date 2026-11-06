@@ -2,6 +2,7 @@
 // sidebar, the session header, the conversation and the commit-history view.
 import { ApiError, apiFetch } from '@shared/http';
 import { closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
+import { isLiveStatus } from '@shared/conductors';
 import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
 import { appStore, activeInstance } from '@/state/app';
 import { syncRoute } from '@/state/route';
@@ -94,8 +95,17 @@ export function archivedSessionUrl(project: string, worktreeName: string | null 
   return base + suffix;
 }
 
-/** Un-archive a session (a no-op when it is not archived), then resume it, which selects it. */
+/**
+ * Un-archive a session (a no-op when it is not archived), then resume it, which
+ * selects it. A session already live again (resumed elsewhere, or by a restart)
+ * is selected instead: the server refuses a second resume.
+ */
 export async function restoreSession({ projectName, worktreeName, sessionId }: { projectName: string; worktreeName: string | null; sessionId: string }) {
+  const live = instances().find((i) => i.sessionId === sessionId && isLiveStatus(i.status));
+  if (live) {
+    selectInstance(live.id, { userGesture: true });
+    return;
+  }
   try {
     await apiFetch(archivedSessionUrl(projectName, worktreeName, sessionId, '/restore'), { method: 'POST' });
   } catch (e: any) {

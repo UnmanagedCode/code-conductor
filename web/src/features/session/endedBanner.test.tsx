@@ -21,7 +21,7 @@ const ended: Instance = {
   ended: { source: 'instance', worktreeName: 'wt' },
 };
 
-async function mount(projects: Project[]) {
+async function mount(projects: Project[], listed: Instance[] = []) {
   vi.resetModules();
   const resumedInst = { id: 'iA2', project: 'p', sessionId: 's-a', status: 'idle', mode: 'plan' };
   const calls = routeFetch({
@@ -34,7 +34,7 @@ async function mount(projects: Project[]) {
   });
   const { appStore } = await import('@/state/app');
   const { EndedBanner } = await import('./EndedBanner');
-  appStore.set({ projects, instances: [], ended, activeId: 'iA' });
+  appStore.set({ projects, instances: listed, ended, activeId: 'iA' });
   render(<EndedBanner inst={ended} />);
   return { appStore, calls };
 }
@@ -53,6 +53,15 @@ describe('EndedBanner', () => {
     expect(posts.map((x) => x.url)).toEqual(['/api/projects/p/worktrees/wt/sessions/s-a/restore', '/api/instances']);
     expect(posts[1].body).toEqual({ project: 'p', resume: 's-a', worktree: 'wt' });
     expect(appStore.get().activeId).toBe('iA2');
+    expect(appStore.get().ended).toBeNull();
+  });
+
+  it('Resume of a session already live again under another instance selects that instance and posts nothing', async () => {
+    const again: Instance = { id: 'iA3', project: 'p', sessionId: 's-a', status: 'idle', mode: 'plan' };
+    const { calls, appStore } = await mount([project(['wt'])], [again]);
+    await act(async () => { fireEvent.click(resume()!); });
+    expect(calls.filter((x) => x.method === 'POST')).toEqual([]);
+    expect(appStore.get().activeId).toBe('iA3');
     expect(appStore.get().ended).toBeNull();
   });
 
