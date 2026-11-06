@@ -73,7 +73,7 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
-  isConducted, markConducted, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd, errCode,
+  isConducted, markConducted, setSessionPlace, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd, errCode,
   appendModelSwitch, reanchorModelSwitches, getModelSwitchesForSegment,
   type SessionBackendRecord, type TurnMarks, type ModelSwitchEntry,
 } from './sessionStore.ts';
@@ -2529,13 +2529,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // custom-model row is deleted. Runs on every spawn/resume, so a
     // model-unknown record self-heals once this.model holds a real id.
     writes.push(this._recordBackend());
-    // A conducted worker's spawn-time facts: who spawned it and where it runs.
-    // Here, not at the first turn_end, so a worker killed mid-first-turn is
-    // still recorded as conducted.
-    if (this.conducted) {
-      writes.push(markConducted(this.sessionId, {
-        parent: this.parentSessionId, project: this.project, worktree: this.worktree?.worktreeName ?? null,
+    // Where the session runs, for every session: what keeps its transcript
+    // locatable once its worktree is deleted (findSessionLocation).
+    if (this.sessionId) {
+      writes.push(setSessionPlace(this.sessionId, {
+        project: this.project, worktree: this.worktree?.worktreeName ?? null,
       }));
+    }
+    // A conducted worker's spawn-time fact: who spawned it. Here, not at the
+    // first turn_end, so a worker killed mid-first-turn is still recorded as
+    // conducted.
+    if (this.conducted) {
+      writes.push(markConducted(this.sessionId, { parent: this.parentSessionId }));
     }
     // Same reason as the temp flag: this is the first point a fresh spawn has
     // a sessionId to key the mode record on (the constructor runs before the id
