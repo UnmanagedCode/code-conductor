@@ -359,6 +359,13 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     await waitFor(async () => (await t.events()).some(e => e.kind === 'retire'));
     const retire = (await t.events()).find(e => e.kind === 'retire');
     assert.equal(retire.sessionId, rev.sessionId);
+    // The kill is also a conductor acting on a worker: one `interaction`, written
+    // after the retire the exit already produced — and no second retire.
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'interaction' && e.tool === 'kill_instance'));
+    const killEvs = (await t.events()).filter(e => e.sessionId === rev.sessionId
+      && (e.kind === 'retire' || (e.kind === 'interaction' && e.tool === 'kill_instance')));
+    assert.deepEqual(killEvs.map(e => e.kind), ['retire', 'interaction']);
+    assert.equal(killEvs[1].conductorSessionId, t.instances.get(t.conductorId).sessionId);
 
     // `needs` on TRANSITION-entry, not just spawn-entry: amend requires the
     // auditor, and the DESTINATION stage's conditions are what get checked.
@@ -626,6 +633,9 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     // that is what makes this fail if the prune moves the public id.
     const afterId = inst.sessionId;
     assert.equal(afterId, publicId, 'the public id is pinned across a prune');
+    // The relaunch's `resume` is written off the manager's event stream,
+    // asynchronously from the prune's reply.
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'resume' && e.sessionId === publicId));
     const evs = await t.events();
     const proj = foldProjection(evs);
     const after = proj.bySession.get(afterId);
@@ -646,6 +656,10 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     const retires = evs.filter(e => e.kind === 'retire');
     assert.equal(retires.length, 1, 'exactly one retire');
     assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
+    const resumes = evs.filter(e => e.kind === 'resume');
+    assert.equal(resumes.length, 1, 'exactly one resume — the relaunch pairs the retire the prune\'s kill wrote');
+    assert.equal(resumes[0].sessionId, publicId);
+    assert.ok(resumes[0].seq > retires[0].seq, 'the resume follows its retire');
 
     // THE acceptance criterion (2026-0130): the prune's retire is audit-only —
     // liveness is answered from the manager (isSessionLive), never from this
@@ -691,25 +705,75 @@ test('enforce: a worker whose subprocess exits is retired without a kill_instanc
   } finally { await t.close(); }
 });
 
-test('an untracked worker\'s exit writes no retire', async () => {
-  // Under `warn` the playbook-less spawn proceeds without a binding, which is the
-  // only way to get an untracked worker now that no level is inert. The ledger
-  // itself DOES exist here (birth + the refusal), so the assertion is on the
-  // absence of the retire event, not of the file.
+test('warn: an untracked CONDUCTED worker retires on exit and resumes once on spawn_instance({resume})', async () => {
+  // Under `warn` a playbook-less spawn proceeds without a binding, so the worker
+  // is conducted but untracked. Lifecycle rows follow `conducted`, not the binding.
   const t = await setup({ enforcement: 'warn' });
   try {
-    const w = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
-    await instForSession(t.instances, w.sessionId).kill();
-    // The retire append is fire-and-forget off the status stream, so asserting
-    // once here would race AHEAD of the write and pass on timing rather than on
-    // suppression. Give the append path real, repeated chances to land and
-    // require that it never does — a sibling test proves the same path writes
-    // within milliseconds when the worker IS tracked.
+    const w = await t.spawnWorker({ project: 'demo', mode: 'bypassPermissions' });
+    assert.ok(w.sessionId, `the spawn must succeed: ${JSON.stringify(w)}`);
+    assert.equal((await t.events()).filter(e => e.kind === 'spawn').length, 0, 'premise: untracked');
+    const backing = instForSession(t.instances, w.sessionId).backingSessionId;
+    await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), backing);
+    await t.call('kill_instance', { sessionId: w.sessionId });
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+    assert.equal((await t.events()).filter(e => e.kind === 'retire').length, 1, 'exactly one retire');
+
+    const back = await t.call('spawn_instance', { resume: w.sessionId });
+    assert.equal(back.sessionId, w.sessionId, `the resume must land: ${JSON.stringify(back)}`);
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'resume' && e.sessionId === w.sessionId));
+    const evs = await t.events();
+    assert.equal(evs.filter(e => e.kind === 'resume' && e.sessionId === w.sessionId).length, 1, 'exactly one resume');
+    assert.equal(evs.filter(e => e.kind === 'spawn').length, 0, 'and still no binding');
+  } finally { await t.close(); }
+});
+
+test('a worker that is neither tracked nor conducted writes no retire on exit', async () => {
+  // Spawned over REST, so it is not conducted; nothing binds it either. The
+  // ledger itself exists (the conductor's birth), so the assertion is on the
+  // absence of the retire, not of the file.
+  const t = await setup({ enforcement: 'warn' });
+  try {
+    const r = await api(t.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    await waitFor(() => t.instances.get(r.body.id)?.status === 'idle');
+    await t.instances.get(r.body.id).kill();
+    await waitFor(() => ['exited', 'crashed'].includes(t.instances.get(r.body.id)?.status ?? 'exited'));
+    // The retire append is fire-and-forget off the status stream, so one read
+    // would race ahead of it and pass on timing. Give it real, repeated chances
+    // to land and require that it never does.
     await assert.rejects(
       () => waitFor(async () => (await t.events()).some(e => e.kind === 'retire'),
         { timeout: 1000, interval: 20 }),
       /timeout/,
-      'the exit listener must stay inert while nothing is tracked');
+      'the exit listener must stay inert for a worker that is neither tracked nor conducted');
+  } finally { await t.close(); }
+});
+
+test('enforce: a conductor\'s prompt to a tracked worker is an interaction, and the worker\'s idle wake is a wake', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
+    assert.ok(w.sessionId, JSON.stringify(w));
+    const conductorSid = t.instances.get(t.conductorId).sessionId;
+    // `draft` declares no draft->draft, so this is an undeclared self-edge: no
+    // transition, but still one interaction naming the conductor.
+    const sent = await t.call('send_prompt', { sessionId: w.sessionId, text: 'SECRET-PROMPT-TEXT' });
+    assert.notEqual(sent.ok, false, JSON.stringify(sent));
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'interaction'));
+    // The worker's turn ends and wakes the conductor that dispatched it.
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'wake'));
+    const evs = await t.events();
+    const interactions = evs.filter(e => e.kind === 'interaction' && e.tool === 'send_prompt');
+    assert.equal(interactions.length, 1);
+    assert.deepEqual({ sessionId: interactions[0].sessionId, conductor: interactions[0].conductorSessionId },
+      { sessionId: w.sessionId, conductor: conductorSid });
+    assert.equal(evs.filter(e => e.kind === 'transition').length, 0, 'an undeclared self-edge moves no stage');
+    const wakes = evs.filter(e => e.kind === 'wake');
+    assert.equal(wakes.length, 1);
+    assert.deepEqual({ sessionId: wakes[0].sessionId, conductor: wakes[0].conductorSessionId },
+      { sessionId: w.sessionId, conductor: conductorSid });
+    assert.doesNotMatch(await fs.readFile(ledgerFile(), 'utf8'), /SECRET-PROMPT-TEXT/, 'no prompt text reaches the ledger');
   } finally { await t.close(); }
 });
 

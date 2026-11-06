@@ -318,6 +318,22 @@ export interface SubtreeRow {
   parentSessionId: string | null;
 }
 
+// IdleSubscriptionHub.deliver() -> the playbook gate: a wake stub reached `callerSessionId`
+// about `targetSessionId`. `heartbeat` is a "did NOT finish" timeout wake.
+export interface WakeDelivered {
+  callerSessionId: string;
+  callerProject: string;
+  targetSessionId: string;
+  heartbeat: boolean;
+}
+
+// Instance.launch() -> the playbook gate: a launch re-entered an existing session
+// (resume, respawn, rotation relaunch, restart restore) rather than minting one.
+export interface SessionRelaunched {
+  sessionId: string;
+  conducted: boolean;
+}
+
 export interface InstanceManagerLike {
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
@@ -341,6 +357,10 @@ export interface InstanceManagerLike {
   // An instance's turn marks changed (Instance.setTurnMarks); wsHub turns it
   // into the `instances` hint alone.
   emit(event: 'turn_marks', arg: { id: string }): void;
+  // Emitted by IdleSubscriptionHub.deliver(); consumed by the playbook gate.
+  emit(event: 'wake_delivered', arg: WakeDelivered): void;
+  // Emitted by the manager's relay of Instance 'relaunch'; consumed by the playbook gate.
+  emit(event: 'session_relaunched', arg: SessionRelaunched): void;
   _overageResumeMode: boolean;
   _overageResetsAt: number | null;
   _maybeReleaseOverageLock(): void;
@@ -366,6 +386,8 @@ export interface InstanceManagerLike {
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
+  on(event: 'wake_delivered', cb: (arg: WakeDelivered) => void): void;
+  on(event: 'session_relaunched', cb: (arg: SessionRelaunched) => void): void;
   off(event: 'status', cb: (summary: InstanceSummary) => void): void;
   off(event: 'subscription_changed', cb: () => void): void;
   // Resume-restart surface (src/resumeRestart.ts).

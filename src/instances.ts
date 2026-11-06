@@ -2205,12 +2205,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // segment with no conversation — rewind's or a model switch's, through
     // _relaunchSegment (`launch({})` on an instance that already has ids), which
     // deliberately reuses the same id under `--session-id`.
-    if (!resume && !this.backingSessionId) {
+    const fresh = !resume && !this.backingSessionId;
+    if (fresh) {
       this.backingSessionId = randomUUID();
       this.sessionId = await mintPublicId(this.backingSessionId);
       this._segments = [this.backingSessionId];
-    } else if (!this.conducted) {
-      await this._hydrateAwaitingUser((resume ?? this.backingSessionId) as string);
     }
     // Recompose the conductor's role doc into `.conduct/CONVENTIONS.md` before
     // the process starts, so it reflects the live convention selection. HERE and
@@ -2276,6 +2275,18 @@ export class Instance extends EventEmitter implements InstanceLike {
       await assertFuseAvailable({ ...realProbes, ensureBinary: ensureUnionBinary });
       this._fuse.unionBinary = await ensureUnionBinary();
       await this._fuse.prepare();
+    }
+    // THE one place that knows a launch re-enters an existing session: resume,
+    // respawn, prune/rewind rotations, model-switch relaunch and restart restore
+    // all arrive here non-fresh. It sits AFTER every refusal site above, so a
+    // launch that is refused never reports a return, and BEFORE this launch's
+    // first `status` emission — the hydrate below can emit one, and a listener
+    // that tracks live/dead edges (the playbook gate) must see the relaunch
+    // first. `sessionId` is already the public id here: the manager pins it
+    // before launch() on a resume, and a relaunch keeps the one it minted.
+    if (!fresh && typeof this.sessionId === 'string' && this.sessionId) this.emit('relaunch');
+    if (!fresh && !this.conducted) {
+      await this._hydrateAwaitingUser((resume ?? this.backingSessionId) as string);
     }
     const facts = this.spawn({ resume });
     if (this._fuse) await this._awaitFuseMount();
@@ -6562,6 +6573,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     });
     inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));
     inst.on('turn_marks', () => this.emit('turn_marks', { id }));
+    inst.on('relaunch', () => {
+      if (inst.sessionId) this.emit('session_relaunched', { sessionId: inst.sessionId, conducted: inst.conducted });
+    });
     // The first prompt: presence no longer matters, and a hidden conductor is listed now.
     inst.on('pristine_ended', () => {
       this.pristine.forget(id);

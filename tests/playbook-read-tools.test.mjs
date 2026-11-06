@@ -586,6 +586,33 @@ test('playbook_state derives the run graph and its history, keeping concurrent r
   } finally { await t.close(); }
 });
 
+test('playbook_state history omits activity rows, and they cannot push stage history out of the cap', async () => {
+  // INVARIANT: `interaction` and `wake` rows are filtered out BEFORE the history
+  // cap, so a long conversation with a worker never evicts its stage events.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
+    await t.call('approve_plan', { sessionId: w.sessionId });
+    const before = await t.call('playbook_state', { sessionId: w.sessionId });
+    const stageRows = before.history.filter(e => e.kind !== 'enforcement');
+    assert.deepEqual(stageRows.map(e => e.kind), ['spawn', 'transition'], 'premise: the stage history');
+
+    // More activity rows than any plausible cap, appended after the stage events.
+    const base = Math.max(...before.history.map(e => e.seq));
+    const lines = [];
+    for (let i = 1; i <= 450; i++) {
+      lines.push(JSON.stringify(i % 2
+        ? { seq: base + i, ts: '2026-09-06T00:00:00Z', kind: 'interaction', tool: 'send_prompt', sessionId: w.sessionId, conductorSessionId: 'c' }
+        : { seq: base + i, ts: '2026-09-06T00:00:00Z', kind: 'wake', sessionId: w.sessionId, conductorSessionId: 'c' }));
+    }
+    await fs.appendFile(ledgerFile(), lines.join('\n') + '\n');
+
+    const after = await t.call('playbook_state', { sessionId: w.sessionId });
+    assert.deepEqual(after.history, before.history);
+    assert.equal(after.historyTruncated, false);
+  } finally { await t.close(); }
+});
+
 test('playbook_state\'s `live` flips to false once the worker is actually killed', async () => {
   // The other direction of the assertion above: `live` is read from the
   // instance manager, not a ledger fold, so it must track a REAL kill —

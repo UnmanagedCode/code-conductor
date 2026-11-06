@@ -1,5 +1,7 @@
 // The playbook enforcement gate — the ONE policy checkpoint on the MCP
-// tools/call path, plus every write to the playbook ledger.
+// tools/call path, plus every write to the playbook ledger. Writes reach the
+// ledger from two paths: a tools/call commit (commitMove), and the manager's
+// event stream (`status`, `session_relaunched`, `wake_delivered`).
 //
 // src/mcp/server.ts stays transport (JSON-RPC, arg validation, prefix
 // resolution); this module owns the policy question and the audit trail. It sits
@@ -37,7 +39,7 @@
 // governs new spawns while those workers stay ungoverned.
 
 import {
-  decide, loadToolIndex, loadPlaybooks, normalizeToolName, normalizePlaybookEnforcement,
+  decide, loadToolIndex, loadInteractionTools, loadPlaybooks, normalizeToolName, normalizePlaybookEnforcement,
   type Move, type Playbook, type RefusalCode, type LegalMoves,
 } from '../playbooks.ts';
 import {
@@ -45,6 +47,7 @@ import {
   type PlaybookLedger, type Projection, type LedgerEvent,
 } from '../playbookLedger.ts';
 import { isConductorInstance } from '../conduct.ts';
+import { isDeadStatus } from '../instances.ts';
 import type { InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 
 // The soft-refusal body, serialized exactly like the transport's own
@@ -165,13 +168,14 @@ export function createPlaybookGate(
   // fires independently of the tools/call path.
   let appendChain: Promise<unknown> = Promise.resolve();
 
-  function append(ev: PendingEvent | (() => PendingEvent)): Promise<unknown> {
+  function append(ev: PendingEvent | (() => PendingEvent | null)): Promise<unknown> {
     // A thunk is resolved INSIDE the chain, so it reads a projection every
     // earlier append has already folded into. Captured so the warn below can
-    // still name the kind.
+    // still name the kind. A thunk that returns null appends nothing.
     let resolved: PendingEvent | null = null;
     appendChain = appendChain.then(async () => {
       resolved = typeof ev === 'function' ? ev() : ev;
+      if (!resolved) return;
       await ledger.append(resolved);
       // AFTER the write has folded (ledger.append folds synchronously before
       // resolving) — a refresh this hint triggers can never read the stage the
@@ -191,17 +195,47 @@ export function createPlaybookGate(
     return appendChain;
   }
 
-  // ── the manager status stream: retire events + enforcement-toggle events ──
+  // ── the manager event stream: lifecycle edges, wakes, enforcement toggles ──
   //
-  // Both are things the gate must record that no tools/call can tell it about.
-  // Watching the one 'status' stream means whichever surface flips the toggle
-  // (the WS message, a spawn-time value, a restart restore) is recorded without
+  // Things the gate must record that no tools/call can tell it about. Watching
+  // the manager's streams means whichever surface causes them (a kill, a crash,
+  // a UI resume, the WS toggle message, a restart restore) is recorded without
   // that surface knowing the ledger exists.
   const lastMode = new Map<string, string>();
+  // Per-session edge state for retire/resume: `dead` after a dead status,
+  // `alive` after any other status or a relaunch. Updated SYNCHRONOUSLY in the
+  // listeners, before any await, so concurrent events read each other's edge.
+  const lifecycle = new Map<string, 'alive' | 'dead'>();
   if (instances) {
     instances.on('status', (summary: InstanceSummary) => {
       void onStatus(summary);
     });
+    instances.on('session_relaunched', ({ sessionId, conducted }) => {
+      if (typeof sessionId !== 'string' || !sessionId) return;
+      if (lifecycle.get(sessionId) === 'alive') return;
+      lifecycle.set(sessionId, 'alive');
+      void appendLifecycle({ kind: 'resume', sessionId }, conducted);
+    });
+    instances.on('wake_delivered', ({ callerSessionId, callerProject, targetSessionId, heartbeat }) => {
+      // Only a conductor's wakes: the gate's scope, and what keeps
+      // `conductorSessionId` truthful.
+      if (!isConductorInstance({ project: callerProject })) return;
+      void ensureLoaded().then(() => append({
+        kind: 'wake',
+        sessionId: targetSessionId,
+        conductorSessionId: callerSessionId,
+        ...(heartbeat ? { heartbeat: true as const } : {}),
+      }));
+    });
+  }
+
+  // A lifecycle row is written for every CONDUCTED session and for any tracked
+  // one. Eligibility is read inside the serialized chain, after the projection
+  // has folded every earlier append.
+  async function appendLifecycle(ev: PendingEvent, conducted: boolean): Promise<void> {
+    await ensureLoaded();
+    const sessionId = (ev as { sessionId: string }).sessionId;
+    await append(() => (conducted || ledger.projection().bySession.has(sessionId) ? ev : null));
   }
 
   async function onStatus(summary: InstanceSummary): Promise<void> {
@@ -209,25 +243,19 @@ export function createPlaybookGate(
     if (!sessionId) return;
     // RETIRE — an audit record of an observed exit, covering both a deliberate
     // kill_instance and an unexpected crash, since either way the subprocess
-    // exits and lands here. Capacity no longer reads this event at all
-    // (`workers:"one"` counts LIVE processes via InstanceManager.isSessionLive),
-    // so unlike before there is no second case this stream needs to cover: a
-    // session whose exit this process never observed (a host reboot) already
-    // reads not-live from the manager, with nothing to reconcile.
-    if (summary.status === 'exited' || summary.status === 'crashed') {
-      // The projection MUST be folded before probing it. It is otherwise loaded
-      // lazily on the first governed call, so a worker that crashes after a
-      // restart but before that call would be read against an empty projection
-      // and never get its retire recorded in the audit trail.
-      //
-      // load() is READ-ONLY (a missing file folds to an empty projection and
-      // creates nothing), and the append below is guarded on the worker already
-      // being tracked. So the guard is "was this worker ever recorded", NOT "is
-      // enforcement on" — deliberately, because a worker bound by an earlier
-      // enforcing run must still retire correctly after a flip to `warn`.
-      await ensureLoaded();
-      const st = ledger.projection().bySession.get(sessionId);
-      if (st) await append({ kind: 'retire', sessionId, reason: `subprocess ${summary.status}` });
+    // exits and lands here. Tracked or conducted, once per alive→dead edge: a
+    // repeated dead summary (exited then crashed) is the same death. A session
+    // whose exit this process never observed (a host reboot) gets no retire.
+    if (isDeadStatus(summary.status)) {
+      if (lifecycle.get(sessionId) !== 'dead') {
+        lifecycle.set(sessionId, 'dead');
+        void appendLifecycle(
+          { kind: 'retire', sessionId, reason: `subprocess ${summary.status}` },
+          summary.conducted === true,
+        );
+      }
+    } else {
+      lifecycle.set(sessionId, 'alive');
     }
     // ENFORCEMENT. Without this, backtracking cannot explain why an
     // illegal-looking move was allowed.
@@ -326,30 +354,31 @@ export function createPlaybookGate(
     const patched = decision.patchedArgs;
     return {
       args: patched,
-      commit: (result: unknown) => commitMove({ move, args: patched, toolName: name, result }),
+      commit: (result: unknown) => commitMove({
+        move, args: patched, toolName: name, result, conductorSessionId: callerId,
+      }),
     };
   }
 
+  // EXACTLY ONE call event per governed interaction call, after a successful
+  // handler: a `transition` (a real move or a declared self-loop) or an
+  // `interaction` (everything else). A refused call keeps its `refusal` and gets
+  // neither; a throw or an `ok:false` result appends nothing.
   async function commitMove(
-    { move, args, toolName, result }:
-    { move: Move; args: Record<string, unknown>; toolName: string; result: unknown },
+    { move, args, toolName, result, conductorSessionId }:
+    { move: Move; args: Record<string, unknown>; toolName: string; result: unknown; conductorSessionId: string },
   ): Promise<void> {
     // A soft refusal from the handler means the call did not do what policy
     // authorised — do not record a move that never happened.
     if (isRecord(result) && result.ok === false) return;
     const provenance = suppliedProvenance(args.provenance);
 
-    // A RESUME un-retires an existing worker; it never re-declares one. Writing a
-    // `spawn` here would reset that worker's stageHistory and empty its provenance
-    // (see the spawn arm of applyEvent), erasing the history every downstream
-    // `needs` is answered from. The sessionId comes from the RESULT for the same
-    // reason as below — the result is the authority on which worker came back.
-    if (move.kind === 'resume') {
-      const sessionId = asRecord(result).sessionId;
-      if (typeof sessionId !== 'string' || !sessionId) return;
-      await append({ kind: 'resume', sessionId });
-      return;
-    }
+    // A RESUME un-retires an existing worker; it never re-declares one, and
+    // this arm writes nothing: the manager's `session_relaunched` stream owns the
+    // `resume` row, and a second writer here would record every tracked resume
+    // twice. Writing a `spawn` would reset the worker's stageHistory and empty its
+    // provenance (see the spawn arm of applyEvent).
+    if (move.kind === 'resume') return;
 
     if (move.kind === 'spawn' && move.playbook && move.to) {
       // The new worker's identity comes from the RESULT, not the arguments:
@@ -371,9 +400,10 @@ export function createPlaybookGate(
       // DECIDED IN THE CHAIN (hence the thunk): the projection is read at append
       // time, so an earlier commit racing this one has already folded. Read out
       // here instead, two concurrent commits on one sessionId both see "unbound"
-      // and the second spawn resets the binding the first just created.
-      await append((): PendingEvent => (ledger.projection().bySession.has(sessionId)
-        ? { kind: 'resume', sessionId }
+      // and the second spawn resets the binding the first just created. An
+      // already-bound session appends nothing (the null).
+      await append((): PendingEvent | null => (ledger.projection().bySession.has(sessionId)
+        ? null
         : {
           kind: 'spawn',
           sessionId,
@@ -423,18 +453,26 @@ export function createPlaybookGate(
       return;
     }
 
-    // Nothing else to record. An UNDECLARED self-edge and kind 'none' move
-    // nothing — every ordinary follow-up prompt is a self-edge, and a playbook
-    // that has not declared the loop is saying it does not want them counted.
-    //
+    // The fall-through: kind 'none' and an UNDECLARED self-edge. Neither moves a
+    // stage, but each is a conductor acting on a worker, so an interaction tool
+    // records one `interaction` row — ids and the tool name, never the prompt.
+    // Read-only tools and spawn_instance (which ends in its own spawn/refusal)
+    // record nothing here.
+    const target = typeof args.sessionId === 'string' ? args.sessionId : '';
+    if (target && (await loadInteractionTools()).has(toolName)) {
+      await append({
+        kind: 'interaction',
+        tool: toolName,
+        sessionId: target,
+        conductorSessionId,
+        ...forwardSubject(args),
+      });
+    }
     // `retire` is deliberately NOT written here, including for kill_instance:
-    // killing a worker makes its subprocess exit, so the status stream above
-    // already emits the retire — and it emits it FIRST, because the kill resolves
-    // through the same status transition the listener watches. A second writer
-    // here would be dead code that only looked like a safety net. The status
-    // stream covers deliberate kills and unexpected crashes identically; a
-    // process whose exit this one never observed (a host reboot) needs no
-    // `retire` at all — isSessionLive already reads it as gone.
+    // killing a worker makes its subprocess exit, so the manager's status stream
+    // already writes the retire — FIRST, because the kill resolves through the
+    // same status transition the listener watches. A kill_instance
+    // `interaction` is therefore appended after the retire it caused.
   }
 
   async function readProjection(): Promise<Projection> {

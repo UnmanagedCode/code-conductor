@@ -11,6 +11,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
 - **Project name → directory resolution** → `resolveProjectDir` in `src/projects.ts` is the single chokepoint every project path comes from, and it is ONE record read; `registerProject` is the one guarded writer. The realpath rule, the delete-means-deregister rule and the reserved-name refusal are in `docs/architecture.md` → `src/projects.ts`
+- **Playbook ledger on-disk format (record kinds + fields; stable — plugins read it)** → `docs/playbook-ledger.md`
 - **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`
 - **Windows launcher / installer contract (installer itself is the separate code-conductor-windows project)** → `docs/windows.md`
 - **Host-OS differences (spawn options, shell, kill, command splitting, path keys, feature capabilities)** → `Platform` in `src/platform/`; no `process.platform` elsewhere

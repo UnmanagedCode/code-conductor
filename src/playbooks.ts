@@ -92,18 +92,19 @@ export function normalizePlaybookEnforcement(v: unknown): PlaybookEnforcement {
 // toolName -> the set of its inputSchema.properties keys.
 export type ToolIndex = Map<string, Set<string>>;
 
-let toolIndexPromise: Promise<ToolIndex> | null = null;
+let toolsPromise: Promise<{ index: ToolIndex; interaction: ReadonlySet<string> }> | null = null;
 
 // DYNAMIC import, deliberately. A static `import { buildTools } from
 // './mcp/tools.ts'` would close a cycle: tools.ts -> handlers.ts, and
 // handlers.ts imports THIS module (the read tools: list_playbooks /
 // describe_playbook / playbook_state). Resolving the registry lazily, after
 // module init, keeps the dependency one-directional.
-export async function loadToolIndex(): Promise<ToolIndex> {
-  if (!toolIndexPromise) {
-    toolIndexPromise = (async () => {
+function loadTools(): NonNullable<typeof toolsPromise> {
+  if (!toolsPromise) {
+    toolsPromise = (async () => {
       const { buildTools } = await import('./mcp/tools.ts');
       const index: ToolIndex = new Map();
+      const interaction = new Set<string>();
       for (const tool of buildTools()) {
         const props = asRecord(asRecord(tool.inputSchema).properties);
         // The same schema gate mcp/server.ts's hasSessionIdProperty applies at
@@ -111,11 +112,25 @@ export async function loadToolIndex(): Promise<ToolIndex> {
         // `sessionId`. spawn_instance is governed by the stage it enters.
         const governable = (!!props.sessionId) || tool.name === 'spawn_instance';
         if (governable) index.set(tool.name, new Set(Object.keys(props)));
+        // An INTERACTION tool acts on the worker it names: it declares a
+        // `sessionId` and is not `readOnlyHint`. Read-only tools observe and
+        // conductors poll them constantly; spawn_instance already ends in its
+        // own `spawn` or `refusal` row.
+        if (props.sessionId && !asRecord(tool.annotations).readOnlyHint) interaction.add(tool.name);
       }
-      return index;
+      return { index, interaction };
     })();
   }
-  return toolIndexPromise;
+  return toolsPromise;
+}
+
+export async function loadToolIndex(): Promise<ToolIndex> {
+  return (await loadTools()).index;
+}
+
+// The tools whose governed calls the ledger records as `interaction` rows.
+export async function loadInteractionTools(): Promise<ReadonlySet<string>> {
+  return (await loadTools()).interaction;
 }
 
 export function governableToolNames(index: ToolIndex): string[] {

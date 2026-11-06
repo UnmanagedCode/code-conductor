@@ -71,7 +71,7 @@ import {
   type ReconMessage,
 } from './messageReconstruction.ts';
 import { loadPlaybooks, playbookSummary, playbookDetail, legalMovesFrom, decide, missingPlaybookCause, type Playbook } from '../playbooks.ts';
-import { runMembers, playbookBinding, type Projection } from '../playbookLedger.ts';
+import { runMembers, playbookBinding, isActivityEvent, type Projection } from '../playbookLedger.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
 // The handle check describe_session enforces. Static import is safe here:
@@ -765,12 +765,13 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
   const memberIds = new Set(members.map(m => m.sessionId));
 
   const all = await gate.readHistory();
-  const relevant = all.filter(ev =>
+  // Activity rows are excluded so they cannot evict stage history under HISTORY_CAP.
+  const relevant = all.filter(ev => !isActivityEvent(ev) && (
     ('sessionId' in ev && typeof ev.sessionId === 'string' && memberIds.has(ev.sessionId))
     // The caller's own enforcement changes: what made an illegal-looking move
     // legal at a given seq. Scoped to the caller, so no other session's setting
     // is ever published here.
-    || (ev.kind === 'enforcement' && !!enforcement && ev.conductorSessionId === enforcement.conductorSessionId));
+    || (ev.kind === 'enforcement' && !!enforcement && ev.conductorSessionId === enforcement.conductorSessionId)));
   const history = relevant.slice(-HISTORY_CAP);
 
   return {

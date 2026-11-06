@@ -27,7 +27,10 @@
 // stage, the playbook and the stage history stay filed under the id the worker
 // still answers to, and no orphan row appears under a rotated backing id.
 //
-// This module owns STAGE STATE and HISTORY only. Liveness is answered from
+// This module owns STAGE STATE and HISTORY, and the file also carries ACTIVITY
+// records (`interaction`, `wake`) that fold to nothing — see ACTIVITY_KINDS. The
+// on-disk record format, which plugins read directly, is documented in
+// docs/playbook-ledger.md. Liveness is answered from
 // InstanceManager.isSessionLive (src/instances.ts) — THE single liveness
 // authority — never from this projection: `retire` and `resume` are audit
 // EVENTS (the ledger's history of what the manager observed and what a
@@ -74,7 +77,23 @@ export type LedgerEvent =
   // never had. Distinct from a change, and deliberately an explicit null rather
   // than an absent key so a reader can tell "born this way" from "field missing".
   // Every conductor records a birth, at either level.
-  | { seq: number; ts: string; kind: 'enforcement'; conductorSessionId: string; from: string | null; to: string };
+  | { seq: number; ts: string; kind: 'enforcement'; conductorSessionId: string; from: string | null; to: string }
+  // ACTIVITY (see ACTIVITY_KINDS): a conductor acted on a worker. `tool` is the
+  // bare tool name. Carries ids only, never prompt text. Key omitted, never undefined.
+  | { seq: number; ts: string; kind: 'interaction'; tool: string; sessionId: string;
+      conductorSessionId: string; forwardSessionId?: string }
+  // ACTIVITY: an idle wake reached the conductor about `sessionId`. `heartbeat`
+  // is present (true) only on a "did NOT finish" heartbeat wake.
+  | { seq: number; ts: string; kind: 'wake'; sessionId: string; conductorSessionId: string;
+      heartbeat?: true };
+
+// The kinds that record what happened between sessions rather than where a
+// worker stands. They fold to no state, and readers of stage history skip them.
+export const ACTIVITY_KINDS = ['interaction', 'wake'] as const;
+
+export function isActivityEvent(ev: LedgerEvent): boolean {
+  return (ACTIVITY_KINDS as readonly string[]).includes(ev.kind);
+}
 
 // A ledger event as handed to append() — seq/ts are assigned by the ledger.
 export type NewLedgerEvent =
@@ -83,7 +102,9 @@ export type NewLedgerEvent =
   | Omit<Extract<LedgerEvent, { kind: 'retire' }>, 'seq' | 'ts'>
   | Omit<Extract<LedgerEvent, { kind: 'resume' }>, 'seq' | 'ts'>
   | Omit<Extract<LedgerEvent, { kind: 'refusal' }>, 'seq' | 'ts'>
-  | Omit<Extract<LedgerEvent, { kind: 'enforcement' }>, 'seq' | 'ts'>;
+  | Omit<Extract<LedgerEvent, { kind: 'enforcement' }>, 'seq' | 'ts'>
+  | Omit<Extract<LedgerEvent, { kind: 'interaction' }>, 'seq' | 'ts'>
+  | Omit<Extract<LedgerEvent, { kind: 'wake' }>, 'seq' | 'ts'>;
 
 export interface WorkerState {
   sessionId: string;
@@ -190,6 +211,9 @@ export function applyEvent(p: Projection, ev: LedgerEvent): void {
       break;
     case 'refusal':
       break; // audit-only; no state change
+    case 'interaction':
+    case 'wake':
+      break; // activity: recorded for readers of the file, folds to nothing
     case 'enforcement':
       // Only `to` is folded, so a birth (`from: null`) sets the initial mode by
       // exactly the same path a change does — `from` is audit-only, there to say

@@ -1009,7 +1009,8 @@ export function buildTools(): Tool[] {
         'component over `provenance` edges), `nextMoves` is every outgoing edge as ' +
         '{to, via, ok, code?, reason?} — each ANSWERED BY THE SAME CHECK THAT ENFORCES, so a move ' +
         'reported ok:false comes back with the exact code and reason you would get for attempting it — ' +
-        'and `history` is the run\'s ledger events oldest-first (capped; see historyTruncated). ' +
+        'and `history` is the run\'s stage-audit ledger events (spawn, transition, retire, resume, refusal, ' +
+        'enforcement; interaction and wake activity is not included) oldest-first (capped; see historyTruncated). ' +
         'Each move is evaluated as the BARE call, with no `provenance` supplied, so an edge into a stage ' +
         'that declares `needs` reads ok:false (NEEDS_UNSATISFIED) even when a satisfying worker exists ' +
         '— the `reason` names what to pass and which workers of the run satisfy it, or that none does. ' +
