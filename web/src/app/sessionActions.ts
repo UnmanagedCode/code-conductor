@@ -17,7 +17,7 @@ const activeId = () => appStore.get().activeId;
 /** Closing the active session is no selection; it drops the anchor naming that session, so a reload resumes nothing. */
 function clearActive() {
   const closed = activeInstance(appStore.get())?.sessionId;
-  appStore.set({ activeId: null });
+  appStore.set({ activeId: null, ended: null });
   if (closed && readSessionAnchor() === closed) {
     writeSessionAnchor(null);
     syncRoute();
@@ -83,6 +83,27 @@ export async function resumeSession({
     if (silent) { console.warn('anchor auto-resume failed', e); return; }
     toast.error('Resume failed', e.message);
   }
+}
+
+/** A session's REST base under its project or worktree, plus `suffix`. */
+export function archivedSessionUrl(project: string, worktreeName: string | null | undefined, sessionId: string, suffix: string) {
+  const enc = encodeURIComponent;
+  const base = worktreeName
+    ? `/api/projects/${enc(project)}/worktrees/${enc(worktreeName)}/sessions/${enc(sessionId)}`
+    : `/api/projects/${enc(project)}/sessions/${enc(sessionId)}`;
+  return base + suffix;
+}
+
+/** Un-archive a session (a no-op when it is not archived), then resume it, which selects it. */
+export async function restoreSession({ projectName, worktreeName, sessionId }: { projectName: string; worktreeName: string | null; sessionId: string }) {
+  try {
+    await apiFetch(archivedSessionUrl(projectName, worktreeName, sessionId, '/restore'), { method: 'POST' });
+  } catch (e: any) {
+    toast.error('Restore failed', e.message);
+    return;
+  }
+  emit('sessionsStale', null);
+  await resumeSession({ projectName, worktreeName, sessionId });
 }
 
 export async function rewindActiveSession(userMessageIndex: number, text: string) {

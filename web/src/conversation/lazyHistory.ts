@@ -4,7 +4,7 @@
 // ConversationModel (the exact live path) and is spliced above with
 // prependPage. The scroll container registers a viewport so a splice keeps the
 // reader's position and short histories fill the screen.
-import { apiFetch } from '@shared/http';
+import { ApiError, apiFetch } from '@shared/http';
 import type { AssistantNode, ConversationModel } from './model';
 import { createStore } from '@/state/createStore';
 import type { UiEvent } from '@shared/uiEvent';
@@ -28,7 +28,18 @@ export type Viewport = {
   preserve: (fn: () => void) => void;
 };
 
-export function createLazyHistory({ model, getActiveId }: { model: ConversationModel; getActiveId: () => string | null }) {
+/**
+ * `pageUrl`: the lineage route for the active id. `isEnded`: whether the active
+ * session has no instance — the server may have forgotten its pages (a 404),
+ * which ends the scroll-back rather than failing it.
+ */
+export function createLazyHistory({ model, getActiveId, pageUrl, isEnded = () => false }: {
+  model: ConversationModel;
+  getActiveId: () => string | null;
+  pageUrl?: (id: string) => string;
+  isEnded?: () => boolean;
+}) {
+  const urlFor = pageUrl ?? ((id: string) => `/api/instances/${encodeURIComponent(id)}/lineage-events`);
   const st = {
     epoch: 0, hasMore: false, nextBefore: 0 as number | null, segment: null as string | null,
     visited: new Set<string | null>([null]), loading: false, emptyStreak: 0, silent: false,
@@ -74,6 +85,17 @@ export function createLazyHistory({ model, getActiveId }: { model: ConversationM
     void loadEarlier().then(() => autoFill());
   }
 
+  /** Start an empty view from the newest page (a session with no snapshot to anchor on). */
+  function openNewest(): Promise<void> {
+    st.epoch += 1;
+    st.initFor = getActiveId();
+    Object.assign(st, { hasMore: true, nextBefore: null, segment: null, loading: false, inflight: null, emptyStreak: 0, silent: false });
+    st.visited = new Set([null]);
+    oldestLeadingWrap = null;
+    publish();
+    return loadEarlier().then(() => autoFill());
+  }
+
   function loadEarlier(): Promise<void> {
     if (st.loading) return st.inflight ?? Promise.resolve();
     if (!st.hasMore || !getActiveId()) return Promise.resolve();
@@ -92,7 +114,7 @@ export function createLazyHistory({ model, getActiveId }: { model: ConversationM
       let q = 'limit=200';
       if (st.nextBefore != null) q += `&before=${st.nextBefore}`;
       if (st.segment != null) q += `&segment=${encodeURIComponent(st.segment)}`;
-      const page = await apiFetch<LineagePage>(`/api/instances/${encodeURIComponent(id)}/lineage-events?${q}`);
+      const page = await apiFetch<LineagePage>(`${urlFor(id)}?${q}`);
       if (epoch !== st.epoch || id !== getActiveId()) return;
       st.silent = false;
       if (page.events.length) {
@@ -111,8 +133,12 @@ export function createLazyHistory({ model, getActiveId }: { model: ConversationM
       st.emptyStreak = page.events.length ? 0 : st.emptyStreak + 1;
       st.hasMore = !!page.hasMore && progressed && st.emptyStreak < MAX_EMPTY_PAGES;
     } catch (e) {
-      console.warn('load earlier failed:', e);
       st.silent = false;
+      if (e instanceof ApiError && e.status === 404 && isEnded()) {
+        if (epoch === st.epoch) st.hasMore = false;
+        return;
+      }
+      console.warn('load earlier failed:', e);
     } finally {
       if (epoch === st.epoch) {
         st.loading = false;
@@ -157,6 +183,7 @@ export function createLazyHistory({ model, getActiveId }: { model: ConversationM
     state: () => ({ ready: isReady(), hasMore: st.hasMore, loading: st.loading }),
     reset,
     init,
+    openNewest,
     loadEarlier,
     loadUntil,
     status,

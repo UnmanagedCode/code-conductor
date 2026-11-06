@@ -53,6 +53,13 @@ export type Instance = {
   stage?: string | null;
   autoResumeAt?: number | null;
   queuedCount?: number;
+  /**
+   * Set only on `AppState.ended`: the session this pane shows has no instance in
+   * any list. `instance` — it left while shown, and its scroll-back still pages
+   * by instance id; `session` — reopened from disk, paging by session id.
+   * `worktreeName` is where it ran, which may no longer exist.
+   */
+  ended?: { source: 'instance' | 'session'; worktreeName: string | null };
   [k: string]: unknown;
 };
 

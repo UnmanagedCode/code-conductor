@@ -195,7 +195,8 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   // Sync sits in the bar from md up and in ⋮ below it; the one query places it
   // and decides whether a stopped worktree session has a ⋮ at all.
   const wide = useMediaQuery(WIDE_QUERY);
-  const menu = canMenu || (!!worktree && !wide);
+  // An ended session has no instance: nothing that addresses one is offered.
+  const menu = canMenu || (!!worktree && !wide && !inst.ended);
   const between = isBetweenTurns(inst);
   const muted = isSessionMuted(inst.sessionId);
   const enforcing = isEnforcing(inst.playbookEnforcement);
@@ -307,12 +308,12 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
         {inst.effort && <Badge variant="outline" className="font-normal"><GaugeIcon />{inst.effort}</Badge>}
       </div>
 
-      {worktree && wide && (
+      {worktree && wide && !inst.ended && (
         <Button variant="outline" size="sm" onClick={() => void syncWorktree()}>
           <GitPullRequestArrowIcon /> Sync
         </Button>
       )}
-      {(inst.status === 'crashed' || inst.status === 'exited') && !inst.modelSwitch && (
+      {(inst.status === 'crashed' || inst.status === 'exited') && !inst.modelSwitch && !inst.ended && (
         <Button size="sm" onClick={() => void respawnActive()}><PlayIcon /> Resume</Button>
       )}
       {inst.mode === 'plan' && canMenu && inst.autoApprovePlan && (

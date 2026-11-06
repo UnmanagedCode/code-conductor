@@ -32,7 +32,7 @@ type Held = ReturnType<typeof held<RouteAnswer>>;
 let stop: (() => void) | null = null;
 
 /** A fresh controller (module state included) over a mocked socket; every GET /api/instances waits on its own deferred. */
-async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAnswer> = () => MISS) {
+async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAnswer> = () => MISS, projects: Project[] = []) {
   stop?.();
   vi.resetModules();
   const ws = (await import('@shared/ws')) as unknown as { bus: EventTarget; sent: [string, unknown][] };
@@ -43,8 +43,10 @@ async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAn
     'GET /api/instances': () => { const h = held<RouteAnswer>(); reads.push(h); return h.answer; },
     'POST /api/instances': (body) => ({ json: resumed(body.resume) }),
     // No session here is a pristine conductor: its lookup (tried before locate) misses.
-    'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? { status: 404, json: {} } : locate(decodeURIComponent(url.split('/')[3]))),
-    'GET /api/projects': () => ({ json: [] }),
+    'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? { status: 404, json: {} }
+      : url.includes('/lineage-events') ? { json: { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null } }
+      : locate(decodeURIComponent(url.split('/')[3]))),
+    'GET /api/projects': () => ({ json: projects }),
     'GET /api/workspaces': () => ({ json: [] }),
   });
   const c = await import('./controller');
@@ -55,6 +57,7 @@ async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAn
   const frame = async (t: string, detail: object = {}) => { ws.bus.dispatchEvent(new CustomEvent(t, { detail })); await flush(); };
   return {
     c, appStore, calls, reads, flush, frame,
+    ended: () => appStore.get().ended,
     open: () => frame('open'),
     hint: () => frame('instances'),
     /** Answers the n-th instance read (1-based) with `list`, then lets everything it unblocks run. */
@@ -350,6 +353,47 @@ describe('restoring the URL-named session on first connect', () => {
     await click;
     expect(b.active()).toBe(Y.id);
     expect(location.hash).toBe('#session=s-y');
+  });
+});
+
+describe('restoring a URL-named session that cannot resume', () => {
+  // Invariant: an archived session, or one whose worktree the project no longer
+  // has, opens read-only with its anchor kept and nothing resumed.
+  it('an archived session opens read-only, keeping its anchor, and nothing is resumed', async () => {
+    history.replaceState(null, '', '/#session=s-old');
+    const b = await boot(() => ({ json: { project: 'p', worktreeName: null, archived: true } }));
+    await b.open();
+    await b.land(1, [A]);
+    expect(b.locates(), 'fixture check: the unlisted anchor was looked up').toBe(1);
+    expect(b.posts()).toBe(0);
+    expect(location.hash).toBe('#session=s-old');
+    expect(b.active()).toBe('ended:s-old');
+    expect(b.ended()?.ended?.source).toBe('session');
+    expect(b.calls.some((x) => x.url === '/api/sessions/s-old/lineage-events?limit=200')).toBe(true);
+    expect(b.subscribes()).toEqual([]);
+  });
+
+  it('a live-on-disk session whose worktree the project no longer lists opens read-only instead of resuming', async () => {
+    history.replaceState(null, '', '/#session=s-wt');
+    const p: Project = { name: 'p', path: '/p', system: 'local', remoteId: null, worktrees: [{ worktreeName: 'other' }] };
+    const b = await boot(() => ({ json: { project: 'p', worktreeName: 'gone', archived: false } }), [p]);
+    await b.open();
+    await b.land(1, [A]);
+    expect(b.posts()).toBe(0);
+    expect(location.hash).toBe('#session=s-wt');
+    expect(b.ended()).toMatchObject({ sessionId: 's-wt', ended: { source: 'session', worktreeName: 'gone' } });
+  });
+
+  it('the same session resumes while the project still lists its worktree', async () => {
+    history.replaceState(null, '', '/#session=s-wt');
+    const p: Project = { name: 'p', path: '/p', system: 'local', remoteId: null, worktrees: [{ worktreeName: 'gone' }] };
+    const b = await boot(() => ({ json: { project: 'p', worktreeName: 'gone', archived: false } }), [p]);
+    await b.open();
+    await b.land(1, [A]);
+    await b.landRest(2, [A, resumed('s-wt')]);
+    expect(b.posts()).toBe(1);
+    expect(b.ended()).toBeNull();
+    expect(b.active()).toBe('i:s-wt');
   });
 });
 

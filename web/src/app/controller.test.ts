@@ -233,12 +233,15 @@ describe('selection and anchors', () => {
     expect(b.actions.resumeSession).toHaveBeenCalledWith({ projectName: 'p', worktreeName: 'wt', sessionId: 's-disk', silent: true, userGesture: false });
   });
 
-  it('first connect skips and clears the anchor of an archived or missing session', async () => {
+  it('first connect opens an archived anchored session read-only, keeping its anchor, and clears the anchor of a missing session', async () => {
     history.replaceState(null, '', '/#session=s-old');
-    const b = await boot({ locate: () => ({ project: 'p', archived: true }) });
+    const b = await boot({ locate: () => ({ project: 'p', worktreeName: null, archived: true }) });
     await b.open();
     expect(b.actions.resumeSession).not.toHaveBeenCalled();
-    expect(location.hash).toBe('');
+    expect(location.hash).toBe('#session=s-old');
+    expect(b.appStore.get().activeId).toBe('ended:s-old');
+    expect(b.appStore.get().ended).toMatchObject({ sessionId: 's-old', project: 'p', ended: { source: 'session', worktreeName: null } });
+    expect(b.fetch.mock.calls.map(([u]) => u)).toContain('/api/sessions/s-old/lineage-events?limit=200');
     history.replaceState(null, '', '/#session=s-gone');
     const c = await boot();
     await c.open();
@@ -274,14 +277,20 @@ describe('notification clicks', () => {
     expect(b.actions.resumeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's9', projectName: 'p', silent: true, userGesture: true }));
   });
 
-  it('nothing to locate is a no-op; an unrelated archived or 404 session never clobbers the current anchor', async () => {
+  it('a clicked archived session opens read-only', async () => {
+    history.replaceState(null, '', '/#session=sess-X');
+    const b = await boot({ locate: () => ({ project: 'p', worktreeName: null, archived: true }) });
+    await b.c.handleNotificationClick({ sessionId: 'other' });
+    expect(b.actions.resumeSession).not.toHaveBeenCalled();
+    expect(b.appStore.get().ended?.sessionId).toBe('other');
+    expect(location.hash).toBe('#session=other');
+  });
+
+  it('nothing to locate is a no-op; a 404 session never clobbers the current anchor', async () => {
     const b = await boot();
     await b.c.handleNotificationClick({ instanceId: 'gone' });
     expect(b.fetch).not.toHaveBeenCalledWith(expect.stringContaining('/locate'));
     history.replaceState(null, '', '/#session=sess-X');
-    const archived = await boot({ locate: () => ({ project: 'p', archived: true }) });
-    await archived.c.handleNotificationClick({ sessionId: 'other' });
-    expect(location.hash).toBe('#session=sess-X');
     const missing = await boot();
     await missing.c.handleNotificationClick({ sessionId: 'other' });
     expect(location.hash).toBe('#session=sess-X');

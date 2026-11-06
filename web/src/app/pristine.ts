@@ -37,7 +37,7 @@ export function notePristineSent(id: string) {
 function shownNow(): Instance | null {
   if (routeStore.get().route.view !== 'session') return null;
   const inst = activeInstance(appStore.get());
-  return inst?.pristine && !sentTo.has(inst.id) ? inst : null;
+  return inst?.pristine && !inst.ended && !sentTo.has(inst.id) ? inst : null;
 }
 
 function leave(prev: { id: string; sessionId: string | null }) {

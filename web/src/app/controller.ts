@@ -5,7 +5,7 @@
 import { bus, connect, send } from '@shared/ws';
 import { ApiError, apiFetch } from '@shared/http';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
-import { appStore, activeInstance, findInstance, type AppState } from '@/state/app';
+import { appStore, activeInstance, findInstance, worktreeRemoved, type AppState } from '@/state/app';
 import { syncRoute, routeStore } from '@/state/route';
 import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
@@ -19,6 +19,7 @@ import { closeSidebarOnMobile } from './ui';
 import { resumeSession } from './sessionActions';
 import { beginGesture, gestureOvertaken, gestureSelected } from './gestures';
 import { startPristineWatch } from './pristine';
+import { isLiveStatus } from '@shared/conductors';
 
 export { send };
 
@@ -30,7 +31,18 @@ export const conversation = new ConversationModel({
   onAssistantText: (node) => emit('assistantText', { text: node.buffer, nodeId: node.id }),
 });
 
-export const lazyHistory = createLazyHistory({ model: conversation, getActiveId: () => appStore.get().activeId });
+export const lazyHistory = createLazyHistory({
+  model: conversation,
+  getActiveId: () => appStore.get().activeId,
+  // A reopened session has no instance: it pages from disk, by session id.
+  pageUrl: (id) => {
+    const inst = activeInstance(appStore.get());
+    return inst?.ended?.source === 'session' && inst.sessionId
+      ? `/api/sessions/${encodeURIComponent(inst.sessionId)}/lineage-events`
+      : `/api/instances/${encodeURIComponent(id)}/lineage-events`;
+  },
+  isEnded: () => !!activeInstance(appStore.get())?.ended,
+});
 
 export const stickyPrompt = createStickyPrompt({
   isConducted: () => !!activeInstance(appStore.get())?.conducted,
@@ -146,12 +158,29 @@ const instanceReads = coalescedReads(
   (data: Instance[]) => {
     instancesLanded = true;
     const instances = Array.isArray(data) ? data : [];
+    const s = appStore.get();
     // A list that carries the pristine conductor takes over from the slot.
-    const slot = appStore.get().pristine;
-    appStore.set({ instances, ...(slot && instances.some((i) => i.id === slot.id) ? { pristine: null } : {}) });
+    const slot = s.pristine;
+    // The shown instance left every list (killed, or a temp worker that exited): its pane stays, read-only.
+    const shown = s.activeId ? s.instances.find((i) => i.id === s.activeId) : undefined;
+    const ended = shown && !instances.some((i) => i.id === shown.id) ? endedFrom(shown) : null;
+    appStore.set({
+      instances,
+      ...(slot && instances.some((i) => i.id === slot.id) ? { pristine: null } : {}),
+      ...(ended ? { ended } : {}),
+    });
     emit('instances');
   },
 );
+/** `inst` as the ended pane shows it: a live status reads as exited. */
+function endedFrom(inst: Instance): Instance {
+  const status = isLiveStatus(inst.status) ? 'exited' : inst.status;
+  return {
+    ...inst, status, displayStatus: status,
+    ended: { source: 'instance', worktreeName: inst.worktree?.worktreeName ?? null },
+  };
+}
+
 /** Whether this controller has applied an instance list: until then an anchor naming no listed session is the restore's to judge. */
 let instancesLanded = false;
 export const refreshInstances = instanceReads.refresh;
@@ -214,7 +243,7 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   if (opts.userGesture) gestureSelected(opts.gesture);
   const prev = appStore.get().activeId;
   if (prev && prev !== id) send('unsubscribe', { id: prev });
-  appStore.set({ activeId: id });
+  appStore.set({ activeId: id, ended: null });
   conversation.clear();
   lazyHistory.reset();
   const inst = id ? findInstance(appStore.get(), id) : null;
@@ -225,6 +254,29 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
   else writeSessionAnchor(inst?.sessionId || null);
   syncRoute();
   closeSidebarOnMobile();
+}
+
+/**
+ * Show a session that has no instance, read-only: its transcript pages from disk
+ * (newest first) and the composer stays disabled. The anchor names it, so a
+ * reload reopens it the same way.
+ */
+export function openEndedSession({ sessionId, project, worktreeName, title = null }: { sessionId: string; project: string; worktreeName: string | null; title?: string | null }) {
+  const prev = appStore.get().activeId;
+  if (prev) send('unsubscribe', { id: prev });
+  subscribe(null);
+  const ended: Instance = {
+    id: `ended:${sessionId}`, project, sessionId, status: 'exited', displayStatus: 'exited', mode: 'plan', title, worktree: null,
+    ended: { source: 'session', worktreeName },
+  };
+  appStore.set({ activeId: ended.id, ended });
+  conversation.clear();
+  lazyHistory.reset();
+  emit('select', { id: ended.id, sessionId, userGesture: false });
+  writeSessionAnchor(sessionId);
+  syncRoute();
+  closeSidebarOnMobile();
+  return lazyHistory.openNewest();
 }
 
 /**
@@ -259,8 +311,12 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
       .catch((e) => { if (e instanceof ApiError) return null; throw e; });
     if (overtaken()) return true;
     if (!hit) { clear(); return false; }
-    // An archived session is never resurrected silently from a link.
-    if (hit.archived) { clear(); return true; }
+    // An archived session is never resurrected silently from a link, and one
+    // whose worktree is gone cannot be: either opens read-only.
+    if (hit.archived || worktreeRemoved(appStore.get().projects, hit.project, hit.worktreeName)) {
+      void openEndedSession({ sessionId: anchor, project: hit.project, worktreeName: hit.worktreeName });
+      return true;
+    }
     appStore.set({ sidebarStatus: { text: 'Resuming session…', warn: true } });
     try {
       await resumeSession({ projectName: hit.project, worktreeName: hit.worktreeName, sessionId: anchor, silent: true, userGesture, gesture });

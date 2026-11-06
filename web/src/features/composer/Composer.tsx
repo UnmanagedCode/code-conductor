@@ -42,6 +42,7 @@ export function composerPlaceholder(inst: Instance | null, owner: WorkerOwner): 
   const status = inst?.status ?? null;
   const name = inst ? inst.title || projectLabel(inst.project) : '';
   return !inst ? 'Select or start a session to chat'
+    : inst.ended ? 'This session has ended · its transcript is read-only'
     : inst.modelSwitch ? 'Switching model · the session is restarting…'
     : status === 'turn' ? (owner.kind === 'owned' ? `Agent is working · type to steer ${name} (worker of ${owner.label})` : 'Agent is working · type to steer the running turn')
     : status === 'spawning' ? 'Starting the session…'
