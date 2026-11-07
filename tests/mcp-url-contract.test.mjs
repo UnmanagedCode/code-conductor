@@ -175,3 +175,33 @@ test('a body that is not JSON is a 400 PARSE_ERROR JSON-RPC error', async () => 
     assert.equal(body.error.data.code, 'PARSE_ERROR');
   } finally { await srv.close(); }
 });
+
+test('format: absent → JSON, text → text, anything else FORMAT_INVALID; Accept never decides', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO_RENEW });
+  try {
+    const absent = await post(`${srv.baseUrl}/mcp`, call('list_workspaces', {}));
+    assert.deepEqual(absent.body.result.structuredContent, { workspaces: [] }, 'JSON is the default');
+    const text = await post(`${srv.baseUrl}/mcp?format=text`, call('list_workspaces', {}));
+    assert.equal(text.body.result.structuredContent, undefined);
+    assert.equal(text.body.result.content[0].text, '[]', 'the text view is the bare array it always was');
+    const json = await post(`${srv.baseUrl}/mcp?format=json`, call('list_workspaces', {}));
+    assert.deepEqual(json.body.result.structuredContent, { workspaces: [] });
+    const xml = await post(`${srv.baseUrl}/mcp?format=xml`, call('list_workspaces', {}));
+    assertUrlFault(xml.body, 'FORMAT_INVALID');
+
+    const res = await fetch(`${srv.baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'text/plain' },
+      body: JSON.stringify(call('list_workspaces', {})),
+    });
+    assert.deepEqual((await res.json()).result.structuredContent, { workspaces: [] }, 'Accept is not consulted');
+  } finally { await srv.close(); }
+});
+
+test('tools/call needs no initialize handshake', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO_RENEW });
+  try {
+    const { body } = await post(`${srv.baseUrl}/mcp`, call('create_workspace', { name: 'cold' }));
+    assert.deepEqual(body.result.structuredContent, { added: true, name: 'cold' });
+  } finally { await srv.close(); }
+});

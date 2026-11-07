@@ -3,9 +3,13 @@
 // no SSE — every tool result fits in a single application/json response.
 //
 // Exposes the orchestrator's verbs (spawn / list / send_prompt / read
-// transcript / worktree ops) as MCP tools so a Claude session can drive
-// the orchestrator directly via `claude mcp add --transport http
-// code-conductor http://127.0.0.1:8787/mcp`.
+// transcript / worktree ops) as MCP tools, to applications and agents alike.
+// The URL contract (docs/mcp-applications.md): identity is the PATH
+// (`/mcp/<sessionId>`, absent = anonymous), presentation the QUERY
+// (`?format=json`, the default, or `?format=text` — the agent view a Claude
+// session reads, e.g. `claude mcp add --transport http code-conductor
+// 'http://127.0.0.1:8787/mcp?format=text'`). A REST alias
+// (`POST /mcp[/<sessionId>]/tools/<name>`) runs the same call core.
 
 import express from 'express';
 import { buildTools } from './tools.ts';
@@ -616,7 +620,7 @@ function resolveFormat(query: Record<string, unknown>): McpFormat | UrlFault {
     }
   }
   const f = query.format;
-  if (f === undefined) return 'text';
+  if (f === undefined) return 'json';
   if (f === 'text' || f === 'json') return f;
   return { code: 'FORMAT_INVALID', rpcCode: -32600,
     reason: `format must be 'json' or 'text', got ${capEcho(JSON.stringify(f) ?? String(f), URL_ECHO_CAP)}` };
@@ -628,6 +632,12 @@ function resolveCaller(instances: InstanceManagerLike | null | undefined, sid: s
   if (callerId) return callerId;
   return { code: 'CALLER_UNKNOWN', rpcCode: -32001,
     reason: `no live session '${capEcho(sid, URL_ECHO_CAP)}' — the /mcp/<sessionId> path takes the exact public sessionId of a running session` };
+}
+
+// A URL-level fault's REST status: an unknown caller names a resource that is
+// not there; a bad query is a bad request.
+function urlFaultStatus(fault: UrlFault): number {
+  return fault.code === 'CALLER_UNKNOWN' ? 404 : 400;
 }
 
 function isUrlFault(v: unknown): v is UrlFault {
@@ -709,16 +719,83 @@ export function buildMcpRouter(
     res.json(r1);
   }
 
+  // ---- the REST alias (docs/mcp-applications.md) ----
+  //
+  // POST /mcp[/<sid>]/tools/<name> with the arguments as the JSON body: the same
+  // runTool as tools/call (one validation, one gate, one handler), answered as
+  // plain HTTP — the structuredContent object itself on success, the refusal
+  // schema on a refusal, an HTTP status for a fault. JSON only.
+  const restFault = (res: express.Response, status: number, code: string, reason: string) => {
+    res.status(status).json({ ok: false, code, reason: capEcho(reason, JSON_ECHO_CAP) });
+  };
+  // The alias preamble: format (absent or json only), then the caller.
+  function restPreamble(req: express.Request, res: express.Response, sid: string | undefined): { callerId: string | null } | null {
+    const format = resolveFormat(req.query as Record<string, unknown>);
+    if (isUrlFault(format)) { restFault(res, urlFaultStatus(format), format.code, format.reason); return null; }
+    if (format !== 'json') {
+      restFault(res, 400, 'FORMAT_INVALID', "the REST alias serves JSON only — drop ?format=text, or use JSON-RPC at /mcp?format=text");
+      return null;
+    }
+    const callerId = resolveCaller(instances, sid);
+    if (isUrlFault(callerId)) { restFault(res, urlFaultStatus(callerId), callerId.code, callerId.reason); return null; }
+    return { callerId };
+  }
+
+  async function restCall(req: express.Request, res: express.Response, sid: string | undefined, name: string | undefined) {
+    // Checked before anything else, an empty body included: only a JSON body is
+    // parsed, and a cross-site "simple" POST cannot send one.
+    if (!req.is('application/json')) {
+      restFault(res, 415, 'CONTENT_TYPE_UNSUPPORTED', 'the REST alias takes a JSON body — send content-type: application/json');
+      return;
+    }
+    const pre = restPreamble(req, res, sid);
+    if (!pre) return;
+    if (!name) { restFault(res, 404, 'TOOL_UNKNOWN', 'no tool named — POST /mcp/tools/<name>'); return; }
+    const args: unknown = req.body;
+    if (!isJsonRecord(args)) { restFault(res, 400, 'ARGS_INVALID', 'the request body must be a JSON object of the tool\'s arguments'); return; }
+    const tools = await composeTools('json');
+    const ctx: McpCtx = { instances, tools, coreTools: registries.json.set, callerId: pre.callerId, playbookGate, capabilities, format: 'json', limits: JSON_LIMITS };
+    const outcome = await runTool(name, args, ctx);
+    if (outcome.kind === 'fault') {
+      restFault(res, outcome.code === 'TOOL_UNKNOWN' ? 404 : 400, outcome.code, outcome.reason);
+      return;
+    }
+    const view = jsonView(outcome, ctx);
+    // A bridged plugin tool has no structured view: its MCP result as it is.
+    res.status(200).json(view.structured === null ? view.passthrough : view.structured);
+  }
+
+  // GET /mcp[/<sid>]/tools: the JSON registry plus the plugin tools this
+  // caller sees (untyped: outputSchema null).
+  async function restListing(req: express.Request, res: express.Response, sid: string | undefined) {
+    if (!restPreamble(req, res, sid)) return;
+    const tools = await composeTools('json');
+    res.json(tools.map(t => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+      outputSchema: registries.json.set.has(t) ? t.outputSchema : null,
+    })));
+  }
+
   // GET would be the SSE long-poll channel for server→client notifications.
   // We don't emit any, so reject explicitly rather than hanging the client.
   const getRejected = (_req: express.Request, res: express.Response) => {
     res.status(405).json({ error: 'GET /mcp not supported (no server notifications in v1)' });
   };
 
+  // The literal `tools` routes come first: a public sessionId is hex, so it is
+  // never the word `tools`.
   r.post('/', (req, res) => rpcRoute(req, res, undefined));
   r.get('/', getRejected);
+  r.get('/tools', (req, res) => restListing(req, res, undefined));
+  r.post('/tools', (req, res) => restCall(req, res, undefined, undefined));
+  r.post('/tools/:name', (req, res) => restCall(req, res, undefined, req.params.name));
   r.post('/:sid', (req, res) => rpcRoute(req, res, req.params.sid));
   r.get('/:sid', getRejected);
+  r.get('/:sid/tools', (req, res) => restListing(req, res, req.params.sid));
+  r.post('/:sid/tools', (req, res) => restCall(req, res, req.params.sid, undefined));
+  r.post('/:sid/tools/:name', (req, res) => restCall(req, res, req.params.sid, req.params.name));
 
   // Nothing under /mcp falls through to the web UI's HTML.
   r.all('*', (req, res) => {
@@ -726,9 +803,11 @@ export function buildMcpRouter(
   });
 
   // A body that is not JSON never reaches a route: express.json throws first.
-  r.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // The alias answers it in its own REST shape; JSON-RPC as a -32700 error.
+  r.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (isJsonRecord(err) && err.type === 'entity.parse.failed') {
       const reason = 'request body is not valid JSON';
+      if (/^\/(?:[^/]+\/)?tools(?:\/|$)/.test(req.path)) { restFault(res, 400, 'PARSE_ERROR', reason); return; }
       res.status(400).json(rpcError(null, -32700, reason, { ok: false, code: 'PARSE_ERROR', reason }));
       return;
     }
