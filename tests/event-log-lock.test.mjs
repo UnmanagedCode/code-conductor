@@ -89,6 +89,96 @@ test('restart overlap: a gate leased on the lock writes rows before the handover
   assert.deepEqual(await readEventLog(file), before, 'no row lands after the offer');
 });
 
+// ── check and write are ONE synchronous step ───────────────────────────────
+//
+// INVARIANT: createEventLog runs `lease.check()` and the `appendFileSync` in the
+// same synchronous step, so a handover offered after a row's check passed can
+// never let that row be written after the offer: every row that reaches the
+// file was written while `writerCheck()` was still null.
+//
+// Observed at the real write: src/eventLog.ts writes through the node:fs
+// default export, so wrapping its `appendFileSync` here sees each write as it
+// happens and reads `writerCheck()` at that instant. Two stagings:
+//   • microtask — the lease's own check() queues the offer. ANY await between
+//     check and write (even one microtask hop) lets the offer run first, and
+//     that row is then written under a non-null writerCheck().
+//   • macrotask — the offer is scheduled for the next turn of the event loop
+//     right after the append is enqueued; a write deferred past I/O or a timer
+//     lands after it.
+function watchWrites(t, file, lock) {
+  const writes = [];
+  const real = fs.appendFileSync;
+  fs.appendFileSync = function (target, ...rest) {
+    if (target === file) writes.push(lock.writerCheck());
+    return real.call(this, target, ...rest);
+  };
+  t.after(() => { fs.appendFileSync = real; });
+  return writes;
+}
+
+async function loadedGate(t, lock, lease) {
+  const root = await mkdtemp('cc-evlock-');
+  const file = path.join(storeOf(root), 'events.jsonl');
+  const instances = stubManager();
+  const gate = createPlaybookGate({ instances, lease, file: () => file });
+  await gate.readProjection(); // the fold has happened: appends go straight to the chain
+  return { root, file, instances, gate };
+}
+
+const settled = (gate) => gate.readProjection().then(() => new Promise(r => setTimeout(r, 30)));
+
+test('ATOMIC (microtask): a handover queued by the passing check itself cannot slip between that check and its write', async (t) => {
+  hush(t);
+  const root = await mkdtemp('cc-evlock-');
+  const lock = await acquire(t, root);
+  let armed = false;
+  const lease = {
+    check() {
+      const reason = lock.writerCheck();
+      if (reason === null && armed) {
+        armed = false;
+        queueMicrotask(() => { lock.offerHandover('T-microtask'); });
+      }
+      return reason;
+    },
+  };
+  const { file, instances, gate } = await loadedGate(t, lock, lease);
+  const writes = watchWrites(t, file, lock);
+  armed = true;
+  instances.fire('session_launched', launched('w-raced'));
+  await settled(gate);
+  assert.match(lock.writerCheck(), /handed over/, 'premise: the offer did run');
+  assert.deepEqual(writes, [null], 'the raced row was written, and written while the lock was still clean');
+  assert.deepEqual((await readEventLog(file)).map(r => r.subject), ['w-raced']);
+
+  // Enqueued after the offer: refused, never written.
+  instances.fire('session_launched', launched('w-after'));
+  await settled(gate);
+  assert.deepEqual(writes, [null], 'no write happened after the offer');
+  assert.deepEqual((await readEventLog(file)).map(r => r.subject), ['w-raced']);
+});
+
+test('ATOMIC (macrotask): an append enqueued just before a next-turn handover is written before it, or not at all', async (t) => {
+  hush(t);
+  const root = await mkdtemp('cc-evlock-');
+  const lock = await acquire(t, root);
+  const { file, instances, gate } = await loadedGate(t, lock, { check: () => lock.writerCheck() });
+  const writes = watchWrites(t, file, lock);
+  instances.fire('session_launched', launched('w-before'));
+  const offered = new Promise((resolve) => setImmediate(() => { lock.offerHandover('T-macrotask'); resolve(); }));
+  await offered;
+  await settled(gate);
+  assert.ok(writes.length > 0, 'premise: the row enqueued before the offer reached the file');
+  assert.ok(writes.every(w => w === null), `every write saw a clean lock: ${JSON.stringify(writes)}`);
+
+  const before = writes.length;
+  instances.fire('session_exited', { sessionId: 'w-before', conducted: true, project: 'demo', status: 'exited', actor: { type: 'system' } });
+  instances.fire('session_launched', launched('w-after'));
+  await settled(gate);
+  assert.equal(writes.length, before, 'rows enqueued after the offer are refused, not written');
+  assert.equal((await readEventLog(file)).some(r => r.subject === 'w-after'), false);
+});
+
 test('a second acquireRootLock on a held store is refused, so a second server never constructs a writer', async (t) => {
   const root = await mkdtemp('cc-evlock-');
   await acquire(t, root);
