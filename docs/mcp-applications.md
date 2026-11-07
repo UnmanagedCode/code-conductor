@@ -109,7 +109,79 @@ How JSON format differs from text:
 - **Content type:** `content-type: application/json` is required, empty body included, and is checked before anything else.
 - **No Origin or Host check.** `/mcp` has none either. The only cross-site barrier is that a browser's "simple" POST cannot send `application/json`, and the alias refuses anything else with `415` rather than ignoring the body.
 
-**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`buildTools('json')`, capability-filtered); the caller's plugin tools follow with `outputSchema: null`.
+**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`capableTools('json', capabilities)` in `src/mcp/tools.ts`); the caller's plugin tools follow with `outputSchema: null`.
+
+## Client libraries
+
+cc generates a typed, zero-dependency client per language from its own tool registry. A script imports it from the directory cc names; there is no download or install step.
+
+| | |
+|---|---|
+| Location | `$CONDUCTOR_MCP_CLIENT_DIR` = `<store>/mcp-client/` (`mcpClientDir()` in `src/projects.ts`) |
+| Files | `conductor_client.py`, `conductor_client.mjs` (`MCP_CLIENT_FILES`, `src/mcp/client/files.ts`) |
+| Written | at every boot, before the server listens (`writeMcpClientFiles`, called from `startHolding` in `server.ts`), temp file + rename; a failed write fails boot |
+| Source | the running server's capability-filtered JSON registry (`capableTools('json', platform.capabilities)`): the tools a host does not serve have no method. Same registry → same bytes |
+| Editing | don't: the files are overwritten at the next boot |
+| Python | 3.11+ (`NotRequired`); stdlib `urllib` only. Importing on an older Python raises `ImportError` |
+| Node | 18+ (global `fetch`); no dependencies. Importing where `fetch` is missing throws |
+| Generator | `src/mcp/client/`: `typeModel.ts` (schema → types), `python.ts`, `node.ts`, `files.ts` |
+
+**Import.**
+- Python: `sys.path.insert(0, os.environ['CONDUCTOR_MCP_CLIENT_DIR'])`, then `from conductor_client import ConductorClient, ConductorError`.
+- Node: `await import(pathToFileURL(path.join(process.env.CONDUCTOR_MCP_CLIENT_DIR, 'conductor_client.mjs')).href)`. The bare `` import(`${dir}/conductor_client.mjs`) `` works on POSIX only: on Windows a `C:\…` path is not an importable URL.
+
+**API.**
+
+| Member | Python | Node |
+|---|---|---|
+| constructor | `ConductorClient(url=None)` | `new ConductorClient(url?)` |
+| URL | `url`, else `$CONDUCTOR_MCP_URL`, else `DEFAULT_URL` (`http://127.0.0.1:8787/mcp`, a constant — pass `url` for cc on another port); a trailing `/` is stripped. Calls are attributed to the session that URL names (anonymous for `/mcp`) | same |
+| any tool | `call(name, args=None)` → the parsed body | `call(name, args = {})` → `Promise` of the parsed body |
+| one method per core tool | `client.<tool>(*, <arg>=…)`: keyword-only, in schema property order | `client.<tool>({<arg>: …})`: one object; `args` may be omitted when nothing is required |
+| argument names | the wire names verbatim (`sessionId=`); a Python keyword gets a `_` suffix (`system_transfer(from_=…, to=…)`) | the wire names verbatim |
+| omitted vs `None`/`null` | an omitted argument is not sent; `None` is sent as `null` (`set_project_workspace(project=…, workspace=None)` clears) | an absent key is not sent; `null` is sent |
+| return value | the tool's `structuredContent` (the REST alias body) | same |
+
+Every method's docstring/JSDoc is the tool's description plus one line per argument (its description and `default`).
+
+**Types.** Each method returns `<Tool>Result` (`Pascal(tool) + 'Result'`, e.g. `SyncWorktreeResult`), generated from the tool's `outputSchema`. Python types are `TypedDict`s (functional form, so a key like `from` works) with `NotRequired` for an optional key; Node types are JSDoc `@typedef`s with `[key]` for an optional key, checked by TypeScript's `checkJs`.
+
+| Nested type | Name |
+|---|---|
+| property `key` of `Parent` | `Parent` + `Pascal(key)` |
+| array item | `… + 'Item'` |
+| map value | `… + 'Value'` |
+| `anyOf` branch *i* (1-based) | `… + 'Variant' + i`; a union result is an alias, e.g. `SyncWorktreeResult = SyncWorktreeResultVariant1 \| …` |
+
+`Pascal` splits on `_` and upper-cases each part's first character.
+
+| Schema | Python | Node |
+|---|---|---|
+| `string` / `integer` / `number` / `boolean` / `null` | `str` / `int` / `float` / `bool` / `None` | `string` / `number` / `number` / `boolean` / `null` |
+| `const v`, `enum [...]` | `Literal[...]` (consecutive literals merged), `null` as `\| None` | the literals, `(a\|b)` |
+| `anyOf`, `type: [a, b]` | `A \| B` | `(A\|B)` |
+| object with `properties` | a named `TypedDict` | a named `@typedef {Object}` |
+| object with a schema `additionalProperties` | `dict[str, T]` | `Object<string, T>` |
+| any other object (`open()`, a bare `object` input) | `dict[str, Any]` | `Object<string, *>` |
+| array | `list[T]` | `Array<T>` |
+| no type (`any()`) | `Any` | `*` |
+
+The generator accepts only the schema vocabulary `src/mcp/outputSchemas.ts` declares, plus `minLength`, `maxLength`, `minimum`, `maximum`, `pattern` and `default` on input schemas. Any other keyword throws `mcp client: unsupported schema keyword '<k>' at <tool>.<path>`. So do a tool named like a client member (`CLIENT_MEMBERS` in `src/mcp/client/typeModel.ts`), two tools whose generated type names collide, and a `const`/`enum` value whose JSON spelling contains `*/` — each fails boot.
+
+**Errors.** A call raises `ConductorError` when the HTTP status is ≥ 400 **or** the body is an object with `ok === false`; anything else is returned.
+
+| `ConductorError` field | Meaning |
+|---|---|
+| `code` | the refusal's or fault's `code` ([Error channels](#error-channels)); `None`/`null` when the body is not JSON |
+| `reason` | its `reason`; `'response is not JSON'` for a non-JSON body |
+| `status` | the HTTP status: **`200` is a tool's own refusal** (`SESSION_UNKNOWN`, `PLAYBOOK_UNKNOWN`, `REFUSED`, …), `4xx`/`5xx` a protocol fault (`TOOL_UNKNOWN` 404, `ARGS_INVALID` 400, `CALLER_UNKNOWN` 404, `INTERNAL` 500, …) |
+| `body` | the parsed body (the raw text when it was not JSON) |
+
+- `str(e)` / `e.message` is `<code>: <reason> (HTTP <status>)`.
+- No success schema has a top-level `ok:false`, so success shapes that read like failures are **returned**: `sync_worktree`'s `{ok:true, action:'commit-required' | 'rebase-conflict'}`, `renew_session`'s `{requested:true}`, `playbook_state`'s `{tracked:false}`, a non-zero `exitCode` from `project_bash` / `system_bash`.
+- A transport failure is the runtime's own exception, unwrapped: Python `urllib.error.URLError`, Node `TypeError: fetch failed`.
+
+**Plugin tools** have no method and no types: call them with `call('<plugin-id>__<tool>', {…})`. The alias passes their MCP envelope `{content, isError?}` through, so an `isError:true` result is **returned**, not raised — it carries no `code` to branch on.
 
 ## Env vars
 
@@ -117,10 +189,13 @@ How JSON format differs from text:
 |---|---|---|
 | `CONDUCTOR_MCP_URL` | a **local** worker (`Instance.spawn`) | `http://127.0.0.1:<port>/mcp/<its sessionId>`: the worker's own session, JSON by default |
 | `CONDUCTOR_MCP_URL` | a plugin backend (`src/plugins/registry.ts`, beside `CONDUCTOR_URL`) | `<CONDUCTOR_URL>/mcp`: anonymous |
+| `CONDUCTOR_MCP_CLIENT_DIR` | a **local** worker, the conductor included (`Instance.spawn`) | the absolute `<store>/mcp-client/` ([Client libraries](#client-libraries)) |
+| `CONDUCTOR_MCP_CLIENT_DIR` | a plugin backend (`src/plugins/registry.ts`) | the same directory |
 
-- A worker's var is **absent** under `ORCH_DISABLE_MCP_AUTOREGISTER=1`; a plugin's is set whenever cc has a port, that setting notwithstanding.
-- **Absent** for a worker on a remote System: its Bash runs on the remote without cc's env, and cc's loopback URL does not reach cc from there.
-- An inherited value (cc itself running as some cc's worker) is removed, never passed on: by `Instance.spawn` for workers and by the supervisor's `spawnChild` for plugins.
+- The two vars always travel together: each is set exactly where the other is.
+- A worker's vars are **absent** under `ORCH_DISABLE_MCP_AUTOREGISTER=1`; a plugin's are set whenever cc has a port, that setting notwithstanding.
+- **Absent** for a worker on a remote System: its Bash runs on the remote without cc's env, cannot read cc's store, and cc's loopback URL does not reach cc from there.
+- An inherited value of either (cc itself running as some cc's worker) is removed, never passed on: by `Instance.spawn` for workers and by the supervisor's `spawnChild` for plugins.
 
 ## JSON-format ceilings
 
@@ -145,7 +220,8 @@ Unchanged in both formats:
 ## Limitations
 
 - **Plugin tools are untyped.** They pass through, and the alias returns their MCP envelope.
-- **A remote worker gets no `CONDUCTOR_MCP_URL`.**
+- **A remote worker gets no `CONDUCTOR_MCP_URL` and no `CONDUCTOR_MCP_CLIENT_DIR`.**
+- **The generated clients type core tools only.** A plugin tool is reachable through `call()`, untyped, and its `isError:true` result is returned rather than raised.
 - **No auth.** Any local process can call as any live session.
 - **No streaming.** Every result is buffered whole; a JSON result can reach the ceilings above.
 
@@ -195,4 +271,52 @@ with urllib.request.urlopen(req) as res:
 <!-- doc-sample: python-output -->
 ```text
 {"workspaces":[{"name":"demo","projectCount":0}]}
+```
+
+The generated Node client, run with `CONDUCTOR_MCP_URL` and `CONDUCTOR_MCP_CLIENT_DIR` set; a protocol fault raises with its HTTP status:
+
+<!-- doc-sample: node-client -->
+```js
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const { ConductorClient, ConductorError } = await import(
+  pathToFileURL(path.join(process.env.CONDUCTOR_MCP_CLIENT_DIR, 'conductor_client.mjs')).href);
+const cc = new ConductorClient();
+console.log(JSON.stringify(await cc.list_workspaces()));
+try {
+  await cc.call('no_such_tool', {});
+} catch (e) {
+  if (!(e instanceof ConductorError)) throw e;
+  console.log(e.code, e.status);
+}
+```
+
+<!-- doc-sample: node-client-output -->
+```text
+{"workspaces":[{"name":"demo","projectCount":0}]}
+TOOL_UNKNOWN 404
+```
+
+The generated Python client; a tool's own refusal raises with `status` 200:
+
+<!-- doc-sample: python-client -->
+```python
+import os, sys
+
+sys.path.insert(0, os.environ['CONDUCTOR_MCP_CLIENT_DIR'])
+from conductor_client import ConductorClient, ConductorError
+
+cc = ConductorClient()
+print(cc.create_workspace(name='scripts'))
+try:
+    cc.describe_playbook(id='no-such')
+except ConductorError as e:
+    print(e.code, e.status)
+```
+
+<!-- doc-sample: python-client-output -->
+```text
+{'added': True, 'name': 'scripts'}
+PLAYBOOK_UNKNOWN 200
 ```

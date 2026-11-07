@@ -570,20 +570,27 @@ describe('T2: the spawn env', () => {
     }
   });
 
-  // CONDUCTOR_MCP_URL is LOCAL-only: a remote worker's Bash runs on the remote
-  // without cc's env, and cc's loopback URL would not reach it from there. A host
-  // value is planted first so "absent" means deleted, not merely not set.
-  test('CONDUCTOR_MCP_URL: a local worker names its own session, a remote worker gets none', async () => {
-    const saved = process.env.CONDUCTOR_MCP_URL;
+  // CONDUCTOR_MCP_URL and CONDUCTOR_MCP_CLIENT_DIR are LOCAL-only: a remote
+  // worker's Bash runs on the remote without cc's env, cannot read cc's store,
+  // and cc's loopback URL would not reach it from there. Host values are
+  // planted first so "absent" means deleted, not merely not set.
+  test('CONDUCTOR_MCP_URL / CONDUCTOR_MCP_CLIENT_DIR: a local worker gets its own session and the client dir, a remote worker neither', async () => {
+    const saved = { url: process.env.CONDUCTOR_MCP_URL, dir: process.env.CONDUCTOR_MCP_CLIENT_DIR };
     process.env.CONDUCTOR_MCP_URL = 'http://host.invalid/mcp/planted';
+    process.env.CONDUCTOR_MCP_CLIENT_DIR = '/host/planted/mcp-client';
     try {
       const local = await spawnIn('localproj');
       await waitFor(() => local.sessionId);
       assert.equal(local._spawnEnv.CONDUCTOR_MCP_URL, `${baseUrl}/mcp/${local.sessionId}`);
-      assert.equal((await spawnIn('app'))._spawnEnv.CONDUCTOR_MCP_URL, undefined);
+      assert.equal(local._spawnEnv.CONDUCTOR_MCP_CLIENT_DIR, projects.mcpClientDir());
+      const remote = await spawnIn('app');
+      assert.equal(remote._spawnEnv.CONDUCTOR_MCP_URL, undefined);
+      assert.equal(remote._spawnEnv.CONDUCTOR_MCP_CLIENT_DIR, undefined);
     } finally {
-      if (saved === undefined) delete process.env.CONDUCTOR_MCP_URL;
-      else process.env.CONDUCTOR_MCP_URL = saved;
+      if (saved.url === undefined) delete process.env.CONDUCTOR_MCP_URL;
+      else process.env.CONDUCTOR_MCP_URL = saved.url;
+      if (saved.dir === undefined) delete process.env.CONDUCTOR_MCP_CLIENT_DIR;
+      else process.env.CONDUCTOR_MCP_CLIENT_DIR = saved.dir;
     }
   });
 

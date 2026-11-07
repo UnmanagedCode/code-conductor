@@ -2,6 +2,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.ts';
+import { writeMcpClientFiles } from '../src/mcp/client/files.ts';
+import { hostPlatform } from '../src/platform/index.ts';
 import { encodeCwd, transcriptRoot, localPlace } from '../src/projects.ts';
 import { getSessionBackend, settleSessionWrites } from '../src/sessionStore.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
@@ -84,6 +86,9 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   if (claudeLauncherOverride) claudeLauncher = claudeLauncherOverride;
 
   const { server, wss, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform, webDistDir, eventLogLease, relaunch });
+  // Mirror server.ts's startHolding: the generated /mcp client is written
+  // after createServer() and before listen.
+  await writeMcpClientFiles((platform ?? hostPlatform).capabilities);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);

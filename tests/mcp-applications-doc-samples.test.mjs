@@ -2,15 +2,18 @@
 // block (`<!-- doc-sample: NAME -->` + a fenced block) is replayed, in order,
 // against a live server on a fresh store, and the documented response must be
 // exactly what comes back. The JSON-RPC request is POSTed as written; the curl
-// line is parsed (URL, header, body) and replayed via fetch; the Python sample
-// runs under `python3 -I` with CONDUCTOR_MCP_URL pointing at the server, and is
-// skipped with a log when no python3 is installed.
+// line is parsed (URL, header, body) and replayed via fetch; the Python samples
+// run under `python3 -I -B` and the Node client sample under this node, with
+// CONDUCTOR_MCP_URL pointing at the server and CONDUCTOR_MCP_CLIENT_DIR at the
+// generated clients. A Python sample is skipped with a log when no python3 is
+// installed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { bootServer } from './helpers.mjs';
+import * as projects from '../src/projects.ts';
 
 const DOC = path.join(import.meta.dirname, '..', 'docs', 'mcp-applications.md');
 const DOC_BASE = 'http://127.0.0.1:8787';
@@ -22,17 +25,19 @@ function samples() {
   return out;
 }
 
-function python3(code, env) {
+function run(cmd, args, env) {
   return new Promise(resolve => {
-    execFile('python3', ['-I', '-c', code], { env: { ...process.env, ...env }, timeout: 20000 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { env: { ...process.env, ...env }, timeout: 20000 }, (err, stdout, stderr) => {
       resolve({ err, stdout, stderr });
     });
   });
 }
+const python3 = (code, env) => run('python3', ['-I', '-B', '-c', code], env);
 
 test('every documented sample replays to its documented bytes', async (t) => {
   const s = samples();
-  for (const name of ['rpc-request', 'rpc-response', 'curl', 'curl-response', 'python', 'python-output']) {
+  for (const name of ['rpc-request', 'rpc-response', 'curl', 'curl-response', 'python', 'python-output',
+    'node-client', 'node-client-output', 'python-client', 'python-client-output']) {
     assert.ok(s.has(name), `docs/mcp-applications.md lost its '${name}' sample`);
   }
   const srv = await bootServer({});
@@ -53,12 +58,25 @@ test('every documented sample replays to its documented bytes', async (t) => {
     assert.equal(rest.status, 200);
     assert.equal(await rest.text(), s.get('curl-response'));
 
-    const py = await python3(s.get('python'), { CONDUCTOR_MCP_URL: `${srv.baseUrl}/mcp` });
+    const env = { CONDUCTOR_MCP_URL: `${srv.baseUrl}/mcp`, CONDUCTOR_MCP_CLIENT_DIR: projects.mcpClientDir() };
+    const py = await python3(s.get('python'), env);
     if (py.err?.code === 'ENOENT') {
       t.diagnostic('python3 not installed — the Python sample was not run');
     } else {
       assert.equal(py.err, null, py.stderr);
       assert.equal(py.stdout.trimEnd(), s.get('python-output'));
+    }
+
+    const js = await run(process.execPath, ['--input-type=module', '-e', s.get('node-client')], env);
+    assert.equal(js.err, null, js.stderr);
+    assert.equal(js.stdout.trimEnd(), s.get('node-client-output'));
+
+    const pyClient = await python3(s.get('python-client'), env);
+    if (pyClient.err?.code === 'ENOENT') {
+      t.diagnostic('python3 not installed — the Python client sample was not run');
+    } else {
+      assert.equal(pyClient.err, null, pyClient.stderr);
+      assert.equal(pyClient.stdout.trimEnd(), s.get('python-client-output'));
     }
   } finally { await srv.close(); }
 });

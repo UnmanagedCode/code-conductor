@@ -3,7 +3,7 @@ import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   tryResolveProject, resolveProjectDir,
-  readProjectRecord, writeProjectMeta, addWorkspace,
+  readProjectRecord, writeProjectMeta, addWorkspace, mcpClientDir,
 } from '../projects.ts';
 import {
   readManifest,
@@ -543,8 +543,10 @@ export function createPluginHost(opts: {
         CONDUCTOR_PLUGIN_DATA_DIR: pluginDataDir(id),
         ...(serverPort ? {
           CONDUCTOR_URL: `http://127.0.0.1:${serverPort}`,
-          // The MCP server, anonymous and JSON by default (docs/mcp-applications.md).
+          // The MCP server, anonymous and JSON by default, and the generated
+          // client that defaults to it (docs/mcp-applications.md).
           CONDUCTOR_MCP_URL: `http://127.0.0.1:${serverPort}/mcp`,
+          CONDUCTOR_MCP_CLIENT_DIR: mcpClientDir(),
         } : {}),
       };
       let rec;
