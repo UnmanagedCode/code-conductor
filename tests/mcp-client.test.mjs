@@ -8,7 +8,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import { execFile } from 'node:child_process';
+import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { start } from '../server.ts';
 import * as projects from '../src/projects.ts';
 import * as tools from '../src/mcp/tools.ts';
@@ -55,7 +58,9 @@ test('bootServer writes both clients into the store, from the registry it serves
   } finally { await srv.close(); }
 });
 
-test('the real start() writes both clients before it resolves, overwriting a stale one', async () => {
+// The real start() on a throwaway store and HOME: `plant` runs with the env in
+// place, before boot; the booted server is always torn down.
+async function withRealStart(plant, check) {
   const home = await mkdtemp('cc-mcp-client-boot-');
   const env = {
     HOME: home,
@@ -70,11 +75,8 @@ test('the real start() writes both clients before it resolves, overwriting a sta
   let booted;
   try {
     await fs.mkdir(env.CLAUDE_PROJECTS_ROOT, { recursive: true });
-    const stale = path.join(projects.mcpClientDir(), MCP_CLIENT_FILES.python);
-    await fs.mkdir(path.dirname(stale), { recursive: true });
-    await fs.writeFile(stale, '# stale\n');
-    booted = await start({ port: 0, host: '127.0.0.1', buildWeb: false });
-    await assertWritten();
+    await plant();
+    await check(async (opts) => { booted = await start({ host: '127.0.0.1', buildWeb: false, ...opts }); return booted; });
   } finally {
     if (booted) {
       const { server, instances, wss, pluginHost } = booted;
@@ -94,6 +96,43 @@ test('the real start() writes both clients before it resolves, overwriting a sta
     }
     await rmrf(home);
   }
+}
+
+test('the real start() writes both clients before it resolves, overwriting a stale one', async () => {
+  const stale = () => path.join(projects.mcpClientDir(), MCP_CLIENT_FILES.python);
+  await withRealStart(async () => {
+    await fs.mkdir(path.dirname(stale()), { recursive: true });
+    await fs.writeFile(stale(), '# stale\n');
+  }, async (boot) => {
+    await boot({ port: 0 });
+    await assertWritten();
+  });
+});
+
+// A port nothing is bound to right now.
+async function freePort() {
+  const srv = net.createServer();
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const { port } = srv.address();
+  await new Promise(r => srv.close(r));
+  return port;
+}
+
+test('a client write that fails fails the real start(), which never listens', async () => {
+  // The client directory's path is taken by a regular file, so its mkdir fails.
+  await withRealStart(async () => {
+    await fs.mkdir(path.dirname(projects.mcpClientDir()), { recursive: true });
+    await fs.writeFile(projects.mcpClientDir(), 'not a directory\n');
+  }, async (boot) => {
+    const port = await freePort();
+    await assert.rejects(boot({ port }), e => ['EEXIST', 'ENOTDIR'].includes(e.code) && String(e.path ?? e.message).includes(projects.MCP_CLIENT_DIRNAME));
+    const refused = await new Promise(resolve => {
+      const sock = net.connect(port, '127.0.0.1');
+      sock.once('connect', () => { sock.destroy(); resolve(false); });
+      sock.once('error', e => resolve(e.code === 'ECONNREFUSED'));
+    });
+    assert.ok(refused, `nothing listens on ${port} after the failed boot`);
+  });
 });
 
 // A registered project with a worktree that is behind its base and dirty, so
@@ -124,6 +163,13 @@ function assertOutcomes(out, workspace) {
   assert.deepEqual(out.badArgs, { raised: { code: 'ARGS_INVALID', status: 400, bodyOk: false } });
   assert.equal(out.measured.returned?.ok, true, `an ok:true measurement is returned, not raised: ${JSON.stringify(out.measured)}`);
   assert.equal(out.measured.returned.action, 'commit-required');
+  // An omitted optional argument is not sent: list_sessions() succeeds. A
+  // None/null one is sent as null: list_sessions's string `project` refuses it.
+  assert.ok(Array.isArray(out.listed.returned?.groups), `an all-optional call sends no sentinel: ${JSON.stringify(out.listed)}`);
+  assert.deepEqual(out.nullSent, { raised: { code: 'ARGS_INVALID', status: 400, bodyOk: false } }, 'a None/null argument is transmitted as null');
+  assert.deepEqual(out.assigned, { returned: { project: 'scripted', workspace } });
+  assert.deepEqual(out.cleared, { returned: { project: 'scripted', workspace: null } }, 'workspace=None is transmitted and clears');
+  assert.equal(out.readBack, null, 'the project reads back with no workspace');
 }
 
 test('a script imports each client from CONDUCTOR_MCP_CLIENT_DIR and gets results, refusals and faults per the raise rule', async (t) => {
@@ -143,4 +189,53 @@ test('a script imports each client from CONDUCTOR_MCP_CLIENT_DIR and gets result
     assertOutcomes(out, 'python-ws');
     assert.deepEqual(out.requiredKeys, ['added', 'name']);
   } finally { await srv.close(); }
+});
+
+// The raise rule's non-JSON and non-object arms, against a fake server: a body
+// that is not JSON raises (even at 200) with code null and the raw text as
+// body; a JSON body that is not an object raises on its status with code null.
+async function fakeServer() {
+  const srv = http.createServer((req, res) => {
+    if (req.url.endsWith('/tools/plain')) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('not json at all'); return; }
+    res.writeHead(500, { 'content-type': 'application/json' }); res.end('[1,2]');
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${srv.address().port}/mcp`, close: () => new Promise(r => srv.close(r)) };
+}
+
+const EXPECTED_FAULTS = {
+  plain: { code: null, reason: 'response is not JSON', status: 200, body: 'not json at all' },
+  array: { code: null, reason: 'HTTP 500', status: 500, body: [1, 2] },
+};
+
+test('a non-JSON or non-object body raises ConductorError with code null, in both clients', async (t) => {
+  const fake = await fakeServer();
+  try {
+    const { ConductorClient, ConductorError } = await import(pathToFileURL(path.join(FIXTURES, 'expected', 'conductor_client.mjs')).href);
+    const client = new ConductorClient(fake.url);
+    for (const [name, want] of Object.entries(EXPECTED_FAULTS)) {
+      await assert.rejects(client.call(name, {}), e => {
+        assert.ok(e instanceof ConductorError, String(e));
+        assert.deepEqual({ code: e.code, reason: e.reason, status: e.status, body: e.body }, want, name);
+        return true;
+      });
+    }
+
+    if (!(await python311())) { t.diagnostic('python3 >= 3.11 not installed — the Python client was not run'); return; }
+    const script = [
+      'import json, sys',
+      'sys.path.insert(0, sys.argv[1])',
+      'from conductor_client import ConductorClient, ConductorError',
+      'c = ConductorClient(sys.argv[2]); out = {}',
+      'for name in ("plain", "array"):',
+      '    try:',
+      '        c.call(name, {}); out[name] = "returned"',
+      '    except ConductorError as e:',
+      '        out[name] = {"code": e.code, "reason": e.reason, "status": e.status, "body": e.body}',
+      'print(json.dumps(out))',
+    ].join('\n');
+    const py = await run('python3', ['-I', '-B', '-c', script, path.join(FIXTURES, 'expected'), fake.url]);
+    assert.equal(py.err, null, py.stderr);
+    assert.deepEqual(JSON.parse(py.stdout), EXPECTED_FAULTS);
+  } finally { await fake.close(); }
 });

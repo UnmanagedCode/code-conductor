@@ -27,5 +27,12 @@ print(json.dumps({
     'unknownTool': outcome(lambda: client.call('no_such_tool', {})),
     'badArgs': outcome(lambda: client.call('create_workspace', {})),
     'measured': outcome(lambda: client.sync_worktree(project=project, worktree=worktree)),
+    # Optional arguments: an omitted one is not sent (the sentinel would not
+    # even serialize); None is sent as null.
+    'listed': outcome(lambda: client.list_sessions()),
+    'nullSent': outcome(lambda: client.list_sessions(project=None)),
+    'assigned': outcome(lambda: client.set_project_workspace(project=project, workspace=workspace)),
+    'cleared': outcome(lambda: client.set_project_workspace(project=project, workspace=None)),
+    'readBack': next(p for p in client.list_projects()['projects'] if p['name'] == project)['workspace'],
     'requiredKeys': sorted(CreateWorkspaceResult.__required_keys__),
 }))

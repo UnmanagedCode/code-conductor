@@ -23,4 +23,10 @@ console.log(JSON.stringify({
   unknownTool: await outcome(() => client.call('no_such_tool', {})),
   badArgs: await outcome(() => client.call('create_workspace', {})),
   measured: await outcome(() => client.sync_worktree({ project, worktree })),
+  // Optional arguments: an all-optional call sends nothing; null is sent.
+  listed: await outcome(() => client.list_sessions()),
+  nullSent: await outcome(() => client.list_sessions({ project: null })),
+  assigned: await outcome(() => client.set_project_workspace({ project, workspace })),
+  cleared: await outcome(() => client.set_project_workspace({ project, workspace: null })),
+  readBack: (await client.list_projects()).projects.find(p => p.name === project)?.workspace,
 }));

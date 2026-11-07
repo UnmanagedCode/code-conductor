@@ -52,8 +52,9 @@ export interface ClientModel {
   declarations: Declaration[];
 }
 
-// Tool names a client class already uses for its own members.
-export const CLIENT_MEMBERS: readonly string[] = ['call', 'url'];
+// Names the client classes already use for their own members (Node's
+// constructor, Python's __init__): a tool so named would shadow one.
+export const CLIENT_MEMBERS: readonly string[] = ['call', 'url', 'constructor', '__init__'];
 
 // The hard keywords of Python 3.11: a parameter named one is spelled with a
 // trailing `_` in the Python client.
@@ -103,6 +104,14 @@ function checkKeywords(s: Schema, where: string, input: boolean): void {
   }
 }
 
+// A literal type. Its JSON spelling is the type text in a JSDoc comment, which
+// a `*/` inside it would close.
+function literal(v: unknown, where: string): TypeNode {
+  const text = JSON.stringify(v);
+  if (text.includes('*/')) fail(where, `a literal ${text} containing '*/'`);
+  return { kind: 'lit', value: v as string | number | boolean | null };
+}
+
 function union(members: TypeNode[]): TypeNode {
   const flat = members.flatMap(m => m.kind === 'union' ? m.members : [m]);
   return flat.length === 1 ? flat[0] : { kind: 'union', members: flat };
@@ -128,10 +137,10 @@ function fieldsOf(s: Schema, name: string, where: string, b: Builder, input: boo
 
 function toType(s: Schema, name: string, where: string, b: Builder, input: boolean): TypeNode {
   checkKeywords(s, where, input);
-  if ('const' in s) return { kind: 'lit', value: s.const as string | number | boolean | null };
+  if ('const' in s) return literal(s.const, where);
   if ('enum' in s) {
     if (!Array.isArray(s.enum)) fail(where, "an 'enum' that is not an array");
-    return union(s.enum.map(v => ({ kind: 'lit', value: v as string | number | boolean | null })));
+    return union(s.enum.map(v => literal(v, where)));
   }
   if ('anyOf' in s) {
     if ('properties' in s) fail(where, "'anyOf' together with 'properties'");

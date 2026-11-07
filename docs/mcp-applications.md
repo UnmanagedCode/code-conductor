@@ -166,7 +166,7 @@ Every method's docstring/JSDoc is the tool's description plus one line per argum
 | array | `list[T]` | `Array<T>` |
 | no type (`any()`) | `Any` | `*` |
 
-The generator accepts only the schema vocabulary `src/mcp/outputSchemas.ts` declares, plus `minLength`, `maxLength`, `minimum`, `maximum`, `pattern` and `default` on input schemas. Any other keyword throws `mcp client: unsupported schema keyword '<k>' at <tool>.<path>`, and so does a tool named `call` or `url` — both fail boot.
+The generator accepts only the schema vocabulary `src/mcp/outputSchemas.ts` declares, plus `minLength`, `maxLength`, `minimum`, `maximum`, `pattern` and `default` on input schemas. Any other keyword throws `mcp client: unsupported schema keyword '<k>' at <tool>.<path>`. So do a tool named like a client member (`CLIENT_MEMBERS` in `src/mcp/client/typeModel.ts`), two tools whose generated type names collide, and a `const`/`enum` value whose JSON spelling contains `*/` — each fails boot.
 
 **Errors.** A call raises `ConductorError` when the HTTP status is ≥ 400 **or** the body is an object with `ok === false`; anything else is returned.
 

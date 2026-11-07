@@ -78,10 +78,32 @@ test('an unsupported schema keyword fails the render, naming the tool and the pa
   assert.throws(() => python.renderPythonClient(annotatedOutput), /unsupported schema keyword 'minimum' at odd_tool\.outputSchema\.properties\.n/);
 });
 
+const bareTool = (name, outputSchema = { type: 'object', properties: {} }) =>
+  ({ name, description: 'x', inputSchema: { type: 'object', properties: {} }, outputSchema });
+
 test('a tool named like a client member fails the render', () => {
-  const clash = [{ name: 'call', description: 'x', inputSchema: { type: 'object', properties: {} }, outputSchema: { type: 'object', properties: {} } }];
-  assert.throws(() => python.renderPythonClient(clash), /'call'/);
-  assert.throws(() => node.renderNodeClient(clash), /'call'/);
+  for (const name of ['call', 'url', 'constructor', '__init__']) {
+    const re = new RegExp(`a tool named '${name}', which is a client member`);
+    assert.throws(() => python.renderPythonClient([bareTool(name)]), re);
+    assert.throws(() => node.renderNodeClient([bareTool(name)]), re);
+  }
+});
+
+test('two tools whose generated type names collide fail the render', () => {
+  // Pascal('foo_bar') === Pascal('foo__bar'): both results are FooBarResult.
+  const twins = [bareTool('foo_bar'), bareTool('foo__bar')];
+  assert.throws(() => python.renderPythonClient(twins), /type name 'FooBarResult' is generated twice/);
+  assert.throws(() => node.renderNodeClient(twins), /type name 'FooBarResult' is generated twice/);
+});
+
+test('a literal whose rendering would close a JSDoc comment fails the render, naming the tool and the path', () => {
+  const viaConst = [bareTool('odd_tool', { type: 'object', properties: { k: { const: 'a*/b' } }, required: ['k'] })];
+  const viaEnum = [bareTool('odd_tool', { type: 'object', properties: { k: { enum: ['ok', 'x*/'] } }, required: ['k'] })];
+  for (const bad of [viaConst, viaEnum]) {
+    for (const render of [python.renderPythonClient, node.renderNodeClient]) {
+      assert.throws(() => render(bad), /mcp client: a literal .* containing '\*\/' at odd_tool\.outputSchema\.properties\.k/);
+    }
+  }
 });
 
 test('the Python clients import, and a TypedDict carries its schema\'s required split', async (t) => {
