@@ -343,7 +343,10 @@ export interface InstanceManagerLike {
   // Both session lookups return null (not undefined) on a miss — the impl's
   // `find(...) ?? null` shape, pinned by tests.
   anyForSession(sessionId: string): InstanceLike | null;
-  callerSessionId(handle: string | null): string | null;
+  // The caller segment of an `/mcp/<sessionId>` URL: the id when it is the exact
+  // public sessionId of a live session, else null.
+  liveCallerForPublicId(id: string): string | null;
+  sessionIdForInstance(instanceId: string): string | null;
   emit(event: 'status', summary: InstanceSummary): void;
   // IdleSubscriptionHub notifies watchers of graph changes; the server listens
   // for it to re-render the watcher count. Emitted with no payload shape beyond

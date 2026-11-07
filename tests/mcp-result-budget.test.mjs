@@ -88,7 +88,7 @@ const HUGE = 60_000;
 const contentChars = result => result.content.reduce((n, c) => n + c.text.length, 0);
 const MARKER = / … \[cut: \d+ chars\] … /;
 async function rpcRaw(baseUrl, method, params, caller) {
-  const res = await fetch(baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}&format=text` : '?format=text'), {
+  const res = await fetch(baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
@@ -182,7 +182,7 @@ test('boundary, playbook gate: a STAGE_UNKNOWN refusal echoing a huge stage is c
       await waitFor(() => ctx.instances.get(conductor.body.id)?.status === 'idle');
       const { result } = await rpcRaw(ctx.baseUrl, 'tools/call', {
         name: 'spawn_instance', arguments: { project: 'demo', playbook: 'solo', stage: 's'.repeat(HUGE) },
-      }, conductor.body.id);
+      }, conductor.body.sessionId);
       assert.ok(contentChars(result) <= MCP_RESULT_CHAR_BUDGET, `${contentChars(result)} chars`);
       const refusal = JSON.parse(result.content[0].text);
       assert.equal(refusal.ok, false);

@@ -38,19 +38,18 @@ async function addPlugin(boot, project, manifestPatch) {
 }
 
 let rpcId = 0;
-// Set per test. `?caller=` now carries the stable instanceId (what Instance.spawn
-// bakes); translate a caller sessionId to it. A bogus/stale caller passes through
-// unchanged (still unresolvable server-side → tools stay global).
-let mgr = null;
+// The caller is the public sessionId in the MCP URL path (`/mcp/<sessionId>`);
+// one that names no live session is refused CALLER_UNKNOWN.
 async function rpc(baseUrl, method, params, caller) {
-  const handle = caller ? (mgr?.liveForSession(caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
   });
-  return (await res.json()).result;
+  const body = await res.json();
+  assert.ok(body.result, `${method} returned no result: ${JSON.stringify(body)}`);
+  return body.result;
 }
 const listToolNames = async (baseUrl, caller) =>
   (await rpc(baseUrl, 'tools/list', {}, caller)).tools.map(t => t.name);
@@ -64,9 +63,8 @@ async function spawnWorker(boot, body) {
   return waitFor(() => boot.instances.get(r.body.id)?.sessionId);
 }
 
-test('visibility: every enabled plugin\'s tools are global — conductor, any-project workers, stale callers', async () => {
+test('visibility: every enabled plugin\'s tools are global — conductor, any-project workers, anonymous', async () => {
   const boot = await setup();
-  mgr = boot.instances;
   try {
     // A manifest `scope` field is accepted (compat) but inert.
     await addPlugin(boot, 'globalplug', { id: 'globalplug', name: 'Global', mcp: { scope: 'global' } });
@@ -99,10 +97,13 @@ test('visibility: every enabled plugin\'s tools are global — conductor, any-pr
     assert.equal(payload.message, 'hi');
     assert.deepEqual(payload.caller, { sessionId: inOther, project: 'other' });
 
-    // Unresolvable caller (stale ?caller=): still everything.
-    const stale = await listToolNames(boot.baseUrl, 'not-a-live-session');
-    assert.ok(stale.includes('fake-plugin__echo'));
-    assert.ok(stale.includes('globalplug__echo'));
+    // A caller that names no live session is refused, never served anonymously.
+    const stale = await fetch(boot.baseUrl + '/mcp/not-a-live-session?format=text', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/list', params: {} }),
+    });
+    assert.equal((await stale.json()).error?.data?.code, 'CALLER_UNKNOWN');
 
     // Disabling removes the tools for new lists.
     await api(boot.baseUrl, 'POST', '/api/plugins/globalplug/disable');
@@ -112,7 +113,6 @@ test('visibility: every enabled plugin\'s tools are global — conductor, any-pr
 
 test('forwarding + pinned child contract: result, tool-error, transport-error, args gate, lazy restart', async () => {
   const boot = await setup();
-  mgr = boot.instances;
   try {
     // First call lazy-starts the child (plugin was never started).
     const ok = await callTool(boot.baseUrl, 'fake-plugin__echo', { message: 'hi' });
@@ -153,7 +153,6 @@ test('forwarding + pinned child contract: result, tool-error, transport-error, a
 
 test('timeout: a slow tool aborts at the manifest timeoutMs', async () => {
   const boot = await setup();
-  mgr = boot.instances;
   try {
     await addPlugin(boot, 'slowplug', { id: 'slowplug', name: 'Slow', mcp: { timeoutMs: 1000 } });
     const t0 = Date.now();
@@ -167,7 +166,6 @@ test('timeout: a slow tool aborts at the manifest timeoutMs', async () => {
 
 test('a worker spawned in a worktree sees its parent project\'s plugin tools', async () => {
   const boot = await setup();
-  mgr = boot.instances;
   try {
     const dir = path.join(boot.projectsRoot, 'fakeplug');
     await run('git', ['-C', dir, 'init', '-q']);

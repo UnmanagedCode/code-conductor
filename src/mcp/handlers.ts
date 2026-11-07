@@ -1158,7 +1158,7 @@ export function resolveSpawnModel(
 
 export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
-  // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
+  // callerId is the conductor's public sessionId (the /mcp/<sessionId> path). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
   let inst;
@@ -1202,7 +1202,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       conducted: true,
       // Record which conductor spawned this worker so the frontend can
       // show a live sub-agent panel scoped to that conductor's view.
-      // `callerId` is now the conductor's stable sessionId (from ?caller=) —
+      // `callerId` is the conductor's public sessionId (from the /mcp/<sessionId> path) —
       // resolve it back to the conductor's live instanceId so the internal
       // Instance.callerInstanceId field stays an instanceId (consumers:
       // SubagentPanel in web/src/features/session/SessionPanels.tsx,
@@ -1263,7 +1263,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
 // The seconds→ms boundary conversion for all four turn-starting tools: the MCP
 // param is whole seconds, everything below this line is ms.
 function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleTimeoutSeconds?: number): void {
-  if (!callerId) return;                  // no ?caller= — a UI/REST-shaped call
+  if (!callerId) return;                  // anonymous /mcp — a UI/REST-shaped call
   if (callerId === sessionId) return;     // a session cannot wait on its own turn
   if (!instances) return;                 // unreachable (getInst threw)
   try {
@@ -1400,8 +1400,8 @@ export async function setMode({ sessionId, mode }: { sessionId: string; mode: st
 // to register — the wake is armed by the target entering a turn (see
 // src/idleSubscriptions.ts) — so this only adjusts how often a still-running
 // turn reports in, and re-arms a heartbeat that is already running. Caller
-// identity comes from the MCP URL's ?caller=<id> query string (baked in at spawn
-// time by InstanceManager.mcpServerUrl). `armed` says whether a live heartbeat
+// identity comes from the MCP URL's /mcp/<sessionId> path (baked in at spawn
+// time by Instance.spawn). `armed` says whether a live heartbeat
 // was re-armed, i.e. whether the target is mid-turn right now.
 export async function setIdleTimeout({ sessionId, timeoutSeconds }: { sessionId: string; timeoutSeconds: number }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
@@ -1420,7 +1420,7 @@ export async function setIdleTimeout({ sessionId, timeoutSeconds }: { sessionId:
 }
 
 // Title the CALLING session. There is no target argument: callerId is the
-// ?caller= handle resolved to the caller's public sessionId, and the schema's
+// public sessionId from the MCP URL's /mcp/<sessionId> path, and the schema's
 // unknown-property refusal rejects any sessionId a caller tries to pass.
 export async function setSessionTitle({ title }: { title: string }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
@@ -1442,7 +1442,7 @@ export async function setSessionTitle({ title }: { title: string }, { instances,
 // sessionId; only the CLI's internal backing id moves) — and seeds the cleared
 // session with the summary (plus a server-generated mechanical state block, built
 // at reseed time) as its first user turn. Caller identity comes from the MCP URL's
-// ?caller=<sessionId>, so this only works for a code-conductor-managed session.
+// /mcp/<sessionId> path, so this only works for a code-conductor-managed session.
 // The `/clear` is deferred to turn_end (not fired now) so this tool call's turn
 // completes normally first — see src/sessionRenew.ts.
 //

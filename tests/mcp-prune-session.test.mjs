@@ -25,12 +25,9 @@ const BIG_TEXT = 'y'.repeat(4000);
 const bigText = BIG_TEXT;
 
 let nextRpcId = 1;
-let mgr = null;
-// `?caller=` carries the stable INSTANCE id, so translate a caller sessionId to
-// its instanceId here (same shim as tests/renew-session.test.mjs).
+// The caller is the public sessionId in the MCP URL path (`/mcp/<sessionId>`).
 async function rpc(baseUrl, method, params, { caller } = {}) {
-  const handle = caller ? (instForSession(mgr, caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -102,7 +99,6 @@ const byUuid = async (sessionDir, sid) => Object.fromEntries(
 
 test('prune_session keeps the newest turn by default and hands back the SAME sessionId', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
-  mgr = ctx.instances;
   try {
     const sid = 'bbbbbbb1-2222-3333-4444-555555555555';
     const { id, sessionDir, inst } = await liveWorker(ctx, { projectName: 'mp1', sid });
@@ -135,6 +131,14 @@ test('prune_session keeps the newest turn by default and hands back the SAME ses
     const sent = await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'still here?' });
     assert.equal(sent.sessionId ?? sid, sid);
     await waitFor(() => inst.status === 'idle');
+
+    // …and still names it as an MCP CALLER (`/mcp/<sessionId>`), while the
+    // backing id the prune rotated to is no caller at all.
+    const titled = await callTool(ctx.baseUrl, 'set_session_title', { title: 'pruned' }, { caller: sid });
+    assert.deepEqual(titled, { sessionId: sid, title: 'pruned' });
+    assert.notEqual(inst.backingSessionId, sid, 'precondition: the prune rotated the backing id');
+    const stale = await rpc(ctx.baseUrl, 'tools/call', { name: 'set_session_title', arguments: { title: 'x' } }, { caller: inst.backingSessionId });
+    assert.equal(stale.body.error?.data?.code, 'CALLER_UNKNOWN');
   } finally { await ctx.close(); }
 });
 
@@ -143,7 +147,6 @@ test('prune_session reports the real pre-prune baseline and a calibrated saving'
   // history for a live calibration factor, and the newest one is the ctx
   // reading the resumed worker latches.
   const ctx = await bootServer({ scenarioPath: SCENARIO });
-  mgr = ctx.instances;
   try {
     const sid = 'bbbbbbb3-2222-3333-4444-555555555555';
     const lines = sessionLines('y'.repeat(6000));
@@ -174,7 +177,6 @@ test('prune_session reports the real pre-prune baseline and a calibrated saving'
 
 test('prune_session({keepLatestTurns: 0}) prunes every turn, newest included', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
-  mgr = ctx.instances;
   try {
     const sid = 'bbbbbbb2-2222-3333-4444-555555555555';
     const { sessionDir, inst } = await liveWorker(ctx, { projectName: 'mp2', sid });
@@ -198,7 +200,6 @@ test('prune_session({keepLatestTurns: 0}) prunes every turn, newest included', a
 
 test('prune_session refuses softly, with a code, in every guarded state', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
-  mgr = ctx.instances;
   try {
     const sid = 'bbbbbbb3-2222-3333-4444-555555555555';
     const { inst } = await liveWorker(ctx, { projectName: 'mp3', sid });
@@ -252,7 +253,6 @@ test('prune_session refuses SESSION_ROTATING while a rotation holds the worker',
   // The renew↔prune interlock, prune-side and over MCP. The reverse direction is
   // covered in tests/renew-session.test.mjs.
   const ctx = await bootServer({ scenarioPath: SCENARIO });
-  mgr = ctx.instances;
   try {
     const sid = 'bbbbbbb4-2222-3333-4444-555555555555';
     const { inst } = await liveWorker(ctx, { projectName: 'mp4', sid });
@@ -284,7 +284,6 @@ test('prune_session rejects bad arguments without touching the subprocess', asyn
   //     isError and leave the proc alone, so this test cannot tell which layer
   //     fired. It kills only the removal of ALL of them.
   const ctx = await bootServer({ scenarioPath: SCENARIO });
-  mgr = ctx.instances;
   try {
     const sid = 'bbbbbbb5-2222-3333-4444-555555555555';
     const { inst } = await liveWorker(ctx, { projectName: 'mp5', sid });

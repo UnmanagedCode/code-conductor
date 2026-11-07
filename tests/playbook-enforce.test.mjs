@@ -64,7 +64,7 @@ async function makeRealRepo(projectsRoot, name) {
 let nextRpcId = 1;
 
 // Boot a server, a real git project, and a live conductor at `enforcement`.
-// `call(name, args)` issues a tools/call AS THE CONDUCTOR; `callAs(handle, …)`
+// `call(name, args)` issues a tools/call AS THE CONDUCTOR; `callAs(sessionId, …)`
 // issues one as somebody else (or nobody).
 // `seedLedger`, when supplied, writes to the ledger AFTER bootServer() but
 // BEFORE the conductor is spawned below — the only window that matters. The
@@ -89,10 +89,11 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) 
   });
   assert.equal(spawned.status, 201, `conductor spawn failed: ${JSON.stringify(spawned.body)}`);
   const conductorId = spawned.body.id;
+  const conductorSid = spawned.body.sessionId;
   await waitFor(() => ctx.instances.get(conductorId)?.status === 'idle');
 
-  async function callAs(handle, name, args) {
-    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  async function callAs(callerSid, name, args) {
+    const url = ctx.baseUrl + '/mcp' + (callerSid ? `/${encodeURIComponent(callerSid)}` : '') + '?format=text';
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -108,12 +109,12 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) 
   return {
     ...ctx,
     conductorId,
-    call: (name, args) => callAs(conductorId, name, args),
+    call: (name, args) => callAs(conductorSid, name, args),
     callAs,
     // Spawn a worker and wait until its session is up, so its sessionId is a
     // valid handle for the next call.
     async spawnWorker(args) {
-      const out = await callAs(conductorId, 'spawn_instance', args);
+      const out = await callAs(conductorSid, 'spawn_instance', args);
       if (out.sessionId) await waitFor(() => instForSession(ctx.instances, out.sessionId)?.sessionId);
       return out;
     },
@@ -551,7 +552,7 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
 
     // The worker renews ITSELF — the real shape, since MCP tools are
     // auto-registered into every worker.
-    const armed = await t.callAs(inst.id, 'renew_session', { summary: 'keep my stage' });
+    const armed = await t.callAs(inst.sessionId, 'renew_session', { summary: 'keep my stage' });
     assert.equal(armed.ok, true, JSON.stringify(armed));
     await t.call('send_prompt', { sessionId: publicId, text: 'go1' });
     await waitFor(() => inst.backingSessionId === RENEW_NEW_SID);
@@ -1090,7 +1091,7 @@ test('policy applies only to the conductor: the same calls from a worker or no c
     // A NON-conductor caller (an ordinary worker driving the MCP itself) is not
     // governed — worker-side calls keep their existing recursion rules.
     const worker = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
-    const workerHandle = instForSession(t.instances, worker.sessionId).id;
+    const workerHandle = worker.sessionId;
     const asWorker = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
     assert.ok(asWorker.sessionId, 'a worker\'s own spawn is ungoverned');
 
@@ -1106,7 +1107,7 @@ test('policy applies only to the conductor: the same calls from a worker or no c
     await waitFor(() => t.instances.get(rogue.body.id)?.status === 'idle');
     assert.equal(t.instances.get(rogue.body.id).playbookEnforcement, 'enforce',
       'the enforcing-but-not-a-conductor precondition actually holds');
-    const asRogue = await t.callAs(rogue.body.id, 'spawn_instance', { project: 'demo', mode: 'plan' });
+    const asRogue = await t.callAs(rogue.body.sessionId, 'spawn_instance', { project: 'demo', mode: 'plan' });
     assert.ok(asRogue.sessionId, 'only the conductor is governed, whatever a worker\'s own setting says');
 
     // The rogue must also be invisible to the AUDIT trail, which is a separate
@@ -1512,7 +1513,7 @@ test('enforce: a stage may deny a renewal REQUEST, while the conductor\'s own ba
 
     // (3) The worker's own self-call is ungoverned too — same tool, same denied
     // stage, but the caller is the worker rather than the conductor.
-    const self = await t.callAs(inst.id, 'renew_session', { summary: 'keep my stage' });
+    const self = await t.callAs(inst.sessionId, 'renew_session', { summary: 'keep my stage' });
     assert.equal(self.ok, true, `a worker renewing itself is never governed: ${JSON.stringify(self)}`);
   } finally { await t.close(); }
 });

@@ -23,8 +23,8 @@ async function seedPair(cc: Cc, uniq: (s: string) => string) {
   const aLabel = uniq('Alpha');
   await api(cc, 'PUT', `/api/sessions/${a.sessionId}/title`, { title: aLabel });
   const b = await spawnConductor(cc, false);
-  await spawnWorker(cc, a.id, { project: P });
-  const aq = await spawnWorker(cc, a.id, { project: Q });
+  await spawnWorker(cc, a.sessionId, { project: P });
+  const aq = await spawnWorker(cc, a.sessionId, { project: Q });
   await api(cc, 'DELETE', `/api/instances/${aq.id}`);
   await gone(cc, aq.id);
   return { P, Q, a, b, aLabel };
@@ -89,7 +89,7 @@ test("a conductor row's × shows on hover, and each row label stays readable and
   const long = ' — a label long enough to overflow the sidebar row and truncate'.repeat(2);
   const a = await spawnConductor(cc, true);
   await api(cc, 'PUT', `/api/sessions/${a.sessionId}/title`, { title: uniq('Alpha') + long });
-  const aw = await spawnWorker(cc, a.id, { project: P });
+  const aw = await spawnWorker(cc, a.sessionId, { project: P });
   const handRes = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', temp: true, ...liveModel(cc) });
   expect(handRes.status, `POST /api/instances (hand): ${JSON.stringify(handRes.body)}`).toBeLessThan(300);
   const hand = await idleInst(cc, (i) => i.id === handRes.body.id, 'hand-spawned session idle');

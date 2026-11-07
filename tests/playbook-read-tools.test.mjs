@@ -72,10 +72,11 @@ async function setup({ enforcement } = {}) {
   });
   assert.equal(spawned.status, 201, `conductor spawn failed: ${JSON.stringify(spawned.body)}`);
   const conductorId = spawned.body.id;
+  const conductorSid = spawned.body.sessionId;
   await waitFor(() => ctx.instances.get(conductorId)?.status === 'idle');
 
-  async function callAs(handle, name, args) {
-    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  async function callAs(callerSid, name, args) {
+    const url = ctx.baseUrl + '/mcp' + (callerSid ? `/${encodeURIComponent(callerSid)}` : '') + '?format=text';
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -89,8 +90,8 @@ async function setup({ enforcement } = {}) {
   }
 
   // Same call, but hands back the raw single text block instead of parsing it.
-  async function callRawAs(handle, name, args) {
-    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  async function callRawAs(callerSid, name, args) {
+    const url = ctx.baseUrl + '/mcp' + (callerSid ? `/${encodeURIComponent(callerSid)}` : '') + '?format=text';
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -105,13 +106,13 @@ async function setup({ enforcement } = {}) {
   return {
     ...ctx,
     conductorId,
-    call: (name, args) => callAs(conductorId, name, args),
+    call: (name, args) => callAs(conductorSid, name, args),
     callAs,
     // The recon read tools, enumerate_remotes and describe_playbook's success
     // path return a plain-text rendering, not JSON.
-    callText: (name, args) => callRawAs(conductorId, name, args),
+    callText: (name, args) => callRawAs(conductorSid, name, args),
     async spawnWorker(args) {
-      const out = await callAs(conductorId, 'spawn_instance', args);
+      const out = await callAs(conductorSid, 'spawn_instance', args);
       if (out.sessionId) await waitFor(() => instForSession(ctx.instances, out.sessionId)?.sessionId);
       return out;
     },
@@ -630,7 +631,7 @@ test('playbook_state reports no enforcement block for a non-conductor caller', a
   const t = await setup({ enforcement: 'enforce' });
   try {
     const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
-    const workerHandle = instForSession(t.instances, w.sessionId).id;
+    const workerHandle = w.sessionId;
     // A worker driving the MCP itself is not a conductor, so there is no
     // enforcement level of its own to publish — and nothing here may make a
     // non-conductor look like a governed actor.
@@ -648,7 +649,7 @@ test('list_sessions carries playbook/stage for a tracked worker and null for an 
   try {
     const tracked = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     // Spawned by a NON-conductor caller, so the gate never tracks it.
-    const workerHandle = instForSession(t.instances, tracked.sessionId).id;
+    const workerHandle = tracked.sessionId;
     const untracked = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
     await waitFor(() => instForSession(t.instances, untracked.sessionId)?.sessionId);
 

@@ -1,7 +1,7 @@
 // Integration tests for the sub-agent panel feature.
-// Verifies that spawn_instance with ?caller=<conductor sessionId> stores the
+// Verifies that spawn_instance called as /mcp/<conductor sessionId> stores the
 // conductor's *instanceId* as callerInstanceId on the spawned worker (the
-// caller suffix is a sessionId on the wire, resolved back to an instanceId
+// caller path segment is a sessionId on the wire, resolved back to an instanceId
 // internally) and exposes it via summary() and GET /api/instances. The MCP
 // spawn return is the scrubbed conductor view (sessionId, no id /
 // callerInstanceId), so worker internals are inspected via instForSession.
@@ -16,14 +16,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 
 let nextRpcId = 1;
-// Set per test. `?caller=` now carries the stable instanceId (what Instance.spawn
-// bakes); translate a caller sessionId to it (bogus/absent passes through).
-let mgr = null;
+// The caller is the public sessionId in the MCP URL path.
 
 async function rpc(baseUrl, method, params, { caller } = {}) {
   const id = nextRpcId++;
-  const handle = caller ? (mgr?.liveForSession(caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -47,9 +44,8 @@ function unwrap(result) {
   return JSON.parse(text);
 }
 
-test('spawn_instance with ?caller=<sessionId> sets callerInstanceId (instanceId) on the worker', async () => {
+test('spawn_instance as /mcp/<sessionId> sets callerInstanceId (instanceId) on the worker', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
-  mgr = instances;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
@@ -62,7 +58,7 @@ test('spawn_instance with ?caller=<sessionId> sets callerInstanceId (instanceId)
     const conductorInst = instForSession(instances, conductor.sessionId);
     assert.equal(conductorInst.callerInstanceId, null, 'conductor has no callerInstanceId');
 
-    // Now spawn a worker with ?caller=<conductor sessionId>.
+    // Now spawn a worker as /mcp/<conductor sessionId>.
     const worker = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
     }, { caller: conductor.sessionId }));
@@ -76,11 +72,10 @@ test('spawn_instance with ?caller=<sessionId> sets callerInstanceId (instanceId)
 
 test('Instance.summary() includes callerInstanceId (resolved to instanceId)', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
-  mgr = instances;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
-    // Spawn a conductor, then a worker that names it via ?caller=<sessionId>.
+    // Spawn a conductor, then a worker that names it via /mcp/<sessionId>.
     const conductor = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
     }));
@@ -99,7 +94,6 @@ test('Instance.summary() includes callerInstanceId (resolved to instanceId)', as
 
 test('GET /api/instances includes callerInstanceId for spawned worker', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
-  mgr = instances;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 

@@ -498,23 +498,44 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
 // one JSON-RPC error object whatever the body held.
 interface UrlFault { code: string; rpcCode: number; reason: string }
 
-// The query parameters /mcp accepts. Identity is not one of them: anything
-// else is refused rather than ignored, so a stale spelling fails loudly.
-const ACCEPTED_QUERY = new Set(['format', 'caller']);
+// The only query parameter /mcp accepts. Identity is in the path, never the
+// query: anything else is refused rather than ignored, so a stale spelling
+// (`?caller=`) fails loudly instead of degrading to anonymous.
+const ACCEPTED_QUERY = new Set(['format']);
+
+// Every echoed URL fragment in a URL-level fault is cut to this.
+const URL_ECHO_CAP = 256;
 
 // The request preamble every /mcp route shares: the output format, from the
-// query string only (never Accept or Content-Type).
+// query string only (never Accept or Content-Type), then the caller from the
+// path.
 function resolveFormat(query: Record<string, unknown>): McpFormat | UrlFault {
   for (const k of Object.keys(query)) {
     if (!ACCEPTED_QUERY.has(k)) {
-      return { code: 'QUERY_PARAM_UNKNOWN', rpcCode: -32600, reason: `unknown query parameter '${capEcho(k, 256)}' — /mcp accepts only ?format=text` };
+      return { code: 'QUERY_PARAM_UNKNOWN', rpcCode: -32600,
+        reason: `unknown query parameter '${capEcho(k, URL_ECHO_CAP)}' — /mcp accepts only ?format=; the caller is the /mcp/<sessionId> path` };
     }
   }
   const f = query.format;
   if (f === undefined || f === 'text') return 'text';
-  return { code: 'FORMAT_INVALID', rpcCode: -32600, reason: `format must be 'text', got ${capEcho(JSON.stringify(f) ?? String(f), 256)}` };
+  return { code: 'FORMAT_INVALID', rpcCode: -32600,
+    reason: `format must be 'text', got ${capEcho(JSON.stringify(f) ?? String(f), URL_ECHO_CAP)}` };
 }
 
+function resolveCaller(instances: InstanceManagerLike | null | undefined, sid: string | undefined): string | null | UrlFault {
+  if (sid === undefined) return null;
+  const callerId = instances ? instances.liveCallerForPublicId(sid) : null;
+  if (callerId) return callerId;
+  return { code: 'CALLER_UNKNOWN', rpcCode: -32001,
+    reason: `no live session '${capEcho(sid, URL_ECHO_CAP)}' — the /mcp/<sessionId> path takes the exact public sessionId of a running session` };
+}
+
+function isUrlFault(v: unknown): v is UrlFault {
+  return isJsonRecord(v) && typeof v.code === 'string' && typeof v.rpcCode === 'number';
+}
+
+// One error object for the whole request — a batch or a notification is
+// refused once, with a null id.
 function urlFaultReply(body: unknown, fault: UrlFault): JsonRpcResponse {
   const id = isJsonRecord(body) && body.id !== undefined ? body.id : null;
   return rpcError(id, fault.rpcCode, fault.reason, { ok: false, code: fault.code, reason: fault.reason });
@@ -530,36 +551,30 @@ export function buildMcpRouter(
   const coreTools = buildTools().filter(t => !t.requires || capabilities[t.requires]);
   const coreToolSet: ReadonlySet<McpTool> = new Set<McpTool>(coreTools);
 
-  r.post('/', async (req, res) => {
-    // Each spawned worker registers the MCP URL with its own stable INSTANCE id
-    // baked into `?caller=` (see Instance.spawn). Resolve it HERE — the single
-    // boundary — to that instance's CURRENT sessionId, so `callerId` stays a valid
-    // sessionId for every downstream handler even after a `/clear` rotates the
-    // session in place (the baked instanceId never changes; its sessionId does).
-    // An absent param, or a handle that names no live instance, yields callerId=null
-    // and any caller-dependent tool errors with a clear message.
+  // Per-request tool composition: core tools + the plugin tools visible to
+  // this caller. init() is memoized — after the first request it's a resolved
+  // promise. A plugin-subsystem failure must never take the core tools down
+  // with it.
+  async function composeTools(): Promise<McpTool[]> {
+    if (!pluginHost) return coreTools;
+    try {
+      await pluginHost.init();
+      return [...coreTools, ...pluginHost.toolsFor()];
+    } catch (e) {
+      console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
+      return coreTools;
+    }
+  }
+
+  // JSON-RPC over POST, as `sid` (the caller's public sessionId from the path)
+  // or anonymously. URL-level faults short-circuit before anything dispatches:
+  // a caller that does not resolve is refused, never served anonymously.
+  async function rpcRoute(req: express.Request, res: express.Response, sid: string | undefined) {
     const format = resolveFormat(req.query as Record<string, unknown>);
-    if (typeof format !== 'string') {
-      res.json(urlFaultReply(req.body, format));
-      return;
-    }
-    const callerHandle = typeof req.query.caller === 'string' && req.query.caller
-      ? req.query.caller : null;
-    const callerId = instances ? instances.callerSessionId(callerHandle) : null;
-    // Per-request tool composition: core tools + the plugin tools visible to
-    // this caller (scoping + dynamism land in this one line; tools/list and
-    // tools/call read ctx.tools unchanged). init() is memoized — after the
-    // first request it's a resolved promise. A plugin-subsystem failure must
-    // never take the core tools down with it.
-    let tools: McpTool[] = coreTools;
-    if (pluginHost) {
-      try {
-        await pluginHost.init();
-        tools = [...coreTools, ...pluginHost.toolsFor()];
-      } catch (e) {
-        console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
-      }
-    }
+    if (isUrlFault(format)) { res.json(urlFaultReply(req.body, format)); return; }
+    const callerId = resolveCaller(instances, sid);
+    if (isUrlFault(callerId)) { res.json(urlFaultReply(req.body, callerId)); return; }
+    const tools = await composeTools();
     const ctx: McpCtx = { instances, tools, coreTools: coreToolSet, callerId, playbookGate, capabilities, format, limits: limitsFor(format) };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
@@ -582,12 +597,32 @@ export function buildMcpRouter(
       return;
     }
     res.json(r1);
-  });
+  }
 
   // GET would be the SSE long-poll channel for server→client notifications.
   // We don't emit any, so reject explicitly rather than hanging the client.
-  r.get('/', (req, res) => {
+  const getRejected = (_req: express.Request, res: express.Response) => {
     res.status(405).json({ error: 'GET /mcp not supported (no server notifications in v1)' });
+  };
+
+  r.post('/', (req, res) => rpcRoute(req, res, undefined));
+  r.get('/', getRejected);
+  r.post('/:sid', (req, res) => rpcRoute(req, res, req.params.sid));
+  r.get('/:sid', getRejected);
+
+  // Nothing under /mcp falls through to the web UI's HTML.
+  r.all('*', (req, res) => {
+    res.status(404).json({ ok: false, code: 'ROUTE_UNKNOWN', reason: `no MCP route ${req.method} ${capEcho(req.path, URL_ECHO_CAP)}` });
+  });
+
+  // A body that is not JSON never reaches a route: express.json throws first.
+  r.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (isJsonRecord(err) && err.type === 'entity.parse.failed') {
+      const reason = 'request body is not valid JSON';
+      res.status(400).json(rpcError(null, -32700, reason, { ok: false, code: 'PARSE_ERROR', reason }));
+      return;
+    }
+    next(err);
   });
 
   return r;

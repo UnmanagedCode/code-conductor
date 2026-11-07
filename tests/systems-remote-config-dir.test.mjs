@@ -570,6 +570,23 @@ describe('T2: the spawn env', () => {
     }
   });
 
+  // CONDUCTOR_MCP_URL is LOCAL-only: a remote worker's Bash runs on the remote
+  // without cc's env, and cc's loopback URL would not reach it from there. A host
+  // value is planted first so "absent" means deleted, not merely not set.
+  test('CONDUCTOR_MCP_URL: a local worker names its own session, a remote worker gets none', async () => {
+    const saved = process.env.CONDUCTOR_MCP_URL;
+    process.env.CONDUCTOR_MCP_URL = 'http://host.invalid/mcp/planted';
+    try {
+      const local = await spawnIn('localproj');
+      await waitFor(() => local.sessionId);
+      assert.equal(local._spawnEnv.CONDUCTOR_MCP_URL, `${baseUrl}/mcp/${local.sessionId}`);
+      assert.equal((await spawnIn('app'))._spawnEnv.CONDUCTOR_MCP_URL, undefined);
+    } finally {
+      if (saved === undefined) delete process.env.CONDUCTOR_MCP_URL;
+      else process.env.CONDUCTOR_MCP_URL = saved;
+    }
+  });
+
   // The same directory spelled relative to cwd, so project resolution is
   // unchanged while the value cc exports must still come out absolute.
   test('CC_PROJECTS_ROOT is absolute even when PROJECTS_ROOT is relative', async () => {

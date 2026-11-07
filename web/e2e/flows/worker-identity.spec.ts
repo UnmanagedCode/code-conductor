@@ -14,7 +14,7 @@ test("a worker's owner chip and composer carry the owner's colour; the first sen
   const conductor = await spawnConductor(cc, true);
   const label = uniq('Owner');
   await api(cc, 'PUT', `/api/sessions/${conductor.sessionId}/title`, { title: label });
-  const worker = await spawnWorker(cc, conductor.id, { project });
+  const worker = await spawnWorker(cc, conductor.sessionId, { project });
   const colour = await colourOf(page, conductor.sessionId);
 
   await page.goto(`/#session=${worker.sessionId}`);

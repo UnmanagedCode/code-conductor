@@ -6,7 +6,7 @@
 // on the transition INTO `turn`, and there is no register verb and no opt-out.
 // When the *target* hits turn_end a stub user prompt lands in the *owner* (via
 // Instance.prompt(), the same path WS / auto-approve use). Caller identity is
-// read from `?caller=<id>` on the MCP URL. Alongside the armed wake runs a
+// read from the `/mcp/<sessionId>` MCP URL path. Alongside the armed wake runs a
 // repeating heartbeat that reports "did NOT finish" WITHOUT consuming it.
 //
 // Tests drive the MCP transport via fetch (same shape a real `claude
@@ -131,11 +131,9 @@ let nextRpcId = 1;
 
 export async function rpc(baseUrl, method, params, { caller } = {}) {
   const id = nextRpcId++;
-  // `?caller=` now carries the stable instanceId (what Instance.spawn bakes);
-  // translate a caller sessionId to it. Unresolved values pass through so the
-  // no-caller / bogus-caller refusal paths still fire.
-  const handle = caller ? (instForSession(ctx.instances, caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  // The caller is the public sessionId in the MCP URL path; an absent one is
+  // anonymous, an unknown one is refused CALLER_UNKNOWN.
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

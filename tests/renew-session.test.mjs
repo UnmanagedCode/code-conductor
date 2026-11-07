@@ -5,7 +5,7 @@
 // src/mcp/handlers.ts (renewSession).
 //
 // The fake CLI can't call MCP tools, so each test arms the renewal out of
-// band (POST /mcp?caller=<sid>) and then drives a turn_end with send_prompt —
+// band (POST /mcp/<sid>) and then drives a turn_end with send_prompt —
 // faithfully standing in for the model finishing the turn the tool was called
 // in. The fixture's `/clear` turn emits a system/init with a fixed NEW sessionId
 // so the real Instance rotation-follow fires; observing that rotation is itself
@@ -40,10 +40,6 @@ const DIRECTIVE = 'MARK-D';
 const NEW_SID = 'c0000000-0000-4000-8000-000000000001';
 
 let nextRpcId = 1;
-// Set to the live manager by each test after bootServer. `?caller=` now carries the
-// stable INSTANCE id (what Instance.spawn bakes), so translate a caller sessionId to
-// its instanceId here; a value that resolves to no instance (bogus/absent) passes
-// through so the "no caller" refusal paths still fire.
 // Ownership + the turn that arms it. `noteDispatch` records the ownership edge;
 // the ARM happens when the target enters a turn. Tests that need an armed entry
 // without running a turn (the target must stay idle for the rotation under test)
@@ -53,10 +49,9 @@ function armWake(instances, callerSid, targetSid, timeoutMs) {
   instances._idleHub.onTurnStart(instances.liveForSession(targetSid).id);
 }
 
-let mgr = null;
+// The caller is the public sessionId in the MCP URL path (`/mcp/<sessionId>`).
 async function rpc(baseUrl, method, params, { caller } = {}) {
-  const handle = caller ? (instForSession(mgr, caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -82,7 +77,6 @@ test('renew_session drives a /clear that rotates the session in place and reseed
   const transcript = path.join(await mkdtemp('renew-tx-'), 'transcript.jsonl');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
   const srv = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     // Plain, non-conducted (UI-spawned) worker — the tool must work for any
@@ -149,7 +143,6 @@ test('renew_session drives a /clear that rotates the session in place and reseed
 
 test('identity holds across a rotation: the public id is pinned, the backing id moves', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -201,7 +194,6 @@ test('resume after rotation resumes CURRENT, not the first segment', async () =>
   // exists to kill, wearing new clothes. So this asserts both halves: the argv
   // names `current`, and the replayed conversation is the post-clear one.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -373,7 +365,6 @@ async function assertResumedCurrentSegment({ inst2, settledBeforeRelease }, firs
 
 test('a resume waits for a PENDING rotation write instead of reading the pre-rotation row (killed)', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   let releaseWrite;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
@@ -408,7 +399,6 @@ test('a resume waits for a PENDING rotation write instead of reading the pre-rot
 
 test('…and on the SPONTANEOUS-EXIT variant, where the instance never left byId', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   let releaseWrite;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
@@ -450,7 +440,6 @@ test('no duplicate worker: the public id still resolves live after a rotation', 
   // `spawn_instance({resume:"<old id>"})` — spawning a SECOND worker on the same
   // worktree against the un-cleared transcript.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
@@ -484,7 +473,6 @@ test('no duplicate worker: the public id still resolves live after a rotation', 
 
 test('renew_session keeps temp + conducted through the rotation and archives the pre-clear segment', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     // spawn_instance defaults to temp:true AND conducted:true — the one call that
@@ -526,7 +514,6 @@ test('renew_session keeps temp + conducted through the rotation and archives the
 
 test('renew_session keeps a custom session title on the session', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -557,7 +544,6 @@ test('renew_session keeps a custom session title on the session', async () => {
 
 test('renew_session: an outgoing idle subscription survives the caller\'s /clear with no migration', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     // `worker` is watched; `sub` watches it and then renews ITSELF — the
@@ -597,7 +583,6 @@ test('renew_session: an outgoing idle subscription survives the caller\'s /clear
 
 test('renew_session defers the /clear while an overage-queued turn is pending, then proceeds once it drains', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
@@ -630,26 +615,24 @@ test('renew_session defers the /clear while an overage-queued turn is pending, t
   }
 });
 
-// The `?caller=` staleness regression: the baked caller handle is the stable
-// INSTANCE id, so it keeps resolving across a /clear — repeated renewal works. On
-// the old sessionId-baked behavior the second (post-rotation) call resolved to a
-// rotated-away id and soft-refused; the public id is pinned now, so the handle
-// resolves to the SAME value each time. The rpc helper passes `caller` through
-// unchanged when it's already an instanceId.
-test('renew_session: the baked caller handle survives a /clear so a session can renew repeatedly', async () => {
+// The caller-identity staleness regression: the public sessionId baked into the
+// worker's MCP URL path (`/mcp/<sessionId>`) is pinned across a /clear — only the
+// backing id rotates — so it keeps resolving and the session can renew
+// repeatedly. Its rotated-away backing id is NOT a caller: it is refused
+// CALLER_UNKNOWN rather than served anonymously.
+test('renew_session: the public id in the MCP URL survives a /clear so a session can renew repeatedly', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
-    const sid1 = spawn.body.sessionId;
-    const handle = spawn.body.id; // the stable instanceId — exactly what Instance.spawn bakes into ?caller=
+    const sid1 = spawn.body.sessionId; // exactly what Instance.spawn bakes into the MCP URL path
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const backingBefore = instForSession(srv.instances, sid1).backingSessionId;
 
-    // First caller-addressed call: the handle resolves to the pre-rotation sessionId.
-    const r1 = await callTool(srv.baseUrl, 'renew_session', { summary: 'first handoff' }, { caller: handle });
+    // First caller-addressed call: the path resolves to the session.
+    const r1 = await callTool(srv.baseUrl, 'renew_session', { summary: 'first handoff' }, { caller: sid1 });
     assert.equal(r1.ok, true);
-    assert.equal(r1.sessionId, sid1, 'caller handle resolves to the current sessionId (pre-rotation)');
+    assert.equal(r1.sessionId, sid1, 'the caller path resolves to the public sessionId (pre-rotation)');
 
     // End the turn → the managed /clear rotates the BACKING id in place.
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
@@ -657,13 +640,16 @@ test('renew_session: the baked caller handle survives a /clear so a session can 
     assert.equal(instForSession(srv.instances, sid1)?.backingSessionId, NEW_SID,
       'the public id still names the same instance, whose backing id rotated');
 
-    // SECOND caller-addressed call with the SAME baked handle, AFTER the rotation.
-    const r2 = await callTool(srv.baseUrl, 'renew_session', { summary: 'second handoff' }, { caller: handle });
-    assert.equal(r2.ok, true, 'caller still resolves after the rotation (not SESSION_UNKNOWN)');
-    // Now stronger than before: the handle resolves to the SAME id it did
-    // pre-rotation, because the public id is pinned. Nothing the caller holds
-    // — the baked instanceId or the sessionId it was told — ever goes stale.
-    assert.equal(r2.sessionId, sid1, 'caller handle resolves to the SAME pinned public id');
+    // SECOND caller-addressed call with the SAME baked path, AFTER the rotation.
+    const r2 = await callTool(srv.baseUrl, 'renew_session', { summary: 'second handoff' }, { caller: sid1 });
+    assert.equal(r2.ok, true, 'caller still resolves after the rotation (not CALLER_UNKNOWN)');
+    assert.equal(r2.sessionId, sid1, 'the caller path resolves to the SAME pinned public id');
+
+    // The rotated-away backing id is no caller handle.
+    if (backingBefore !== sid1) {
+      const stale = await rpc(srv.baseUrl, 'tools/call', { name: 'renew_session', arguments: { summary: 'x' } }, { caller: backingBefore });
+      assert.equal(stale.body.error?.data?.code, 'CALLER_UNKNOWN');
+    }
   } finally {
     await srv.close();
   }
@@ -671,10 +657,9 @@ test('renew_session: the baked caller handle survives a /clear so a session can 
 
 test('renew_session: the mechanical state block lists live spawned workers and idle subscriptions', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    // `conductor` spawns `worker` via spawn_instance with ?caller=conductor, so
+    // `conductor` spawns `worker` via spawn_instance as /mcp/<conductor>, so
     // Instance.callerInstanceId links them — the ownership tracking liveOwnedBy()
     // relies on.
     const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -711,7 +696,6 @@ test('renew_session: the mechanical state block lists live spawned workers and i
 
 test('renew_session: the state block is composed at reseed time, not arm time', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -749,7 +733,6 @@ test('renew_session: the state block is composed at reseed time, not arm time', 
 
 test('renew_session: the state block renders (none) when there are no owned workers or subscriptions', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -786,7 +769,6 @@ test('the rotation tell reaches the conductor view, and the backing id never doe
   // "gone quiet". These three keys are the replacement, and the ABSENCE of
   // backingSessionId beside them is the enforcement of the invariant.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
@@ -836,7 +818,6 @@ test('rotation interlock: renew and prune refuse to interleave (SESSION_ROTATING
   // prune; reachable the moment prune is MCP-exposed. So the two are made mutually
   // exclusive at the controller level, each refusing the later one with a code.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -903,7 +884,6 @@ test('a bare renew_session refuses under a prompt-blocking rewrite and arms unde
   // its own session is being forked would otherwise get a soft refusal for up
   // to the fork's whole wait.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -944,7 +924,6 @@ test('the interlock covers the RESEED window, not just arming', async () => {
   // handoff summary LOST, conductor silent until the watchdog. The second flag
   // (_renewing) exists to cover exactly this window.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1012,7 +991,6 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
   // delays it), so all three sub-behaviours were unpinned: the report, the
   // reseed-anyway, and their ordering.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1091,7 +1069,6 @@ test('a TRANSIENT lineage-flush failure is retried, leaving the store correct an
   // recordRotation entirely and leave the store already correct, so it could not
   // tell a working retry from no retry at all.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1159,7 +1136,6 @@ test('a FAILED reseed wakes its owner instead of stranding it on the heartbeat',
   // conductor, so without this the conductor waits out the full watchdog and is
   // then told a healthy worker "did NOT finish".
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const target = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1209,7 +1185,6 @@ test('an ABANDONED renewal closes the rotation window and wakes its owner', asyn
   // watchdog and then be told the worker "did NOT finish" — for a worker that is
   // sitting there perfectly healthy, with a renewal that simply never happened.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1252,7 +1227,6 @@ test('an ABANDONED renewal closes the rotation window and wakes its owner', asyn
 
 test('renew_session against the real claude binary rotates the BACKING id and pins the public one', { skip: process.env.RUN_REAL_CLAUDE !== '1' }, async () => {
   const srv = await bootServer({ useRealClaude: true });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1288,7 +1262,6 @@ test("a rotation no init reports a mode for keeps the worker's recorded mode", a
   // a mode for; were the mode keyed per transcript, it would resolve to
   // DEFAULT_RESUME_MODE and a `plan` worker would resume ungated.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
@@ -1338,7 +1311,6 @@ test('a targeted renew_session refuses a worker under a prompt-blocking rewrite 
   // The TARGET-side interlock: the request is a prompt() to the worker, which a
   // rewind/prune holder refuses; a fork holder does not.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, worker } = await pair(srv);
     for (const kind of ['rewind', 'prune']) {
@@ -1369,7 +1341,6 @@ test('a targeted renew_session refuses a worker under a prompt-blocking rewrite 
 
 test('a requested renewal: the worker authors the summary, and the followUp lands under its own fence', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, worker } = await pair(srv);
 
@@ -1440,7 +1411,6 @@ test('a DECLINED request: nothing is cleared, and the decline rides the conducto
   const transcript = path.join(await mkdtemp('renew-decline-'), 'transcript.jsonl');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, cond, worker } = await pair(srv);
     const backingBefore = worker.backingSessionId;
@@ -1494,7 +1464,6 @@ test('a request lives exactly ONE turn: a later self-renewal does not inherit th
   // with no bound lifetime gets injected into whatever renewal happens next,
   // which may be days of work later and about something else entirely.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, worker } = await pair(srv);
 
@@ -1524,7 +1493,6 @@ test('a request lives exactly ONE turn: a later self-renewal does not inherit th
 
 test('renew_session form guards: one code for every combination mistake, bare form untouched', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     const { condSid, wSid } = await pair(srv);
     const refusedForm = async (args) => {
@@ -1565,7 +1533,6 @@ test('an armed renewal fires when a background task drains an ALREADY-IDLE worke
   // watchdog, and a conductor waiting on it would be told a healthy worker "did
   // NOT finish". Mirrors IdleSubscriptionHub's own task-drain trigger.
   const srv = await bootServer({ scenarioPath: SCENARIO_DRAIN });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1617,7 +1584,6 @@ test('a MID-TURN target is refused rather than producing a false decline', async
   // never saw), drops the followUp, and spends the conductor's armed wake — inverting
   // the one signal the whole decline contract rests on.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, cond, worker } = await pair(srv);
     // Put the worker mid-turn: this fixture's turn for a MARK-D prompt emits
@@ -1653,7 +1619,6 @@ test('a decline note is recorded only for a conductor that is waiting, and dies 
   // recorded from the manager's synchronous event dispatch, so the direct call is
   // the honest way to isolate it from the turn that would also deliver it).
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, cond, worker } = await pair(srv);
     const hub = srv.instances._idleHub;
@@ -1691,7 +1656,6 @@ test('a DEFERRED wake still carries the decline (the worker declined with a suba
   // so the hub defers — at the very moment the request expires. The note has to
   // survive that gap and ride the wake that eventually fires.
   const srv = await bootServer({ scenarioPath: SCENARIO_DECLINE_DEFER });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, cond, worker } = await pair(srv);
 
@@ -1719,7 +1683,6 @@ test('a MID-TURN conductor gets the decline on the plain (unfolded) steering stu
   // timeout watchdog). The note has to be threaded into BOTH builders or the
   // decline is silently dropped on those paths.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, cond, worker } = await pair(srv);
 
@@ -1747,7 +1710,6 @@ test('the decline reaches the conductor that ASKED, not another watcher', async 
   // woken first — telling a conductor about a request it never made while the one
   // that did hears nothing.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = async () => (await api(srv.baseUrl, 'POST', '/api/instances',
@@ -1782,7 +1744,6 @@ test('a task event while the target is MID-TURN does not fire an armed clear', a
   // The drain trigger is for the drained-IDLE case only. Firing it under an
   // in-flight turn would rotate the context out from under that turn.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1813,7 +1774,6 @@ test('a request whose prompt throws leaves no pending entry to expire', async ()
   // Otherwise the worker carries a live `requested` entry it was never told about,
   // and its next turn_end reports a decline for a request that never went out.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, cond, worker } = await pair(srv);
     const realPrompt = worker.prompt.bind(worker);
@@ -1846,7 +1806,6 @@ test('request() never clobbers a live renewal, and reports whether it replaced a
   // first, so the guard is the second line — and the handler now reads its verdict
   // instead of prompting a worker whose renewal is already in flight.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, worker } = await pair(srv);
     const ctl = srv.instances._sessionRenew;
@@ -1891,7 +1850,6 @@ test('an IDLE target that owes a re-invocation turn is still refused', async () 
   // turn ends before any turn the request would get, expiring it as a decline the
   // worker never saw.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, worker } = await pair(srv);
     // The state an unconsumed mid-turn task_notification leaves behind.
@@ -1917,7 +1875,6 @@ test('an OVERAGE-PARKED target is refused rather than left to the watchdog', asy
   // report a dispatch for a turn that never runs, so the conductor eats the
   // full watchdog and is told a healthy, merely rate-limited worker "did NOT finish".
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, worker } = await pair(srv);
     worker._overageQueue.push({ text: 'parked turn', attachments: [], ts: 1 });
@@ -1941,7 +1898,6 @@ test('the drain trigger defers while a SECOND background task is still live', as
   // The drain path shares the turn_end path's defer predicate. Without it, the
   // first of two tasks completing fires the /clear and strands the second.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
@@ -1980,7 +1936,6 @@ test('a note whose caller has no live subprocess is consumed, not saved for its 
   // resurface as a stale DECLINED on the conductor's next wake, about a request that
   // was already answered.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, cond, worker } = await pair(srv);
     const hub = srv.instances._idleHub;
@@ -2013,7 +1968,6 @@ test('a target with LIVE SUBAGENTS is refused on the request path too', async ()
   // the request path's use of it could silently revert. The conductor's prescribed
   // trigger (its own idle wake) is gated on this same background work.
   const srv = await bootServer({ scenarioPath: SCENARIO_DECLINE_DEFER });
-  mgr = srv.instances;
   try {
     const { condSid, wSid, worker } = await pair(srv);
     // This fixture's MARK-D turn launches a backgrounded Agent task and ends with it

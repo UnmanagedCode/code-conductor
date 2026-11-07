@@ -1,5 +1,5 @@
 // Integration tests for the set_session_title MCP tool — a session names ITSELF
-// (the target is always the ?caller= identity) through the same title write the
+// (the target is always the caller identity in the `/mcp/<sessionId>` path) through the same title write the
 // ⋮ → Rename route uses (applySessionTitle, src/sessionTitles.ts).
 
 import test from 'node:test';
@@ -24,12 +24,9 @@ async function titledRecords() {
 }
 
 let nextRpcId = 1;
-// `?caller=` carries the stable INSTANCE id (what Instance.spawn bakes), so a
-// caller sessionId is translated to its instanceId here.
-let mgr = null;
+// The caller is the public sessionId in the MCP URL path (`/mcp/<sessionId>`).
 async function callToolRaw(baseUrl, name, args, { caller } = {}) {
-  const handle = caller ? (instForSession(mgr, caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -58,7 +55,6 @@ test('set_session_title titles the caller: store record under public id, live su
   // PUBLIC id), which the backing id also resolves to; sets the live instance's
   // title immediately; and the sidebar row (listed under the public id) carries it.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'st-caller' });
     const inst = await spawnIdle(srv, 'st-caller');
@@ -91,7 +87,6 @@ test('set_session_title titles the caller: store record under public id, live su
 test('set_session_title shows up in list_sessions and describe_session', async () => {
   // Pins: the MCP read surfaces render the self-set title in place of firstPrompt.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'st-reads' });
     const inst = await spawnIdle(srv, 'st-reads');
@@ -115,7 +110,6 @@ test('set_session_title refuses a sessionId argument', async () => {
   // Pins: a caller cannot title ANY other session — a sessionId argument is an
   // unexpected-argument refusal, and the other session's title is untouched.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'st-other' });
     const caller = await spawnIdle(srv, 'st-other');
@@ -133,11 +127,10 @@ test('set_session_title refuses a sessionId argument', async () => {
   }
 });
 
-test('set_session_title without ?caller= errors', async () => {
+test('set_session_title without a caller path errors', async () => {
   // Pins: with no caller identity there is no target — the tool throws the
   // missing-caller error and stores nothing.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'st-nocaller' });
     const inst = await spawnIdle(srv, 'st-nocaller');
@@ -156,7 +149,6 @@ test('set_session_title rejects empty/whitespace and over-long titles', async (t
   // whitespace-only and a MAX_TITLE_LEN+1 title each error and leave the
   // caller's existing title in place.
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'st-bad' });
     const inst = await spawnIdle(srv, 'st-bad');
@@ -189,7 +181,6 @@ test('a self-set title survives resume', async () => {
   // Pins: a fresh Instance resumed on the public id re-acquires the self-set
   // title from the store (_hydrateTitle).
   const srv = await bootServer({ scenarioPath: SCENARIO });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'st-resume' });
     const inst = await spawnIdle(srv, 'st-resume');
@@ -217,7 +208,6 @@ test('a self-set title survives renew_session', async () => {
   // backing id, which resolves to the same title — and the in-memory title
   // survives too.
   const srv = await bootServer({ scenarioPath: SCENARIO_RENEW });
-  mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const inst = await spawnIdle(srv, 'p');

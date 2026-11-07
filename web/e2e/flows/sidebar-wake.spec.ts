@@ -32,7 +32,7 @@ test("a session's dot lights while its worker is mid-turn, stays lit across a he
   expect(c.status, `POST /api/instances (caller): ${JSON.stringify(c.body)}`).toBeLessThan(300);
   const caller = await idleInst(cc, (i) => i.id === c.body.id, 'caller idle');
   // Spawned THROUGH the caller, so the worker's wakes go to it.
-  const r = await mcpCall(cc, 'spawn_instance', { project: P, mode: 'bypassPermissions', ...liveModel(cc) }, caller.id);
+  const r = await mcpCall(cc, 'spawn_instance', { project: P, mode: 'bypassPermissions', ...liveModel(cc) }, caller.sessionId);
   if (r.isError) throw new Error(`spawn_instance refused: ${r.content?.[0]?.text}`);
   const { sessionId: workerSid } = JSON.parse(r.content[0].text);
   const worker = await idleInst(cc, (i) => i.sessionId === workerSid, 'worker idle');
@@ -44,7 +44,7 @@ test("a session's dot lights while its worker is mid-turn, stays lit across a he
   });
 
   await test.step('worker mid-turn: the waiting-on-a-worker dot', async () => {
-    await mcpCall(cc, 'send_prompt', { sessionId: worker.sessionId, text: 'WORKER-GO' }, caller.id);
+    await mcpCall(cc, 'send_prompt', { sessionId: worker.sessionId, text: 'WORKER-GO' }, caller.sessionId);
     await expect.poll(() => statusOf(cc, worker.id), { message: 'worker in turn' }).toBe('turn');
     await expect.poll(async () => (await dot(page, ui, P, caller.sessionId)).title).toBe('idle — waiting on a worker');
   });

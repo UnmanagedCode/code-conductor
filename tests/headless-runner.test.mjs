@@ -83,7 +83,7 @@ async function start({ scenario, mode = 'code', prompt = 'do the thing', signals
 async function spawnWorker(root, scenario, log, { project = 'demo' } = {}) {
   await api(server.baseUrl, 'POST', '/api/projects', { name: project });
   return withLaunchEnv(scenario, log, async () => {
-    const res = await fetch(`${server.baseUrl}/mcp?caller=${encodeURIComponent(root.id)}&format=text`, {
+    const res = await fetch(`${server.baseUrl}/mcp/${encodeURIComponent(root.sessionId)}?format=text`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project, mode: 'bypassPermissions', playbook: 'freeform', stage: 'freeform' } } }),

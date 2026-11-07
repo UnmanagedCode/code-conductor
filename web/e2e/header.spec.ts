@@ -271,7 +271,7 @@ test("a conducted worker's owner chip fits line 2: the header keeps its height, 
   const created = await mcpCall(cc, 'create_worktree', { project, name: 'wwww-'.repeat(40) });
   expect(created.isError, JSON.stringify(created.content)).toBeFalsy();
   const worktreeName = ((await api(cc, 'GET', `/api/projects/${project}/worktrees`)).body as { worktreeName: string }[])[0].worktreeName;
-  const worker = await spawnWorker(cc, conductor.id, { project, worktree: worktreeName });
+  const worker = await spawnWorker(cc, conductor.sessionId, { project, worktree: worktreeName });
   expect((await api(cc, 'PUT', `/api/sessions/${worker.sessionId}/title`, { title: 't' })).status).toBeLessThan(300);
 
   await page.goto(`/#session=${worker.sessionId}`);

@@ -709,7 +709,7 @@ test('cost-tracking: turn_end persists timing + resolves parentSessionId', async
     const worker = fakeInst({ sessionId: 'worker-1', callerInstanceId: 'cond-inst' });
     const emitter = new EventEmitter();
     emitter.get = () => worker;
-    emitter.callerSessionId = (handle) => (handle === 'cond-inst' ? 'conductor-1' : null);
+    emitter.sessionIdForInstance = (handle) => (handle === 'cond-inst' ? 'conductor-1' : null);
     initCostTracking(emitter);
 
     // Turn with timing fields.
