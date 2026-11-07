@@ -106,11 +106,20 @@ test('the listing: name, description, inputSchema, outputSchema — plugin tools
       assert.equal(plug.outputSchema, null);
     }
     assert.equal((await fetch(`${srv.baseUrl}/mcp/deadbeef/tools`)).status, 404);
-    // A bridged plugin tool answers with its MCP result unchanged.
+    // A bridged plugin tool answers with its content blocks as `{content}`;
+    // the only key, so an `isError` would show up here.
     const echoed = await rest(srv.baseUrl, 'fake-plugin__echo', { message: 'hi' });
     assert.equal(echoed.status, 200);
+    assert.deepEqual(Object.keys(echoed.body), ['content'], JSON.stringify(echoed.body));
     assert.ok(Array.isArray(echoed.body.content), JSON.stringify(echoed.body));
     assert.equal(JSON.parse(echoed.body.content[0].text).message, 'hi');
+    // A plugin's tool-level failure is a refusal at 200, which the generated
+    // client raises: not a passthrough envelope, not a ≥400 fault.
+    const failed = await rest(srv.baseUrl, 'fake-plugin__fail', {});
+    assert.equal(failed.status, 200, JSON.stringify(failed.body));
+    assert.equal(failed.body.ok, false, JSON.stringify(failed.body));
+    assert.equal(failed.body.code, 'TOOL_ERROR');
+    assert.equal(failed.body.content, undefined);
   } finally { await srv.close(); }
 });
 
