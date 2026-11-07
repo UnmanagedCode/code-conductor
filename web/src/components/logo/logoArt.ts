@@ -114,16 +114,16 @@ export const FAV16: Art = small16(WHITE_SCREEN);
 const legStroke = (d: string, ink: Ink): LogoElement => ({
   tag: 'path', attrs: { d, 'stroke-width': '5.5', 'stroke-linecap': 'round' }, ink, stroke: true,
 });
-const TILE_TRANSFORM = 'translate(7.385 7.487) scale(0.410256)';
+const TILE_TRANSFORM = 'translate(6.469 6.858) scale(0.4539)';
 const strokeLegSide = (transform: string) => [
   legStroke('M2.75 35.25A4 4 0 0 1 -1.25 39.25', 'deep'),
-  legStroke('M11.25 28V44A4 4 0 0 1 7.25 48', 'coral'),
+  legStroke('M11.25 28V42A4 4 0 0 1 7.25 46', 'coral'),
 ].map((e) => ({ ...e, attrs: { ...e.attrs, transform } }));
 /** The 3-leg stroked set (a side pair and the centre) in `transform`'s space: thick round-capped strokes, all drawn under the body, that stay legible at 32px. */
 const strokeLegs = (transform: string): LogoElement[] => [
   ...strokeLegSide(transform),
   ...strokeLegSide(`${transform} matrix(-1 0 0 1 40 0)`),
-  ...under(transform, [legStroke('M20 35.25V45.25', 'deep')]),
+  ...under(transform, [legStroke('M20 35.25V43.25', 'deep')]),
 ];
 /** What the stroked-leg arts draw over the screen: the prompt, arm and baton (the legs sit under the body). */
 const OVER_SCREEN_NO_LEGS = [...GLYPHS, CURSOR, ARM, BATON];
