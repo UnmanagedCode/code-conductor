@@ -248,3 +248,30 @@ test('a section lead finishing a turn notifies nothing; its lead does', () => {
   const t = seen([cond('L', { status: 'turn' }), sl({ status: 'turn' })]);
   assert.deepEqual(kinds(t.observe([cond('L', { liveTurnEnds: 1 }), sl({ liveTurnEnds: 1 })])), ['finished:L']);
 });
+
+const ids = (t) => [...t.needsYou()].sort();
+
+test('needsYou holds exactly the top-level Waiting and Finished sessions, first-sight entries included', () => {
+  // Invariant: set source — needsYou() is the strip's Waiting ∪ Finished among top-level sessions.
+  const t = createAttentionTracker();
+  t.observe([
+    hand('W', { awaitingUser: 'question', awaitingUserSource: 'tool', liveAsks: 1 }),
+    hand('F', { liveTurnEnds: 1 }),
+    hand('R', { status: 'turn' }),
+    cond('C', { status: 'turn' }),
+    worker('K', 'C', { liveTurnEnds: 1 }),
+    cond('J', { awaitingWake: true, liveTurnEnds: 1 }),
+  ]);
+  assert.deepEqual(ids(t), ['F', 'W']);
+});
+
+test('needsYou reflects only the latest list: a session that runs again or vanishes drops out', () => {
+  // Invariant: set source — departures are visible on the same pass.
+  const t = createAttentionTracker();
+  t.observe([hand('A'), hand('B'), cond('C')]);
+  assert.deepEqual(ids(t), ['A', 'B', 'C']);
+  t.observe([hand('A', { status: 'turn' }), hand('B'), cond('C', { awaitingWake: true })]);
+  assert.deepEqual(ids(t), ['B']);
+  t.observe([hand('A')]);
+  assert.deepEqual(ids(t), ['A']);
+});

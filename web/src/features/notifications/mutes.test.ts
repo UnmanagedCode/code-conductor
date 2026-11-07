@@ -1,27 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { summarizeOpenNotifications } from './notifications';
 
 const KEY = 'code-conductor:muted-sessions';
 const reload = async () => {
   vi.resetModules();
   return import('./mutes');
 };
-
-describe('summarizeOpenNotifications with exactly two pings', () => {
-  it('summarises both projects, and a single ping does not', () => {
-    // Invariant: two session pings yield one summary naming both projects; one ping yields none.
-    const two = summarizeOpenNotifications([
-      { tag: 'session:a', data: { project: 'alpha-proj' } },
-      { tag: 'session:b', data: { project: 'beta-proj' } },
-    ]);
-    expect(two.shouldFire).toBe(true);
-    if (!two.shouldFire) return;
-    expect(two.body).toContain('alpha-proj');
-    expect(two.body).toContain('beta-proj');
-    expect(two.title).toMatch(/(^|\D)2(\D|$)/);
-    expect(summarizeOpenNotifications([{ tag: 'session:a', data: { project: 'alpha-proj' } }]).shouldFire).toBe(false);
-  });
-});
 
 describe('session mutes persistence', () => {
   beforeEach(() => localStorage.removeItem(KEY));

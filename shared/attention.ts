@@ -22,11 +22,17 @@ export type AttentionTransition =
   | Base & { kind: 'waiting'; ask: AskKind | null; source: AskSource | null }
   | Base & { kind: 'finished'; isError: boolean };
 
-export function createAttentionTracker(): { observe(instances: readonly AttentionInstance[]): AttentionTransition[] } {
+export function createAttentionTracker(): {
+  observe(instances: readonly AttentionInstance[]): AttentionTransition[];
+  needsYou(): ReadonlySet<string>;
+} {
   // instanceId → { asks, turnEnds, pending }. `pending`: first seen already past
   // its turn end but held in Running (idle with subagents live or a wake armed),
   // so its settle into Finished is owed a notification with no new turn end.
   const baselines = new Map<string, { asks: number; turnEnds: number; pending: boolean }>();
+
+  // sessionIds in the strip's Waiting or Finished group in the last observed list.
+  let needsYou: ReadonlySet<string> = new Set();
 
   // Returns the transitions this list produced: { kind: 'waiting' | 'finished',
   // sessionId, instanceId, entry, ask?, source?, isError? }.
@@ -35,6 +41,7 @@ export function createAttentionTracker(): { observe(instances: readonly Attentio
     const pool = topLevelEntries({ conductors: deriveConductors({ instances }).live, instances });
     const out: AttentionTransition[] = [];
     const present = new Set<string>();
+    const needs = new Set<string>();
     for (const entry of pool) {
       const inst = byId.get(entry.instanceId);
       if (!inst) continue;
@@ -43,6 +50,7 @@ export function createAttentionTracker(): { observe(instances: readonly Attentio
       const turnEnds = inst.liveTurnEnds ?? 0;
       const base = baselines.get(entry.instanceId);
       const group = stripGroupOf(entry);
+      if (group === 'waiting' || group === 'finished') needs.add(entry.sessionId);
       // First sight, or a counter that went backwards (the id now fronts a fresh
       // Instance object): re-baseline silently.
       if (!base || asks < base.asks || turnEnds < base.turnEnds) {
@@ -73,8 +81,9 @@ export function createAttentionTracker(): { observe(instances: readonly Attentio
       }
     }
     for (const id of [...baselines.keys()]) if (!present.has(id)) baselines.delete(id);
+    needsYou = needs;
     return out;
   }
 
-  return { observe };
+  return { observe, needsYou: () => needsYou };
 }
