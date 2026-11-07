@@ -35,8 +35,8 @@ function WorkerList({ m, workers, projectName, worktreeName }: { m: SidebarModel
 }
 
 /**
- * A conductor's expanded tree: each chip project, its main-checkout workers, then its worktrees; then each live
- * section lead it spawned, as a nested conductor block, most recently active first. The conductor project gets no
+ * A conductor's expanded tree: each live section lead it spawned, as a nested conductor block, most recently active
+ * first; then each chip project, its main-checkout workers, then its worktrees. The conductor project gets no
  * project group: its live workers are those section leads.
  * A project row carries its ⋮ only when the project list holds its record, and a worktree row only when that project lists it.
  */
@@ -50,6 +50,9 @@ function ConductorTree({ m, sid, chips, nested }: { m: SidebarModel; sid: string
     .sort((a, b) => (b.c.lastActivity ?? 0) - (a.c.lastActivity ?? 0));
   return (
     <ul className={cn('space-y-0.5 py-1 pl-1', nested && 'ml-3')} data-conductor-tree>
+      {leads.map(({ c, stage }) => (
+        <ConductorBlock key={c.sessionId} m={m} c={c} open={ui.expandedConductors.includes(c.sessionId)} nested stage={stage} />
+      ))}
       {chips.filter((ch) => ch.project !== CONDUCT_PROJECT).map((chip) => {
         const full = byName.get(chip.project);
         const p: Project = full ?? ({ name: chip.project, worktrees: [] } as unknown as Project);
@@ -90,9 +93,6 @@ function ConductorTree({ m, sid, chips, nested }: { m: SidebarModel; sid: string
           </li>
         );
       })}
-      {leads.map(({ c, stage }) => (
-        <ConductorBlock key={c.sessionId} m={m} c={c} open={ui.expandedConductors.includes(c.sessionId)} nested stage={stage} />
-      ))}
     </ul>
   );
 }
