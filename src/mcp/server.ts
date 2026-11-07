@@ -711,16 +711,16 @@ export function buildMcpRouter(
   const r = express.Router();
   r.use(express.json({ limit: MCP_REQUEST_BODY_LIMIT }));
 
-  // One core registry per format: they differ only in the limits baked into
-  // an input schema (project_read's maxBytes), and tools/list shows the
-  // outputSchema in JSON only.
-  const registry = (limits: FormatLimits) => {
-    const tools: McpTool[] = buildTools(limits).filter(t => !t.requires || capabilities[t.requires]);
+  // One core registry per format: they differ in the limits baked into an
+  // input schema (project_read's maxBytes) and in each description's result
+  // clause, and tools/list shows the outputSchema in JSON only.
+  const registry = (format: McpFormat) => {
+    const tools: McpTool[] = buildTools(format).filter(t => !t.requires || capabilities[t.requires]);
     return { tools, set: new Set<McpTool>(tools) as ReadonlySet<McpTool> };
   };
   const registries: Record<McpFormat, { tools: McpTool[]; set: ReadonlySet<McpTool> }> = {
-    text: registry(TEXT_LIMITS),
-    json: registry(JSON_LIMITS),
+    text: registry('text'),
+    json: registry('json'),
   };
 
   // Per-request tool composition: core tools + the plugin tools visible to

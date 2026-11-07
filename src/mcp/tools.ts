@@ -2,6 +2,10 @@
 // handler }. Schemas are inline JSON-Schema objects (shallow-validated
 // by ../mcp/server.ts). Handlers live in ./handlers.ts and reach into
 // the orchestrator's existing modules — no business logic here.
+//
+// One registry per output format (buildTools(format)): the formats differ in
+// their limits, in each description's result clause (`fmt` in coreTools) and
+// in whether tools/list shows the outputSchema.
 
 import * as h from './handlers.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
@@ -16,7 +20,7 @@ import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
 import { MAX_TITLE_LEN } from '../sessionTitles.ts';
-import { TEXT_LIMITS, type FormatLimits, type McpFormat } from './limits.ts';
+import { limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
 import { OUTPUT_SCHEMAS } from './outputSchemas.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
@@ -45,12 +49,16 @@ const BASH_DESCRIPTION_PROP = {
 // is a claim about that ONE function and cannot be allowed to differ between
 // them. Only the metadata KEY SET does, so each tool passes its own. Restated in
 // both descriptions rather than cross-referenced: a caller who finds only one of
-// the two tools never sees the other's text.
-const bashOutputDescription = (metaKeys: string) =>
-  `OUTPUT: a compact-JSON metadata block (content[0]) {${metaKeys}} PLUS a separate raw, un-escaped `
-  + 'text block (content[1]) carrying the combined stdout+stderr output, in arrival order. A non-zero '
+// the two tools never sees the other's text. `fmt` is coreTools' per-format
+// clause helper.
+type Fmt = (text: string, json: string) => string;
+const bashOutputDescription = (metaKeys: string, fmt: Fmt) =>
+  fmt(`OUTPUT: a compact-JSON metadata block (content[0]) {${metaKeys}} PLUS a separate raw, un-escaped `
+    + 'text block (content[1]) carrying ', '`output` is ')
+  + 'the combined stdout+stderr output, in arrival order. A non-zero '
   + 'exitCode is a normal result, not a tool error. truncated:true means retained output was capped at '
-  + 'the bash output cap (`BASH_OUTPUT_CAP`) — the command still ran to completion; assume later output '
+  + fmt('the bash output cap (`BASH_OUTPUT_CAP`)', 'the safety ceiling (`JSON_BASH_OUTPUT_CAP`)')
+  + ' — the command still ran to completion; assume later output '
   + 'beyond the cap was lost, not that the process was killed. timeout is milliseconds (default per the '
   + 'schema, clamped to the max enforced in `clampBashTimeoutMs` — larger values are clamped); on '
   + 'timeout (the only hard kill) the whole process group is killed, exitCode is null, and timedOut:true '
@@ -93,27 +101,39 @@ interface Tool {
   requires?: keyof PlatformCapabilities;
 }
 
-// The registry for one output format: `limits` sets the one input-schema field
-// that differs by format (project_read's maxBytes bound), and every tool gets
-// its outputSchema — a core tool without one is a build-time failure.
-export function buildTools(limits: FormatLimits = TEXT_LIMITS): Tool[] {
-  return coreTools(limits).map(t => {
+// The registry for one output format: the format's limits set the one
+// input-schema field that differs by format (project_read's maxBytes bound),
+// its `fmt` clauses set each description's result clause, and every tool gets
+// its outputSchema (in both formats; tools/list shows it in JSON only) — a core
+// tool without one is a build-time failure.
+export function buildTools(format: McpFormat = 'text'): Tool[] {
+  return coreTools(format).map(t => {
     const outputSchema = OUTPUT_SCHEMAS[t.name];
     if (!outputSchema) throw new Error(`mcp: core tool '${t.name}' has no outputSchema (src/mcp/outputSchemas.ts)`);
     return { ...t, outputSchema };
   });
 }
 
-function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
+function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
+  const limits = limitsFor(format);
+  // A description's one per-format span. The purpose around it is written once;
+  // `text` is the agent view's result clause (renderings, content blocks, the
+  // context caps), `json` the application view's. The JSON span is usually ''
+  // because outputSchema states the shape.
+  const fmt: Fmt = (text, json) => (format === 'json' ? json : text);
   return [
     {
       name: 'list_projects',
       description:
-        'List every project as PLAIN TEXT (this tool returns no JSON). ' +
-        'One block per project, headed by its name and absolute path, then its workspace when set, session counts, a ' +
-        'live-worker count, a no-commits-yet flag (an unborn HEAD cannot take a worktree), '
-        + 'and each worktree with branch, base, ahead/behind and its path, plus a `locked` marker on a worktree ' +
-        'the user has locked (merging it and deleting it are refused; only the user can unlock it). ' +
+        'List every project' +
+        fmt(' as PLAIN TEXT (this tool returns no JSON). ' +
+          'One block per project, headed by its name and absolute path, then its workspace when set, session counts, a ' +
+          'live-worker count, a no-commits-yet flag',
+        ', with its worktrees; `unbornHead:true` flags a project whose HEAD is unborn') +
+        ' (an unborn HEAD cannot take a worktree)' +
+        fmt(', and each worktree with branch, base, ahead/behind and its path, plus a `locked` marker on a worktree',
+          ', and `locked` marks a worktree') +
+        ' the user has locked (merging it and deleting it are refused; only the user can unlock it). ' +
         'A project lives wherever its record says — inside the projects root, nested in a container ' +
         'directory, elsewhere on disk, or on a registered system — and every row has the same shape. ' +
         'The NAME is the `project` argument every other tool takes; the path is informational. ' +
@@ -125,20 +145,22 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'list_sessions',
       description:
-        'Every live orchestrator worker and every stopped session it could resume, as PLAIN TEXT ' +
-        '(this tool returns no JSON), grouped by the directory the sessions live in: each ' +
-        'project\'s main checkout first, then its worktrees. A group header carries its branch, ' +
-        'ahead/behind, and `live N · inactive N · archived N`. ' +
-        'Each LIVE worker summary is ' +
+        'Every live orchestrator worker and every stopped session it could resume' +
+        fmt(', as PLAIN TEXT (this tool returns no JSON),', ',') +
+        ' grouped by the directory the sessions live in: each ' +
+        'project\'s main checkout first, then its worktrees.' +
+        fmt(' A group header carries its branch, ahead/behind, and `live N · inactive N · archived N`.', '') +
+        ' Each LIVE worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, backgroundJobs, mode, effort, thinking, ' +
         'backend, model, contextTokens, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
         'lastResponseAt, queuedCount, autoResumeAt, ' +
         'overageActive, overageResetsAt, ownerSessionId, awaitingUser, awaitingUserSource, ' +
         'awaitingWake, playbook, stage}. ' +
-        'Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
-        'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity is the ' +
-        'timestamp on the session\'s own last record, so it is when that session actually ran. ' +
+        fmt('Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
+          'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity',
+        'Inactive sessions are newest first. `lastActivity`') +
+        ' is the timestamp on the session\'s own last record, so it is when that session actually ran. ' +
         'Their sessionIds still resume. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
         '`playbook`/`stage` say where the session sits in its playbook graph, or null when it is not ' +
@@ -152,7 +174,8 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         '`rotationReason` says whether the session\'s context was last reset by its own ' +
         '`renew_session` or by a prune, and `lastRotatedAt` when — a quiet worker that just ' +
         'rotated has a fresh context, not a stalled one. `segmentCount` is how many times over. ' +
-        '`worktree` is the worktree\'s full metadata object (or null); the rendering shows its name. ' +
+        '`worktree` is the worktree\'s full metadata object (or null)' +
+        fmt('; the rendering shows its name', '') + '. ' +
         '`ownerSessionId` is the sessionId of the conductor at the root of a live worker\'s spawn ' +
         'chain — null for a hand-spawned session, and for any session that is not live. ' +
         '`awaitingUser` (`question` | `plan` | null) says the session asked the user something and no ' +
@@ -160,12 +183,15 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'ExitPlanMode) or `text` (a turn that ended asking). It is sticky, never set on a conducted ' +
         'worker, and not derived for an archived row here. A send over MCP (send_prompt, ' +
         'answer_question, approve_plan, reject_plan) counts as a real user message and clears it. ' +
-        'The rendering omits pid / createdAt, names a firstPrompt the server or the CLI wrote (`Wake: …`, ' +
-        'a forward by its instruction\'s first line, `Context renewed`) rather than printing it raw, and shows ' +
-        'temp / conducted / debug / overage / auto-resume / resumes-hot / owner / awaiting-user only ' +
-        'when they deviate from ' +
-        'their default — so anything on a `flags` line is news. ' +
-        '**`resumes-hot` means resuming that session comes up in bypassPermissions** — either it was ' +
+        fmt('The rendering omits pid / createdAt, names a firstPrompt the server or the CLI wrote (`Wake: …`, ' +
+          'a forward by its instruction\'s first line, `Context renewed`) rather than printing it raw, and shows ' +
+          'temp / conducted / debug / overage / auto-resume / resumes-hot / owner / awaiting-user only ' +
+          'when they deviate from ' +
+          'their default — so anything on a `flags` line is news. ' +
+          '**`resumes-hot` means resuming that session comes up in bypassPermissions**',
+        'An inactive row\'s `resumeMode` is the mode resuming it comes up in; ' +
+          '**`bypassPermissions` there means it resumes hot**') +
+        ' — either it was ' +
         'recorded in that mode, or it has no recorded mode and therefore falls back to it. It reads the ' +
         'session record only. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
@@ -187,8 +213,9 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
           },
           includeArchived: {
             type: 'boolean',
-            description: 'List archived sessions instead of collapsing them to a per-group '
-              + '`+N archived` count (default false).',
+            description: 'List archived sessions instead of '
+              + fmt('collapsing them to a per-group `+N archived` count', 'only counting them in each group\'s `archivedCount`')
+              + ' (default false).',
           },
         },
         required: [],
@@ -199,12 +226,16 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'describe_session',
       description:
-        'One session\'s row as PLAIN TEXT (this tool returns no JSON): the same row list_sessions ' +
-        'prints for it, plus the project and worktree that own it. ' +
-        'A RETIRED session renders the single session line instead of the worker block, and carries ' +
-        'no mode/effort/model — there is no process to read them off; `resumes-hot` is the one mode ' +
-        'fact available off-process. ' +
-        '`awaiting-user` is derived for the described session even when it is archived. ' +
+        'One session\'s row' +
+        fmt(' as PLAIN TEXT (this tool returns no JSON): the same row list_sessions prints',
+          ': the same row list_sessions lists') +
+        ' for it, plus the project and worktree that own it. ' +
+        'A RETIRED session ' +
+        fmt('renders the single session line instead of the worker block, and carries',
+          'is a `retired` session row (plus its `exit`) instead of a `live` worker row, and carries') +
+        ' no mode/effort/model — there is no process to read them off; ' +
+        fmt('`resumes-hot`', 'its `resumeMode`') + ' is the one mode fact available off-process. ' +
+        fmt('`awaiting-user`', '`awaitingUser`') + ' is derived for the described session even when it is archived. ' +
         '`sessionId` takes the handle only: a backing/segment id soft-refuses SESSION_NOT_A_HANDLE ' +
         'naming the handle that owns it. ' +
         'SESSION_UNLOCATABLE means the transcript exists but no registered project or worktree owns ' +
@@ -222,11 +253,13 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'list_worktrees',
       description:
-        'List orchestrator-owned git worktrees for a project as PLAIN TEXT (this tool returns ' +
-        'no JSON), oldest-first: the parent project and path as a header, then each worktree\'s ' +
-        'name, branch, base branch@sha, creation time and absolute path, plus a `locked` marker on a ' +
-        'worktree the user has locked (merging it and deleting it are refused; only the user can unlock it). The name is the ' +
-        '`worktree` argument every other worktree tool takes, exactly as printed — there is one ' +
+        'List orchestrator-owned git worktrees for a project' +
+        fmt(' as PLAIN TEXT (this tool returns no JSON), oldest-first: the parent project and path as a header, ' +
+          'then each worktree\'s name, branch, base branch@sha, creation time and absolute path, plus a `locked` ' +
+          'marker on a worktree',
+        ', oldest-first; `locked` marks a worktree') +
+        ' the user has locked (merging it and deleting it are refused; only the user can unlock it). The name is the ' +
+        '`worktree` argument every other worktree tool takes, exactly as ' + fmt('printed', 'listed') + ' — there is one ' +
         'spelling per worktree.',
       inputSchema: {
         type: 'object',
@@ -252,9 +285,10 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'carries `author: "human"|"conductor"`; absent = unknown (an unmarked line, a server- or ' +
         'CLI-injected turn, or not a conducted worker) — never inferred. (Caveat: an in-flight block is ' +
         'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
-        'mid-turn use get_recent_messages.) A page stops short of `limit` when the next event would push the ' +
-        'result past the MCP result budget — hasMore/nextFrom continue from there; an event too large for any ' +
-        'page arrives as {_seq, kind, omitted:true, chars} (read its prose via get_recent_messages).',
+        'mid-turn use get_recent_messages.)' +
+        fmt(' A page stops short of `limit` when the next event would push the ' +
+          'result past the MCP result budget — hasMore/nextFrom continue from there; an event too large for any ' +
+          'page arrives as {_seq, kind, omitted:true, chars} (read its prose via get_recent_messages).', ''),
       inputSchema: {
         type: 'object',
         properties: {
@@ -288,7 +322,9 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Required for a fresh spawn. On a `resume` with `worktree` also omitted it may be omitted too, but only when the session\'s recorded location resolves — its transcript lies under a registered project or worktree.' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are.' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — '
+            + fmt('list_sessions\' `resumes-hot` flag marks which sessions those are', 'an inactive list_sessions row\'s `resumeMode` is the mode it would resume in')
+            + '.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
             description:
@@ -358,7 +394,7 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
       description:
         'Send a user turn to a running instance. ' +
         'A mid-turn send_prompt steers a worker in flight rather than waiting out its turn. ' +
-        'The result carries `humanPrompts` (oldest first, quoted and truncated) only when the human has prompted ' +
+        'The result carries `humanPrompts` (oldest first, ' + fmt('quoted and truncated', 'each whole') + ') only when the human has prompted ' +
         'this worker directly since its last wake to you — your send joined or followed a turn they started; ' +
         'check it does not contradict them. ' +
         'PLAYBOOKS: always carry `stage` — it is what makes send_prompt the default transition driver.',
@@ -732,8 +768,8 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
       name: 'list_workspaces',
       description:
         'List every workspace — both registered (in the central store\'s workspaces.json) ' +
-        'and derived (referenced by any project\'s `workspace` field). Returns ' +
-        '[{name, projectCount}] sorted alphabetically. Empty workspaces appear with projectCount 0.',
+        'and derived (referenced by any project\'s `workspace` field). ' +
+        fmt('Returns [{name, projectCount}] sorted alphabetically.', 'Sorted alphabetically.') + ' Empty workspaces appear with projectCount 0.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listWorkspaces,
       annotations: { readOnlyHint: true },
@@ -742,11 +778,13 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
       name: 'enumerate_remotes',
       requires: 'remoteSystems',
       description:
-        'Ask registered Systems which remoteIds (named targets) their providers are configured to route to, as PLAIN TEXT '
-        + '(this tool returns no JSON). One block per System: its id and label, whether it is enumerable, then its remoteIds '
-        + 'or the reason it is not enumerable or why enumeration failed. `system` names one registry id; omit it for every '
+        'Ask registered Systems which remoteIds (named targets) their providers are configured to route to'
+        + fmt(', as PLAIN TEXT (this tool returns no JSON). One block per System: its id and label, whether it is '
+          + 'enumerable, then its remoteIds or the reason it is not enumerable or why enumeration failed.',
+        '. Each System reports its `state`: `listed` with its remoteIds, or `not-enumerable` / `failed` with a reason.')
+        + ' `system` names one registry id; omit it for every '
         + 'registered System, `local` included (never enumerable — cc\'s own machine has no named remotes). A System whose '
-        + 'provider does not advertise remote listing is reported NOT ENUMERABLE, never as having no remotes — its Remote '
+        + 'provider does not advertise remote listing is reported ' + fmt('NOT ENUMERABLE', '`not-enumerable`') + ', never as having no remotes — its Remote '
         + 'is named by hand; a failed enumeration is reported per System with its reason, never as an empty list. Each call '
         + 'asks the provider afresh over the systems protocol. A listed id is configured, not necessarily reachable, and an '
         + 'unlisted one is not necessarily refused. Unlike a plugin tool that lists one provider\'s own records, this asks '
@@ -927,7 +965,8 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_IS_CC_STATE, ' +
         'TARGET_INSIDE_REPO, TARGET_NO_WORK_TREE, TARGET_DUBIOUS_OWNERSHIP, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, ' +
         'INVALID_REMOTE_ID, INVALID_STALE_ACTION, PROJECT_PLACEMENT_IN_USE, PROJECT_EXISTS, ' +
-        'PROJECT_EXISTS_STALE, PROJECT_EXISTS_UNRESOLVABLE — not errors. PROJECT_EXISTS_STALE means the name is held by a ' +
+        'PROJECT_EXISTS_STALE, PROJECT_EXISTS_UNRESOLVABLE' + fmt(' — not errors', '') +
+        '. PROJECT_EXISTS_STALE means the name is held by a ' +
         'record whose path no longer exists; it carries `heldPath` and `discards`, and re-calling ' +
         'with `onStaleRecord` resolves it. PROJECT_EXISTS_UNRESOLVABLE means cc could not ask, so it ' +
         'cannot tell a moved project from a machine that is merely down. ' +
@@ -995,12 +1034,13 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'describe_playbook',
       description:
-        'The full graph of one playbook. Returns PLAIN TEXT (no JSON). ' +
-        'Per stage, `needs` names WORKERS that must exist for the stage to be entered, each rendered ' +
-        '`<stage>@<liveness> in <stages>`: the stage that worker must have PASSED THROUGH (and the key you ' +
+        'The full graph of one playbook. ' + fmt('Returns PLAIN TEXT (no JSON). ', '') +
+        'Per stage, `needs` names WORKERS that must exist for the stage to be entered, ' +
+        fmt('each rendered `<stage>@<liveness> in <stages>`: ', 'each {stage, liveness, position}: ') +
+        'the stage that worker must have PASSED THROUGH (and the key you ' +
         'pass its sessionId under), whether it must still be running (live / retired / any), and which ' +
         'stages it may be in NOW. `tools` maps a tool to allow / ' +
-        'deny / pin {json} of enforced argument values — a `*` entry is the fallback for every ' +
+        'deny / ' + fmt('pin {json}', '{pin: {…}}') + ' of enforced argument values — a `*` entry is the fallback for every ' +
         'tool the stage does not name, and with no `*` an unnamed tool is allowed — except ' +
         'spawn_instance, which fails closed: a stage must name it to be spawnable, and a `*` does not ' +
         'confer that. `workers` is the ' +
@@ -1028,7 +1068,7 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'reported ok:false comes back with the exact code and reason you would get for attempting it — ' +
         'and `history` is the run\'s event-log rows — `call` (one per governed call, with `outcome`; `bind`/`move` ' +
         'when it bound or moved a worker), `session` (start/resume/exit) and your own `config` (enforcement) rows; ' +
-        'no turn or wake rows — oldest-first (capped; see historyTruncated). ' +
+        'no turn or wake rows — oldest-first' + fmt(' (capped; see historyTruncated)', '') + '. ' +
         'Each move is evaluated as the BARE call, with no `provenance` supplied, so an edge into a stage ' +
         'that declares `needs` reads ok:false (NEEDS_UNSATISFIED) even when a satisfying worker exists ' +
         '— the `reason` names what to pass and which workers of the run satisfy it, or that none does. ' +
@@ -1058,7 +1098,7 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         '`blocks` is present only when non-text blocks exist and contains only `tool_use` and ' +
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
-        'in `blocks[]` when their content is represented in the message body (see OUTPUT). ' +
+        'in `blocks[]` when their content is represented in the message body ' + fmt('(see OUTPUT)', '(its `text`)') + '. ' +
         '`hasPlan` (boolean) flags a turn that called ExitPlanMode; `planPath` (string) is the plan document\'s path when a ' +
         'file backs the plan — prefer handing that path on rather than copying the text, or ' +
         'send_prompt({forward}) relays the whole message verbatim; `questionCount` (int) ' +
@@ -1066,32 +1106,41 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
         'By default, messages are returned when they have text, narration, a plan, or questions — ' +
         'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
-        'include every assistant message regardless AND to emit tool inputs verbatim (see `blocks[].input` ' +
-        'below). Thinking blocks are excluded by default; ' +
+        'include every assistant message regardless' +
+        fmt(' AND to emit tool inputs verbatim (see `blocks[].input` below)', '') +
+        '. Thinking blocks are excluded by default; ' +
         'set `includeThinking` to true to include them in `blocks[]`. NARRATION — a thinking block Claude sends straight after a ' +
-        'redacted one as a progress note — is never in `blocks[]` and needs no flag: it is always in the body (see OUTPUT). ' +
+        'redacted one as a progress note — is never in `blocks[]` and needs no flag: it is always in the body ' +
+        fmt('(see OUTPUT)', '(its `text`)') + '. ' +
         '`count` applies to the filtered set. ' +
         'DISK-BACKED & ring-first: served from the in-memory ring on the hot path; if the ring\'s retained ' +
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
         'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
         'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
         'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
-        'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, narrationChars?, narrationTruncated?, hasPlan?, planTruncated?, planPath?, questionCount?, questionsTruncated?, blocks?, blocksOmitted?}], ' +
-        'source:"ring"|"disk", ' +
-        'omittedToolOnly:int, omittedForBudget?, retained:{firstSeq, lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
-        'messages[k]\'s body: its prose (if any) plus a "--- narration ---" section (the worker\'s progress note, not its answer), a "--- plan ---" (or "--- plan · saved to <path> ---") or a "--- questions ---" fenced section when the ' +
-        'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
-        'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
+        fmt('OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
+          'textTruncated, narrationChars?, narrationTruncated?, hasPlan?, planTruncated?, planPath?, questionCount?, questionsTruncated?, blocks?, blocksOmitted?}], ' +
+          'source:"ring"|"disk", ' +
+          'omittedToolOnly:int, omittedForBudget?, retained:{firstSeq, lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
+          'messages[k]\'s body: ',
+        'Messages are oldest-first; each one\'s `text` is its body: ') +
+        'its prose (if any) plus a "--- narration ---" section (the worker\'s progress note, not its answer), a "--- plan ---" (or "--- plan · saved to <path> ---") or a "--- questions ---" fenced section when the ' +
+        'turn produced one, in the order those blocks actually occurred' +
+        fmt(' — UNLESS more than one message is returned, in ' +
+          'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---")', '') +
+        '. `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
-        'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated), and so is the whole ' +
-        'result: over one MCP result\'s budget, text, narration (narrationTruncated), plan (planTruncated), questions (questionsTruncated) and block ' +
-        'inputs are cut shorter, then the ' +
-        'oldest messages are dropped (omittedForBudget + hint) — a plan/questions message last; ' +
-        '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
-        '(`TOOL_ARG_VALUE_CAP`) rides verbatim, so pointers like `file_path`, a command or a pattern ' +
-        'survive, while a larger one is replaced by an `[omitted: …]` marker and the block carries ' +
-        '`inputTruncated:true`. To read an omitted argument: `includeToolCalls:true`. Default count and max per the `count` schema. ' +
+        'messages[] is empty); `hint` explains a short/empty result. ' +
+        fmt('Large message text is capped (textTruncated), and so is the whole ' +
+          'result: over one MCP result\'s budget, text, narration (narrationTruncated), plan (planTruncated), questions (questionsTruncated) and block ' +
+          'inputs are cut shorter, then the ' +
+          'oldest messages are dropped (omittedForBudget + hint) — a plan/questions message last; ' +
+          '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
+          '(`TOOL_ARG_VALUE_CAP`) rides verbatim, so pointers like `file_path`, a command or a pattern ' +
+          'survive, while a larger one is replaced by an `[omitted: …]` marker and the block carries ' +
+          '`inputTruncated:true`. To read an omitted argument: `includeToolCalls:true`. ',
+        'Text, narration, plan, questions and `blocks[].input` ride whole. ') +
+        'Default count and max per the `count` schema. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
         'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +
         'of that turn — so a turn whose trailing prose spans several messages still surfaces the plan/questions ' +
@@ -1103,7 +1152,7 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           count: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: 'Number of recent messages to return (from the filtered set). clamped to the `count` schema\'s [minimum, maximum].' },
-          includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks) AND emit tool inputs verbatim instead of as per-argument descriptors. Default false.' },
+          includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks)' + fmt(' AND emit tool inputs verbatim instead of as per-argument descriptors', '') + '. Default false.' },
           includeThinking: { type: 'boolean', default: false, description: 'When true, include thinking blocks in blocks[]; narration stays in the body either way. Default false.' },
         },
         required: ['sessionId'],
@@ -1115,13 +1164,15 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
       name: 'project_status',
       description:
         'Read-only introspection for a project (or one of its worktrees): top-level file ' +
-        'listing, git branch + HEAD subject (or `no commits yet` on an unborn HEAD), '
+        'listing, git branch + HEAD subject ' +
+        fmt('(or `no commits yet` on an unborn HEAD)', '(`unbornHead` on an unborn HEAD)') + ', '
         + 'uncommitted lines (`git status --porcelain`), ' +
         'recent commits (`git log`), and — for worktrees — mergeStatus (ahead/behind) plus a ' +
         'diff-stat against the base branch. Useful for reviewing what an agent did without ' +
-        'leaving MCP. Returns PLAIN TEXT (no JSON), in sections: header, FILES, DIRTY, ' +
-        'DIFFSTAT, COMMITS. The dirty list is capped; its header reports both counts and says ' +
-        'truncated when it hits the cap.',
+        'leaving MCP.' +
+        fmt(' Returns PLAIN TEXT (no JSON), in sections: header, FILES, DIRTY, ' +
+          'DIFFSTAT, COMMITS. The dirty list is capped; its header reports both counts and says ' +
+          'truncated when it hits the cap.', ''),
       inputSchema: {
         type: 'object',
         properties: {
@@ -1141,24 +1192,30 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
         '(per the contextLines schema range/default) sets hunk context. The supported modes keep this usable at any size: (1) summary:true returns a ' +
         'structured per-file stat {totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a ' +
-        'diff, in one JSON block; totals always cover the whole change set, and files pages by offset (a file index in ' +
+        'diff' + fmt(', in one JSON block', '') + '; totals always cover the whole change set, and files pages by offset (a file index in ' +
         'this mode) with truncated/nextOffset like diff mode. (2) paths:[...] scopes the diff (or summary) to ' +
         'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns as many whole lines as fit ' +
-        'one MCP result (a single over-long line is cut, lineTruncated:true), ' +
-        'starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
-        'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
-        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], untrackedTruncated?, untrackedTotal?, ' +
-        'ahead, lineTruncated?, includedFiles?, includedFilesTruncated?, includedFilesTotal?, omittedFiles?, ' +
-        'omittedFilesTruncated?, omittedFilesTotal?} ' +
-        'PLUS a separate raw, un-escaped diff text block (content[1]); when truncated, re-call with offset:nextOffset ' +
+        fmt('one MCP result', 'the page ceiling (`JSON_DIFF_PAGE_BYTES`)') +
+        ' (a single over-long line is cut, lineTruncated:true), ' +
+        'starting at offset (0-based line index, default 0).' +
+        fmt(' In diff mode the OUTPUT is a compact-JSON metadata ' +
+          'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
+          'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], untrackedTruncated?, untrackedTotal?, ' +
+          'ahead, lineTruncated?, includedFiles?, includedFilesTruncated?, includedFilesTotal?, omittedFiles?, ' +
+          'omittedFilesTruncated?, omittedFilesTotal?} ' +
+          'PLUS a separate raw, un-escaped diff text block (content[1]);',
+        ' In diff mode the diff text is `body`;') +
+        ' when truncated, re-call with offset:nextOffset ' +
         'until truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a ' +
         'truncated page lists includedFiles/omittedFiles. Never silently cuts. Staged + unstaged changes vs HEAD ' +
         '(git diff HEAD) are always appended after the committed diff behind a `@@@ uncommitted working tree changes ' +
         '(git diff HEAD) @@@` separator whenever any exist (absent on a clean tree); untracked files never-git-added ' +
         'are always listed in `untracked`. summary:true likewise always includes `ahead` and an ' +
-        '`uncommitted:{totals, files, untracked}` section. untracked, uncommitted.files and includedFiles/omittedFiles ' +
-        'are capped, flagged <list>Truncated + <list>Total; project_bash\'s git ls-files --others --exclude-standard / ' +
-        'git diff --name-status give the full lists. `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
+        '`uncommitted:{totals, files, untracked}` section.' +
+        fmt(' untracked, uncommitted.files and includedFiles/omittedFiles ' +
+          'are capped, flagged <list>Truncated + <list>Total; project_bash\'s git ls-files --others --exclude-standard / ' +
+          'git diff --name-status give the full lists.', '') +
+        ' `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
         'hasUncommittedChanges:true is the signal that nothing will land if you merge_worktree right now. ' +
         'Complements project_status.',
       inputSchema: {
@@ -1190,7 +1247,7 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'Mirrors project/worktree for cwd scoping plus the ' +
         'meaningful subset of the built-in Bash tool (command/description/timeout). Replaces ' +
         'grep/glob — use rg/grep/find through this tool for search. ' +
-        bashOutputDescription('project, worktree, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?'),
+        bashOutputDescription('project, worktree, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?', fmt),
       inputSchema: {
         type: 'object',
         properties: {
@@ -1219,7 +1276,7 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'remoteIds it is configured for, where its provider can say. ' +
         'Refuses system:"local" with code SYSTEM_IS_LOCAL — use your own Bash tool for ' +
         'cc\'s own machine. The command runs in a plain login shell on that system. ' +
-        bashOutputDescription('system, remoteId, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?'),
+        bashOutputDescription('system, remoteId, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?', fmt),
       inputSchema: {
         type: 'object',
         properties: {
@@ -1250,8 +1307,10 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'existing destination is refused DEST_EXISTS unless overwrite:true (a directory is never replaced). ' +
         'move:true deletes the source (a symlink source: the link only) only after the destination is written ' +
         'and re-checked; any failure keeps the source. Writing — or moving out of — cc\'s own store on `local` ' +
-        'is refused PATH_IN_CC_STORE. OUTPUT: compact JSON {from, to, bytes, mode, moved}. An expected failure ' +
-        'is a normal result {ok:false, code, reason, side?, errno?, written?} — written:true means the ' +
+        'is refused PATH_IN_CC_STORE. ' +
+        fmt('OUTPUT: compact JSON {from, to, bytes, mode, moved}. An expected failure is a normal result',
+          'An expected failure is a refusal') +
+        ' {ok:false, code, reason, side?, errno?, written?} — written:true means the ' +
         'destination now holds the file and the source was kept.',
       inputSchema: {
         type: 'object',
@@ -1270,14 +1329,16 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
       name: 'project_read',
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
-        'guarded. OUTPUT: a compact-JSON metadata block (content[0]) {path, size, truncated, encoding, lineCount, ' +
-        'lineCountExact, lineTruncated?, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
-        'file body. `lineCountExact` is false when the fast byte-capped read may have a partial final line. Supports ' +
+        'guarded.' +
+        fmt(' OUTPUT: a compact-JSON metadata block (content[0]) {path, size, truncated, encoding, lineCount, ' +
+          'lineCountExact, lineTruncated?, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
+          'file body.', ' The file\'s contents are `body`.') +
+        ' `lineCountExact` is false when the fast byte-capped read may have a partial final line. Supports ' +
         '`offset` (1-based start line, default 1) and `limit` (max lines, default: to EOF) for range reads. Set ' +
         '`lineNumbers:true` to prefix each line with a right-aligned number and tab (cat -n style, absolute to the ' +
-        'full file). Metadata includes `startLine`/`endLine` when a range is requested or the byte cap cut a line-param read. Binary files come back as a ' +
+        'full file). ' + fmt('Metadata includes', 'The result includes') + ' `startLine`/`endLine` when a range is requested or the byte cap cut a line-param read. Binary files come back as a ' +
         'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
-        '(default and maximum per the schema — the most one result carries); `truncated` says when. A cut line-range ' +
+        '(default and maximum per the schema' + fmt(' — the most one result carries', '') + '); `truncated` says when. A cut line-range ' +
         'read ends on a whole line and endLine names it, so offset:endLine+1 continues — except a single line longer ' +
         'than maxBytes, which (with or without line params) is cut mid-line with an in-band "… [line cut: N bytes]" ' +
         'marker (when it fits within maxBytes), lineTruncated:true and endLine; ' +
