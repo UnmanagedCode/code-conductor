@@ -7,7 +7,8 @@
 // CLOSED (`additionalProperties:false`) unless built with `open()`, so a handler
 // that adds a field fails tests/mcp-json-conformance.test.mjs until its schema
 // learns it. `open()` is reserved for pass-through data cc does not own the
-// shape of: transcript events, tool-call inputs, ledger history.
+// shape of here: transcript events, tool-call inputs, and event-log history
+// rows (versioned, with their own contract in docs/event-log.md).
 //
 // The vocabulary is the subset tests/jsonSchemaSubset.mjs validates: type
 // (incl. unions), properties, required, additionalProperties, items, enum,
@@ -184,7 +185,7 @@ const SYNC_BASE = { ok: lit(true), ahead: int, behind: int };
 const ENFORCEMENT = { type: ['object', 'null'], properties: { conductorSessionId: str, mode: str }, required: ['conductorSessionId', 'mode'], additionalProperties: false };
 const RUN_MEMBER = obj({ sessionId: str, playbook: str, stage: str, live: bool });
 const NEXT_MOVE = obj({ to: str, via: str, ok: bool, code: str, reason: str }, { optional: ['code', 'reason'] });
-const LEDGER_EVENT = open('a playbook ledger record, passed through as stored (docs/playbook-ledger.md)');
+const EVENT_ROW = open('an event-log `call`, `session` or `config` row, passed through as stored (docs/event-log.md)');
 
 const TOOL_POLICY: Schema = {
   anyOf: [oneOf('allow', 'deny'), obj({ pin: mapOf({ type: ['string', 'number', 'boolean', 'null'] }) })],
@@ -316,7 +317,7 @@ export const OUTPUT_SCHEMAS: Record<string, Schema> = {
   playbook_state: variants(
     obj({ tracked: lit(false), runs: arr(obj({ root: str, members: arr(RUN_MEMBER) })), enforcement: ENFORCEMENT }),
     obj({
-      tracked: lit(false), worker: lit(null), run: lit(null), nextMoves: arr(NEXT_MOVE), history: arr(LEDGER_EVENT),
+      tracked: lit(false), worker: lit(null), run: lit(null), nextMoves: arr(NEXT_MOVE), history: arr(EVENT_ROW),
       historyTruncated: lit(false), enforcement: ENFORCEMENT, reason: str,
     }),
     obj({
@@ -327,7 +328,7 @@ export const OUTPUT_SCHEMAS: Record<string, Schema> = {
       }, { optional: ['project', 'worktree'] }),
       run: open('the run the worker belongs to: {root, members}'),
       nextMoves: arr(NEXT_MOVE), playbookMissing: str, reason: str,
-      history: arr(LEDGER_EVENT), historyTruncated: bool, enforcement: ENFORCEMENT,
+      history: arr(EVENT_ROW), historyTruncated: bool, enforcement: ENFORCEMENT,
     }, { optional: ['playbookMissing', 'reason'] }),
   ),
   get_recent_messages: obj({

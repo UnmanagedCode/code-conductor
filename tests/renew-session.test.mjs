@@ -2024,7 +2024,6 @@ async function renewalTurnActors(srv) {
 
 test('ATTR renew_session request: the request prompt\'s turn is the requesting conductor\'s', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, requestActor } = await renewalTurnActors(srv);
     assert.deepEqual(requestActor, { type: 'conductor', sessionId: condSid });
@@ -2033,7 +2032,6 @@ test('ATTR renew_session request: the request prompt\'s turn is the requesting c
 
 test('ATTR renew_session reseed with a followUp: the reseed\'s turn is the requesting conductor\'s, though internal', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
-  mgr = srv.instances;
   try {
     const { condSid, reseedActor } = await renewalTurnActors(srv);
     assert.deepEqual(reseedActor, { type: 'conductor', sessionId: condSid });

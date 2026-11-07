@@ -1909,17 +1909,54 @@ test('a NON-ROOT conductor\'s send is attributed to itself, not to the root cond
   try {
     const conductorSid = t.instances.get(t.conductorId).sessionId;
     const lead = await t.spawnWorker({ project: 'demo', mode: 'bypassPermissions' });
-    const leadInst = instForSession(t.instances, lead.sessionId);
-    const w = await t.callAs(leadInst.id, 'spawn_instance', { project: 'demo', mode: 'bypassPermissions' });
+    const w = await t.callAs(lead.sessionId, 'spawn_instance', { project: 'demo', mode: 'bypassPermissions' });
     assert.ok(w.sessionId, JSON.stringify(w));
     const wInst = await waitFor(() => instForSession(t.instances, w.sessionId));
     await waitFor(() => wInst.status === 'idle');
     assert.equal(wInst.rootOwnerSessionId, conductorSid, 'premise: W\'s root owner is the root conductor');
 
-    const sent = await t.callAs(leadInst.id, 'send_prompt', { sessionId: w.sessionId, text: 'go' });
+    const sent = await t.callAs(lead.sessionId, 'send_prompt', { sessionId: w.sessionId, text: 'go' });
     assert.notEqual(sent.ok, false, JSON.stringify(sent));
     const start = await waitFor(async () =>
       (await t.events()).find(e => e.kind === 'turn' && e.event === 'start' && e.subject === w.sessionId) ?? false);
     assert.deepEqual(start.actor, { type: 'conductor', sessionId: lead.sessionId });
+  } finally { await t.close(); }
+});
+
+test('every MCP format records each governed call exactly once: text and JSON tools/call and the REST alias, ok and handler-ok:false alike', async () => {
+  // INVARIANT: one call core (runTool) serves every format, and the gate
+  // commits from the result's DATA (`value.json` for a dual result), so each
+  // governed call yields exactly one `call` row whichever transport carried it
+  // — and a handler's soft refusal (`ok:false`) is that row's `failed` outcome.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const conductorSid = t.instances.get(t.conductorId).sessionId;
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
+    const source = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
+    let rpcId = 9000;
+    const sid = encodeURIComponent(conductorSid);
+    const viaRpc = (format) => async (name, args) => {
+      const res = await fetch(`${t.baseUrl}/mcp/${sid}${format === 'text' ? '?format=text' : ''}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      assert.equal(res.status, 200);
+    };
+    const viaRest = async (name, args) => {
+      const res = await fetch(`${t.baseUrl}/mcp/${sid}/tools/${name}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args),
+      });
+      assert.equal(res.status, 200, await res.clone().text());
+    };
+    const mine = async () => (await t.events()).filter(e => isCall(e) && e.subject === w.sessionId);
+    for (const [label, call] of [['text', viaRpc('text')], ['json', viaRpc('json')], ['rest', viaRest]]) {
+      const before = (await mine()).length;
+      await call('set_idle_timeout', { sessionId: w.sessionId, timeoutSeconds: 600 });
+      await call('send_prompt', { sessionId: w.sessionId, text: 'x', stage: 'loose', forward: { sessionId: source.sessionId } });
+      const rows = (await mine()).slice(before);
+      assert.deepEqual(rows.map(r => [r.tool, r.outcome, r.failure?.code]),
+        [['set_idle_timeout', 'ok', undefined], ['send_prompt', 'failed', 'NOTHING_TO_FORWARD']], label);
+      assert.ok(rows.every(r => r.actor.sessionId === conductorSid), `${label}: the caller from the /mcp/<sessionId> path`);
+    }
   } finally { await t.close(); }
 });
