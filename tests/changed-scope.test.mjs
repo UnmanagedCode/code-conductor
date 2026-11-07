@@ -16,6 +16,8 @@ const side = ({ files = [], text = '', walked = [] } = {}) => ({ files: new Set(
 const reachOf = (node, web) => ({ node: side(node), web: side(web), stale: [] });
 const classify = (p, reach) => classifyChanged([p], reach).why[0];
 const suitesOf = (p, reach) => classify(p, reach).suites;
+const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args],
+  { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 // A reviewed file's live `sites` in the tree at `root`.
 const liveSites = (root, file) => buildReach(root, { reviewed: { [file]: { sites: '', node: [], why: 'probe' } } }).sites[file];
 
@@ -117,10 +119,19 @@ function fixtureTree(files) {
   return root;
 }
 
+// A fixtureTree with every file in a fresh git index, which buildReach reads
+// the tracked paths from.
+function indexedTree(files) {
+  const root = fixtureTree(files);
+  git(root, 'init', '-q');
+  git(root, 'add', '-A');
+  return root;
+}
+
 test('buildReach over a fixture tree', async (t) => {
   const SKIPPED = 'SKIPPED_TREE_MARKER';
   const walkSource = "export const w = fs.readdirSync(path.join(ROOT, 'web', 'lint'));";
-  const root = fixtureTree({
+  const root = indexedTree({
     'tests/a.test.mjs': [
       "import { h } from './helper.mjs';",
       "import '../src/side.ts';",
@@ -233,7 +244,7 @@ test('buildReach over a fixture tree', async (t) => {
   });
 
   await t.test('a same-arity change to a walk call line makes its entry stale', () => {
-    const tree = (call) => fixtureTree({
+    const tree = (call) => indexedTree({
       'tests/a.test.mjs': "import '../shared/walk.ts';",
       'shared/walk.ts': `export const w = fs.${call}(path.join(ROOT, 'web', 'lint'));`,
       'web/lint/rule.ts': '', 'docs/d.md': '',
@@ -251,7 +262,7 @@ test('buildReach over a fixture tree', async (t) => {
   });
 
   await t.test('moving the constant a narrowing comes from, on a non-call line, makes its entry stale', () => {
-    const tree = (dir) => fixtureTree({
+    const tree = (dir) => indexedTree({
       'tests/r.mjs': `const FIX = path.join(ROOT, 'web', 'src', '${dir}');\nconst read = (n) => fs.readFileSync(path.join(FIX, n));`,
       'web/src/d1/a.ts': '', 'web/src/d2/b.ts': '',
     });
@@ -283,14 +294,14 @@ test('buildReach: comments are stripped outside strings only', () => {
   };
   const files = { 'tests/c.test.mjs': Object.values(lines).join('\n') };
   for (const n of ['one', 'two', 'three', 'four', 'five', 'six', 'seven']) files[`bin/${n}.mjs`] = '';
-  const { node } = buildReach(fixtureTree(files), { reviewed: {} });
+  const { node } = buildReach(indexedTree(files), { reviewed: {} });
   for (const n of ['one', 'two', 'four', 'five', 'six', 'seven']) assert.ok(node.files.has(`bin/${n}.mjs`), `bin/${n}.mjs must survive stripping`);
   assert.ok(!node.files.has('bin/three.mjs'), 'a real block comment is stripped');
 });
 
 test('buildReach: a read naming exactly web/ is other-side for node only', () => {
   const read = "const at = (n) => readFileSync(path.join(ROOT, 'web', n));";
-  const reach = buildReach(fixtureTree({ 'tests/r.test.mjs': read, 'web/src/r.test.ts': read, 'web/x.json': '' }), { reviewed: {} });
+  const reach = buildReach(indexedTree({ 'tests/r.test.mjs': read, 'web/src/r.test.ts': read, 'web/x.json': '' }), { reviewed: {} });
   assert.ok(reach.node.walked.has('web'));
   assert.ok(!reach.web.walked.has('web'));
 });
@@ -332,7 +343,7 @@ test('buildReach: each walk and read call form', async (t) => {
     files[`tests/reads/${name}.mjs`] = src;
     files[`web/r/${name}/x.json`] = '';
   }
-  const { node } = buildReach(fixtureTree(files), { reviewed: {} });
+  const { node } = buildReach(indexedTree(files), { reviewed: {} });
   for (const name of Object.keys(WALKS)) {
     await t.test(`walk: ${name}`, () => assert.ok(node.walked.has(`d/${name}`), `d/${name} must be walked`));
   }
@@ -343,7 +354,7 @@ test('buildReach: each walk and read call form', async (t) => {
 
 test('buildReach: a closureOf reviewed entry reaches an import closure', async (t) => {
   const depsSource = "const WEB = path.join(ROOT, 'web');\nconst html = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');";
-  const root = fixtureTree({
+  const root = indexedTree({
     'tests/deps.test.mjs': depsSource,
     'web/index.html': '<script type="module" src="/src/main.tsx"></script>',
     'web/src/main.tsx': "import './lib';\nimport './main.css';",
@@ -390,9 +401,54 @@ test('buildReach: a closureOf reviewed entry reaches an import closure', async (
   });
 });
 
+// Playwright leaves test-results/ and playwright-report/ in the repo root, and
+// webBuild.ts and build.test.ts name both: a dir only on disk must not move a
+// reviewed file's sites.
+test('buildReach: a dir git does not track leaves a reviewed entry fresh', async (t) => {
+  const OUTPUT = ['test-results', 'playwright-report', 'web/dist'];
+  const tree = () => indexedTree({
+    '.gitignore': 'test-results/\nplaywright-report/\nweb/dist/\n',
+    'tests/a.test.mjs': "import '../shared/walk.ts';",
+    'shared/walk.ts': "const OUT = ['test-results', 'playwright-report', 'web/dist', 'scratch'];\nexport const w = fs.readdirSync(path.join(ROOT, 'web', 'lint'));",
+    'web/lint/rule.ts': '', 'docs/d.md': '',
+  });
+  const reviewedIn = (root) => ({ 'shared/walk.ts': { sites: liveSites(root, 'shared/walk.ts'), node: ['docs'], why: 'fixture' } });
+  const assertFresh = (root, reviewed) => {
+    const r = buildReach(root, { reviewed });
+    assert.deepEqual(r.stale, []);
+    assert.equal(r.sites['shared/walk.ts'], reviewed['shared/walk.ts'].sites);
+    assert.ok(r.node.walked.has('docs') && !r.node.walked.has('web/lint'), 'the reviewed roots replace the inferred ones');
+  };
+
+  await t.test('empty ignored output dirs', () => {
+    const root = tree();
+    const reviewed = reviewedIn(root);
+    for (const d of OUTPUT) fs.mkdirSync(path.join(root, d), { recursive: true });
+    assertFresh(root, reviewed);
+  });
+
+  await t.test('non-empty ignored output dirs', () => {
+    const root = tree();
+    const reviewed = reviewedIn(root);
+    for (const f of ['test-results/r/trace.zip', 'playwright-report/index.html', 'web/dist/index.js']) {
+      fs.mkdirSync(path.join(root, path.dirname(f)), { recursive: true });
+      fs.writeFileSync(path.join(root, f), 'x');
+    }
+    assertFresh(root, reviewed);
+  });
+
+  await t.test('an untracked, not-ignored dir counts only once staged', () => {
+    const root = tree();
+    const reviewed = reviewedIn(root);
+    fs.mkdirSync(path.join(root, 'scratch'));
+    fs.writeFileSync(path.join(root, 'scratch', 'a.txt'), 'x');
+    assertFresh(root, reviewed);
+    git(root, 'add', 'scratch');
+    assert.deepEqual(buildReach(root, { reviewed }).stale, ['shared/walk.ts']);
+  });
+});
+
 test('changedPaths against a temp git repo', async (t) => {
-  const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args],
-    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const repo = (files) => {
     const root = fixtureTree(files);
     git(root, 'init', '-q', '-b', 'main');
