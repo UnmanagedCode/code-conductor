@@ -27,8 +27,9 @@ const OTHER_SIDE = {
 
 // What a file's reach is computed from: a short hash of each walk and read
 // call site's trimmed line (comments stripped), in source order, then one hash
-// of the sorted repo paths (`isRepoPath`) its literals name, so moving a
-// constant a narrowing came from changes it too.
+// of the sorted git-tracked paths (`isRepoPath`) its literals name, so moving a
+// constant a narrowing came from changes it too, and an ignored or untracked
+// dir on disk never does.
 export function sitesOf(source, isRepoPath) {
   const text = stripComments(source);
   const lines = text.split('\n');
@@ -46,7 +47,7 @@ const TEMP_ONLY = (what) => `${what}; its repo-dir literals are fixture paths or
 // For each suite an entry names, its value replaces the inferred dirs: a list of
 // dirs, or `{ closureOf: [roots] }` for a file that follows imports itself (an
 // .html root contributes its module <script> srcs). `sites` is sitesOf(the
-// file, its repo paths); `buildReach` returns each reviewed file's live value as
+// file, its tracked paths); `buildReach` returns each reviewed file's live value as
 // `sites`. When it differs, or a closureOf root is gone, the entry is stale:
 // ignored and reported, so a changed call over-selects until it is re-reviewed.
 export const WALKS_REVIEWED = {
@@ -76,8 +77,8 @@ export const WALKS_REVIEWED = {
   },
   'web/e2e/harness/boot.ts': { sites: 'aa0206d3 61a09ac6', node: ['web/e2e/fixtures'], why: 'FIXTURES names web/e2e/fixtures; its own read is a temp log' },
   'web/src/conversation/testkit.ts': { sites: '33814713 4e89ed51', web: ['tests/fixtures'], why: 'FIXTURES is tests/fixtures, read through computed names' },
-  'tests/changedScope.mjs': { sites: 'b04d40e7 e1618153 1384b122 35c10387 6be9e464 d1573673 ee3d9fcb', node: [], why: FULL_GATE },
-  'tests/changed-scope.test.mjs': { sites: 'f95d83a4 0e146f58 9d784053 e7c5322d 12467dd7 55034659 821cbd72 87b80e20 1f8fea67 d6788adc 081e659c 081e659c 0017fecc b23cfe1b 7c2dcb60 71fdd1b7 12f6b5d8 291d57a9 af882457 d6495aa7 9a7a8887 0dc907a7 45e55e8c ff7912b4 48609e11 98c6d0d8 1a35a52c 2cd0aece c162c661 c9a22610 74710671 a4ab583c 002a278d b8eeebc4 99033093 da492361 d4ec334f a2b29e83', node: [], why: FULL_GATE },
+  'tests/changedScope.mjs': { sites: 'b04d40e7 e1618153 1384b122 35c10387 6be9e464 29b8a01a f8348029 ee3d9fcb', node: [], why: FULL_GATE },
+  'tests/changed-scope.test.mjs': { sites: 'f95d83a4 0e146f58 9d784053 e7c5322d 12467dd7 55034659 821cbd72 87b80e20 1f8fea67 d6788adc 081e659c 081e659c 0017fecc b23cfe1b 7c2dcb60 71fdd1b7 12f6b5d8 291d57a9 af882457 d6495aa7 9a7a8887 0dc907a7 45e55e8c ff7912b4 48609e11 98c6d0d8 1a35a52c 2cd0aece c162c661 c9a22610 74710671 a4ab583c 002a278d b8eeebc4 99033093 be8ec867 da492361 d4ec334f a2b29e83', node: [], why: FULL_GATE },
 };
 
 const SUITES = ['node', 'web'];
@@ -179,8 +180,15 @@ export function stripComments(src) {
   code(false);
   return out;
 }
+const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const under = (p, dirs) => [...dirs].some((d) => p === d || p.startsWith(`${d}/`));
+// A repo-relative path's leading dirs, nearest first (`'web/src/a.ts'` → `web/src`, `web`).
+const ancestorsOf = (p) => {
+  const out = [];
+  for (let d = path.posix.dirname(p); d !== '.' && d !== '/'; d = path.posix.dirname(d)) out.push(d);
+  return out;
+};
 
 // Every repo path a comment-stripped text spells: a literal or a run of quoted
 // segments not preceded by another (`path.join(ROOT, 'bin', 'x.mjs')`), read
@@ -193,7 +201,7 @@ export function namedPaths(text, { ancestors }) {
     if (!p) return;
     const repoRel = path.posix.normalize(p.replace(/^(?:\.\.?\/)+/, ''));
     names.add(repoRel);
-    if (ancestors) for (let d = path.posix.dirname(repoRel); d !== '.' && d !== '/'; d = path.posix.dirname(d)) names.add(d);
+    if (ancestors) for (const d of ancestorsOf(repoRel)) names.add(d);
   };
   for (const q of text.matchAll(/['"`]/g)) {
     const i = q.index;
@@ -232,7 +240,7 @@ function listTree(root) {
 }
 
 // The closures, the walked roots and the stale reviewed entries, read from the
-// tree at `root` once.
+// tree at `root` and its git index once.
 export function buildReach(root, { reviewed = WALKS_REVIEWED } = {}) {
   const { files, dirs } = listTree(root);
   const fileSet = new Set(files);
@@ -294,7 +302,9 @@ export function buildReach(root, { reviewed = WALKS_REVIEWED } = {}) {
   };
 
   const matches = (f, re) => [...(stripped(f) ?? '').matchAll(re)];
-  const isRepoPath = (p) => fileSet.has(p) || dirs.has(p);
+  const tracked = new Set(git(root, 'ls-files', '-z').split('\0').filter(Boolean));
+  for (const f of [...tracked]) for (const d of ancestorsOf(f)) tracked.add(d);
+  const isRepoPath = (p) => tracked.has(p);
   const sites = Object.fromEntries(Object.keys(reviewed).map((f) => [f, fileSet.has(f) ? sitesOf(read(f), isRepoPath) : null]));
   const stale = Object.entries(reviewed)
     .filter(([f, entry]) => sites[f] !== entry.sites || SUITES.some((s) => entry[s]?.closureOf?.some((r) => !fileSet.has(r))))
@@ -352,13 +362,12 @@ export function classifyChanged(paths, reach) {
 // Paths changed since `base`'s merge-base with HEAD: committed on the branch,
 // staged, unstaged (both sides of a rename) and untracked-not-ignored.
 export function changedPaths(root, base = 'main') {
-  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   try {
-    const mergeBase = git('merge-base', base, 'HEAD').trim();
+    const mergeBase = git(root, 'merge-base', base, 'HEAD').trim();
     const list = (out) => out.split('\0').filter(Boolean);
     const paths = new Set([
-      ...list(git('diff', '--name-only', '--no-renames', '-z', mergeBase)),
-      ...list(git('ls-files', '--others', '--exclude-standard', '-z')),
+      ...list(git(root, 'diff', '--name-only', '--no-renames', '-z', mergeBase)),
+      ...list(git(root, 'ls-files', '--others', '--exclude-standard', '-z')),
     ]);
     return { ok: true, base, mergeBase, paths: [...paths].sort() };
   } catch (err) {
