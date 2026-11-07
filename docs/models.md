@@ -18,8 +18,8 @@ then the caller appends the SAME claude args uniformly. Three callers share it:
 (`src/claudeShellEnv.ts`).
 
 **A template that passes host paths must share our filesystem view.** One of the
-uniformly-appended claude args is a *host path*: `--plugin-dir` (one per entry,
-only when the session has plugin dirs).
+uniformly-appended claude args is a *host path*: `--plugin-dir`, present on every
+session launch (cc's built-in root, plus one per enabled plugin root).
 (`--settings` and `--mcp-config` are not — they carry inline JSON built by
 `buildSettingsJSON`/`buildMcpConfigJSON` in `src/settings.ts`.) A template that
 wraps `claude` in a container or over ssh without mounting those paths will

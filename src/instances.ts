@@ -9,6 +9,7 @@ import { RetiredPagers } from './retiredPagers.ts';
 import type { LineageSource } from './lineagePager.ts';
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
+import { CORE_CLAUDE_PLUGIN_ROOT, withCoreClaudePlugin } from './coreClaudePlugin.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -985,8 +986,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._redirectPlacement = null;
     this._mirrorScope = null;
     // Absolute Claude Code plugin roots (each directly containing
-    // `.claude-plugin/plugin.json`) contributed by enabled cc plugins whose
-    // manifest declares `claudePlugin`. Resolved + validated once at create()
+    // `.claude-plugin/plugin.json`): cc's built-in root first, then those
+    // contributed by enabled cc plugins whose manifest declares `claudePlugin`
+    // (see withCoreClaudePlugin). Resolved + validated once at create()
     // time (async) and frozen on the instance, mirroring mcpServerUrl; spawn()
     // emits one `--plugin-dir <root>` per entry. Reused verbatim across
     // respawn/rewind (a plugin enabled mid-session is picked up on the next
@@ -2660,11 +2662,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       const url = `${this.mcpServerUrl}/${encodeURIComponent(this.sessionId)}?format=text`;
       args.push('--mcp-config', buildMcpConfigJSON({ url }));
     }
-    // Session-local Claude Code plugin roots (skills et al.) contributed by
-    // enabled cc plugins. Repeatable flag, one per validated root; lands on the
-    // claude side of a template's trailing `--` separator (same args array as
-    // every other claude flag), so it's correct for every backend. Empty for the
-    // common case (no plugin ships a claudePlugin surface).
+    // Session-local Claude Code plugin roots (skills et al.): cc's built-in
+    // root, then those contributed by enabled cc plugins. Repeatable flag, one
+    // per validated root; lands on the claude side of a template's trailing `--`
+    // separator (same args array as every other claude flag), so it's correct
+    // for every backend. Empty only on a broken install (no built-in root).
     for (const dir of this.claudePluginDirs) args.push('--plugin-dir', dir);
     // Each family runs at one fixed context window, pinned via the model id
     // itself (Sonnet carries the CLI-native `[1m]` suffix; Opus/Haiku are
@@ -5209,6 +5211,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _exitCauses: Map<string, ExitCause>;
   serverPort: number | null;
   _claudePluginDirsResolver: () => Promise<string[]>;
+  _coreClaudePluginRoot: string;
   _idleHub: IdleSubscriptionHub;
   _overageResume: OverageResumeController;
   _sessionRenew: SessionRenewController;
@@ -5269,6 +5272,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // plugin host exists (it's constructed after this manager); default [] keeps
     // headless/tests working. Awaited in _doCreate and frozen on each Instance.
     this._claudePluginDirsResolver = async () => [];
+    // cc's built-in Claude Code plugin root, composed ahead of the resolver's
+    // plugin roots in _doCreateResolved. A test seam: tests point it at a copy
+    // carrying a fixture skill, or at a broken root.
+    this._coreClaudePluginRoot = CORE_CLAUDE_PLUGIN_ROOT;
     // Two self-contained subsystems composed as collaborators. Each owns its
     // backing state (the idle-wake graph map / the auto-resume timer
     // map) and resolves cross-instance lookups + event emission back through
@@ -6320,12 +6327,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       catch { /* best-effort */ }
     }
 
-    // Resolve + validate the enabled plugins' Claude Code plugin roots here (async
-    // launch-config, like mcpServerUrl) so the sync spawn() can just append the
-    // frozen list. Best-effort: a resolver failure must never block a spawn.
-    let claudePluginDirs: string[] = [];
-    try { claudePluginDirs = await this._claudePluginDirsResolver(); }
+    // Resolve + validate the Claude Code plugin roots here (async launch-config,
+    // like mcpServerUrl) so the sync spawn() can just append the frozen list:
+    // cc's built-in root, then the enabled plugins'. Best-effort: a resolver
+    // failure must never block a spawn, and the built-in root is composed
+    // outside its try so a plugin-host failure cannot drop core skills.
+    let pluginDirs: string[] = [];
+    try { pluginDirs = await this._claudePluginDirsResolver(); }
     catch (e) { console.warn(`instances: claudePlugin resolve failed: ${(e as Error).message}`); }
+    const claudePluginDirs = await withCoreClaudePlugin(this._coreClaudePluginRoot, pluginDirs);
 
     const id = randomUUID();
     const inst = new Instance({
@@ -6423,12 +6433,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // legitimately needs one has `get_transcript`, which is not a file tool.
         { prefix: claudeProjectsRoot(), access: 'deny',
           why: "every session on this machine's transcripts" },
-        // A plugin skill routinely instructs the model to Read a file under its
+        // A skill routinely instructs the model to Read a file under its
         // own root (`references/*.md`) — that is the named tool call the rule
         // asks for. These may live outside `projectsRoot`, so this is also the
         // only entry that adds a host PIN the rest of the table lacks.
         ...claudePluginDirs.map((prefix): LocalRoot => ({ prefix, access: 'allow',
-          why: 'an enabled plugin\'s own root — its skills instruct the model to read files under it' })),
+          why: 'a Claude Code plugin root cc loads (built-in or an enabled plugin\'s) — its skills instruct the model to read files under it' })),
       ];
       // ONE TIER TABLE, ONE CONSTRUCTION SITE, TWO CONSUMERS — the hook's deny
       // surface and the daemon's pins file. Criterion 15 is an IDENTITY claim:

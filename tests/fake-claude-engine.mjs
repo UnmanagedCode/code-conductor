@@ -13,7 +13,8 @@
 // process.env), and the three stdio streams.
 //
 // Honors a subset of the real CLI's argv: --session-id, --resume,
-// --permission-mode (any other flag is ignored). Reads stdin line by line
+// --permission-mode, --plugin-dir (repeatable; read only under
+// `plugin_skills`) — any other flag is ignored. Reads stdin line by line
 // expecting Claude Code stream-json input. Emits canned events from a scenario
 // JSON file pointed at by env.FAKE_CLAUDE_SCENARIO.
 //
@@ -38,6 +39,12 @@
 // emits nothing and exits 1. Opt-in: the fake writes no transcript, so most
 // suites resume sessions they never seeded.
 //
+// `"plugin_skills": true` makes the top-level `system`/`init` event list the
+// `--plugin-dir` roots the way the real CLI does: for each root, its
+// `.claude-plugin/plugin.json` `name` goes into `plugins` as
+// `{name, path, source: '<name>@inline'}`, and every `skills/<d>/SKILL.md`
+// appends `'<name>:<d>'` to `skills`. Opt-in, so no other suite's init changes.
+//
 // Optional env vars:
 //   FAKE_CLAUDE_TRANSCRIPT  Path to append every received stdin line to
 //   FAKE_CLAUDE_ARGV_DUMP   Path to write the received argv to (one per line)
@@ -49,16 +56,42 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 function parseArgv(argv) {
-  const out = { sessionId: null, resumeId: null, mode: 'default', otherFlags: [] };
+  const out = { sessionId: null, resumeId: null, mode: 'default', pluginDirs: [], otherFlags: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
     if (a === '--session-id') out.sessionId = next();
     else if (a === '--resume') out.resumeId = next();
     else if (a === '--permission-mode') out.mode = next();
+    else if (a === '--plugin-dir') out.pluginDirs.push(next());
     else out.otherFlags.push(a);
   }
   return out;
+}
+
+// The `plugin_skills` listing, read from disk once per launch. A root whose
+// plugin.json is unreadable or nameless is left out, as the real CLI would
+// refuse it.
+async function listPluginSkills(dirs) {
+  const plugins = [];
+  const skills = [];
+  for (const dir of dirs) {
+    let name;
+    try { name = JSON.parse(await fs.readFile(path.join(dir, '.claude-plugin', 'plugin.json'), 'utf8')).name; }
+    catch { continue; }
+    if (typeof name !== 'string') continue;
+    plugins.push({ name, path: dir, source: `${name}@inline` });
+    let entries = [];
+    try { entries = await fs.readdir(path.join(dir, 'skills'), { withFileTypes: true }); }
+    catch { /* no skills dir */ }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      try { await fs.access(path.join(dir, 'skills', e.name, 'SKILL.md')); }
+      catch { continue; }
+      skills.push(`${name}:${e.name}`);
+    }
+  }
+  return { plugins, skills };
 }
 
 // Run the fake-claude scenario engine to completion.
@@ -120,6 +153,7 @@ export async function runFakeClaude({ argv, env, cwd, stdin, stdout, stderr, onR
     return 1;
   }
   const turns = [...(scenario.turns ?? [])];
+  const pluginListing = scenario.plugin_skills ? await listPluginSkills(args.pluginDirs) : null;
 
   const transcriptPath = env.FAKE_CLAUDE_TRANSCRIPT;
   let transcriptHandle = null;
@@ -155,7 +189,12 @@ export async function runFakeClaude({ argv, env, cwd, stdin, stdout, stderr, onR
   }
 
   function emit(event) {
-    stdout.write(JSON.stringify(substitute(event)) + '\n');
+    let out = substitute(event);
+    if (pluginListing && out?.type === 'system' && out.subtype === 'init' && !out.parent_tool_use_id) {
+      out = { ...out, plugins: [...(out.plugins ?? []), ...pluginListing.plugins],
+        skills: [...(out.skills ?? []), ...pluginListing.skills] };
+    }
+    stdout.write(JSON.stringify(out) + '\n');
   }
 
   async function emitMany(events, delay = 0) {
