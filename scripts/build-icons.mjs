@@ -2,7 +2,7 @@
 // icon.svg as text, every PNG rasterised by Playwright's Chromium at its exact
 // pixel size; docs/assets/logo-{light,dark}.svg as text, the README's lockup. Run `node scripts/build-icons.mjs` after changing the art, and
 // commit the results. Exits non-zero when a self-check fails: a maskable icon
-// drawing outside its safe zone, or a favicon with an opaque corner.
+// drawing outside its safe zone, or a favicon with an opaque corner (a plate behind the art).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,9 @@ const icon = iconSvg();
 /** [file, size, svg text, check] — `size` is the PNG's width and height. */
 const PNGS = [
   ['favicon-16.png', 16, artToSvgString(FAV16, { palette: 'light', size: 16 }), 'favicon'],
+  ['favicon-16-dark.png', 16, artToSvgString(FAV16, { palette: 'dark', size: 16 }), 'favicon'],
   ['favicon-32.png', 32, artToSvgString(FAV32_FAVICON, { palette: 'light', size: 32 }), 'favicon'],
+  ['favicon-32-dark.png', 32, artToSvgString(FAV32_FAVICON, { palette: 'dark', size: 32 }), 'favicon'],
   ['icon-192.png', 192, icon, 'any'],
   ['icon-512.png', 512, icon, 'any'],
   ['apple-touch-icon.png', 180, pwaIconSvg('apple', 180), 'apple'],
@@ -33,7 +35,8 @@ function problems(check, size, px) {
   const out = [];
   if (check === 'favicon') {
     for (const [x, y] of [[0, 0], [size - 1, 0], [0, size - 1], [size - 1, size - 1]]) {
-      if (at(x, y)[3] !== 0) out.push(`corner ${x},${y} is not transparent`);
+      // Opaque, not merely inked: the art may reach a corner, a plate fills all four.
+      if (at(x, y)[3] === 255) out.push(`corner ${x},${y} is opaque`);
     }
   }
   if (check === 'maskable') {
