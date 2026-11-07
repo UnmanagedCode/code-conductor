@@ -62,7 +62,7 @@ How JSON format differs from text:
 
 `describe_session`, `project_status` and `describe_playbook` answer with their object as it is.
 - **Refusals** are `result.isError:true`, and their `structuredContent` matches `REFUSAL_SCHEMA` (`src/mcp/outputSchemas.ts`): `{ok:false, code, reason?, statusCode?, truncated?, …}`, plus the refusal's own fields (`sessionId`, `matches`, `legalMoves`, …). An `outputSchema` describes the **success** shape only.
-- **Plugin tools** are untyped. A bridged plugin tool's result passes through as its own `content` blocks in both formats, with no `structuredContent`.
+- **Plugin tools** appear in JSON format only when their manifest declares an `outputSchema`, and then answer `structuredContent` like a core tool, validated by cc against that schema ([docs/plugins.md](plugins.md#typed-plugin-tools-both-formats)). A plugin tool with no `outputSchema` is text-only: absent from the JSON `tools/list`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT`.
 
 ## Error channels
 
@@ -70,9 +70,11 @@ How JSON format differs from text:
 |---|---|---|---|
 | a handler's or the gate's own code (`SESSION_UNKNOWN`, `SESSION_AMBIGUOUS`, `PLAYBOOK_UNKNOWN`, …) | soft refusal | `result`, `isError:true` | `200` + the refusal object |
 | `REFUSED` | a handler refusal carrying no code: `sync_worktree` when the system refuses, the ahead/behind comparison fails, `git status` fails, or `merge --ff-only` fails | `result`, `isError:true` | `200` |
-| a thrown error's `code`, else `codeForStatus` of its `statusCode` (`BAD_REQUEST`, `NOT_FOUND`, `CONFLICT`, `INTERNAL`), plus `statusCode` | thrown handler error | `result`, `isError:true` | `200` |
+| a thrown error's `code`, else `codeForStatus` of its `statusCode` (`BAD_REQUEST`, `NOT_FOUND`, `CONFLICT`, `INTERNAL`), plus `statusCode` | thrown handler error; a plugin tool's `{error, code}` carries the plugin's own `code` (no `statusCode`) | `result`, `isError:true` | `200` |
+| `PLUGIN_REPLY_INVALID`, `statusCode:500` | a plugin child's reply breaks its format's shape: a json reply that is not `{structured}` alone, valid against the `outputSchema`; a text reply carrying `structured` (or, for a typed tool, anything but `{text, meta?}`); a malformed error `code` | `result`, `isError:true` | `200` |
 | `TOOL_ERROR` | thrown with neither a code nor a status (e.g. `describe_session` with an empty `sessionId`) | `result`, `isError:true` | `200` |
 | `TOOL_UNKNOWN` | no such tool, including one the host platform's capabilities omit | error `-32602` | `404` |
+| `TOOL_UNAVAILABLE_IN_FORMAT` | a plugin tool with no `outputSchema`, called in JSON format; the child is not contacted | error `-32602` | `404` |
 | `ARGS_INVALID` | `validateArgs` refused the arguments; on the alias also a body that is not a JSON object | error `-32602` | `400` |
 | `CALLER_UNKNOWN` | the `/mcp/<sessionId>` segment | error `-32001` | `404` |
 | `FORMAT_INVALID` | `?format=` | error `-32600` | `400` (the alias serves JSON only, so `text` is refused too) |
@@ -105,11 +107,11 @@ How JSON format differs from text:
 - **Success:** `200` + the `structuredContent` object itself, with no envelope.
 - **Refusal or thrown error:** `200` + the refusal object.
 - **Faults:** the statuses in the table above.
-- **A bridged plugin tool:** `200` + `{content}`, its content blocks unchanged; no `isError` key. A plugin's tool-level failure is a thrown error: `200` + the refusal object (`TOOL_ERROR`), like a core one.
+- **A bridged plugin tool:** a typed one (manifest `outputSchema`) answers like a core tool: `200` + its object; a tool-level failure is `200` + the refusal object, with the plugin's own `code` or `TOOL_ERROR`. An untyped one is `404` `TOOL_UNAVAILABLE_IN_FORMAT`.
 - **Content type:** `content-type: application/json` is required, empty body included, and is checked before anything else.
 - **No Origin or Host check.** `/mcp` has none either. The only cross-site barrier is that a browser's "simple" POST cannot send `application/json`, and the alias refuses anything else with `415` rather than ignoring the body.
 
-**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`capableTools('json', capabilities)` in `src/mcp/tools.ts`); the caller's plugin tools follow with `outputSchema: null`.
+**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`capableTools('json', capabilities)` in `src/mcp/tools.ts`); the caller's typed plugin tools follow with their own `outputSchema`. Every listed tool has one; an untyped plugin tool is not listed.
 
 ## Client libraries
 
@@ -183,7 +185,7 @@ The generator accepts only the schema vocabulary `src/mcp/outputSchemas.ts` decl
 - No success schema has a top-level `ok:false`, so success shapes that read like failures are **returned**: `sync_worktree`'s `{ok:true, action:'commit-required' | 'rebase-conflict'}`, `renew_session`'s `{requested:true}`, `playbook_state`'s `{tracked:false}`, a non-zero `exitCode` from `project_bash` / `system_bash`.
 - A transport failure is the runtime's own exception, unwrapped: Python `urllib.error.URLError`, Node `TypeError: fetch failed`.
 
-**Plugin tools** have no method and no types: call them with `call('<plugin-id>__<tool>', {…})`. A result comes back as `{content}` (no `isError`); parse its text blocks. A plugin's tool-level failure arrives as a `200` refusal (`TOOL_ERROR`) and is **raised** as `ConductorError`, like a core refusal. A plugin that reports its own refusals inside a successful result (code-kanban's `{ok:false, code}` JSON text block) is returned, not raised.
+**Plugin tools** have no method and no types: methods and types cover core tools only. Call a typed plugin tool (one whose manifest declares `outputSchema`, so it is in `GET …/tools`) with `call('<plugin-id>__<tool>', {…})`; it returns the tool's object. A plugin's tool-level failure is **raised** as `ConductorError` with the plugin's code (or `TOOL_ERROR`), like a core refusal. An untyped plugin tool raises `ConductorError` `TOOL_UNAVAILABLE_IN_FORMAT` (HTTP 404).
 
 ## Env vars
 
@@ -211,6 +213,8 @@ JSON drops every context cap: the result budget and its `RESULT_OVER_BUDGET` bac
 | `JSON_ECHO_CAP` | each echoed string in a refusal, and a JSON-RPC error's `message` | `truncated` (refusals) |
 | `URL_ECHO_CAP` (`src/mcp/server.ts`, both formats) | each URL fragment a URL-level fault echoes (a query key, a format value, a caller id, a route) | — |
 
+**Plugin tools:** cc applies **no** ceiling to a typed plugin tool's `structured` reply — none of the safety ceilings above apply to it. The only bounds are the plugin's own `mcp.timeoutMs` and the V8 string-length ceiling, past which serializing fails loudly as `INTERNAL`, never as a cut. A plugin refusal's or error's strings still take `JSON_ECHO_CAP`. The plugin's side of this — never truncating in json — is in [docs/plugins.md](plugins.md#typed-plugin-tools-both-formats).
+
 Unchanged in both formats:
 - the request body limit `MCP_REQUEST_BODY_LIMIT` (`src/mcp/server.ts`; over it → `PAYLOAD_TOO_LARGE`)
 - `GIT_OUTPUT_LIMIT_BYTES` and `HOOK_OUTPUT_CAP` (`src/worktrees.ts`)
@@ -221,9 +225,9 @@ Unchanged in both formats:
 
 ## Limitations
 
-- **Plugin tools are untyped.** Their content blocks pass through as `{content}`.
+- **Untyped plugin tools are text-only.** A plugin tool without a manifest `outputSchema` is absent from JSON format and the REST alias.
 - **A remote worker gets no `CONDUCTOR_MCP_URL` and no `CONDUCTOR_MCP_CLIENT_DIR`.**
-- **The generated clients type core tools only.** A plugin tool is reachable through `call()`, untyped.
+- **The generated clients type core tools only.** A typed plugin tool is reachable through `call()`, its result untyped in the client.
 - **No auth.** Any local process can call as any live session.
 - **No streaming.** Every result is buffered whole; a JSON result can reach the ceilings above.
 
