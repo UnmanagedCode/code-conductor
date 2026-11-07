@@ -777,6 +777,14 @@ test('enforce: a conductor\'s prompt to a tracked worker is an interaction, and 
   } finally { await t.close(); }
 });
 
+// Pins: on a built-in that declares no self-loop, a same-stage send_prompt
+// writes exactly one `interaction` row and no `transition` row. `stage` must be
+// passed — resolveMove only takes the self-edge branch when send_prompt carries a
+// string `stage`; without it the call is kind `none` and would write the
+// interaction row whether or not plan->plan were declared. With it, a declared
+// plan->plan resolves `recorded`, commitMove appends a `transition` and returns
+// BEFORE the interaction fall-through, so this test would see zero interaction
+// rows and one transition row.
 test('enforce: a same-stage send_prompt on a built-in is an interaction, not a transition', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
@@ -785,11 +793,13 @@ test('enforce: a same-stage send_prompt on a built-in is an interaction, not a t
     const forge = JSON.parse(await fs.readFile(new URL('../playbooks/forge.json', import.meta.url), 'utf8'));
     assert.equal(forge.transitions.some(e => e.from === 'plan' && e.to === 'plan'), false,
       'premise: forge declares no plan->plan self-loop');
-    const sent = await t.call('send_prompt', { sessionId: w.sessionId, text: 'next round' });
+    const sent = await t.call('send_prompt', { sessionId: w.sessionId, text: 'next round', stage: 'plan' });
     assert.notEqual(sent.ok, false, JSON.stringify(sent));
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'interaction' && e.tool === 'send_prompt'));
+    const mine = e => e.sessionId === w.sessionId;
+    await waitFor(async () => (await t.events()).some(e => mine(e) && e.kind === 'interaction' && e.tool === 'send_prompt'));
     const evs = await t.events();
-    assert.equal(evs.filter(e => e.kind === 'transition').length, 0);
+    assert.equal(evs.filter(e => mine(e) && e.kind === 'interaction' && e.tool === 'send_prompt').length, 1);
+    assert.equal(evs.filter(e => mine(e) && e.kind === 'transition').length, 0);
   } finally { await t.close(); }
 });
 
