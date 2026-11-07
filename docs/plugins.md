@@ -29,7 +29,9 @@ Building a plugin's UI (the host contract, security advisories, an optional refe
                                 //   manifest declares it; the value is read nowhere, not normalized,
                                 //   and not enum-checked. Tools are always globally visible.
     "timeoutMs": 30000,         // per-call cap, clamped to `MCP_TIMEOUT_CAP` (`src/plugins/manifest.ts`)
-    "tools": [{ "name": "...", "description": "...", "inputSchema": { "type": "object", ... } }]
+    "tools": [{ "name": "...", "description": "...", "inputSchema": { "type": "object", ... },
+                "outputSchema": { "type": "object", ... } }]  // outputSchema OPTIONAL — required for the tool to
+                                //   exist in JSON format; see "Typed plugin tools (both formats)"
   },
   "conventions": [              // OPTIONAL, NO backend required — project conventions
     { "slug": "visual-verification",           // ^[a-z][a-z0-9-]*$ ≤40, unique in this array
@@ -136,7 +138,7 @@ const worktree = q.get('ccWorktree'); // null for a project item
 
 **Scaffold delivery (conductor-directive, no persistence).** At project creation the picked conventions that carry a `scaffold` facet have their directive texts composed **in selection order** into one framed orchestrator-guidance block (`Project "<name>" was created with these setup steps…`) that `create_project` (MCP) / `POST /api/projects` (REST) **RETURN** under a `scaffold` field (empty/omitted when none). Nothing is persisted and nothing touches the spawn path. The conductor folds the returned `scaffold` into its **first** `send_prompt` to the project's first worker (see `conventions/conductor/core.md`); the UI shows it read-only in the create confirmation. The scaffold facet has **no `scope` field** by design: it fires at *project creation*, so it is inherently project-scoped — workspaces and the conductor aren't "created", so there is no scaffold trigger for them. *(Future work: persist a lightweight pending-scaffold the conductor can pick up for UI-created projects.)*
 
-Unknown top-level keys are rejected. Every `inputSchema` must stay inside the conductor's `validateArgs` subset — a **flat** `type:"object"` schema (per-property `type`/`enum`/`minLength`/`maxLength`/`pattern`/`minimum`/`maximum`/`items.type`; boolean `additionalProperties` accepted and ignored). `$ref`/`oneOf`/`anyOf`/`allOf`/`not` and nested object `properties` are rejected at manifest load, so an unvalidatable schema can never register. Invalid ⇒ state `invalid`, listed with errors, never startable.
+Unknown top-level keys are rejected. Every `inputSchema` must stay inside the conductor's `validateArgs` subset — a **flat** `type:"object"` schema (per-property `type`/`enum`/`minLength`/`maxLength`/`pattern`/`minimum`/`maximum`/`items.type`; boolean `additionalProperties` accepted and ignored). `$ref`/`oneOf`/`anyOf`/`allOf`/`not` and nested object `properties` are rejected at manifest load, so an unvalidatable schema can never register. An optional `outputSchema` must stay inside the strict output subset (`checkSchema` in `src/mcp/jsonSchemaSubset.ts`) with a root `type: "object"` — see [Typed plugin tools](#typed-plugin-tools-both-formats); outside it, the manifest is invalid. Invalid ⇒ state `invalid`, listed with errors, never startable.
 
 Child env:
 
@@ -500,9 +502,9 @@ A `file:` output is always `pathToFileURL` of a NUL-free local path, so turning 
 
 ### Plugin MCP forwarding — child wire contract (pinned)
 
-The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to the manifest `mcp.endpoint`. The child returns **HTTP 200 for EVERY well-formed tool invocation** with body `{result: <any JSON>}` or `{error: "<message>"}` — unknown tool, bad arguments and tool-level failures are all `200 + {error}`. A **non-200 means a transport-level failure only** (malformed envelope, plugin bug) and surfaces to the MCP client as an HTTP-coded error; `200 + {error}` surfaces as a plain tool error. Calls are aborted at `mcp.timeoutMs`. Tool names are namespaced `<plugin-id>__<tool>`; argument validation against the declared `inputSchema` happens in the conductor **before** any forward. Visibility: every enabled plugin's tools are offered to **every** MCP caller — the conductor UI and workers in any project (`mcp.scope` is dropped at load, and `toolsFor()` takes no caller argument because there is nothing to scope by); a disabled plugin's tools are absent, so calling one refuses as an unknown tool.
+The conductor POSTs `{tool, arguments, caller:{sessionId, project}, format}` (JSON) to the manifest `mcp.endpoint`; `format` is `"text"` or `"json"` — the format the MCP caller asked for (the REST alias always sends `"json"`; agents' own MCP config sends `"text"`). A plugin that ignores `format` keeps working in text. The child returns **HTTP 200 for EVERY well-formed tool invocation** with a success body (below) or `{error: "<message>", code?}` — unknown tool, bad arguments and tool-level failures are all `200 + {error}`. A **non-200 means a transport-level failure only** (malformed envelope, plugin bug) and surfaces to the MCP client as an HTTP-coded error; `200 + {error}` surfaces as a tool error carrying `code` when one is sent (rules in [Typed plugin tools](#typed-plugin-tools-both-formats)), else `TOOL_ERROR`. A tool whose manifest declares no `outputSchema` is **text-only**: absent from JSON format and the REST alias. Calls are aborted at `mcp.timeoutMs`. Tool names are namespaced `<plugin-id>__<tool>`; argument validation against the declared `inputSchema` happens in the conductor **before** any forward. Visibility: every enabled plugin's tools are offered to **every** MCP caller — the conductor UI and workers in any project (`mcp.scope` is dropped at load, and `toolsFor()` takes no caller argument because there is nothing to scope by); a disabled plugin's tools are absent, so calling one refuses as an unknown tool.
 
-**Raw-text results (opt-in, additive).** A success body may return `{text, meta?}` **instead of** `{result}`. `text` is one string **or** a list of strings; each becomes a **raw, UNESCAPED** `content[]` block (in both MCP formats: a plugin tool's result passes through untyped, with no `structuredContent`). With a non-null `meta`, a compact-JSON block holding `meta` comes first, then one raw block per `text` entry. With `meta` omitted or `null`, a **single string** `text` is the whole result: exactly one raw block, no metadata block (the shape of cc's own rendered read tools). A **list** with no `meta` still gets a leading `null` block — send `meta` with a list, or send one string. Use it for anything a human or LLM reads as prose — a wiki page, a diff, file contents — where `{result}`'s `JSON.stringify` would escape every newline. `{result}` remains correct for structured data; a body with no `text` key behaves exactly as before.
+**Raw-text results (opt-in, additive).** On a tool with no `outputSchema`, a success body may return `{text, meta?}` **instead of** `{result}`; a typed tool's only text-format success shape is `{text, meta?}` (see [Typed plugin tools](#typed-plugin-tools-both-formats)). The rendering below is the same for both kinds of tool. `text` is one string **or** a list of strings; each becomes a **raw, UNESCAPED** `content[]` block (text format). With a non-null `meta`, a compact-JSON block holding `meta` comes first, then one raw block per `text` entry. With `meta` omitted or `null`, a **single string** `text` is the whole result: exactly one raw block, no metadata block (the shape of cc's own rendered read tools). A **list** with no `meta` still gets a leading `null` block — send `meta` with a list, or send one string. Use it for anything a human or LLM reads as prose — a wiki page, a diff, file contents — where `{result}`'s `JSON.stringify` would escape every newline. `{result}` remains correct for structured data; a body with no `text` key behaves exactly as before.
 
 Two edges, both deliberate:
 
@@ -511,6 +513,55 @@ Two edges, both deliberate:
 
 `text: null` → zero text blocks. A non-string (`text: 42`) is stringified, not rejected — nothing on this path throws.
 
+### Typed plugin tools (both formats)
+
+**JSON visibility.** A tool is served in JSON format (`/mcp?format=json`, the REST alias, the generated script clients) **only if** its manifest entry declares an `outputSchema`. A tool without one is text-only: it is absent from the JSON `tools/list` and from `GET /mcp/tools`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT` (JSON-RPC error `-32602`, REST `404`) **without contacting the child**. A tool whose manifest stops declaring its `outputSchema` between the tool set's composition and the forward is refused by the bridge instead, as a tool error with the same code (JSON-RPC `result` with `isError:true`, REST `200` + the refusal object); the tool is never forwarded. Text format lists and calls every tool.
+
+1. **The request.** Every forward carries `format: "text" | "json"`. Build only the view asked for.
+2. **Reply shapes — exactly one per format, no combined bodies.**
+
+   | Request `format` | Tool | Success body | Becomes |
+   |---|---|---|---|
+   | `json` | typed | `{structured: {…}}` and no other key | `structuredContent` (+ one text block of its JSON); the REST body is the object itself |
+   | `text` | typed | `{text, meta?}` and no other key | raw text blocks, as in [Raw-text results](#plugin-mcp-forwarding--child-wire-contract-pinned) |
+   | `text` | untyped | `{result}` or `{text, meta?}` (legacy; `text` wins) | as above |
+
+   A `structured` whose object has `ok: false` (and passes its schema) reads as a refusal, as for core tools — so, like any refusal, its echoed strings take `JSON_ECHO_CAP`; prefer `{error, code}`.
+3. **Schema rules.** `outputSchema` uses only the vocabulary `checkSchema` (`src/mcp/jsonSchemaSubset.ts`) accepts: `type` (a string or a union list), `properties`, `required`, `additionalProperties` (boolean or schema), `items`, `enum`, `const`, `anyOf`, `description`. The root is `type: "object"` (one string). **Every** object schema, nested ones included, states `additionalProperties`. Anything else — `$ref`, `oneOf`, `allOf`, `not`, `pattern`, `minimum`, `format`, … — makes the manifest invalid at load.
+4. **Runtime validation.** cc validates every `structured` against the declared schema before answering (it advertises that schema in the JSON `tools/list` and in `GET /mcp/tools`). These replies are refused `PLUGIN_REPLY_INVALID` (a tool error carrying `statusCode: 500`, logged by cc; the reason names the plugin and tool):
+   - json: any key besides `structured` (`result`, `text`, `meta`, …); a `structured` that is not a JSON object; a `structured` that fails the schema (the reason quotes the first validation errors with their `$.path`);
+   - text, typed tool: no `text`, or any key besides `text`/`meta`;
+   - text, untyped tool: any body carrying `structured`;
+   - any format: an `{error}` whose `code` is present but malformed.
+5. **Never truncate in json.** `{structured}` carries the complete result: no caps, no elision, no `…truncated` markers, no default limit that trims data. Size bounding — row caps, body caps, tail limits, summarising — belongs to the `{text}` view only. Explicit caller arguments (`limit`, `offset`, …) are honoured in json too, because that is the caller's choice; an omitted `limit` means everything. cc applies no ceiling of its own to a `structured` reply ([docs/mcp-applications.md](mcp-applications.md) → JSON-format ceilings).
+6. **Errors.** `{error: "<message>", code?: "<CODE>"}` in either format. A `code` must match `^[A-Z][A-Z0-9_]*$` (`PLUGIN_ERROR_CODE_RE`, `src/plugins/mcpBridge.ts`); reusing cc's own codes (`NOT_FOUND`, `CONFLICT`, …) is allowed. It reaches JSON callers as `{ok:false, code, reason}` and the text error block as `{error, code}`. With no `code`, the error is `TOOL_ERROR`.
+7. **One description.** A tool has one format-neutral `description`: describe the data, not its rendering.
+8. **Example.** Manifest tool:
+
+   ```json
+   { "name": "list_items", "description": "The items on the board, optionally only those in one column.",
+     "inputSchema": { "type": "object", "properties": { "column": { "type": "string" } } },
+     "outputSchema": { "type": "object", "additionalProperties": false, "required": ["items"],
+       "properties": { "items": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+         "required": ["id", "title"], "properties": { "id": { "type": "string" }, "title": { "type": "string" } } } } } } }
+   ```
+
+   Child handler (Node):
+
+   ```js
+   app.post('/api/mcp', express.json(), (req, res) => {
+     const { tool, arguments: args, format } = req.body;
+     if (tool !== 'list_items') return res.json({ error: `unknown tool ${tool}`, code: 'TOOL_UNKNOWN' });
+     const column = args.column;
+     if (column && !board.has(column)) return res.json({ error: `no column '${column}'`, code: 'NOT_FOUND' });
+     const items = board.items(column); // the complete list — never capped for json
+     if (format === 'json') return res.json({ structured: { items } });
+     return res.json({ text: items.map(i => `${i.id}  ${i.title}`).join('\n') });
+   });
+   ```
+
+   A JSON call answers `structuredContent: {items:[{id, title}, …]}` plus one text block holding that JSON; a text call answers one raw block of lines.
+
 ### Plugin-compliance checklist
 
 1. `conductor.plugin.json` at the repo root (schema above); keep `id` stable.
@@ -518,7 +569,7 @@ Two edges, both deliberate:
 3. Base-path compliance: reachable under `X-Forwarded-Prefix` — relative asset URLs (or honor the prefix), root-relative redirects only (they get rewritten).
 4. `<script src="/pluginBridge.js"></script>` (blocking, first in `<head>`) and `<link rel="stylesheet" href="/pluginTheme.css">` in the frontend, and routing that survives the bridge's history contract: `pushState` is demoted to `replaceState`, and a hash change adds a joint history entry (the bridge reports routes for you; [docs/plugin-ui.md](plugin-ui.md) → Routing).
 5. A `healthPath` endpoint (any HTTP response counts as alive).
-6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas. Return `{result}` for structured data; return `{text, meta?}` when the tool's output is prose/diff/file content that should reach the caller un-escaped (omit `meta` and send one string to get exactly one block; `text` wins if both are sent; `meta` alone, without `text`, is dropped).
+6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat input schemas. Read the request's `format`. A tool that should exist in JSON format (scripts, the REST alias) declares an `outputSchema` and answers `{structured}` in json and `{text, meta?}` in text — see [Typed plugin tools](#typed-plugin-tools-both-formats). An untyped tool is text-only: return `{result}` for structured data or `{text, meta?}` for prose/diff/file content that should reach the caller un-escaped (omit `meta` and send one string to get exactly one block; `text` wins if both are sent; `meta` alone, without `text`, is dropped). Failures are `{error, code?}`.
 7. Expect to be killed at any time (Doze) and restarted lazily — persist state under `$CONDUCTOR_PLUGIN_DATA_DIR` (see Child env above), never in the projects root; start fast.
 8. A `frontend.keepAlive` page stays up while its backend crashes and is lazily restarted under it — reconnect rather than assume the backend it loaded against. (An explicit Restart, Update or version switch from Settings → Plugins evicts the page; the next entry loads it afresh.)
 9. If a convention's fragment depends on something its `scaffold` facet sets up, **word the fragment to degrade gracefully** when the scaffold step wasn't run — the picked convention may land in a project where the setup directive was never carried out (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one").

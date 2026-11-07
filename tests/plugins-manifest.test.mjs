@@ -292,6 +292,56 @@ test('inputSchema subset: full validateArgs vocabulary accepted', () => {
   assert.equal(r.errors, undefined);
 });
 
+// A manifest whose single tool carries `extra` (e.g. {outputSchema}).
+const withTool = extra => base({ backend: { start: 'x' }, mcp: { endpoint: '/m', tools: [{ name: 't', description: 'd', inputSchema: { type: 'object' }, ...extra }] } });
+
+test('outputSchema: optional; carried onto the tool when valid, no key when undeclared', () => {
+  const schema = { type: 'object', properties: { items: { type: 'array', items: { type: 'string' } } }, required: ['items'], additionalProperties: false };
+  const typed = validateManifest(withTool({ outputSchema: schema }));
+  assert.equal(typed.errors, undefined);
+  assert.deepEqual(typed.manifest.mcp.tools[0].outputSchema, schema);
+  const untyped = validateManifest(withTool({}));
+  assert.equal(untyped.errors, undefined);
+  assert.equal('outputSchema' in untyped.manifest.mcp.tools[0], false);
+});
+
+test('outputSchema: anyOf and nested properties accepted (wider than inputSchema)', () => {
+  const schema = {
+    type: 'object', additionalProperties: false,
+    properties: {
+      card: { type: 'object', additionalProperties: false, properties: { id: { type: 'string' } }, required: ['id'] },
+      state: { anyOf: [{ type: 'string', enum: ['open', 'done'] }, { type: 'null' }] },
+      n: { type: ['integer', 'null'], description: 'a count' },
+      v: { const: 1 },
+    },
+  };
+  const r = validateManifest(withTool({ outputSchema: schema }));
+  assert.equal(r.errors, undefined, JSON.stringify(r.errors));
+  assert.deepEqual(r.manifest.mcp.tools[0].outputSchema, schema);
+});
+
+test('outputSchema: rejected outside the subset', async t => {
+  const cases = [
+    ['$ref', { type: 'object', additionalProperties: false, properties: { a: { $ref: '#/x' } } }],
+    ['oneOf', { type: 'object', additionalProperties: false, oneOf: [{ type: 'object', additionalProperties: false }] }],
+    ['an unknown keyword', { type: 'object', additionalProperties: false, properties: { a: { type: 'string', pattern: '^x' } } }],
+    ['an object without additionalProperties', { type: 'object', properties: { a: { type: 'string' } } }],
+    ['a nested object without additionalProperties', { type: 'object', additionalProperties: false, properties: { a: { type: 'object' } } }],
+    ['a non-object', 'object'],
+    ["root type 'array'", { type: 'array', items: { type: 'string' } }],
+    ["root type ['object','null']", { type: ['object', 'null'], additionalProperties: false }],
+    ['no root type', { additionalProperties: false, properties: {} }],
+    ['non-object properties', { type: 'object', additionalProperties: false, properties: ['a'] }, /properties must be an object/],
+  ];
+  for (const [name, outputSchema, re] of cases) {
+    await t.test(name, () => {
+      const r = validateManifest(withTool({ outputSchema }));
+      assert.ok(r.errors, `${name}: the manifest is invalid`);
+      assert.ok(r.errors.some(e => e.includes('mcp.tools[0].outputSchema') && (!re || re.test(e))), JSON.stringify(r.errors));
+    });
+  }
+});
+
 test('readManifest: absent → null, bad JSON → errors, invalid keeps id for display', async () => {
   const dir = await mkdtemp('manif-');
   try {

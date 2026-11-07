@@ -10,7 +10,7 @@
 // shape of here: transcript events, tool-call inputs, and event-log history
 // rows (versioned, with their own contract in docs/event-log.md).
 //
-// The vocabulary is the subset tests/jsonSchemaSubset.mjs validates: type
+// The vocabulary is the subset src/mcp/jsonSchemaSubset.ts validates: type
 // (incl. unions), properties, required, additionalProperties, items, enum,
 // const, anyOf, description. Use nothing else.
 

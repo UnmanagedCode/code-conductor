@@ -44,6 +44,10 @@ interface McpCtx {
   // The core tools (buildTools()), the ones boundResult guards. Plugin bridge
   // tools are not in it.
   coreTools: ReadonlySet<McpTool>;
+  // Plugin tools left out of `tools` because this format cannot serve them (a
+  // tool with no outputSchema, in json) — named so a call to one is refused
+  // TOOL_UNAVAILABLE_IN_FORMAT rather than TOOL_UNKNOWN.
+  textOnlyTools: ReadonlySet<string>;
   callerId: string | null;
   playbookGate: PlaybookGate;
   capabilities: PlatformCapabilities;
@@ -57,7 +61,7 @@ interface McpCtx {
 // The tool shape the transport itself needs — deliberately broader than the
 // registry's `Tool` (tools.ts) so BOTH core tools (inputSchema typed as a
 // Record, handler ctx `ToolCtx`) and plugin tools (inputSchema: unknown,
-// handler ctx narrowed to `{callerId}`) satisfy it without a cast. `handler`'s
+// handler ctx narrowed to `{callerId, format}`) satisfy it without a cast. `handler`'s
 // ctx is McpCtx (a supertype of both) so the assignment is contravariantly
 // sound in each direction.
 interface McpTool {
@@ -78,7 +82,8 @@ interface McpPluginHostLike {
     name: string;
     description: string;
     inputSchema: unknown;
-    handler: (args: unknown, ctx: { callerId: string | null }) => Promise<unknown>;
+    outputSchema?: unknown;
+    handler: (args: unknown, ctx: { callerId: string | null; format: McpFormat }) => Promise<unknown>;
   }>;
 }
 
@@ -286,7 +291,8 @@ interface ToolCall {
 // One tools/call, up to (not including) the response: how it ended, in a
 // format-neutral shape both serializers (and the REST alias) read.
 //   - fault:   refused before anything ran because the CALL is malformed —
-//              no such tool, or arguments its inputSchema refuses;
+//              no such tool, a plugin tool this format does not serve, or
+//              arguments its inputSchema refuses;
 //   - refused: refused before the handler, as a soft refusal (prefix
 //              ambiguity, playbook policy);
 //   - result:  the handler's own return, a soft refusal ({ok:false}) included;
@@ -294,7 +300,7 @@ interface ToolCall {
 //   - internal: a step BEFORE the handler threw (session-ref resolution, the
 //              playbook gate) — a cc fault, not the tool's answer.
 type Outcome =
-  | { kind: 'fault'; code: 'TOOL_UNKNOWN' | 'ARGS_INVALID'; reason: string; tool: McpTool | null }
+  | { kind: 'fault'; code: 'TOOL_UNKNOWN' | 'TOOL_UNAVAILABLE_IN_FORMAT' | 'ARGS_INVALID'; reason: string; tool: McpTool | null }
   | { kind: 'refused'; body: Record<string, unknown>; tool: McpTool }
   | { kind: 'result'; value: unknown; tool: McpTool }
   | { kind: 'error'; error: unknown; tool: McpTool }
@@ -319,7 +325,13 @@ async function runTool(name: unknown, rawArgs: unknown, ctx: McpCtx): Promise<Ou
 async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promise<Outcome> {
   let args: unknown = rawArgs ?? {};
   const tool = ctx.tools.find(t => t.name === name);
-  if (!tool) return { kind: 'fault', code: 'TOOL_UNKNOWN', reason: `unknown tool: ${name}`, tool: null };
+  if (!tool) {
+    if (typeof name === 'string' && ctx.textOnlyTools.has(name)) {
+      return { kind: 'fault', code: 'TOOL_UNAVAILABLE_IN_FORMAT', tool: null,
+        reason: `'${name}' is a plugin tool with no outputSchema, so it is served in text format only — call it over JSON-RPC at /mcp?format=text` };
+    }
+    return { kind: 'fault', code: 'TOOL_UNKNOWN', reason: `unknown tool: ${name}`, tool: null };
+  }
   const v = validateArgs(tool.inputSchema, args, name);
   if (v) return { kind: 'fault', code: 'ARGS_INVALID', reason: v, tool };
   // sessionId prefix resolution — the single, uniform chokepoint for every
@@ -528,21 +540,19 @@ function errorBody(e: unknown, cap: number): Record<string, unknown> {
 }
 
 // The JSON-format view of a non-fault outcome: the structured value, and
-// whether it is a refusal. A plugin-bridged tool (not core) has no structured
-// view — its own content blocks pass through, `structured` null.
-// A core result that is not an object is a cc defect: `internal` carries why.
+// whether it is a refusal. Every tool reaching it has an outputSchema — core,
+// or a typed plugin tool whose bridge already validated its reply — so a
+// result that is not an object is a cc defect: `internal` carries why.
 type JsonView =
   | { structured: Record<string, unknown>; isError: boolean }
-  | { structured: null; passthrough: ToolCall['result'] }
   | { structured: null; internal: string };
 function jsonView(o: Exclude<Outcome, { kind: 'fault' | 'internal' }>, ctx: McpCtx): JsonView {
   const cap = ctx.limits.echoCap;
   if (o.kind === 'refused') return { structured: refusalBody(o.body, cap), isError: true };
   if (o.kind === 'error') return { structured: errorBody(o.error, cap), isError: true };
-  if (!ctx.coreTools.has(o.tool)) return { structured: null, passthrough: { content: textContent(o.value) } };
   const value = isDual(o.value) ? o.value.json : o.value;
   if (!isJsonRecord(value)) {
-    // Every core tool returns an object in JSON format; anything else is a cc
+    // Every tool returns an object in JSON format; anything else is a cc
     // defect, surfaced rather than reshaped.
     const internal = `${o.tool.name} returned a non-object JSON result`;
     console.error(`mcp: ${internal}`);
@@ -565,7 +575,6 @@ function serializeJson(id: unknown, o: Exclude<Outcome, { kind: 'internal' }>, c
   if (o.kind === 'fault') return faultError(id, o);
   const view = jsonView(o, ctx);
   if ('internal' in view) return internalReply(id, view.internal, ctx);
-  if (view.structured === null) return rpcResult(id, view.passthrough);
   return rpcResult(id, {
     content: [{ type: 'text', text: JSON.stringify(view.structured) }],
     structuredContent: view.structured,
@@ -724,18 +733,25 @@ export function buildMcpRouter(
   };
 
   // Per-request tool composition: core tools + the plugin tools visible to
-  // this caller. init() is memoized — after the first request it's a resolved
-  // promise. A plugin-subsystem failure must never take the core tools down
-  // with it.
-  async function composeTools(format: McpFormat): Promise<McpTool[]> {
+  // this caller that the format serves — in json, only plugin tools with an
+  // outputSchema; the others are named in `textOnly`. init() is memoized —
+  // after the first request it's a resolved promise. A plugin-subsystem
+  // failure must never take the core tools down with it.
+  const NONE: ReadonlySet<string> = new Set();
+  async function composeTools(format: McpFormat): Promise<{ tools: McpTool[]; textOnly: ReadonlySet<string> }> {
     const core = registries[format].tools;
-    if (!pluginHost) return core;
+    if (!pluginHost) return { tools: core, textOnly: NONE };
     try {
       await pluginHost.init();
-      return [...core, ...pluginHost.toolsFor()];
+      const plugin = pluginHost.toolsFor();
+      if (format === 'text') return { tools: [...core, ...plugin], textOnly: NONE };
+      return {
+        tools: [...core, ...plugin.filter(t => t.outputSchema)],
+        textOnly: new Set(plugin.filter(t => !t.outputSchema).map(t => t.name)),
+      };
     } catch (e) {
       console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
-      return core;
+      return { tools: core, textOnly: NONE };
     }
   }
 
@@ -747,8 +763,8 @@ export function buildMcpRouter(
     if (isUrlFault(format)) { res.json(urlFaultReply(req.body, format)); return; }
     const callerId = resolveCaller(instances, sid);
     if (isUrlFault(callerId)) { res.json(urlFaultReply(req.body, callerId)); return; }
-    const tools = await composeTools(format);
-    const ctx: McpCtx = { instances, tools, coreTools: registries[format].set, callerId, playbookGate, capabilities, format, limits: limitsFor(format) };
+    const { tools, textOnly } = await composeTools(format);
+    const ctx: McpCtx = { instances, tools, coreTools: registries[format].set, textOnlyTools: textOnly, callerId, playbookGate, capabilities, format, limits: limitsFor(format) };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {
@@ -806,11 +822,13 @@ export function buildMcpRouter(
     if (!name) { restFault(res, 404, 'TOOL_UNKNOWN', 'no tool named — POST /mcp/tools/<name>'); return; }
     const args: unknown = req.body;
     if (!isJsonRecord(args)) { restFault(res, 400, 'ARGS_INVALID', 'the request body must be a JSON object of the tool\'s arguments'); return; }
-    const tools = await composeTools('json');
-    const ctx: McpCtx = { instances, tools, coreTools: registries.json.set, callerId: pre.callerId, playbookGate, capabilities, format: 'json', limits: JSON_LIMITS };
+    const { tools, textOnly } = await composeTools('json');
+    const ctx: McpCtx = { instances, tools, coreTools: registries.json.set, textOnlyTools: textOnly, callerId: pre.callerId, playbookGate, capabilities, format: 'json', limits: JSON_LIMITS };
     const outcome = await runTool(name, args, ctx);
     if (outcome.kind === 'fault') {
-      restFault(res, outcome.code === 'TOOL_UNKNOWN' ? 404 : 400, outcome.code, outcome.reason);
+      // A text-only plugin tool is absent from this alias's own listing: a
+      // 404 like an unknown tool, told apart by its code.
+      restFault(res, outcome.code === 'ARGS_INVALID' ? 400 : 404, outcome.code, outcome.reason);
       return;
     }
     if (outcome.kind === 'internal') {
@@ -819,20 +837,19 @@ export function buildMcpRouter(
     }
     const view = jsonView(outcome, ctx);
     if ('internal' in view) { restFault(res, 500, 'INTERNAL', view.internal); return; }
-    // A bridged plugin tool has no structured view: its MCP result as it is.
-    res.status(200).json(view.structured === null ? view.passthrough : view.structured);
+    res.status(200).json(view.structured);
   }
 
-  // GET /mcp[/<sid>]/tools: the JSON registry plus the plugin tools this
-  // caller sees (untyped: outputSchema null).
+  // GET /mcp[/<sid>]/tools: the JSON registry plus the typed plugin tools this
+  // caller sees — every listed tool has an outputSchema.
   async function restListing(req: express.Request, res: express.Response, sid: string | undefined) {
     if (!restPreamble(req, res, sid)) return;
-    const tools = await composeTools('json');
+    const { tools } = await composeTools('json');
     res.json(tools.map(t => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
-      outputSchema: registries.json.set.has(t) ? t.outputSchema : null,
+      outputSchema: t.outputSchema,
     })));
   }
 
