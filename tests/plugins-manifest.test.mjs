@@ -331,12 +331,13 @@ test('outputSchema: rejected outside the subset', async t => {
     ["root type 'array'", { type: 'array', items: { type: 'string' } }],
     ["root type ['object','null']", { type: ['object', 'null'], additionalProperties: false }],
     ['no root type', { additionalProperties: false, properties: {} }],
+    ['non-object properties', { type: 'object', additionalProperties: false, properties: ['a'] }, /properties must be an object/],
   ];
-  for (const [name, outputSchema] of cases) {
+  for (const [name, outputSchema, re] of cases) {
     await t.test(name, () => {
       const r = validateManifest(withTool({ outputSchema }));
       assert.ok(r.errors, `${name}: the manifest is invalid`);
-      assert.ok(r.errors.some(e => e.includes('mcp.tools[0].outputSchema')), JSON.stringify(r.errors));
+      assert.ok(r.errors.some(e => e.includes('mcp.tools[0].outputSchema') && (!re || re.test(e))), JSON.stringify(r.errors));
     });
   }
 });

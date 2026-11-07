@@ -367,6 +367,7 @@ test('PLUGIN_REPLY_INVALID: a typed tool answering json with anything but a vali
     ['a structured array', { structured: [] }, /'structured' must be a JSON object, got array/],
     ['a structured null', { structured: null }, /'structured' must be a JSON object, got null/],
     ['a structured failing its schema', { structured: { items: [1] } }, /'structured' does not match its outputSchema: \$\.items\[0\]: expected string, got integer/],
+    ['a structured missing a required property', { structured: {} }, /'structured' does not match its outputSchema: \$: missing required 'items'/],
   ];
   await withChild(null, async ({ callMcp, callRest, set, seen }) => {
     for (const [name, body, re] of cases) {
