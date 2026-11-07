@@ -15,7 +15,8 @@ const reactAttrs = (attrs: Record<string, string>) => Object.fromEntries(
 function Shape({ el, fill, blink }: { el: LogoElement; fill: string; blink?: boolean }) {
   const Tag = el.tag;
   const cursor = el.cursor ? { 'data-logo-cursor': '', className: blink ? BLINK : undefined } : {};
-  return <Tag {...reactAttrs(el.attrs)} fill={fill} {...cursor} />;
+  const paint = el.stroke ? { fill: 'none', stroke: fill } : { fill };
+  return <Tag {...reactAttrs(el.attrs)} {...paint} {...cursor} />;
 }
 
 function LogoSvg({ art, name, blink = false, className }: {

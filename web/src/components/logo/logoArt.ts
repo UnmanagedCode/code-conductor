@@ -17,6 +17,8 @@ export type LogoElement = {
   /** Absent on a knockout, which paints nothing. */
   ink?: Ink;
   ko?: true;
+  /** Drawn as an outline: the ink is the stroke's colour (width and caps in `attrs`) and the fill is none. */
+  stroke?: true;
   /** The prompt's `_`, the one part that blinks. */
   cursor?: true;
 };
@@ -109,11 +111,24 @@ const small16 = (face: LogoElement): Art => ({
 /** The 16px art: the favicon and the app switcher's Conductor entry, both with the white face. */
 export const FAV16: Art = small16(WHITE_SCREEN);
 
-/** The sidebar header's tile, its face white. */
+const legStroke = (d: string, ink: Ink): LogoElement => ({
+  tag: 'path', attrs: { d, 'stroke-width': '5.5', 'stroke-linecap': 'round' }, ink, stroke: true,
+});
+const TILE_TRANSFORM = 'translate(7.385 7.487) scale(0.410256)';
+const tileSideLegs = (transform: string) => [
+  legStroke('M2.75 35.25A4 4 0 0 1 -1.25 39.25', 'deep'),
+  legStroke('M11.25 28V44A4 4 0 0 1 7.25 48', 'coral'),
+].map((e) => ({ ...e, attrs: { ...e.attrs, transform } }));
+
+/** The sidebar header's tile, its face white: a few thick round-capped stroke legs, all under the body, that stay legible at 32px. */
 export const TILE: Art = {
   viewBox: '0 0 32 32',
   base: [{ tag: 'rect', attrs: { width: '32', height: '32', rx: '8' }, ink: 'tile' }],
-  elements: under('translate(7.385 7.487) scale(0.410256)', smallLayers(WHITE_SCREEN)),
+  elements: [
+    ...tileSideLegs(TILE_TRANSFORM),
+    ...tileSideLegs(`${TILE_TRANSFORM} matrix(-1 0 0 1 40 0)`),
+    ...under(TILE_TRANSFORM, [legStroke('M20 35.25V45.25', 'deep'), BODY_WITH_SCREEN, WHITE_SCREEN, ...GLYPHS, CURSOR, ARM, BATON]),
+  ],
 };
 
 const FAV32_TRANSFORM = 'translate(4.513 4.65) scale(0.547009)';
@@ -174,7 +189,7 @@ export function viewBoxRect(viewBox: string): Record<'x' | 'y' | 'width' | 'heig
 const XMLNS = 'http://www.w3.org/2000/svg';
 
 const attrString = (attrs: Record<string, string>) => Object.entries(attrs).map(([k, v]) => ` ${k}="${v}"`).join('');
-const elString = (el: LogoElement, fill: string) => `<${el.tag}${attrString(el.attrs)} fill="${fill}"/>`;
+const elString = (el: LogoElement, fill: string) => `<${el.tag}${attrString(el.attrs)}${el.stroke ? ` fill="none" stroke="${fill}"` : ` fill="${fill}"`}/>`;
 
 /** The art's own `<svg>` text, with masks named `k<n>` (one per document). */
 function artSvg(art: Art, inks: Record<Ink, string>, frame: Record<string, string>): string {
