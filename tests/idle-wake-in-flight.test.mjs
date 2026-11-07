@@ -314,3 +314,26 @@ test('the backstop is armed with PARKED_BACKSTOP_MS, which exceeds the measured 
   assert.ok(PARKED_BACKSTOP_MS > 9_500, `${PARKED_BACKSTOP_MS} must exceed the 9.5 s dequeue max`);
   await r.instances.shutdown().catch(() => {});
 });
+
+// Invariant: whether a send was written into a running turn is decided from the
+// caller's flag AFTER prompt(), not from the status read at dispatch. A caller
+// idle at dispatch that is `turn` by the time the send runs parks the hold, and
+// the hold survives that caller's turn_end until its queued turn starts.
+test('a caller idle at dispatch but in a turn by send time parks the hold until its queued turn starts', async () => {
+  const r = rig();
+  assert.equal(r.conductor.status, 'idle', 'premise: idle at dispatch');
+  r.conductor.prompt = async () => { r.conductor.queuedPromptPending = true; };
+  r.finishWorker();
+  r.conductor.status = 'turn'; // the caller starts a turn before the send's microtask runs
+  r.release();
+  await r.settle();
+  assert.equal(r.hub._parked.get('c')?.length, 1, 'parked, though the stub was built for an idle caller');
+  r.conductor.status = 'idle';
+  r.instances.emit('event', { id: 'c', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  assert.equal(r.instances.isIdleCaller('c'), true, 'survives the caller\'s turn_end');
+  r.conductor.status = 'turn';
+  r.conductor.queuedPromptPending = false;
+  r.hub.onTurnStart('c');
+  assert.equal(r.instances.isIdleCaller('c'), false, 'released at the queued turn\'s start');
+  await r.instances.shutdown().catch(() => {});
+});

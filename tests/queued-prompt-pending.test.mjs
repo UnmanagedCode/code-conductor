@@ -119,6 +119,41 @@ test('process exit clears queuedPromptPending', async () => {
   assert.equal(inst.queuedPromptPending, false);
 });
 
+// Invariant: the flag is already false when the exit event is emitted, so the hub's
+// onEvent for that event releases a parked hold — a dead conductor must not keep
+// reading as awaiting a wake.
+test('exit: the flag is cleared before the exit event, and a parked hold is released by it', async () => {
+  const instances = new InstanceManager({ platform: posixPlatform });
+  try {
+    const lines = await load('queued-after-end.stdout.jsonl');
+    const conductor = makeInstance('xc');
+    const worker = makeInstance('xw');
+    worker.status = 'turn';
+    wire(instances, conductor);
+    instances.byId.set('xw', worker);
+    feed(conductor, lines.slice(0, 1));
+    instances.noteDispatch('xc-sid', 'xw-sid');
+    instances._idleHub.onTurnStart('xw');
+    const seen = [];
+    conductor.on('event', (ev) => {
+      if (ev.kind === 'system' && ev.subtype === 'exit') {
+        seen.push({ pending: conductor.queuedPromptPending, awaiting: instances.isIdleCaller('xc') });
+      }
+    });
+    worker.status = 'idle';
+    instances.emit('event', { id: 'xw', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    assert.equal(conductor.queuedPromptPending, true, 'premise: the wake is parked');
+    assert.equal(instances.isIdleCaller('xc'), true, 'premise: awaiting');
+    conductor._handleExit(1, null, Promise.resolve(''));
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].pending, false, 'cleared before the exit event was emitted');
+    assert.equal(instances.isIdleCaller('xc'), false, 'the hub released the hold on the exit event');
+  } finally {
+    await instances.shutdown().catch(() => {});
+  }
+});
+
 // Invariant: _endMutation lifts the claim and announces prompts_unblocked,
 // the event a held wake is flushed on.
 test('_endMutation clears _mutating and emits prompts_unblocked', () => {

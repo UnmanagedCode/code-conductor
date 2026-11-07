@@ -192,8 +192,15 @@ test('a root AskUserQuestion gets the canned answer, once', async () => {
   assert.ok(rootIn[1].endsWith(HEADLESS_QUESTION_ANSWER), rootIn[1]);
 });
 
-test('a worker\'s AskUserQuestion is not answered by the runner; it reaches the root as a wake', async () => {
+test('a worker\'s AskUserQuestion is not answered by the runner; it reaches the root as a wake', async (t) => {
   const r = await start({ scenario: ROOT_GATED_QUEUED });
+  // The park backstop never fires here: the run must complete because the queued
+  // turn's start released the hold, not because the backstop did.
+  const hub = server.instances._idleHub;
+  const { _setTimer, _clearTimer } = hub;
+  t.after(() => { hub._setTimer = _setTimer; hub._clearTimer = _clearTimer; });
+  hub._setTimer = () => ({});
+  hub._clearTimer = () => {};
   await waitFor(() => r.root.status === 'turn');
   const workerLog = path.join(home, 'worker-stdin.jsonl');
   const worker = await spawnWorker(r.root, QUESTION, workerLog);
