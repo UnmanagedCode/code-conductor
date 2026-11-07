@@ -93,9 +93,6 @@ const BATON = path('M42.75 4.5L42.75 -7.25A1.25 1.25 0 0 1 44 -8.5L44 -8.5A1.25 
 
 /** The prompt, legs, arm and baton: everything drawn over the screen. */
 const overScreen = (cursor: LogoElement) => [...GLYPHS, cursor, ...FRONT_LEGS, ARM, BATON];
-const OVER_SCREEN = overScreen(CURSOR);
-/** The small sizes' layers around `face`: no screen ring, the screen cut into the body. */
-const smallLayers = (face: LogoElement) => [...BACK_LEGS, BAND_KO, BODY_WITH_SCREEN, face, ...OVER_SCREEN];
 
 /** The full mark: landing, empty chat, About. */
 export const MARK: Art = {
@@ -103,27 +100,19 @@ export const MARK: Art = {
   elements: [...BACK_LEGS, BAND_KO, BODY, SCREEN_RING_KO, SCREEN, ...overScreen({ ...CURSOR, cursor: true })],
 };
 
-const small16 = (face: LogoElement): Art => ({
-  viewBox: '0 0 16 16',
-  elements: under('translate(2.256 2.325) scale(0.273504)', smallLayers(face)),
-});
-
-/** The 16px art: the favicon and the app switcher's Conductor entry, both with the white face. */
-export const FAV16: Art = small16(WHITE_SCREEN);
-
-const legStroke = (d: string, ink: Ink): LogoElement => ({
-  tag: 'path', attrs: { d, 'stroke-width': '5.5', 'stroke-linecap': 'round' }, ink, stroke: true,
+const legStroke = (d: string, ink: Ink, width: string): LogoElement => ({
+  tag: 'path', attrs: { d, 'stroke-width': width, 'stroke-linecap': 'round' }, ink, stroke: true,
 });
 const TILE_TRANSFORM = 'translate(6.469 6.858) scale(0.4539)';
-const strokeLegSide = (transform: string) => [
-  legStroke('M2.75 35.25A4 4 0 0 1 -1.25 39.25', 'deep'),
-  legStroke('M11.25 28V42A4 4 0 0 1 7.25 46', 'coral'),
+const strokeLegSide = (transform: string, width: string) => [
+  legStroke('M2.75 35.25A4 4 0 0 1 -1.25 39.25', 'deep', width),
+  legStroke('M11.25 28V42A4 4 0 0 1 7.25 46', 'coral', width),
 ].map((e) => ({ ...e, attrs: { ...e.attrs, transform } }));
-/** The 3-leg stroked set (a side pair and the centre) in `transform`'s space: thick round-capped strokes, all drawn under the body, that stay legible at 32px. */
-const strokeLegs = (transform: string): LogoElement[] => [
-  ...strokeLegSide(transform),
-  ...strokeLegSide(`${transform} matrix(-1 0 0 1 40 0)`),
-  ...under(transform, [legStroke('M20 35.25V43.25', 'deep')]),
+/** The 3-leg stroked set (a side pair and the centre) in `transform`'s space, strokes `width` wide: thick round-capped strokes, all drawn under the body, that stay legible at 32px. */
+const strokeLegs = (transform: string, width = '5.5'): LogoElement[] => [
+  ...strokeLegSide(transform, width),
+  ...strokeLegSide(`${transform} matrix(-1 0 0 1 40 0)`, width),
+  ...under(transform, [legStroke('M20 35.25V43.25', 'deep', width)]),
 ];
 /** What the stroked-leg arts draw over the screen: the prompt, arm and baton (the legs sit under the body). */
 const OVER_SCREEN_NO_LEGS = [...GLYPHS, CURSOR, ARM, BATON];
@@ -135,6 +124,16 @@ export const TILE: Art = {
   elements: [
     ...strokeLegs(TILE_TRANSFORM),
     ...under(TILE_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...OVER_SCREEN_NO_LEGS]),
+  ],
+};
+
+/** The 16px art: the favicon and the app switcher's Conductor entry. Its transform snaps the body and the white face to whole pixels, and its legs are thicker (about 2px) so they stay distinct. */
+const FAV16_TRANSFORM = 'translate(2 2.8) scale(0.275)';
+export const FAV16: Art = {
+  viewBox: '0 0 16 16',
+  elements: [
+    ...strokeLegs(FAV16_TRANSFORM, '7'),
+    ...under(FAV16_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...OVER_SCREEN_NO_LEGS]),
   ],
 };
 
