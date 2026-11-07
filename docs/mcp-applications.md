@@ -75,7 +75,7 @@ How JSON format differs from text:
 | `TOOL_ERROR` | thrown with neither a code nor a status (e.g. `describe_session` with an empty `sessionId`) | `result`, `isError:true` | `200` |
 | `TOOL_UNKNOWN` | no such tool, including one the host platform's capabilities omit | error `-32602` | `404` |
 | `TOOL_UNAVAILABLE_IN_FORMAT` | a plugin tool with no `outputSchema`, called in JSON format; the child is not contacted | error `-32602` | `404` |
-| `TOOL_UNAVAILABLE_IN_FORMAT` | the bridge's race guard: the tool was listed typed, but the active manifest no longer declares its `outputSchema` when the call runs; the child is not contacted | `result`, `isError:true` | `200` |
+| `TOOL_UNAVAILABLE_IN_FORMAT` | the bridge's race guard: the active manifest stops declaring its `outputSchema` between the tool set's composition and the forward; the tool is never forwarded | `result`, `isError:true` | `200` |
 | `ARGS_INVALID` | `validateArgs` refused the arguments; on the alias also a body that is not a JSON object | error `-32602` | `400` |
 | `CALLER_UNKNOWN` | the `/mcp/<sessionId>` segment | error `-32001` | `404` |
 | `FORMAT_INVALID` | `?format=` | error `-32600` | `400` (the alias serves JSON only, so `text` is refused too) |
@@ -108,7 +108,7 @@ How JSON format differs from text:
 - **Success:** `200` + the `structuredContent` object itself, with no envelope.
 - **Refusal or thrown error:** `200` + the refusal object.
 - **Faults:** the statuses in the table above.
-- **A bridged plugin tool:** a typed one (manifest `outputSchema`) answers like a core tool: `200` + its object; a tool-level failure is `200` + the refusal object, with the plugin's own `code` or `TOOL_ERROR`. An untyped one is `404` `TOOL_UNAVAILABLE_IN_FORMAT`; one whose manifest dropped its `outputSchema` after the listing is `200` + the refusal object with that code (the bridge's race guard).
+- **A bridged plugin tool:** a typed one (manifest `outputSchema`) answers like a core tool: `200` + its object; a tool-level failure is `200` + the refusal object, with the plugin's own `code` or `TOOL_ERROR`. An untyped one is `404` `TOOL_UNAVAILABLE_IN_FORMAT`; one whose manifest stops declaring its `outputSchema` between the tool set's composition and the forward is `200` + the refusal object with that code (the bridge's race guard).
 - **Content type:** `content-type: application/json` is required, empty body included, and is checked before anything else.
 - **No Origin or Host check.** `/mcp` has none either. The only cross-site barrier is that a browser's "simple" POST cannot send `application/json`, and the alias refuses anything else with `415` rather than ignoring the body.
 
@@ -186,7 +186,7 @@ The generator accepts only the schema vocabulary `src/mcp/outputSchemas.ts` decl
 - No success schema has a top-level `ok:false`, so success shapes that read like failures are **returned**: `sync_worktree`'s `{ok:true, action:'commit-required' | 'rebase-conflict'}`, `renew_session`'s `{requested:true}`, `playbook_state`'s `{tracked:false}`, a non-zero `exitCode` from `project_bash` / `system_bash`.
 - A transport failure is the runtime's own exception, unwrapped: Python `urllib.error.URLError`, Node `TypeError: fetch failed`.
 
-**Plugin tools** have no method and no types: methods and types cover core tools only. Call a typed plugin tool (one whose manifest declares `outputSchema`, so it is in `GET …/tools`) with `call('<plugin-id>__<tool>', {…})`; it returns the tool's object. A plugin's tool-level failure is **raised** as `ConductorError` with the plugin's code (or `TOOL_ERROR`), like a core refusal. An untyped plugin tool raises `ConductorError` `TOOL_UNAVAILABLE_IN_FORMAT` with `status: 404`; one whose manifest dropped its `outputSchema` after the listing raises the same code with `status: 200`.
+**Plugin tools** have no method and no types: methods and types cover core tools only. Call a typed plugin tool (one whose manifest declares `outputSchema`, so it is in `GET …/tools`) with `call('<plugin-id>__<tool>', {…})`; it returns the tool's object. A plugin's tool-level failure is **raised** as `ConductorError` with the plugin's code (or `TOOL_ERROR`), like a core refusal. An untyped plugin tool raises `ConductorError` `TOOL_UNAVAILABLE_IN_FORMAT` with `status: 404`; one whose manifest stops declaring its `outputSchema` between the tool set's composition and the forward raises the same code with `status: 200`.
 
 ## Env vars
 
