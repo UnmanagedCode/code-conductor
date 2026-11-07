@@ -87,7 +87,7 @@ import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance, materi
 import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // The DEFAULT is imported rather than restated: a second copy of the level this
 // field is born at would drift from the allow-list that validates it. Safe as a
-// runtime edge — playbooks.ts reaches only projects/fragmentCatalog/playbookLedger
+// runtime edge — playbooks.ts reaches only projects/fragmentCatalog/playbookState
 // at module scope, and the tool registry through a lazy dynamic import, so nothing
 // here closes a cycle. The allow-list itself (PLAYBOOK_ENFORCEMENT_MODES) is still
 // applied at the ingress boundaries — the spawn route and the WS toggle — not here.
@@ -123,7 +123,7 @@ import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { hostPlatform, type Platform } from './platform/index.ts';
-import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, ModelSwitchState, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
+import type { Actor, CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, LaunchCause, ModelSwitchState, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
 import type { UiEvent, UiEventOf, UserEchoAttachment, PromptAuthor } from '../shared/uiEvent.ts';
 import { authorMarkerBlock, combineAuthors, quoteHumanPrompts, type HumanPromptQuote } from './promptAuthor.ts';
 import type { WorktreeMeta } from './worktrees.ts';
@@ -385,6 +385,9 @@ export function softInterruptDeadlineMs(): number {
 // (src/mcp/handlers.ts) — and a second spelling of the rule is how they would
 // drift apart. A dead instance retained in byId (non-temp exits are kept
 // indefinitely, so respawn can resume them) is NOT a live worker.
+// The default event-log actor: nothing a person or a conductor asked for.
+const SYSTEM_ACTOR: Actor = Object.freeze({ type: 'system' });
+
 export function isDeadStatus(status: unknown): boolean {
   return status === 'exited' || status === 'crashed';
 }
@@ -802,6 +805,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   _turnNudgeChain: boolean;
   _lastTurnEndNudgeChain: boolean;
   _renewalNudgeChain: boolean;
+  // Event-log attribution (src/mcp/sessionRecorder.ts). `_sessionOpen`: a launch
+  // was announced and its exit edge has not fired. `_exitActor`: who commanded
+  // the coming exit (kill/remove), else `system`. `_turnActor`: who prompted the
+  // turn _setStatus is entering, set only around prompt()'s transition.
+  _sessionOpen = false;
+  _exitActor: Actor | null = null;
+  _turnActor: Actor | null = null;
   // Epoch ms until which the last live rate_limit_event reported overage use
   // (+Infinity when it named no reset; 0 once one reports none). The only
   // server-side record of overage under `onOverage: 'none'`, read by the
@@ -1507,13 +1517,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Same shape as setAutoApprovePlan: no-op on an unchanged value, otherwise
-  // assign and broadcast. The broadcast is load-bearing beyond the UI — the
-  // playbook gate watches the manager's 'status' stream to ledger the change,
-  // so whichever surface flips the toggle gets recorded without knowing about
-  // the ledger.
-  setPlaybookEnforcement(mode: PlaybookEnforcement): void {
+  // assign and broadcast. `enforcement_changed` is what the event log records
+  // the change from (src/mcp/sessionRecorder.ts), so whichever surface flips
+  // the toggle gets recorded without knowing the log exists.
+  setPlaybookEnforcement(mode: PlaybookEnforcement, { actor = SYSTEM_ACTOR }: { actor?: Actor } = {}): void {
     if (this.playbookEnforcement === mode) return;
     this.playbookEnforcement = mode;
+    this.emit('enforcement_changed', { to: mode, actor });
     this.emit('status', this.summary());
   }
 
@@ -1739,6 +1749,16 @@ export class Instance extends EventEmitter implements InstanceLike {
   _setStatus(next: string): void {
     if (this.status === next) return;
     this.status = next;
+    // The session's exit edge: once per announced launch (`_sessionOpen`), so a
+    // repeated dead status (exited then crashed) is the same death, and an
+    // instance that never launched — a refused launch, a dead husk — has none.
+    // Before this transition's `status` frame, like the launch it closes.
+    if (isDeadStatus(next) && this._sessionOpen) {
+      this._sessionOpen = false;
+      const actor = this._exitActor ?? SYSTEM_ACTOR;
+      this._exitActor = null;
+      this.emit('session_exited', { status: next as 'exited' | 'crashed', actor });
+    }
     // Any exit from `turn` ends an in-flight soft interrupt — the turn either
     // finished on its own (turn_end → idle) or the process died. This is also
     // what closes the "turn ends before the boundary" race BY CONSTRUCTION: the
@@ -1803,8 +1823,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       // one entry per owner here, so prompted and unprompted turns re-arm
       // identically (an auto-approved plan rolling into implementation needs no
       // conductor call) and so the arm is synchronous inside prompt() — there is
-      // no window for a fast turn_end to land in.
-      this.emit('turn_start');
+      // no window for a fast turn_end to land in. The actor is who prompted the
+      // turn (prompt() sets it around its transition); unprompted is `system`.
+      this.emit('turn_start', { actor: this._turnActor ?? SYSTEM_ACTOR });
     }
     this.emit('status', this.summary());
   }
@@ -2183,7 +2204,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._fuse = fuse;
   }
 
-  async launch({ resume }: { resume?: string } = {}): Promise<void> {
+  // `cause` names why a non-fresh launch re-enters the session (absent for a
+  // plain resume), or `fork` for a fork's first launch; `actor` who asked.
+  async launch({ resume, cause, actor = SYSTEM_ACTOR }: { resume?: string; cause?: LaunchCause; actor?: Actor } = {}): Promise<void> {
     // THE one mint site in the codebase. It lives here rather than in spawn()
     // because minting is async (it persists the lineage row under the store
     // lock) and must complete BEFORE the process starts and before the first
@@ -2276,15 +2299,19 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._fuse.unionBinary = await ensureUnionBinary();
       await this._fuse.prepare();
     }
-    // THE one place that knows a launch re-enters an existing session: resume,
+    // THE one place every launch is announced: a fresh spawn as `start`; resume,
     // respawn, prune/rewind rotations, model-switch relaunch and restart restore
-    // all arrive here non-fresh. It sits AFTER every refusal site above, so a
-    // launch that is refused never reports a return, and BEFORE this launch's
-    // first `status` emission — the hydrate below can emit one, and a listener
-    // that tracks live/dead edges (the playbook gate) must see the relaunch
-    // first. `sessionId` is already the public id here: the manager pins it
-    // before launch() on a resume, and a relaunch keeps the one it minted.
-    if (!fresh && typeof this.sessionId === 'string' && this.sessionId) this.emit('relaunch');
+    // arrive here non-fresh, as `resume` (a fork's resume of its new transcript
+    // is the forked session's `start`). It sits AFTER every refusal site above,
+    // so a refused launch is never announced, and BEFORE this launch's first
+    // `status` emission — the hydrate below can emit one. `sessionId` is already
+    // the public id here: minted above, pinned by the manager before launch()
+    // on a resume, or kept by a relaunch.
+    if (typeof this.sessionId === 'string' && this.sessionId) {
+      this._sessionOpen = true;
+      this._exitActor = null;
+      this.emit('launch', { event: fresh || cause === 'fork' ? 'start' : 'resume', ...(cause ? { cause } : {}), actor });
+    }
     if (!fresh && !this.conducted) {
       await this._hydrateAwaitingUser((resume ?? this.backingSessionId) as string);
     }
@@ -3107,6 +3134,7 @@ export class Instance extends EventEmitter implements InstanceLike {
           }));
         }
         this._setStatus('idle');
+        if (!ev.parentToolUseId) this.emit('turn_ended', { ...(typeof ev.stopReason === 'string' ? { stopReason: ev.stopReason } : {}) });
         this._idleWindowDirty = false; // fresh idle window starts clean
         // This turn's plan-file writes stop corroborating the next turn's
         // inline plans. plan_request and turn_end are distinct events in this
@@ -3623,7 +3651,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     // case is the one the hub's survived-a-wake check deliberately does not clear,
     // which is why this clear is not redundant with it.
     this._turnForceAborted = false;
+    // Who started the turn, read by _setStatus's `turn_start` and cleared at
+    // once, so a steer into a running turn (no transition) leaks no actor. An
+    // orchestrator-injected prompt (`internal`) is the system's, whatever
+    // authors it carries.
+    this._turnActor = internal ? null
+      : author === 'human' ? { type: 'human' }
+      : author === 'conductor' ? { type: 'conductor', ...(this.rootOwnerSessionId ? { sessionId: this.rootOwnerSessionId } : {}) }
+      : null;
     this._setStatus('turn');
+    this._turnActor = null;
     // A real message steered into a chain turn makes it real.
     this._turnNudgeChain = wasTurn ? (this._turnNudgeChain && chain) : chain;
   }
@@ -3973,7 +4010,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         // it is a known-wrong reading (prune's rule). Consumed by the relaunch's
         // replay, which only a resume runs.
         this._skipUsageSeed = resumable;
-        await this._relaunchSegment(segment, resumable);
+        await this._relaunchSegment(segment, resumable, 'model-switch');
         await this._awaitRelaunchConfirmed();
       } catch (err) {
         const cancelled = this._procEnded !== replacedLatch && this._killing;
@@ -4010,7 +4047,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         try {
           // The ledger already holds the failure, so this replay splices its
           // divider exactly once — no live emit.
-          await this._relaunchSegment(segment, resumable);
+          await this._relaunchSegment(segment, resumable, 'model-switch');
           await this._awaitRelaunchConfirmed();
         } catch (again) {
           if (this.proc) await this.kill({ graceMs: 300 }).catch(() => {});
@@ -4085,13 +4122,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // conversation has nothing to `--resume` (the CLI would exit): relaunch under
   // the same id with `--session-id`, after removing the stub the CLI would
   // refuse that id over and any stale sub-agent dir.
-  async _relaunchSegment(segment: string, resumable: boolean, wipeExtra: Record<string, unknown> = {}): Promise<void> {
+  async _relaunchSegment(segment: string, resumable: boolean, cause: 'rewind' | 'model-switch', wipeExtra: Record<string, unknown> = {}): Promise<void> {
     this._wipeForResume(wipeExtra);
-    if (resumable) { await this.launch({ resume: segment }); return; }
+    if (resumable) { await this.launch({ resume: segment, cause }); return; }
     await fsp.rm(sessionFilePath(this.transcriptPlace, segment), { force: true });
     await fsp.rm(subAgentDirPath(this.transcriptPlace, segment), { recursive: true, force: true });
     await this._seedUnanchoredSwitches(segment);
-    await this.launch({});
+    await this.launch({ cause });
   }
 
   // After a wipe that NO replay follows (`launch({})`): put the segment's
@@ -4545,7 +4582,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._controlRequest({ subtype: 'interrupt' }, { timeout: CLEAN_STOP_GRACE_MS }).catch(() => {});
   }
 
-  async kill({ graceMs = 2000 }: { graceMs?: number } = {}): Promise<void> {
+  async kill({ graceMs = 2000, actor }: { graceMs?: number; actor?: Actor } = {}): Promise<void> {
+    // Attributed to the exit edge this kill causes (_setStatus).
+    if (actor) this._exitActor = actor;
     if (!this.proc) {
       // A SESSION CAN HOLD A PREPARED FuseSession WITH NO PROCESS. launch()
       // creates the run directory and starts listening on the control socket
@@ -4666,7 +4705,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // Fresh vs resume is chosen by resumability (isResumableLine), not line
       // count. `droppedText` rides on the wipe's snapshot_reset frame so the
       // client can prefill the composer without racing the HTTP response.
-      await this._relaunchSegment(backingId, result.resumable, { droppedText: result.droppedText });
+      await this._relaunchSegment(backingId, result.resumable, 'rewind', { droppedText: result.droppedText });
       await this._awaitRelaunchConfirmed();
 
       return { droppedText: result.droppedText };
@@ -4998,7 +5037,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._segments.push(newSid);
       // The public id is pinned across this rotation — only backingSessionId
       // moves, and spawn() sets it from `resume`.
-      await this.launch({ resume: newSid });
+      await this.launch({ resume: newSid, cause: 'prune' });
       await this._awaitRelaunchConfirmed();
       // Archive the pre-prune transcript now that the pruned one is running (the
       // new segment already inherited temp in recordRotation). Awaited so the
@@ -5034,7 +5073,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._skipUsageSeed = false;
       this.backingSessionId = oldSid;
       try {
-        await this.launch({ resume: oldSid });
+        await this.launch({ resume: oldSid, cause: 'prune' });
         await this._awaitRelaunchConfirmed();
       } catch {
         // Both relaunches failed: nothing left running, and the window's close
@@ -5836,7 +5875,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, pristine, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
+  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, pristine, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill, actor, launchCause }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -6515,9 +6554,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // The overage guard runs AFTER onTurnStart, deliberately: onTurnStart owns the
     // survived-a-wake / consumeTurnForceAborted bookkeeping, and severing before it
     // would make `survived` read false and change the abort qualifier's lifetime.
-    inst.on('turn_start', () => {
+    inst.on('turn_start', ({ actor: turnActor }: { actor: Actor }) => {
       this._idleHub.onTurnStart(inst.id);
       this._guardOverageTurnStart(inst);
+      if (inst.sessionId) this.emit('turn_started', { sessionId: inst.sessionId, conducted: inst.conducted, project: inst.project, actor: turnActor });
+    });
+    inst.on('turn_ended', ({ stopReason }: { stopReason?: string }) => {
+      if (inst.sessionId) {
+        this.emit('turn_ended', { sessionId: inst.sessionId, conducted: inst.conducted, project: inst.project, ...(stopReason !== undefined ? { stopReason } : {}) });
+      }
     });
     // A user/MCP-driven turn cancels any pending overage auto-resume. If the
     // turn is a manual takeover of an overage-stopped session, it also clears
@@ -6589,8 +6634,20 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     });
     inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));
     inst.on('turn_marks', () => this.emit('turn_marks', { id }));
-    inst.on('relaunch', () => {
-      if (inst.sessionId) this.emit('session_relaunched', { sessionId: inst.sessionId, conducted: inst.conducted });
+    // The event log's lifecycle feed (src/mcp/sessionRecorder.ts), relayed with
+    // the session's public id and the facts that scope it.
+    inst.on('launch', (l: { event: 'start' | 'resume'; cause?: LaunchCause; actor: Actor }) => {
+      if (inst.sessionId) {
+        this.emit('session_launched', {
+          sessionId: inst.sessionId, conducted: inst.conducted, project: inst.project, playbookEnforcement: inst.playbookEnforcement, ...l,
+        });
+      }
+    });
+    inst.on('session_exited', (x: { status: 'exited' | 'crashed'; actor: Actor }) => {
+      if (inst.sessionId) this.emit('session_exited', { sessionId: inst.sessionId, conducted: inst.conducted, project: inst.project, ...x });
+    });
+    inst.on('enforcement_changed', (c: { to: string; actor: Actor }) => {
+      if (inst.sessionId) this.emit('enforcement_changed', { sessionId: inst.sessionId, project: inst.project, ...c });
     });
     // The first prompt: presence no longer matters, and a hidden conductor is listed now.
     inst.on('pristine_ended', () => {
@@ -6644,7 +6701,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // explicit value, a fresh conductor starts at the Settings default — read
     // live (the catalog does not cache), so it lands on the next spawn without a
     // server restart. Set before launch() below, so the first status frame — the
-    // one the gate ledgers off — already carries it.
+    // one the event log's `config` birth reads — already carries it.
     if (playbookEnforcement) inst.playbookEnforcement = playbookEnforcement;
     else if (isConductorInstance(inst)) inst.playbookEnforcement = await getDefaultPlaybookEnforcement();
     // Fork prefill: the dropped prompt rides the new instance's first
@@ -6659,7 +6716,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       const segs = (await segmentsFor(publicId)).map(seg => seg.id);
       inst._segments = segs.length > 0 ? segs : [resume as string];
     }
-    await inst.launch({ resume });
+    await inst.launch({ resume, ...(launchCause ? { cause: launchCause } : {}), ...(actor ? { actor } : {}) });
     // The session is running again, so an earlier exit no longer describes it.
     // Guarded on `proc`: a relaunch that already died again recorded its own cause.
     if (publicId && inst.proc) this._exitCauses.delete(publicId);
@@ -7188,7 +7245,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  async respawn(id: string): Promise<Instance> {
+  async respawn(id: string, { actor }: { actor?: Actor } = {}): Promise<Instance> {
     const inst = this.byId.get(id);
     if (!inst) {
       throw httpError(404, 'instance not found');
@@ -7234,7 +7291,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // prefix of it.
     inst._relaunching = true;
     try {
-      await inst.launch({ resume: sessionId });
+      await inst.launch({ resume: sessionId, cause: 'respawn', ...(actor ? { actor } : {}) });
     } finally {
       inst._relaunching = false;
     }
@@ -7242,7 +7299,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return inst;
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, { actor }: { actor?: Actor } = {}): Promise<void> {
     const inst = this.byId.get(id);
     if (!inst) {
       throw httpError(404, 'instance not found');
@@ -7251,7 +7308,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // session's mount scaffolding and it handles the no-process case itself: an
     // instance removed after a failed launch still owns a run directory and a
     // listening control socket, both created BEFORE spawn().
-    await inst.kill({ graceMs: 500 });
+    await inst.kill({ graceMs: 500, ...(actor ? { actor } : {}) });
     // Independently of the kill: an instance can be removed with no live
     // process (it crashed, or it already exited), and a command it still has
     // running on the remote system would then outlive every reference to the
@@ -7278,7 +7335,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // running inside worktrees of that project). Used by the
   // project-delete endpoint. Failures are swallowed — we're tearing
   // everything down anyway.
-  async removeAllForProject(projectName: string): Promise<number> {
+  async removeAllForProject(projectName: string, { actor }: { actor?: Actor } = {}): Promise<number> {
     const victims = [...this.byId.values()].filter(i => i.project === projectName);
     const removing = new Set(victims.map(i => i.id));
     await Promise.all(victims.map(async (i) => {
@@ -7288,7 +7345,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // prepare() and spawn() still owns a run directory and a LISTENING
       // control socket, and gating on `proc` leaves both for the orchestrator's
       // lifetime.
-      try { await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
+      try { await i.kill({ graceMs: 200, ...(actor ? { actor } : {}) }); } catch { /* ignore */ }
       try { await i._redirect?.close(); } catch { /* ignore */ }
       // Same reason as remove(): the directory holds this session's command
       // output and nothing else will reap it.

@@ -1,6 +1,6 @@
 // The `wake_delivered` manager event: what IdleSubscriptionHub.deliver() tells
-// the playbook gate so a delivered wake can be ledgered without the hub ever
-// importing the ledger. Driven over a stub manager — the hub's constructor only
+// the playbook gate so a delivered wake can be logged without the hub ever
+// importing the event log. Driven over a stub manager — the hub's constructor only
 // builds maps — with a caller whose status is 'turn' and which accepts mid-turn
 // steering, so deliver() takes the plain-stub path (no transcript read).
 

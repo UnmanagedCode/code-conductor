@@ -54,7 +54,7 @@ export function playbookOptions(data: ConventionsPayload) {
 
 export const ENFORCEMENT_LABELS: Record<string, string> = {
   enforce: 'Enforce — off-graph calls are refused',
-  warn: 'Warn — off-graph calls are ledgered and proceed',
+  warn: 'Warn — off-graph calls are logged and proceed',
 };
 
 function ConductorPlaybookPrefs({ data }: { data: ConventionsPayload }) {

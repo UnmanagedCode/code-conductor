@@ -302,7 +302,7 @@ type Outcome =
 
 // THE tools/call core: lookup → argument validation → the four prefix-
 // resolution passes → playbook policy → project-ref validation → handler →
-// ledger commit. Shared by JSON-RPC tools/call and the REST alias, so both run
+// event-log commit. Shared by JSON-RPC tools/call and the REST alias, so both run
 // one validation, one gate and one handler path. TOTAL: it never rejects —
 // every way a call can end is an Outcome, so neither transport has a path
 // where a throw escapes it.
@@ -413,6 +413,9 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
   const gate = await ctx.playbookGate.check({ toolName: name, args, callerId: ctx.callerId, resumeHandle });
   if ('refusal' in gate) return { kind: 'refused', body: { ...gate.refusal }, tool };
   args = gate.args;
+  // Set once the handler returned, so a later throw (rendering) is not
+  // recorded as the call failing after commit() recorded it.
+  let handled = false;
   try {
     // Every core tool's `project` names an existing project (creation takes
     // `name`), so a malformed one — most often a path — is refused here with
@@ -423,12 +426,15 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
       validateProjectRef(args.project);
     }
     const value = await tool.handler(args, ctx);
-    // Ledger the move only now that it has actually happened. A throw skips
-    // this entirely (see the catch below); a soft refusal is filtered inside
-    // commit(). The gate reads the data, never a rendering.
+    handled = true;
+    // Record the call only now that it has actually happened: commit() writes
+    // its row (an `ok:false` result as failed), and a throw is recorded by
+    // fail() in the catch below — one row either way. The gate reads the
+    // data, never a rendering, so every format records the same row once.
     if (gate.commit) await gate.commit(isDual(value) ? value.json : value);
     return { kind: 'result', value, tool };
   } catch (e) {
+    if (!handled && gate.fail) await gate.fail(e);
     return { kind: 'error', error: e, tool };
   }
 }

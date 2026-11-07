@@ -360,7 +360,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
           }
           case 'kill': {
             if (!inst) { reply(false, 'unknown instance'); return; }
-            await inst.kill();
+            await inst.kill({ actor: { type: 'human' } });
             reply(true);
             return;
           }
@@ -396,7 +396,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
               reply(false, `mode must be one of ${PLAYBOOK_ENFORCEMENT_MODES.join(' | ')}`);
               return;
             }
-            inst.setPlaybookEnforcement(msg.mode);
+            inst.setPlaybookEnforcement(msg.mode, { actor: { type: 'human' } });
             reply(true);
             return;
           }

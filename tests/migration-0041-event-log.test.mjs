@@ -1,0 +1,167 @@
+// Migration 0041: playbook-ledger.jsonl → events.jsonl. Pins the mapping row
+// by row, that the converted rows fold to the playbook state the old fold
+// produced, the move-aside, idempotence, crash resume, and the refusal when
+// both files exist and differ.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as m0041 from '../migrations/0041-event-log.mjs';
+import { runMigrations } from '../migrations/index.mjs';
+import { readEventLog } from '../src/eventLog.ts';
+import { equivalenceSides } from './legacy-ledger-oracle.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+
+// The whole chain runs below, and migration 0004 reads $HOME — never the real one.
+process.env.HOME = await mkdtemp('cc-mig41-home-');
+
+const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'playbook-ledger-0041.jsonl');
+const RAW = await fs.readFile(FIXTURE, 'utf8');
+
+async function mkRoot() {
+  const root = await mkdtemp('cc-m0041-');
+  await fs.mkdir(path.join(root, '.code-conductor'), { recursive: true });
+  await fs.writeFile(path.join(root, '.code-conductor', 'playbook-ledger.jsonl'), RAW);
+  return root;
+}
+const store = (root) => path.join(root, '.code-conductor');
+const newFile = (root) => path.join(store(root), 'events.jsonl');
+const oldFile = (root) => path.join(store(root), 'playbook-ledger.jsonl');
+const backup = (root) => path.join(store(root), 'migrated-backup-0041', 'playbook-ledger.jsonl');
+const exists = (p) => fs.access(p).then(() => true, () => false);
+
+const C1 = 'c1000000-0000-4000-8000-000000000001';
+const C2 = 'c2000000-0000-4000-8000-000000000002';
+const W0 = 'w0000000-0000-4000-8000-000000000000';
+const W2 = 'w2000000-0000-4000-8000-000000000002';
+const W3 = 'w3000000-0000-4000-8000-000000000003';
+const GHOST = 'ghost000-0000-4000-8000-000000000000';
+const ts = (s) => `2026-08-06T05:00:${String(s).padStart(2, '0')}.000Z`;
+const COND = { type: 'conductor' };
+const SYS = { type: 'system' };
+
+// One expected row per fixture line, in file order; the unknown kind and the
+// torn last line are skipped.
+const EXPECTED = [
+  { v: 1, ts: ts(0), kind: 'config', actor: SYS, subject: C1, key: 'enforcement', to: 'warn' },
+  { v: 1, ts: ts(1), kind: 'config', actor: SYS, subject: C1, key: 'enforcement', from: 'off', to: 'warn' },
+  { v: 1, ts: ts(2), kind: 'call', actor: COND, tool: 'spawn_instance', outcome: 'refused',
+    refusal: { code: 'PLAYBOOK_UNKNOWN', reason: 'this spawn has no `needs`, so it starts a new run and must name a `playbook`.' } },
+  { v: 1, ts: ts(3), kind: 'call', actor: COND, subject: W0, tool: 'spawn_instance', outcome: 'ok', bind: { playbook: 'classic', stage: 'plan', project: 'demo', worktree: 'wt-a' } },
+  { v: 1, ts: ts(4), kind: 'call', actor: COND, subject: W0, tool: 'spawn_instance', outcome: 'ok', bind: { playbook: 'classic', stage: 'plan', project: 'demo', worktree: 'wt-a' } },
+  { v: 1, ts: ts(5), kind: 'call', actor: COND, subject: W2, tool: 'spawn_instance', outcome: 'ok', bind: { playbook: 'classic', stage: 'review', provenance: { implement: W0 }, project: 'demo' } },
+  { v: 1, ts: ts(6), kind: 'call', actor: COND, subject: W0, tool: 'approve_plan', outcome: 'ok', move: { from: 'plan', to: 'implement' } },
+  { v: 1, ts: ts(7), kind: 'call', actor: COND, subject: W0, tool: 'send_prompt', outcome: 'ok', forward: W2 },
+  { v: 1, ts: ts(8), kind: 'call', actor: COND, subject: W0, tool: 'send_prompt', outcome: 'ok' },
+  { v: 1, ts: ts(9), kind: 'call', actor: COND, subject: W0, tool: 'send_prompt', outcome: 'ok', move: { from: 'implement', to: 'refine', provenance: { review: W2 } } },
+  { v: 1, ts: ts(10), kind: 'call', actor: COND, subject: W0, tool: 'send_prompt', outcome: 'refused', refusal: { code: 'TRANSITION_ILLEGAL', reason: 'no edge refine -> plan' }, forward: W2 },
+  { v: 1, ts: ts(11), kind: 'call', actor: { type: 'conductor', sessionId: C1 }, subject: W2, tool: 'set_mode', outcome: 'ok' },
+  { v: 1, ts: ts(12), kind: 'call', actor: { type: 'conductor', sessionId: C1 }, subject: W2, tool: 'send_prompt', outcome: 'ok', forward: W0 },
+  { v: 1, ts: ts(13), kind: 'session', actor: SYS, subject: W2, event: 'exit', cause: 'exited' },
+  { v: 1, ts: ts(14), kind: 'session', actor: SYS, subject: W2, event: 'resume' },
+  { v: 1, ts: ts(15), kind: 'wake', actor: SYS, subject: W2, recipient: C1, heartbeat: true },
+  { v: 1, ts: ts(16), kind: 'wake', actor: SYS, subject: W0, recipient: C1 },
+  { v: 1, ts: ts(17), kind: 'session', actor: SYS, subject: W0, event: 'exit', cause: 'crashed' },
+  { v: 1, ts: ts(18), kind: 'session', actor: SYS, subject: W3, event: 'exit', cause: 'orphaned' },
+  { v: 1, ts: ts(19), kind: 'config', actor: SYS, subject: C1, key: 'enforcement', from: 'warn', to: 'enforce' },
+  { v: 1, ts: ts(20), kind: 'config', actor: SYS, subject: C2, key: 'enforcement', to: 'off' },
+  { v: 1, ts: ts(21), kind: 'config', actor: SYS, subject: C1, key: 'enforcement', to: 'enforce' },
+  { v: 1, ts: ts(22), kind: 'call', actor: COND, subject: GHOST, tool: 'approve_plan', outcome: 'ok', move: { from: 'plan', to: 'implement' } },
+];
+
+test('the mapping, row by row: kinds, actors, subjects, causes, the self-loop without move, dropped needs and seq, line order and ts kept', async () => {
+  const root = await mkRoot();
+  const r = await m0041.run({ root });
+  assert.equal(r.applied, true);
+  const lines = (await fs.readFile(newFile(root), 'utf8')).split('\n').filter(Boolean);
+  assert.deepEqual(lines.map(l => JSON.parse(l)), EXPECTED);
+  // Fixed key order: the envelope first, exactly as the writer serialises it.
+  for (const l of lines) assert.deepEqual(Object.keys(JSON.parse(l)).slice(0, 4), ['v', 'ts', 'kind', 'actor']);
+  for (const l of lines) assert.ok(!/"seq"|"needs"|null/.test(l), l);
+  assert.deepEqual(r.summary, {
+    rows: EXPECTED.length,
+    byKind: { config: 5, call: 12, session: 4, wake: 2 },
+    skippedMalformed: 1, skippedUnknown: 1, droppedNeeds: 2, selfLoops: 2, droppedSelfLoopProvenance: 0,
+  });
+  // The converted file is valid event-log input for the real reader.
+  assert.equal((await readEventLog(newFile(root))).length, EXPECTED.length);
+});
+
+test('EQUIVALENCE: the converted rows fold to the old fold\'s state — stageHistory with consecutive repeats collapsed, everything else exact', async () => {
+  const root = await mkRoot();
+  await m0041.run({ root });
+  const { legacy, converted } = equivalenceSides(RAW, await fs.readFile(newFile(root), 'utf8'));
+  assert.deepEqual(converted, legacy);
+  // Premises — the fixture exercises what the comparison is about.
+  assert.deepEqual(converted.sessions[W0].stageHistory, ['plan', 'implement', 'refine']);
+  assert.deepEqual(converted.sessions[W0].provenance, { review: W2 });
+  assert.equal(converted.sessions[W2].runRoot, converted.sessions[W0].runRoot);
+  assert.deepEqual(converted.enforcement, { [C1]: 'enforce', [C2]: 'off' });
+});
+
+test('the old file is moved aside byte-identical into migrated-backup-0041/, and a re-run is a no-op', async () => {
+  const root = await mkRoot();
+  await m0041.run({ root });
+  assert.equal(await exists(oldFile(root)), false);
+  assert.equal(await fs.readFile(backup(root), 'utf8'), RAW);
+  const after = await fs.readFile(newFile(root), 'utf8');
+  assert.deepEqual(await m0041.run({ root }), { applied: false });
+  assert.equal(await fs.readFile(newFile(root), 'utf8'), after);
+});
+
+test('a self-loop that carried a provenance loses it with its move, and is counted', () => {
+  const raw = JSON.stringify({ seq: 1, ts: ts(1), kind: 'transition', sessionId: W0, from: 'refine', to: 'refine', via: 'send_prompt', provenance: { review: W2 } }) + '\n';
+  const { text, summary } = m0041.convertLedger(raw);
+  assert.deepEqual(JSON.parse(text), { v: 1, ts: ts(1), kind: 'call', actor: COND, subject: W0, tool: 'send_prompt', outcome: 'ok' });
+  assert.equal(summary.selfLoops, 1);
+  assert.equal(summary.droppedSelfLoopProvenance, 1);
+});
+
+test('no ledger file at all → applied:false, and nothing is created', async () => {
+  const root = await mkdtemp('cc-m0041-empty-');
+  assert.deepEqual(await m0041.run({ root }), { applied: false });
+  assert.equal(await exists(newFile(root)), false);
+});
+
+test('crash resume: an events.jsonl identical to the conversion, old file still present → the move-aside completes', async () => {
+  const root = await mkRoot();
+  const { text } = m0041.convertLedger(RAW);
+  await fs.writeFile(newFile(root), text);
+  const r = await m0041.run({ root });
+  assert.equal(r.applied, true);
+  assert.equal(await fs.readFile(newFile(root), 'utf8'), text);
+  assert.equal(await exists(oldFile(root)), false);
+  assert.equal(await fs.readFile(backup(root), 'utf8'), RAW);
+});
+
+test('a backup name already taken gets a timestamp suffix rather than overwriting it', async () => {
+  const root = await mkRoot();
+  await fs.mkdir(path.dirname(backup(root)), { recursive: true });
+  await fs.writeFile(backup(root), 'an earlier backup');
+  await m0041.run({ root });
+  assert.equal(await fs.readFile(backup(root), 'utf8'), 'an earlier backup');
+  const names = await fs.readdir(path.dirname(backup(root)));
+  const stamped = names.filter(n => /^playbook-ledger\.jsonl-\d+$/.test(n));
+  assert.equal(stamped.length, 1);
+  assert.equal(await fs.readFile(path.join(path.dirname(backup(root)), stamped[0]), 'utf8'), RAW);
+});
+
+test('an events.jsonl that differs from the conversion is refused: both files stay untouched', async () => {
+  const root = await mkRoot();
+  await fs.writeFile(newFile(root), '{"v":1,"ts":"2026-11-01T00:00:00Z","kind":"wake","actor":{"type":"system"},"subject":"x","recipient":"y"}\n');
+  const before = await fs.readFile(newFile(root), 'utf8');
+  await assert.rejects(m0041.run({ root }), /both exist and differ/);
+  assert.equal(await fs.readFile(newFile(root), 'utf8'), before);
+  assert.equal(await fs.readFile(oldFile(root), 'utf8'), RAW);
+});
+
+test('the whole migration chain over the store, run twice: the second run is silent', async () => {
+  const root = await mkRoot();
+  await runMigrations({ root, log: () => {} });
+  assert.equal(await exists(newFile(root)), true);
+  const logs = [];
+  await runMigrations({ root, log: (m) => logs.push(m) });
+  assert.deepEqual(logs, []);
+});

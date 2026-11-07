@@ -446,6 +446,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         // which is why absorbing it here needs no migration.
         playbookEnforcement: normalizePlaybookEnforcement(e.playbookEnforcement),
         callerInstanceId: null,
+        launchCause: 'restore',
       });
       if (e.title) inst.setTitle(e.title);
       if (e.firstPrompt && !inst.firstPrompt) {

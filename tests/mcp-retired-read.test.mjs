@@ -249,7 +249,7 @@ test('the worker-addressing tools still refuse a retired worker SESSION_NOT_LIVE
 });
 
 // 7 — acceptance item 6. The playbook gate runs at the MCP boundary, BEFORE the
-// handler, and decideTargeted resolves its subject from the ledger projection,
+// handler, and decideTargeted resolves its subject from the playbook projection,
 // which is liveness-agnostic. A relaxed resolver must not become a policy
 // bypass: a stage that denies get_recent_messages still denies it for a worker
 // whose subprocess is gone.
@@ -281,7 +281,7 @@ test('a stage that denies get_recent_messages still denies it for a retired work
     await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
 
     // Retire it: seed the transcript, then kill the subprocess directly so the
-    // ledger subject survives while the process does not.
+    // projection's subject survives while the process does not.
     await seedSessionJsonl(localPlace(path.join(ctx.projectsRoot, 'p')), instForSession(ctx.instances, sid).backingSessionId, ONE_TURN);
     await instForSession(ctx.instances, sid).kill({ graceMs: 200 });
     await waitFor(() => !instForSession(ctx.instances, sid)?.proc);

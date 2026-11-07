@@ -66,6 +66,11 @@ export interface RootLock {
   // Resolves true once a higher generation exists or our record no longer
   // carries our token, false on the timeout or when `signal` aborts.
   awaitAdoption(opts: { timeoutMs: number; signal?: AbortSignal }): Promise<boolean>;
+  // Synchronous: null while this server is the root's sole writer — not
+  // released, its generation the highest, its record still its own and offering
+  // no handover — otherwise why not. The event log (src/eventLog.ts) checks it
+  // in the same step as each append.
+  writerCheck(): string | null;
   releaseSync(): void;
 }
 
@@ -420,6 +425,22 @@ function holdLock(
         if (signal?.aborted || Date.now() >= deadline) return false;
         await sleep(ADOPTION_POLL_MS);
       }
+    },
+    writerCheck() {
+      if (released) return 'the projects-root lock was released';
+      let top: number;
+      let raw: string | 'missing';
+      try {
+        top = maxGen(listGens(dir)) ?? 0;
+        raw = readRaw(file);
+      } catch (e) {
+        return `the projects-root lock cannot be read (${errCode(e) ?? String(e)})`;
+      }
+      if (top > gen) return `a newer server holds the projects root (generation ${top})`;
+      const rec = raw === 'missing' ? null : parseRootLockRecord(raw);
+      if (!rec || rec.token !== token) return 'the projects-root lock record is gone or no longer ours';
+      if (rec.handoverTo !== null) return 'the projects root is being handed over to a replacement server';
+      return null;
     },
     releaseSync() {
       if (released) return;

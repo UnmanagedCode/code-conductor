@@ -1,6 +1,6 @@
 // GET /api/instances' playbook-binding degrade path (src/routes.ts), isolated
-// from the real playbook gate/ledger: a fake gate whose readBindings() rejects
-// stands in for a torn ledger file. Pins two things review round 1 flagged —
+// from the real playbook gate and event log: a fake gate whose readBindings()
+// rejects stands in for an unreadable log file. Pins two things review round 1 flagged —
 // (a) a read failure degrades every row to null/null rather than 500ing the
 // whole instance list, and (b) it costs exactly ONE warning per request, not
 // one per row, which is what moving the read from per-row to a single batch
@@ -21,7 +21,7 @@ function fakeFailingGate() {
     calls: 0,
     readBindings() {
       this.calls++;
-      return Promise.reject(new Error('ledger read failed'));
+      return Promise.reject(new Error('event log read failed'));
     },
   };
 }

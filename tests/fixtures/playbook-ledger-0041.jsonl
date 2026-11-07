@@ -1,0 +1,25 @@
+{"seq":1,"ts":"2026-08-06T05:00:00.000Z","kind":"enforcement","conductorSessionId":"c1000000-0000-4000-8000-000000000001","from":null,"to":"warn"}
+{"seq":2,"ts":"2026-08-06T05:00:01.000Z","kind":"enforcement","conductorSessionId":"c1000000-0000-4000-8000-000000000001","from":"off","to":"warn"}
+{"seq":3,"ts":"2026-08-06T05:00:02.000Z","kind":"refusal","tool":"spawn_instance","code":"PLAYBOOK_UNKNOWN","reason":"this spawn has no `needs`, so it starts a new run and must name a `playbook`."}
+{"seq":4,"ts":"2026-08-06T05:00:03.000Z","kind":"spawn","sessionId":"w0000000-0000-4000-8000-000000000000","playbook":"classic","stage":"plan","project":"demo","worktree":"wt-a"}
+{"seq":5,"ts":"2026-08-06T05:00:04.000Z","kind":"spawn","sessionId":"w0000000-0000-4000-8000-000000000000","playbook":"classic","stage":"plan","project":"demo","worktree":"wt-a"}
+{"seq":6,"ts":"2026-08-06T05:00:05.000Z","kind":"spawn","sessionId":"w2000000-0000-4000-8000-000000000002","playbook":"classic","stage":"review","provenance":{"implement":"w0000000-0000-4000-8000-000000000000"},"project":"demo","needs":[{"stage":"implement"}]}
+{"seq":7,"ts":"2026-08-06T05:00:06.000Z","kind":"transition","sessionId":"w0000000-0000-4000-8000-000000000000","from":"plan","to":"implement","via":"approve_plan"}
+{"seq":8,"ts":"2026-08-06T05:00:07.000Z","kind":"transition","sessionId":"w0000000-0000-4000-8000-000000000000","from":"implement","to":"implement","via":"send_prompt","forwardSessionId":"w2000000-0000-4000-8000-000000000002"}
+{"seq":9,"ts":"2026-08-06T05:00:08.000Z","kind":"transition","sessionId":"w0000000-0000-4000-8000-000000000000","from":"implement","to":"implement","via":"send_prompt"}
+{"seq":10,"ts":"2026-08-06T05:00:09.000Z","kind":"transition","sessionId":"w0000000-0000-4000-8000-000000000000","from":"implement","to":"refine","via":"send_prompt","provenance":{"review":"w2000000-0000-4000-8000-000000000002"},"needs":[{"stage":"review"}]}
+{"seq":11,"ts":"2026-08-06T05:00:10.000Z","kind":"refusal","sessionId":"w0000000-0000-4000-8000-000000000000","forwardSessionId":"w2000000-0000-4000-8000-000000000002","tool":"send_prompt","code":"TRANSITION_ILLEGAL","reason":"no edge refine -> plan"}
+{"seq":12,"ts":"2026-08-06T05:00:11.000Z","kind":"interaction","tool":"set_mode","sessionId":"w2000000-0000-4000-8000-000000000002","conductorSessionId":"c1000000-0000-4000-8000-000000000001"}
+{"seq":13,"ts":"2026-08-06T05:00:12.000Z","kind":"interaction","tool":"send_prompt","sessionId":"w2000000-0000-4000-8000-000000000002","conductorSessionId":"c1000000-0000-4000-8000-000000000001","forwardSessionId":"w0000000-0000-4000-8000-000000000000"}
+{"seq":14,"ts":"2026-08-06T05:00:13.000Z","kind":"retire","sessionId":"w2000000-0000-4000-8000-000000000002","reason":"subprocess exited"}
+{"seq":15,"ts":"2026-08-06T05:00:14.000Z","kind":"resume","sessionId":"w2000000-0000-4000-8000-000000000002"}
+{"seq":15,"ts":"2026-08-06T05:00:15.000Z","kind":"wake","sessionId":"w2000000-0000-4000-8000-000000000002","conductorSessionId":"c1000000-0000-4000-8000-000000000001","heartbeat":true}
+{"seq":12,"ts":"2026-08-06T05:00:16.000Z","kind":"wake","sessionId":"w0000000-0000-4000-8000-000000000000","conductorSessionId":"c1000000-0000-4000-8000-000000000001"}
+{"seq":17,"ts":"2026-08-06T05:00:17.000Z","kind":"retire","sessionId":"w0000000-0000-4000-8000-000000000000","reason":"subprocess crashed"}
+{"seq":18,"ts":"2026-08-06T05:00:18.000Z","kind":"retire","sessionId":"w3000000-0000-4000-8000-000000000003","reason":"orphaned at boot: no live instance answered"}
+{"seq":19,"ts":"2026-08-06T05:00:19.000Z","kind":"enforcement","conductorSessionId":"c1000000-0000-4000-8000-000000000001","from":"warn","to":"enforce"}
+{"seq":20,"ts":"2026-08-06T05:00:20.000Z","kind":"enforcement","conductorSessionId":"c2000000-0000-4000-8000-000000000002","from":null,"to":"off"}
+{"seq":21,"ts":"2026-08-06T05:00:21.000Z","kind":"enforcement","conductorSessionId":"c1000000-0000-4000-8000-000000000001","from":null,"to":"enforce"}
+{"seq":22,"ts":"2026-08-06T05:00:22.000Z","kind":"transition","sessionId":"ghost000-0000-4000-8000-000000000000","from":"plan","to":"implement","via":"approve_plan"}
+{"seq":23,"ts":"2026-08-06T05:00:23.000Z","kind":"mystery","sessionId":"w0000000-0000-4000-8000-000000000000"}
+{"seq":24,"ts":"2026-08-06T05:00:24.000Z","kind":"spa

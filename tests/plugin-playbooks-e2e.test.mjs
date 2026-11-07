@@ -3,7 +3,7 @@
 // router with the fake claude engine. What the pure tests in
 // tests/plugin-playbooks.test.mjs cannot reach: server.ts's provider wiring, the
 // host's enable/disable driving the definitions every governed call reads, the
-// ledger binding surviving a disable, and spawn-time role resolution.
+// event-log binding surviving a disable, and spawn-time role resolution.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url';
 import {
   bootServer, api, waitFor, instForSession, seedSessionJsonl, registerLocalProject,
 } from './helpers.mjs';
-import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
+import { eventLogFile, readEventLog } from '../src/eventLog.ts';
+import { foldPlaybookState } from '../src/playbookState.ts';
+import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -78,7 +80,7 @@ async function writePlugin(projectsRoot, { id, roles, playbooks }) {
 let nextRpcId = 1;
 
 async function setup() {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  const ctx = await bootServer({ scenarioPath: SCENARIO, eventLogLease: OPEN_LEASE });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await writePlugin(ctx.projectsRoot, {
     id: 'acme',
@@ -134,7 +136,7 @@ async function setup() {
       await waitFor(() => instForSession(ctx.instances, out.sessionId)?.sessionId);
       return out;
     },
-    events: () => readEvents(ledgerFile()),
+    events: () => readEventLog(eventLogFile()),
   };
 }
 
@@ -153,11 +155,11 @@ test('a plugin playbook is listed, spawnable under its own role pin, survives a 
     assert.equal(listed.playbooks.find(p => p.id === 'relay')?.plugin, undefined, 'a built-in carries no plugin');
 
     const w = await t.spawnRelease();
-    const spawns = (await t.events()).filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId);
-    assert.equal(spawns.length, 1);
-    assert.equal(spawns[0].playbook, 'acme/release');
+    const binds = (await t.events()).filter(e => e.kind === 'call' && e.bind && e.subject === w.sessionId);
+    assert.equal(binds.length, 1);
+    assert.equal(binds[0].bind.playbook, 'acme/release');
     const bindingOf = async () => {
-      const st = foldProjection(await t.events()).bySession.get(w.sessionId);
+      const st = foldPlaybookState(await t.events()).bySession.get(w.sessionId);
       return { playbook: st.playbook, stage: st.stage, stageHistory: st.stageHistory };
     };
     const before = await bindingOf();
@@ -203,16 +205,19 @@ test('a plugin playbook is listed, spawnable under its own role pin, survives a 
     });
     assert.equal(beeSpawn.isError, true, `the spawn must hard-error: ${JSON.stringify(beeSpawn)}`);
     assert.match(beeSpawn.content[0].text, /unknown model 'acme\/captain'/);
-    assert.deepEqual((await t.events()).filter(e => e.kind === 'spawn' && e.playbook === 'bee/flow'), [],
-      'a failed spawn ledgers nothing');
+    assert.deepEqual((await t.events()).filter(e => e.kind === 'call' && e.bind?.playbook === 'bee/flow'), [],
+      'a failed spawn binds nothing');
+    const failed = (await t.events()).filter(e => e.kind === 'call' && e.tool === 'spawn_instance' && e.outcome === 'failed');
+    assert.equal(failed.length, 1, 'the failed spawn is its one failed call row');
+    assert.equal(Object.hasOwn(failed[0], 'subject'), false, 'a spawn that produced no session names none');
 
     await t.setPlugin('acme', true);
 
     const ok = await t.call('send_prompt', { sessionId: w.sessionId, text: 'go', stage: 'plan' });
     assert.notEqual(ok.ok, false, `re-enable restores governance on the same session: ${JSON.stringify(ok)}`);
     assert.deepEqual(await bindingOf(), before, 'the binding is untouched by the disable');
-    assert.equal((await t.events()).filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId).length, 1,
-      'no second spawn event — nothing was repaired');
+    assert.equal((await t.events()).filter(e => e.kind === 'call' && e.bind && e.subject === w.sessionId).length, 1,
+      'no second bind — nothing was repaired');
   } finally { await t.close(); }
 });
 
@@ -224,7 +229,7 @@ test('a resume into a disabled plugin playbook is refused naming the plugin, and
     await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), backingSessionId);
     await t.call('kill_instance', { sessionId: w.sessionId });
     await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'session' && e.event === 'exit' && e.subject === w.sessionId));
 
     await t.setPlugin('acme', false);
     const refused = await t.call('spawn_instance', { resume: w.sessionId });
@@ -236,6 +241,6 @@ test('a resume into a disabled plugin playbook is refused naming the plugin, and
     const back = await t.call('spawn_instance', { resume: w.sessionId });
     assert.notEqual(back.ok, false, `the resume must succeed once acme is back: ${JSON.stringify(back)}`);
     assert.equal(back.sessionId, w.sessionId);
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'resume' && e.sessionId === w.sessionId));
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'session' && e.event === 'resume' && e.subject === w.sessionId));
   } finally { await t.close(); }
 });

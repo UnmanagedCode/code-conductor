@@ -16,7 +16,7 @@ import {
   getDefaultPlaybookSelection, setDefaultPlaybook, defaultPlaybookMissing,
 } from '../src/conductorConventions.ts';
 import { freshProjectsRoot } from './helpers.mjs';
-import { proj, isLiveFromEvents } from './playbook-fixtures.mjs';
+import { proj, isLiveFromEvents, bindRow, exitRow } from './playbook-fixtures.mjs';
 
 // A plugin graph whose entry stage pins its OWN plugin's role, and a second
 // stage reached by a declared edge.
@@ -100,8 +100,8 @@ test('a plugin graph naming a non-governable tool is rejected by the shared vali
 // ── the drift rule, attributed to the plugin ────────────────────────────────
 
 test('a worker bound to a vanished plugin playbook is refused PLAYBOOK_UNKNOWN naming the plugin and the remedy — and governed again once it returns', async () => {
-  const live = [{ kind: 'spawn', sessionId: 'w-acme-001', playbook: 'acme/release', stage: 'plan' }];
-  const retired = [...live, { kind: 'retire', sessionId: 'w-acme-001' }];
+  const live = [bindRow('w-acme-001', 'acme/release', 'plan')];
+  const retired = [...live, exitRow('w-acme-001')];
   const decideWith = async (toolName, args, events) => {
     const { playbooks } = await loadPlaybooks();
     return decide({ toolName, args, projection: proj(events), playbooks, isLive: isLiveFromEvents(events) });
@@ -131,7 +131,7 @@ test('a worker bound to a vanished plugin playbook is refused PLAYBOOK_UNKNOWN n
 // would be the wrong remedy. The text must route to list_playbooks' errors,
 // which carries the distinguishing `plugins` entry.
 test('with the plugin host failing, the refusal points at the host-unavailable cause and the error that carries it', async () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-acme-002', playbook: 'acme/release', stage: 'plan' }];
+  const events = [bindRow('w-acme-002', 'acme/release', 'plan')];
   setPluginPlaybooksProvider(async () => { throw new Error('init failed'); });
   const { playbooks, errors } = await loadPlaybooks();
   assert.deepEqual(errors.map(e => e.id), ['plugins']);

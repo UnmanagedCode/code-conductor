@@ -527,14 +527,13 @@ test('a transition `on` must be a governable tool, and neither send_prompt nor s
 
 test('a self-loop may be declared, but never with an `on`', () => {
   const stages = { a: { tools: { spawn_instance: 'allow' } }, b: {} };
-  // The declaration itself is legal — it is the whole mechanism by which a
-  // repeated round becomes countable.
+  // The declaration itself is legal (a no-op: a same-stage send needs no edge).
   expectOk(base({ stages, transitions: [{ from: 'a', to: 'b' }, { from: 'b', to: 'b' }] }));
   // With an `on` it is not: resolveMove answers a self-edge BEFORE it looks at
   // drivers, so the driver branch would give one edge a second, gated path.
   // Without this rule the definition loads and the contradiction is silent.
   expectErr(base({ stages, transitions: [{ from: 'a', to: 'b' }, { from: 'b', to: 'b', on: 'approve_plan' }] }),
-    /a self-loop cannot declare `on`/);
+    /a self-loop is a no-op .* cannot declare `on`/);
 });
 
 test('a self-loop does not make an otherwise-unreachable stage reachable', () => {

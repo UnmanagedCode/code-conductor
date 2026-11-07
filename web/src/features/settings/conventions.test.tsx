@@ -305,7 +305,7 @@ describe('Conventions → conductor pickers', () => {
     await expand('Conductor conventions');
     expect([...select('dpe-select').options].map((o) => [o.value, o.textContent])).toEqual([
       ['lenient', 'lenient'],
-      ['warn', 'Warn — off-graph calls are ledgered and proceed'],
+      ['warn', 'Warn — off-graph calls are logged and proceed'],
       ['paranoid', 'paranoid'],
     ]);
     expect(select('dpe-select').value).toBe('paranoid');

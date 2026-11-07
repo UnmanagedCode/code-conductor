@@ -1,12 +1,12 @@
 // The pure policy decision — decide() in src/playbooks.ts. No HTTP, no
-// instances, no ledger file: every case is a fixture projection plus a
+// instances, no event-log file: every case is a fixture projection plus a
 // definition.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide } from '../src/playbooks.ts';
 import {
-  pb, pbs, proj, builtins, isLiveFromEvents, GATELAB_PB, GATELAB_RUN,
+  pb, pbs, proj, builtins, isLiveFromEvents, GATELAB_PB, GATELAB_RUN, bindRow, moveRow, exitRow,
 } from './playbook-fixtures.mjs';
 import { resolvePolicy } from '../src/playbooks.ts';
 
@@ -92,7 +92,7 @@ test('`require` is enforced per tool, not once per stage — a second tool has i
     transitions: [],
   });
   const P = pbs(two);
-  const events = [{ kind: 'spawn', sessionId: 'w-two-0001', playbook: 'two', stage: 'a' }];
+  const events = [bindRow('w-two-0001', 'two', 'a')];
   const projection = proj(events);
   const isLive = isLiveFromEvents(events);
   // tool 1: filled on the spawn
@@ -138,7 +138,7 @@ test('a "*": "allow" wildcard does NOT make a stage spawnable — spawn_instance
   assert.match(res.reason, /does not declare spawn_instance/);
   assert.match(res.reason, /Spawnable stages: a\./);
   // The wildcard still governs every OTHER tool in that stage as usual.
-  const wildEvents = [{ kind: 'spawn', sessionId: 'w-wild-001', playbook: 'wild', stage: 'b' }];
+  const wildEvents = [bindRow('w-wild-001', 'wild', 'b')];
   allowed(decide({
     toolName: 'set_mode', args: { sessionId: 'w-wild-001', mode: 'bypassPermissions' },
     projection: proj(wildEvents),
@@ -164,7 +164,7 @@ test('a run-root spawn must name a playbook; an unknown playbook or stage is nam
 //
 // What is pinned here is the refusal PAYLOAD, computed by calling decide()
 // directly — so it holds at either enforcement level, and says nothing about
-// which one ships. (Both levels decide and ledger; `enforce` returns this
+// which one ships. (Both levels decide and log; `enforce` returns this
 // payload to the caller, `warn` warns with it and lets the spawn proceed
 // untracked.)
 //
@@ -236,7 +236,7 @@ test('naming a playbook but no stage names its entry stages, and ONLY those', ()
 // work there, and an entry check would refuse it.
 const RESUMABLE = [
   ...GATELAB_RUN.slice(0, 2),
-  { kind: 'retire', sessionId: 'w-drafter-1', reason: 'subprocess exited' },
+  exitRow('w-drafter-1'),
 ];
 
 test('a BARE resume of a playbook-tracked worker is allowed — no playbook/stage needed', () => {
@@ -258,7 +258,7 @@ test('a resume does NOT apply the entered-stage SPAWN-SHAPE `pin` — those args
   // The highest-value case in this section: `sealed` pins createWorktree:true, so
   // routing a resume through applyPin would silently hand a resumed session a
   // brand-new worktree, which no other assertion here would notice.
-  const events = [{ kind: 'spawn', sessionId: 'w-sealed-p1', playbook: 'gatelab', stage: 'sealed', project: 'demo' }];
+  const events = [bindRow('w-sealed-p1', 'gatelab', 'sealed', { project: 'demo' })];
   const args = { resume: 'w-sealed-p1' };
   const res = allowed(d('spawn_instance', args, events));
   // Identity, not deep-equal: the contract is "unchanged", and deep-equal would
@@ -289,7 +289,7 @@ test('a resume keeps a stage\'s POLICY pin while dropping its SPAWN-SHAPE pins',
 
   // …and the TRACKED resume, which reaches the pin by the other path. One rule,
   // not two — a mutant that narrows only decideSpawn survives without this arm.
-  const events = [{ kind: 'spawn', sessionId: 'w-draft-p1', playbook: 'gatelab', stage: 'draft' }];
+  const events = [bindRow('w-draft-p1', 'gatelab', 'draft')];
   const tracked = allowed(d('spawn_instance', { resume: 'w-draft-p1' }, events));
   assert.equal(tracked.move.kind, 'resume');
   assert.equal(tracked.patchedArgs.mode, 'bypassPermissions');
@@ -387,7 +387,7 @@ test('the two PLAYBOOK_UNKNOWN reasons are distinguishable: untracked resume vs.
 
 test('a resume of an UNTRACKED session that names playbook + stage is still a legal run root', () => {
   // Regression guard: adopting a loose session into a playbook is unchanged, and
-  // the resume branch must not swallow ids the ledger knows nothing about.
+  // the resume branch must not swallow ids the projection knows nothing about.
   const res = allowed(d('spawn_instance',
     { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'draft' }, RESUMABLE));
   assert.deepEqual(res.move, { kind: 'spawn', to: 'draft', playbook: 'gatelab' });
@@ -396,7 +396,7 @@ test('a resume of an UNTRACKED session that names playbook + stage is still a le
 test('a resume whose recorded playbook is no longer loaded is refused, naming the cause', () => {
   // Definition drift (settled): definitions are not pinned to a run, so a worker
   // can outlive its own. Without this guard the resume binds to nothing.
-  const events = [{ kind: 'spawn', sessionId: 'w-ghost-001', playbook: 'deleted-pb', stage: 'somewhere' }];
+  const events = [bindRow('w-ghost-001', 'deleted-pb', 'somewhere')];
   const res = refusal(d('spawn_instance', { resume: 'w-ghost-001' }, events), 'PLAYBOOK_UNKNOWN');
   assert.match(res.reason, /bound to playbook 'deleted-pb', which is no longer loaded/);
   assert.match(res.reason, /definition was removed or renamed/);
@@ -447,7 +447,7 @@ test('needs is enforced on TRANSITION-entry too, not only on spawn', () => {
 //
 // One test per case, not a table: each is its own red/green.
 const short8 = sid => sid.slice(0, 8);
-const AUDITOR_RETIRED = [...GATELAB_RUN, { kind: 'retire', sessionId: 'w-auditor-1', reason: 'killed' }];
+const AUDITOR_RETIRED = [...GATELAB_RUN, exitRow('w-auditor-1')];
 
 // Invariant: the census names the run's valid satisfiers — and provenance is
 // never filled in from it: the bare call is still refused.
@@ -499,11 +499,11 @@ test('the worker a census names is accepted when passed back as provenance', () 
 // that happen to hold.
 test('a second lens is spawnable while the worker it audits has moved on to amend', () => {
   const events = [
-    { kind: 'spawn', sessionId: 'w-imp-0001', playbook: 'gatelab', stage: 'draft' },
-    { kind: 'transition', sessionId: 'w-imp-0001', from: 'draft', to: 'build', via: 'approve_plan' },
-    { kind: 'spawn', sessionId: 'w-audit-01', playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-imp-0001' } },
+    bindRow('w-imp-0001', 'gatelab', 'draft'),
+    moveRow('w-imp-0001', 'draft', 'build', { tool: 'approve_plan' }),
+    bindRow('w-audit-01', 'gatelab', 'audit', { provenance: { build: 'w-imp-0001' } }),
     // Round 1 relayed: the builder is now in `amend`, not `build`.
-    { kind: 'transition', sessionId: 'w-imp-0001', from: 'build', to: 'amend', via: 'send_prompt' },
+    moveRow('w-imp-0001', 'build', 'amend', { tool: 'send_prompt' }),
   ];
   // Mutant `workers:"one"`      => STAGE_AT_CAPACITY (the first lens holds it).
   // Mutant position ["build"]   => NEEDS_UNSATISFIED (it is in `amend`).
@@ -527,8 +527,8 @@ const MOVER = pb({
   transitions: [{ from: 'root', to: 'other' }],
 });
 const MOVED_OFF = [
-  { kind: 'spawn', sessionId: 'w-mover-001', playbook: 'mover', stage: 'root' },
-  { kind: 'transition', sessionId: 'w-mover-001', from: 'root', to: 'other', via: 'send_prompt' },
+  bindRow('w-mover-001', 'mover', 'root'),
+  moveRow('w-mover-001', 'root', 'other', { tool: 'send_prompt' }),
 ];
 const mv = (stage, events = MOVED_OFF) => decide({
   toolName: 'spawn_instance',
@@ -576,9 +576,9 @@ test('liveness:"live" refuses a RETIRED worker with NEEDS_WORKER_GONE, not NEEDS
   // named worker is gone. A mutant folding it back into NEEDS_UNSATISFIED fails
   // on the code; a mutant dropping the liveness check entirely fails on `ok`.
   const cur = [
-    { kind: 'spawn', sessionId: 'w-cl-imp-1', playbook: 'gatelab', stage: 'draft' },
-    { kind: 'transition', sessionId: 'w-cl-imp-1', from: 'draft', to: 'build', via: 'approve_plan' },
-    { kind: 'retire', sessionId: 'w-cl-imp-1', reason: 'killed' },
+    bindRow('w-cl-imp-1', 'gatelab', 'draft'),
+    moveRow('w-cl-imp-1', 'draft', 'build', { tool: 'approve_plan' }),
+    exitRow('w-cl-imp-1'),
   ];
   const res = refusal(d('spawn_instance',
     { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-cl-imp-1' } }, cur), 'NEEDS_WORKER_GONE');
@@ -594,13 +594,13 @@ test('liveness:"live" refuses a RETIRED worker with NEEDS_WORKER_GONE, not NEEDS
 // instead of calling isLive would flip one or both of these two assertions).
 test('needs.liveness:"live" is answered from isLive(), not from the projection\'s retire event', () => {
   const cur = [
-    { kind: 'spawn', sessionId: 'w-cl-imp-1', playbook: 'gatelab', stage: 'draft' },
-    { kind: 'transition', sessionId: 'w-cl-imp-1', from: 'draft', to: 'build', via: 'approve_plan' },
-    { kind: 'retire', sessionId: 'w-cl-imp-1', reason: 'killed' },
+    bindRow('w-cl-imp-1', 'gatelab', 'draft'),
+    moveRow('w-cl-imp-1', 'draft', 'build', { tool: 'approve_plan' }),
+    exitRow('w-cl-imp-1'),
   ];
   const args = { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-cl-imp-1' } };
   const projection = proj(cur);
-  // The ledger recorded a retire, but the oracle says the worker IS live —
+  // The log recorded an exit, but the oracle says the worker IS live —
   // this must be ALLOWED, which a projection-derived `live` bit could never do.
   allowed(decide({ toolName: 'spawn_instance', args, projection, playbooks: PB, isLive: () => true }));
   // And the mirror, on the identical projection: the oracle says NOT live.
@@ -616,7 +616,7 @@ test('liveness is checked BEFORE position: a worker both gone and moved on repor
   // Swapping the branches yields NEEDS_UNSATISFIED and fails here. Reporting
   // "you did the workflow wrong" for a worker that simply died is the thing
   // this ordering exists to prevent.
-  const gone = [...MOVED_OFF, { kind: 'retire', sessionId: 'w-mover-001', reason: 'killed' }];
+  const gone = [...MOVED_OFF, exitRow('w-mover-001')];
   const res = refusal(mv('strict', gone), 'NEEDS_WORKER_GONE');
   assert.match(res.reason, /to still be running, but it has no running process/);
 });
@@ -639,7 +639,7 @@ test('liveness:"retired" refuses a live worker and names kill_instance; a retire
     transitions: [],
   });
   const pbsGone = pbs(strictRetired);
-  const live = [{ kind: 'spawn', sessionId: 'w-root-r001', playbook: 'gone', stage: 'root' }];
+  const live = [bindRow('w-root-r001', 'gone', 'root')];
   const at = (events) => decide({
     toolName: 'spawn_instance',
     args: { playbook: 'gone', stage: 'after', provenance: { root: 'w-root-r001' } },
@@ -650,7 +650,7 @@ test('liveness:"retired" refuses a live worker and names kill_instance; a retire
   assert.match(res.reason, /to be RETIRED before this stage is entered, but it is still running/);
   assert.match(res.reason, /kill_instance/);
   // …and the other half, so a mutant that refuses unconditionally also fails.
-  allowed(at([...live, { kind: 'retire', sessionId: 'w-root-r001', reason: 'work done' }]));
+  allowed(at([...live, exitRow('w-root-r001')]));
 
   // Same fixture PROJECTION both times (no retire event either way) — only the
   // oracle differs. Proves needs.liveness:"retired" reads isLive(), not a
@@ -688,9 +688,9 @@ test('the loose values — liveness:"any" and position:["*"] — each drop exact
   });
   const pbs2 = pbs(loose);
   const run = [
-    { kind: 'spawn', sessionId: 'w-root-0001', playbook: 'loose', stage: 'root' },
+    bindRow('w-root-0001', 'loose', 'root'),
     // position:["*"] — the worker is in `moved`, which `sink`'s list never names.
-    { kind: 'transition', sessionId: 'w-root-0001', from: 'root', to: 'moved', via: 'send_prompt' },
+    moveRow('w-root-0001', 'root', 'moved', { tool: 'send_prompt' }),
   ];
   const at = (events) => decide({
     toolName: 'spawn_instance',
@@ -699,14 +699,14 @@ test('the loose values — liveness:"any" and position:["*"] — each drop exact
   });
   allowed(at(run));
   // liveness:"any" — and still fine once it is gone.
-  allowed(at([...run, { kind: 'retire', sessionId: 'w-root-0001', reason: 'killed' }]));
+  allowed(at([...run, exitRow('w-root-0001')]));
 });
 
 test('needs is scoped to one run — a worker from another run cannot satisfy it', () => {
   const twoRuns = [
     ...GATELAB_RUN,                                                  // run A
-    { kind: 'spawn', sessionId: 'w-drafter-2', playbook: 'gatelab', stage: 'draft' },   // run B
-    { kind: 'transition', sessionId: 'w-drafter-2', from: 'draft', to: 'build', via: 'approve_plan' },
+    bindRow('w-drafter-2', 'gatelab', 'draft'),   // run B
+    moveRow('w-drafter-2', 'draft', 'build', { tool: 'approve_plan' }),
   ];
   // run B's builder trying to enter amend on run A's auditor
   const res = refusal(d('send_prompt',
@@ -739,8 +739,8 @@ test('TRANSITION: an unknown needs target is refused by the needs check itself',
 
 test('a non-root spawn inherits its playbook; disagreement is PLAYBOOK_MISMATCH', () => {
   const mixed = [
-    { kind: 'spawn', sessionId: 'w-cl-0001', playbook: 'gatelab', stage: 'draft' },
-    { kind: 'spawn', sessionId: 'w-sp-0001', playbook: 'otherlab', stage: 'draft' },
+    bindRow('w-cl-0001', 'gatelab', 'draft'),
+    bindRow('w-sp-0001', 'otherlab', 'draft'),
   ];
   // ancestors disagree with each other
   assert.match(refusal(d('spawn_instance',
@@ -769,8 +769,8 @@ function capacityPlaybook(workers) {
 
 test('workers:"one" refuses a second live worker in the stage; "many" does not', () => {
   const events = [
-    { kind: 'spawn', sessionId: 'w-cap-root', playbook: 'cap', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-root' } },
+    bindRow('w-cap-root', 'cap', 'root'),
+    bindRow('w-cap-a001', 'cap', 'slot', { provenance: { root: 'w-cap-root' } }),
   ];
   const args = { stage: 'slot', provenance: { root: 'w-cap-root' } };
   const isLive = isLiveFromEvents(events);
@@ -784,9 +784,9 @@ test('workers:"one" refuses a second live worker in the stage; "many" does not',
 
 test('capacity counts LIVE workers, so a retire frees the slot', () => {
   const events = [
-    { kind: 'spawn', sessionId: 'w-cap-root', playbook: 'cap', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-root' } },
-    { kind: 'retire', sessionId: 'w-cap-a001', reason: 'killed' },
+    bindRow('w-cap-root', 'cap', 'root'),
+    bindRow('w-cap-a001', 'cap', 'slot', { provenance: { root: 'w-cap-root' } }),
+    exitRow('w-cap-a001'),
   ];
   allowed(decide({
     toolName: 'spawn_instance',
@@ -795,19 +795,19 @@ test('capacity counts LIVE workers, so a retire frees the slot', () => {
   }));
 });
 
-// The oracle is CONSULTED, not merely folded from the ledger's own events: a
+// The oracle is CONSULTED, not merely folded from the log's own rows: a
 // stub isLive independent of the projection's retire/spawn history is what
-// tells apart "capacity reads isLive()" from "capacity still reads a ledger
+// tells apart "capacity reads isLive()" from "capacity still reads a log
 // bit that happens to agree with it here".
-test('workers:"one" capacity is answered from isLive(), not from ledger retire/spawn history', () => {
+test('workers:"one" capacity is answered from isLive(), not from event-log exit/bind history', () => {
   const events = [
-    { kind: 'spawn', sessionId: 'w-cap-root', playbook: 'cap', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-root' } },
+    bindRow('w-cap-root', 'cap', 'root'),
+    bindRow('w-cap-a001', 'cap', 'slot', { provenance: { root: 'w-cap-root' } }),
   ];
   const args = { stage: 'slot', provenance: { root: 'w-cap-root' } };
   const projection = proj(events);
-  // The ledger never retired w-cap-a001, but the oracle says it is not live —
-  // capacity must free the slot anyway (mutant: reading a ledger-derived flag
+  // The log never recorded an exit for w-cap-a001, but the oracle says it is not live —
+  // capacity must free the slot anyway (mutant: reading a log-derived flag
   // instead of calling isLive would refuse this as STAGE_AT_CAPACITY). `root`
   // must stay live so this exercises capacity, not the ancestor's own `needs`
   // liveness check.
@@ -841,9 +841,9 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
   const P = pbs(capT);
   // Two workers of the SAME run sitting in `worker`.
   const twoInWorker = [
-    { kind: 'spawn', sessionId: 'w-capt-rt', playbook: 'capt', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-capt-w1', playbook: 'capt', stage: 'worker', provenance: { root: 'w-capt-rt' } },
-    { kind: 'spawn', sessionId: 'w-capt-w2', playbook: 'capt', stage: 'worker', provenance: { root: 'w-capt-rt' } },
+    bindRow('w-capt-rt', 'capt', 'root'),
+    bindRow('w-capt-w1', 'capt', 'worker', { provenance: { root: 'w-capt-rt' } }),
+    bindRow('w-capt-w2', 'capt', 'worker', { provenance: { root: 'w-capt-rt' } }),
   ];
   const move = { sessionId: 'w-capt-w2', text: 'take the slot', stage: 'hold' };
   // `hold` empty -> the transition is allowed
@@ -854,7 +854,7 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
   // w1 has since transitioned into `hold` -> w2's identical transition is refused
   const occupied = [
     ...twoInWorker,
-    { kind: 'transition', sessionId: 'w-capt-w1', from: 'worker', to: 'hold', via: 'send_prompt' },
+    moveRow('w-capt-w1', 'worker', 'hold', { tool: 'send_prompt' }),
   ];
   const res = refusal(decide({
     toolName: 'send_prompt', args: move, projection: proj(occupied), playbooks: P,
@@ -863,7 +863,7 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
   assert.match(res.reason, /stage 'hold' declares workers:"one"/);
   assert.match(res.reason, /w-capt-w/, 'the refusal names the blocking sessionId, not just the code');
   // ...and freeing the slot lets it through again
-  const freed = [...occupied, { kind: 'retire', sessionId: 'w-capt-w1', reason: 'killed' }];
+  const freed = [...occupied, exitRow('w-capt-w1')];
   allowed(decide({
     toolName: 'send_prompt', args: move, playbooks: P,
     projection: proj(freed), isLive: isLiveFromEvents(freed),
@@ -876,7 +876,7 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
 test('TRANSITION: a needs target bound to another playbook is PLAYBOOK_MISMATCH', () => {
   const events = [
     ...GATELAB_RUN.slice(0, 2),                                                       // gatelab builder
-    { kind: 'spawn', sessionId: 'w-other-01', playbook: 'otherlab', stage: 'draft' },  // a worker on another playbook
+    bindRow('w-other-01', 'otherlab', 'draft'),  // a worker on another playbook
   ];
   const res = refusal(d('send_prompt',
     { sessionId: 'w-drafter-1', text: 'go', stage: 'amend', provenance: { audit: 'w-other-01' } }, events),
@@ -886,9 +886,9 @@ test('TRANSITION: a needs target bound to another playbook is PLAYBOOK_MISMATCH'
 
 test('capacity is scoped to the RUN, not globally — a second run gets its own slot', () => {
   const events = [
-    { kind: 'spawn', sessionId: 'w-cap-rtA0', playbook: 'cap', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-rtA0' } },
-    { kind: 'spawn', sessionId: 'w-cap-rtB0', playbook: 'cap', stage: 'root' },
+    bindRow('w-cap-rtA0', 'cap', 'root'),
+    bindRow('w-cap-a001', 'cap', 'slot', { provenance: { root: 'w-cap-rtA0' } }),
+    bindRow('w-cap-rtB0', 'cap', 'root'),
   ];
   allowed(decide({
     toolName: 'spawn_instance',
@@ -900,7 +900,7 @@ test('capacity is scoped to the RUN, not globally — a second run gets its own 
 // ── the tools map: deny, wildcard, precedence, prefix ──────────────────────
 
 test('a stage that denies a tool refuses it, and the reason names the stage and playbook', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-sealed-01', playbook: 'gatelab', stage: 'sealed' }];
+  const events = [bindRow('w-sealed-01', 'gatelab', 'sealed')];
   const res = refusal(d('set_mode', { sessionId: 'w-sealed-01', mode: 'bypassPermissions' }, events),
     'TOOL_DENIED_IN_STAGE');
   assert.match(res.reason, /set_mode is denied for a worker in stage 'sealed' of playbook 'gatelab'/);
@@ -913,7 +913,7 @@ test('"*": "deny" reads as an allowlist, and an exact name beats the wildcard', 
     transitions: [],
   });
   const P = pbs(locked);
-  const lockedEvents = [{ kind: 'spawn', sessionId: 'w-locked-1', playbook: 'locked', stage: 'a' }];
+  const lockedEvents = [bindRow('w-locked-1', 'locked', 'a')];
   const projection = proj(lockedEvents);
   const isLive = isLiveFromEvents(lockedEvents);
   // not in the allowlist -> denied via '*'
@@ -926,7 +926,7 @@ test('"*": "deny" reads as an allowlist, and an exact name beats the wildcard', 
 });
 
 test('the mcp__code-conductor__ prefix is normalized before policy lookup', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-sealed-01', playbook: 'gatelab', stage: 'sealed' }];
+  const events = [bindRow('w-sealed-01', 'gatelab', 'sealed')];
   refusal(d('mcp__code-conductor__set_mode', { sessionId: 'w-sealed-01', mode: 'bypassPermissions' }, events),
     'TOOL_DENIED_IN_STAGE');
   // and the prefixed spawn_instance still routes to the spawn path
@@ -954,7 +954,7 @@ test('SCOPE RULE 1: permission is read from the CURRENT stage, not the destinati
     },
     transitions: [{ from: 'a', to: 'b', on: 'approve_plan' }],
   });
-  const scopeEvents = [{ kind: 'spawn', sessionId: 'w-scope-01', playbook: 'scope', stage: 'a' }];
+  const scopeEvents = [bindRow('w-scope-01', 'scope', 'a')];
   const projection = proj(scopeEvents);
   const isLive = isLiveFromEvents(scopeEvents);
   const args = { sessionId: 'w-scope-01' };
@@ -977,7 +977,7 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
     },
     transitions: [{ from: 'a', to: 'b' }],
   });
-  const scopereqEvents = [{ kind: 'spawn', sessionId: 'w-scopeq-1', playbook: 'scopereq', stage: 'a' }];
+  const scopereqEvents = [bindRow('w-scopeq-1', 'scopereq', 'a')];
   const projection = proj(scopereqEvents);
   const isLive = isLiveFromEvents(scopereqEvents);
   // Transitioning a -> b: the constraint that applies is b's (2000), not a's.
@@ -995,7 +995,7 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
 // ── definition drift (settled: definitions are NOT pinned to a live run) ────
 
 test('a live worker whose stage vanished gets STAGE_UNKNOWN that says the DEFINITION changed', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-drift-01', playbook: 'gatelab', stage: 'gone' }];
+  const events = [bindRow('w-drift-01', 'gatelab', 'gone')];
   const res = refusal(d('send_prompt', { sessionId: 'w-drift-01', text: 'hi', stage: 'gone' }, events), 'STAGE_UNKNOWN');
   assert.match(res.reason, /no longer exists in playbook 'gatelab'/);
   assert.match(res.reason, /the definition was edited while this worker was live/);
@@ -1005,7 +1005,7 @@ test('a live worker whose stage vanished gets STAGE_UNKNOWN that says the DEFINI
 });
 
 test('a live worker whose whole playbook vanished gets PLAYBOOK_UNKNOWN saying the same', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-drift-02', playbook: 'deleted-pb', stage: 'plan' }];
+  const events = [bindRow('w-drift-02', 'deleted-pb', 'plan')];
   const res = refusal(d('send_prompt', { sessionId: 'w-drift-02', text: 'hi', stage: 'plan' }, events), 'PLAYBOOK_UNKNOWN');
   assert.match(res.reason, /no longer loaded/);
   assert.match(res.reason, /not pinned/);
@@ -1016,7 +1016,7 @@ test('a live worker whose whole playbook vanished gets PLAYBOOK_UNKNOWN saying t
 test('every refusal carries the playbook, the stage, and the legal transitions from here', () => {
   // `draft` both denies a tool and has an outgoing edge, so the transitions list
   // is non-empty — an empty one would pass a mutant that always returned [].
-  const events = [{ kind: 'spawn', sessionId: 'w-drafter-1', playbook: 'gatelab', stage: 'draft' }];
+  const events = [bindRow('w-drafter-1', 'gatelab', 'draft')];
   const res = refusal(d('set_mode', { sessionId: 'w-drafter-1', mode: 'bypassPermissions' }, events), 'TOOL_DENIED_IN_STAGE');
   assert.equal(res.legalMoves.playbook, 'gatelab');
   assert.equal(res.legalMoves.stage, 'draft');
@@ -1052,14 +1052,12 @@ const GUARD = pb({
 });
 
 const GUARD_RUN = [
-  { kind: 'spawn', sessionId: 'w-open-0001', playbook: 'guard', stage: 'open' },
-  { kind: 'spawn', sessionId: 'w-vault-001', playbook: 'guard', stage: 'vault' },
-  { kind: 'spawn', sessionId: 'w-quiet-001', playbook: 'guard', stage: 'quiet' },
-  { kind: 'spawn', sessionId: 'w-guarded-1', playbook: 'guard', stage: 'guarded' },
-  { kind: 'spawn', sessionId: 'w-pinned-01', playbook: 'guard', stage: 'pinned',
-    provenance: { open: 'w-open-0001' } },
-  { kind: 'spawn', sessionId: 'w-sink-0001', playbook: 'guard', stage: 'sink',
-    provenance: { open: 'w-open-0001' } },
+  bindRow('w-open-0001', 'guard', 'open'),
+  bindRow('w-vault-001', 'guard', 'vault'),
+  bindRow('w-quiet-001', 'guard', 'quiet'),
+  bindRow('w-guarded-1', 'guard', 'guarded'),
+  bindRow('w-pinned-01', 'guard', 'pinned', { provenance: { open: 'w-open-0001' } }),
+  bindRow('w-sink-0001', 'guard', 'sink', { provenance: { open: 'w-open-0001' } }),
 ];
 
 // A send to the `sink` worker (whose own stage permits everything), forwarding
@@ -1121,8 +1119,8 @@ test('a malformed `forward` is the HANDLER\'s refusal — policy mints no argume
 test('definition drift on the SOURCE passes — an unresolvable stage lands where an unauthored one does', () => {
   const drifted = [
     ...GUARD_RUN,
-    { kind: 'spawn', sessionId: 'w-ghost-001', playbook: 'deleted-pb', stage: 'gone' },
-    { kind: 'spawn', sessionId: 'w-ghost-002', playbook: 'guard', stage: 'gone' },
+    bindRow('w-ghost-001', 'deleted-pb', 'gone'),
+    bindRow('w-ghost-002', 'guard', 'gone'),
   ];
   allowed(fwd('w-sink-0001', { sessionId: 'w-ghost-001' }, drifted));
   allowed(fwd('w-sink-0001', { sessionId: 'w-ghost-002' }, drifted));
@@ -1177,9 +1175,8 @@ test('cross-run forwarding is LEGAL, deliberately', () => {
   // run root — the two workers below are genuinely in different runs.
   const twoRuns = [
     ...GUARD_RUN,
-    { kind: 'spawn', sessionId: 'w-open-0002', playbook: 'guard', stage: 'open' },
-    { kind: 'spawn', sessionId: 'w-sink-0002', playbook: 'guard', stage: 'sink',
-      provenance: { open: 'w-open-0002' } },
+    bindRow('w-open-0002', 'guard', 'open'),
+    bindRow('w-sink-0002', 'guard', 'sink', { provenance: { open: 'w-open-0002' } }),
   ];
   allowed(fwd('w-sink-0002', { sessionId: 'w-open-0001' }, twoRuns));
 });
@@ -1202,8 +1199,8 @@ test('a resume drops a pinned `backend` along with the pinned `model`, on both r
   assert.equal(fresh.patchedArgs.backend, 'p');
 
   const events = [
-    { kind: 'spawn', sessionId: 'w-onp-1', playbook: 'pinlab', stage: 'onp' },
-    { kind: 'retire', sessionId: 'w-onp-1', reason: 'subprocess exited' },
+    bindRow('w-onp-1', 'pinlab', 'onp'),
+    exitRow('w-onp-1'),
   ];
   const tracked = allowed(run({ resume: 'w-onp-1' }, events));
   assert.equal(tracked.move.kind, 'resume');

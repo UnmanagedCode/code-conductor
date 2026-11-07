@@ -1,25 +1,28 @@
 // The playbook enforcement gate — the ONE policy checkpoint on the MCP
-// tools/call path, plus every write to the playbook ledger. Writes reach the
-// ledger from two paths: a tools/call commit (commitMove), and the manager's
-// event stream (`status`, `session_relaunched`, `wake_delivered`).
+// tools/call path, and the ONE write path into the event log
+// (src/eventLog.ts, format: docs/event-log.md). Rows reach the log from two
+// places, both through this module's `append`: a tools/call (`call` rows,
+// written by check/commit/fail below) and the manager's session stream
+// (`session`/`turn`/`wake`/`config` rows, src/mcp/sessionRecorder.ts).
 //
 // src/mcp/server.ts stays transport (JSON-RPC, arg validation, prefix
 // resolution); this module owns the policy question and the audit trail. It sits
 // between them as a composed collaborator, the same shape handlers.ts uses for
 // diffPaging / messageReconstruction.
 //
-// CHECK BEFORE, COMMIT AFTER — one checkpoint, two moments. A `spawn` ledger
-// event needs the NEW worker's sessionId, which does not exist until
-// spawn_instance's handler has run, so check() decides and commit() records:
+// CHECK BEFORE, COMMIT AFTER — one checkpoint, two moments. A spawn's binding
+// needs the NEW worker's sessionId, which does not exist until spawn_instance's
+// handler has run, so check() decides and commit()/fail() record:
 //
 //   const gate = await playbookGate.check({toolName, args, callerId});
 //   if ('refusal' in gate) -> return it verbatim as a soft result
-//   const result = await tool.handler(gate.args, ctx);
-//   await gate.commit?.(result);
+//   try { const result = await tool.handler(gate.args, ctx); await gate.commit?.(result); }
+//   catch (e) { await gate.fail?.(e); ... }
 //
-// A handler that THROWS never reaches commit(), and a handler that soft-refuses
-// ({ok:false}) is not committed either: in both cases the move did not happen,
-// so the ledger must not claim it did.
+// EXACTLY ONE `call` row per governed call that is refused (either level, any
+// tool), and per governed interaction call or spawn_instance that runs —
+// `outcome` says which: ok, refused, or failed (an `ok:false` result or a
+// throw). A governed read-only call that is not refused writes nothing.
 //
 // SCOPE. Policy applies only when the caller is the conductor
 // (isConductorInstance) — worker-side calls keep their existing recursion rules
@@ -27,28 +30,28 @@
 // through untouched.
 //
 // NEITHER LEVEL IS INERT. Both `warn` and `enforce` run decide(), patch args and
-// append to the ledger; they part company on one thing only — whether a refusal
-// is returned to the caller or merely recorded while the call proceeds. So every
-// conductor session materialises the ledger, and a governed call always costs a
-// fold plus a definitions read.
+// write rows; they part company on one thing only — whether a refusal is
+// returned to the caller or merely recorded while the call proceeds.
 //
-// A LEGAL spawn is recorded under either level, so a `warn` run that named its
+// A LEGAL spawn is bound under either level, so a `warn` run that named its
 // playbook is fully governable the moment enforcement is flipped on. An illegal
 // one is not: under `warn` it proceeds with only the refusal recorded and no
-// binding, leaving that worker untracked — so flipping to `enforce` mid-run
-// governs new spawns while those workers stay ungoverned.
+// binding, leaving that worker untracked.
 
 import {
-  decide, loadToolIndex, loadInteractionTools, loadPlaybooks, normalizeToolName, normalizePlaybookEnforcement,
+  decide, loadToolIndex, loadInteractionTools, loadPlaybooks, normalizeToolName,
   type Move, type Playbook, type RefusalCode, type LegalMoves,
 } from '../playbooks.ts';
 import {
-  createPlaybookLedger, ledgerFile, readEvents, playbookBinding, liveSessionsOnPlaybook,
-  type PlaybookLedger, type Projection, type LedgerEvent,
-} from '../playbookLedger.ts';
+  createEventLog, eventLogFile, readEventLog,
+  type AppendInput, type EventLog, type EventRow, type NewEventRow, type WriteLease,
+} from '../eventLog.ts';
+import {
+  applyRow, emptyProjection, foldPlaybookState, playbookBinding, liveSessionsOnPlaybook, type Projection,
+} from '../playbookState.ts';
+import { attachSessionRecorder } from './sessionRecorder.ts';
 import { isConductorInstance } from '../conduct.ts';
-import { isDeadStatus } from '../instances.ts';
-import type { InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
+import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 // The soft-refusal body, serialized exactly like the transport's own
 // SESSION_AMBIGUOUS result: a normal tool result, never `isError`, never a
@@ -65,7 +68,7 @@ export interface GateRefusal {
 }
 
 export type GateOutcome =
-  | { args: unknown; commit?: (result: unknown) => Promise<void> }
+  | { args: unknown; commit?: (result: unknown) => Promise<void>; fail?: (err: unknown) => Promise<void> }
   | { refusal: GateRefusal };
 
 export interface PlaybookGate {
@@ -75,213 +78,122 @@ export interface PlaybookGate {
   // the caller named — see InstanceManager.resolveResumeRef.
   check(input: { toolName: unknown; args: unknown; callerId: string | null; resumeHandle?: string }): Promise<GateOutcome>;
   // READ SURFACE for the introspection tools (src/mcp/handlers.ts). Named methods
-  // rather than handing out the ledger, so a read tool never reaches through the
-  // test seam below, and so there is exactly one projection in the process — a
-  // second one folded independently would drift from the one that enforces.
+  // rather than handing out the log, so there is exactly one projection in the
+  // process — a second one folded independently would drift from the one that
+  // enforces.
   //
   // Both fold on demand through the same memoised load the enforcement path uses,
-  // and that load is READ-ONLY: a missing ledger folds to an empty projection and
-  // creates nothing. That is what lets a read tool answer before any run has been
-  // recorded without materialising the file.
+  // and that load is READ-ONLY: a missing log folds to an empty projection and
+  // creates nothing.
   readProjection(): Promise<Projection>;
-  readHistory(): Promise<LedgerEvent[]>;
-  // The batch binding lookup for a surface that has no other reason to import
-  // playbookLedger.ts (src/routes.ts's GET /api/instances — see
-  // tests/playbook-ledger-chokepoint.test.mjs, which refuses that import
-  // directly). One projection read for the whole list, in input order;
-  // null/null per id for an untracked worker. Same read-only-on-a-missing-
-  // ledger contract as readProjection — but NOT exception-free: a load
-  // failure (anything but ENOENT from the ledger file) still propagates, same
-  // as readProjection, so a caller that wants to degrade rather than throw
-  // still has to catch it.
+  readHistory(): Promise<EventRow[]>;
+  // The batch binding lookup for a surface that may not import the log or the
+  // projection directly (src/routes.ts's GET /api/instances — see
+  // tests/event-log-chokepoint.test.mjs). One projection read for the whole
+  // list, in input order; null/null per id for an untracked worker. A load
+  // failure (anything but ENOENT) propagates, so a caller that wants to degrade
+  // rather than throw has to catch it.
   readBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>>;
-  // The live workers bound to `playbook` (liveSessionsOnPlaybook over this
-  // gate's projection and isLive), for src/playbookApi.ts — which, like
-  // routes.ts, may not import playbookLedger.ts. Same propagate-on-load-failure
-  // contract as readBindings.
+  // The live workers bound to `playbook`, for src/playbookApi.ts (same import
+  // rule and load-failure contract as readBindings).
   readLiveWorkers(playbook: string): Promise<string[]>;
   // THE liveness oracle this gate's decide() calls use — exposed so a read
   // surface (playbook_state, describe_playbook's dry-run) answers from the same
   // source as enforcement, rather than re-deriving its own.
   isLive(sessionId: string): boolean;
-  // Test seam: the ledger this gate appends to.
-  ledger(): PlaybookLedger;
+  // Test seam: the log this gate writes.
+  eventLog(): EventLog;
 }
 
-// The gate's default ledger PINS its path on first resolution instead of
-// re-resolving per write. ledgerFile() stays lazy (so it is never captured at
-// module load, and a PROJECTS_ROOT override is honoured), but one gate must
-// serve exactly one store: appends are asynchronous and some are fire-and-forget
-// from the status stream, so a write can land after PROJECTS_ROOT has moved on —
-// recording an event in a store other than the one it was decided against. First
-// resolution happens on the first governed call, by which point the environment
-// is settled.
-// The event shape `append` below takes. Also its THUNK form: an event whose
-// shape depends on the projection must be built inside the serialized chain,
-// after every earlier append has folded.
-type PendingEvent = Parameters<PlaybookLedger['append']>[0];
-
-function pinnedLedger(): PlaybookLedger {
-  let resolved: string | null = null;
-  return createPlaybookLedger({ file: () => (resolved ??= ledgerFile()) });
-}
+// `failure.reason` is bounded and taken only from a result's `reason` or an
+// error's message, never from tool arguments — so no prompt text reaches the
+// file through it beyond this many characters.
+export const FAILURE_REASON_MAX = 200;
 
 export function createPlaybookGate(
-  { instances, ledger = pinnedLedger() }:
-  { instances?: InstanceManagerLike | null; ledger?: PlaybookLedger },
+  { instances, lease, file }:
+  {
+    instances?: InstanceManagerLike | null;
+    // Who may write (src/eventLog.ts → WriteLease); server.ts passes the
+    // projects-root lock's writerCheck.
+    lease: WriteLease;
+    // Test seam. The default PINS the path on first resolution: eventLogFile()
+    // stays lazy (never captured at module load, so a PROJECTS_ROOT override is
+    // honoured), but one gate serves exactly one store — a row decided against
+    // one store must not land in another after PROJECTS_ROOT moved on.
+    file?: () => string;
+  },
 ): PlaybookGate {
-  let loading: Promise<unknown> | null = null;
+  let resolvedFile: string | null = null;
+  const logFile = file ?? (() => (resolvedFile ??= eventLogFile()));
+  let proj: Projection = emptyProjection();
 
-  // Fold the ledger from disk once, on the first governed call rather than at
-  // construction: the router is built before a test has finished pointing
-  // PROJECTS_ROOT at its temp store, so resolving the path eagerly would bind the
-  // wrong store. The PROMISE is memoised, not a boolean — a tools/call
-  // and a status event can both arrive first, and two concurrent load() calls
-  // would fold the same events into the projection twice.
+  const eventLog = createEventLog({
+    file: logFile,
+    lease,
+    onWritten(row) {
+      applyRow(proj, row);
+      // AFTER the fold — a refresh this hint triggers can never read the stage
+      // the row just replaced. Only a bind or a move changes a binding.
+      if (row.kind === 'call' && row.subject && (row.bind || row.move)) {
+        instances?.emit('playbook_changed', { sessionId: row.subject });
+      }
+    },
+    onBlocked(reason, row) {
+      // Put the drop in front of a human: a UI-only bubble in the transcript of
+      // the live conductor the row is about (its actor, else its subject).
+      // `_emitUi` reaches the ring and the WS feed only — never model input.
+      const candidates = [row.actor.type === 'conductor' ? row.actor.sessionId : undefined, row.subject];
+      for (const sid of candidates) {
+        const inst = sid ? instances?.liveForSession(sid) : null;
+        if (inst && isConductorInstance(inst)) {
+          inst._emitUi({ kind: 'system', subtype: 'event_log_blocked', data: { reason } });
+          return;
+        }
+      }
+    },
+  });
+
+  // Fold the log from disk once, on first use rather than at construction: the
+  // router is built before a test has finished pointing PROJECTS_ROOT at its
+  // temp store, and in production after the root lock is held, so the fold sees
+  // every row a previous server wrote. The PROMISE is memoised — two concurrent
+  // first uses must not fold twice.
+  let loading: Promise<unknown> | null = null;
   function ensureLoaded(): Promise<unknown> {
-    if (!loading) loading = ledger.load();
+    if (!loading) loading = readEventLog(logFile()).then(rows => { proj = foldPlaybookState(rows); });
     return loading;
   }
 
+  // THE one append call site in src/. Serialised behind the load, so every row
+  // is folded into a projection that already holds the file — and in call
+  // order, whichever path (tools/call or the session stream) appended first.
+  let chain: Promise<unknown> = Promise.resolve();
+  function append(input: AppendInput): Promise<unknown> {
+    chain = chain.then(ensureLoaded).then(() => eventLog.append(input)).catch(e => {
+      // The log is the audit trail, not the authority for THIS call's outcome.
+      console.warn(`eventLog: append skipped — the log could not be loaded: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    return chain;
+  }
+
   // THE liveness oracle every decide() call and read surface goes through.
-  // `instances` can be null (a gate built with no registry, e.g. a read-only
-  // tool context) — every session reads as not-live in that case: with no
-  // registry to ask, "not live" is the only answer that cannot mis-govern.
+  // `instances` can be null (a gate built with no registry) — every session
+  // reads as not-live then: "not live" is the only answer that cannot mis-govern.
   function isLive(sessionId: string): boolean {
     return !!instances?.isSessionLive(sessionId);
   }
 
-  // Definitions are read PER CALL, never memoised for the process lifetime.
-  // That is a deliberate property of the catalog (src/playbooks.ts): a
+  // Definitions are read PER CALL, never memoised for the process lifetime: a
   // hand-authored playbook dropped into <orchStoreRoot>/playbooks/ takes effect
-  // without an orchestrator restart. Conductor tool calls happen at agent pace,
-  // so a handful of small JSON reads per call costs nothing worth trading it for.
+  // without an orchestrator restart (src/playbooks.ts).
   async function definitions(): Promise<Map<string, Playbook>> {
     const { playbooks, errors } = await loadPlaybooks();
     for (const e of errors) console.warn(`playbooks: '${e.id}' rejected at load: ${e.message}`);
     return playbooks;
   }
 
-  // Appends are SERIALIZED through one chain. ledger.append() reads the current
-  // seq, then awaits the write, so two overlapping appends would take the same
-  // seq — reachable here because the status stream (retires, toggle changes)
-  // fires independently of the tools/call path.
-  let appendChain: Promise<unknown> = Promise.resolve();
-
-  function append(ev: PendingEvent | (() => PendingEvent | null)): Promise<unknown> {
-    // A thunk is resolved INSIDE the chain, so it reads a projection every
-    // earlier append has already folded into. Captured so the warn below can
-    // still name the kind. A thunk that returns null appends nothing.
-    let resolved: PendingEvent | null = null;
-    appendChain = appendChain.then(async () => {
-      resolved = typeof ev === 'function' ? ev() : ev;
-      if (!resolved) return;
-      await ledger.append(resolved);
-      // AFTER the write has folded (ledger.append folds synchronously before
-      // resolving) — a refresh this hint triggers can never read the stage the
-      // append just replaced. Only spawn/transition move a worker's
-      // playbook/stage; refusal/retire/resume/enforcement fold to no binding
-      // change, so emitting for them would be noise with nothing to refresh.
-      if (resolved.kind === 'spawn' || resolved.kind === 'transition') {
-        instances?.emit('playbook_changed', { sessionId: resolved.sessionId });
-      }
-    }).catch(e => {
-      // The ledger is the audit trail, not the authority for THIS call's
-      // outcome. A failed append must never turn a successful tool call into an
-      // error reply, so it warns and the call stands — and the chain is caught
-      // here so one failure cannot poison every later append.
-      console.warn(`playbookLedger: append failed (${resolved?.kind ?? 'unresolved'}): ${errMsg(e)}`);
-    });
-    return appendChain;
-  }
-
-  // ── the manager event stream: lifecycle edges, wakes, enforcement toggles ──
-  //
-  // Things the gate must record that no tools/call can tell it about. Watching
-  // the manager's streams means whichever surface causes them (a kill, a crash,
-  // a UI resume, the WS toggle message, a restart restore) is recorded without
-  // that surface knowing the ledger exists.
-  const lastMode = new Map<string, string>();
-  // Per-session edge state for retire/resume: `dead` after a dead status,
-  // `alive` after any other status or a relaunch. Updated SYNCHRONOUSLY in the
-  // listeners, before any await, so concurrent events read each other's edge.
-  const lifecycle = new Map<string, 'alive' | 'dead'>();
-  if (instances) {
-    instances.on('status', (summary: InstanceSummary) => {
-      void onStatus(summary);
-    });
-    instances.on('session_relaunched', ({ sessionId, conducted }) => {
-      if (typeof sessionId !== 'string' || !sessionId) return;
-      if (lifecycle.get(sessionId) === 'alive') return;
-      lifecycle.set(sessionId, 'alive');
-      void appendLifecycle({ kind: 'resume', sessionId }, conducted);
-    });
-    instances.on('wake_delivered', ({ callerSessionId, callerProject, targetSessionId, heartbeat }) => {
-      // Only a conductor's wakes: the gate's scope, and what keeps
-      // `conductorSessionId` truthful.
-      if (!isConductorInstance({ project: callerProject })) return;
-      void ensureLoaded().then(() => append({
-        kind: 'wake',
-        sessionId: targetSessionId,
-        conductorSessionId: callerSessionId,
-        ...(heartbeat ? { heartbeat: true as const } : {}),
-      }));
-    });
-  }
-
-  // A lifecycle row is written for every CONDUCTED session and for any tracked
-  // one. Eligibility is read inside the serialized chain, after the projection
-  // has folded every earlier append.
-  async function appendLifecycle(ev: PendingEvent, conducted: boolean): Promise<void> {
-    await ensureLoaded();
-    const sessionId = (ev as { sessionId: string }).sessionId;
-    await append(() => (conducted || ledger.projection().bySession.has(sessionId) ? ev : null));
-  }
-
-  async function onStatus(summary: InstanceSummary): Promise<void> {
-    const sessionId = typeof summary.sessionId === 'string' ? summary.sessionId : null;
-    if (!sessionId) return;
-    // RETIRE — an audit record of an observed exit, covering both a deliberate
-    // kill_instance and an unexpected crash, since either way the subprocess
-    // exits and lands here. Tracked or conducted, once per alive→dead edge: a
-    // repeated dead summary (exited then crashed) is the same death. A session
-    // whose exit this process never observed (a host reboot) gets no retire.
-    if (isDeadStatus(summary.status)) {
-      if (lifecycle.get(sessionId) !== 'dead') {
-        lifecycle.set(sessionId, 'dead');
-        void appendLifecycle(
-          { kind: 'retire', sessionId, reason: `subprocess ${summary.status}` },
-          summary.conducted === true,
-        );
-      }
-    } else {
-      lifecycle.set(sessionId, 'alive');
-    }
-    // ENFORCEMENT. Without this, backtracking cannot explain why an
-    // illegal-looking move was allowed.
-    if (!isConductorInstance({ project: String(summary.project) })) return;
-    const mode = normalizePlaybookEnforcement(summary.playbookEnforcement);
-    // The FIRST observation of a conductor is its BIRTH, not a change: a
-    // conductor created at one level was never at any other, so a synthesized
-    // {from:<default>} would put a value in the audit trail that never held. A
-    // birth is recorded with `from: null` instead.
-    //
-    // Every birth is recorded, at either level — neither is inert. The first tick
-    // carries the spawn-time value because create() awaits launch(), which emits
-    // status, so a conductor has always ticked at least once before any client can
-    // reach it to flip the toggle.
-    if (!lastMode.has(sessionId)) {
-      lastMode.set(sessionId, mode);
-      await ensureLoaded();
-      await append({ kind: 'enforcement', conductorSessionId: sessionId, from: null, to: mode });
-      return;
-    }
-    const prev = lastMode.get(sessionId) as string;
-    if (mode === prev) return;
-    lastMode.set(sessionId, mode);
-    await ensureLoaded();
-    await append({ kind: 'enforcement', conductorSessionId: sessionId, from: prev, to: mode });
-  }
+  if (instances) attachSessionRecorder({ instances, record: append, projection: () => proj });
 
   // ── the checkpoint ──
 
@@ -307,36 +219,24 @@ export function createPlaybookGate(
 
     await ensureLoaded();
     const playbooks = await definitions();
-    const decision = decide({ toolName: name, args, projection: ledger.projection(), playbooks, isLive, resumeHandle });
+    const decision = decide({ toolName: name, args, projection: proj, playbooks, isLive, resumeHandle });
+    const base = callBase({ name, args, callerId, resumeHandle });
 
     if (!decision.ok) {
-      // Recorded under BOTH warn and enforce — under warn the call proceeds
-      // anyway, and the ledger is the only trace that it should not have.
-      await append({
-        kind: 'refusal',
-        ...subjects(args),
-        tool: name,
-        code: decision.code,
-        reason: decision.reason,
-      });
+      // Recorded under BOTH levels and for every governable tool — under warn
+      // the call proceeds anyway, and this row is the only trace that it
+      // should not have.
+      await append({ ...base, outcome: 'refused', refusal: { code: decision.code, reason: decision.reason } });
       if (mode === 'warn') {
-        // warn lets the call through, so the ledger row is its only durable
-        // trace — and nothing reads it back. Put the same fact in front of the
-        // human by pushing a UI-only bubble into the CONDUCTOR's transcript
-        // (it made the call; a refusal may name no worker at all). `_emitUi`
-        // reaches the ring and the WS feed only — it is never model input, so
-        // the conductor agent still sees the call succeed, exactly as before.
-        // Strictly after the append: the audit trail is written first.
+        // warn lets the call through: put the same fact in front of the human
+        // as a UI-only bubble in the CONDUCTOR's transcript (it made the call; a
+        // refusal may name no worker at all). Strictly after the row.
         caller._emitUi({
           kind: 'system',
           subtype: 'playbook_warn',
-          data: {
-            tool: name,
-            code: decision.code,
-            reason: decision.reason,
-            ...subjects(args),
-          },
+          data: { tool: name, code: decision.code, reason: decision.reason, ...bubbleSubjects(args) },
         });
+        // No commit/fail: the refused row is this call's one row.
         return pass;
       }
       return {
@@ -352,178 +252,151 @@ export function createPlaybookGate(
 
     const move = decision.move;
     const patched = decision.patchedArgs;
+    // A read-only call that ran is not an interaction: no row.
+    if (name !== 'spawn_instance' && !(await loadInteractionTools()).has(name)) return { args: patched };
+    if (name !== 'spawn_instance' && !base.subject) return { args: patched };
     return {
       args: patched,
-      commit: (result: unknown) => commitMove({
-        move, args: patched, toolName: name, result, conductorSessionId: callerId,
-      }),
+      commit: (result: unknown) => commitCall({ base, move, args: patched, result }),
+      fail: async (err: unknown) => { await append({ ...base, outcome: 'failed', failure: failureOfError(err) }); },
     };
   }
 
-  // EXACTLY ONE call event per governed interaction call, after a successful
-  // handler: a `transition` (a real move or a declared self-loop) or an
-  // `interaction` (everything else). A refused call keeps its `refusal` and gets
-  // neither; a throw or an `ok:false` result appends nothing.
-  async function commitMove(
-    { move, args, toolName, result, conductorSessionId }:
-    { move: Move; args: Record<string, unknown>; toolName: string; result: unknown; conductorSessionId: string },
+  async function commitCall(
+    { base, move, args, result }:
+    { base: CallBase; move: Move; args: Record<string, unknown>; result: unknown },
   ): Promise<void> {
-    // A soft refusal from the handler means the call did not do what policy
-    // authorised — do not record a move that never happened.
-    if (isRecord(result) && result.ok === false) return;
-    const provenance = suppliedProvenance(args.provenance);
+    // A soft refusal from the handler: the call did not do what policy
+    // authorised — recorded as failed, with no move and no binding.
+    if (isRecord(result) && result.ok === false) {
+      await append({ ...base, outcome: 'failed', failure: failureOfResult(result) });
+      return;
+    }
 
-    // A RESUME un-retires an existing worker; it never re-declares one, and
-    // this arm writes nothing: the manager's `session_relaunched` stream owns the
-    // `resume` row, and a second writer here would record every tracked resume
-    // twice. Writing a `spawn` would reset the worker's stageHistory and empty its
-    // provenance (see the spawn arm of applyEvent).
-    if (move.kind === 'resume') return;
-
-    if (move.kind === 'spawn' && move.playbook && move.to) {
-      // The new worker's identity comes from the RESULT, not the arguments:
-      // createWorktree:true generates the worktree name server-side, and the
-      // sessionId does not exist until the subprocess is up.
+    if (base.tool === 'spawn_instance') {
+      // The session's identity comes from the RESULT, not the arguments: the
+      // sessionId does not exist until the subprocess is up, and createWorktree
+      // generates the worktree name server-side.
       const view = asRecord(result);
-      const sessionId = typeof view.sessionId === 'string' ? view.sessionId : '';
-      if (!sessionId) return;
+      const sessionId = typeof view.sessionId === 'string' && view.sessionId ? view.sessionId : base.subject;
+      const row: NewEventRow = { ...base, ...(sessionId ? { subject: sessionId } : {}), outcome: 'ok' };
+      if (move.kind !== 'spawn' || !move.playbook || !move.to || !sessionId) { await append(row); return; }
       const worktree = asRecord(view.worktree).worktreeName;
-      const playbook = move.playbook;
-      const stage = move.to;
-      // THE SAME RULE AS THE ARM ABOVE, enforced against the authoritative id
-      // rather than against the decision layer's classification. A `spawn` for a
-      // session that ALREADY has a row is never a new declaration — decide() was
-      // handed an id it could not place (a ledger/lineage divergence), and the
-      // worker that came back is one it already governs. Folding a spawn here
-      // would reset its stage, stageHistory and provenance.
-      //
-      // DECIDED IN THE CHAIN (hence the thunk): the projection is read at append
-      // time, so an earlier commit racing this one has already folded. Read out
-      // here instead, two concurrent commits on one sessionId both see "unbound"
-      // and the second spawn resets the binding the first just created. An
-      // already-bound session appends nothing (the null).
-      await append((): PendingEvent | null => (ledger.projection().bySession.has(sessionId)
-        ? null
-        : {
-          kind: 'spawn',
-          sessionId,
-          playbook,
-          stage,
-          // Absent `provenance` ⇒ a run root. Keep it off the event entirely
-          // rather than writing `{}`, so the fold can tell the two apart.
-          ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
-          ...(typeof view.project === 'string' ? { project: view.project } : {}),
-          ...(typeof worktree === 'string' ? { worktree } : {}),
-        }));
-      return;
-    }
-
-    // A DECLARED self-loop is ledgered by this same path: the round it closes is
-    // the thing worth counting, and writing it as a transition from===to is what
-    // makes `stageHistory` show `refine -> refine` per round. It carries no
-    // `provenance` — a self-edge never re-runs `needs`, so there is none — but it
-    // does carry the forward source like a real move, since that round's handoff
-    // is what the row audits.
-    if (move.kind === 'transition' && move.from && move.to) {
-      const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
-      if (!sessionId) return;
-      await append({
-        kind: 'transition',
-        sessionId,
-        from: move.from,
-        to: move.to,
-        via: move.via ?? toolName,
+      const provenance = suppliedProvenance(args.provenance);
+      const bind = {
+        playbook: move.playbook,
+        stage: move.to,
+        // Absent `provenance` ⇒ a run root; kept off the row rather than `{}`.
         ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
-        ...forwardSubject(args),
-      });
+        ...(typeof view.project === 'string' ? { project: view.project } : {}),
+        ...(typeof worktree === 'string' ? { worktree } : {}),
+      };
+      // A session that ALREADY has a binding is never re-bound — decide() was
+      // handed an id it could not place, and the worker that came back is one
+      // it already governs; a bind would reset its stage history. DECIDED IN
+      // THE CHAIN (a thunk), so two concurrent commits on one session cannot
+      // both read "unbound".
+      await append(() => (proj.bySession.has(sessionId) ? row : { ...row, bind }));
       return;
     }
 
-    if (move.kind === 'self' && move.recorded && move.from && move.to) {
-      const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
-      if (!sessionId) return;
+    // A real move carries `move` (from !== to by construction — a same-stage
+    // send resolves to `self`, which moves nothing). Everything else is the
+    // plain row.
+    if (move.kind === 'transition' && move.from && move.to) {
+      const provenance = suppliedProvenance(args.provenance);
       await append({
-        kind: 'transition',
-        sessionId,
-        from: move.from,
-        to: move.to,
-        via: move.via ?? toolName,
-        ...forwardSubject(args),
+        ...base, outcome: 'ok',
+        move: { from: move.from, to: move.to, ...(Object.keys(provenance).length > 0 ? { provenance } : {}) },
       });
       return;
     }
-
-    // The fall-through: kind 'none' and an UNDECLARED self-edge. Neither moves a
-    // stage, but each is a conductor acting on a worker, so an interaction tool
-    // records one `interaction` row — ids and the tool name, never the prompt.
-    // Read-only tools and spawn_instance (which ends in its own spawn/refusal)
-    // record nothing here.
-    const target = typeof args.sessionId === 'string' ? args.sessionId : '';
-    if (target && (await loadInteractionTools()).has(toolName)) {
-      await append({
-        kind: 'interaction',
-        tool: toolName,
-        sessionId: target,
-        conductorSessionId,
-        ...forwardSubject(args),
-      });
-    }
-    // `retire` is deliberately NOT written here, including for kill_instance:
-    // killing a worker makes its subprocess exit, so the manager's status stream
-    // already writes the retire — FIRST, because the kill resolves through the
-    // same status transition the listener watches. A kill_instance
-    // `interaction` is therefore appended after the retire it caused.
+    await append({ ...base, outcome: 'ok' });
   }
 
   async function readProjection(): Promise<Projection> {
     await ensureLoaded();
-    return ledger.projection();
+    return proj;
   }
 
   async function readBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>> {
-    const proj = await readProjection();
-    return sessionIds.map(sid => playbookBinding(proj, sid));
+    const p = await readProjection();
+    return sessionIds.map(sid => playbookBinding(p, sid));
   }
 
   async function readLiveWorkers(playbook: string): Promise<string[]> {
     return liveSessionsOnPlaybook(await readProjection(), playbook, isLive);
   }
 
-  // Raw events, for the backtrack surface. Re-read per call rather than kept
+  // Raw rows, for the backtrack surface. Re-read per call rather than kept
   // alongside the projection: history is asked for by a human-paced read tool,
-  // and holding every event in memory forever to serve it would be a leak.
-  async function readHistory(): Promise<LedgerEvent[]> {
+  // and holding every row in memory forever to serve it would be a leak.
+  async function readHistory(): Promise<EventRow[]> {
     await ensureLoaded();
-    return readEvents(ledger.file());
+    return readEventLog(logFile());
   }
 
-  return { check, readProjection, readHistory, readBindings, readLiveWorkers, isLive, ledger: () => ledger };
+  return { check, readProjection, readHistory, readBindings, readLiveWorkers, isLive, eventLog: () => eventLog };
 }
 
-// The caller's `provenance` map, narrowed to the {stage: sessionId} string pairs the
-// ledger stores. Prefix values have already been resolved to full sessionIds at
-// the transport's prefix chokepoint.
-// EVERY WORKER THE CALL NAMED, for the refusal row and the `playbook_warn`
-// bubble alike — one rule, no branch on which side was refused (`code` says
-// that). `forwardSessionId` is send_prompt's forward source, a policy subject in
-// its own right (see checkForwardSource in ../playbooks.ts); forwardSubject also
-// feeds it to every ledgered `transition` row. Keys are OMITTED rather than set
-// to undefined, on both: the raw `_emitUi` payload and append()'s argument are
-// asserted on.
-function subjects(args: Record<string, unknown>): { sessionId?: string; forwardSessionId?: string } {
+// The fields every `call` row of one governed call shares.
+type CallBase = Omit<Extract<NewEventRow, { kind: 'call' }>, 'outcome'>;
+function callBase(
+  { name, args, callerId, resumeHandle }:
+  { name: string; args: Record<string, unknown>; callerId: string; resumeHandle?: string },
+): CallBase {
+  // The subject is the worker the call names; for spawn_instance it is the
+  // resumed session on a resume, and (until the result names the new session)
+  // absent on a fresh spawn.
+  const subject = name === 'spawn_instance'
+    ? (resumeHandle ?? (typeof args.resume === 'string' && args.resume ? args.resume : undefined))
+    : (typeof args.sessionId === 'string' && args.sessionId ? args.sessionId : undefined);
+  const forward = forwardOf(args);
   return {
-    ...(typeof args.sessionId === 'string' ? { sessionId: args.sessionId } : {}),
-    ...forwardSubject(args),
+    kind: 'call',
+    actor: { type: 'conductor', sessionId: callerId },
+    ...(subject ? { subject } : {}),
+    tool: name,
+    ...(forward ? { forward } : {}),
   };
 }
 
-function forwardSubject(args: Record<string, unknown>): { forwardSessionId?: string } {
-  const forward = asRecord(args.forward);
-  return typeof forward.sessionId === 'string' && forward.sessionId
-    ? { forwardSessionId: forward.sessionId }
-    : {};
+function capReason(s: string): string {
+  return s.length > FAILURE_REASON_MAX ? `${s.slice(0, FAILURE_REASON_MAX - 1)}…` : s;
 }
 
+function failureOfResult(result: Record<string, unknown>): { code?: string; reason: string } {
+  const reason = typeof result.reason === 'string' && result.reason ? result.reason : 'the handler returned ok:false';
+  return { ...(typeof result.code === 'string' ? { code: result.code } : {}), reason: capReason(reason) };
+}
+
+function failureOfError(err: unknown): { code?: string; reason: string } {
+  const code = isRecord(err) && typeof err.code === 'string' ? err.code : undefined;
+  const message = err instanceof Error ? err.message : String(err);
+  return { ...(code ? { code } : {}), reason: capReason(message || 'the handler threw') };
+}
+
+// EVERY WORKER THE CALL NAMED, for the `playbook_warn` bubble — one rule, no
+// branch on which side was refused (`code` says that). Keys are OMITTED rather
+// than set to undefined: the raw `_emitUi` payload is asserted on.
+function bubbleSubjects(args: Record<string, unknown>): { sessionId?: string; forwardSessionId?: string } {
+  const forward = forwardOf(args);
+  return {
+    ...(typeof args.sessionId === 'string' ? { sessionId: args.sessionId } : {}),
+    ...(forward ? { forwardSessionId: forward } : {}),
+  };
+}
+
+// send_prompt's forward source, a policy subject in its own right (see
+// checkForwardSource in ../playbooks.ts).
+function forwardOf(args: Record<string, unknown>): string | undefined {
+  const forward = asRecord(args.forward);
+  return typeof forward.sessionId === 'string' && forward.sessionId ? forward.sessionId : undefined;
+}
+
+// The caller's `provenance` map, narrowed to the {stage: sessionId} string
+// pairs the log stores. Prefix values have already been resolved to full
+// sessionIds at the transport's prefix chokepoint.
 function suppliedProvenance(v: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (!isRecord(v)) return out;
@@ -537,8 +410,4 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function asRecord(v: unknown): Record<string, unknown> {
   return isRecord(v) ? v : {};
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

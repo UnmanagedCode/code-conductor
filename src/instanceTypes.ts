@@ -27,6 +27,12 @@ import type { Response } from 'express';
 import type { LineageSource } from './lineagePager.ts';
 import type { HumanPromptQuote } from './promptAuthor.ts';
 import type { PristineTracker } from './pristine.ts';
+import type { Actor, ResumeCause } from './eventLog.ts';
+
+export type { Actor, ResumeCause };
+// Why a launch is announced the way it is: a ResumeCause on a relaunch, `fork`
+// on a fork's first launch (src/eventLog.ts → `session` rows).
+export type LaunchCause = ResumeCause | 'fork';
 
 // One backing segment's claim on the ring's seq space: ring content with
 // `_seq >= startSeq` (and below the next seam's `startSeq`) belongs to backing
@@ -127,6 +133,10 @@ export interface CreateInstanceInput {
   playbookEnforcement?: PlaybookEnforcement;
   callerInstanceId?: string | null;
   prefill?: string;
+  // Who asked for this create (the event log's `session` row actor; default
+  // system) and why its launch happens, when not a plain spawn or resume.
+  actor?: Actor;
+  launchCause?: 'restore' | 'fork';
 }
 
 // The destructive transcript rewrite holding an instance's `_mutating`.
@@ -253,9 +263,9 @@ export interface InstanceLike {
   // stdin, so there is no control_response to await. See src/instances.ts.
   setEffort(effort: string): string;
   interrupt(opts?: { force?: boolean; deadlineMs?: number }): Promise<unknown>;
-  kill(opts?: { graceMs?: number }): Promise<unknown>;
+  kill(opts?: { graceMs?: number; actor?: Actor }): Promise<unknown>;
   setAutoApprovePlan(enabled: boolean): void;
-  setPlaybookEnforcement(mode: PlaybookEnforcement): void;
+  setPlaybookEnforcement(mode: PlaybookEnforcement, opts?: { actor?: Actor }): void;
   // Orchestrator surfaces beyond the core lifecycle: the worktree the session
   // is attached to (MCP handlers, src/mcp/handlers.ts), temp→normal promotion
   // (REST POST /api/instances/:id/promote, src/routes.ts), and the
@@ -328,12 +338,25 @@ export interface WakeDelivered {
   heartbeat: boolean;
 }
 
-// Instance.launch() -> the playbook gate: a launch re-entered an existing session
-// (resume, respawn, rotation relaunch, restart restore) rather than minting one.
-export interface SessionRelaunched {
-  sessionId: string;
-  conducted: boolean;
+// The manager's relays of an Instance's lifecycle, consumed by the event-log
+// recorder (src/mcp/sessionRecorder.ts). Each names the session by its public id
+// and carries `conducted`/`project`, which decide the recorder's scope.
+interface SessionEventBase { sessionId: string; conducted: boolean; project: string }
+// Every announced launch: `start` mints the session (or is a fork's first),
+// `resume` re-enters it — see Instance.launch().
+export interface SessionLaunched extends SessionEventBase {
+  event: 'start' | 'resume';
+  cause?: LaunchCause;
+  actor: Actor;
+  // The instance's enforcement level as it launches (a conductor's birth row).
+  playbookEnforcement: PlaybookEnforcement;
 }
+// Once per announced launch, on its alive→dead edge (Instance._setStatus).
+export interface SessionExited extends SessionEventBase { status: 'exited' | 'crashed'; actor: Actor }
+export interface TurnStarted extends SessionEventBase { actor: Actor }
+// An outer turn ending on its own (a turn the process died in has none).
+export interface TurnEnded extends SessionEventBase { stopReason?: string }
+export interface EnforcementChanged { sessionId: string; project: string; to: string; actor: Actor }
 
 export interface InstanceManagerLike {
   byId: ReadonlyMap<string, InstanceLike>;
@@ -353,7 +376,7 @@ export interface InstanceManagerLike {
   // for it to re-render the watcher count. Emitted with no payload shape beyond
   // the target id.
   emit(event: 'subscription_changed', arg: { targetId: string }): void;
-  // The playbook gate emits this after a `spawn`/`transition` ledger append
+  // The playbook gate emits this after a `call` row with `bind`/`move`
   // has folded into its projection, so a refresh it triggers can never read a
   // stale stage. wsHub turns it into the same `instances` hint a status flip
   // does.
@@ -363,8 +386,12 @@ export interface InstanceManagerLike {
   emit(event: 'turn_marks', arg: { id: string }): void;
   // Emitted by IdleSubscriptionHub.deliver(); consumed by the playbook gate.
   emit(event: 'wake_delivered', arg: WakeDelivered): void;
-  // Emitted by the manager's relay of Instance 'relaunch'; consumed by the playbook gate.
-  emit(event: 'session_relaunched', arg: SessionRelaunched): void;
+  // The manager's lifecycle relays — see SessionLaunched and its siblings.
+  emit(event: 'session_launched', arg: SessionLaunched): void;
+  emit(event: 'session_exited', arg: SessionExited): void;
+  emit(event: 'turn_started', arg: TurnStarted): void;
+  emit(event: 'turn_ended', arg: TurnEnded): void;
+  emit(event: 'enforcement_changed', arg: EnforcementChanged): void;
   _overageResumeMode: boolean;
   _overageResetsAt: number | null;
   _maybeReleaseOverageLock(): void;
@@ -391,7 +418,11 @@ export interface InstanceManagerLike {
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
   on(event: 'wake_delivered', cb: (arg: WakeDelivered) => void): void;
-  on(event: 'session_relaunched', cb: (arg: SessionRelaunched) => void): void;
+  on(event: 'session_launched', cb: (arg: SessionLaunched) => void): void;
+  on(event: 'session_exited', cb: (arg: SessionExited) => void): void;
+  on(event: 'turn_started', cb: (arg: TurnStarted) => void): void;
+  on(event: 'turn_ended', cb: (arg: TurnEnded) => void): void;
+  on(event: 'enforcement_changed', cb: (arg: EnforcementChanged) => void): void;
   off(event: 'status', cb: (summary: InstanceSummary) => void): void;
   off(event: 'subscription_changed', cb: () => void): void;
   // Resume-restart surface (src/resumeRestart.ts).
@@ -425,10 +456,10 @@ export interface InstanceManagerLike {
   exitCauseFor(sessionId: string): ExitCause | null;
   // THE liveness authority for a public sessionId — see src/instances.ts. Every
   // consumer of worker liveness (playbook policy, MCP read surfaces) reads this,
-  // never a ledger-side mirror.
+  // never an event-log-side mirror.
   isSessionLive(sessionId: string): boolean;
-  remove(id: string): Promise<unknown>;
-  respawn(id: string): Promise<InstanceLike>;
+  remove(id: string, opts?: { actor?: Actor }): Promise<unknown>;
+  respawn(id: string, opts?: { actor?: Actor }): Promise<InstanceLike>;
   noteDispatch(callerSessionId: string, targetSessionId: string, timeoutMs?: number): void;
   setIdleTimeout(callerSessionId: string, targetSessionId: string, timeoutMs: number): { armed: boolean };
   disarmIdleSilently(callerSessionId: string, targetInstanceId: string): void;
@@ -441,7 +472,7 @@ export interface InstanceManagerLike {
   liveBackingIdsForPlace(place: TranscriptPlacement): Set<string>;
   idsForSession(sessionId: string): string[];
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
-  removeAllForProject(projectName: string): Promise<number>;
+  removeAllForProject(projectName: string, opts?: { actor?: Actor }): Promise<number>;
   reevaluateOverageResumes(): void;
   syncOveragePolicy(): void;
   syncIdleRenewNudge(): void;

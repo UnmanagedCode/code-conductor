@@ -526,7 +526,7 @@ test('forward: a successful result keeps today\'s shape plus forwarded — nothi
 
 // A RETIRED source is forwarded from its backing store. Liveness stopped being
 // the gatekeeper here (2026-0142): what governs a forward source is the
-// playbook gate, which resolves it from the liveness-agnostic ledger projection
+// playbook gate, which resolves it from the liveness-agnostic playbook projection
 // (checkForwardSource, src/playbooks.ts) — see tests/playbook-enforce.test.mjs
 // for the retired-and-denied case.
 //

@@ -114,6 +114,8 @@ export async function spawnFromBody(instances: InstanceManagerLike, body: Record
   // runtime validator (unknown project / bad effort → its own error), so
   // the erased casts change nothing at runtime.
   return instances.create({
+    // Both callers act for a person: the UI's POST and a headless invocation.
+    actor: { type: 'human' },
     project: project as string,
     resume: resume as string | undefined,
     mode: effectiveMode as string | null | undefined,

@@ -175,7 +175,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
-  'model_changed', 'model_switch_failed', 'cache_miss', 'playbook_warn', 'renew_error', 'read_nudge',
+  'model_changed', 'model_switch_failed', 'cache_miss', 'playbook_warn', 'event_log_blocked', 'renew_error', 'read_nudge',
 ]);
 
 /** Which system events the conversation shows; the rest is per-turn noise. */

@@ -8,6 +8,8 @@ import { hostPlatform, type Platform } from './src/platform/index.ts';
 import { buildRoutes, type RelaunchOptions } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
+import type { WriteLease } from './src/eventLog.ts';
+
 import { InstanceManager, sweepSessionTmpDirs } from './src/instances.ts';
 import { sweepFuseSessions } from './src/systems/fuse/sweep.ts';
 import { attachWsHub } from './src/wsHub.ts';
@@ -44,6 +46,9 @@ import { acquireRootLock, RootLockHeldError, RootLockUnreadableError, ROOT_LOCK_
 import { parseHeadlessArgs } from './src/headless/args.ts';
 import { headlessMain } from './src/headless/entry.ts';
 
+// The event-log lease of a server built without the projects-root lock.
+const NO_ROOT_LOCK_LEASE: WriteLease = { check: () => 'this server holds no projects-root lock' };
+
 // The child side of the plugin bridge, beside its parent side (plugins.ts).
 const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBridge.js');
 
@@ -55,7 +60,7 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(hostSecurityHeaders());
@@ -122,11 +127,15 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   // /admin/restart) can reach the http server + wss without those
   // existing at route-build time. Populated below once they do.
   const serverCtx: ServerCtx = {};
-  // ONE gate, shared by the MCP and REST routers: it holds the folded ledger
-  // projection and subscribes to the manager's status stream for
-  // retire/enforcement-toggle events, so a second instance would double-append
-  // those and read a projection the other router's writes never reach.
-  const playbookGate = createPlaybookGate({ instances });
+  // ONE gate, shared by the MCP and REST routers: it holds the folded playbook
+  // projection and records the manager's session stream into the event log, so
+  // a second instance would double-append those and read a projection the
+  // other router's writes never reach. It writes only while this server holds
+  // the projects-root lock (src/eventLog.ts → WriteLease); `eventLogLease` is a
+  // test seam, and a server built without the lock writes nothing, loudly.
+  const rootLock = relaunch?.rootLock;
+  const lease: WriteLease = eventLogLease ?? (rootLock ? { check: () => rootLock.writerCheck() } : NO_ROOT_LOCK_LEASE);
+  const playbookGate = createPlaybookGate({ instances, lease });
   // Settings → Account's Claude login. Starting one drops the cached auth status
   // (the CLI can rewrite credentials at start); a success also drops the usage
   // cache, which would otherwise serve the previous account's usage.

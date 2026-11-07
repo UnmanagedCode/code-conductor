@@ -12,7 +12,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 - **`/mcp` as an application API — URL contract (caller in the path, `?format=`), JSON results and `outputSchema`, error channels, REST alias, `CONDUCTOR_MCP_URL`** → `docs/mcp-applications.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
 - **Project name → directory resolution** → `resolveProjectDir` in `src/projects.ts` is the single chokepoint every project path comes from, and it is ONE record read; `registerProject` is the one guarded writer. The realpath rule, the delete-means-deregister rule and the reserved-name refusal are in `docs/architecture.md` → `src/projects.ts`
-- **Playbook ledger on-disk format (record kinds + fields; stable — plugins read it)** → `docs/playbook-ledger.md`
+- **Event log on-disk format (record kinds + fields; plugins read it)** → `docs/event-log.md`
 - **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`
 - **Windows launcher / installer contract (installer itself is the separate code-conductor-windows project)** → `docs/windows.md`
 - **Host-OS differences (spawn options, shell, kill, command splitting, path keys, feature capabilities)** → `Platform` in `src/platform/`; no `process.platform` elsewhere

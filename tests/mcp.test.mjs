@@ -9,6 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl, registerLocalProject} from './helpers.mjs';
+import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
 import { isDeadStatus } from '../src/instances.ts';
 import { localPlace } from '../src/projects.ts';
@@ -127,7 +128,8 @@ async function makeRealRepo(projectsRoot, name, { register = true } = {}) {
 let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
 
 before(async () => {
-  ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  // OPEN_LEASE: the log can be written, so the read tools' never-write cases are not vacuous.
+  ctx = await bootServer({ scenarioPath: SCENARIO_WS, eventLogLease: OPEN_LEASE });
   ({ baseUrl, instances } = ctx);
 });
 after(async () => { await ctx.close(); });
@@ -870,8 +872,8 @@ test('describe_session sits on the shared prefix-resolution chokepoint', async (
   assert.equal(amb.code, 'SESSION_AMBIGUOUS');
 });
 
-test('describe_session never materialises the playbook ledger it reads', async () => {
-  const { ledgerFile } = await import('../src/playbookLedger.ts');
+test('describe_session never materialises the event log it reads', async () => {
+  const { eventLogFile } = await import('../src/eventLog.ts');
   const sid = 'cccccccc-1111-2222-3333-444444444444';
   await seedRowlessSession('host', sid);
   text(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
@@ -881,10 +883,10 @@ test('describe_session never materialises the playbook ledger it reads', async (
   // racing it.
   await assert.rejects(
     () => waitFor(async () => {
-      try { await fs.access(ledgerFile()); return true; } catch { return false; }
+      try { await fs.access(eventLogFile()); return true; } catch { return false; }
     }, { timeout: 1000, interval: 20 }),
     /timeout/,
-    'a read tool must never materialise the ledger it reads');
+    'a read tool must never materialise the log it reads');
 });
 
 test('create_worktree + list_worktrees + delete_worktree against a real git repo', async () => {

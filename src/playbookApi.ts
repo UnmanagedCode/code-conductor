@@ -13,7 +13,7 @@ import type { PlaybookGate } from './mcp/playbookGate.ts';
 // parser and trailing error middleware. There is no write route: an authoring
 // plugin writes the user-overlay file itself (docs/plugins.md).
 //
-// Ledger state is read ONLY through the gate (tests/playbook-ledger-chokepoint.test.mjs).
+// Playbook state is read ONLY through the gate (tests/event-log-chokepoint.test.mjs).
 
 function provenance(pb: Playbook) {
   const source = playbookSource(pb);

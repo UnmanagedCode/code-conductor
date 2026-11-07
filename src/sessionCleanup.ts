@@ -20,7 +20,7 @@
 //     error; the empty-scan check catches it even when some record is kept for
 //     another reason, which would stand the every-record check down.
 // Nothing else is cascaded: the session-keyed append-only logs (costs, the
-// playbook ledger) hold history where a dead id is inert, as after the explicit
+// event log) hold history where a dead id is inert, as after the explicit
 // session delete.
 
 import { readResumeManifest } from './resumeManifest.ts';
