@@ -9,7 +9,7 @@
 //
 // The closing tests pin completeness: the driven set IS the capability-filtered
 // registry (a tool with no driver fails), every listed tool carries an
-// outputSchema inside the validated subset (tests/jsonSchemaSubset.mjs), and
+// outputSchema inside the validated subset (src/mcp/jsonSchemaSubset.ts), and
 // refusals, faults and bridged plugin tools take their documented channels.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ import { bindRemoteSystem, seedRepo, git } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { mcpUrl } from './mcpClient.mjs';
 import { OPEN_LEASE } from './playbook-fixtures.mjs';
-import { checkSchema, validate } from './jsonSchemaSubset.mjs';
+import { checkSchema, validate } from '../src/mcp/jsonSchemaSubset.ts';
 import { buildTools } from '../src/mcp/tools.ts';
 import { REFUSAL_SCHEMA } from '../src/mcp/outputSchemas.ts';
 import { buildMcpRouter } from '../src/mcp/server.ts';
