@@ -17,7 +17,7 @@ vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
 import {
   column, columnButtons, DOCK_CATALOG, dockHandle, dockSplit, dragBy, emitWidth, endHost, go, keepRow, mountApp, net,
-  pickApp, plainRow, pressColumn, residentFrame, resetHost, sessionShown, settle, sharedFrame, standInWindow, stubResizeObserver, viewOpen,
+  openSwitcher, pickApp, plainRow, pressColumn, residentFrame, resetHost, sessionShown, settle, sharedFrame, sidebar, standInWindow, stubResizeObserver, viewOpen,
 } from './test/pluginHost';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
 import { closeDock, DOCK_WIDTH_STORAGE_KEY, dockStore, readDockState } from './dock';
@@ -66,16 +66,16 @@ afterEach(async () => {
 });
 
 describe('the plugin dock collapse', () => {
-  it('in split the bar\'s first control is Collapse plugin dock, before the plugin\'s title', async () => {
-    // Invariant: Collapse leads the split bar, left of the name.
+  it('in split the bar\'s last control is Collapse plugin dock, after the plugin\'s title', async () => {
+    // Invariant: Collapse ends the split bar, right of the name.
     await mountApp();
     await dockSplit('alpha');
     const b = ctl(COLLAPSE);
     expect(b, 'the Collapse control').not.toBeNull();
-    expect(columnButtons()[0]).toBe(COLLAPSE);
+    expect(columnButtons().at(-1)).toBe(COLLAPSE);
     const title = column()!.querySelector('[data-plugin-title]');
     expect(title, 'the bar\'s title').not.toBeNull();
-    expect(b!.compareDocumentPosition(title!) & Node.DOCUMENT_POSITION_FOLLOWING, 'before the title').toBeTruthy();
+    expect(b!.compareDocumentPosition(title!) & Node.DOCUMENT_POSITION_PRECEDING, 'after the title').toBeTruthy();
   });
 
   it('Collapse shows the rail beside the session: rail mode, Expand plugin dock and the plugin\'s name in it, the section hidden from AT, no handle', async () => {
@@ -201,7 +201,7 @@ describe('the plugin dock collapse', () => {
     await press(COLLAPSE);
     await go('#plugin/alpha/');
     expect(mode()).toBe('full');
-    expect(columnButtons()).toEqual(['Dock to side', 'Switch app']);
+    expect(columnButtons()).toEqual(['Dock to side', 'Switch app', COLLAPSE]);
     expect(localStorage.getItem(COLLAPSED_KEY)).toBe('false');
     await pressColumn('Dock to side');
     expect(mode()).toBe('split');
@@ -263,8 +263,8 @@ describe('the plugin dock collapse', () => {
     expect(document.activeElement).not.toBe(ctl(EXPAND));
   });
 
-  it('below md a collapse shows nothing beside the session and no dock control; a pick opens the full view with only Open sidebar, the switcher and Close', async () => {
-    // Invariant: the phone layout has no rail and no Collapse.
+  it('below md a collapse shows nothing beside the session and no dock control; a pick opens the full view with Open sidebar, the switcher and Close plugin, and no Collapse', async () => {
+    // Invariant: the phone layout has no rail and no Collapse; its far-right control is Close plugin.
     let wide = true;
     const listeners = new Set<() => void>();
     vi.stubGlobal('matchMedia', (query: string) => ({
@@ -290,6 +290,186 @@ describe('the plugin dock collapse', () => {
     expect(mode(), 'back above md the rail returns').toBe('rail');
     await cross(false);
     await pickApp('beta');
-    expect(columnButtons()).toEqual(['Open sidebar', 'Switch app']);
+    expect(columnButtons()).toEqual(['Open sidebar', 'Switch app', 'Close plugin']);
+  });
+});
+
+/** Escape, keyed on `el` (default: the focused element, else the body), so the listener's focus scope is exercised. */
+async function escapeOn(el: Element = document.activeElement ?? document.body) {
+  await act(async () => { fireEvent.keyDown(el, { key: 'Escape' }); });
+  await settle();
+}
+/** A focusable sidebar control with no tooltip (an open Radix tooltip takes the Escape itself, which would make a test of the pane's own Escape vacuous). */
+function sidebarControl(): HTMLElement {
+  const el = sidebar().querySelector<HTMLElement>('button:not([data-slot="tooltip-trigger"]):not([disabled])');
+  expect(el, 'fixture check: a sidebar button with no tooltip').not.toBeNull();
+  return el!;
+}
+/** Alpha's full view with the full mode remembered: picked from Conductor. */
+async function openFull() {
+  await pickApp('alpha');
+  expect(mode(), 'fixture check: full').toBe('full');
+  expect(location.hash, 'fixture check: the full view').toBe('#plugin/alpha/');
+}
+
+describe('full-pane collapse', () => {
+  it('Collapse in the full view of a listed plugin docks it as the rail beside the session, on the same frame with no reload', async () => {
+    // Invariant: the full-pane Collapse is "dock collapsed, then leave the view": rail beside the session on that plugin, the URL back on the anchor, the page never reloaded.
+    await mountApp();
+    await openFull();
+    const frame = sharedFrame()!;
+    expect(frame, 'fixture check: Alpha\'s frame').not.toBeNull();
+    const startsBefore = starts();
+    await press(COLLAPSE);
+    expect(mode()).toBe('rail');
+    expect(rail()!.textContent, 'the rail names Alpha').toContain('Alpha');
+    expect(sessionShown()).toBe(true);
+    expect(location.hash).toBe(ANCHOR);
+    expect(sharedFrame() === frame && !frame.hidden, 'the same frame node, shown').toBe(true);
+    expect(frame.getAttribute('src')).toBe('/plugins/alpha/');
+    expect(starts()).toBe(startsBefore);
+  });
+
+  it('the full mode stays remembered after a full-pane Collapse: a Conductor pick then a pick of the plugin opens its full view', async () => {
+    // Invariant: only the toggle writes the remembered mode, so Collapse from full keeps it and the next pick from Conductor opens full again.
+    await mountApp();
+    await openFull();
+    await press(COLLAPSE);
+    expect(dockStore.get().mode, 'the store').toBe('full');
+    expect(JSON.parse(localStorage.getItem('code-conductor:plugin-dock')!).mode, 'the stored JSON').toBe('full');
+    await pickApp('conductor');
+    expect(mode(), 'fixture check: Conductor hides the column').toBe('hidden');
+    await pickApp('alpha');
+    expect(location.hash).toBe('#plugin/alpha/');
+    expect(mode()).toBe('full');
+  });
+
+  it('Expand plugin dock after a full-pane Collapse gives split, and a pick of the other plugin then swaps it in split instead of opening full', async () => {
+    // Invariant: a pick from a plugin showing beside the session keeps split even though the remembered mode is full; only a pick with nothing beside it opens full.
+    await mountApp();
+    await openFull();
+    await press(COLLAPSE);
+    await press(EXPAND);
+    expect(mode()).toBe('split');
+    await pickApp('beta');
+    expect(mode(), 'still split').toBe('split');
+    expect(location.hash, 'on the session, not a full view').toBe(ANCHOR);
+    expect(dockStore.get().id).toBe('beta');
+    expect(sessionShown()).toBe(true);
+  });
+
+  it('a split too narrow to fit offers Collapse, which gives the rail; a keyboard Expand there hands focus back to Collapse', async () => {
+    // Invariant: the forced-full split's Collapse is setDockCollapsed (a rail always fits), and Expand's keyboard handoff lands on the bar's Collapse.
+    stubResizeObserver();
+    await mountApp();
+    emitWidth(1100);
+    await dockSplit('alpha');
+    emitWidth(DOCK_PANEL_MIN_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH - 1);
+    await settle();
+    expect(mode(), 'fixture check: forced full').toBe('full');
+    expect(columnButtons()).toEqual(['Switch app', COLLAPSE]);
+    await press(COLLAPSE, 0);
+    expect(mode()).toBe('rail');
+    expect(sessionShown()).toBe(true);
+    expect(document.activeElement, 'focus on Expand').toBe(ctl(EXPAND));
+    await press(EXPAND, 0);
+    expect(mode(), 'forced full again').toBe('full');
+    expect(document.activeElement, 'focus back on Collapse').toBe(ctl(COLLAPSE));
+  });
+
+  it('Escape with focus on the bar\'s Collapse collapses the full view to the rail and focuses Expand plugin dock', async () => {
+    // Invariant: Escape in the full pane is a keyboard Collapse where Collapse is offered.
+    await mountApp();
+    await openFull();
+    const b = ctl(COLLAPSE)!;
+    // A pointer-down first keeps Radix from opening the button's tooltip on focus, which would take the Escape itself.
+    await act(async () => { fireEvent.pointerDown(b); b.focus(); });
+    expect(document.activeElement, 'fixture check: focus in the column').toBe(b);
+    await escapeOn();
+    expect(mode()).toBe('rail');
+    expect(location.hash).toBe(ANCHOR);
+    expect(document.activeElement, 'focus handed to Expand').toBe(ctl(EXPAND));
+  });
+
+  it('Escape with focus on the page body collapses the full view to the rail', async () => {
+    // Invariant: nothing focused means the pane owns Escape.
+    await mountApp();
+    await openFull();
+    await act(async () => { (document.activeElement as HTMLElement | null)?.blur(); });
+    await escapeOn(document.body);
+    expect(mode()).toBe('rail');
+    expect(dockStore.get().mode, 'full stays remembered').toBe('full');
+  });
+
+  it('Escape with focus on a sidebar control leaves the full pane full', async () => {
+    // Invariant: Escape collapses only while focus is in the plugin column or on the body; elsewhere it is that control's own.
+    await mountApp();
+    await openFull();
+    const other = sidebarControl();
+    await act(async () => { other.focus(); });
+    expect(document.activeElement, 'fixture check: focus in the sidebar').toBe(other);
+    await escapeOn();
+    expect(mode()).toBe('full');
+    expect(location.hash).toBe('#plugin/alpha/');
+  });
+
+  it('with the switcher\'s menu open Escape closes the menu only; a second Escape collapses', async () => {
+    // Invariant: an open Radix menu keeps its Escape; the pane collapses on the next one.
+    await mountApp();
+    await openFull();
+    const menu = await openSwitcher();
+    await act(async () => { fireEvent.keyDown(menu, { key: 'Escape' }); });
+    await settle();
+    expect(document.querySelector('[role="menu"]'), 'the menu closed').toBeNull();
+    expect(mode(), 'the pane stays full').toBe('full');
+    await escapeOn();
+    expect(mode(), 'the second Escape collapses').toBe('rail');
+  });
+
+  it('with an open listbox (a Select) or dialog on the page, Escape leaves the full pane full', async () => {
+    // Invariant: an open Select or dialog owns Escape, so the pane does not collapse under it.
+    await mountApp();
+    await openFull();
+    for (const role of ['listbox', 'dialog']) {
+      const el = document.body.appendChild(document.createElement('div'));
+      el.setAttribute('role', role);
+      el.setAttribute('data-state', 'open');
+      await escapeOn(document.body);
+      expect(mode(), `an open ${role}`).toBe('full');
+      el.remove();
+    }
+  });
+
+  it('an unlisted plugin\'s full view has no rail to collapse to: Escape leaves the view', async () => {
+    // Invariant: where Close is offered Escape keeps closing, even with focus elsewhere.
+    net.status.ghost = plainRow();
+    await mountApp();
+    await go('#plugin/ghost/');
+    expect(mode(), 'fixture check: full').toBe('full');
+    const other = sidebarControl();
+    await act(async () => { other.focus(); });
+    await escapeOn();
+    expect(location.hash).toBe(ANCHOR);
+    expect(mode()).toBe('hidden');
+  });
+
+  describe('below md', () => {
+    const happyDOM = () => (window as unknown as { happyDOM: { setViewport(v: { width: number; height: number }): void } }).happyDOM;
+    let prev = { width: 0, height: 0 };
+    beforeEach(() => {
+      prev = { width: window.innerWidth, height: window.innerHeight };
+      happyDOM().setViewport({ width: 412, height: 915 });
+    });
+    afterEach(() => { happyDOM().setViewport(prev); });
+
+    it('Escape in a plugin\'s full view leaves the view, as there is no rail', async () => {
+      // Invariant: the phone layout keeps Escape-to-close.
+      await mountApp();
+      await go('#plugin/alpha/');
+      expect(mode(), 'fixture check: full').toBe('full');
+      await escapeOn(document.body);
+      expect(location.hash).toBe(ANCHOR);
+      expect(mode()).toBe('hidden');
+    });
   });
 });

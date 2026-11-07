@@ -2,10 +2,11 @@
 // keep-alive frames survive and no mode change moves a frame. Its width is its
 // mode (dockLayout.ts): hidden, a split beside the session, a rail, or the whole
 // row — the full view (`#plugin/<id>/<subpath>`), or a split too narrow to fit.
-// Its bar carries Collapse (split only), the one full ⇄ split toggle and the app switcher (labelled with the plugin's name),
-// whose Conductor pick closes the plugin (hiding a keep-alive page, stopping nothing).
+// Its bar carries the one full ⇄ split toggle, the app switcher (labelled with the plugin's name, whose Conductor
+// pick closes the plugin, hiding a keep-alive page and stopping nothing) and, at the far right, Collapse (to the
+// rail) where a rail can show or Close plugin where none can (dockLayout's `dismiss`).
 import * as React from 'react';
-import { LoaderCircleIcon, Maximize2Icon, MenuIcon, PanelRightCloseIcon, PanelRightIcon, PanelRightOpenIcon, PlugIcon, RotateCwIcon } from 'lucide-react';
+import { LoaderCircleIcon, Maximize2Icon, MenuIcon, PanelRightCloseIcon, PanelRightIcon, PanelRightOpenIcon, PlugIcon, RotateCwIcon, XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSignal, useStore } from '@/state/createStore';
@@ -15,10 +16,10 @@ import { pluginsChangedSignal, pluginsChangeStore } from '@/features/settings/pl
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { RESIZE_HANDLE_CLASS, useResizableWidth } from '@/lib/useResizableWidth';
 import { leaveView, useEscapeToClose } from './ViewShell';
-import { AppSwitcher } from './AppSwitcher';
+import { AppSwitcher, exitToConductor } from './AppSwitcher';
 import { appLabel, catalogStore, hashMirror, overlayStore, pluginFrames, refreshCatalog } from './plugins';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, dockLayout, maxPanel } from './dockLayout';
-import { closeDock, DOCK_WIDTH_STORAGE_KEY, dockBesideStore, dockCollapsedStore, dockFullView, dockModeStore, dockMirror, dockStore, expandDock, followFrameLink, setDockCollapsed } from './dock';
+import { collapseFullView, DOCK_WIDTH_STORAGE_KEY, dockBesideStore, dockCollapsedStore, dockFullView, dockModeStore, dockMirror, dockStore, expandDock, followFrameLink, setDockCollapsed } from './dock';
 import { cn } from '@/lib/utils';
 
 /** The main row's content width, from its ResizeObserver; null until the first measurement. */
@@ -66,15 +67,13 @@ export function PluginView() {
     edge: 'left',
     label: 'Resize plugin dock',
   });
-  const { mode, shownId, toggle } = dockLayout({
+  const { mode, shownId, toggle, dismiss } = dockLayout({
     desktop, view: route.view, routePluginId: route.pluginId, catalogIds, dockId: dock.id, available, collapsed,
   });
   const rail = mode === 'rail';
   const routeFull = route.view === 'plugin';
   const shown = mode !== 'hidden';
   const title = shownId ? appLabel(apps.find((a) => a.id === shownId) ?? { name: shownId }) : '';
-  // The full view steps back; a split shown full closes with no history step; split ignores Escape.
-  useEscapeToClose(mode === 'full', routeFull ? leaveView : closeDock);
 
   React.useLayoutEffect(() => {
     dockModeStore.set({ mode });
@@ -113,8 +112,14 @@ export function PluginView() {
   const focusAfter = React.useRef<'rail' | 'bar' | null>(null);
   const collapseRef = React.useRef<HTMLButtonElement>(null);
   const expandRef = React.useRef<HTMLButtonElement>(null);
-  const collapse = (kb: boolean) => { focusAfter.current = kb ? 'rail' : null; setDockCollapsed(true); };
+  const collapse = React.useCallback((kb: boolean) => {
+    focusAfter.current = kb ? 'rail' : null;
+    if (routeFull) collapseFullView(); else setDockCollapsed(true);
+  }, [routeFull]);
   const restore = (kb: boolean) => { focusAfter.current = kb ? 'bar' : null; setDockCollapsed(false); };
+  // Full pane: Escape collapses where Collapse is offered (focus in the column or on the body), else leaves the view; split and the rail ignore it.
+  const collapseByKey = React.useCallback(() => collapse(true), [collapse]);
+  useEscapeToClose(mode === 'full', dismiss === 'collapse' ? collapseByKey : leaveView, dismiss === 'collapse' ? columnRef : undefined);
   React.useLayoutEffect(() => {
     const target = focusAfter.current === 'rail' ? expandRef.current : focusAfter.current === 'bar' ? collapseRef.current : null;
     target?.focus();
@@ -163,16 +168,6 @@ export function PluginView() {
       >
         {/* The column's bar, above the plugin's page and never over it. */}
         <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur">
-          {mode === 'split' && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button ref={collapseRef} variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" aria-label="Collapse plugin dock" onClick={(e) => collapse(e.detail === 0)}>
-                  <PanelRightCloseIcon />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Collapse plugin dock</TooltipContent>
-            </Tooltip>
-          )}
           {t && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -191,6 +186,26 @@ export function PluginView() {
           <div data-plugin-title className="flex min-w-0 flex-1">
             <AppSwitcher slot="pane" title={title} className="hover:bg-accent" fallback={<h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</h1>} />
           </div>
+          {dismiss === 'collapse' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button ref={collapseRef} variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" aria-label="Collapse plugin dock" onClick={(e) => collapse(e.detail === 0)}>
+                  <PanelRightCloseIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Collapse plugin dock</TooltipContent>
+            </Tooltip>
+          )}
+          {dismiss === 'close' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" aria-label="Close plugin" onClick={exitToConductor}>
+                  <XIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Close plugin</TooltipContent>
+            </Tooltip>
+          )}
         </header>
         {/* Positioned: the frames and the start overlay fill the area below the bar. */}
         <div className="relative min-h-0 flex-1">

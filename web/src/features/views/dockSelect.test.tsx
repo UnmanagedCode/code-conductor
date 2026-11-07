@@ -20,7 +20,7 @@ import { selectInstance, type SelectOptions } from '@/app/controller';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { openCosts, openSettings } from './api';
-import { dockStore, readDockState } from './dock';
+import { closeDock, dockStore, readDockState } from './dock';
 import { DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
 import {
   ACTIVE, checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, emitWidth, endHost, go, keepRow, mountApp, net, pickApp, plainRow,
@@ -64,6 +64,7 @@ async function narrowSplit() {
 }
 
 beforeEach(() => {
+  closeDock();
   localStorage.clear();
   dockStore.set(readDockState());
   resetHost(`/${ANCHOR}`);
@@ -315,16 +316,21 @@ describe('a window too narrow for any split', () => {
     expect(dockStore.get().id).toBe('alpha');
   });
 
-  it('in a window too narrow for any split, Escape closes the plugin and keeps the remembered split', async () => {
-    // Invariant (F9, F7): Escape closes a split shown full-screen without a history step, and the split stays remembered.
+  it('in a window too narrow for any split, Escape collapses to the rail with no history step and the split remembered; Expand then a session pick closes it', async () => {
+    // Invariant (F9, F7): Escape on a split shown full-screen gives the rail (a rail always fits) without a history step, keeping the split selected and remembered; only a session pick closes the plugin.
     await narrowSplit();
     const historyBack = vi.spyOn(history, 'back');
     await escape();
-    expect(mode()).toBe('hidden');
+    expect(mode()).toBe('rail');
     expect(sessionShown()).toBe(true);
     expect(location.hash).toBe(ANCHOR);
     expect(historyBack, 'no history step').not.toHaveBeenCalled();
     expect(dockStore.get().mode, 'split stays remembered').toBe('split');
+    expect(dockStore.get().id, 'still selected').toBe('alpha');
+    await pressColumn('Expand plugin dock');
+    expect(mode(), 'covering again').toBe('full');
+    await select(OTHER.id, { userGesture: true });
+    expect(mode(), 'a session pick closes it').toBe('hidden');
     expect(dockStore.get().id, 'nothing selected').toBeNull();
     emitWidth(WIDE);
     await settle();
@@ -335,12 +341,6 @@ describe('a window too narrow for any split', () => {
 
 describe('leaving the full view', () => {
   const EXITS: [string, () => Promise<void>][] = [
-    ['Escape from a full view entered by Expand lands on Conductor, never split', async () => {
-      await dockSplit('alpha');
-      await pressColumn('Expand to full view');
-      expect(location.hash, 'fixture check: expanded').toBe('#plugin/alpha/');
-      await escape();
-    }],
     ['Back from a full view entered by Expand lands on Conductor, never split', async () => {
       await dockSplit('alpha');
       await pressColumn('Expand to full view');
@@ -353,12 +353,6 @@ describe('leaving the full view', () => {
       expect(location.hash, 'fixture check: B in full').toBe('#plugin/beta/');
       await back();
     }],
-    ['Escape from a linked full view while another plugin is docked lands on Conductor', async () => {
-      await dockSplit('beta');
-      await go('#plugin/alpha/');
-      expect(viewOpen() && !sessionShown(), 'fixture check: Alpha in full').toBe(true);
-      await escape();
-    }],
   ];
 
   it.each(EXITS)('%s', async (_title, exit) => {
@@ -369,6 +363,31 @@ describe('leaving the full view', () => {
     expect(mode()).toBe('hidden');
     expect(sessionShown()).toBe(true);
     expect(await checkedNow()).toEqual(['conductor']);
+  });
+
+  it('Escape from a full view entered by Expand gives the rail on that plugin, with full remembered', async () => {
+    // Invariant (F7): Escape in a listed plugin's full view collapses instead of leaving: the rail on that plugin beside the session, the remembered mode kept.
+    await mountApp();
+    await dockSplit('alpha');
+    await pressColumn('Expand to full view');
+    expect(location.hash, 'fixture check: expanded').toBe('#plugin/alpha/');
+    await escape();
+    expect(location.hash).toBe(ANCHOR);
+    expect(mode()).toBe('rail');
+    expect(dockStore.get(), 'alpha docked, full remembered').toMatchObject({ id: 'alpha', mode: 'full' });
+    expect(sessionShown()).toBe(true);
+  });
+
+  it('Escape from a linked full view while another plugin is docked gives the rail on the linked plugin', async () => {
+    // Invariant (F7): a linked full view replaces the dock selection, and Escape collapses that plugin to the rail.
+    await mountApp();
+    await dockSplit('beta');
+    await go('#plugin/alpha/');
+    expect(viewOpen() && !sessionShown(), 'fixture check: Alpha in full').toBe(true);
+    await escape();
+    expect(location.hash).toBe(ANCHOR);
+    expect(mode()).toBe('rail');
+    expect(dockStore.get().id).toBe('alpha');
   });
 
   it('Escape in split changes nothing', async () => {

@@ -13,27 +13,27 @@ const input = (over: Partial<Input> = {}): Input => ({
 describe('dockLayout', () => {
   it('with no catalog app the column is hidden beside a session', () => {
     // Invariant: no frontend plugin, no dock.
-    expect(dockLayout(input({ catalogIds: [], dockId: 'alpha' }))).toEqual({ mode: 'hidden', shownId: null, toggle: null });
+    expect(dockLayout(input({ catalogIds: [], dockId: 'alpha' }))).toEqual({ mode: 'hidden', shownId: null, toggle: null, dismiss: null });
   });
 
   it('below md a session hides the column even with a split selected', () => {
     // Invariant (F10): the phone layout has no split.
-    expect(dockLayout(input({ desktop: false, dockId: 'alpha' }))).toEqual({ mode: 'hidden', shownId: null, toggle: null });
+    expect(dockLayout(input({ desktop: false, dockId: 'alpha' }))).toEqual({ mode: 'hidden', shownId: null, toggle: null, dismiss: null });
   });
 
   it('below md a plugin route is the full view with no toggle', () => {
     // Invariant (F10): the phone's full view offers no Dock to side.
-    expect(dockLayout(input({ desktop: false, view: 'plugin', routePluginId: 'alpha' }))).toEqual({ mode: 'full', shownId: 'alpha', toggle: null });
+    expect(dockLayout(input({ desktop: false, view: 'plugin', routePluginId: 'alpha' }))).toEqual({ mode: 'full', shownId: 'alpha', toggle: null, dismiss: 'close' });
   });
 
   it('on desktop with nothing selected the column is hidden', () => {
     // Invariant (F3): Conductor shows no column.
-    expect(dockLayout(input())).toEqual({ mode: 'hidden', shownId: null, toggle: null });
+    expect(dockLayout(input())).toEqual({ mode: 'hidden', shownId: null, toggle: null, dismiss: null });
   });
 
   it('a listed split selection with room is split, offering Expand', () => {
     // Invariant (F1): split shows exactly the selected plugin, and its toggle expands it.
-    expect(dockLayout(input({ dockId: 'beta' }))).toEqual({ mode: 'split', shownId: 'beta', toggle: 'expand' });
+    expect(dockLayout(input({ dockId: 'beta' }))).toEqual({ mode: 'split', shownId: 'beta', toggle: 'expand', dismiss: 'collapse' });
   });
 
   it('a split selection the catalog no longer lists is hidden', () => {
@@ -48,17 +48,17 @@ describe('dockLayout', () => {
 
   it('a split selection with no room for any split is full, with no toggle', () => {
     // Invariant (F9): a split too narrow to fit fills the row and offers no toggle, whose target could not show.
-    expect(dockLayout(input({ dockId: 'alpha', available: SPLIT_MIN_ROW - 1 }))).toEqual({ mode: 'full', shownId: 'alpha', toggle: null });
+    expect(dockLayout(input({ dockId: 'alpha', available: SPLIT_MIN_ROW - 1 }))).toEqual({ mode: 'full', shownId: 'alpha', toggle: null, dismiss: 'collapse' });
   });
 
   it('a listed plugin route with room is full, offering Dock to side', () => {
     // Invariant (F1): the full view's toggle docks it.
-    expect(dockLayout(input({ view: 'plugin', routePluginId: 'beta' }))).toEqual({ mode: 'full', shownId: 'beta', toggle: 'dock' });
+    expect(dockLayout(input({ view: 'plugin', routePluginId: 'beta' }))).toEqual({ mode: 'full', shownId: 'beta', toggle: 'dock', dismiss: 'collapse' });
   });
 
   it('an unlisted plugin route is full, with no toggle', () => {
     // Invariant: a plugin the switcher does not list cannot be docked.
-    expect(dockLayout(input({ view: 'plugin', routePluginId: 'gone' }))).toEqual({ mode: 'full', shownId: 'gone', toggle: null });
+    expect(dockLayout(input({ view: 'plugin', routePluginId: 'gone' }))).toEqual({ mode: 'full', shownId: 'gone', toggle: null, dismiss: 'close' });
   });
 
   it('a listed plugin route with no room for any split offers no toggle', () => {
@@ -67,10 +67,26 @@ describe('dockLayout', () => {
   });
 });
 
+describe('dockLayout dismiss', () => {
+  it.each([
+    ['split', { dockId: 'alpha' }, 'collapse'],
+    ['a split too narrow to fit (forced full)', { dockId: 'alpha', available: SPLIT_MIN_ROW - 1 }, 'collapse'],
+    ['a listed plugin route with room for a split', { view: 'plugin', routePluginId: 'alpha' }, 'collapse'],
+    ['a listed plugin route with no room for a split', { view: 'plugin', routePluginId: 'alpha', available: SPLIT_MIN_ROW - 1 }, 'collapse'],
+    ['an unlisted plugin route', { view: 'plugin', routePluginId: 'gone' }, 'close'],
+    ['a plugin route below md', { desktop: false, view: 'plugin', routePluginId: 'alpha' }, 'close'],
+    ['a hidden column', {}, null],
+    ['a rail', { dockId: 'alpha', collapsed: true }, null],
+  ] as const)('%s dismisses by %s', (_what, over, dismiss) => {
+    // Invariant: the bar's far-right control is Collapse wherever a rail can show beside the session (desktop, listed plugin), Close where none can, and none in the rail or when hidden.
+    expect(dockLayout(input(over as Partial<Input>)).dismiss).toBe(dismiss);
+  });
+});
+
 describe('dockLayout collapsed', () => {
   it('collapsed beside a session is the rail on the selected plugin with no toggle', () => {
     // Invariant: a collapsed split is the rail, offering no mode toggle (the bar is behind it).
-    expect(dockLayout(input({ dockId: 'alpha', collapsed: true }))).toEqual({ mode: 'rail', shownId: 'alpha', toggle: null });
+    expect(dockLayout(input({ dockId: 'alpha', collapsed: true }))).toEqual({ mode: 'rail', shownId: 'alpha', toggle: null, dismiss: null });
   });
 
   it('collapsed is the rail even where no split fits', () => {
@@ -80,7 +96,7 @@ describe('dockLayout collapsed', () => {
 
   it('collapsed changes nothing on a plugin route', () => {
     // Invariant: the full view always shows expanded.
-    expect(dockLayout(input({ view: 'plugin', routePluginId: 'beta', collapsed: true }))).toEqual({ mode: 'full', shownId: 'beta', toggle: 'dock' });
+    expect(dockLayout(input({ view: 'plugin', routePluginId: 'beta', collapsed: true }))).toEqual({ mode: 'full', shownId: 'beta', toggle: 'dock', dismiss: 'collapse' });
   });
 
   it('collapsed below md hides the column beside a session', () => {

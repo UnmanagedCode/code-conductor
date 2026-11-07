@@ -94,14 +94,14 @@ describe('the plugin dock', () => {
     expect(viewOpen()).toBe(false);
   });
 
-  it('the column\'s controls are Collapse, then the mode toggle, then the switcher: Expand to full view in split, Dock to side in full, and nothing else', async () => {
-    // Invariant (F1): the switcher picks the plugin; the column carries Collapse (split only), the full ⇄ split toggle and the switcher, nothing after it.
+  it('the column\'s controls are the mode toggle, the switcher, then Collapse: Expand to full view in split, Dock to side in full, and nothing else', async () => {
+    // Invariant (F1): the switcher picks the plugin; the column carries the full ⇄ split toggle, the switcher and Collapse at the far right, nothing after it.
     await mountApp();
     await dockSplit('alpha');
-    expect(columnButtons(), 'split').toEqual(['Collapse plugin dock', 'Expand to full view', 'Switch app']);
+    expect(columnButtons(), 'split').toEqual(['Expand to full view', 'Switch app', 'Collapse plugin dock']);
     await pressColumn('Expand to full view');
     expect(location.hash, 'fixture check: expanded').toBe('#plugin/alpha/');
-    expect(columnButtons(), 'full').toEqual(['Dock to side', 'Switch app']);
+    expect(columnButtons(), 'full').toEqual(['Dock to side', 'Switch app', 'Collapse plugin dock']);
     expect(column()!.querySelector('nav'), 'no navigation strip').toBeNull();
   });
 
@@ -293,7 +293,7 @@ describe('a narrow window', () => {
     expect(viewOpen(), 'the plugin shown').toBe(true);
     expect(sessionShown(), 'over the session').toBe(false);
     expect(dockHandle(), 'no handle').toBeNull();
-    expect(columnButtons(), 'no toggle, only the switcher').toEqual(['Switch app']);
+    expect(columnButtons(), 'no toggle, the switcher then Collapse').toEqual(['Switch app', 'Collapse plugin dock']);
     expect(location.hash).toBe(ANCHOR);
     expect(setItem, 'nothing written').not.toHaveBeenCalled();
     expect(await checkedNow()).toEqual(['alpha']);
@@ -446,6 +446,6 @@ describe('below md', () => {
     await cross(false);
     await pickApp('beta');
     expect(location.hash, 'the full-page view').toBe('#plugin/beta/');
-    expect(columnButtons(), 'the phone bar: no toggle, only Open sidebar and the switcher').toEqual(['Open sidebar', 'Switch app']);
+    expect(columnButtons(), 'the phone bar: no toggle, Open sidebar, the switcher and Close').toEqual(['Open sidebar', 'Switch app', 'Close plugin']);
   });
 });

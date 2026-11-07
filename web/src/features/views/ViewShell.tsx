@@ -21,18 +21,22 @@ export function showActiveSession() {
   syncRoute();
 }
 
-/** Escape runs `onClose` (default: leave the view), unless a dialog or menu is open (it closes those first). */
-export function useEscapeToClose(enabled = true, onClose: () => void = leaveView) {
+/** Escape runs `onClose` (default: leave the view), unless a dialog, menu or select is open (it closes those first). With a `scope`, only while focus is inside it or on the page body. */
+export function useEscapeToClose(enabled = true, onClose: () => void = leaveView, scope?: React.RefObject<HTMLElement | null>) {
   React.useEffect(() => {
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
-      if (document.querySelector('[role="dialog"][data-state="open"], [role="menu"][data-state="open"]')) return;
+      if (document.querySelector('[role="dialog"][data-state="open"], [role="menu"][data-state="open"], [role="listbox"][data-state="open"]')) return;
+      if (scope) {
+        const at = document.activeElement;
+        if (at && at !== document.body && !scope.current?.contains(at)) return;
+      }
       onClose();
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [enabled, onClose]);
+  }, [enabled, onClose, scope]);
 }
 
 /** The frame every full-page view shares: back button, title, stats, actions, scrolling body. */

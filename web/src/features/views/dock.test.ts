@@ -38,6 +38,7 @@ describe('readDockState', () => {
   it.each([
     { id: 'beta', subpath: '/x/y', mode: 'split' },
     { id: null, subpath: '/', mode: 'split' },
+    { id: 'beta', subpath: '/x', mode: 'full' },
   ])('round-trips a valid stored state: %o', (state) => {
     // Invariant: what the dock persisted is what a reload reads.
     localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify(state));
@@ -53,10 +54,9 @@ describe('readDockState', () => {
     ['an {id, subpath, open} shape, open', JSON.stringify({ id: 'beta', subpath: '/x', open: true })],
     ['an {id, subpath, open} shape, closed', JSON.stringify({ id: 'beta', subpath: '/', open: false })],
     ['an {id, subpath, open} shape with nothing selected', JSON.stringify({ id: null, subpath: '/', open: false })],
-    ['a selection with the full view remembered', JSON.stringify({ id: 'beta', subpath: '/', mode: 'full' })],
     ['an unknown mode', JSON.stringify({ id: null, subpath: '/', mode: 'docked' })],
   ])('reads %s as nothing selected', (_what, raw) => {
-    // Invariant (F11): only the current shape {id, subpath, mode} with a selection only in split is read; anything else selects nothing.
+    // Invariant (F11): only the current shape {id, subpath, mode} is read; anything else selects nothing.
     if (raw !== null) localStorage.setItem(DOCK_STORAGE_KEY, raw);
     expect(readDockState()).toEqual(NOTHING);
   });

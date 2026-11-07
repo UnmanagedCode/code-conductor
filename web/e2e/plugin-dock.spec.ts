@@ -1,6 +1,6 @@
 import { test } from './harness/fixtures.ts';
 import {
-  KEEP, PLAIN, collapseFlow, dragClampFlow, fullExitFlow, installProbes, keyboardFlow, narrowWindowFlow, noReloadFlow, persistFlow, phoneFlow, pluginLinkFlow, internalLinkFlow, sessionHandleCoexistFlow, sessionWidthFlow,
+  KEEP, PLAIN, collapseFlow, dragClampFlow, fullCollapseFlow, fullExitFlow, installProbes, keyboardFlow, narrowWindowFlow, noReloadFlow, persistFlow, phoneFlow, pluginLinkFlow, internalLinkFlow, sessionHandleCoexistFlow, sessionWidthFlow,
   toastClearsToggleFlow, toggleGeometryFlow, barSwitcherFitsFlow, dockWidthFlow,
 } from './plugin-dock.shared.ts';
 
@@ -8,13 +8,14 @@ import {
 test.use({ ccOptions: { server: 'plugin-dock' } });
 test.beforeAll(async ({ cc }) => { await installProbes(cc); });
 
-test('the column holds Collapse and its mode toggle left of the plugin\'s name in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
+test('the column holds its mode toggle left of the plugin\'s name and Collapse right of it in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
 test('Dock to side and Expand to full view never reload a plain plugin\'s page', noReloadFlow(PLAIN));
 test('Dock to side and Expand to full view never reload a keep-alive plugin\'s page', noReloadFlow(KEEP));
-test('Back and Escape from the full view land on Conductor, never on split, and a switch in full costs no entry', fullExitFlow);
+test('Back from the full view lands on Conductor, never on split, Escape gives the rail, and a switch in full costs no entry', fullExitFlow);
+test('Collapse in the full view docks the same page as the rail and keeps full remembered; Escape does the same, except from inside the plugin\'s page', fullCollapseFlow);
 test('a handle drag crossing the iframe resizes and stops at both limits, and a double-click resets the default width', dragClampFlow);
 test('the dock and sidebar handles resize from the keyboard', keyboardFlow);
-test('a window too narrow for any split shows the plugin full-screen without writing, and Escape or a session pick closes it keeping the remembered split; a narrower window clamps split; widening restores the stored width', narrowWindowFlow);
+test('a window too narrow for any split shows the plugin full-screen without writing, Escape gives the rail and a session pick closes it, keeping the remembered split; a narrower window clamps split; widening restores the stored width', narrowWindowFlow);
 test('Collapse parks the split as a rail at the edge, widening the session, keeps the page live and scrolled, and Expand restores the width; a reload keeps the rail', collapseFlow);
 test('the bar\'s switcher never squeezes or covers its controls with a long name at the dock\'s floor, and the page holds one switcher in every mode', barSwitcherFitsFlow);
 test('a reload restores the split plugin at its width and the page\'s own route, checked in the switcher, off the URL', persistFlow);
@@ -22,6 +23,6 @@ test('a session width holds beside the dock', sessionWidthFlow);
 test('a docked plugin page fills the side pane whatever the session width, and the full view follows the setting', dockWidthFlow);
 test('the session handles stay clear of the dock and sidebar handles and the scrollbar, and each grab moves only its own box', sessionHandleCoexistFlow);
 test('below md the plugin view is full-page whatever the remembered mode, with no toggle', phoneFlow);
-test('a toast sits below the strip and never covers its toggle or the switcher', toastClearsToggleFlow);
+test('a toast sits below the strip and never covers its Collapse button', toastClearsToggleFlow);
 test('a _top link in a docked plugin\'s page to another plugin shows it in the dock with no URL or history change, and from the full view navigates as the browser does', pluginLinkFlow);
 test('a cc.internal link in a docked plugin\'s page is the bridge\'s whatever its target: no target steers the page in place, _blank opens no tab and shows the plugin in the dock', internalLinkFlow);
