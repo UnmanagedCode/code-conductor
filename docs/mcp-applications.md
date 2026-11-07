@@ -115,6 +115,8 @@ How JSON format differs from text:
 
 cc generates a typed, zero-dependency client per language from its own tool registry. A script imports it from the directory cc names; there is no download or install step.
 
+Agents learn the scripting pattern from the core skill `code-conductor:scripting` ([features.md → Core skills](features.md#core-skills)).
+
 | | |
 |---|---|
 | Location | `$CONDUCTOR_MCP_CLIENT_DIR` = `<store>/mcp-client/` (`mcpClientDir()` in `src/projects.ts`) |
