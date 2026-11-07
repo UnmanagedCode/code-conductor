@@ -21,6 +21,7 @@ import { bootServer, api, waitFor, instForSession, registerLocalProject } from '
 import { bindRemoteSystem, seedRepo, git } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { mcpUrl } from './mcpClient.mjs';
+import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { checkSchema, validate } from './jsonSchemaSubset.mjs';
 import { buildTools } from '../src/mcp/tools.ts';
 import { JSON_LIMITS } from '../src/mcp/limits.ts';
@@ -139,7 +140,8 @@ before(async () => {
   resetShellEnvCache();
   fakeShellEnvBin = path.join(await mkdtemp('cc-conf-shellenv-'), 'fake-claude.js');
   await fs.writeFile(fakeShellEnvBin, FAKE_CLAUDE_SHELL_ENV_SCRIPT, 'utf8');
-  srv = await bootServer({ scenarioPath: SCENARIO });
+  // OPEN_LEASE: a tracked worker's binding is a written event-log row.
+  srv = await bootServer({ scenarioPath: SCENARIO, eventLogLease: OPEN_LEASE });
   const listed = await rpc('tools/list', {});
   schemas = new Map(listed.result.tools.map(t => [t.name, t.outputSchema]));
   repoPath = await makeRealRepo('demo');
