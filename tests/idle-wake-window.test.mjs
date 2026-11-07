@@ -1,6 +1,6 @@
 // The heartbeat WINDOW: set_idle_timeout's three states (idle target, running
 // target, preserved-across-a-dispatch preference), the clamp that lets it only
-// SHORTEN, and the two identity refusals (self-directed, and no ?caller= at all).
+// SHORTEN, and the two identity refusals (self-directed, and no caller at all).
 //
 // One of the eight tests/idle-wake-*.test.mjs files (card 2026-0221). The
 // contract under test, the MCP transport and the whole lifecycle live in
@@ -31,7 +31,7 @@ test('a self-directed set_idle_timeout is rejected with a clear error', async ()
   assert.match(result.content[0].text, /wait on self/);
 });
 
-test('missing ?caller= surfaces a clear isError result', async () => {
+test('an anonymous caller surfaces a clear isError result', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const targetId = await spawnReady('p');
 

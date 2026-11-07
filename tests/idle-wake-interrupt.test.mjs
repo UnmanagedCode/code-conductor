@@ -157,7 +157,7 @@ test('a SOFT interrupt leaves the wake armed, and the heartbeat keeps firing', a
 });
 
 test('a soft interrupt by an IDENTIFIED caller disarms nothing — the heartbeat is the escalation signal', async () => {
-  // The sibling soft-interrupt pin drives interrupt_turn with NO ?caller=, so the
+  // The sibling soft-interrupt pin drives interrupt_turn anonymously (no caller path), so the
   // handler's `force && callerId` guard short-circuits on callerId and the
   // caller-scoped branch is never reached. That leaves the contract the conductor
   // role doc actually promises — YOUR soft interrupt leaves YOUR wake armed, and

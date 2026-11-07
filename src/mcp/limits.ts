@@ -18,8 +18,6 @@ import { HUMAN_PROMPT_QUOTE_MAX_CHARS, HUMAN_PROMPT_QUOTE_MAX_COUNT } from '../p
 
 export type McpFormat = 'json' | 'text';
 
-export const MCP_FORMATS: readonly McpFormat[] = ['json', 'text'];
-
 // Text-format caps that have a name of their own (the project_bash /
 // system_bash descriptions cite BASH_OUTPUT_CAP).
 export const BASH_OUTPUT_CAP = MCP_BODY_BUDGET;

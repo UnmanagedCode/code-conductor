@@ -4,7 +4,7 @@
 // conductor-only scope, and the playbookEnforcement toggle.
 //
 // The caller here is a REAL conductor (a `.conduct` instance whose instanceId
-// rides `?caller=`), because "policy applies only to the conductor" is one of
+// rides the `/mcp/<sessionId>` path), because "policy applies only to the conductor" is one of
 // the invariants under test — a stand-in project would prove nothing.
 //
 // The GRAPH these tests drive that wiring through is `GATELAB` below — a
@@ -1121,7 +1121,7 @@ test('policy applies only to the conductor: the same calls from a worker or no c
       'the one enforcement event belongs to the real conductor');
     await expectNoMoreEnforcement(t, 1);
 
-    // And no ?caller= at all (a human or an unattributed client) likewise.
+    // And no caller at all (a human or an unattributed client) likewise.
     const anon = await t.callAs(null, 'spawn_instance', { project: 'demo', mode: 'plan' });
     assert.ok(anon.sessionId, 'an unattributed spawn is ungoverned');
   } finally { await t.close(); }

@@ -1,6 +1,6 @@
 // The playbook read surface — list_playbooks, describe_playbook, playbook_state
 // — end to end through the MCP router with a real `.conduct` conductor as
-// ?caller= and the fake claude engine.
+// the /mcp/<sessionId> caller path and the fake claude engine.
 //
 // Two properties matter more than the shapes:
 //   • READING NEVER WRITES. A read tool that appended to the ledger — or created
