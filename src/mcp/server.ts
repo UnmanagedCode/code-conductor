@@ -88,8 +88,8 @@ function rpcResult(id: unknown, result: unknown): JsonRpcResponse {
 // Every JSON-RPC error goes through here, and its message can echo the caller
 // (`method not found: <method>`, an internal error's message), so the message
 // is capped at the boundary the same way a tools/call echo is.
-function rpcError(id: unknown, code: number, message: string, data?: unknown): JsonRpcResponse {
-  const capped = capEcho(message);
+function rpcError(id: unknown, code: number, message: string, data?: unknown, cap = ECHO_CAP): JsonRpcResponse {
+  const capped = capEcho(message, cap);
   if (capped !== message) console.error(`mcp: JSON-RPC error message of ${message.length} chars cut to fit the MCP result budget`);
   const err: { code: number; message: string; data?: unknown } = { code, message: capped };
   if (data !== undefined) err.data = data;
@@ -290,18 +290,33 @@ interface ToolCall {
 //   - refused: refused before the handler, as a soft refusal (prefix
 //              ambiguity, playbook policy);
 //   - result:  the handler's own return, a soft refusal ({ok:false}) included;
-//   - error:   the handler threw.
+//   - error:   the handler threw;
+//   - internal: a step BEFORE the handler threw (session-ref resolution, the
+//              playbook gate) — a cc fault, not the tool's answer.
 type Outcome =
   | { kind: 'fault'; code: 'TOOL_UNKNOWN' | 'ARGS_INVALID'; reason: string; tool: McpTool | null }
   | { kind: 'refused'; body: Record<string, unknown>; tool: McpTool }
   | { kind: 'result'; value: unknown; tool: McpTool }
-  | { kind: 'error'; error: unknown; tool: McpTool };
+  | { kind: 'error'; error: unknown; tool: McpTool }
+  | { kind: 'internal'; error: unknown; tool: McpTool | null };
 
 // THE tools/call core: lookup → argument validation → the four prefix-
 // resolution passes → playbook policy → project-ref validation → handler →
 // ledger commit. Shared by JSON-RPC tools/call and the REST alias, so both run
-// one validation, one gate and one handler path.
+// one validation, one gate and one handler path. TOTAL: it never rejects —
+// every way a call can end is an Outcome, so neither transport has a path
+// where a throw escapes it.
 async function runTool(name: unknown, rawArgs: unknown, ctx: McpCtx): Promise<Outcome> {
+  const tool = ctx.tools.find(t => t.name === name) ?? null;
+  try {
+    return await runToolSteps(name, rawArgs, ctx);
+  } catch (e) {
+    console.error(`mcp: ${String(name)} failed before its handler ran:`, errMessage(e) ?? e);
+    return { kind: 'internal', error: e, tool };
+  }
+}
+
+async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promise<Outcome> {
   let args: unknown = rawArgs ?? {};
   const tool = ctx.tools.find(t => t.name === name);
   if (!tool) return { kind: 'fault', code: 'TOOL_UNKNOWN', reason: `unknown tool: ${name}`, tool: null };
@@ -439,7 +454,7 @@ function textContent(value: unknown): TextContent {
 
 // The text-format tools/call result, byte-identical to what the agent view has
 // always been, then bounded by the response boundary (boundToolCall).
-function serializeText(o: Outcome, ctx: McpCtx): ToolCall['result'] {
+function serializeText(o: Exclude<Outcome, { kind: 'internal' }>, ctx: McpCtx): ToolCall['result'] {
   let call: ToolCall;
   if (o.kind === 'fault') {
     call = { result: { content: [{ type: 'text', text: o.reason }], isError: true }, tool: o.tool, outcome: 'refused' };
@@ -509,10 +524,12 @@ function errorBody(e: unknown, cap: number): Record<string, unknown> {
 // The JSON-format view of a non-fault outcome: the structured value, and
 // whether it is a refusal. A plugin-bridged tool (not core) has no structured
 // view — its own content blocks pass through, `structured` null.
+// A core result that is not an object is a cc defect: `internal` carries why.
 type JsonView =
   | { structured: Record<string, unknown>; isError: boolean }
-  | { structured: null; passthrough: ToolCall['result'] };
-function jsonView(o: Exclude<Outcome, { kind: 'fault' }>, ctx: McpCtx): JsonView {
+  | { structured: null; passthrough: ToolCall['result'] }
+  | { structured: null; internal: string };
+function jsonView(o: Exclude<Outcome, { kind: 'fault' | 'internal' }>, ctx: McpCtx): JsonView {
   const cap = ctx.limits.echoCap;
   if (o.kind === 'refused') return { structured: refusalBody(o.body, cap), isError: true };
   if (o.kind === 'error') return { structured: errorBody(o.error, cap), isError: true };
@@ -521,7 +538,9 @@ function jsonView(o: Exclude<Outcome, { kind: 'fault' }>, ctx: McpCtx): JsonView
   if (!isJsonRecord(value)) {
     // Every core tool returns an object in JSON format; anything else is a cc
     // defect, surfaced rather than reshaped.
-    throw new Error(`${o.tool.name} returned a non-object JSON result`);
+    const internal = `${o.tool.name} returned a non-object JSON result`;
+    console.error(`mcp: ${internal}`);
+    return { structured: null, internal };
   }
   if (value.ok === false) return { structured: refusalBody(value, cap), isError: true };
   return { structured: value, isError: false };
@@ -530,15 +549,16 @@ function jsonView(o: Exclude<Outcome, { kind: 'fault' }>, ctx: McpCtx): JsonView
 // A tools/call fault as a JSON-RPC error carrying the refusal shape.
 function faultError(id: unknown, o: Extract<Outcome, { kind: 'fault' }>): JsonRpcResponse {
   const body = capRefusal({ ok: false, code: o.code, reason: o.reason }, JSON_ECHO_CAP);
-  return rpcError(id, -32602, body.reason as string, body);
+  return rpcError(id, -32602, body.reason as string, body, JSON_ECHO_CAP);
 }
 
 // The JSON-format tools/call reply: structuredContent + one text block holding
 // its JSON. No result budget and no backstop — JSON's ceilings are its own
 // (src/mcp/limits.ts).
-function serializeJson(id: unknown, o: Outcome, ctx: McpCtx): JsonRpcResponse {
+function serializeJson(id: unknown, o: Exclude<Outcome, { kind: 'internal' }>, ctx: McpCtx): JsonRpcResponse {
   if (o.kind === 'fault') return faultError(id, o);
   const view = jsonView(o, ctx);
+  if ('internal' in view) return internalReply(id, view.internal, ctx);
   if (view.structured === null) return rpcResult(id, view.passthrough);
   return rpcResult(id, {
     content: [{ type: 'text', text: JSON.stringify(view.structured) }],
@@ -547,11 +567,19 @@ function serializeJson(id: unknown, o: Outcome, ctx: McpCtx): JsonRpcResponse {
   });
 }
 
+// The -32603 reply for a fault outside any tool's own answer. Text format
+// carries no `data` (its reply is what it always was); JSON adds the refusal
+// shape, code INTERNAL.
+function internalReply(id: unknown, reason: string, ctx: McpCtx): JsonRpcResponse {
+  const cap = ctx.limits.echoCap;
+  return rpcError(id, -32603, reason, ctx.format === 'json' ? { ok: false, code: 'INTERNAL', reason: capEcho(reason, cap) } : undefined, cap);
+}
+
 async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
   const json = ctx.format === 'json';
   if (!isJsonRecord(msg) || msg.jsonrpc !== JSONRPC) {
     const reason = 'invalid JSON-RPC request';
-    return rpcError(rpcRequestId(msg) ?? null, -32600, reason, json ? { ok: false, code: 'REQUEST_INVALID', reason } : undefined);
+    return rpcError(rpcRequestId(msg) ?? null, -32600, reason, json ? { ok: false, code: 'REQUEST_INVALID', reason } : undefined, ctx.limits.echoCap);
   }
   const { id, method, params } = msg;
   const isNotification = id === undefined || id === null;
@@ -585,15 +613,16 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
     if (method === 'tools/call') {
       const p = asRecord(params);
       const outcome = await runTool(p.name, p.arguments, ctx);
+      if (outcome.kind === 'internal') return isNotification ? null : internalReply(id, errMessage(outcome.error) ?? 'internal error', ctx);
       return json ? serializeJson(id, outcome, ctx) : rpcResult(id, serializeText(outcome, ctx));
     }
     if (isNotification) return null;
     const reason = `method not found: ${method}`;
-    return rpcError(id, -32601, reason, json ? { ok: false, code: 'METHOD_UNKNOWN', reason: capEcho(reason) } : undefined);
+    const cap = ctx.limits.echoCap;
+    return rpcError(id, -32601, reason, json ? { ok: false, code: 'METHOD_UNKNOWN', reason: capEcho(reason, cap) } : undefined, cap);
   } catch (e) {
     if (isNotification) return null;
-    const reason = errMessage(e) ?? 'internal error';
-    return rpcError(id, -32603, reason, json ? { ok: false, code: 'INTERNAL', reason: capEcho(reason) } : undefined);
+    return internalReply(id, errMessage(e) ?? 'internal error', ctx);
   }
 }
 
@@ -607,7 +636,11 @@ interface UrlFault { code: string; rpcCode: number; reason: string }
 const ACCEPTED_QUERY = new Set(['format']);
 
 // Every echoed URL fragment in a URL-level fault is cut to this.
-const URL_ECHO_CAP = 256;
+export const URL_ECHO_CAP = 256;
+
+// The largest request body /mcp parses (express.json's `limit`); a larger one
+// is refused PAYLOAD_TOO_LARGE.
+export const MCP_REQUEST_BODY_LIMIT = '8mb';
 
 // The request preamble every /mcp route shares: the output format, from the
 // query string only (never Accept or Content-Type), then the caller from the
@@ -651,12 +684,26 @@ function urlFaultReply(body: unknown, fault: UrlFault): JsonRpcResponse {
   return rpcError(id, fault.rpcCode, fault.reason, { ok: false, code: fault.code, reason: fault.reason });
 }
 
+// A request body express.json refused (body-parser marks its errors with a
+// `type`): bad JSON, too large, or a charset/encoding/length it cannot read.
+function bodyParserFault(err: unknown): { status: number; rpcCode: number; code: string; reason: string } | null {
+  if (!isJsonRecord(err) || typeof err.type !== 'string') return null;
+  if (err.type === 'entity.parse.failed') {
+    return { status: 400, rpcCode: -32700, code: 'PARSE_ERROR', reason: 'request body is not valid JSON' };
+  }
+  if (err.type === 'entity.too.large') {
+    return { status: 413, rpcCode: -32600, code: 'PAYLOAD_TOO_LARGE', reason: `request body is over the ${MCP_REQUEST_BODY_LIMIT} limit` };
+  }
+  const status = typeof err.status === 'number' && err.status >= 400 && err.status < 500 ? err.status : 400;
+  return { status, rpcCode: -32600, code: 'REQUEST_INVALID', reason: `request body could not be read (${capEcho(err.type, URL_ECHO_CAP)})` };
+}
+
 export function buildMcpRouter(
   { instances, pluginHost, playbookGate, capabilities = hostPlatform.capabilities }:
   { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null; playbookGate: PlaybookGate; capabilities?: PlatformCapabilities },
 ): express.Router {
   const r = express.Router();
-  r.use(express.json({ limit: '8mb' }));
+  r.use(express.json({ limit: MCP_REQUEST_BODY_LIMIT }));
 
   // One core registry per format: they differ only in the limits baked into
   // an input schema (project_read's maxBytes), and tools/list shows the
@@ -760,7 +807,12 @@ export function buildMcpRouter(
       restFault(res, outcome.code === 'TOOL_UNKNOWN' ? 404 : 400, outcome.code, outcome.reason);
       return;
     }
+    if (outcome.kind === 'internal') {
+      restFault(res, 500, 'INTERNAL', errMessage(outcome.error) ?? 'internal error');
+      return;
+    }
     const view = jsonView(outcome, ctx);
+    if ('internal' in view) { restFault(res, 500, 'INTERNAL', view.internal); return; }
     // A bridged plugin tool has no structured view: its MCP result as it is.
     res.status(200).json(view.structured === null ? view.passthrough : view.structured);
   }
@@ -784,34 +836,51 @@ export function buildMcpRouter(
     res.status(405).json({ error: 'GET /mcp not supported (no server notifications in v1)' });
   };
 
+  // Express 4 does not catch a rejected async handler: an escaped rejection
+  // would be unhandled and take the process down. Every async route goes
+  // through this, so a stray one reaches the error middleware below instead.
+  const safe = (fn: (req: express.Request, res: express.Response) => Promise<void>): express.RequestHandler =>
+    (req, res, next) => { fn(req, res).catch(next); };
+
   // The literal `tools` routes come first: a public sessionId is hex, so it is
   // never the word `tools`.
-  r.post('/', (req, res) => rpcRoute(req, res, undefined));
+  r.post('/', safe((req, res) => rpcRoute(req, res, undefined)));
   r.get('/', getRejected);
-  r.get('/tools', (req, res) => restListing(req, res, undefined));
-  r.post('/tools', (req, res) => restCall(req, res, undefined, undefined));
-  r.post('/tools/:name', (req, res) => restCall(req, res, undefined, req.params.name));
-  r.post('/:sid', (req, res) => rpcRoute(req, res, req.params.sid));
+  r.get('/tools', safe((req, res) => restListing(req, res, undefined)));
+  r.post('/tools', safe((req, res) => restCall(req, res, undefined, undefined)));
+  r.post('/tools/:name', safe((req, res) => restCall(req, res, undefined, req.params.name)));
+  r.post('/:sid', safe((req, res) => rpcRoute(req, res, req.params.sid)));
   r.get('/:sid', getRejected);
-  r.get('/:sid/tools', (req, res) => restListing(req, res, req.params.sid));
-  r.post('/:sid/tools', (req, res) => restCall(req, res, req.params.sid, undefined));
-  r.post('/:sid/tools/:name', (req, res) => restCall(req, res, req.params.sid, req.params.name));
+  r.get('/:sid/tools', safe((req, res) => restListing(req, res, req.params.sid)));
+  r.post('/:sid/tools', safe((req, res) => restCall(req, res, req.params.sid, undefined)));
+  r.post('/:sid/tools/:name', safe((req, res) => restCall(req, res, req.params.sid, req.params.name)));
 
   // Nothing under /mcp falls through to the web UI's HTML.
   r.all('*', (req, res) => {
     res.status(404).json({ ok: false, code: 'ROUTE_UNKNOWN', reason: `no MCP route ${req.method} ${capEcho(req.path, URL_ECHO_CAP)}` });
   });
 
-  // A body that is not JSON never reaches a route: express.json throws first.
-  // The alias answers it in its own REST shape; JSON-RPC as a -32700 error.
+  // Every error that reaches the router: a body express.json refused before
+  // any route ran, or a stray rejection from an async route. Answered in the
+  // shape of the route asked — the alias's REST body, or one JSON-RPC error —
+  // never Express's HTML page.
   r.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (isJsonRecord(err) && err.type === 'entity.parse.failed') {
-      const reason = 'request body is not valid JSON';
-      if (/^\/(?:[^/]+\/)?tools(?:\/|$)/.test(req.path)) { restFault(res, 400, 'PARSE_ERROR', reason); return; }
-      res.status(400).json(rpcError(null, -32700, reason, { ok: false, code: 'PARSE_ERROR', reason }));
+    if (res.headersSent) { next(err); return; }
+    const rest = /^\/(?:[^/]+\/)?tools(?:\/|$)/.test(req.path);
+    const fault = bodyParserFault(err);
+    if (fault) {
+      if (rest) { restFault(res, fault.status, fault.code, fault.reason); return; }
+      res.status(fault.status).json(rpcError(null, fault.rpcCode, fault.reason, { ok: false, code: fault.code, reason: fault.reason }));
       return;
     }
-    next(err);
+    const reason = errMessage(err) ?? 'internal error';
+    console.error(`mcp: ${req.method} ${req.path} failed:`, reason);
+    if (rest) { restFault(res, 500, 'INTERNAL', reason); return; }
+    // The text format's -32603 carries no data, as dispatch's does.
+    const json = req.query.format !== 'text';
+    res.status(500).json(rpcError(null, -32603, reason,
+      json ? { ok: false, code: 'INTERNAL', reason: capEcho(reason, JSON_ECHO_CAP) } : undefined,
+      json ? JSON_ECHO_CAP : ECHO_CAP));
   });
 
   return r;

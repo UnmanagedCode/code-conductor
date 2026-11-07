@@ -33,11 +33,13 @@ Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts
 
 The **descriptions** in `tools/list` are the same in both formats and describe the **text view**. In JSON format the contract is each tool's **`outputSchema`**: where a description talks about text blocks, renderings or `content[0]`, read the schema instead.
 
-JSON format differs from text in four ways:
+How JSON format differs from text:
 - `tools/list` adds an `outputSchema` per core tool (`OUTPUT_SCHEMAS`, `src/mcp/outputSchemas.ts`).
+- `project_read`'s `maxBytes` input schema has a larger maximum and default (`JSON_READ_BODY_CAP`; the registries are `buildTools(TEXT_LIMITS)` / `buildTools(JSON_LIMITS)`).
 - `tools/call` returns `structuredContent`.
 - The context caps do not apply; only the safety ceilings below do.
 - Faults are JSON-RPC errors (`data:{ok:false, code, reason}`), not `isError` results.
+- A JSON-RPC error's `message` is cut at `JSON_ECHO_CAP`, not the text format's echo cap.
 
 ## Result shape (JSON format)
 
@@ -77,11 +79,14 @@ JSON format differs from text in four ways:
 | `PARSE_ERROR` | the body is not valid JSON | error `-32700`, HTTP `400` | `400` |
 | `REQUEST_INVALID` | not a JSON-RPC 2.0 request | error `-32600` | — |
 | `METHOD_UNKNOWN` | unknown JSON-RPC method | error `-32601` | — |
-| `INTERNAL` | a dispatch failure outside any tool | error `-32603` | — |
+| `INTERNAL` | a cc fault outside any tool's own answer: a step before the handler threw (session-ref resolution, the playbook gate), a core tool returned a non-object, or any other failure in a route | error `-32603` (HTTP 200 inside dispatch, 500 from the router's error middleware) | `500` |
+| `PAYLOAD_TOO_LARGE` | the body is over `MCP_REQUEST_BODY_LIMIT` | error `-32600`, HTTP `413` | `413` |
+| `REQUEST_INVALID` (body) | a body `express.json` cannot read (charset, encoding, length) | error `-32600`, HTTP `400`/`415` (body-parser's own status) | `400`/`415` |
 | `CONTENT_TYPE_UNSUPPORTED` | POST without `content-type: application/json` | — | `415` |
 | `ROUTE_UNKNOWN` | any other `/mcp` path | HTTP `404` | HTTP `404` |
 
 - JSON-RPC errors carry `data:{ok:false, code, reason}`.
+- Every `runTool` failure is an outcome, never an escaped rejection, and every async route forwards a stray rejection to the router's error middleware (`buildMcpRouter`), so no `/mcp` request can take the server down or reach Express's HTML error page.
 - URL-level faults (`CALLER_UNKNOWN`, `FORMAT_INVALID`, `QUERY_PARAM_UNKNOWN`) carry `data` in both formats.
 - In text format the `-32600`, `-32601` and `-32603` replies carry no `data`, a tool fault is an `isError` result whose text is the reason, and a refusal or error is the text view described in protocol.md.
 - Every echoed string in a JSON refusal is cut at `JSON_ECHO_CAP`, and the refusal then carries `truncated:true`.
@@ -111,7 +116,7 @@ JSON format differs from text in four ways:
 | `CONDUCTOR_MCP_URL` | a **local** worker (`Instance.spawn`) | `http://127.0.0.1:<port>/mcp/<its sessionId>`: the worker's own session, JSON by default |
 | `CONDUCTOR_MCP_URL` | a plugin backend (`src/plugins/registry.ts`, beside `CONDUCTOR_URL`) | `<CONDUCTOR_URL>/mcp`: anonymous |
 
-- **Absent** under `ORCH_DISABLE_MCP_AUTOREGISTER=1`.
+- A worker's var is **absent** under `ORCH_DISABLE_MCP_AUTOREGISTER=1`; a plugin's is set whenever cc has a port, that setting notwithstanding.
 - **Absent** for a worker on a remote System: its Bash runs on the remote without cc's env, and cc's loopback URL does not reach cc from there.
 - An inherited value (cc itself running as some cc's worker) is removed, never passed on: by `Instance.spawn` for workers and by the supervisor's `spawnChild` for plugins.
 
@@ -124,10 +129,11 @@ JSON drops every context cap: the result budget and its `RESULT_OVER_BUDGET` bac
 | `JSON_READ_BODY_CAP` | `project_read`'s `maxBytes` (its schema maximum and default in JSON format) | `truncated`, `lineTruncated`; continue with `offset`/`limit` from `endLine` |
 | `JSON_BASH_OUTPUT_CAP` | retained `project_bash` / `system_bash` output | `truncated`; not pageable |
 | `JSON_DIFF_PAGE_BYTES` | one `project_diff` page | `truncated` + `nextOffset` (page on), `lineTruncated` |
-| `JSON_ECHO_CAP` | each echoed string in a refusal | `truncated` |
+| `JSON_ECHO_CAP` | each echoed string in a refusal, and a JSON-RPC error's `message` | `truncated` (refusals) |
+| `URL_ECHO_CAP` (`src/mcp/server.ts`, both formats) | each URL fragment a URL-level fault echoes (a query key, a format value, a caller id, a route) | — |
 
 Unchanged in both formats:
-- the 8 MB request body limit (`express.json` in `buildMcpRouter`)
+- the request body limit `MCP_REQUEST_BODY_LIMIT` (`src/mcp/server.ts`; over it → `PAYLOAD_TOO_LARGE`)
 - `GIT_OUTPUT_LIMIT_BYTES` and `HOOK_OUTPUT_CAP` (`src/worktrees.ts`)
 - `MAX_FILE_BYTES` (`src/systems/protocol.ts`)
 - the bash timeouts (`clampBashTimeoutMs`)

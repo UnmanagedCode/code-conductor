@@ -12,7 +12,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { bootServer, registerLocalProject, api, waitFor } from './helpers.mjs';
+import { bootServer, registerLocalProject, api, waitFor, seedSessionJsonl } from './helpers.mjs';
+import { JSON_ECHO_CAP } from '../src/mcp/limits.ts';
+import { MSG_TEXT_CAP } from '../src/mcp/messageReconstruction.ts';
+import { localPlace } from '../src/projects.ts';
 import { buildTools } from '../src/mcp/tools.ts';
 import { boundResult, boundToolCall, capEcho } from '../src/mcp/server.ts';
 import { execFile } from 'node:child_process';
@@ -234,7 +237,60 @@ test('boundary, playbook gate: a STAGE_UNKNOWN refusal echoing a huge stage is c
       assert.equal(refusal.code, 'STAGE_UNKNOWN');
       assert.match(refusal.reason, MARKER);
       assert.ok(logged.some(l => l.includes('spawn_instance') && l.includes('cut to fit')), 'the cut is logged');
+
+      // JSON format: no result budget, only the per-string JSON_ECHO_CAP. The
+      // same HUGE stage, under that cap, is echoed whole; one over it is cut
+      // there, and the refusal says so with truncated:true.
+      const jsonCall = async (stage) => {
+        const res = await fetch(`${ctx.baseUrl}/mcp/${conductor.body.sessionId}?format=json`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'demo', playbook: 'solo', stage } } }),
+        });
+        return (await res.json()).result;
+      };
+      const whole = await jsonCall('s'.repeat(HUGE));
+      assert.equal(whole.isError, true);
+      assert.equal(whole.structuredContent.code, 'STAGE_UNKNOWN');
+      assert.ok(whole.structuredContent.reason.includes('s'.repeat(HUGE)), `under JSON_ECHO_CAP: echoed whole (${whole.structuredContent.reason.length} chars)`);
+      assert.equal(whole.structuredContent.truncated, undefined);
+      const cut = await jsonCall('s'.repeat(JSON_ECHO_CAP + 10_000));
+      assert.equal(cut.structuredContent.code, 'STAGE_UNKNOWN');
+      assert.equal(cut.structuredContent.truncated, true);
+      assert.match(cut.structuredContent.reason, MARKER);
+      const len = cut.structuredContent.reason.length;
+      assert.ok(len > JSON_ECHO_CAP - 100 && len < JSON_ECHO_CAP + 100, `cut at JSON_ECHO_CAP, not the text cap: ${len} chars`);
     });
+  } finally { await ctx.close(); }
+});
+
+// Invariant: MSG_TEXT_CAP is a TEXT-format (context) cap. A retired session's
+// assistant message longer than it is cut in text (textTruncated) and comes
+// back whole in JSON.
+test('JSON format: a get_recent_messages message over MSG_TEXT_CAP comes back whole; text cuts it', async () => {
+  const ctx = await bootServer({});
+  try {
+    const dir = path.join(ctx.projectsRoot, 'longmsg');
+    await registerLocalProject('longmsg', dir);
+    const sid = 'eeeeeeee-2222-3333-4444-555555555555';
+    const long = 'w'.repeat(MSG_TEXT_CAP + 5000);
+    await seedSessionJsonl(localPlace(dir), sid, [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'go' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: long }] } },
+    ]);
+    const call = async (format) => {
+      const res = await fetch(`${ctx.baseUrl}/mcp?format=${format}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_recent_messages', arguments: { sessionId: sid, count: 1 } } }),
+      });
+      return (await res.json()).result;
+    };
+    const text = await call('text');
+    const meta = JSON.parse(text.content[0].text);
+    assert.equal(meta.messages[0].textTruncated, true);
+    assert.ok(text.content[1].text.length < long.length);
+    const json = (await call('json')).structuredContent;
+    assert.equal(json.messages[0].textTruncated, false);
+    assert.equal(json.messages[0].text, long);
   } finally { await ctx.close(); }
 });
 
