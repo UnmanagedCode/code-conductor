@@ -43,12 +43,9 @@ function pluginDirArgs(argv) {
   return out;
 }
 
-// The namespace the shipped built-in root declares.
-async function realCoreName() {
-  const manifest = JSON.parse(await fs.readFile(path.join(CORE_CLAUDE_PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
-  assert.equal(typeof manifest.name, 'string', 'the shipped claude-plugin/.claude-plugin/plugin.json names the plugin');
-  return manifest.name;
-}
+// The core-skill namespace the docs promise (`code-conductor:<skill>`). Pinned
+// here as the contract; production reads it from the shipped plugin.json.
+const CORE_NAMESPACE = 'code-conductor';
 
 // Write a cc plugin project (manifest + a Claude Code plugin root at <rel>) under
 // the active projects root.
@@ -105,8 +102,7 @@ test('missing .claude-plugin/plugin.json → plugin root dropped, built-in root 
   assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT]);
 });
 
-test('a skill under the built-in root is listed by the CLI under the shipped namespace', async () => {
-  const name = await realCoreName();
+test('a skill under the built-in root is listed by the CLI as code-conductor:<skill>', async () => {
   const root = path.join(await mkdtemp('cc-core-skills-'), 'claude-plugin');
   await fs.cp(CORE_CLAUDE_PLUGIN_ROOT, root, { recursive: true });
   const skillDir = path.join(root, 'skills', 'fixture-skill');
@@ -122,8 +118,9 @@ test('a skill under the built-in root is listed by the CLI under the shipped nam
   const isInit = ev => ev.kind === 'system' && ev.subtype === 'init';
   await waitFor(() => inst.ringSnapshot().some(isInit));
   const init = inst.ringSnapshot().find(isInit);
-  assert.ok(init.data.skills.includes(`${name}:fixture-skill`),
-    `init skills ${JSON.stringify(init.data.skills)} should list ${name}:fixture-skill`);
+  const expected = `${CORE_NAMESPACE}:fixture-skill`;
+  assert.ok(init.data.skills.includes(expected),
+    `init skills ${JSON.stringify(init.data.skills)} should list ${expected}`);
 });
 
 test('broken built-in root → warned by path, left out, session still launches', async () => {
