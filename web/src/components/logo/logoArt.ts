@@ -129,13 +129,13 @@ export const TILE: Art = {
   ],
 };
 
-/** The 16px art: the favicon and the app switcher's Conductor entry. Its transform snaps the body's edges to whole pixels and fills the 16px box (the front-leg tips and the arm just inside it, the baton tip flush with the body top, which keeps the top-right corner pixel transparent); its legs are thicker (about 2px) so they stay distinct; its baton is lowered and drawn under the arm, so the tip no longer sets the art's top edge. */
+/** The 16px art: the favicon and the app switcher's Conductor entry. Its transform snaps the body's edges to whole pixels and fills the 16px box (the front-leg tips, the arm and the baton tip just inside it); its legs are thicker (about 2px) so they stay distinct; its baton is lowered and drawn under the arm, so the tip no longer sets the art's top edge. */
 const FAV16_TRANSFORM = 'translate(2 1) scale(0.3)';
 export const FAV16: Art = {
   viewBox: '0 0 16 16',
   elements: [
     ...strokeLegs(FAV16_TRANSFORM, '7'),
-    ...under(FAV16_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...GLYPHS, CURSOR, batonAt(8.5), ARM]),
+    ...under(FAV16_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...GLYPHS, CURSOR, batonAt(5.5), ARM]),
   ],
 };
 

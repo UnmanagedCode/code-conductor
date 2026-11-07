@@ -2,7 +2,7 @@
 // icon.svg as text, every PNG rasterised by Playwright's Chromium at its exact
 // pixel size; docs/assets/logo-{light,dark}.svg as text, the README's lockup. Run `node scripts/build-icons.mjs` after changing the art, and
 // commit the results. Exits non-zero when a self-check fails: a maskable icon
-// drawing outside its safe zone, or a favicon with an opaque corner.
+// drawing outside its safe zone, or a favicon with an opaque corner (a plate behind the art).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,8 @@ function problems(check, size, px) {
   const out = [];
   if (check === 'favicon') {
     for (const [x, y] of [[0, 0], [size - 1, 0], [0, size - 1], [size - 1, size - 1]]) {
-      if (at(x, y)[3] !== 0) out.push(`corner ${x},${y} is not transparent`);
+      // Opaque, not merely inked: the art may reach a corner, a plate fills all four.
+      if (at(x, y)[3] === 255) out.push(`corner ${x},${y} is opaque`);
     }
   }
   if (check === 'maskable') {
