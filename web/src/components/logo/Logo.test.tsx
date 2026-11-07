@@ -75,8 +75,8 @@ describe('Logo', () => {
       const fills = painted(container.querySelector('svg[data-logo="small"]')!).map((e) => (e.getAttribute('fill') === 'none' ? e.getAttribute('stroke') : e.getAttribute('fill')));
       const face = fills.indexOf('#ffffff');
       expect(face, 'fixture check: the small mark draws one white face').toBeGreaterThan(-1);
-      // Document order: the legs (a deep curl then a coral leg per side, then the deep centre leg), the body and the over-screen coral (the glyphs, cursor, arm), the baton (ink).
-      expect(fills.filter((_, i) => i !== face)).toEqual([DEEP, CORAL, DEEP, CORAL, DEEP, ...Array<string>(5).fill(CORAL), INK]);
+      // Document order: the legs (a deep curl then a coral leg per side, then the deep centre leg), the body, the glyphs and cursor (coral), the baton (ink), which the arm (coral) then covers at its foot.
+      expect(fills.filter((_, i) => i !== face)).toEqual([DEEP, CORAL, DEEP, CORAL, DEEP, ...Array<string>(4).fill(CORAL), INK, CORAL]);
     });
   });
 

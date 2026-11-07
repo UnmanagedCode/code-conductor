@@ -89,7 +89,9 @@ const FRONT_LEGS = [
   path('M28 29L28 48A2 2 0 0 1 26 50L26 50A2 2 0 0 1 24 48L24 29Z', 'coral'),
 ];
 const ARM = path('M38 18L40 18A2 2 0 0 0 42 16L42 8A2 2 0 0 1 44 6L44 6A2 2 0 0 1 46 8L46 16A6 6 0 0 1 40 22L38 22Z', 'coral');
-const BATON = path('M42.75 4.5L42.75 -7.25A1.25 1.25 0 0 1 44 -8.5L44 -8.5A1.25 1.25 0 0 1 45.25 -7.25L45.25 4.5Z', 'ink');
+/** The baton, its whole stick lowered `drop` art units (the shapes drawn after it cover its foot). */
+const batonAt = (drop: number) => path(`M42.75 ${4.5 + drop}L42.75 ${-7.25 + drop}A1.25 1.25 0 0 1 44 ${-8.5 + drop}L44 ${-8.5 + drop}A1.25 1.25 0 0 1 45.25 ${-7.25 + drop}L45.25 ${4.5 + drop}Z`, 'ink');
+const BATON = batonAt(0);
 
 /** The prompt, legs, arm and baton: everything drawn over the screen. */
 const overScreen = (cursor: LogoElement) => [...GLYPHS, cursor, ...FRONT_LEGS, ARM, BATON];
@@ -127,13 +129,13 @@ export const TILE: Art = {
   ],
 };
 
-/** The 16px art: the favicon and the app switcher's Conductor entry. Its transform snaps the body and the white face to whole pixels, and its legs are thicker (about 2px) so they stay distinct. */
-const FAV16_TRANSFORM = 'translate(2 2.8) scale(0.275)';
+/** The 16px art: the favicon and the app switcher's Conductor entry. Its transform snaps the body's edges to whole pixels and fills the 16px box (the front-leg tips and the arm just inside it, the baton tip flush with the body top, which keeps the top-right corner pixel transparent); its legs are thicker (about 2px) so they stay distinct; its baton is lowered and drawn under the arm, so the tip no longer sets the art's top edge. */
+const FAV16_TRANSFORM = 'translate(2 1) scale(0.3)';
 export const FAV16: Art = {
   viewBox: '0 0 16 16',
   elements: [
     ...strokeLegs(FAV16_TRANSFORM, '7'),
-    ...under(FAV16_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...OVER_SCREEN_NO_LEGS]),
+    ...under(FAV16_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...GLYPHS, CURSOR, batonAt(8.5), ARM]),
   ],
 };
 
