@@ -105,7 +105,7 @@ How JSON format differs from text:
 - **Success:** `200` + the `structuredContent` object itself, with no envelope.
 - **Refusal or thrown error:** `200` + the refusal object.
 - **Faults:** the statuses in the table above.
-- **A bridged plugin tool:** `200` + its MCP result `{content, isError?}` unchanged.
+- **A bridged plugin tool:** `200` + `{content}`, its content blocks unchanged; no `isError` key. A plugin's tool-level failure is a thrown error: `200` + the refusal object (`TOOL_ERROR`), like a core one.
 - **Content type:** `content-type: application/json` is required, empty body included, and is checked before anything else.
 - **No Origin or Host check.** `/mcp` has none either. The only cross-site barrier is that a browser's "simple" POST cannot send `application/json`, and the alias refuses anything else with `415` rather than ignoring the body.
 
@@ -114,6 +114,8 @@ How JSON format differs from text:
 ## Client libraries
 
 cc generates a typed, zero-dependency client per language from its own tool registry. A script imports it from the directory cc names; there is no download or install step.
+
+Agents learn the scripting pattern from the core skill `code-conductor:scripting` ([features.md → Core skills](features.md#core-skills)).
 
 | | |
 |---|---|
@@ -181,7 +183,7 @@ The generator accepts only the schema vocabulary `src/mcp/outputSchemas.ts` decl
 - No success schema has a top-level `ok:false`, so success shapes that read like failures are **returned**: `sync_worktree`'s `{ok:true, action:'commit-required' | 'rebase-conflict'}`, `renew_session`'s `{requested:true}`, `playbook_state`'s `{tracked:false}`, a non-zero `exitCode` from `project_bash` / `system_bash`.
 - A transport failure is the runtime's own exception, unwrapped: Python `urllib.error.URLError`, Node `TypeError: fetch failed`.
 
-**Plugin tools** have no method and no types: call them with `call('<plugin-id>__<tool>', {…})`. The alias passes their MCP envelope `{content, isError?}` through, so an `isError:true` result is **returned**, not raised — it carries no `code` to branch on.
+**Plugin tools** have no method and no types: call them with `call('<plugin-id>__<tool>', {…})`. A result comes back as `{content}` (no `isError`); parse its text blocks. A plugin's tool-level failure arrives as a `200` refusal (`TOOL_ERROR`) and is **raised** as `ConductorError`, like a core refusal. A plugin that reports its own refusals inside a successful result (code-kanban's `{ok:false, code}` JSON text block) is returned, not raised.
 
 ## Env vars
 
@@ -219,9 +221,9 @@ Unchanged in both formats:
 
 ## Limitations
 
-- **Plugin tools are untyped.** They pass through, and the alias returns their MCP envelope.
+- **Plugin tools are untyped.** Their content blocks pass through as `{content}`.
 - **A remote worker gets no `CONDUCTOR_MCP_URL` and no `CONDUCTOR_MCP_CLIENT_DIR`.**
-- **The generated clients type core tools only.** A plugin tool is reachable through `call()`, untyped, and its `isError:true` result is returned rather than raised.
+- **The generated clients type core tools only.** A plugin tool is reachable through `call()`, untyped.
 - **No auth.** Any local process can call as any live session.
 - **No streaming.** Every result is buffered whole; a JSON result can reach the ceilings above.
 
