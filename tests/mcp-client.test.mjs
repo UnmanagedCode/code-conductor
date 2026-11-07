@@ -191,17 +191,27 @@ test('a script imports each client from CONDUCTOR_MCP_CLIENT_DIR and gets result
   } finally { await srv.close(); }
 });
 
-// The raise rule's non-JSON and non-object arms, against a fake server: a body
-// that is not JSON raises (even at 200) with code null and the raw text as
-// body; a JSON body that is not an object raises on its status with code null.
+// A fake /mcp server: `/tools/plain` answers a non-JSON 200, `/tools/array` a
+// non-object JSON 500, anything else `{}`. Every request body is captured.
 async function fakeServer() {
+  const requests = [];
   const srv = http.createServer((req, res) => {
-    if (req.url.endsWith('/tools/plain')) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('not json at all'); return; }
-    res.writeHead(500, { 'content-type': 'application/json' }); res.end('[1,2]');
+    let body = '';
+    req.on('data', d => { body += d; });
+    req.on('end', () => {
+      requests.push({ url: req.url, body });
+      if (req.url.endsWith('/tools/plain')) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('not json at all'); return; }
+      if (req.url.endsWith('/tools/array')) { res.writeHead(500, { 'content-type': 'application/json' }); res.end('[1,2]'); return; }
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}');
+    });
   });
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
-  return { url: `http://127.0.0.1:${srv.address().port}/mcp`, close: () => new Promise(r => srv.close(r)) };
+  return { url: `http://127.0.0.1:${srv.address().port}/mcp`, requests, close: () => new Promise(r => srv.close(r)) };
 }
+
+// The raise rule's non-JSON and non-object arms: a body that is not JSON
+// raises (even at 200) with code null and the raw text as body; a JSON body
+// that is not an object raises on its status with code null.
 
 const EXPECTED_FAULTS = {
   plain: { code: null, reason: 'response is not JSON', status: 200, body: 'not json at all' },
@@ -237,5 +247,41 @@ test('a non-JSON or non-object body raises ConductorError with code null, in bot
     const py = await run('python3', ['-I', '-B', '-c', script, path.join(FIXTURES, 'expected'), fake.url]);
     assert.equal(py.err, null, py.stderr);
     assert.deepEqual(JSON.parse(py.stdout), EXPECTED_FAULTS);
+  } finally { await fake.close(); }
+});
+
+// The Python client's own spellings and transport, measured on the wire: a
+// keyword parameter `from_` is sent as the wire key `from`, and an inherited
+// http_proxy does not route a call (the opener has an empty ProxyHandler).
+test('the Python client sends from_ as `from`, and ignores an inherited http_proxy', async (t) => {
+  if (!(await python311())) { t.diagnostic('python3 >= 3.11 not installed — the Python client was not run'); return; }
+  const fake = await fakeServer();
+  try {
+    const dead = 'http://127.0.0.1:9';
+    const env = { ...process.env, http_proxy: dead, HTTP_PROXY: dead };
+    for (const k of ['no_proxy', 'NO_PROXY']) delete env[k];
+    const script = [
+      'import json, sys, urllib.request',
+      'sys.path.insert(0, sys.argv[1])',
+      'from conductor_client import ConductorClient',
+      'out = {"result": ConductorClient(sys.argv[2]).make_thing(name="x", from_="there")}',
+      // Positive control: a default opener honours the dead proxy and fails.
+      'try:',
+      '    urllib.request.urlopen(sys.argv[2] + "/tools/control", data=b"{}", timeout=5); out["control"] = "reached"',
+      'except OSError as e:',
+      '    out["control"] = "failed"',
+      'print(json.dumps(out))',
+    ].join('\n');
+    const py = await new Promise(resolve => {
+      execFile('python3', ['-I', '-B', '-c', script, path.join(FIXTURES, 'expected'), fake.url], { env, timeout: 30000 },
+        (err, stdout, stderr) => resolve({ err, stdout, stderr }));
+    });
+    assert.equal(py.err, null, py.stderr);
+    const out = JSON.parse(py.stdout);
+    assert.equal(out.control, 'failed', 'precondition: the planted proxy routes a default urllib opener');
+    assert.deepEqual(out.result, {}, 'the client call reached the fake server despite the proxy');
+    const calls = fake.requests.filter(r => r.url === '/mcp/tools/make_thing');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(JSON.parse(calls[0].body), { name: 'x', from: 'there' }, 'from_ goes on the wire as `from`');
   } finally { await fake.close(); }
 });
