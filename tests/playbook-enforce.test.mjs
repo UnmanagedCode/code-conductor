@@ -26,6 +26,8 @@ import { eventLogFile, readEventLog } from '../src/eventLog.ts';
 import { foldPlaybookState } from '../src/playbookState.ts';
 import { orchStoreRoot, localPlace} from '../src/projects.ts';
 import { listWorktrees } from '../src/worktrees.ts';
+import { MAX_TITLE_LEN } from '../src/sessionTitles.ts';
+import { getTitle } from '../src/sessionStore.ts';
 import {
   DEFAULT_PLAYBOOK_ENFORCEMENT, DEFAULT_PLAYBOOK_ID, loadPlaybooks, isSpawnable,
 } from '../src/playbooks.ts';
@@ -109,6 +111,14 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLog } = {}) {
   return {
     ...ctx,
     conductorId,
+    // The raw tools/call result, for asserting an isError refusal.
+    async callRaw(name, args) {
+      const res = await fetch(ctx.baseUrl + '/mcp/' + encodeURIComponent(conductorSid) + '?format=text', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      return (await res.json()).result;
+    },
     call: (name, args) => callAs(conductorSid, name, args),
     callAs,
     // Spawn a worker and wait until its session is up, so its sessionId is a
@@ -1882,6 +1892,60 @@ test('enforce: a bare resume of a worker in a stage pinning {model, backend} lan
     assert.equal(back.backend, 'p');
     assert.equal(back.model, 'mine:v1');
     assert.equal(back.contextWindowTokens, 222_000);
+  } finally { await t.close(); }
+});
+
+test('a stage pinning `title` names the worker at spawn, a bare resume keeps a later rename, an explicit title retitles, and an over-long pin is refused', async () => {
+  // INVARIANT: a pinned title applies at birth only (SPAWN_SHAPE_PINS); a resume
+  // is neither refused ARG_PIN_CONFLICT nor re-titled by the pin; and a pinned
+  // value, which skips the schema check, is re-validated by the handler before
+  // any worker exists.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    await t.writeUserPlaybook('titlelab', {
+      id: 'titlelab', name: 'Titlelab', description: 'Stages pinning a title.',
+      entryStages: ['named', 'toolong'],
+      stages: {
+        named: { description: 'Pins a title.',
+          tools: { spawn_instance: { pin: { title: 'Pinned title', mode: 'bypassPermissions' } } } },
+        toolong: { description: 'Pins an over-long title.',
+          tools: { spawn_instance: { pin: { title: 'x'.repeat(MAX_TITLE_LEN + 1), mode: 'bypassPermissions' } } } },
+      },
+      transitions: [],
+    });
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'titlelab', stage: 'named' });
+    assert.equal(w.title, 'Pinned title', JSON.stringify(w));
+    assert.equal(await getTitle(w.sessionId), 'Pinned title');
+
+    const renamed = await t.callAs(w.sessionId, 'set_session_title', { title: 'Renamed' });
+    assert.equal(renamed.title, 'Renamed');
+    const cwd = localPlace(path.join(t.projectsRoot, 'demo'));
+    const kill = async () => {
+      await seedSessionJsonl(cwd, instForSession(t.instances, w.sessionId).backingSessionId);
+      await t.call('kill_instance', { sessionId: w.sessionId });
+      await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
+    };
+    await kill();
+
+    const back = await t.call('spawn_instance', { resume: w.sessionId });
+    assert.notEqual(back.ok, false, `a bare resume must land: ${JSON.stringify(back)}`);
+    assert.equal(back.sessionId, w.sessionId);
+    assert.equal(back.title, 'Renamed', 'the dropped pin must not re-title the resumed session');
+    assert.equal(await getTitle(w.sessionId), 'Renamed');
+    await kill();
+
+    const explicit = await t.call('spawn_instance', { resume: w.sessionId, title: 'Explicit' });
+    assert.notEqual(explicit.ok, false, `an explicit title on resume must land: ${JSON.stringify(explicit)}`);
+    assert.notEqual(explicit.code, 'ARG_PIN_CONFLICT');
+    assert.equal(explicit.title, 'Explicit');
+    assert.equal(await getTitle(w.sessionId), 'Explicit');
+
+    const before = t.instances.list().length;
+    const raw = await t.callRaw('spawn_instance', { project: 'demo', playbook: 'titlelab', stage: 'toolong' });
+    assert.equal(raw.isError, true, JSON.stringify(raw));
+    assert.match(raw.content[0].text, /title/);
+    assert.equal(JSON.parse(raw.content[1].text).code, 'ARGS_INVALID');
+    assert.equal(t.instances.list().length, before, 'no worker was created');
   } finally { await t.close(); }
 });
 

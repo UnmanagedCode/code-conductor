@@ -1128,6 +1128,7 @@ function decideSpawn(
 //   • SPAWN-SHAPE keys (SPAWN_SHAPE_PINS, above applyPin) are dropped. relay's
 //     `plan` pins createWorktree, and injecting it would hand a resumed session a
 //     brand-new worktree — a cwd that by construction holds none of its history.
+//     `title` is dropped too: it names the session at birth and must not undo a rename.
 //   • POLICY keys — `mode`, above all — still apply, filled or refused exactly as
 //     on a spawn. Skipping them would be a WIDENING, not a simplification: with
 //     no pinned mode and none supplied, _doCreateResolved falls back to
@@ -1465,19 +1466,23 @@ function checkForwardSource(
     legalMovesFrom(targetPlaybook, subject?.stage ?? null));
 }
 
-// The pinned args a RESUME drops: every one describes how to CREATE a process,
-// and a resume's subject already exists. `createWorktree` is the damaging one —
+// The pinned args a RESUME drops: every one describes how to CREATE a process
+// (or, for `title`, how to name the session at its creation), and a resume's
+// subject already exists. `createWorktree` is the damaging one —
 // injecting it hands a resumed session a brand-new worktree, at a cwd that by
 // construction holds none of its history — and `model` is merely moot, since
 // the session record (else the jsonl) recovers it. `backend` goes with `model`:
 // it only picks among the backends serving a named model id, so injected alone
 // it gets the resume refused BAD_MODEL, and the session record already holds
-// the pair.
+// the pair. `title` names the session at birth; the resumed session already has
+// its name, which the worker or the human may have changed since, so re-applying
+// the pin would overwrite that rename. A title is not policy, so skipping it
+// widens nothing.
 //
 // ENUMERATING WHAT TO STRIP, not what to keep, is the fail-safe direction: a
 // future pinned key stays enforced by default rather than being silently
 // dropped. Everything not listed is POLICY and still applies — see decideResume.
-const SPAWN_SHAPE_PINS: ReadonlySet<string> = new Set(['createWorktree', 'baseWorktree', 'name', 'model', 'backend']);
+const SPAWN_SHAPE_PINS: ReadonlySet<string> = new Set(['createWorktree', 'baseWorktree', 'name', 'model', 'backend', 'title']);
 
 // `pin` — ARGUMENT VALUES (not worker provenance; that is `needs`). Omitted
 // by the caller ⇒ filled in; supplied and mismatched ⇒ refused. A hard
