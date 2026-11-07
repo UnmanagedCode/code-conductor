@@ -5,7 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject, seedSessionJsonl } from './helpers.mjs';
+import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { CORE_CLAUDE_PLUGIN_ROOT } from '../src/coreClaudePlugin.ts';
+import { adoptProject, selfProjectDir } from '../src/projects.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
 
 // End-to-end wire: every session's claude argv carries cc's built-in Claude
 // Code plugin root as the first `--plugin-dir`, and an enabled cc plugin
@@ -32,7 +35,9 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   instances._coreClaudePluginRoot = CORE_CLAUDE_PLUGIN_ROOT;
+  instances.setClaudePluginDirsResolver(() => pluginHost.claudePluginDirs());
   await instances.shutdown();
+  disposeSystemHandles();
   await rmrf(home);
 });
 
@@ -157,4 +162,29 @@ test('respawn and resume relaunch with the built-in root', async () => {
   assert.notEqual(fresh, inst, 'fixture check: resume built a new Instance');
   assert.ok(fresh._spawnArgv.includes('--resume'), 'fixture check: the relaunch is a --resume');
   assert.deepEqual(pluginDirArgs(fresh._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT], 'resume argv');
+});
+
+test('a plugin-resolver failure does not drop the built-in root', async () => {
+  instances.setClaudePluginDirsResolver(async () => { throw new Error('plugin host down'); });
+  const inst = await spawnInProject(); // still reaches idle
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT]);
+});
+
+test('a remote-backed worker may Read under the built-in root', async () => {
+  const remote = await bindRemoteSystem();
+  const tree = await seedRepo(path.join(remote.root, 'app'));
+  const adopted = await adoptProject('app', tree, { system: remote.id });
+  assert.equal(adopted.ok, true, JSON.stringify(adopted));
+
+  const inst = await spawnIn('app');
+  assert.ok(inst._redirect, 'fixture check: the session is redirect-backed');
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT]);
+
+  // cc's checkout is a host pin that file tools may not read, so only the
+  // built-in root's own allow entry lets a skill's reference file through.
+  const sibling = path.join(selfProjectDir(), 'package.json');
+  assert.equal((await inst._redirect.preToolUse('Read', { file_path: sibling })).decision, 'deny',
+    'fixture check: the rest of cc\'s checkout is denied');
+  const skillFile = path.join(CORE_CLAUDE_PLUGIN_ROOT, 'skills', 'some-skill', 'references', 'guide.md');
+  assert.deepEqual(await inst._redirect.preToolUse('Read', { file_path: skillFile }), { decision: 'allow' });
 });
