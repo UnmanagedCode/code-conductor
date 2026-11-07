@@ -27,7 +27,7 @@ export async function spawnConductor(cc: Cc, temp: boolean): Promise<FleetInst> 
   return idleInst(cc, (i) => i.id === r.body.id, `conductor ${r.body.id} idle`);
 }
 
-/** Spawns a worker through `spawn_instance` as the conductor whose instance id is `caller`. */
+/** Spawns a worker through `spawn_instance` as the conductor whose sessionId is `caller`. */
 export async function spawnWorker(cc: Cc, caller: string, args: Record<string, unknown>): Promise<FleetInst> {
   const r = await mcpCall(cc, 'spawn_instance', { mode: 'bypassPermissions', ...liveModel(cc), ...args }, caller);
   if (r.isError) throw new Error(`spawn_instance refused: ${r.content?.[0]?.text}`);

@@ -70,7 +70,7 @@ async function withChild(body, fn) {
   const mcpPort = mcpServer.address().port;
   let rpcId = 0;
   const callMcp = async (args = {}) => {
-    const res = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/mcp?format=text`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

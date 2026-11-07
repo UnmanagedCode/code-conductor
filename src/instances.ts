@@ -125,7 +125,7 @@ import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBac
 import { hostPlatform, type Platform } from './platform/index.ts';
 import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, ModelSwitchState, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
 import type { UiEvent, UiEventOf, UserEchoAttachment, PromptAuthor } from '../shared/uiEvent.ts';
-import { authorMarkerBlock, combineAuthors, quoteHumanPrompts } from './promptAuthor.ts';
+import { authorMarkerBlock, combineAuthors, quoteHumanPrompts, type HumanPromptQuote } from './promptAuthor.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
@@ -2620,15 +2620,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     // `claude mcp add` step. Disabled when ORCH_DISABLE_MCP_AUTOREGISTER=1
     // is set on the orchestrator (the URL comes through as null).
     if (this.mcpServerUrl) {
-      // Bake THIS worker's own stable INSTANCE id into ?caller= so the MCP server
-      // can identify it when it calls caller-dependent tools (set_idle_timeout,
-      // renew_session). The instanceId (NOT the sessionId) is used deliberately,
-      // though no longer for the original reason — a baked PUBLIC sessionId would
-      // now stay valid, since a rotation cannot move it. What the instanceId buys
-      // is that it names the PROCESS, which is what a caller-addressed tool acts
-      // on, and it needs no store read to resolve. The MCP boundary translates it
-      // to the caller's sessionId per request (InstanceManager.callerSessionId).
-      const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.id)}`;
+      // The worker's own PUBLIC sessionId names it in the MCP URL path, so the
+      // MCP server can identify it when it calls caller-dependent tools
+      // (set_idle_timeout, renew_session, set_session_title) and attribute the
+      // ownership edge a turn_end wake is routed along. The public id names the
+      // session for its whole life: a /clear, a renewal or a prune rotates only
+      // the backing id, and a restart-resume pins the same public id again.
+      // InstanceManager.liveCallerForPublicId resolves it per request.
+      // `?format=text` because the CLI's consumer is the model: the text view.
+      if (!this.sessionId) throw new Error('spawn: public sessionId not minted');
+      const url = `${this.mcpServerUrl}/${encodeURIComponent(this.sessionId)}?format=text`;
       args.push('--mcp-config', buildMcpConfigJSON({ url }));
     }
     // Session-local Claude Code plugin roots (skills et al.) contributed by
@@ -2680,6 +2681,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Remote workers get the same host value: their CLI runs on this machine,
     // and their redirected Bash runs on the remote without cc's env.
     spawnEnv.CC_PROJECTS_ROOT = path.resolve(projectsRoot());
+    // The same session's MCP URL for a script the worker runs (JSON by default —
+    // docs/mcp-applications.md). Local placement only: a remote worker's Bash
+    // runs on the remote without cc's env, and the loopback URL would not reach
+    // cc from there anyway. Deleted otherwise so an outer cc's value never leaks
+    // into a worker it does not describe.
+    if (this.mcpServerUrl && this.sessionId && this.transcriptPlace.system === LOCAL_SYSTEM_ID) {
+      spawnEnv.CONDUCTOR_MCP_URL = `${this.mcpServerUrl}/${encodeURIComponent(this.sessionId)}`;
+    } else {
+      delete spawnEnv.CONDUCTOR_MCP_URL;
+    }
     // Settings → Models → Task tools. The CLI offers TaskCreate/Get/List/Update
     // only on its own model allowlist (Claude ≤4.x) unless this is truthy; the env
     // var is the opt-in with no permission side effects (`--tools`/`--allowedTools`
@@ -4915,8 +4926,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // The instanceId AND the public sessionId are both preserved (only the backing
   // id rotates), so the idle-wake graph, overage timers, the renew
-  // controller, every `?caller=<instanceId>` MCP handle and every id a conductor
-  // holds stay valid with no migration.
+  // controller, every worker's `/mcp/<sessionId>` MCP URL and every id a
+  // conductor holds stay valid with no migration.
   async pruneSession({ cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; keepLatestTurns?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
     // THE interlock (decision D6). A prune sets `_mutating`, which makes prompt()
     // 409 — and a renewal's reseed IS a prompt(). Interleaving them would clear the
@@ -5322,8 +5333,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // The human's prompts into this instance that the caller's next wake about it
   // will report, quoted for a send-time result (src/promptAuthor.ts). Read-only:
   // the wake still carries them.
-  pendingHumanPrompts(instanceId: string, callerInstanceId: string | null = null): string[] {
-    return quoteHumanPrompts(this._idleHub.peekHumanPrompts(instanceId, callerInstanceId));
+  pendingHumanPrompts(instanceId: string, callerInstanceId: string | null = null, quote?: HumanPromptQuote | null): string[] {
+    return quoteHumanPrompts(this._idleHub.peekHumanPrompts(instanceId, callerInstanceId), quote);
   }
 
   setServerPort(port: number): void {
@@ -5349,10 +5360,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/bash-forward`;
   }
 
-  // Auto-registered orchestrator MCP server URL. Returns the BASE URL (no
-  // ?caller=) — Instance.spawn() appends the worker's own sessionId as the
-  // caller suffix once it's known, so the MCP server can identify which worker
-  // is calling (it is the ownership edge the turn_end wake is routed along).
+  // Auto-registered orchestrator MCP server URL. Returns the BASE URL —
+  // Instance.spawn() appends the worker's own public sessionId as the path
+  // segment (`/mcp/<sessionId>`), so the MCP server can identify which worker is
+  // calling (it is the ownership edge the turn_end wake is routed along).
   // Honours ORCH_DISABLE_MCP_AUTOREGISTER at call time.
   mcpServerUrl(): string | null {
     if (!this.serverPort) return null;
@@ -5360,16 +5371,21 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return `http://127.0.0.1:${this.serverPort}/mcp`;
   }
 
-  // Resolve a worker's `?caller=` handle (the stable instanceId baked into its MCP
-  // URL at spawn) to that instance's CURRENT sessionId. This is the single MCP
-  // boundary translation that keeps caller identity valid across a `/clear`
-  // rotation: the instanceId is frozen in the subprocess config, but its sessionId
-  // rotates, so we re-resolve the live value per request. Returns null when the
-  // handle names no live instance (or it has no sessionId yet) — callers then see
-  // the same "no caller" path as an absent `?caller=`.
-  callerSessionId(handle: string | null): string | null {
-    if (!handle) return null;
-    return this.byId.get(handle)?.sessionId ?? null;
+  // Resolve the caller segment of an `/mcp/<sessionId>` URL: the id itself when
+  // it is the EXACT public sessionId of a session with a live process, else null.
+  // liveForSession also answers to a backing/segment id and is proc-attached;
+  // the exact compare is what refuses a rotated-away CLI id, a prefix or an
+  // instanceId. The public id is pinned across /clear, renewal, prune and a
+  // restart-resume, so a worker's baked URL keeps resolving for its life.
+  liveCallerForPublicId(id: string): string | null {
+    const inst = this.liveForSession(id);
+    return inst && inst.sessionId === id ? id : null;
+  }
+
+  // The current public sessionId of an instance, by its instanceId (a worker's
+  // stable callerInstanceId names its conductor this way).
+  sessionIdForInstance(instanceId: string): string | null {
+    return this.byId.get(instanceId)?.sessionId ?? null;
   }
 
   hasArmedWake(instanceId: string): boolean { return this._idleHub.hasArmedWake(instanceId); }
@@ -6268,7 +6284,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       contextWindowTokens: finalContextWindowTokens,
       backend,
       hookCallbackUrl: this.hookCallbackUrl(id),
-      // Base MCP URL (no ?caller=) — the per-worker caller suffix is appended in
+      // Base MCP URL — the per-worker `/<sessionId>` path segment is appended in
       // Instance.spawn() once the sessionId is known.
       mcpServerUrl: this.mcpServerUrl(),
       worktree: worktreeMeta,

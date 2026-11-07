@@ -49,8 +49,7 @@ afterEach(async () => {
 let nextRpcId = 1;
 async function rpc(method, params, { caller } = {}) {
   const id = nextRpcId++;
-  const handle = caller ? (instForSession(instances, caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

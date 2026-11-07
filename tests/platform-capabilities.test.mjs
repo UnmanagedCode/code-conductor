@@ -39,7 +39,7 @@ describe('every capability off', () => {
   });
 
   async function rpc(method, params) {
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
     });

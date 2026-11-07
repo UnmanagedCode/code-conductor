@@ -85,7 +85,7 @@ test('steering: caller mid-turn at delivery gets the plain stub delivered LIVE',
   const callerId = await spawnReadyWithScenario('p', SCENARIO_SLOW);
   const targetId = await spawnReady('p');
 
-  // Kick the caller into its slow turn. No ?caller= on THIS send, so nothing
+  // Kick the caller into its slow turn. No caller path on THIS send, so nothing
   // starts owning the caller.
   await callTool('send_prompt', { sessionId: callerId, text: 'busy' });
   const caller = instForSession(instances, callerId);
@@ -150,7 +150,7 @@ test('ownership is durable: a second target turn wakes the owner again', async (
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubsAfterTurn1, 1, 'exactly one stub after turn 1');
 
-  // Turn 2, driven with NO ?caller= at all: the ownership edge from turn 1 is
+  // Turn 2, driven anonymously (no caller path): the ownership edge from turn 1 is
   // what re-arms, so the wake is not riding on this call.
   await driveTurn(instances, targetId, () => callTool('send_prompt',
     { sessionId: targetId, text: 'two' }));
@@ -203,7 +203,7 @@ test('target removed before turn_end: the wake is purged', async () => {
 
 test('spawn-only ownership: the SPAWNER is woken even with no dispatch of its own', async () => {
   // `callerInstanceId` (set by spawn_instance) is an ownership edge in its own
-  // right. The turn below is driven with NO ?caller=, so no dispatch edge exists
+  // right. The turn below is driven anonymously, so no dispatch edge exists
   // and only the spawn edge can produce this wake.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const conductorId = await spawnReady('p');
@@ -223,7 +223,7 @@ test('a first-time dispatch to a MID-TURN target arms for the turn it just steer
   // `onTurnStart` has already been and gone for that turn, so `noteDispatch`'s
   // own "target is already mid-turn ⇒ arm now" branch is the only thing that can
   // arm. Without it a conductor that steers a worker it did not previously own
-  // gets no report on the very turn it steered. Turn 1 is opened with NO ?caller=
+  // gets no report on the very turn it steered. Turn 1 is opened with NO caller path
   // so no ownership edge exists when the turn starts.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
@@ -306,7 +306,7 @@ test('send_prompt with no caller still succeeds and records no ownership', async
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const targetId = await spawnReady('p');
 
-  // No `caller` opt — the MCP URL carries no ?caller=.
+  // No `caller` opt — the MCP URL names no caller.
   const res = unwrap(await callTool('send_prompt', { sessionId: targetId, text: 'go' }));
   assert.equal(res.sessionId, targetId);
   assert.deepEqual(Object.keys(res).sort(), ['sessionId', 'status'],

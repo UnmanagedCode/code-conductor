@@ -599,10 +599,8 @@ afterEach(async () => {
 let nextRpcId = 1;
 async function rpc(method, params, { caller } = {}) {
   const id = nextRpcId++;
-  // `?caller=` now carries the stable instanceId (what Instance.spawn bakes);
-  // translate the e2e caller sessionId to it.
-  const handle = caller ? (instForSession(srvInstances, caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
+  // The caller is the public sessionId in the MCP URL path.
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

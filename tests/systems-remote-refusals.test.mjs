@@ -35,7 +35,7 @@ const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).p
 
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args) {
-  const res = await fetch(baseUrl + '/mcp', {
+  const res = await fetch(baseUrl + '/mcp?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
@@ -590,7 +590,7 @@ describe('a remote project refuses what it cannot do, by name', () => {
       assert.ok(observed.has(k), `the ${k} branch of bashPayload was never reached — the fixture is stale`);
     }
 
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 9001, method: 'tools/list' }),

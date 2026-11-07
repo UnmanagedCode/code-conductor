@@ -317,7 +317,7 @@ test('REST spawn with worktree, no hook — postWorktreeCreate.ran is false', as
 // ── MCP create_worktree: result in response ───────────────────────────────
 
 async function mcpCall(baseUrl, toolName, args) {
-  const r = await fetch(`${baseUrl}/mcp`, {
+  const r = await fetch(`${baseUrl}/mcp?format=text`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({

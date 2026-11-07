@@ -117,8 +117,8 @@ test('a Conductors-lens tree project row offers the same Commit history button a
     sid = row?.status === 'idle' ? row.sessionId : null;
     return sid;
   }).not.toBeNull();
-  // The MCP caller is the conductor's instance id, as a worker's MCP client sends it.
-  const r = await mcpCall(cc, 'spawn_instance', { project, mode: 'bypassPermissions' }, id);
+  // The MCP caller is the conductor's sessionId, as a worker's MCP URL path carries it.
+  const r = await mcpCall(cc, 'spawn_instance', { project, mode: 'bypassPermissions' }, sid!);
   expect(r.isError, JSON.stringify(r.content)).toBeFalsy();
   await expect.poll(async () => (await instances()).some((i) => i.callerInstanceId === id && i.status === 'idle')).toBe(true);
 

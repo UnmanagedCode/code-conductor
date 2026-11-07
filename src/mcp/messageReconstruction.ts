@@ -185,10 +185,10 @@ export async function mergeRecentWithDisk(inst: InstanceLike, ringMessages: Reco
 // TOOL_ARG_VALUE_CAP bytes rides verbatim" is literally true and the marker's
 // byte count is the number a reader can compare against a file on disk;
 // everything else gates on its JSON encoding, which the marker labels.
-function describeArg(v: unknown): { value: unknown; omitted: boolean } {
+function describeArg(v: unknown, argCap: number): { value: unknown; omitted: boolean } {
   if (typeof v === 'string') {
     const bytes = Buffer.byteLength(v, 'utf8');
-    if (bytes <= TOOL_ARG_VALUE_CAP) return { value: v, omitted: false };
+    if (bytes <= argCap) return { value: v, omitted: false };
     return { value: `[omitted: string, ${bytes} bytes]`, omitted: true };
   }
   // `?? 'null'` because JSON.stringify(undefined) returns undefined, not a
@@ -197,7 +197,7 @@ function describeArg(v: unknown): { value: unknown; omitted: boolean } {
   // BigInt / circular values cannot occur here.
   const json = JSON.stringify(v) ?? 'null';
   const bytes = Buffer.byteLength(json, 'utf8');
-  if (bytes <= TOOL_ARG_VALUE_CAP) return { value: v, omitted: false };
+  if (bytes <= argCap) return { value: v, omitted: false };
   if (Array.isArray(v)) return { value: `[omitted: array, ${v.length} items, ${bytes} bytes of JSON]`, omitted: true };
   if (v && typeof v === 'object') {
     return { value: `[omitted: object, ${Object.keys(v).length} keys, ${bytes} bytes of JSON]`, omitted: true };
@@ -206,12 +206,12 @@ function describeArg(v: unknown): { value: unknown; omitted: boolean } {
 }
 
 // Per-argument descriptor for a whole tool_use input, preserving key order.
-function describeToolInput(input: Record<string, unknown> | null | undefined): { input: unknown; omitted: boolean } {
+function describeToolInput(input: Record<string, unknown> | null | undefined, argCap: number): { input: unknown; omitted: boolean } {
   if (!input || typeof input !== 'object') return { input: input ?? null, omitted: false };
   const out: Record<string, unknown> = {};
   let omitted = false;
   for (const [k, v] of Object.entries(input)) {
-    const d = describeArg(v);
+    const d = describeArg(v, argCap);
     out[k] = d.value;
     if (d.omitted) omitted = true;
   }
@@ -234,10 +234,12 @@ function describeToolInput(input: Record<string, unknown> | null | undefined): {
 // (narration never reaches blocks[]), and its text is prose through the same cap
 // as message text, not JSON-escaped tool arguments.
 //
-// `cap` lowers that ceiling for get_recent_messages' result-budget fit only.
-export function capBlockInput(b: ReconBlockOut, verbatim: boolean, cap = MSG_TEXT_CAP) {
+// `cap` lowers that ceiling for get_recent_messages' result-budget fit; `argCap`
+// is the per-argument descriptor cap. The JSON-format MCP result passes
+// Infinity for both (src/mcp/limits.ts): every input rides whole.
+export function capBlockInput(b: ReconBlockOut, verbatim: boolean, cap = MSG_TEXT_CAP, argCap = TOOL_ARG_VALUE_CAP) {
   if (b.type === 'tool_use') {
-    const described = verbatim ? { input: b.input ?? null, omitted: false } : describeToolInput(b.input as Record<string, unknown> | null | undefined);
+    const described = verbatim ? { input: b.input ?? null, omitted: false } : describeToolInput(b.input as Record<string, unknown> | null | undefined, argCap);
     const json = JSON.stringify(described.input ?? null);
     const { text, truncated } = capText(json, cap);
     return {

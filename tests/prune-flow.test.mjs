@@ -392,7 +392,7 @@ test('a prune-created segment is addressable by its new backing id, permanently'
     assert.deepEqual(ctx.instances.resolveSessionRef(sid), { sessionId: sid });
     // (4) End to end over MCP, by the new backing id: the tool answers, and it
     // answers with the PINNED public id.
-    const res = await fetch(ctx.baseUrl + '/mcp', {
+    const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',

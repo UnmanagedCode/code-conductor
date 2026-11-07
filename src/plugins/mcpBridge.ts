@@ -34,7 +34,7 @@ export interface McpBridgeDeps {
 
 export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, portFor, reportUpstreamFailure }: McpBridgeDeps) {
   // callerId → project of the live/known session, or undefined when the
-  // caller can't be resolved (stale ?caller=). Used only to attribute the
+  // caller's session is not known. Used only to attribute the
   // forwarded call — never for visibility.
   function callerProject(callerId: string): string | undefined {
     return instances?.anyForSession?.(callerId)?.project;

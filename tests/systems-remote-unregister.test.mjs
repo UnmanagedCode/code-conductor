@@ -31,7 +31,7 @@ import { disposeSystemHandles } from '../src/systems/registry.ts';
 
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args) {
-  const res = await fetch(baseUrl + '/mcp', {
+  const res = await fetch(baseUrl + '/mcp?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
@@ -204,7 +204,7 @@ describe('a held name on an unreachable system is a REFUSAL, never a throw', () 
   test('adopt_project returns the refusal rather than erroring', async () => {
     await strandedProject('app');
     const localRepo = await seedRepo(path.join(home, 'mine'));
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

@@ -24,15 +24,15 @@ export async function treeFlow({ page, cc }: Ctx): Promise<void> {
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
   const a = await spawnConductor(cc, true);
   const b = await spawnConductor(cc, false);
-  const main = await spawnWorker(cc, a.id, { project: P });
-  const inWt = await spawnWorker(cc, a.id, { project: P, createWorktree: true, name: label('wt') });
-  const listed = JSON.parse((await mcpCall(cc, 'list_playbooks', {}, a.id)).content[0].text);
+  const main = await spawnWorker(cc, a.sessionId, { project: P });
+  const inWt = await spawnWorker(cc, a.sessionId, { project: P, createWorktree: true, name: label('wt') });
+  const listed = JSON.parse((await mcpCall(cc, 'list_playbooks', {}, a.sessionId)).content[0].text);
   type Pb = { id: string; entryStages?: string[]; spawnableStages?: string[] };
   const pb = ((listed.playbooks ?? []) as Pb[]).find((p) => (p.entryStages ?? []).some((s) => (p.spawnableStages ?? []).includes(s)));
   expect(pb, 'fixture: list_playbooks offers a playbook with a spawnable entry stage').toBeTruthy();
   const stage = pb!.entryStages!.find((s) => pb!.spawnableStages!.includes(s));
   // No explicit mode: a stage may pin one, and a conflicting value is refused.
-  const bound = await spawnWorker(cc, a.id, { project: P, playbook: pb!.id, stage, mode: undefined });
+  const bound = await spawnWorker(cc, a.sessionId, { project: P, playbook: pb!.id, stage, mode: undefined });
   const boundInst = ((await insts(cc)) as Inst[]).find((i) => i.sessionId === bound.sessionId)!;
   const expectedStage = [boundInst.playbook, boundInst.stage].filter(Boolean).join(' · ');
   expect(expectedStage, 'fixture: the bound worker reports its binding').not.toBe('');

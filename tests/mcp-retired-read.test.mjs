@@ -23,7 +23,7 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args, { caller } = {}) {
-  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : '');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -275,7 +275,7 @@ test('a stage that denies get_recent_messages still denies it for a retired work
     await waitFor(() => ctx.instances.get(conductorId)?.status === 'idle');
 
     const worker = unwrap(await callTool(ctx.baseUrl, 'spawn_instance',
-      { project: 'p', mode: 'bypassPermissions', playbook: 'noread', stage: 'a' }, { caller: conductorId }));
+      { project: 'p', mode: 'bypassPermissions', playbook: 'noread', stage: 'a' }, { caller: conductor.body.sessionId }));
     assert.ok(worker.sessionId, `worker spawn refused: ${JSON.stringify(worker)}`);
     const sid = worker.sessionId;
     await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
@@ -286,7 +286,7 @@ test('a stage that denies get_recent_messages still denies it for a retired work
     await instForSession(ctx.instances, sid).kill({ graceMs: 200 });
     await waitFor(() => !instForSession(ctx.instances, sid)?.proc);
 
-    const denied = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }, { caller: conductorId }));
+    const denied = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }, { caller: conductor.body.sessionId }));
     assert.equal(denied.ok, false);
     assert.equal(denied.code, 'TOOL_DENIED_IN_STAGE', 'stage policy wins over the relaxed resolver');
     assert.equal(denied.meta, undefined, 'no disk read happened');

@@ -709,23 +709,27 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
     const mcpCfg = JSON.parse(argv[mcp + 1]);
     assert.ok(mcpCfg.mcpServers?.['code-conductor'], 'mcp-config registers a `code-conductor` server');
     assert.equal(mcpCfg.mcpServers['code-conductor'].type, 'http');
-    // The URL embeds the spawning instance's id as `?caller=<id>` so the
-    // MCP server can identify the caller (it is the idle-wake ownership edge).
-    assert.match(
+    // The URL path names the spawned session's PUBLIC id (`/mcp/<sessionId>`) so
+    // the MCP server can identify the caller (it is the idle-wake ownership
+    // edge), and asks for the text view — the CLI's consumer is the model.
+    assert.equal(
       mcpCfg.mcpServers['code-conductor'].url,
-      /^http:\/\/127\.0\.0\.1:\d+\/mcp\?caller=[0-9a-f-]{36}$/,
+      `${baseUrl}/mcp/${instances.get(id).sessionId}?format=text`,
     );
+    assert.match(mcpCfg.mcpServers['code-conductor'].url, /\/mcp\/[0-9a-f-]{8,36}\?format=text$/);
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
   }
 });
 
-test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv', async () => {
+test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv and CONDUCTOR_MCP_URL from its env', async () => {
   await setupWithProject();
   const fsp = (await import('node:fs')).promises;
   const argvPath = `${home}/argv.txt`;
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
   process.env.ORCH_DISABLE_MCP_AUTOREGISTER = '1';
+  // Planted, so "absent" means removed rather than never inherited.
+  process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
     const id = r.body.id;
@@ -735,9 +739,30 @@ test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv', async
     const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
     assert.equal(argv.indexOf('--mcp-config'), -1,
       `--mcp-config should be absent when ORCH_DISABLE_MCP_AUTOREGISTER=1; argv was: ${argv.join(' ')}`);
+    assert.equal(instances.get(id)._spawnEnv.CONDUCTOR_MCP_URL, undefined,
+      'no MCP server to name, and the outer value is not inherited');
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     delete process.env.ORCH_DISABLE_MCP_AUTOREGISTER;
+    delete process.env.CONDUCTOR_MCP_URL;
+  }
+});
+
+// A worker's scripts reach its own session's MCP URL through CONDUCTOR_MCP_URL
+// (docs/mcp-applications.md): the base URL plus the public sessionId — the
+// same URL the CLI's --mcp-config names, without the text-format query. An
+// outer cc's value in the server's own env never reaches the worker.
+test('a spawned worker\'s env carries CONDUCTOR_MCP_URL naming its own session, never an inherited one', async () => {
+  await setupWithProject();
+  process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+    assert.equal(inst._spawnEnv.CONDUCTOR_MCP_URL, `${baseUrl}/mcp/${inst.sessionId}`);
+  } finally {
+    delete process.env.CONDUCTOR_MCP_URL;
   }
 });
 

@@ -101,9 +101,9 @@ export async function askFlow({ page, cc }: Ctx): Promise<void> {
   });
 
   await test.step('a conductor idle on its worker is Running and says so; the worker is not listed', async () => {
-    const Wd = await spawnWorker(cc, D.id, { project: P });
+    const Wd = await spawnWorker(cc, D.sessionId, { project: P });
     workers.push(Wd.sessionId);
-    await mcpCall(cc, 'send_prompt', { sessionId: Wd.sessionId, text: 'WORKER-GO' }, D.id);
+    await mcpCall(cc, 'send_prompt', { sessionId: Wd.sessionId, text: 'WORKER-GO' }, D.sessionId);
     await until(cc, Wd.id, 'Wd in a turn', (i) => i.status === 'turn');
     await until(cc, D.id, 'D idle on its worker', (i) => i.status === 'idle' && !!i.awaitingWake);
     const s = await sample('D Running with an idle dot', (x) => only(x, D.sessionId, 'running') && entryIn(x, 'running', D.sessionId)!.dot === 'idle');
@@ -132,10 +132,10 @@ export async function askFlow({ page, cc }: Ctx): Promise<void> {
     expect(entryIn(s2, 'waiting', H.sessionId)!.needsYou).toBe(true);
   });
 
-  const Wa = await spawnWorker(cc, A.id, { project: P });
+  const Wa = await spawnWorker(cc, A.sessionId, { project: P });
   workers.push(Wa.sessionId);
   await test.step('a waiting conductor idle on its worker stays in Waiting, not Running', async () => {
-    await mcpCall(cc, 'send_prompt', { sessionId: Wa.sessionId, text: 'WORKER-GO' }, A.id);
+    await mcpCall(cc, 'send_prompt', { sessionId: Wa.sessionId, text: 'WORKER-GO' }, A.sessionId);
     await until(cc, Wa.id, 'Wa in a turn', (i) => i.status === 'turn');
     await until(cc, A.id, 'A idle on its worker', (i) => i.status === 'idle' && !!i.awaitingWake);
     const s = await sample('A Waiting, on a worker', (x) => only(x, A.sessionId, 'waiting') && reasonOf(entryIn(x, 'waiting', A.sessionId)!) !== asks[0]);

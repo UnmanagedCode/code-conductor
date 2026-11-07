@@ -57,8 +57,9 @@ import { getCatalog as getConductorConventionsCatalog, getSelection as getConduc
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendsForModel, defaultSpawnBinding, getDefaultSpawnTier, getLandingRenewNudge } from '../appSettings.ts';
 import {
-  textPayload, textResult, type TextPayload, MCP_RESULT_CHAR_BUDGET, MCP_BODY_BUDGET, utf8Prefix, payloadChars,
+  textPayload, textResult, dualResult, type DualResult, payloadChars, utf8Prefix,
 } from './content.ts';
+import { TEXT_LIMITS, type FormatLimits, type McpFormat } from './limits.ts';
 import {
   renderProjects, renderWorktrees, renderSessions, renderSession, renderProjectStatus,
   renderPlaybook, renderRemoteEnumeration,
@@ -87,22 +88,22 @@ import type { ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary } fr
 import type { UiEvent } from '../../shared/uiEvent.ts';
 import { httpError } from '../httpError.ts';
 
-// Dirty-line cap for project_status — mirror project_read/project_diff's
-// bounded-output pattern so no tool can emit an unbounded body. (The
-// per-message text cap MSG_TEXT_CAP now lives in ./messageReconstruction.ts.)
-const DIRTY_CAP = 500;
-
 // ---------- helpers ----------
 
 // The per-handler call context injected by the MCP server (src/mcp/server.ts).
 // `playbookGate` is the same gate the enforcement checkpoint uses, so the read
 // tools below see the one projection that actually governs — not a second fold.
 // Optional to match the style of its siblings; the transport always supplies it.
+// `limits` are the request format's caps (src/mcp/limits.ts); a handler called
+// without them (a direct caller, a test) gets the text caps. `format` is read
+// only where the two views are built differently (get_recent_messages).
 interface McpCtx {
   instances?: InstanceManagerLike | null;
   callerId?: string | null;
   playbookGate?: PlaybookGate;
   capabilities?: PlatformCapabilities;
+  limits?: FormatLimits;
+  format?: McpFormat;
 }
 
 // Loose type for handlers that don't destructure their args (schema-validated
@@ -491,7 +492,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       sessions: await summarizeSessions(placeOf(p, p.path)).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
     };
   }));
-  return textResult(renderProjects(enriched));
+  return dualResult({ projects: enriched }, () => textResult(renderProjects(enriched)));
 }
 
 // Live-row order within a list_sessions group. Map insertion order (what list() hands back) is
@@ -680,7 +681,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   kept.sort((a, b) => a.project.localeCompare(b.project)
     || (a.worktree === null ? -1 : b.worktree === null ? 1 : a.worktree.localeCompare(b.worktree)));
 
-  return textResult(renderSessions(kept, { project, expanded: includeArchived }));
+  return dualResult({ groups: kept }, () => textResult(renderSessions(kept, { project, expanded: includeArchived })));
 }
 
 // ---------- playbooks: the read / introspection surface ----------
@@ -717,12 +718,12 @@ export async function describePlaybook({ id }: { id: string }) {
       known: [...playbooks.keys()].sort(),
     };
   }
-  return textResult(renderPlaybook(playbookDetail(pb)));
+  const detail = playbookDetail(pb);
+  return dualResult(detail, () => textResult(renderPlaybook(detail)));
 }
 
-const HISTORY_CAP = 200;
-
 export async function playbookState({ sessionId }: { sessionId?: string }, ctx: McpCtx) {
+  const { historyCap } = ctx.limits ?? TEXT_LIMITS;
   const gate = ctx.playbookGate;
   if (!gate) throw new Error('orchestrator has no playbook gate');
   const proj = await gate.readProjection();
@@ -772,7 +773,7 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
     // legal at a given seq. Scoped to the caller, so no other session's setting
     // is ever published here.
     || (ev.kind === 'enforcement' && !!enforcement && ev.conductorSessionId === enforcement.conductorSessionId)));
-  const history = relevant.slice(-HISTORY_CAP);
+  const history = historyCap === null ? relevant : relevant.slice(-historyCap);
 
   return {
     tracked: true,
@@ -843,7 +844,7 @@ function toMcpWorktree({ worktreeName, ...rest }: WorktreeMeta) {
 
 export async function listWorktrees({ project }: { project: string }) {
   const wts = (await fsListWorktrees(project)).map(toMcpWorktree);
-  return textResult(renderWorktrees(wts));
+  return dualResult({ worktrees: wts }, () => textResult(renderWorktrees(wts)));
 }
 
 // One session's row, keyed on the orchestrator handle, with the owning project
@@ -887,7 +888,10 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
   // instead of rendering as a live worker.
   const live = (instances ? instances.listVisible() : [])
     .find(r => r.sessionId === sessionId && !isDeadStatus(r.status));
-  if (live) return textResult(renderSession({ sessionId, live: conductorRowView(live, proj) }));
+  if (live) {
+    const view = { sessionId, live: conductorRowView(live, proj) };
+    return dualResult(view, () => textResult(renderSession(view)));
+  }
 
   // Step 3 — RETIRED. includeArchived so an archived session is still
   // describable; the row is picked by sessionId because the listing projects
@@ -897,14 +901,15 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
     const { rows } = await listSessionsForCwdWithCounts(hit.place, null, { includeArchived: true, deriveAwaitingFor: sessionId });
     const row = rows.find(r => r.sessionId === sessionId);
     if (row) {
-      return textResult(renderSession({
+      const view = {
         sessionId,
         project: hit.project,
         worktree: hit.worktreeName ?? null,
         path: hit.cwd,
         retired: { ...row, ...playbookBinding(proj, sessionId) },
         exit: instances?.exitCauseFor(sessionId) ?? null,
-      }));
+      };
+      return dualResult(view, () => textResult(renderSession(view)));
     }
     // Located but not listed (the transcript went away under us) — fall through
     // to the orphan probe, which answers with the degraded outcome or with
@@ -951,7 +956,7 @@ type OmittedEvent = { _seq?: number; kind: UiEvent['kind']; omitted: true; chars
 // NOTE: a single turn larger than the ring cap can leave a mid-turn gap (the
 // archive's dense _seq space can't overlap the live ring); get_transcript
 // covers dropped PRIOR turns — for prose mid-giant-turn use get_recent_messages.
-export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessionId: string; fromSeq?: number; limit?: number }, { instances }: McpCtx) {
+export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessionId: string; fromSeq?: number; limit?: number }, { instances, limits = TEXT_LIMITS }: McpCtx) {
   const r = await getInstOrDisk(instances, sessionId);
   if ('soft' in r) return r.soft;
   // fromSeq is this tool's own INCLUSIVE convention; the pager's `after`
@@ -971,21 +976,23 @@ export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessi
       status: r.inst.status, resolvedSessionId: r.inst.sessionId, source: 'ring',
       page: await pageInstanceEvents(r.inst, { limit, ...after }),
     };
-  // Fit the page to one MCP result: keep the longest prefix of events whose
+  // Fit the page to one MCP result (text format only — JSON pages by `limit`
+  // alone, with no stubs): keep the longest prefix of events whose
   // compact-JSON result stays within MCP_RESULT_CHAR_BUDGET, measured against
   // the result's widest possible frame — each placeholder at its longest
   // spelling: hasMore `false` (one char longer than `true`), nextFrom one past
   // the largest seq. An event too large for ANY page becomes a stub that still
   // carries its `_seq`, so the cursor advances past it.
-  const frame = JSON.stringify({
+  const budget = limits.resultBudget;
+  const frame = budget === null ? 0 : JSON.stringify({
     status, sessionId: resolvedSessionId, source, events: [],
     lastSeq: page.lastSeq, trimmedBefore: page.trimmedBefore, hasMore: false,
     nextFrom: Math.max(page.lastSeq, ...page.events.map(e => (typeof e._seq === 'number' ? e._seq : 0))) + 1,
   }).length;
-  const room = MCP_RESULT_CHAR_BUDGET - frame;
-  const events: Array<UiEvent | OmittedEvent> = [];
+  const room = budget === null ? Infinity : budget - frame;
+  const events: Array<UiEvent | OmittedEvent> = budget === null ? [...page.events] : [];
   let used = 0;
-  for (const ev of page.events) {
+  for (const ev of budget === null ? [] : page.events) {
     let fitted: UiEvent | OmittedEvent = ev;
     let chars = JSON.stringify(ev).length;
     if (chars > room) {
@@ -1158,7 +1165,7 @@ export function resolveSpawnModel(
 
 export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
-  // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
+  // callerId is the conductor's public sessionId (the /mcp/<sessionId> path). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
   let inst;
@@ -1202,7 +1209,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       conducted: true,
       // Record which conductor spawned this worker so the frontend can
       // show a live sub-agent panel scoped to that conductor's view.
-      // `callerId` is now the conductor's stable sessionId (from ?caller=) —
+      // `callerId` is the conductor's public sessionId (from the /mcp/<sessionId> path) —
       // resolve it back to the conductor's live instanceId so the internal
       // Instance.callerInstanceId field stays an instanceId (consumers:
       // SubagentPanel in web/src/features/session/SessionPanels.tsx,
@@ -1263,7 +1270,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
 // The seconds→ms boundary conversion for all four turn-starting tools: the MCP
 // param is whole seconds, everything below this line is ms.
 function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleTimeoutSeconds?: number): void {
-  if (!callerId) return;                  // no ?caller= — a UI/REST-shaped call
+  if (!callerId) return;                  // anonymous /mcp — a UI/REST-shaped call
   if (callerId === sessionId) return;     // a session cannot wait on its own turn
   if (!instances) return;                 // unreachable (getInst threw)
   try {
@@ -1276,10 +1283,10 @@ function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleT
 // follows a turn the human started. Read just before the send, and omitted when
 // there are none.
 function humanPromptsField(
-  instances: McpCtx['instances'], callerId: string | null | undefined, inst: InstanceLike,
+  { instances, callerId, limits = TEXT_LIMITS }: McpCtx, inst: InstanceLike,
 ): { humanPrompts?: string[] } {
   const callerInstanceId = callerId ? instances?.liveForSession(callerId)?.id ?? null : null;
-  const humanPrompts = instances?.pendingHumanPrompts(inst.id, callerInstanceId) ?? [];
+  const humanPrompts = instances?.pendingHumanPrompts(inst.id, callerInstanceId, limits.humanPromptQuote) ?? [];
   return humanPrompts.length ? { humanPrompts } : {};
 }
 
@@ -1383,7 +1390,7 @@ export async function sendPrompt(
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, callerId, inst);
+  const humanPrompts = humanPromptsField(ctx, inst);
   await inst.promptOrQueueSteer(composedText, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, status: inst.status, ...forwardedField, ...humanPrompts };
 }
@@ -1400,14 +1407,14 @@ export async function setMode({ sessionId, mode }: { sessionId: string; mode: st
 // to register — the wake is armed by the target entering a turn (see
 // src/idleSubscriptions.ts) — so this only adjusts how often a still-running
 // turn reports in, and re-arms a heartbeat that is already running. Caller
-// identity comes from the MCP URL's ?caller=<id> query string (baked in at spawn
-// time by InstanceManager.mcpServerUrl). `armed` says whether a live heartbeat
+// identity comes from the MCP URL's /mcp/<sessionId> path (baked in at spawn
+// time by Instance.spawn). `armed` says whether a live heartbeat
 // was re-armed, i.e. whether the target is mid-turn right now.
 export async function setIdleTimeout({ sessionId, timeoutSeconds }: { sessionId: string; timeoutSeconds: number }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
-      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'caller identity missing — call the MCP URL as `/mcp/<sessionId>`. ' +
       'Spawn this instance through the orchestrator so its MCP config carries the caller sessionId.',
     );
   }
@@ -1420,13 +1427,13 @@ export async function setIdleTimeout({ sessionId, timeoutSeconds }: { sessionId:
 }
 
 // Title the CALLING session. There is no target argument: callerId is the
-// ?caller= handle resolved to the caller's public sessionId, and the schema's
+// public sessionId from the MCP URL's /mcp/<sessionId> path, and the schema's
 // unknown-property refusal rejects any sessionId a caller tries to pass.
 export async function setSessionTitle({ title }: { title: string }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
-      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'caller identity missing — call the MCP URL as `/mcp/<sessionId>`. ' +
       'set_session_title titles the calling session, so it only works for a code-conductor-managed instance.',
     );
   }
@@ -1442,7 +1449,7 @@ export async function setSessionTitle({ title }: { title: string }, { instances,
 // sessionId; only the CLI's internal backing id moves) — and seeds the cleared
 // session with the summary (plus a server-generated mechanical state block, built
 // at reseed time) as its first user turn. Caller identity comes from the MCP URL's
-// ?caller=<sessionId>, so this only works for a code-conductor-managed session.
+// /mcp/<sessionId> path, so this only works for a code-conductor-managed session.
 // The `/clear` is deferred to turn_end (not fired now) so this tool call's turn
 // completes normally first — see src/sessionRenew.ts.
 //
@@ -1460,7 +1467,7 @@ export async function renewSession(
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
-      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'caller identity missing — call the MCP URL as `/mcp/<sessionId>`. ' +
       'renew_session acts on the calling session, so it only works for a ' +
       'code-conductor-managed instance whose MCP config carries the caller sessionId.',
     );
@@ -1683,8 +1690,9 @@ export async function approvePlan(
   { sessionId, feedback, idleTimeoutSeconds }: {
     sessionId: string; feedback?: string; idleTimeoutSeconds?: number;
   },
-  { instances, callerId }: McpCtx,
+  ctx: McpCtx,
 ) {
+  const { instances, callerId } = ctx;
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
@@ -1698,7 +1706,7 @@ export async function approvePlan(
   if (refused) return refused;
   const text = buildApprovePrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, callerId, inst);
+  const humanPrompts = humanPromptsField(ctx, inst);
   await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
@@ -1710,8 +1718,9 @@ export async function rejectPlan(
   { sessionId, feedback, idleTimeoutSeconds }: {
     sessionId: string; feedback?: string; idleTimeoutSeconds?: number;
   },
-  { instances, callerId }: McpCtx,
+  ctx: McpCtx,
 ) {
+  const { instances, callerId } = ctx;
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
@@ -1719,7 +1728,7 @@ export async function rejectPlan(
   if (refused) return refused;
   const text = buildRejectPrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, callerId, inst);
+  const humanPrompts = humanPromptsField(ctx, inst);
   await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
@@ -1758,8 +1767,9 @@ export async function answerQuestion(
   { sessionId, answers, idleTimeoutSeconds }: {
     sessionId: string; answers: AnswerEntry[]; idleTimeoutSeconds?: number;
   },
-  { instances, callerId }: McpCtx,
+  ctx: McpCtx,
 ) {
+  const { instances, callerId } = ctx;
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
@@ -1833,7 +1843,7 @@ export async function answerQuestion(
 
   const text = formatUserQuestionAnswers(questions, states);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
-  const humanPrompts = humanPromptsField(instances, callerId, inst);
+  const humanPrompts = humanPromptsField(ctx, inst);
   await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
@@ -1859,7 +1869,7 @@ export async function answerQuestion(
 
 export async function projectDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }: {
   project: string; worktree: string; baseRef?: string; contextLines?: number; summary?: boolean; paths?: string[]; offset?: number;
-}) {
+}, { limits = TEXT_LIMITS }: McpCtx = {}) {
   if (!project || !worktree) {
     throw new Error('project_diff requires {project, worktree}');
   }
@@ -1881,8 +1891,11 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   const lsPathspec = pathArgs.length ? ['--', ...pathArgs] : [];
 
   // Every side list is capped to this many chars of JSON, so the metadata that
-  // rides beside a page can never crowd it out of one MCP result.
-  const sideListChars = MCP_RESULT_CHAR_BUDGET / 8;
+  // rides beside a page can never crowd it out of one MCP result. JSON lists
+  // them whole: the git output fence (GIT_OUTPUT_LIMIT_BYTES) bounds them.
+  const sideListChars = limits.diffSideListChars ?? Infinity;
+  // The page budget: one MCP result in text, the JSON page ceiling otherwise.
+  const pageBudget = limits.resultBudget ?? limits.diffPageBytes ?? Infinity;
   const startAt = Number.isInteger(offset) && offset > 0 ? offset : 0;
 
   // ---- summary mode: structured per-file stat, `files` paged by index ----
@@ -1963,7 +1976,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     const page: DiffFileRow[] = [];
     for (let i = startAt; i < files.length; i++) {
       const add = JSON.stringify(files[i]).length + (page.length > 0 ? 1 : 0);
-      if (used + add > MCP_RESULT_CHAR_BUDGET && page.length > 0) break;
+      if (used + add > pageBudget && page.length > 0) break;
       page.push(files[i]);
       used += add;
     }
@@ -2032,14 +2045,20 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   // JSON is exactly that long), and the longer of the two truncated/nextOffset
   // spellings — {true, <largest n>} or {false, null}, which one depends on the
   // digits of n.
-  const capPlaceholder = 'x'.repeat(sideListChars - 2);
-  const widestOf = (truncated: boolean, nextOffset: number | null) => JSON.stringify({
-    ...meta, truncated, nextOffset, lineTruncated: true,
-    includedFiles: capPlaceholder, includedFilesTruncated: true, includedFilesTotal: allPaths.length,
-    omittedFiles: capPlaceholder, omittedFilesTruncated: true, omittedFilesTotal: allPaths.length,
-  }).length;
-  const widest = Math.max(widestOf(true, totalLines), widestOf(false, null));
-  const pageCap = MCP_RESULT_CHAR_BUDGET - widest - 64;
+  // JSON has no result budget to share: the page ceiling is the cap.
+  let pageCap: number;
+  if (limits.resultBudget === null) {
+    pageCap = pageBudget;
+  } else {
+    const capPlaceholder = 'x'.repeat(sideListChars - 2);
+    const widestOf = (truncated: boolean, nextOffset: number | null) => JSON.stringify({
+      ...meta, truncated, nextOffset, lineTruncated: true,
+      includedFiles: capPlaceholder, includedFilesTruncated: true, includedFilesTotal: allPaths.length,
+      omittedFiles: capPlaceholder, omittedFilesTruncated: true, omittedFilesTotal: allPaths.length,
+    }).length;
+    const widest = Math.max(widestOf(true, totalLines), widestOf(false, null));
+    pageCap = limits.resultBudget - widest - 64;
+  }
   const { diff, cutoff, lineTruncated } = paginateDiff(lines, startLine, pageCap, idx);
   // `truncated` means more pages remain after this one; drain by re-calling
   // with offset:nextOffset until truncated:false.
@@ -2062,7 +2081,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     if (om.truncated) { meta.omittedFilesTruncated = true; meta.omittedFilesTotal = om.total; }
   }
   // Metadata block + a separate raw, un-escaped diff text block.
-  return textPayload(meta, diff);
+  return dualResult({ ...meta, body: diff }, () => textPayload(meta, diff));
 }
 
 // ---------- mutating: worktrees ----------
@@ -2198,7 +2217,9 @@ export async function mergeWorktree({ project, worktree, allowDirty }: { project
 // up its own organisation alongside the human.
 
 export async function listWorkspaces() {
-  return summarizeWorkspaces();
+  const rows = await summarizeWorkspaces();
+  // The text view stays the bare array it always was; JSON results are objects.
+  return dualResult({ workspaces: rows }, () => rows);
 }
 
 export async function createWorkspace({ name }: { name: string }) {
@@ -2474,8 +2495,18 @@ export async function getRecentMessages(args: McpArgs, ctx: McpCtx) {
   const sel = await selectRecentMessages(a, ctx);
   if ('soft' in sel) return sel.soft;
   const verbatim = a.includeToolCalls === true;
+  const limits = ctx.limits ?? TEXT_LIMITS;
+  // JSON: built once, unfitted — each message's body rides on its own entry as
+  // `text`, with no text-block boundary line (the entry already carries index,
+  // msgId and textChars).
+  if (ctx.format === 'json') {
+    const r = renderRecentMessages(sel, verbatim, undefined, limits, { boundaryHeaders: false });
+    const metaMessages = r.meta.messages as Array<Record<string, unknown>>;
+    return { ...r.meta, messages: metaMessages.map((m, i) => ({ ...m, text: r.bodies[i] })) };
+  }
+  const budget = limits.resultBudget ?? Infinity;
   const fits = (r: { meta: Record<string, unknown>; bodies: string[] }) =>
-    payloadChars(r.meta, r.bodies) <= MCP_RESULT_CHAR_BUDGET;
+    payloadChars(r.meta, r.bodies) <= budget;
 
   let r = renderRecentMessages(sel, verbatim);
   if (fits(r)) return textPayload(r.meta, r.bodies);
@@ -2620,10 +2651,13 @@ function renderRecentMessages(
   sel: Exclude<Awaited<ReturnType<typeof selectRecentMessages>>, { soft: SoftRefusal }>,
   includeToolCalls: boolean,
   stringCap?: number,
+  limits: FormatLimits = TEXT_LIMITS,
+  { boundaryHeaders = true }: { boundaryHeaders?: boolean } = {},
 ): { meta: Record<string, unknown>; bodies: string[] } {
   const { ring, messages, source, omittedToolOnly, requested: n, live } = sel;
   const trimmedBefore = sel.trimmedBefore;
-  const textCap = stringCap ?? MSG_TEXT_CAP;
+  const textCap = stringCap ?? limits.msgTextCap ?? Infinity;
+  const argCap = limits.toolArgValueCap ?? Infinity;
 
   // Multi-block: metadata block describes each message; one raw text block per
   // message carries its rendered body (prose + plan/questions, order-faithful
@@ -2645,7 +2679,7 @@ function renderRecentMessages(
       ? capText(renderQuestions(m.questions), stringCap) : null;
     const narration = m.narration ? capText(m.narration, textCap) : null;
     const rendered = renderMessageBody(plan ? { ...m, plan: plan.text } : m, capped.text, questions?.text, narration?.text);
-    const body = total > 1
+    const body = total > 1 && boundaryHeaders
       ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
       : rendered;
     bodies.push(body);
@@ -2666,7 +2700,7 @@ function renderRecentMessages(
     if (m.planPath) entry.planPath = m.planPath;
     if (m.questions) entry.questionCount = m.questions.length;
     if (questions?.truncated) entry.questionsTruncated = true;
-    if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls, textCap));
+    if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls, textCap, argCap));
     return entry;
   });
 
@@ -2722,7 +2756,7 @@ async function listTopLevelEntries(system: System, cwd: string): Promise<Array<{
 // Read-only project / worktree introspection. Returns the cwd, git state
 // (branch + head + dirty + recent commits), top-level files, and — for
 // worktrees — the mergeStatus + a diff stat vs the base branch.
-export async function projectStatus({ project, worktree, logLimit = 20 }: { project: string; worktree?: string; logLimit?: number }) {
+export async function projectStatus({ project, worktree, logLimit = 20 }: { project: string; worktree?: string; logLimit?: number }, { limits = TEXT_LIMITS }: McpCtx = {}) {
   const { cwd, worktreeMeta, system } = await resolveProjectCwd(project, worktree);
   const out: {
     project: string; worktree: string | null; cwd: string;
@@ -2759,9 +2793,9 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     // The files were listed without git; everything below needs it.
     delete out.isGitRepo;
     out.gitRefusal = (e as Error).message;
-    return textResult(renderProjectStatus(out));
+    return dualResult(out, () => textResult(renderProjectStatus(out)));
   }
-  if (!repo) return textResult(renderProjectStatus(out));
+  if (!repo) return dualResult(out, () => textResult(renderProjectStatus(out)));
   out.isGitRepo = true;
   out.unbornHead = await hasUnbornHead(system, cwd);
   // Branch (may be null on detached HEAD).
@@ -2793,10 +2827,12 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
   }
   // Cap the dirty list so a pathological working tree can't blow up the
   // response (mirrors project_read / project_diff's bounded-output pattern).
+  // JSON lists it whole: git's output fence (GIT_OUTPUT_LIMIT_BYTES) bounds it.
   const dirty = out.dirty ?? [];
-  if (dirty.length > DIRTY_CAP) {
+  const dirtyCap = limits.dirtyCap ?? Infinity;
+  if (dirty.length > dirtyCap) {
     out.dirtyTotal = dirty.length;
-    out.dirty = dirty.slice(0, DIRTY_CAP);
+    out.dirty = dirty.slice(0, dirtyCap);
     out.dirtyTruncated = true;
   } else {
     out.dirtyTruncated = false;
@@ -2816,7 +2852,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     const diffR = await runGit(system, cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
     out.diffStat = diffR.code === 0 ? diffR.stdout.trim() : '';
   }
-  return textResult(renderProjectStatus(out));
+  return dualResult(out, () => textResult(renderProjectStatus(out)));
 }
 
 // Path-traversal-guarded file read. Path is project-relative; absolute
@@ -2827,10 +2863,10 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
 // Optional line params (text only): offset (1-based start line, default per projectRead),
 // limit (max lines, default: to EOF), lineNumbers (cat-n prefix).
 export async function projectRead({ project, worktree, relativePath,
-  maxBytes = MCP_BODY_BUDGET, lineNumbers = false, offset = 1, limit }: {
+  maxBytes, lineNumbers = false, offset = 1, limit }: {
   project: string; worktree?: string; relativePath: string;
   maxBytes?: number; lineNumbers?: boolean; offset?: number; limit?: number;
-}) {
+}, { limits = TEXT_LIMITS }: McpCtx = {}) {
   if (typeof relativePath !== 'string' || !relativePath) {
     throw new Error('relativePath required');
   }
@@ -2854,9 +2890,10 @@ export async function projectRead({ project, worktree, relativePath,
   if (stat.kind !== 'file') {
     throw new Error(`'${relativePath}' is not a regular file`);
   }
-  // The schema bounds maxBytes to [1, MCP_BODY_BUDGET]; validateArgs refuses
-  // anything larger, so nothing here clamps it.
-  const cap = maxBytes;
+  // The schema bounds maxBytes to [1, limits.readBody] — the format's read cap,
+  // also its default; validateArgs refuses anything larger, so nothing here
+  // clamps it.
+  const cap = maxBytes ?? limits.readBody;
 
   // Always read up to cap bytes first (preserves existing binary behaviour and
   // avoids loading huge files on the fast path).
@@ -2871,7 +2908,7 @@ export async function projectRead({ project, worktree, relativePath,
     // Base64 grows 4/3, so the raw bytes are cut to 3/4 of the cap to keep
     // the ENCODED body within it.
     const rawCap = Math.floor(cap * 3 / 4);
-    return textPayload(
+    return readResult(
       { path: relativePath, size: stat.size, truncated: stat.size > rawCap, encoding: 'base64' },
       buf.subarray(0, rawCap).toString('base64'),
     );
@@ -2891,7 +2928,7 @@ export async function projectRead({ project, worktree, relativePath,
     const rawLines = text.split('\n');
     const lineCount = text.endsWith('\n') ? rawLines.length - 1 : rawLines.length;
     // lineCountExact:false → the byte cap may have cut a partial final line.
-    return textPayload(
+    return readResult(
       { path: relativePath, size: stat.size, truncated: truncatedByBytes,
         encoding: 'utf8', lineCount, lineCountExact: !truncatedByBytes },
       text,
@@ -2967,12 +3004,17 @@ export async function projectRead({ project, worktree, relativePath,
     meta.startLine = startLine;
     meta.endLine = endLine;
   }
-  return textPayload(meta, content);
+  return readResult(meta, content);
+}
+
+// project_read's two views of one read: the metadata block + the raw body
+// block in text, one object with the body under `body` in JSON.
+function readResult(meta: Record<string, unknown>, body: string): DualResult {
+  return dualResult({ ...meta, body }, () => textPayload(meta, body));
 }
 
 // ---- project_bash / system_bash ----
 
-const BASH_OUTPUT_CAP = MCP_BODY_BUDGET;
 const BASH_DEFAULT_TIMEOUT_MS = 120_000; // matches the built-in Bash tool's default
 const BASH_MAX_TIMEOUT_MS = 600_000;     // matches the built-in Bash tool's documented max
 
@@ -3001,17 +3043,16 @@ async function claudeShellSpec(command: string): Promise<ExecSpec> {
 //
 // `meta` is a Record rather than an inline type because the key set genuinely
 // varies by caller; the fields this function itself sets are the typed half.
-function bashPayload(place: Record<string, string | null>, r: ExecResult): TextPayload {
+function bashPayload(place: Record<string, string | null>, r: ExecResult, outputCap: number): DualResult {
   if (r.spawnError) {
-    return textPayload(
-      { ...place, exitCode: null, durationMs: r.durationMs, error: true },
-      r.spawnError,
-    );
+    const meta = { ...place, exitCode: null, durationMs: r.durationMs, error: true };
+    const spawnError = r.spawnError;
+    return dualResult({ ...meta, output: spawnError }, () => textPayload(meta, spawnError));
   }
   // headCapBytes admits the whole chunk that crosses it, so the retained output
   // can overshoot the cap by up to one chunk — cut it back here, where the
   // result budget is owed.
-  const capped = utf8Prefix(r.output, BASH_OUTPUT_CAP);
+  const capped = utf8Prefix(r.output, outputCap);
   const truncated = r.truncated || capped.length < r.output.length;
   const output = truncated ? capped + '\n… [truncated at the output cap]' : r.output;
   const meta: Record<string, unknown> = {
@@ -3026,7 +3067,8 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult): TextP
   // next move depends on it: the tree it just timed out may still be holding a
   // lock, a port or the CPU, and nothing else will ever say so.
   if (r.descendantsMaySurvive) meta.descendantsMaySurvive = true;
-  return textPayload(meta, output.trimEnd());
+  const body = output.trimEnd();
+  return dualResult({ ...meta, output: body }, () => textPayload(meta, body));
 }
 
 // Run a shell command inside a project/worktree cwd, in claude's own
@@ -3038,7 +3080,7 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult): TextP
 // (web/src/conversation/format.ts) and never read here.
 export async function bashProject({ project, worktree, command, timeout }: {
   project: string; worktree?: string; command: string; timeout?: number;
-}) {
+}, { limits = TEXT_LIMITS }: McpCtx = {}) {
   if (typeof command !== 'string' || !command.trim()) {
     throw new Error('project_bash requires a non-empty command string');
   }
@@ -3063,19 +3105,18 @@ export async function bashProject({ project, worktree, command, timeout }: {
   // keeps draining both streams to completion — truncate what is *shown*, let
   // the command run — matching the built-in Bash tool's semantics.
   const r = await system.exec(spec, {
-    cwd, timeoutMs, stdin: 'ignore', headCapBytes: BASH_OUTPUT_CAP,
+    cwd, timeoutMs, stdin: 'ignore', headCapBytes: limits.bashOutput,
   });
 
-  return bashPayload({ project, worktree: wtName, cwd }, r);
+  return bashPayload({ project, worktree: wtName, cwd }, r, limits.bashOutput);
 }
 
 // Which remoteIds registered Systems are configured for. The same caller as
 // `GET /api/systems/:id/remotes`; every per-System outcome is a block in the
 // text, so nothing here throws for a System that could not be enumerated.
 export async function enumerateRemotes({ system }: { system?: string }) {
-  return textResult(renderRemoteEnumeration(
-    system ? [await enumerateSystemRemotes(system)] : await enumerateAllRemotes(),
-  ));
+  const entries = system ? [await enumerateSystemRemotes(system)] : await enumerateAllRemotes();
+  return dualResult({ remotes: entries }, () => textResult(renderRemoteEnumeration(entries)));
 }
 
 // The (system, remoteId) addressing system_bash and system_transfer share. Same
@@ -3096,7 +3137,7 @@ async function addressedSystem(system: string, remoteId: string | null | undefin
 // read here.
 export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
   system: string; remoteId?: string | null; command: string; cwd?: string | null; timeout?: number;
-}) {
+}, { limits = TEXT_LIMITS }: McpCtx = {}) {
   if (typeof system !== 'string' || !system.trim()) {
     throw new Error('system_bash requires a system id');
   }
@@ -3134,9 +3175,9 @@ export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
     cwd: runCwd,
     timeoutMs: clampBashTimeoutMs(timeout),
     stdin: 'ignore',
-    headCapBytes: BASH_OUTPUT_CAP,
+    headCapBytes: limits.bashOutput,
   });
-  return bashPayload({ system, remoteId: target, cwd: runCwd }, r);
+  return bashPayload({ system, remoteId: target, cwd: runCwd }, r, limits.bashOutput);
 }
 
 // ---- system_transfer ----

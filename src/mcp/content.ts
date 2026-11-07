@@ -1,5 +1,7 @@
-// MCP tool result shaping. The MCP server wraps every handler return into the
-// JSON-RPC tools/call `content[]` array. Most tools return a plain object that
+// MCP tool result shaping. In TEXT format (the agent view) the MCP server
+// wraps every handler return into the JSON-RPC tools/call `content[]` array as
+// below; the JSON format reads a handler's data instead (`dualResult`,
+// docs/mcp-applications.md). Most tools return a plain object that
 // becomes a single compact-JSON block. The read tools whose whole answer is a
 // rendering instead return a `textResult(text)` — one plain-text block, no JSON
 // at all (see its comment below). Tools that carry a large text body (file
@@ -62,7 +64,7 @@ export function isTextPayload(v: unknown): v is TextPayload {
   return !!v && typeof v === 'object' && (v as Partial<TextPayload>)[PAYLOAD] === true;
 }
 
-// The rendered read tools' channel — the recon read tools, enumerate_remotes,
+// The rendered read tools' text-format channel — the recon read tools, enumerate_remotes,
 // describe_playbook's success path, and the plugin bridge's meta-less string
 // `{text}` (src/plugins/mcpBridge.ts): the whole result IS a plain-text rendering,
 // emitted as one raw block with no metadata block at all. Same Symbol-tag
@@ -83,6 +85,28 @@ export function textResult(text: string): TextResult {
 
 export function isTextResult(v: unknown): v is TextResult {
   return !!v && typeof v === 'object' && (v as Partial<TextResult>)[TEXT_RESULT] === true;
+}
+
+// A result with two views, built from ONE build of the data: `json` is the
+// application view (the tool's outputSchema; `structuredContent` in JSON
+// format) and `text` the agent view (a textResult, a textPayload or a plain
+// value, serialized exactly as a handler returning it directly would be). The
+// thunk runs only in text format, so a rendering is never paid for in JSON.
+// Same Symbol-tag discipline as textPayload.
+const DUAL = Symbol('mcpDualResult');
+
+export interface DualResult {
+  [DUAL]: true;
+  json: Record<string, unknown>;
+  text: () => unknown;
+}
+
+export function dualResult(json: Record<string, unknown>, text: () => unknown): DualResult {
+  return { [DUAL]: true, json, text };
+}
+
+export function isDual(v: unknown): v is DualResult {
+  return !!v && typeof v === 'object' && (v as Partial<DualResult>)[DUAL] === true;
 }
 
 // Flatten a (meta, bodies) payload into the single string an LLM would read off

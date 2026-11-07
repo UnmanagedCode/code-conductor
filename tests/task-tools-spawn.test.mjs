@@ -32,9 +32,10 @@ async function spawnIdle(ctx, body = {}) {
   return inst;
 }
 
-// Mask the per-launch ids (session id, and the instance id inside the hook/MCP urls).
+// Mask the per-launch ids (session id, the instance id inside the hook url, and
+// the public session id inside the MCP url).
 const maskIds = (inst) => inst._spawnArgv.map((a, i, argv) =>
-  (argv[i - 1] === '--session-id' ? '<sid>' : a.replaceAll(inst.id, '<id>')));
+  (argv[i - 1] === '--session-id' ? '<sid>' : a.replaceAll(inst.id, '<id>').replaceAll(inst.sessionId, '<sid>')));
 
 async function boot(opts) {
   const ctx = await bootServer({ scenarioPath: SCENARIO, ...opts });

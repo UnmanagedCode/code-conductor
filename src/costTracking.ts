@@ -157,10 +157,10 @@ export function initCostTracking(instances: InstanceManagerLike | null | undefin
     if (ev.costDelta == null && ev.cost == null) return;
     const inst = instances.get(id);
     if (!inst) return;
-    // Resolve the spawning conductor's current sessionId from the worker's
-    // stable callerInstanceId (see InstanceManager.callerSessionId).
+    // Resolve the spawning conductor's sessionId from the worker's stable
+    // callerInstanceId.
     const parentSessionId = inst.callerInstanceId
-      ? instances.callerSessionId(inst.callerInstanceId)
+      ? instances.sessionIdForInstance(inst.callerInstanceId)
       : null;
     appendCostRow(inst, ev, parentSessionId);
   });

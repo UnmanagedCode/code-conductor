@@ -48,7 +48,7 @@ test('a worker spawned by a conductor is owned by it; the conductor itself has n
   assert.equal(rows.find(r => r.sessionId === worker.sessionId).ownerSessionId, cond.sessionId, 'GET /api/instances');
 });
 
-test('a conducted session spawned with no ?caller= has no owner', async () => {
+test('a conducted session spawned anonymously (no caller path) has no owner', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
   const orphan = await spawnFrom(null, { project: 'demo' });
   assert.equal(orphan.ownerSessionId, null);

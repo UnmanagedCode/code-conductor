@@ -272,6 +272,25 @@ test('readiness via healthPath; child gets $PORT and reaches ready', async (t) =
   assert.ok(rec.startedAt);
 });
 
+// An outer cc's CONDUCTOR_MCP_URL (this server itself running as a worker) never
+// reaches a plugin child: only the env the registry hands over names the MCP URL.
+test('a plugin child gets CONDUCTOR_MCP_URL from its env only, never inherited', async (t) => {
+  const saved = process.env.CONDUCTOR_MCP_URL;
+  process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
+  t.after(() => {
+    if (saved === undefined) delete process.env.CONDUCTOR_MCP_URL;
+    else process.env.CONDUCTOR_MCP_URL = saved;
+  });
+  const sup = createSupervisor();
+  const bare = await startAndSettle(t, sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'node server.mjs', healthPath: '/health' }),
+    cwd: FAKE_PLUGIN_DIR,
+    env: {},
+  });
+  assert.equal((await (await fetch(`http://127.0.0.1:${bare.rec.port}/env`)).json()).mcpUrl, null);
+});
+
 test('readiness via readyWhen stdout regex', async (t) => {
   const sup = createSupervisor();
   const { rt } = await startAndSettle(t, sup, {

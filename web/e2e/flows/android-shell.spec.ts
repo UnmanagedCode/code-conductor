@@ -16,7 +16,7 @@ async function conductorWithWorker(cc: Cc, project: string, title: string): Prom
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
   const conductor = await spawnConductor(cc, true);
   await createProject(cc, project);
-  const worker = await spawnWorker(cc, conductor.id, { project });
+  const worker = await spawnWorker(cc, conductor.sessionId, { project });
   await api(cc, 'PUT', `/api/sessions/${worker.sessionId}/title`, { title });
   return { conductor, worker };
 }

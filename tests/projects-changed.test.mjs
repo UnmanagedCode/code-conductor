@@ -19,7 +19,7 @@ import { disposeSystemHandles } from '../src/systems/registry.ts';
 let rpcId = 1;
 /** One MCP tools/call's raw result. */
 async function callTool(baseUrl, name, args) {
-  const res = await fetch(baseUrl + '/mcp', {
+  const res = await fetch(baseUrl + '/mcp?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),

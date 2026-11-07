@@ -169,7 +169,7 @@ test('a steer and a renew_session arm sent while the fork waits are accepted', a
       if (n !== 1) return;
       assert.equal(inst._mutating, 'fork', 'precondition: the fork holds the flag');
       steer = await inst.prompt('steer while forking').then(() => 'accepted', (e) => e);
-      const res = await fetch(`${ctx.baseUrl}/mcp?caller=${encodeURIComponent(inst.id)}`, {
+      const res = await fetch(`${ctx.baseUrl}/mcp/${encodeURIComponent(inst.sessionId)}?format=text`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',

@@ -65,7 +65,7 @@ async function commitFile(cwd, filename, content, message) {
 
 let nextRpcId = 1;
 async function callTool(name, args, { caller } = {}) {
-  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : '');
+  const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -87,7 +87,7 @@ async function spawnIdle(project) {
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
-  return inst.id;
+  return inst.sessionId;
 }
 async function conductor() {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
@@ -184,7 +184,7 @@ test('on, non-conductor caller: no renewNudge', async () => {
 });
 
 // INVARIANT: a call with no live calling session is not nudged.
-test('on, no ?caller=: no renewNudge', async () => {
+test('on, anonymous (no caller path): no renewNudge', async () => {
   await setNudge(true);
   const { wt } = await fixture({ merge: true });
   assert.deepEqual(await del(wt, undefined), expected(wt));

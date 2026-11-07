@@ -16,7 +16,8 @@ import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
 import { MAX_TITLE_LEN } from '../sessionTitles.ts';
-import { MCP_BODY_BUDGET } from './content.ts';
+import { TEXT_LIMITS, type FormatLimits, type McpFormat } from './limits.ts';
+import { OUTPUT_SCHEMAS } from './outputSchemas.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
@@ -61,6 +62,8 @@ interface ToolCtx {
   instances?: InstanceManagerLike | null;
   callerId?: string | null;
   capabilities?: PlatformCapabilities;
+  format?: McpFormat;
+  limits?: FormatLimits;
 }
 
 interface ToolAnnotations {
@@ -81,13 +84,27 @@ interface Tool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  // The JSON-format contract for this tool's structuredContent
+  // (src/mcp/outputSchemas.ts). Listed in JSON format only.
+  outputSchema: Record<string, unknown>;
   handler(args: unknown, ctx: ToolCtx): Promise<unknown>;
   annotations?: ToolAnnotations;
   // Omitted from the tool list when the host platform lacks this capability.
   requires?: keyof PlatformCapabilities;
 }
 
-export function buildTools(): Tool[] {
+// The registry for one output format: `limits` sets the one input-schema field
+// that differs by format (project_read's maxBytes bound), and every tool gets
+// its outputSchema — a core tool without one is a build-time failure.
+export function buildTools(limits: FormatLimits = TEXT_LIMITS): Tool[] {
+  return coreTools(limits).map(t => {
+    const outputSchema = OUTPUT_SCHEMAS[t.name];
+    if (!outputSchema) throw new Error(`mcp: core tool '${t.name}' has no outputSchema (src/mcp/outputSchemas.ts)`);
+    return { ...t, outputSchema };
+  });
+}
+
+function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
   return [
     {
       name: 'list_projects',
@@ -462,7 +479,7 @@ export function buildTools(): Tool[] {
         'you automatically. This tool changes only how often that ping arrives. It re-arms a heartbeat that is ' +
         'already running; `armed:true` in the result means a wake from the target was pending and its live ' +
         'heartbeat was re-armed. The ceiling is the ' +
-        'default, so this can only shorten. Caller identity is taken from the MCP URL (?caller=<sessionId>), ' +
+        'default, so this can only shorten. Caller identity is taken from the MCP URL path (`/mcp/<sessionId>`), ' +
         'so this only works for orchestrator-spawned instances.',
       inputSchema: {
         type: 'object',
@@ -1270,7 +1287,7 @@ export function buildTools(): Tool[] {
           project: { type: 'string' },
           worktree: { type: 'string', minLength: 1, description: 'Optional worktree name to scope into.' },
           relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
-          maxBytes: { type: 'integer', minimum: 1, maximum: MCP_BODY_BUDGET, default: MCP_BODY_BUDGET, description: 'Cap on bytes returned (default and maximum per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
+          maxBytes: { type: 'integer', minimum: 1, maximum: limits.readBody, default: limits.readBody, description: 'Cap on bytes returned (default and maximum per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
           lineNumbers: { type: 'boolean', default: false, description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },
           offset: { type: 'integer', minimum: 1, default: 1, description: '1-based line number to start at (default 1). Ignored for binary files.' },
           limit: { type: 'integer', minimum: 1, description: 'Maximum number of lines to return (default: to end of file). Ignored for binary files.' },

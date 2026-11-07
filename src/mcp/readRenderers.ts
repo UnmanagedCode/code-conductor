@@ -3,8 +3,9 @@
 // describe_session, project_status) plus describe_playbook and
 // enumerate_remotes.
 //
-// The rendering is the tool's ENTIRE result — there is no JSON channel beside
-// it (src/mcp/content.ts textResult). So the bar is: every fact a conductor acts
+// In text format the rendering is the tool's ENTIRE result — there is no JSON
+// channel beside it (src/mcp/content.ts textResult); the JSON format answers
+// with the data instead (dualResult, docs/mcp-applications.md). So the bar is: every fact a conductor acts
 // on must be in the text. These functions are pure, so tests pin exact strings.
 //
 // Two ways a field reaches the text. Most are rendered unconditionally. The

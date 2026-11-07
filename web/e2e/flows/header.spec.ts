@@ -56,8 +56,8 @@ test('opening a conductor from its sidebar row shows its title and its workers',
   await api(cc, 'PUT', `/api/sessions/${sessionId}/title`, { title });
   const project = uniq('wk');
   await createProject(cc, project);
-  // The MCP caller is the conductor's instance id, as a worker's MCP client sends it.
-  const r = await mcpCall(cc, 'spawn_instance', { project, mode: 'bypassPermissions' }, id);
+  // The MCP caller is the conductor's sessionId, as a worker's MCP URL path carries it.
+  const r = await mcpCall(cc, 'spawn_instance', { project, mode: 'bypassPermissions' }, sessionId!);
   expect(r.isError, JSON.stringify(r.content)).toBeFalsy();
   await expect.poll(async () => (await instances(cc)).some((i) => i.callerInstanceId === id && i.status === 'idle')).toBe(true);
 

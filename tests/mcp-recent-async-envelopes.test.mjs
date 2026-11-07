@@ -21,7 +21,7 @@ const SCENARIO_ASYNC_SINGLE_BLOCK = path.join(__dirname, 'fixtures', 'scenario-a
 let nextRpcId = 1;
 async function rpc(baseUrl, method, params) {
   const id = nextRpcId++;
-  const res = await fetch(baseUrl + '/mcp', {
+  const res = await fetch(baseUrl + '/mcp?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),

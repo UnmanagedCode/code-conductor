@@ -61,9 +61,9 @@ export async function installFakePlugin(cc: Pick<Cc, 'url' | 'dirs'>, name: stri
 }
 
 let rpcId = 1;
-/** One MCP `tools/call`; `caller` is the calling instance id, as a worker's MCP client sends it. */
+/** One MCP `tools/call`; `caller` is the calling sessionId, as a worker's MCP URL path (`/mcp/<sessionId>`) carries it. */
 export async function mcpCall(cc: Pick<Cc, 'url'>, name: string, args: Record<string, unknown>, caller?: string): Promise<any> {
-  const res = await fetch(cc.url + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : ''), {
+  const res = await fetch(cc.url + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),

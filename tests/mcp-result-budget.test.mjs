@@ -12,10 +12,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { bootServer, registerLocalProject, api, waitFor } from './helpers.mjs';
+import { bootServer, registerLocalProject, api, waitFor, seedSessionJsonl } from './helpers.mjs';
+import { JSON_ECHO_CAP } from '../src/mcp/limits.ts';
+import { MSG_TEXT_CAP } from '../src/mcp/messageReconstruction.ts';
+import { localPlace } from '../src/projects.ts';
 import { buildTools } from '../src/mcp/tools.ts';
 import { boundResult, boundToolCall, capEcho } from '../src/mcp/server.ts';
-import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { MCP_RESULT_CHAR_BUDGET, MCP_BODY_BUDGET } from '../src/mcp/content.ts';
 
 test('every core tool: over-budget content becomes RESULT_OVER_BUDGET, at-budget content passes', async (t) => {
   const tools = buildTools();
@@ -65,7 +70,7 @@ test('dispatch: an overflowing core read tool answers RESULT_OVER_BUDGET instead
     await registerLocalProject('wide', dir);
     await Promise.all(Array.from({ length: 2500 }, (_, i) =>
       fs.writeFile(path.join(dir, `a-rather-long-file-name-${String(i).padStart(5, '0')}.txt`), '')));
-    const res = await fetch(ctx.baseUrl + '/mcp', {
+    const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'project_status', arguments: { project: 'wide' } } }),
@@ -81,14 +86,57 @@ test('dispatch: an overflowing core read tool answers RESULT_OVER_BUDGET instead
   } finally { console.error = origError; await ctx.close(); }
 });
 
+// Invariant: the result budget is a TEXT-format (context) cap. The same
+// overflowing project_status in JSON format comes back whole — every file and
+// every dirty line, nothing withheld or cut — and so does a read past the text
+// body budget, which text format cuts at MCP_BODY_BUDGET.
+test('JSON format: no result budget — project_status and project_read come back whole', async () => {
+  const ctx = await bootServer({});
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    const dir = path.join(ctx.projectsRoot, 'wide');
+    await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('wide', dir);
+    await execFileP('git', ['-C', dir, 'init', '-q']);
+    await Promise.all(Array.from({ length: 2500 }, (_, i) =>
+      fs.writeFile(path.join(dir, `a-rather-long-file-name-${String(i).padStart(5, '0')}.txt`), '')));
+    const call = async (format, name, args) => {
+      const res = await fetch(`${ctx.baseUrl}/mcp?format=${format}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      return (await res.json()).result;
+    };
+    const textStatus = await call('text', 'project_status', { project: 'wide' });
+    assert.equal(JSON.parse(textStatus.content[0].text).code, 'RESULT_OVER_BUDGET');
+    const status = (await call('json', 'project_status', { project: 'wide' })).structuredContent;
+    assert.equal(status.files.length, 2500);
+    assert.equal(status.dirty.length, 2500);
+    assert.equal(status.dirtyTruncated, false);
+    assert.equal(status.dirtyTotal, undefined);
+
+    const big = `${'z'.repeat(99)}\n`.repeat(1024);
+    await fs.writeFile(path.join(dir, 'big.txt'), big);
+    const textRead = await call('text', 'project_read', { project: 'wide', relativePath: 'big.txt' });
+    assert.equal(JSON.parse(textRead.content[0].text).truncated, true);
+    assert.equal(textRead.content[1].text.length, MCP_BODY_BUDGET);
+    const read = (await call('json', 'project_read', { project: 'wide', relativePath: 'big.txt' })).structuredContent;
+    assert.equal(read.truncated, false);
+    assert.equal(read.body, big);
+  } finally { console.error = origError; await ctx.close(); }
+});
+
 // ── the response boundary: refusals and errors echoing caller strings ──────
 // Every tools/call response and every JSON-RPC error passes one boundary
 // (boundToolCall / rpcError in src/mcp/server.ts). One test per branch shape.
+const execFileP = promisify(execFile);
 const HUGE = 60_000;
 const contentChars = result => result.content.reduce((n, c) => n + c.text.length, 0);
 const MARKER = / … \[cut: \d+ chars\] … /;
 async function rpcRaw(baseUrl, method, params, caller) {
-  const res = await fetch(baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : ''), {
+  const res = await fetch(baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
@@ -182,14 +230,67 @@ test('boundary, playbook gate: a STAGE_UNKNOWN refusal echoing a huge stage is c
       await waitFor(() => ctx.instances.get(conductor.body.id)?.status === 'idle');
       const { result } = await rpcRaw(ctx.baseUrl, 'tools/call', {
         name: 'spawn_instance', arguments: { project: 'demo', playbook: 'solo', stage: 's'.repeat(HUGE) },
-      }, conductor.body.id);
+      }, conductor.body.sessionId);
       assert.ok(contentChars(result) <= MCP_RESULT_CHAR_BUDGET, `${contentChars(result)} chars`);
       const refusal = JSON.parse(result.content[0].text);
       assert.equal(refusal.ok, false);
       assert.equal(refusal.code, 'STAGE_UNKNOWN');
       assert.match(refusal.reason, MARKER);
       assert.ok(logged.some(l => l.includes('spawn_instance') && l.includes('cut to fit')), 'the cut is logged');
+
+      // JSON format: no result budget, only the per-string JSON_ECHO_CAP. The
+      // same HUGE stage, under that cap, is echoed whole; one over it is cut
+      // there, and the refusal says so with truncated:true.
+      const jsonCall = async (stage) => {
+        const res = await fetch(`${ctx.baseUrl}/mcp/${conductor.body.sessionId}?format=json`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'demo', playbook: 'solo', stage } } }),
+        });
+        return (await res.json()).result;
+      };
+      const whole = await jsonCall('s'.repeat(HUGE));
+      assert.equal(whole.isError, true);
+      assert.equal(whole.structuredContent.code, 'STAGE_UNKNOWN');
+      assert.ok(whole.structuredContent.reason.includes('s'.repeat(HUGE)), `under JSON_ECHO_CAP: echoed whole (${whole.structuredContent.reason.length} chars)`);
+      assert.equal(whole.structuredContent.truncated, undefined);
+      const cut = await jsonCall('s'.repeat(JSON_ECHO_CAP + 10_000));
+      assert.equal(cut.structuredContent.code, 'STAGE_UNKNOWN');
+      assert.equal(cut.structuredContent.truncated, true);
+      assert.match(cut.structuredContent.reason, MARKER);
+      const len = cut.structuredContent.reason.length;
+      assert.ok(len > JSON_ECHO_CAP - 100 && len < JSON_ECHO_CAP + 100, `cut at JSON_ECHO_CAP, not the text cap: ${len} chars`);
     });
+  } finally { await ctx.close(); }
+});
+
+// Invariant: MSG_TEXT_CAP is a TEXT-format (context) cap. A retired session's
+// assistant message longer than it is cut in text (textTruncated) and comes
+// back whole in JSON.
+test('JSON format: a get_recent_messages message over MSG_TEXT_CAP comes back whole; text cuts it', async () => {
+  const ctx = await bootServer({});
+  try {
+    const dir = path.join(ctx.projectsRoot, 'longmsg');
+    await registerLocalProject('longmsg', dir);
+    const sid = 'eeeeeeee-2222-3333-4444-555555555555';
+    const long = 'w'.repeat(MSG_TEXT_CAP + 5000);
+    await seedSessionJsonl(localPlace(dir), sid, [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'go' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: long }] } },
+    ]);
+    const call = async (format) => {
+      const res = await fetch(`${ctx.baseUrl}/mcp?format=${format}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_recent_messages', arguments: { sessionId: sid, count: 1 } } }),
+      });
+      return (await res.json()).result;
+    };
+    const text = await call('text');
+    const meta = JSON.parse(text.content[0].text);
+    assert.equal(meta.messages[0].textTruncated, true);
+    assert.ok(text.content[1].text.length < long.length);
+    const json = (await call('json')).structuredContent;
+    assert.equal(json.messages[0].textTruncated, false);
+    assert.equal(json.messages[0].text, long);
   } finally { await ctx.close(); }
 });
 

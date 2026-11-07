@@ -97,11 +97,12 @@ async function setup() {
   });
   assert.equal(spawned.status, 201, `conductor spawn failed: ${JSON.stringify(spawned.body)}`);
   const conductorId = spawned.body.id;
+  const conductorSid = spawned.body.sessionId;
   await waitFor(() => ctx.instances.get(conductorId)?.status === 'idle');
 
   // The raw result, hard errors included — the cross-plugin pin case expects one.
-  async function rawCall(name, args, caller = conductorId) {
-    const res = await fetch(`${ctx.baseUrl}/mcp${caller ? `?caller=${encodeURIComponent(caller)}` : ''}`, {
+  async function rawCall(name, args, caller = conductorSid) {
+    const res = await fetch(`${ctx.baseUrl}/mcp${caller ? `/${encodeURIComponent(caller)}` : ''}?format=text`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
@@ -178,7 +179,7 @@ test('a plugin playbook is listed, spawnable under its own role pin, survives a 
 
     // The targeted playbook_state names a worker, so under enforce it is itself
     // governed and meets the same refusal. The handler's own report is what an
-    // ungoverned caller (no conductor behind `?caller=`) reads.
+    // ungoverned caller (no conductor in the `/mcp/<sessionId>` path) reads.
     const governedState = await t.call('playbook_state', { sessionId: w.sessionId });
     assert.equal(governedState.code, 'PLAYBOOK_UNKNOWN');
     assertNamesAcme(governedState.reason);

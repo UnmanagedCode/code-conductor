@@ -37,15 +37,15 @@ async function seedFleet(cc: Cc, page: Page, uniq: (s: string) => string) {
   }
   expect(colB, 'A and B share a hue slot after 4 tries').not.toBe(colA);
 
-  const aSolo = await spawnWorker(cc, a.id, { project: P, createWorktree: true, name: 'solo-a' });
-  const aSolo2 = await spawnWorker(cc, a.id, { project: P, worktree: 'solo-a' });
-  const aMixed = await spawnWorker(cc, a.id, { project: P, createWorktree: true, name: 'mixed' });
-  const bMixed = await spawnWorker(cc, b.id, { project: P, worktree: 'mixed' });
-  const aMain = await spawnWorker(cc, a.id, { project: P });
-  const bMain = await spawnWorker(cc, b.id, { project: P });
+  const aSolo = await spawnWorker(cc, a.sessionId, { project: P, createWorktree: true, name: 'solo-a' });
+  const aSolo2 = await spawnWorker(cc, a.sessionId, { project: P, worktree: 'solo-a' });
+  const aMixed = await spawnWorker(cc, a.sessionId, { project: P, createWorktree: true, name: 'mixed' });
+  const bMixed = await spawnWorker(cc, b.sessionId, { project: P, worktree: 'mixed' });
+  const aMain = await spawnWorker(cc, a.sessionId, { project: P });
+  const bMain = await spawnWorker(cc, b.sessionId, { project: P });
   // A transcript makes its archive on kill observable as its row leaving.
   await seedTranscript(cc, bMain.id, 'bravo: main-checkout chore');
-  const bOther = await spawnWorker(cc, b.id, { project: O });
+  const bOther = await spawnWorker(cc, b.sessionId, { project: O });
 
   const handRes = await api(cc, 'POST', '/api/instances', { project: P, worktree: 'mixed', mode: 'bypassPermissions', temp: false, ...liveModel(cc) });
   expect(handRes.status, `POST /api/instances (hand): ${JSON.stringify(handRes.body)}`).toBeLessThan(300);
