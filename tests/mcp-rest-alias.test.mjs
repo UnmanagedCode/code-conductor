@@ -86,7 +86,7 @@ test('faults are HTTP statuses carrying {ok:false, code, reason}', async () => {
   } finally { await srv.close(); }
 });
 
-test('the listing: name, description, inputSchema, outputSchema — plugin tools untyped and passed through', async () => {
+test('the listing: name, description, inputSchema, outputSchema; untyped plugin tools absent and refused', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   try {
     const dir = path.join(srv.projectsRoot, 'fakeplug');
@@ -98,28 +98,20 @@ test('the listing: name, description, inputSchema, outputSchema — plugin tools
       const res = await fetch(url);
       assert.equal(res.status, 200);
       const tools = await res.json();
-      for (const t of tools) assert.deepEqual(Object.keys(t).sort(), ['description', 'inputSchema', 'name', 'outputSchema']);
-      const core = tools.find(t => t.name === 'list_workspaces');
-      assert.equal(core.outputSchema.type, 'object');
-      const plug = tools.find(t => t.name.startsWith('fake-plugin__'));
-      assert.ok(plug, 'the plugin tool is listed');
-      assert.equal(plug.outputSchema, null);
+      for (const t of tools) {
+        assert.deepEqual(Object.keys(t).sort(), ['description', 'inputSchema', 'name', 'outputSchema']);
+        assert.equal(t.outputSchema?.type, 'object', `${t.name} lists an outputSchema`);
+      }
+      assert.ok(tools.some(t => t.name === 'list_workspaces'));
+      // The fake plugin declares no outputSchema, so its tools are text-only.
+      assert.equal(tools.some(t => t.name.startsWith('fake-plugin__')), false, 'no untyped plugin tool is listed');
     }
     assert.equal((await fetch(`${srv.baseUrl}/mcp/deadbeef/tools`)).status, 404);
-    // A bridged plugin tool answers with its content blocks as `{content}`;
-    // the only key, so an `isError` would show up here.
     const echoed = await rest(srv.baseUrl, 'fake-plugin__echo', { message: 'hi' });
-    assert.equal(echoed.status, 200);
-    assert.deepEqual(Object.keys(echoed.body), ['content'], JSON.stringify(echoed.body));
-    assert.ok(Array.isArray(echoed.body.content), JSON.stringify(echoed.body));
-    assert.equal(JSON.parse(echoed.body.content[0].text).message, 'hi');
-    // A plugin's tool-level failure is a refusal at 200, which the generated
-    // client raises: not a passthrough envelope, not a ≥400 fault.
-    const failed = await rest(srv.baseUrl, 'fake-plugin__fail', {});
-    assert.equal(failed.status, 200, JSON.stringify(failed.body));
-    assert.equal(failed.body.ok, false, JSON.stringify(failed.body));
-    assert.equal(failed.body.code, 'TOOL_ERROR');
-    assert.equal(failed.body.content, undefined);
+    assert.equal(echoed.status, 404, JSON.stringify(echoed.body));
+    assert.equal(echoed.body.ok, false);
+    assert.equal(echoed.body.code, 'TOOL_UNAVAILABLE_IN_FORMAT');
+    assert.equal(typeof echoed.body.reason, 'string');
   } finally { await srv.close(); }
 });
 

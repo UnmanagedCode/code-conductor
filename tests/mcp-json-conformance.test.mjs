@@ -10,7 +10,8 @@
 // The closing tests pin completeness: the driven set IS the capability-filtered
 // registry (a tool with no driver fails), every listed tool carries an
 // outputSchema inside the validated subset (src/mcp/jsonSchemaSubset.ts), and
-// refusals, faults and bridged plugin tools take their documented channels.
+// refusals and faults take their documented channels, and plugin tools are
+// listed in json only when typed.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
@@ -366,30 +367,56 @@ test('faults are JSON-RPC errors carrying the refusal shape', async () => {
   assert.equal(method.error.data.code, 'METHOD_UNKNOWN');
 });
 
-test('a bridged plugin tool passes through untouched, in both formats', async () => {
+// A router over one stub plugin tool (the shape pluginHost.toolsFor() returns),
+// answering JSON-RPC in either format; `calls` records each handler ctx.format.
+async function withPluginRouter(extra, fn) {
+  const calls = [];
   const router = buildMcpRouter({
     instances: null,
     pluginHost: { init: async () => {}, toolsFor: () => [{
-      name: 'plug__echo', description: 'echo', inputSchema: { type: 'object' },
-      handler: async () => ({ hello: 'world' }),
+      name: 'plug__echo', description: 'echo', inputSchema: { type: 'object' }, ...extra,
+      handler: async (_args, ctx) => { calls.push(ctx.format); return { hello: 'world' }; },
     }] },
     playbookGate: { check: async ({ args }) => ({ args }) },
   });
   const app = express();
   app.use('/mcp', router);
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
-  try {
-    for (const format of ['json', 'text']) {
-      const res = await fetch(`http://127.0.0.1:${server.address().port}/mcp?format=${format}`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'plug__echo', arguments: {} } }),
-      });
-      const { result } = await res.json();
-      assert.deepEqual(result, { content: [{ type: 'text', text: '{"hello":"world"}' }] }, format);
-    }
-  } finally {
-    await new Promise(resolve => server.close(resolve));
-  }
+  const rpcAt = async (format, method, params) => {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/mcp?format=${format}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    return res.json();
+  };
+  try { await fn({ rpcAt, calls }); } finally { await new Promise(resolve => server.close(resolve)); }
+}
+
+test('a plugin tool without an outputSchema is text-only', async () => {
+  await withPluginRouter({}, async ({ rpcAt, calls }) => {
+    const text = await rpcAt('text', 'tools/call', { name: 'plug__echo', arguments: {} });
+    assert.deepEqual(text.result, { content: [{ type: 'text', text: '{"hello":"world"}' }] });
+    assert.deepEqual(calls, ['text']);
+    const listed = (await rpcAt('json', 'tools/list', {})).result.tools;
+    assert.equal(listed.some(t => t.name === 'plug__echo'), false, 'absent from the json tools/list');
+    const json = await rpcAt('json', 'tools/call', { name: 'plug__echo', arguments: {} });
+    assert.equal(json.error.code, -32602);
+    assert.equal(json.error.data.code, 'TOOL_UNAVAILABLE_IN_FORMAT');
+    assert.deepEqual(calls, ['text'], 'the handler did not run in json');
+  });
+});
+
+test('a plugin tool with an outputSchema answers structuredContent in json', async () => {
+  const outputSchema = { type: 'object', properties: { hello: { type: 'string' } }, required: ['hello'], additionalProperties: false };
+  assert.doesNotThrow(() => checkSchema(outputSchema));
+  await withPluginRouter({ outputSchema }, async ({ rpcAt, calls }) => {
+    const listed = (await rpcAt('json', 'tools/list', {})).result.tools.find(t => t.name === 'plug__echo');
+    assert.deepEqual(listed.outputSchema, outputSchema);
+    const { result } = await rpcAt('json', 'tools/call', { name: 'plug__echo', arguments: {} });
+    assert.deepEqual(result, { content: [{ type: 'text', text: '{"hello":"world"}' }], structuredContent: { hello: 'world' } });
+    assert.deepEqual(validate(outputSchema, result.structuredContent), []);
+    assert.deepEqual(calls, ['json'], 'the handler was told the format');
+  });
 });
 
 // ---------- completeness ----------

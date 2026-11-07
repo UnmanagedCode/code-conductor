@@ -2,6 +2,7 @@ import path from 'node:path';
 import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding, type TierBinding } from '../modelVersions.ts';
 import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
 import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
+import { checkSchema } from '../mcp/jsonSchemaSubset.ts';
 import type { System } from '../systems/system.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
 
@@ -87,6 +88,9 @@ export interface PluginMcpTool {
   name: string;
   description: string;
   inputSchema: unknown;
+  // Present only when declared: the tool is then served in json format too
+  // (src/plugins/mcpBridge.ts); without it the tool is text-only.
+  outputSchema?: Record<string, unknown>;
 }
 
 export interface PluginMcp {
@@ -703,7 +707,13 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
         errors.push(`'mcp.tools[${i}].description' is required (non-empty string)`);
       }
       checkSchemaSubset(tool.inputSchema, `mcp.tools[${i}].inputSchema`, errors);
-      tools.push({ name: typeof tool.name === 'string' ? tool.name : '', description: typeof tool.description === 'string' ? tool.description : '', inputSchema: tool.inputSchema });
+      const outputSchema = checkOutputSchema(tool.outputSchema, `mcp.tools[${i}].outputSchema`, errors);
+      tools.push({
+        name: typeof tool.name === 'string' ? tool.name : '',
+        description: typeof tool.description === 'string' ? tool.description : '',
+        inputSchema: tool.inputSchema,
+        ...(outputSchema ? { outputSchema } : {}),
+      });
     });
   }
   return {
@@ -711,6 +721,26 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
     timeoutMs,
     tools,
   };
+}
+
+// A tool's optional `outputSchema`: inside the strict output subset core's
+// schemas use (checkSchema, src/mcp/jsonSchemaSubset.ts), with a root
+// `type: "object"` — a json reply is always an object. Returns the schema when
+// declared and valid, else undefined (an error pushed when declared).
+function checkOutputSchema(schema: unknown, label: string, errors: string[]): Record<string, unknown> | undefined {
+  if (schema === undefined) return undefined;
+  try {
+    checkSchema(schema);
+  } catch (e) {
+    errors.push(`'${label}' ${(e as Error).message}`);
+    return undefined;
+  }
+  const rec = schema as Record<string, unknown>;
+  if (rec.type !== 'object') {
+    errors.push(`'${label}.type' must be 'object'`);
+    return undefined;
+  }
+  return rec;
 }
 
 // Static check that a tool schema stays inside the subset the MCP layer's
