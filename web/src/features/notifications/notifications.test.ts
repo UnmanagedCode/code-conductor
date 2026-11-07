@@ -103,10 +103,12 @@ function rig({ onScreen = new Set<string>(), bell = true } = {}) {
   const shown: Shown[] = [];
   const alerts: Shown[] = [];
   const tray = new Map<string, Shown & { close(): void }>();
+  let gate: Promise<void> | null = null;
   __setSwRegistrationForTests({
     showNotification: async (title: string, opts: NotificationOptions & { renotify?: boolean }) => {
       if (opts.renotify && !opts.tag) throw new TypeError('renotify needs a tag');
       if (opts.renotify && opts.silent) throw new TypeError('renotify and silent conflict');
+      if (gate) await gate;
       const entry = { title, ...opts, close: () => { if (tray.get(opts.tag!) === entry) tray.delete(opts.tag!); } };
       const replaced = !!opts.tag && tray.has(opts.tag);
       shown.push({ title, ...opts });
@@ -123,10 +125,16 @@ function rig({ onScreen = new Set<string>(), bell = true } = {}) {
   const summaryAlerts = () => alerts.filter((n) => n.tag === 'cc-summary');
   const summary = () => tray.get('cc-summary');
   const open = () => [...tray.keys()].sort();
+  // Shows made from now on wait for the returned release.
+  const holdShows = () => {
+    let release!: () => void;
+    gate = new Promise<void>((r) => { release = () => { gate = null; r(); }; });
+    return release;
+  };
   const dismiss = (tag: string) => { tray.delete(tag); };
   const seed = (tag: string) => { tray.set(tag, { title: 'stale', tag, close: () => { tray.delete(tag); } }); };
   const observe = async (list: ReturnType<typeof inst>[]) => { notifier.observe(list); await __notificationsSettledForTests(); };
-  return { notifier, observe, pings, summaryShows, summaryAlerts, summary, open, dismiss, seed, onScreen };
+  return { notifier, observe, holdShows, pings, summaryShows, summaryAlerts, summary, open, dismiss, seed, onScreen };
 }
 
 describe('attention notifier', () => {
@@ -305,6 +313,22 @@ describe('the summary notification', () => {
     await r.observe([done('X'), done('C'), done('W')]);
     expect(r.summary()).toMatchObject({ title: '3 sessions need you' });
     expect(r.summaryAlerts()).toHaveLength(alerts + 1);
+  });
+
+  it('closes the ping of a session that departs while its show is still held back', async () => {
+    // Invariant: 2 — every service-worker call runs in order, so a departure close sees the ping show it targets.
+    const r = rig();
+    await r.observe([inst('X')]);
+    const release = r.holdShows();
+    r.notifier.observe([done('X')]);
+    r.notifier.observe([inst('X')]);
+    let settled = false;
+    const pending = __notificationsSettledForTests().then(() => { settled = true; });
+    await new Promise((res) => setTimeout(res, 0));
+    expect(settled).toBe(false);
+    release();
+    await pending;
+    expect(r.open()).toEqual([]);
   });
 
   it('closes the summary when fewer than two sessions are left, and keeps it closed', async () => {
