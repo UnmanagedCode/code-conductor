@@ -3,7 +3,7 @@
 // the /mcp/<sessionId> caller path and the fake claude engine.
 //
 // Two properties matter more than the shapes:
-//   • READING NEVER WRITES. A read tool that appended to the ledger — or created
+//   • READING NEVER WRITES. A read tool that appended to the event log — or created
 //     it — to answer would corrupt the audit trail with the act of inspecting it.
 //   • ADVERTISED == ENFORCED. `nextMoves` is answered by dry-running the same
 //     decide() the enforcement checkpoint runs, so the two cannot diverge by
@@ -16,7 +16,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, registerLocalProject, seedSessionJsonl } from './helpers.mjs';
-import { ledgerFile } from '../src/playbookLedger.ts';
+import { eventLogFile, readEventLog } from '../src/eventLog.ts';
+import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
 import { SEED_PLAYBOOK_IDS, DEFAULT_PLAYBOOK_ID } from '../src/playbooks.ts';
 import { GATELAB } from './playbook-fixtures.mjs';
@@ -59,7 +60,7 @@ async function makeRealRepo(projectsRoot, name) {
 let nextRpcId = 1;
 
 async function setup({ enforcement } = {}) {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  const ctx = await bootServer({ scenarioPath: SCENARIO, eventLogLease: OPEN_LEASE });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
   // Per-test store, so the fixture is invisible to production by construction.
@@ -116,12 +117,12 @@ async function setup({ enforcement } = {}) {
       if (out.sessionId) await waitFor(() => instForSession(ctx.instances, out.sessionId)?.sessionId);
       return out;
     },
-    async ledgerExists() {
-      try { await fs.access(ledgerFile()); return true; } catch { return false; }
+    async logExists() {
+      try { await fs.access(eventLogFile()); return true; } catch { return false; }
     },
     async eventCount() {
       try {
-        const raw = await fs.readFile(ledgerFile(), 'utf8');
+        const raw = await fs.readFile(eventLogFile(), 'utf8');
         return raw.split('\n').filter(l => l.trim()).length;
       } catch { return 0; }
     },
@@ -373,12 +374,13 @@ test('describe_playbook soft-refuses an unknown id and lists the known ones', as
 
 // ── reading never writes ───────────────────────────────────────────────────
 
-test('the read tools create no ledger when there is nothing to read', async () => {
+test('the read tools create no event log when there is nothing to read', async () => {
   // No conductor at all, so nothing has recorded a birth: the read-only fold must
   // answer from an empty projection and leave the filesystem untouched. Built from
   // scratch rather than via setup() precisely because setup()'s conductor would
-  // materialise the ledger itself — legitimately, and for reasons unrelated to reads.
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  // materialise the log itself — legitimately, and for reasons unrelated to reads.
+  // OPEN_LEASE, so the log COULD be written and its absence means something.
+  const ctx = await bootServer({ scenarioPath: SCENARIO, eventLogLease: OPEN_LEASE });
   try {
     const rawCall = async (name, args) => {
       const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
@@ -400,14 +402,14 @@ test('the read tools create no ledger when there is nothing to read', async () =
     // racing it.
     await assert.rejects(
       () => waitFor(async () => {
-        try { await fs.access(ledgerFile()); return true; } catch { return false; }
+        try { await fs.access(eventLogFile()); return true; } catch { return false; }
       }, { timeout: 1000, interval: 20 }),
       /timeout/,
-      'a read tool must never materialise the ledger it reads');
+      'a read tool must never materialise the log it reads');
   } finally { await ctx.close(); }
 });
 
-test('the read tools append no events to a ledger that already exists', async () => {
+test('the read tools append no rows to an event log that already exists', async () => {
   // The other half of "reading never writes", and the half that still applies once
   // a conductor's birth event has created the file: answering must add nothing.
   const t = await setup({ enforcement: 'warn' });
@@ -538,7 +540,7 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
 
     // Step 4 — `amend`'s only outgoing edge is its own self-loop, which is
     // always legal (a self-edge is never gated) and is what makes each further
-    // round a ledgered event rather than an invisible re-prompt.
+    // round an ordinary, legal re-prompt.
     assert.deepEqual(await movesNow(), [{ to: 'amend', via: 'send_prompt', ok: true }]);
   } finally { await t.close(); }
 });
@@ -566,18 +568,25 @@ test('playbook_state derives the run graph and its history, keeping concurrent r
 
     // History is the backtrack surface: this run's events, oldest first.
     assert.equal(stateA.historyTruncated, false);
-    assert.deepEqual(stateA.history.filter(e => e.kind !== 'enforcement').map(e => e.kind),
-      ['spawn', 'transition', 'spawn']);
-    assert.deepEqual(stateA.history.map(e => e.seq), [...stateA.history.map(e => e.seq)].sort((x, y) => x - y));
-    assert.equal(stateA.history.some(e => e.sessionId === b.sessionId), false,
-      'another run\'s events must not leak into this one\'s history');
-    // The caller's own enforcement birth event rides along — it is what explains
-    // why these moves were checked at all.
-    const enf = stateA.history.filter(e => e.kind === 'enforcement');
+    const shape = (e) => (e.kind === 'call' ? (e.bind ? 'bind' : e.move ? 'move' : 'call') : `${e.kind}:${e.event ?? e.key}`);
+    assert.deepEqual(stateA.history.filter(e => e.subject === a.sessionId).map(shape),
+      ['session:start', 'bind', 'move']);
+    assert.deepEqual(stateA.history.filter(e => e.subject === aRev.sessionId).map(shape),
+      ['session:start', 'bind']);
+    assert.equal(stateA.history.some(e => e.kind === 'turn' || e.kind === 'wake'), false, 'turn and wake rows are not history');
+    // Line order: the history is the file's own subsequence, in file order.
+    const file = await readEventLog(eventLogFile());
+    const ids = new Set(stateA.history.map(e => JSON.stringify(e)));
+    assert.deepEqual(file.filter(e => ids.has(JSON.stringify(e))), stateA.history);
+    assert.equal(stateA.history.some(e => e.subject === b.sessionId), false,
+      'another run\'s rows must not leak into this one\'s history');
+    // The caller's own enforcement birth rides along — it is what explains why
+    // these moves were checked at all.
+    const enf = stateA.history.filter(e => e.kind === 'config');
     assert.equal(enf.length, 1);
-    assert.equal(enf[0].conductorSessionId, t.instances.get(t.conductorId).sessionId);
+    assert.equal(enf[0].subject, t.instances.get(t.conductorId).sessionId);
 
-    // The conductor's live level, read off the instance rather than the ledger.
+    // The conductor's live level, read off the instance rather than the log.
     assert.deepEqual(stateA.enforcement,
       { conductorSessionId: t.instances.get(t.conductorId).sessionId, mode: 'enforce' });
 
@@ -587,26 +596,25 @@ test('playbook_state derives the run graph and its history, keeping concurrent r
   } finally { await t.close(); }
 });
 
-test('playbook_state history omits activity rows, and they cannot push stage history out of the cap', async () => {
-  // INVARIANT: `interaction` and `wake` rows are filtered out BEFORE the history
-  // cap, so a long conversation with a worker never evicts its stage events.
+test('playbook_state history omits turn and wake rows, and they cannot push history out of the cap', async () => {
+  // INVARIANT: `turn` and `wake` rows are filtered out BEFORE the history cap,
+  // so a long conversation with a worker never evicts its call history.
   const t = await setup({ enforcement: 'enforce' });
   try {
     const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     await t.call('approve_plan', { sessionId: w.sessionId });
     const before = await t.call('playbook_state', { sessionId: w.sessionId });
-    const stageRows = before.history.filter(e => e.kind !== 'enforcement');
-    assert.deepEqual(stageRows.map(e => e.kind), ['spawn', 'transition'], 'premise: the stage history');
+    const callRows = before.history.filter(e => e.kind === 'call');
+    assert.deepEqual(callRows.map(e => (e.bind ? 'bind' : e.move ? 'move' : 'call')), ['bind', 'move'], 'premise: the call history');
 
-    // More activity rows than any plausible cap, appended after the stage events.
-    const base = Math.max(...before.history.map(e => e.seq));
+    // More turn/wake rows than any plausible cap, appended after the calls.
     const lines = [];
     for (let i = 1; i <= 450; i++) {
       lines.push(JSON.stringify(i % 2
-        ? { seq: base + i, ts: '2026-09-06T00:00:00Z', kind: 'interaction', tool: 'send_prompt', sessionId: w.sessionId, conductorSessionId: 'c' }
-        : { seq: base + i, ts: '2026-09-06T00:00:00Z', kind: 'wake', sessionId: w.sessionId, conductorSessionId: 'c' }));
+        ? { v: 1, ts: '2026-09-06T00:00:00Z', kind: 'turn', actor: { type: 'system' }, subject: w.sessionId, event: 'start' }
+        : { v: 1, ts: '2026-09-06T00:00:00Z', kind: 'wake', actor: { type: 'system' }, subject: w.sessionId, recipient: 'c' }));
     }
-    await fs.appendFile(ledgerFile(), lines.join('\n') + '\n');
+    await fs.appendFile(eventLogFile(), lines.join('\n') + '\n');
 
     const after = await t.call('playbook_state', { sessionId: w.sessionId });
     assert.deepEqual(after.history, before.history);
@@ -616,7 +624,7 @@ test('playbook_state history omits activity rows, and they cannot push stage his
 
 test('playbook_state\'s `live` flips to false once the worker is actually killed', async () => {
   // The other direction of the assertion above: `live` is read from the
-  // instance manager, not a ledger fold, so it must track a REAL kill —
+  // instance manager, not a log fold, so it must track a REAL kill —
   // not merely start true and never move.
   const t = await setup({ enforcement: 'enforce' });
   try {

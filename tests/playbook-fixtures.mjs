@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { validatePlaybook, loadToolIndex, loadPlaybooks } from '../src/playbooks.ts';
-import { foldProjection } from '../src/playbookLedger.ts';
+import { foldPlaybookState } from '../src/playbookState.ts';
 
 export const index = await loadToolIndex();
 
@@ -19,25 +19,74 @@ export function pbs(...list) {
   return new Map(list.map(p => [p.id, p]));
 }
 
-// Fold a fixture event list into a projection, assigning seq/ts so the tests
-// only have to state what actually matters to the case.
-export function proj(events) {
-  return foldProjection(events.map((e, i) => ({ seq: i + 1, ts: `2026-08-05T00:00:0${i % 10}Z`, ...e })));
+// ── event-log row builders ───────────────────────────────────────────────────
+// Fixture rows in the event-log shape (src/eventLog.ts), so a test states only
+// what matters to its case. `v`/`ts` are filled in by proj().
+
+// The conductor every fixture `call` row is attributed to.
+export const TEST_CONDUCTOR = 'c-test-conductor';
+const conductorActor = { type: 'conductor', sessionId: TEST_CONDUCTOR };
+const systemActor = { type: 'system' };
+
+// A spawn_instance call that bound `sid` to `playbook`/`stage`.
+export function bindRow(sid, playbook, stage, { provenance, project, worktree } = {}) {
+  return {
+    kind: 'call', actor: conductorActor, subject: sid, tool: 'spawn_instance', outcome: 'ok',
+    bind: {
+      playbook, stage,
+      ...(provenance ? { provenance } : {}),
+      ...(project !== undefined ? { project } : {}),
+      ...(worktree !== undefined ? { worktree } : {}),
+    },
+  };
 }
 
-// decide()'s isLive oracle now comes from InstanceManager, not the ledger — so
-// a pure policy test that wants "liveness follows this event list" (spawn/resume
-// -> live, retire -> not live) builds its own tiny oracle from the same fixture
-// events, rather than reading a fold that no longer carries the bit. This is
-// ONLY a test fixture: production wires isLive to InstanceManager.isSessionLive.
-export function isLiveFromEvents(events) {
+// A governed call that moved `sid` from `from` to `to` (never equal — a
+// same-stage call carries no move; build it with callRow).
+export function moveRow(sid, from, to, { tool = 'send_prompt', provenance, forward } = {}) {
+  assert.notEqual(from, to, 'a move changes the stage; a same-stage call is a callRow');
+  return {
+    kind: 'call', actor: conductorActor, subject: sid, tool, outcome: 'ok',
+    ...(forward ? { forward } : {}),
+    move: { from, to, ...(provenance ? { provenance } : {}) },
+  };
+}
+
+// A governed call on `sid` that moved nothing.
+export function callRow(sid, tool = 'send_prompt', extra = {}) {
+  return { kind: 'call', actor: conductorActor, subject: sid, tool, outcome: 'ok', ...extra };
+}
+
+export function exitRow(sid, cause = 'exited') {
+  return { kind: 'session', actor: systemActor, subject: sid, event: 'exit', cause };
+}
+
+export function resumeRow(sid) {
+  return { kind: 'session', actor: systemActor, subject: sid, event: 'resume' };
+}
+
+// Fold fixture rows into a projection, stamping the envelope's v/ts.
+export function proj(rows) {
+  return foldPlaybookState(rows.map((r, i) => ({ v: 1, ts: `2026-08-05T00:00:0${i % 10}Z`, ...r })));
+}
+
+// decide()'s isLive oracle comes from InstanceManager, not the log — so a pure
+// policy test that wants "liveness follows this row list" (bound/started/
+// resumed -> live, exited -> not live) builds its own tiny oracle from the same
+// fixture rows. ONLY a test fixture: production wires isLive to
+// InstanceManager.isSessionLive.
+export function isLiveFromEvents(rows) {
   const live = new Set();
-  for (const ev of events) {
-    if (ev.kind === 'spawn' || ev.kind === 'resume') live.add(ev.sessionId);
-    else if (ev.kind === 'retire') live.delete(ev.sessionId);
+  for (const r of rows) {
+    if (r.kind === 'call' && r.bind) live.add(r.subject);
+    else if (r.kind === 'session' && (r.event === 'start' || r.event === 'resume')) live.add(r.subject);
+    else if (r.kind === 'session' && r.event === 'exit') live.delete(r.subject);
   }
   return sid => live.has(sid);
 }
+
+// A lease that always grants the write — for a test that needs rows written.
+export const OPEN_LEASE = { check: () => null };
 
 export async function builtins() {
   const { playbooks, errors } = await loadPlaybooks();
@@ -74,7 +123,7 @@ export async function builtins() {
 //
 //   draft   entry; `pin` FILLS IN mode+createWorktree; no declared draft->draft,
 //           so an ordinary follow-up prompt is an UNDECLARED self-edge (legal,
-//           never ledgered). The one stage that both DENIES a tool and has an
+//           moves nothing). The one stage that both DENIES a tool and has an
 //           outgoing edge, so a refusal from it carries a non-empty legalMoves
 //   build   omits spawn_instance ⇒ STAGE_NOT_SPAWNABLE; denies nothing that
 //           `audit` denies, which is the permitted half of the deny tests
@@ -82,7 +131,7 @@ export async function builtins() {
 //           (`set_idle_timeout` is a governable no-op on an idle worker —
 //           denying it exercises policy without touching the subprocess)
 //   amend   `needs` on TRANSITION-entry at the default liveness:"live"; the
-//           DECLARED amend->amend self-loop, so its rounds are ledgered
+//           DECLARED amend->amend self-loop (a no-op, like any self-edge)
 //   sealed  a dead end with both write doors shut — no outgoing edge, set_mode
 //           and approve_plan denied. Pins no `mode`, so its worker spawns in
 //           plan mode and approve_plan's flip is reachable — which is what makes
@@ -138,7 +187,7 @@ export const GATELAB = {
   transitions: [
     { from: 'draft', to: 'build', on: 'approve_plan' }, // an `on` driver
     { from: 'build', to: 'amend' },                     // no `on` ⇒ send_prompt
-    { from: 'amend', to: 'amend' },                     // DECLARED self-loop ⇒ ledgered
+    { from: 'amend', to: 'amend' },                     // DECLARED self-loop (a no-op)
   ],                                                    // no draft->draft ⇒ undeclared self-edge
 };
 
@@ -151,8 +200,7 @@ export const GATELAB_PB = pb(GATELAB);
 // A GATELAB run part-way through: the drafter has been approved into `build`,
 // and an auditor has been spawned against it.
 export const GATELAB_RUN = [
-  { kind: 'spawn', sessionId: 'w-drafter-1', playbook: 'gatelab', stage: 'draft', project: 'demo' },
-  { kind: 'transition', sessionId: 'w-drafter-1', from: 'draft', to: 'build', via: 'approve_plan' },
-  { kind: 'spawn', sessionId: 'w-auditor-1', playbook: 'gatelab', stage: 'audit',
-    provenance: { build: 'w-drafter-1' }, project: 'demo' },
+  bindRow('w-drafter-1', 'gatelab', 'draft', { project: 'demo' }),
+  moveRow('w-drafter-1', 'draft', 'build', { tool: 'approve_plan' }),
+  bindRow('w-auditor-1', 'gatelab', 'audit', { provenance: { build: 'w-drafter-1' }, project: 'demo' }),
 ];

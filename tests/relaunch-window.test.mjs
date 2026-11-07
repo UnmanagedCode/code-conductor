@@ -282,3 +282,39 @@ test('a route error with a multi-MB message logs at most ROUTE_ERROR_LOG_MAX, 5x
     });
   }
 });
+
+// The event log's `session` rows name why a session came back: the relaunch is
+// announced as {event:'resume'} with the rotation's cause, after the exit its
+// kill caused (src/instances.ts → Instance.launch / _setStatus).
+async function lifecycleOf(inst, fn) {
+  const seen = [];
+  const onLaunch = (a) => { if (a.sessionId === inst.sessionId) seen.push(['launch', a.event, a.cause]); };
+  const onExit = (x) => { if (x.sessionId === inst.sessionId) seen.push(['exit']); };
+  instances.on('session_launched', onLaunch);
+  instances.on('session_exited', onExit);
+  try { await fn(); } finally {
+    instances.off('session_launched', onLaunch);
+    instances.off('session_exited', onExit);
+  }
+  return seen;
+}
+
+test('a rewind is recorded as an exit then a resume with cause rewind', async () => {
+  const { inst } = await resumeSeeded(TWO_TURNS);
+  const seen = await lifecycleOf(inst, async () => {
+    const rew = await rewind(inst, 1, 'p2');
+    assert.equal(rew.status, 200, JSON.stringify(rew.body));
+    await waitFor(() => inst.status === 'idle' && inst.proc);
+  });
+  assert.deepEqual(seen, [['exit'], ['launch', 'resume', 'rewind']]);
+});
+
+test('a prune is recorded as an exit then a resume with cause prune', async () => {
+  const { inst } = await resumeSeeded(TWO_TURNS);
+  const seen = await lifecycleOf(inst, async () => {
+    const pr = await api(baseUrl, 'POST', `/api/instances/${inst.id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 200, JSON.stringify(pr.body));
+    await waitFor(() => inst.status === 'idle' && inst.proc);
+  });
+  assert.deepEqual(seen, [['exit'], ['launch', 'resume', 'prune']]);
+});

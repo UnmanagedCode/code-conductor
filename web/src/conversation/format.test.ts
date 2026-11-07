@@ -173,7 +173,7 @@ describe('system lines', () => {
     expect(shouldRenderSystem({ kind: 'system', subtype: 'status', data: { status: 'requesting' } })).toBe(false);
     expect(shouldRenderSystem({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { status: 'allowed' } } })).toBe(false);
     expect(shouldRenderSystem({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { status: 'allowed_warning' } } })).toBe(true);
-    for (const s of ['read_nudge', 'playbook_warn', 'model_switch_failed', 'model_changed', 'init', 'stderr']) {
+    for (const s of ['read_nudge', 'playbook_warn', 'event_log_blocked', 'model_switch_failed', 'model_changed', 'init', 'stderr']) {
       expect(shouldRenderSystem({ kind: 'system', subtype: s, data: {} })).toBe(true);
     }
     expect(shouldRenderSystem({ kind: 'system', subtype: 'task_notification', data: { notified: true } })).toBe(true);
@@ -227,6 +227,13 @@ describe('system lines', () => {
     const untargeted = systemLine({ kind: 'system', subtype: 'playbook_warn', data: { tool: 'spawn_instance', code: 'PLAYBOOK_UNKNOWN', reason: 'no playbook named' } });
     expect(untargeted.text).not.toContain('undefined');
     expect(untargeted.text).not.toMatch(/ on /);
+  });
+
+  it('an event-log blocked notice is a warn-tone line naming the reason', () => {
+    const l = systemLine({ kind: 'system', subtype: 'event_log_blocked', data: { reason: 'a newer server holds the projects root (generation 4)' } });
+    expect(l.tone).toBe('warn');
+    expect(l.text).toContain('a newer server holds the projects root (generation 4)');
+    expect(l.text).not.toContain('{');
   });
 
   it('a read nudge carries the verbatim text as a warning; an ordinary line is not a warning', () => {

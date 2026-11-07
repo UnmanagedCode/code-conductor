@@ -1992,3 +1992,48 @@ test('a target with LIVE SUBAGENTS is refused on the request path too', async ()
     await srv.close();
   }
 });
+
+// ── event-log attribution of renewal turns ──────────────────────────────────
+//
+// INVARIANT: both turns a conductor's targeted renew_session opens on the
+// worker — the request prompt, and the reseed carrying its followUp — are the
+// REQUESTING conductor's. The worker is given a root owner that is NOT the
+// requester (the section-lead shape), so a site that drops its actor falls back
+// to that root owner and fails here rather than being masked.
+async function renewalTurnActors(srv) {
+  const { condSid, wSid, worker } = await pair(srv);
+  worker.rootOwnerSessionId = 'c-root-owner-not-the-requester';
+  const starts = [];
+  srv.instances.on('turn_started', (t) => { if (t.sessionId === wSid) starts.push(t.actor); });
+  const req = await callTool(srv.baseUrl, 'renew_session', {
+    sessionId: wSid, directive: `${DIRECTIVE}: roster`, followUp: 'MARK-F: next job',
+  }, { caller: condSid });
+  assert.equal(req.requested, true, JSON.stringify(req));
+  await waitFor(() => echoWith(worker, DIRECTIVE));
+  const requestActor = starts[0];
+  await callTool(srv.baseUrl, 'renew_session', { summary: 'MARK-S: roster' }, { caller: wSid });
+  await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
+  await waitFor(() => worker.backingSessionId === NEW_SID);
+  await waitFor(() => echoWith(worker, 'MARK-F'));
+  // Turns on the worker: the request, the server's `/clear` (the system's), the reseed.
+  await waitFor(() => starts.length >= 3);
+  assert.deepEqual(starts[1], { type: 'system' }, 'premise: the /clear between them is the system\'s');
+  assert.equal(starts.length, 3, JSON.stringify(starts));
+  return { condSid, requestActor, reseedActor: starts[2] };
+}
+
+test('ATTR renew_session request: the request prompt\'s turn is the requesting conductor\'s', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  try {
+    const { condSid, requestActor } = await renewalTurnActors(srv);
+    assert.deepEqual(requestActor, { type: 'conductor', sessionId: condSid });
+  } finally { await srv.close(); }
+});
+
+test('ATTR renew_session reseed with a followUp: the reseed\'s turn is the requesting conductor\'s, though internal', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  try {
+    const { condSid, reseedActor } = await renewalTurnActors(srv);
+    assert.deepEqual(reseedActor, { type: 'conductor', sessionId: condSid });
+  } finally { await srv.close(); }
+});

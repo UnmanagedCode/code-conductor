@@ -7,13 +7,13 @@
 // Scope note: this file pins the DECISION half — that `approve_plan` on a
 // `plan` worker decides a transition to `implement`, and that send_prompt cannot
 // produce the same move. Actually FIRING the transition on handler success (and
-// appending it to the ledger) is the dispatch() wiring, a separate milestone;
+// appending it to the event log) is the dispatch() wiring, a separate milestone;
 // there is nothing to auto-fire from inside a pure function.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide, resolveMove } from '../src/playbooks.ts';
-import { pbs, proj, isLiveFromEvents, GATELAB_PB, GATELAB_RUN } from './playbook-fixtures.mjs';
+import { pbs, proj, isLiveFromEvents, GATELAB_PB, GATELAB_RUN, bindRow, moveRow } from './playbook-fixtures.mjs';
 
 // Driven through GATELAB (tests/playbook-fixtures.mjs), never the shipped
 // playbooks/*.json: which edges exist and which carry an `on` is precisely what
@@ -27,7 +27,7 @@ function d(toolName, args, events) {
   return decide({ toolName, args, projection: proj(events), playbooks: PB, isLive: isLiveFromEvents(events) });
 }
 
-const DRAFTER = [{ kind: 'spawn', sessionId: 'w-drafter-1', playbook: 'gatelab', stage: 'draft' }];
+const DRAFTER = [bindRow('w-drafter-1', 'gatelab', 'draft')];
 
 test('premise: gatelab declares draft->build with on:approve_plan and build->amend with no on', () => {
   const driven = graph.transitions.find(t => t.from === 'draft' && t.to === 'build');
@@ -66,7 +66,7 @@ test('the `on` tool moves nothing when the worker is not at that edge\'s `from`'
   // it is an ordinary governed call, not a second transition.
   const events = [
     ...DRAFTER,
-    { kind: 'transition', sessionId: 'w-drafter-1', from: 'draft', to: 'build', via: 'approve_plan' },
+    moveRow('w-drafter-1', 'draft', 'build', { tool: 'approve_plan' }),
   ];
   const res = d('approve_plan', { sessionId: 'w-drafter-1' }, events);
   assert.equal(res.ok, true, `expected ok, got ${res.code}: ${res.reason}`);
@@ -86,7 +86,7 @@ test('absence of an edge is a refusal in BOTH directions unless both are declare
   // declared one way never implies the other.
   const events = [
     ...GATELAB_RUN,
-    { kind: 'transition', sessionId: 'w-drafter-1', from: 'build', to: 'amend', via: 'send_prompt' },
+    moveRow('w-drafter-1', 'build', 'amend', { tool: 'send_prompt' }),
   ];
   const back = d('send_prompt', { sessionId: 'w-drafter-1', text: 're-audit', stage: 'audit' }, events);
   assert.equal(back.ok, false);
@@ -99,7 +99,7 @@ test('absence of an edge is a refusal in BOTH directions unless both are declare
 
 test('a stage with no outgoing edge cannot be moved by any tool, nor unlock itself', () => {
   assert.equal(graph.transitions.some(t => t.from === 'sealed'), false, 'premise: no edge out of sealed');
-  const events = [{ kind: 'spawn', sessionId: 'w-sealed-01', playbook: 'gatelab', stage: 'sealed' }];
+  const events = [bindRow('w-sealed-01', 'gatelab', 'sealed')];
   // send_prompt cannot
   const viaPrompt = d('send_prompt', { sessionId: 'w-sealed-01', text: 'now hand off', stage: 'handoff' }, events);
   assert.equal(viaPrompt.code, 'TRANSITION_ILLEGAL');

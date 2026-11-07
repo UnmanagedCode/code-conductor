@@ -386,8 +386,13 @@ export class SessionRenewController {
     // worst outcome in the whole flow, so it must never be swallowed.
     try {
       // A conductor's followUp makes the seed carry the conductor's next task, so
-      // it is authored `conductor`; a self-renewal's seed has no author.
-      await inst.prompt(seed, [], { internal: true, author: p.opts.followUp ? 'conductor' : undefined });
+      // it is authored `conductor` — and its turn is the requesting conductor's
+      // (`actor`); a self-renewal's seed has no author and is the system's.
+      const followUpBy = p.opts.followUp && p.requestedBy ? p.requestedBy : null;
+      await inst.prompt(seed, [], {
+        internal: true, author: p.opts.followUp ? 'conductor' : undefined,
+        ...(followUpBy ? { actor: { type: 'conductor', sessionId: followUpBy } } : {}),
+      });
     } catch (err) {
       inst._emitUi({
         kind: 'system', subtype: 'renew_error',

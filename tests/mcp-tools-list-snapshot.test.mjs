@@ -3,8 +3,10 @@
 // leave it byte-identical. The fixture was captured from main's tools/list on a
 // bare router with every capability on, with ONE edit — the set_idle_timeout
 // sentence naming caller identity now names the `/mcp/<sessionId>` path
-// instead of the `?caller=` query parameter. That reword is the sole delta
-// from main.
+// instead of the `?caller=` query parameter — and the event log's two
+// description edits: send_prompt's `stage` no longer says a declared self-loop
+// is recorded, and playbook_state describes `history` as event-log rows and
+// `stageHistory` as stage changes (docs/event-log.md).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

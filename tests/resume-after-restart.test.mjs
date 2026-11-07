@@ -470,6 +470,34 @@ test('a restarted conductor keeps its OWN level, not a default that changed unde
   clearResumeManifest();
 });
 
+test('a restart restore relaunches each session as a resume with cause restore, attributed to the system', async () => {
+  // Invariant: the event log's `session` row for a restored session says WHY it
+  // came back — Manager.create({launchCause:'restore'}) from
+  // restoreFromResumeManifest, announced by Instance.launch.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'restorecause' });
+  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'restorecause', mode: 'bypassPermissions' });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  const inst = instances.get(res.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  assert.equal(entries.length, 1);
+  await waitFor(() => inst.proc === null, { timeout: 20000 });
+
+  const launched = [];
+  const onLaunch = (a) => { if (a.sessionId === inst.sessionId) launched.push(a); };
+  instances.on('session_launched', onLaunch);
+  try {
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 1);
+  } finally { instances.off('session_launched', onLaunch); }
+  assert.deepEqual(launched.map(a => [a.event, a.cause, a.actor]), [['resume', 'restore', { type: 'system' }]]);
+  clearResumeManifest();
+});
+
 // Invariant: each row names its spawner — "you" for the root itself — and a
 // row with no parentSessionId (written by a build that listed direct workers
 // only) reads as the root's.

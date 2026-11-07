@@ -1,5 +1,5 @@
-// The set of tools whose governed calls the ledger records as `interaction`
-// rows: derived from the tool registry, never listed by hand.
+// The set of tools whose governed calls that run are recorded as event-log
+// `call` rows: derived from the tool registry, never listed by hand.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

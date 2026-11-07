@@ -72,7 +72,7 @@ import {
   type ReconMessage,
 } from './messageReconstruction.ts';
 import { loadPlaybooks, playbookSummary, playbookDetail, legalMovesFrom, decide, missingPlaybookCause, type Playbook } from '../playbooks.ts';
-import { runMembers, playbookBinding, isActivityEvent, type Projection } from '../playbookLedger.ts';
+import { runMembers, playbookBinding, type Projection } from '../playbookState.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
 // The handle check describe_session enforces. Static import is safe here:
@@ -592,7 +592,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     return { ok: false, code: 'PROJECT_REQUIRED', worktree: worktreeArg,
       reason: 'worktree narrows a project — pass `project` alongside it' };
   }
-  // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
+  // Read-only, and folds nothing into being: absent event log ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
   // A dead instance retained in byId (non-temp exits are never dropped) is not a
   // live worker: it fails isDeadStatus, so it is excluded here AND left out of
@@ -686,12 +686,12 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
 
 // ---------- playbooks: the read / introspection surface ----------
 //
-// Playbook definitions are the authority on what the graph IS; the ledger's
+// Playbook definitions are the authority on what the graph IS; the event log's
 // projection is the authority on where workers ARE. These three tools expose
 // both without ever restating the graph in prose somewhere else.
 //
 // Every one of them is read-only in the strong sense: a fresh install with no
-// ledger answers with empty state and creates no file (see
+// event log answers with empty state and creates no file (see
 // PlaybookGate.readProjection).
 
 export async function listPlaybooks() {
@@ -728,7 +728,7 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
   if (!gate) throw new Error('orchestrator has no playbook gate');
   const proj = await gate.readProjection();
   // The CALLING conductor's live mode, read off the instance rather than the
-  // ledger: the instance is the runtime authority and the ledger is the audit
+  // event log: the instance is the runtime authority and the log is the audit
   // trail. Deliberately not the projection's enforcement map — publishing that
   // could name an instance which is not a conductor and therefore not governed.
   const caller = ctx.callerId && ctx.instances ? ctx.instances.liveForSession(ctx.callerId) : null;
@@ -766,13 +766,14 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
   const memberIds = new Set(members.map(m => m.sessionId));
 
   const all = await gate.readHistory();
-  // Activity rows are excluded so they cannot evict stage history under HISTORY_CAP.
-  const relevant = all.filter(ev => !isActivityEvent(ev) && (
-    ('sessionId' in ev && typeof ev.sessionId === 'string' && memberIds.has(ev.sessionId))
+  // The run's `call` and `session` rows, in line order. `turn` and `wake` rows
+  // are excluded so they cannot evict that history under the history cap.
+  const relevant = all.filter(row =>
+    ((row.kind === 'call' || row.kind === 'session') && typeof row.subject === 'string' && memberIds.has(row.subject))
     // The caller's own enforcement changes: what made an illegal-looking move
-    // legal at a given seq. Scoped to the caller, so no other session's setting
-    // is ever published here.
-    || (ev.kind === 'enforcement' && !!enforcement && ev.conductorSessionId === enforcement.conductorSessionId)));
+    // legal at a given point. Scoped to the caller, so no other session's
+    // setting is ever published here.
+    || (row.kind === 'config' && !!enforcement && row.subject === enforcement.conductorSessionId));
   const history = historyCap === null ? relevant : relevant.slice(-historyCap);
 
   return {
@@ -880,7 +881,7 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
     return { ok: false, code: 'SESSION_NOT_A_HANDLE', handle: owner,
       reason: `that id is a backing/segment id, not a session handle — call describe_session({sessionId:"${owner}"}), the handle that owns it.` };
   }
-  // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
+  // Read-only, and folds nothing into being: absent event log ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
 
   // Step 2 — LIVE. Same isDeadStatus split list_sessions uses, so a dead
@@ -1215,6 +1216,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       // SubagentPanel in web/src/features/session/SessionPanels.tsx,
       // conductedSubtreeOf — both match on instanceId).
       callerInstanceId: callerInst?.id ?? null,
+      actor: callerId ? { type: 'conductor' as const, sessionId: callerId } : { type: 'system' as const },
     };
     inst = await instances.create(createArgs);
   } catch (e) {
@@ -1314,6 +1316,13 @@ function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): Soft
   };
 }
 
+// The event-log actor of a conductor's send: the MCP caller that sent it, so a
+// non-root conductor (a section lead) is attributed to itself. Empty with no
+// caller, which leaves Instance.prompt's root-owner fallback.
+function senderActor(callerId: string | null | undefined): { actor?: { type: 'conductor'; sessionId: string } } {
+  return callerId ? { actor: { type: 'conductor', sessionId: callerId } } : {};
+}
+
 export async function sendPrompt(
   { sessionId, text, idleTimeoutSeconds, forward }: {
     sessionId: string; text: string; idleTimeoutSeconds?: number;
@@ -1356,9 +1365,9 @@ export async function sendPrompt(
   // getInst is LIVE-only, so inst.proc is guaranteed here.
 
   // Every `forward` refusal fires here — before inst.prompt, before
-  // noteOwnership, and before the playbook ledger (dispatch's gate.commit
-  // drops any result with ok===false) — so a refused forward starts no turn,
-  // arms no wake, and records no transition.
+  // noteOwnership, and before the event log (dispatch's gate.commit records an
+  // ok===false result as a failed call, with no move) — so a refused forward
+  // starts no turn, arms no wake, and records no transition.
   let composedText = text;
   let forwarded: number | undefined;
   if (forward) {
@@ -1391,7 +1400,7 @@ export async function sendPrompt(
 
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(composedText, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(composedText, [], { author: 'conductor', ...senderActor(ctx.callerId) });
   return { sessionId: inst.sessionId, status: inst.status, ...forwardedField, ...humanPrompts };
 }
 
@@ -1573,7 +1582,7 @@ export async function renewSession(
     // A normal (non-internal) prompt, like sendPrompt — but the guard above means
     // it can be neither a mid-turn delivery nor an overage-queued one, so this
     // always opens a turn of its own.
-    await inst.prompt(buildRenewRequest({ directive }), [], { author: 'conductor' });
+    await inst.prompt(buildRenewRequest({ directive }), [], { author: 'conductor', ...senderActor(callerId) });
   } catch (e) {
     instances.dropSessionRenewRequest(inst.id);
     throw e;
@@ -1654,7 +1663,7 @@ export async function interruptTurn({ sessionId, force }: { sessionId: string; f
   return { sessionId: inst.sessionId, status: inst.status, interrupting: !!inst.interrupting };
 }
 
-export async function killInstance({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
+export async function killInstance({ sessionId }: { sessionId: string }, { instances, callerId }: McpCtx) {
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
@@ -1662,7 +1671,7 @@ export async function killInstance({ sessionId }: { sessionId: string }, { insta
   // longer reap an already-exited non-temp instance by sessionId (it is already
   // gone from the process table; resume it first if you need to act on it).
   // Accepted under the strict-live contract.
-  await instances!.remove(inst.id);
+  await instances!.remove(inst.id, { actor: callerId ? { type: 'conductor', sessionId: callerId } : { type: 'system' } });
   return { sessionId };
 }
 
@@ -1707,7 +1716,7 @@ export async function approvePlan(
   const text = buildApprovePrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor', ...senderActor(callerId) });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
@@ -1729,7 +1738,7 @@ export async function rejectPlan(
   const text = buildRejectPrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor', ...senderActor(callerId) });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
@@ -1844,7 +1853,7 @@ export async function answerQuestion(
   const text = formatUserQuestionAnswers(questions, states);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor', ...senderActor(callerId) });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
@@ -2549,7 +2558,7 @@ export async function getRecentMessages(args: McpArgs, ctx: McpCtx) {
 // Both callers resolve through getInstOrDisk, so a retired session is served
 // from its transcript on the read AND on the forward. What keeps a forward
 // source governed is not liveness but the playbook gate, which checks it
-// against its own stage from the ledger projection (checkForwardSource,
+// against its own stage from the playbook projection (checkForwardSource,
 // ../playbooks.ts) — a projection that never asked whether a process is
 // running.
 async function selectRecentMessages(

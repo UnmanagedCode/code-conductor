@@ -26,7 +26,7 @@ import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, validateSlug, type ExtraEntry } from './fragmentCatalog.ts';
 import {
   type Projection, type WorkerState, hasEverBeen, liveSessionsInStage, runMembers, runRootOf, sameRun,
-} from './playbookLedger.ts';
+} from './playbookState.ts';
 
 // EXPORTED FOR DISK-BINDING IN TESTS, for the same reason the validator's
 // allowlists below are: tests/playbook-schema.test.mjs enumerates this directory
@@ -60,9 +60,9 @@ export const PIN_FORBIDDEN_KEYS = ['sessionId', 'stage', 'playbook', 'provenance
 export const WILDCARD = '*';
 
 // Per-conductor-session enforcement level. The single home for the allow-list:
-//   • 'warn'    — the refusal is ledgered and the call PROCEEDS anyway.
+//   • 'warn'    — the refusal is logged and the call PROCEEDS anyway.
 //   • 'enforce' — the refusal is returned to the caller.
-// Both levels check, patch and ledger; neither is inert. DEFAULT_ is the
+// Both levels check, patch and log; neither is inert. DEFAULT_ is the
 // fallback for the persisted Settings default (getDefaultPlaybookEnforcement in
 // conductorConventions.ts), which is what a new conductor is born at.
 export const PLAYBOOK_ENFORCEMENT_MODES = ['warn', 'enforce'] as const;
@@ -114,8 +114,7 @@ function loadTools(): NonNullable<typeof toolsPromise> {
         if (governable) index.set(tool.name, new Set(Object.keys(props)));
         // An INTERACTION tool acts on the worker it names: it declares a
         // `sessionId` and is not `readOnlyHint`. Read-only tools observe and
-        // conductors poll them constantly; spawn_instance already ends in its
-        // own `spawn` or `refusal` row.
+        // conductors poll them constantly; spawn_instance is recorded by name.
         if (props.sessionId && !asRecord(tool.annotations).readOnlyHint) interaction.add(tool.name);
       }
       return { index, interaction };
@@ -128,7 +127,8 @@ export async function loadToolIndex(): Promise<ToolIndex> {
   return (await loadTools()).index;
 }
 
-// The tools whose governed calls the ledger records as `interaction` rows.
+// The tools whose governed calls that run are recorded as event-log `call` rows
+// (a refused governed call of any tool is recorded too — src/mcp/playbookGate.ts).
 export async function loadInteractionTools(): Promise<ReadonlySet<string>> {
   return (await loadTools()).interaction;
 }
@@ -168,7 +168,7 @@ export interface NeedsEntry {
   // "retired"        — it is gone: an enforced handoff, not advice.
   // "any"            — no liveness check.
   // Answered from InstanceManager.isSessionLive (the `isLive` DecideInput
-  // parameter) — THE liveness authority, never a ledger-side projection.
+  // parameter) — THE liveness authority, never a projection of the event log.
   liveness: 'live' | 'retired' | 'any';
 }
 
@@ -462,12 +462,11 @@ export function validatePlaybook(
         } else if (on === 'send_prompt') {
           err(`transition ${edge}: on cannot be send_prompt — send_prompt is the DEFAULT driver for an edge with no \`on\`, so declaring it is an ambiguous no-op`);
         } else if (from === to) {
-          // A self-loop exists ONLY to make the move ledgered; resolveMove
-          // answers a self-edge before it ever looks at drivers. An `on` here
-          // would also match the driver branch, giving one edge two
-          // contradictory paths — one gated, one not.
-          err(`transition ${edge}: a self-loop cannot declare \`on\` — it exists only to make the self-edge ` +
-              'ledgered, and a driver would make the same edge resolve two different ways');
+          // A self-loop is a no-op: resolveMove answers a self-edge before it
+          // ever looks at drivers. An `on` here would also match the driver
+          // branch, giving one edge two contradictory paths — one gated, one not.
+          err(`transition ${edge}: a self-loop is a no-op — a same-stage send is legal without it — and cannot ` +
+              'declare `on`: a driver would make the same edge resolve two different ways');
         } else if (seenDrivers.has(`${String(from)}:${on}`)) {
           // Two edges out of the same stage driven by the same tool: resolveMove
           // resolves a driver by (from, on) and takes the FIRST match, so the
@@ -860,7 +859,7 @@ export interface LegalMoves {
   transitions: Array<{ to: string; via: string }>;
 }
 
-// What the call DID to the graph, so the enforcement gate knows what to ledger.
+// What the call DID to the graph, so the enforcement gate knows what to record.
 // A self-edge ('self') and an ordinary governed call ('none') move nothing.
 export interface Move {
   // 'resume' — spawn_instance({resume}) bringing a playbook-tracked worker back.
@@ -873,12 +872,9 @@ export interface Move {
   via?: string;
   // Set on a 'spawn' only: the playbook the new worker is bound to, which on a
   // non-root spawn is INHERITED from the `provenance` ancestors rather than supplied.
-  // Carried here so the gate can write the `spawn` ledger event without
-  // re-deriving that inheritance.
+  // Carried here so the gate can write the spawn's `bind` without re-deriving
+  // that inheritance.
   playbook?: string;
-  // Set on a 'self' only, when the playbook declares a from===to edge: the gate
-  // ledgers this move. Legality is identical either way.
-  recorded?: true;
 }
 
 export type Decision =
@@ -923,9 +919,6 @@ export interface ResolvedMove {
   resultingStage: string | null;
   kind: Move['kind'];
   via?: string;
-  // Self-edge only: the playbook DECLARES a from===to edge, so the move is
-  // ledgered. Legality is unaffected — see the self-edge branch in resolveMove.
-  recorded?: true;
   // Set when the requested move is not a legal edge.
   illegal?: { code: 'TRANSITION_ILLEGAL' | 'STAGE_UNKNOWN'; reason: string };
 }
@@ -942,14 +935,10 @@ export function resolveMove(
       // it does NOT re-run the stage's `needs`. Load-bearing: every ordinary
       // follow-up prompt is a self-edge, so without this rule every one of them
       // is refused. (The current stage's `tools` permission and its `pin`
-      // still apply — the resulting stage IS the current stage.)
-      //
-      // A DECLARED self-loop changes one thing and one thing only: the move is
-      // ledgered, so a review/refine round becomes countable. It is NOT routed
-      // through the transition branch below — gating it would refuse the
-      // follow-up prompts this rule exists to permit.
-      const declared = playbook.transitions.some(t => t.from === currentStage && t.to === currentStage);
-      return { currentStage, resultingStage: currentStage, kind: 'self', ...(declared && { recorded: true }) };
+      // still apply — the resulting stage IS the current stage.) A DECLARED
+      // self-loop changes nothing: it moves no stage, so it is never routed
+      // through the transition branch below.
+      return { currentStage, resultingStage: currentStage, kind: 'self' };
     }
     if (!playbook.stages[target]) {
       return {
@@ -1052,12 +1041,12 @@ function decideSpawn(
   } else if (typeof args.playbook === 'string' && args.playbook) {
     playbookId = args.playbook;
   } else if (resumeId) {
-    // Reached only when `resume` names a session the ledger holds nothing for —
+    // Reached only when `resume` names a session the projection holds nothing for —
     // the tracked case returned above. Naming the case matters: the remedy for an
     // untracked session (declare a binding) is not the remedy for a mistyped id
     // (re-send a good one).
     return refuse('PLAYBOOK_UNKNOWN',
-      `session ${short(resumeId)} is not playbook-tracked — the ledger holds no playbook/stage for it, ` +
+      `session ${short(resumeId)} is not playbook-tracked — the event log holds no playbook/stage for it, ` +
       'so resuming it starts a new run and must name a `playbook` and a `stage`. ' +
       `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, noMoves);
   } else {
@@ -1117,7 +1106,7 @@ function decideSpawn(
   return applyPin({
     stage, stageName, playbook, toolName: 'spawn_instance', args,
     move: { kind: 'spawn', to: stageName, playbook: playbook.id },
-    // ADOPTION — `resume` naming a session the ledger holds nothing for. It
+    // ADOPTION — `resume` naming a session the projection holds nothing for. It
     // genuinely declares a new binding (hence the `spawn` move), but it creates
     // no process, so the spawn-shape half of the pin has no subject. Same rule as
     // decideResume's, stated there.
@@ -1271,9 +1260,7 @@ function decideTargeted(
   const move: Move =
     moved.kind === 'transition'
       ? { kind: 'transition', from: subject.stage, to: resultingName, via: moved.via }
-      : moved.recorded
-        ? { kind: 'self', from: subject.stage, to: resultingName, via: 'send_prompt', recorded: true }
-        : { kind: moved.kind };
+      : { kind: moved.kind };
 
   // A self-edge does NOT re-run the stage's `needs` (and neither does a call
   // that moves nothing) — only an ENTRY into a stage does.
@@ -1355,7 +1342,7 @@ function checkNeeds(
 // checkNeedEntry — the gate's own per-worker check — so the census never names
 // a worker the gate would then refuse. Provenance is never filled in from it.
 // No anchor (a run-root spawn with no provenance) ⇒ no run to count, no census.
-// Any anchor that does reach here is ledger-tracked — an untracked provenance
+// Any anchor that does reach here is playbook-tracked — an untracked provenance
 // worker is refused before checkNeeds, and a transition's anchor is its tracked
 // subject — so it always has a run root.
 function needCensus(

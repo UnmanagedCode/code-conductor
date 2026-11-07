@@ -3,9 +3,9 @@
 //
 // Where that file pinned a REPAIR (an orphaned `live:true` row gets retired at
 // boot), this file pins the opposite: there is nothing to repair, because the
-// ledger carries no liveness bit for anything to desync. Every case reads
+// event log carries no liveness bit for anything to desync. Every case reads
 // liveness from a stub InstanceManager's isSessionLive() — never from the
-// projection — and every case that lands a decision asserts the ledger file
+// projection — and every case that lands a decision asserts the log file
 // is BYTE-IDENTICAL afterwards, so a reintroduced repair writer (an "un-retire
 // on reappearance" implementation, or a revived reconcileOrphans()) fails
 // here even if it happens to compute the right answer.
@@ -13,7 +13,7 @@
 // Gate-level, no server: a stub manager exposing only what the gate touches
 // (isSessionLive, plus liveForSession/anyForSession for parity with the real
 // InstanceManagerLike shape) stands in for the instance registry, and the
-// ledger is hand-seeded JSONL on disk — the shape a previous orchestrator
+// event log is hand-seeded JSONL on disk — the shape a previous orchestrator
 // process would have left behind.
 
 import { test } from 'node:test';
@@ -21,10 +21,10 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createPlaybookGate } from '../src/mcp/playbookGate.ts';
-import { createPlaybookLedger, readEvents } from '../src/playbookLedger.ts';
+import { readEventLog } from '../src/eventLog.ts';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { orchStoreRoot } from '../src/projects.ts';
-import { GATELAB } from './playbook-fixtures.mjs';
+import { GATELAB, OPEN_LEASE, bindRow, moveRow, exitRow } from './playbook-fixtures.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 // The gate loads real definitions, so the graph these cases drive has to exist
@@ -41,15 +41,15 @@ process.env.PROJECTS_ROOT = await mkdtemp('cc-pbliveness-root-');
   await fs.writeFile(path.join(dir, 'gatelab.json'), JSON.stringify(GATELAB));
 }
 
-async function tmpLedgerFile() {
+async function tmpLogFile() {
   const dir = await mkdtemp('cc-pbliveness-');
-  return { dir, file: path.join(dir, 'playbook-ledger.jsonl') };
+  return { dir, file: path.join(dir, 'events.jsonl') };
 }
 
 async function seed(file, events) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, events.map((e, i) =>
-    JSON.stringify({ seq: i + 1, ts: `2026-08-15T00:00:0${i % 10}Z`, ...e })).join('\n') + '\n');
+    JSON.stringify({ v: 1, ts: `2026-08-15T00:00:0${i % 10}Z`, ...e })).join('\n') + '\n');
 }
 
 const CONDUCTOR_ID = 'conductor-1';
@@ -63,8 +63,8 @@ function stubManager({ live = [], known = [] } = {}) {
   const knownSet = new Set(known);
   const caller = { project: CONDUCT_PROJECT_NAME, playbookEnforcement: 'enforce' };
   return {
-    on() {}, // the gate subscribes to 'status'; nothing in these tests emits it
-    emit() {}, // the gate emits 'playbook_changed' after a spawn/transition fold
+    on() {}, // the recorder subscribes to the session stream; nothing here emits it
+    emit() {}, // the gate emits 'playbook_changed' after a bind/move fold
     liveForSession(sessionId) { return sessionId === CONDUCTOR_ID ? caller : null; },
     anyForSession(sessionId) { return knownSet.has(sessionId) ? { sessionId } : null; },
     isSessionLive(sessionId) { return liveSet.has(sessionId); },
@@ -72,16 +72,16 @@ function stubManager({ live = [], known = [] } = {}) {
 }
 
 function gateOver(file, instances) {
-  return createPlaybookGate({ instances, ledger: createPlaybookLedger({ file: () => file }) });
+  return createPlaybookGate({ instances, lease: OPEN_LEASE, file: () => file });
 }
 
-test('a needs:@live entry is satisfied from isSessionLive() even though the ledger already holds a retire row for that worker, and the ledger is untouched', async () => {
-  const { dir, file } = await tmpLedgerFile();
+test('a needs:@live entry is satisfied from isSessionLive() even though the log already holds an exit row for that worker, and the log is untouched', async () => {
+  const { dir, file } = await tmpLogFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
-      { kind: 'transition', sessionId: 'w1', from: 'draft', to: 'build', via: 'approve_plan' },
-      { kind: 'retire', sessionId: 'w1', reason: 'subprocess exited' },
+      bindRow('w1', 'gatelab', 'draft'),
+      moveRow('w1', 'draft', 'build', { tool: 'approve_plan' }),
+      exitRow('w1'),
     ]);
     const before = await fs.readFile(file, 'utf8');
     // gatelab's 'audit' stage needs.build defaults to liveness:"live".
@@ -94,17 +94,17 @@ test('a needs:@live entry is satisfied from isSessionLive() even though the ledg
     assert.ok(!('refusal' in outcome),
       `expected the spawn to be allowed; got refusal ${JSON.stringify(outcome.refusal)}`);
     assert.equal(await fs.readFile(file, 'utf8'), before,
-      'check() must not write to the ledger for an allowed decision — no un-retire, no repair');
+      'check() must not write to the log for an allowed decision — no un-retire, no repair');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test('the same ledger row with isSessionLive() false is refused NEEDS_WORKER_GONE, and the refusal is the ONLY thing appended — no un-retire, no repair', async () => {
-  const { dir, file } = await tmpLedgerFile();
+test('the same log rows with isSessionLive() false is refused NEEDS_WORKER_GONE, and the refusal is the ONLY thing appended — no un-retire, no repair', async () => {
+  const { dir, file } = await tmpLogFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
-      { kind: 'transition', sessionId: 'w1', from: 'draft', to: 'build', via: 'approve_plan' },
-      { kind: 'retire', sessionId: 'w1', reason: 'subprocess exited' },
+      bindRow('w1', 'gatelab', 'draft'),
+      moveRow('w1', 'draft', 'build', { tool: 'approve_plan' }),
+      exitRow('w1'),
     ]);
     const gate = gateOver(file, stubManager({ live: [] }));
     const outcome = await gate.check({
@@ -114,19 +114,19 @@ test('the same ledger row with isSessionLive() false is refused NEEDS_WORKER_GON
     });
     assert.ok('refusal' in outcome, 'expected a refusal');
     assert.equal(outcome.refusal.code, 'NEEDS_WORKER_GONE');
-    // The refusal IS ledgered (that is the audit trail's job), but nothing else
-    // is: no second `retire`, no `resume` un-retiring the row.
-    const events = await readEvents(file);
-    assert.deepEqual(events.map(e => e.kind), ['spawn', 'transition', 'retire', 'refusal']);
+    // The refusal IS logged (that is the audit trail's job), but nothing else
+    // is: no second exit, no resume un-retiring the worker.
+    const events = await readEventLog(file);
+    assert.deepEqual(events.map(e => [e.kind, e.outcome ?? e.event]), [['call', 'ok'], ['call', 'ok'], ['session', 'exit'], ['call', 'refused']]);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
 test('the gate asks isSessionLive, not anyForSession/liveForSession — a session the registry has otherwise lost still reads live', async () => {
-  const { dir, file } = await tmpLedgerFile();
+  const { dir, file } = await tmpLogFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
-      { kind: 'transition', sessionId: 'w1', from: 'draft', to: 'build', via: 'approve_plan' },
+      bindRow('w1', 'gatelab', 'draft'),
+      moveRow('w1', 'draft', 'build', { tool: 'approve_plan' }),
     ]);
     // `known: []` -> anyForSession('w1') is null, mirroring _resumingPublicIds'
     // pre-registration window. isSessionLive alone must still say live.
@@ -141,15 +141,15 @@ test('the gate asks isSessionLive, not anyForSession/liveForSession — a sessio
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test('a workers:"one" slot held by a ledger row with no retire event reads free the moment isSessionLive says so — 2026-0149\'s reboot guarantee, with no boot repair', async () => {
-  const { dir, file } = await tmpLedgerFile();
+test('a workers:"one" slot held by a bind row with no exit row reads free the moment isSessionLive says so — 2026-0149\'s reboot guarantee, with no boot repair', async () => {
+  const { dir, file } = await tmpLogFile();
   try {
     // A complete run, NO retire anywhere: exactly what a previous orchestrator
     // process would leave behind after an unobserved host reboot. `handoff`
     // declares no `workers`, so it is the default "one".
     await seed(file, [
-      { kind: 'spawn', sessionId: 'planner-1', playbook: 'gatelab', stage: 'sealed' },
-      { kind: 'spawn', sessionId: 'impl-1', playbook: 'gatelab', stage: 'handoff', provenance: { sealed: 'planner-1' } },
+      bindRow('planner-1', 'gatelab', 'sealed'),
+      bindRow('impl-1', 'gatelab', 'handoff', { provenance: { sealed: 'planner-1' } }),
     ]);
     const before = await fs.readFile(file, 'utf8');
     // The new process's registry knows NOTHING from the old one.
@@ -167,11 +167,11 @@ test('a workers:"one" slot held by a ledger row with no retire event reads free 
 });
 
 test('the same rebooted run still wedges the slot if the new process\'s registry claims the old worker is live', async () => {
-  const { dir, file } = await tmpLedgerFile();
+  const { dir, file } = await tmpLogFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'planner-1', playbook: 'gatelab', stage: 'sealed' },
-      { kind: 'spawn', sessionId: 'impl-1', playbook: 'gatelab', stage: 'handoff', provenance: { sealed: 'planner-1' } },
+      bindRow('planner-1', 'gatelab', 'sealed'),
+      bindRow('impl-1', 'gatelab', 'handoff', { provenance: { sealed: 'planner-1' } }),
     ]);
     const gate = gateOver(file, stubManager({ live: ['impl-1'] }));
     const outcome = await gate.check({
@@ -186,12 +186,12 @@ test('the same rebooted run still wedges the slot if the new process\'s registry
 });
 
 test('readLiveWorkers lists exactly the workers bound to that playbook that isSessionLive reports live', async () => {
-  const { dir, file } = await tmpLedgerFile();
+  const { dir, file } = await tmpLogFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
-      { kind: 'spawn', sessionId: 'w2', playbook: 'gatelab', stage: 'draft' },
-      { kind: 'spawn', sessionId: 'w3', playbook: 'other', stage: 'draft' },
+      bindRow('w1', 'gatelab', 'draft'),
+      bindRow('w2', 'gatelab', 'draft'),
+      bindRow('w3', 'other', 'draft'),
     ]);
     const gate = gateOver(file, stubManager({ live: ['w1', 'w3'], known: ['w2'] }));
     assert.deepEqual(await gate.readLiveWorkers('gatelab'), ['w1']);
@@ -200,10 +200,10 @@ test('readLiveWorkers lists exactly the workers bound to that playbook that isSe
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-// A directory at the ledger path: readFile fails EISDIR, a non-ENOENT load
+// A directory at the log path: readFile fails EISDIR, a non-ENOENT load
 // failure (a malformed LINE would only be skipped, never thrown).
-test('readLiveWorkers propagates a ledger load failure rather than answering []', async () => {
-  const { dir, file } = await tmpLedgerFile();
+test('readLiveWorkers propagates a log load failure rather than answering []', async () => {
+  const { dir, file } = await tmpLogFile();
   try {
     await fs.mkdir(file, { recursive: true });
     const gate = gateOver(file, stubManager({ live: ['w1'] }));
@@ -212,14 +212,14 @@ test('readLiveWorkers propagates a ledger load failure rather than answering []'
 });
 
 test('two readProjection() calls append nothing — the load stays read-only', async () => {
-  const { dir, file } = await tmpLedgerFile();
+  const { dir, file } = await tmpLogFile();
   try {
-    await seed(file, [{ kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' }]);
+    await seed(file, [bindRow('w1', 'gatelab', 'draft')]);
     const before = await fs.readFile(file, 'utf8');
     const gate = gateOver(file, stubManager({ live: ['w1'] }));
     await gate.readProjection();
     await gate.readProjection();
     assert.equal(await fs.readFile(file, 'utf8'), before, 'no reintroduced repair writer runs on load');
-    assert.equal((await readEvents(file)).length, 1);
+    assert.equal((await readEventLog(file)).length, 1);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

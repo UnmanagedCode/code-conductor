@@ -1,6 +1,6 @@
 // Playbook enforcement, end to end through the MCP router with the fake claude
 // engine — the wiring the pure decide() unit tests cannot reach: the single
-// checkpoint in dispatch(), the ledger writes, `provenance` prefix resolution, the
+// checkpoint in dispatch(), the event-log writes, `provenance` prefix resolution, the
 // conductor-only scope, and the playbookEnforcement toggle.
 //
 // The caller here is a REAL conductor (a `.conduct` instance whose instanceId
@@ -22,14 +22,14 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl, registerLocalProject} from './helpers.mjs';
-import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
+import { eventLogFile, readEventLog } from '../src/eventLog.ts';
+import { foldPlaybookState } from '../src/playbookState.ts';
 import { orchStoreRoot, localPlace} from '../src/projects.ts';
 import { listWorktrees } from '../src/worktrees.ts';
-// (foldProjection is used by the resume tests below to assert the un-retire.)
 import {
   DEFAULT_PLAYBOOK_ENFORCEMENT, DEFAULT_PLAYBOOK_ID, loadPlaybooks, isSpawnable,
 } from '../src/playbooks.ts';
-import { GATELAB } from './playbook-fixtures.mjs';
+import { GATELAB, OPEN_LEASE, bindRow } from './playbook-fixtures.mjs';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,14 +66,14 @@ let nextRpcId = 1;
 // Boot a server, a real git project, and a live conductor at `enforcement`.
 // `call(name, args)` issues a tools/call AS THE CONDUCTOR; `callAs(sessionId, …)`
 // issues one as somebody else (or nobody).
-// `seedLedger`, when supplied, writes to the ledger AFTER bootServer() but
+// `seedLog`, when supplied, writes to the event log AFTER bootServer() but
 // BEFORE the conductor is spawned below — the only window that matters. The
 // conductor's first status tick reaches the gate's ensureLoaded() (its birth
 // event, at :194-ish) before setup() returns, and that promise is memoized —
 // so a seed written any later would fold against an already-materialized,
 // bare projection and never be reconciled at all.
-async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) {
-  const ctx = await bootServer({ scenarioPath });
+async function setup({ enforcement, scenarioPath = SCENARIO, seedLog } = {}) {
+  const ctx = await bootServer({ scenarioPath, eventLogLease: OPEN_LEASE });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
   // The fixture graph, in this test's own store only — bootServer points
@@ -82,7 +82,7 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) 
   const pbDir = path.join(orchStoreRoot(), 'playbooks');
   await fs.mkdir(pbDir, { recursive: true });
   await fs.writeFile(path.join(pbDir, 'gatelab.json'), JSON.stringify(GATELAB));
-  if (seedLedger) await seedLedger(ctx);
+  if (seedLog) await seedLog(ctx);
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
     project: '.conduct', mode: 'bypassPermissions', temp: true,
     ...(enforcement ? { playbookEnforcement: enforcement } : {}),
@@ -126,9 +126,9 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) 
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, `${id}.json`), JSON.stringify(body));
     },
-    events: () => readEvents(ledgerFile()),
-    async ledgerExists() {
-      try { await fs.access(ledgerFile()); return true; } catch { return false; }
+    events: () => readEventLog(eventLogFile()),
+    async logExists() {
+      try { await fs.access(eventLogFile()); return true; } catch { return false; }
     },
     setEnforcement(mode) {
       // Over the WebSocket, the same channel the session hamburger uses for the
@@ -154,7 +154,7 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) 
 // gives the append real chances to land and requires that it doesn't.
 async function expectEnforcementEvents(t, n) {
   const all = await waitFor(async () => {
-    const evs = (await t.events()).filter(e => e.kind === 'enforcement');
+    const evs = (await t.events()).filter(e => isConfig(e));
     return evs.length >= n ? evs : false;
   });
   assert.equal(all.length, n, `expected exactly ${n} enforcement events, got ${all.length}`);
@@ -163,7 +163,7 @@ async function expectEnforcementEvents(t, n) {
 
 async function expectNoMoreEnforcement(t, n) {
   await assert.rejects(
-    () => waitFor(async () => (await t.events()).filter(e => e.kind === 'enforcement').length > n,
+    () => waitFor(async () => (await t.events()).filter(e => isConfig(e)).length > n,
       { timeout: 1000, interval: 20 }),
     /timeout/,
     `no enforcement event beyond the expected ${n} may be recorded`);
@@ -213,6 +213,15 @@ async function watchConductor(t) {
   };
 }
 
+// Event-log row predicates (docs/event-log.md).
+const isCall = (e, outcome) => e.kind === 'call' && (!outcome || e.outcome === outcome);
+const isRefusal = (e) => isCall(e, 'refused');
+const isBind = (e) => isCall(e) && !!e.bind;
+const isMove = (e) => isCall(e) && !!e.move;
+const isExit = (e) => e.kind === 'session' && e.event === 'exit';
+const isResume = (e) => e.kind === 'session' && e.event === 'resume';
+const isConfig = (e) => e.kind === 'config' && e.key === 'enforcement';
+
 const refused = (res, code) => {
   assert.equal(res.ok, false, `expected a refusal, got ${JSON.stringify(res)}`);
   assert.equal(res.code, code, `expected ${code}, got ${res.code}: ${res.reason}`);
@@ -225,7 +234,7 @@ const refused = (res, code) => {
 // thing — whether the refusal reaches the caller — so these tests pin that the
 // permissive level still decides, still patches and still writes.
 
-test('warn: an illegal spawn PROCEEDS, is ledgered as a refusal, and stays untracked', async () => {
+test('warn: an illegal spawn PROCEEDS, is logged as a refused call, and stays untracked', async () => {
   const t = await setup({ enforcement: 'warn' });
   try {
     // No playbook at all: `enforce` refuses this with PLAYBOOK_UNKNOWN.
@@ -233,16 +242,18 @@ test('warn: an illegal spawn PROCEEDS, is ledgered as a refusal, and stays untra
     assert.ok(w.sessionId, 'warn lets a spawn with no playbook through');
 
     const refusals = await waitFor(async () => {
-      const evs = (await t.events()).filter(e => e.kind === 'refusal');
+      const evs = (await t.events()).filter(e => isRefusal(e));
       return evs.length > 0 ? evs : false;
     });
-    assert.equal(refusals[0].code, 'PLAYBOOK_UNKNOWN',
-      'the ledger is the only trace that the call should not have been allowed');
+    assert.equal(refusals[0].refusal.code, 'PLAYBOOK_UNKNOWN',
+      'the log is the only trace that the call should not have been allowed');
     assert.equal(refusals[0].tool, 'spawn_instance');
+    assert.equal((await t.events()).filter(e => isCall(e) && e.tool === 'spawn_instance').length, 1,
+      'the refused-but-run spawn is ONE row: its refusal, no second ok row');
 
     // Refused-but-allowed means NO binding was written, so the worker is
     // ungoverned even after a flip to enforce.
-    assert.equal((await t.events()).filter(e => e.kind === 'spawn').length, 0,
+    assert.equal((await t.events()).filter(e => isBind(e)).length, 0,
       'an illegal spawn records no binding');
     assert.equal((await t.call('send_prompt', {
       sessionId: w.sessionId, text: 'go', stage: 'amend',
@@ -260,9 +271,9 @@ test('warn: a LEGAL spawn is patched by `require` and recorded, exactly as under
     assert.ok(w.worktree?.worktreeName, 'require filled in createWorktree under warn');
 
     const spawn = await waitFor(async () =>
-      (await t.events()).find(e => e.kind === 'spawn') ?? false);
-    assert.deepEqual({ playbook: spawn.playbook, stage: spawn.stage },
-      { playbook: 'gatelab', stage: 'draft' }, 'the binding is written under warn');
+      (await t.events()).find(e => isBind(e)) ?? false);
+    assert.deepEqual({ playbook: spawn.bind.playbook, stage: spawn.bind.stage, subject: spawn.subject },
+      { playbook: 'gatelab', stage: 'draft', subject: w.sessionId }, 'the binding is written under warn');
   } finally { await t.close(); }
 });
 
@@ -279,12 +290,12 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     const wtName = impl.worktree.worktreeName;
 
     // A SELF-EDGE — every ordinary follow-up prompt is one. Always legal, and
-    // NOT ledgered here, because gatelab declares no draft->draft loop.
+    // it moves nothing.
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'plan it', stage: 'draft',
     })).ok, undefined);
-    assert.equal((await t.events()).filter(e => e.kind === 'transition').length, 0,
-      'an UNDECLARED self-edge must not be ledgered as a transition');
+    assert.equal((await t.events()).filter(e => isMove(e)).length, 0,
+      'a self-edge carries no move');
 
     // draft -> build fires on approve_plan ONLY; send_prompt cannot sneak a
     // worker past the driver.
@@ -299,9 +310,8 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     // is still in `draft`, which satisfies neither the anchor's history
     // requirement nor audit's position list. Both refuse with the same
     // NEEDS_UNSATISFIED, so this assertion pins the PAIR, not either one alone —
-    // the anchor's history check is isolated in tests/playbook-ledger.test.mjs
-    // ('retire preserves stageHistory…'), where the position check is out of the
-    // way.
+    // the anchor's history check is isolated in tests/playbook-policy.test.mjs,
+    // where the position check is out of the way.
     refused(await t.call('spawn_instance', {
       project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
       provenance: { build: impl.sessionId },
@@ -309,10 +319,10 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
 
     // The declared `on` auto-fires the edge.
     await t.call('approve_plan', { sessionId: impl.sessionId });
-    const moved = (await t.events()).find(e => e.kind === 'transition');
+    const moved = (await t.events()).find(e => isMove(e));
     assert.deepEqual(
-      { from: moved.from, to: moved.to, via: moved.via, sessionId: moved.sessionId },
-      { from: 'draft', to: 'build', via: 'approve_plan', sessionId: impl.sessionId });
+      { from: moved.move.from, to: moved.move.to, tool: moved.tool, subject: moved.subject },
+      { from: 'draft', to: 'build', tool: 'approve_plan', subject: impl.sessionId });
 
     // A spawn into a transition-only stage is refused without either stage
     // having to say so — spawn_instance fails closed.
@@ -353,20 +363,19 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     const rev2 = await t.spawnWorker(secondReviewer);
     assert.ok(rev2.sessionId, 'a second reviewer runs on its own lens, concurrently');
 
-    // A retire is still recorded, and still frees whatever it held. kill_instance
-    // exits the subprocess, so the retire arrives on the one status-stream path
-    // rather than a separate kill path.
+    // An exit is still recorded, and still frees whatever it held. kill_instance
+    // exits the subprocess, so the exit arrives on the one session-stream path
+    // rather than a separate kill path — attributed to the conductor that killed.
+    const conductorSid = t.instances.get(t.conductorId).sessionId;
     await t.call('kill_instance', { sessionId: rev.sessionId });
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire'));
-    const retire = (await t.events()).find(e => e.kind === 'retire');
-    assert.equal(retire.sessionId, rev.sessionId);
-    // The kill is also a conductor acting on a worker: one `interaction`, written
-    // after the retire the exit already produced — and no second retire.
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'interaction' && e.tool === 'kill_instance'));
-    const killEvs = (await t.events()).filter(e => e.sessionId === rev.sessionId
-      && (e.kind === 'retire' || (e.kind === 'interaction' && e.tool === 'kill_instance')));
-    assert.deepEqual(killEvs.map(e => e.kind), ['retire', 'interaction']);
-    assert.equal(killEvs[1].conductorSessionId, t.instances.get(t.conductorId).sessionId);
+    // The kill is also a conductor acting on a worker: one call row, written
+    // after the exit it caused — and no second exit.
+    await waitFor(async () => (await t.events()).some(e => isCall(e, 'ok') && e.tool === 'kill_instance'));
+    const killEvs = (await t.events()).filter(e => e.subject === rev.sessionId
+      && (isExit(e) || (isCall(e) && e.tool === 'kill_instance')));
+    assert.deepEqual(killEvs.map(e => e.kind), ['session', 'call']);
+    assert.deepEqual(killEvs[0].actor, { type: 'conductor', sessionId: conductorSid }, 'the exit names who killed');
+    assert.deepEqual(killEvs[1].actor, { type: 'conductor', sessionId: conductorSid });
 
     // `needs` on TRANSITION-entry, not just spawn-entry: amend requires the
     // auditor, and the DESTINATION stage's conditions are what get checked.
@@ -384,30 +393,25 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
       provenance: { audit: rev2.sessionId },
     })).ok, undefined, 'supplying the destination stage\'s needs admits the transition');
 
-    // ROUND 2. The implementer is already in `amend`, so this is a self-edge —
-    // but gatelab DECLARES amend->amend, so unlike the draft-stage prompt above
-    // it lands in the ledger. This is what makes rounds countable, and it is
-    // asserted here rather than only against decide() because the recording
-    // happens in commitMove: a change to resolveMove alone passes the unit test
-    // and fails this one.
-    const before = (await t.events()).filter(e => e.kind === 'transition').length;
+    // ROUND 2. The implementer is already in `amend`, so this is a self-edge.
+    // gatelab DECLARES amend->amend, and that changes nothing: the call is one
+    // plain row with no move, exactly like an undeclared self-edge, and
+    // stageHistory lists stage changes only.
+    const before = (await t.events()).filter(e => isMove(e)).length;
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'round 2', stage: 'amend',
     })).ok, undefined, 'a declared self-loop is still ungated');
-    const loops = (await t.events()).filter(e => e.kind === 'transition' && e.from === 'amend' && e.to === 'amend');
-    assert.equal(loops.length, 1, 'the round was ledgered exactly once');
-    assert.equal(loops[0].sessionId, impl.sessionId);
-    assert.equal(loops[0].via, 'send_prompt');
-    assert.equal((await t.events()).filter(e => e.kind === 'transition').length, before + 1);
-    // …and it shows up where a reader counts rounds.
-    assert.deepEqual(foldProjection(await t.events()).bySession.get(impl.sessionId).stageHistory,
-      ['draft', 'build', 'amend', 'amend']);
+    const round = (await t.events()).filter(e => isCall(e) && e.subject === impl.sessionId).at(-1);
+    assert.deepEqual({ tool: round.tool, outcome: round.outcome, move: round.move }, { tool: 'send_prompt', outcome: 'ok', move: undefined });
+    assert.equal((await t.events()).filter(e => isMove(e)).length, before, 'the round moved nothing');
+    assert.deepEqual(foldPlaybookState(await t.events()).bySession.get(impl.sessionId).stageHistory,
+      ['draft', 'build', 'amend']);
 
     // The projection folded from disk reproduces the run — state survives a
     // restart because the JSONL, not memory, is the source of truth.
-    const projection = foldProjection(await t.events());
+    const projection = foldPlaybookState(await t.events());
     const state = projection.bySession.get(impl.sessionId);
-    assert.deepEqual(state.stageHistory, ['draft', 'build', 'amend', 'amend']);
+    assert.deepEqual(state.stageHistory, ['draft', 'build', 'amend']);
     assert.equal(state.playbook, 'gatelab');
     assert.equal(t.instances.isSessionLive(rev.sessionId), false);
     assert.equal(projection.bySession.get(rev2.sessionId).runRoot, state.runRoot,
@@ -443,19 +447,19 @@ test('enforce: the shipped default playbook spawns end to end, at whatever entry
     assert.ok(w.sessionId, `the default playbook's entry spawn must succeed: ${JSON.stringify(w)}`);
 
     const spawn = await waitFor(async () =>
-      (await t.events()).find(e => e.kind === 'spawn' && e.sessionId === w.sessionId) ?? false);
-    assert.deepEqual({ playbook: spawn.playbook, stage: spawn.stage },
+      (await t.events()).find(e => isBind(e) && e.subject === w.sessionId) ?? false);
+    assert.deepEqual({ playbook: spawn.bind.playbook, stage: spawn.bind.stage },
       { playbook: DEFAULT_PLAYBOOK_ID, stage: entry }, 'the binding names the graph it was spawned on');
   } finally { await t.close(); }
 });
 
-test('enforce: a send_prompt whose transition would be legal is not ledgered when forward refuses NOTHING_TO_FORWARD', async () => {
-  // send_prompt has never soft-refused before `forward` — this is a genuinely
-  // NEW interaction: playbookGate's decide() computes the SAME legal move
-  // whether or not `forward` is attached (it knows nothing about it), so the
-  // only thing that can stop the transition from being ledgered is dispatch's
-  // gate.commit dropping any handler result with ok===false. If that wiring
-  // ever regressed, this is the one test that would catch it.
+test('enforce: a send_prompt whose transition would be legal records no move when forward refuses NOTHING_TO_FORWARD', async () => {
+  // INVARIANT: decide() computes the SAME legal build -> amend move whether or
+  // not `forward` is attached (it knows nothing about it), so the only thing
+  // that stops the move from being recorded is dispatch's ok:false path — the
+  // call's one row is `outcome:'failed'` with no `move`, and the worker stays
+  // in `build`. The refused call is a REAL move (build -> amend), not a
+  // same-stage send, so a regression that recorded it would change the stage.
   const t = await setup({ enforcement: 'enforce' });
   try {
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
@@ -465,27 +469,29 @@ test('enforce: a send_prompt whose transition would be legal is not ledgered whe
       project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
       provenance: { build: impl.sessionId },
     });
-    assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
-      provenance: { audit: rev.sessionId },
-    })).ok, undefined, 'build -> amend is legal once its needs are satisfied');
 
-    // A fresh, live, ungoverned-by-this-call source with no output: forward
-    // from it refuses NOTHING_TO_FORWARD before send_prompt's handler ever
-    // calls inst.prompt.
+    // A fresh, live source with no output: forward from it refuses
+    // NOTHING_TO_FORWARD before send_prompt's handler ever calls inst.prompt.
     const source = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
-    const before = (await t.events()).filter(e => e.kind === 'transition').length;
+    const callsBefore = (await t.events()).filter(e => isCall(e) && e.subject === impl.sessionId).length;
 
-    // gatelab DECLARES amend->amend as a self-loop, so absent the forward
-    // refusal this exact call would ledger a transition (see the "ROUND 2"
-    // case above) — the only difference here is the attached `forward`.
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'round 2', stage: 'amend',
-      forward: { sessionId: source.sessionId },
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
+      provenance: { audit: rev.sessionId }, forward: { sessionId: source.sessionId },
     }), 'NOTHING_TO_FORWARD');
 
-    assert.equal((await t.events()).filter(e => e.kind === 'transition').length, before,
-      'a handler-refused forward must record no move — the transition never happened');
+    const mine = (await t.events()).filter(e => isCall(e) && e.subject === impl.sessionId).slice(callsBefore);
+    assert.equal(mine.length, 1, 'the call is one row');
+    assert.deepEqual({ outcome: mine[0].outcome, code: mine[0].failure?.code, move: mine[0].move, forward: mine[0].forward },
+      { outcome: 'failed', code: 'NOTHING_TO_FORWARD', move: undefined, forward: source.sessionId });
+    assert.equal(foldPlaybookState(await t.events()).bySession.get(impl.sessionId).stage, 'build',
+      'the transition never happened');
+
+    // Control: the same move without the forward IS recorded.
+    assert.equal((await t.call('send_prompt', {
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend', provenance: { audit: rev.sessionId },
+    })).ok, undefined);
+    assert.equal(foldPlaybookState(await t.events()).bySession.get(impl.sessionId).stage, 'amend');
   } finally { await t.close(); }
 });
 
@@ -524,14 +530,10 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
 });
 
 test('enforce: a stage binding survives a renewal — one row, and capacity is released on exit', async () => {
-  // The ledger's projection is sessionId-keyed. Before card 2026-0126 a
-  // `renew_session` rotated that key out from under it, so the chain broke three
-  // ways at once: the worker lost its stage binding, its pre-rotation row stayed
-  // `live:true` forever (leaking a `workers:"one"` capacity slot, since capacity
-  // counts LIVE members), and the retire on exit landed under an id nothing was
-  // bound to. src/playbookLedger.ts carried a standing note saying so. Pinning the
-  // public id fixes all three without the ledger changing at all — which is
-  // exactly what this asserts, so the note can come out against a passing test.
+  // The playbook projection is keyed by the PUBLIC sessionId, which a
+  // `renew_session` does not rotate: the binding survives, no second row
+  // appears under a backing id, and the exit lands under the id the binding is
+  // filed under — which is what `workers:"one"` capacity counting depends on.
   const t = await setup({ enforcement: 'enforce', scenarioPath: SCENARIO_RENEW });
   try {
     const w = await t.spawnWorker({
@@ -545,7 +547,7 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
     assert.notEqual(firstBacking, publicId, 'precondition: the two ids have diverged');
 
     // Bound and live before the rotation.
-    const before = foldProjection(await t.events()).bySession.get(publicId);
+    const before = foldPlaybookState(await t.events()).bySession.get(publicId);
     assert.deepEqual({ stage: before.stage, playbook: before.playbook },
       { stage: 'loose', playbook: 'gatelab' });
     assert.equal(t.instances.isSessionLive(publicId), true);
@@ -559,41 +561,37 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
     await waitFor(() => inst.rotationPending === false);
 
     const evs = await t.events();
-    const proj = foldProjection(evs);
+    const proj = foldPlaybookState(evs);
     // (1) The binding survived, under the SAME key, with its history intact.
     const after = proj.bySession.get(publicId);
     assert.deepEqual({ stage: after.stage, history: after.stageHistory },
       { stage: 'loose', history: ['loose'] });
     assert.equal(t.instances.isSessionLive(publicId), true);
     // (2) No second declaration and no orphan row under either backing id.
-    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === publicId).length, 1,
-      'exactly one spawn event — a rotation must not re-declare the binding');
+    assert.equal(evs.filter(e => isBind(e) && e.subject === publicId).length, 1,
+      'exactly one bind — a rotation must not re-declare the binding');
     assert.equal(proj.bySession.get(RENEW_NEW_SID), undefined, 'no row under the rotated backing id');
     assert.equal(proj.bySession.get(firstBacking), undefined, 'nor under the pre-clear one');
     assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');
 
-    // (3) The capacity slot is released on exit — the retire lands under the same
-    // key the spawn did, which is what `workers:"one"` counting depends on.
+    // (3) The capacity slot is released on exit — the exit lands under the same
+    // key the bind did, which is what `workers:"one"` counting depends on.
     await t.call('kill_instance', { sessionId: publicId });
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === publicId));
-    const finalProj = foldProjection(await t.events());
-    const retires = (await t.events()).filter(e => e.kind === 'retire');
-    assert.equal(retires.length, 1, 'exactly one retire');
-    assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
-    assert.ok(finalProj.bySession.get(publicId), 'the row itself must still exist — retire is audit-only');
+    await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === publicId));
+    const finalProj = foldPlaybookState(await t.events());
+    const exits = (await t.events()).filter(e => isExit(e) && e.subject !== t.instances.get(t.conductorId).sessionId);
+    assert.equal(exits.length, 1, 'exactly one exit');
+    assert.equal(exits[0].subject, publicId, 'and it names the pinned id');
+    assert.ok(finalProj.bySession.get(publicId), 'the binding itself must still exist — an exit folds nothing');
     assert.equal(t.instances.isSessionLive(publicId), false, 'the slot is free again');
   } finally { await t.close(); }
 });
 
 test('enforce: a stage binding survives a PRUNE — tracked under the same key, no second slot', async () => {
-  // The prune half of the same claim, and a DIFFERENT pre-card failure from the
-  // renewal above. A prune kills the subprocess, so the gate's status listener
-  // appended its retire while inst.sessionId was still the OLD id — meaning prune
-  // never leaked a slot. What it lost was the other end: the relaunch reassigned
-  // sessionId, nothing re-declared the binding, and the worker came back UNTRACKED
-  // by omission. (Observed in production on this very card: a pruned session's new
-  // id read `playbook — / —`.) Pinning the public id fixes that, and the assertion
-  // that matters is on the id the worker holds AFTER the prune.
+  // The prune half of the same claim. A prune kills the subprocess and relaunches
+  // it on a new backing id; the binding must stay filed under the public id the
+  // worker answers to AFTER the prune, or the worker comes back untracked.
+  // The assertion that matters is on the id the worker holds after the prune.
   const t = await setup({ enforcement: 'enforce' });
   try {
     // gatelab/draft deliberately: its `createWorktree: true` pin is what puts the
@@ -621,7 +619,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
       { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'r2' }] } },
     ]);
 
-    const before = foldProjection(await t.events()).bySession.get(publicId);
+    const before = foldPlaybookState(await t.events()).bySession.get(publicId);
     assert.equal(before.stage, 'draft');
     assert.equal(t.instances.isSessionLive(publicId), true);
 
@@ -636,9 +634,9 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     assert.equal(afterId, publicId, 'the public id is pinned across a prune');
     // The relaunch's `resume` is written off the manager's event stream,
     // asynchronously from the prune's reply.
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'resume' && e.sessionId === publicId));
+    await waitFor(async () => (await t.events()).some(e => isResume(e) && e.subject === publicId));
     const evs = await t.events();
-    const proj = foldProjection(evs);
+    const proj = foldPlaybookState(evs);
     const after = proj.bySession.get(afterId);
     assert.ok(after, `the pruned worker must still be tracked under ${afterId} — this is the production break`);
     assert.deepEqual({ stage: after.stage, playbook: after.playbook, history: after.stageHistory },
@@ -648,26 +646,20 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');
     assert.equal(proj.bySession.get(firstBacking), undefined, 'no row under the pre-prune backing id');
     assert.equal(proj.bySession.get(inst.backingSessionId), undefined, 'nor under the post-prune one');
-    assert.equal(evs.filter(e => e.kind === 'spawn').length, 1,
-      'exactly one spawn event — a prune must not re-declare the binding');
+    assert.equal(evs.filter(e => isBind(e)).length, 1,
+      'exactly one bind — a prune must not re-declare the binding');
 
-    // No SECOND capacity slot is consumed: the one retire the prune's kill produced
-    // names the pinned id, so it lands on the row the spawn created rather than on
-    // an id nothing is bound to.
-    const retires = evs.filter(e => e.kind === 'retire');
-    assert.equal(retires.length, 1, 'exactly one retire');
-    assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
-    const resumes = evs.filter(e => e.kind === 'resume');
-    assert.equal(resumes.length, 1, 'exactly one resume — the relaunch pairs the retire the prune\'s kill wrote');
-    assert.equal(resumes[0].sessionId, publicId);
-    assert.ok(resumes[0].seq > retires[0].seq, 'the resume follows its retire');
+    // No SECOND capacity slot is consumed: the one exit the prune's kill produced
+    // names the pinned id, so it lands on the binding rather than on an id
+    // nothing is bound to.
+    const mine = evs.filter(e => e.subject === publicId && (isExit(e) || isResume(e)));
+    assert.deepEqual(mine.map(e => [e.event, e.cause]), [['exit', 'exited'], ['resume', 'prune']],
+      'exactly one exit then one resume, in line order — the relaunch pairs the exit the prune\'s kill wrote');
 
-    // THE acceptance criterion (2026-0130): the prune's retire is audit-only —
-    // liveness is answered from the manager (isSessionLive), never from this
-    // `retire` row — so a pruned-and-relaunched worker is governable again
-    // immediately, with no kill + spawn_instance({resume}) revival dance. This
-    // replaces the old "documented residual" (`live:false` after a prune),
-    // which this change closes rather than merely re-pins.
+    // The prune's exit is audit-only — liveness is answered from the manager
+    // (isSessionLive), never from a `session` row — so a pruned-and-relaunched
+    // worker is governable again immediately, with no kill +
+    // spawn_instance({resume}) revival dance.
     const state = await t.call('playbook_state', { sessionId: publicId });
     assert.equal(state.worker.live, true, 'the worker is running again, and the read surface must say so');
 
@@ -677,11 +669,11 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     // so this is the call that actually advances a gatelab/draft worker).
     assert.equal((await t.call('approve_plan', { sessionId: publicId })).ok, undefined,
       'approve_plan must succeed on the pruned-and-relaunched worker with no revival step');
-    assert.equal(foldProjection(await t.events()).bySession.get(publicId).stage, 'build');
+    assert.equal(foldPlaybookState(await t.events()).bySession.get(publicId).stage, 'build');
 
     // (3) A sibling spawn whose stage declares `needs` on the pruned worker with
     // the default liveness:"live" succeeds — capacity/needs read real liveness,
-    // not a ledger bit the prune could desynchronise.
+    // not a log row the prune could desynchronise.
     const rev = await t.spawnWorker({
       project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: w.worktree.worktreeName,
       provenance: { build: publicId },
@@ -695,13 +687,12 @@ test('enforce: a worker whose subprocess exits is retired without a kill_instanc
   try {
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     // Kill the subprocess out from under the orchestrator — no MCP call, so the
-    // gate learns about it only from the manager's status stream. Without that
-    // the worker would hold its stage's capacity slot forever.
+    // gate learns about it only from the manager's session stream.
     await instForSession(t.instances, impl.sessionId).kill();
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire'));
-    const retire = (await t.events()).find(e => e.kind === 'retire');
-    assert.equal(retire.sessionId, impl.sessionId);
-    assert.match(retire.reason, /subprocess (exited|crashed)/);
+    await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === impl.sessionId));
+    const exit = (await t.events()).find(e => isExit(e) && e.subject === impl.sessionId);
+    assert.match(exit.cause, /^(exited|crashed)$/);
+    assert.deepEqual(exit.actor, { type: 'system' }, 'nobody commanded it');
     assert.equal(t.instances.isSessionLive(impl.sessionId), false);
   } finally { await t.close(); }
 });
@@ -713,80 +704,85 @@ test('warn: an untracked CONDUCTED worker retires on exit and resumes once on sp
   try {
     const w = await t.spawnWorker({ project: 'demo', mode: 'bypassPermissions' });
     assert.ok(w.sessionId, `the spawn must succeed: ${JSON.stringify(w)}`);
-    assert.equal((await t.events()).filter(e => e.kind === 'spawn').length, 0, 'premise: untracked');
+    assert.equal((await t.events()).filter(e => isBind(e)).length, 0, 'premise: untracked');
     const backing = instForSession(t.instances, w.sessionId).backingSessionId;
     await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), backing);
     await t.call('kill_instance', { sessionId: w.sessionId });
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
-    assert.equal((await t.events()).filter(e => e.kind === 'retire').length, 1, 'exactly one retire');
+    await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === w.sessionId));
+    assert.equal((await t.events()).filter(e => isExit(e) && e.subject === w.sessionId).length, 1, 'exactly one exit');
 
     const back = await t.call('spawn_instance', { resume: w.sessionId });
     assert.equal(back.sessionId, w.sessionId, `the resume must land: ${JSON.stringify(back)}`);
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'resume' && e.sessionId === w.sessionId));
+    await waitFor(async () => (await t.events()).some(e => isResume(e) && e.subject === w.sessionId));
     const evs = await t.events();
-    assert.equal(evs.filter(e => e.kind === 'resume' && e.sessionId === w.sessionId).length, 1, 'exactly one resume');
-    assert.equal(evs.filter(e => e.kind === 'spawn').length, 0, 'and still no binding');
+    assert.equal(evs.filter(e => isResume(e) && e.subject === w.sessionId).length, 1, 'exactly one resume');
+    assert.equal(evs.filter(e => isBind(e)).length, 0, 'and still no binding');
+    // Under warn this untracked resume is REFUSED (PLAYBOOK_UNKNOWN) and
+    // proceeds: its one call row is written by check(), BEFORE the handler
+    // launches anything, so here the refused row precedes the session resume.
+    const resumeAt = evs.findIndex(e => isResume(e) && e.subject === w.sessionId);
+    const resumeCalls = evs.filter(e => isCall(e) && e.tool === 'spawn_instance' && e.subject === w.sessionId);
+    assert.deepEqual(resumeCalls.map(e => e.outcome), ['refused'], 'the resume call is its one refused row');
+    assert.ok(evs.indexOf(resumeCalls[0]) < resumeAt, 'a refused row is written before the handler runs');
+    // Both the start and the resume came from the conductor's spawn_instance:
+    // their actor is that MCP caller.
+    const conductorSid = t.instances.get(t.conductorId).sessionId;
+    const launches = evs.filter(e => e.kind === 'session' && e.subject === w.sessionId && e.event !== 'exit');
+    assert.deepEqual(launches.map(e => [e.event, e.actor]), [
+      ['start', { type: 'conductor', sessionId: conductorSid }],
+      ['resume', { type: 'conductor', sessionId: conductorSid }],
+    ]);
   } finally { await t.close(); }
 });
 
-test('a worker that is neither tracked nor conducted writes no retire on exit', async () => {
-  // Spawned over REST, so it is not conducted; nothing binds it either. The
-  // ledger itself exists (the conductor's birth), so the assertion is on the
-  // absence of the retire, not of the file.
+test('a worker that is neither tracked nor conducted still gets its start and exit rows — every session is recorded', async () => {
+  // Spawned over REST, so it is not conducted; nothing binds it either.
   const t = await setup({ enforcement: 'warn' });
   try {
     const r = await api(t.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     await waitFor(() => t.instances.get(r.body.id)?.status === 'idle');
+    const sid = t.instances.get(r.body.id).sessionId;
     await t.instances.get(r.body.id).kill();
-    await waitFor(() => ['exited', 'crashed'].includes(t.instances.get(r.body.id)?.status ?? 'exited'));
-    // The retire append is fire-and-forget off the status stream, so one read
-    // would race ahead of it and pass on timing. Give it real, repeated chances
-    // to land and require that it never does.
-    await assert.rejects(
-      () => waitFor(async () => (await t.events()).some(e => e.kind === 'retire'),
-        { timeout: 1000, interval: 20 }),
-      /timeout/,
-      'the exit listener must stay inert for a worker that is neither tracked nor conducted');
+    await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === sid));
+    const mine = (await t.events()).filter(e => e.subject === sid);
+    assert.deepEqual(mine.map(e => [e.kind, e.event, e.actor.type]), [['session', 'start', 'human'], ['session', 'exit', 'system']]);
   } finally { await t.close(); }
 });
 
-test('enforce: a conductor\'s prompt to a tracked worker is an interaction, and the worker\'s idle wake is a wake', async () => {
+test('enforce: a conductor\'s prompt to a tracked worker is one call row, its turn is a turn, and the worker\'s idle wake is a wake', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     assert.ok(w.sessionId, JSON.stringify(w));
     const conductorSid = t.instances.get(t.conductorId).sessionId;
-    // `draft` declares no draft->draft, so this is an undeclared self-edge: no
-    // transition, but still one interaction naming the conductor.
+    // No `stage`, so the call moves nothing: one call row naming the conductor.
     const sent = await t.call('send_prompt', { sessionId: w.sessionId, text: 'SECRET-PROMPT-TEXT' });
     assert.notEqual(sent.ok, false, JSON.stringify(sent));
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'interaction'));
+    await waitFor(async () => (await t.events()).some(e => isCall(e, 'ok') && e.tool === 'send_prompt'));
     // The worker's turn ends and wakes the conductor that dispatched it.
     await waitFor(async () => (await t.events()).some(e => e.kind === 'wake'));
     const evs = await t.events();
-    const interactions = evs.filter(e => e.kind === 'interaction' && e.tool === 'send_prompt');
+    const interactions = evs.filter(e => isCall(e, 'ok') && e.tool === 'send_prompt');
     assert.equal(interactions.length, 1);
-    assert.deepEqual({ sessionId: interactions[0].sessionId, conductor: interactions[0].conductorSessionId },
-      { sessionId: w.sessionId, conductor: conductorSid });
-    assert.equal(evs.filter(e => e.kind === 'transition').length, 0, 'an undeclared self-edge moves no stage');
+    assert.deepEqual({ subject: interactions[0].subject, actor: interactions[0].actor },
+      { subject: w.sessionId, actor: { type: 'conductor', sessionId: conductorSid } });
+    assert.equal(evs.filter(e => isMove(e)).length, 0, 'a call without a stage moves nothing');
     const wakes = evs.filter(e => e.kind === 'wake');
     assert.equal(wakes.length, 1);
-    assert.deepEqual({ sessionId: wakes[0].sessionId, conductor: wakes[0].conductorSessionId },
-      { sessionId: w.sessionId, conductor: conductorSid });
-    assert.doesNotMatch(await fs.readFile(ledgerFile(), 'utf8'), /SECRET-PROMPT-TEXT/, 'no prompt text reaches the ledger');
+    assert.deepEqual({ subject: wakes[0].subject, recipient: wakes[0].recipient },
+      { subject: w.sessionId, recipient: conductorSid });
+    // The worker's turn, prompted by the conductor, is a turn start/end pair.
+    const turns = evs.filter(e => e.kind === 'turn' && e.subject === w.sessionId);
+    assert.deepEqual(turns.map(e => e.event), ['start', 'end']);
+    assert.deepEqual(turns[0].actor, { type: 'conductor', sessionId: conductorSid });
+    assert.doesNotMatch(await fs.readFile(eventLogFile(), 'utf8'), /SECRET-PROMPT-TEXT/, 'no prompt text reaches the log');
   } finally { await t.close(); }
 });
 
-// Pins: on a built-in that declares no self-loop, a same-stage send_prompt
-// writes exactly one `interaction` row and no `transition` row. `stage` must be
-// passed — resolveMove only takes the self-edge branch when send_prompt carries a
-// string `stage`; without it the call is kind `none` and would write the
-// interaction row whether or not plan->plan were declared. With it, a declared
-// plan->plan resolves `recorded`, commitMove appends a `transition` and returns
-// BEFORE the interaction fall-through, so this test would see zero interaction
-// rows and one transition row.
-test('enforce: a same-stage send_prompt on a built-in is an interaction, not a transition', async () => {
+// Pins: on a built-in, a same-stage send_prompt (with `stage`, so resolveMove
+// takes the self-edge branch) writes exactly one call row and no move.
+test('enforce: a same-stage send_prompt on a built-in is one call row with no move', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const w = await t.spawnWorker({ project: 'demo', playbook: 'forge', stage: 'plan' });
@@ -796,25 +792,24 @@ test('enforce: a same-stage send_prompt on a built-in is an interaction, not a t
       'premise: forge declares no plan->plan self-loop');
     const sent = await t.call('send_prompt', { sessionId: w.sessionId, text: 'next round', stage: 'plan' });
     assert.notEqual(sent.ok, false, JSON.stringify(sent));
-    const mine = e => e.sessionId === w.sessionId;
-    await waitFor(async () => (await t.events()).some(e => mine(e) && e.kind === 'interaction' && e.tool === 'send_prompt'));
+    const mine = e => e.subject === w.sessionId;
+    await waitFor(async () => (await t.events()).some(e => mine(e) && isCall(e, 'ok') && e.tool === 'send_prompt'));
     const evs = await t.events();
-    assert.equal(evs.filter(e => mine(e) && e.kind === 'interaction' && e.tool === 'send_prompt').length, 1);
-    assert.equal(evs.filter(e => mine(e) && e.kind === 'transition').length, 0);
+    assert.equal(evs.filter(e => mine(e) && isCall(e, 'ok') && e.tool === 'send_prompt').length, 1);
+    assert.equal(evs.filter(e => mine(e) && isMove(e)).length, 0);
   } finally { await t.close(); }
 });
 
 // The restart window: a worker bound by a PREVIOUS run of the orchestrator exits
-// before this process has made any governed call. The retire path must fold the
-// ledger itself rather than assume enforcement already did, or that worker never
-// retires and holds its stage's workers:"one" slot in the on-disk ledger forever.
+// before this process has made any governed call. Its exit is recorded, and the
+// slot frees, without enforcement ever having folded anything.
 //
-// Staged the way production reaches it — the ledger is already on disk when the
+// Staged the way production reaches it — the log is already on disk when the
 // conductor boots — which is why this test builds its own fixture instead of
 // using setup(): the binding has to predate the conductor, and setup() spawns the
 // conductor first.
-test('a worker bound by a previous run still retires when it exits', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
+test('a worker bound by a previous run still records its exit', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO, eventLogLease: OPEN_LEASE });
   try {
     await makeRealRepo(ctx.projectsRoot, 'demo');
     await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
@@ -831,11 +826,10 @@ test('a worker bound by a previous run still retires when it exits', async () =>
     await waitFor(() => ctx.instances.get(worker.body.id)?.sessionId);
     const sessionId = ctx.instances.get(worker.body.id).sessionId;
 
-    // The earlier run's ledger, hand-authored as if it had tracked this worker.
-    await fs.mkdir(path.dirname(ledgerFile()), { recursive: true });
-    await fs.writeFile(ledgerFile(), JSON.stringify({
-      seq: 1, ts: '2026-08-05T00:00:00Z', kind: 'spawn',
-      sessionId, playbook: 'gatelab', stage: 'draft', project: 'demo',
+    // The earlier run's log, hand-authored as if it had bound this worker.
+    await fs.mkdir(path.dirname(eventLogFile()), { recursive: true });
+    await fs.appendFile(eventLogFile(), JSON.stringify({
+      v: 1, ts: '2026-08-05T00:00:00Z', ...bindRow(sessionId, 'gatelab', 'draft', { project: 'demo' }),
     }) + '\n');
 
     // Only now does a conductor exist, and it makes no tools/call at all.
@@ -845,38 +839,33 @@ test('a worker bound by a previous run still retires when it exits', async () =>
     await waitFor(() => ctx.instances.get(spawned.body.id)?.status === 'idle');
 
     await ctx.instances.get(worker.body.id).kill();
-    await waitFor(async () => (await readEvents(ledgerFile())).some(e => e.kind === 'retire'));
+    await waitFor(async () => (await readEventLog(eventLogFile())).some(e => isExit(e) && e.subject === sessionId));
     assert.equal(ctx.instances.isSessionLive(sessionId), false,
       'the slot is freed even though enforcement never decided a single call');
   } finally { await ctx.close(); }
 });
 
-// The reboot case, card 2026-0149: a host reboot (or an orchestrator crash)
-// kills the process watching for an exit ALONG WITH the worker, so — unlike
-// the test above — no retire is ever written and a `live:true` row from a
-// previous orchestrator process persists forever. Without reconciliation this
-// wedges every future `workers:"one"` spawn into that stage: `kill_instance`
-// is SESSION_UNKNOWN (no registry entry), and `spawn_instance({resume})` is
-// SESSION_UNKNOWN too (the seeded worker never got a first prompt, so it has no
-// transcript to resume from). The seeded sessionIds below never existed as real instances in this
+// The reboot case: a host reboot (or an orchestrator crash) kills the process
+// watching for an exit ALONG WITH the worker, so — unlike the test above — no
+// exit row is ever written for it. `kill_instance` is SESSION_UNKNOWN (no
+// registry entry), and `spawn_instance({resume})` is SESSION_UNKNOWN too (the
+// seeded worker never got a first prompt, so it has no transcript to resume
+// from). The seeded sessionIds below never existed as real instances in this
 // process, which is exactly what "unknown to the instance registry" means.
 test('a reboot cannot wedge a workers:"one" stage: capacity counts live processes, so the slot is free by construction', async () => {
   const rootPlanId = 'reboot0000-0000-4000-8000-0000000000aa';
   const implId = 'reboot0000-0000-4000-8000-0000000000bb';
   const t = await setup({
     enforcement: 'enforce',
-    seedLedger: async () => {
-      await fs.mkdir(path.dirname(ledgerFile()), { recursive: true });
+    seedLog: async () => {
+      await fs.mkdir(path.dirname(eventLogFile()), { recursive: true });
       const lines = [
-        { seq: 1, ts: '2026-08-15T00:00:00Z', kind: 'spawn', sessionId: rootPlanId, playbook: 'gatelab', stage: 'sealed' },
-        {
-          seq: 2, ts: '2026-08-15T00:00:01Z', kind: 'spawn', sessionId: implId, playbook: 'gatelab', stage: 'handoff',
-          provenance: { sealed: rootPlanId },
-        },
-        // Deliberately NO `retire` — this process's registry never heard of
+        { v: 1, ts: '2026-08-15T00:00:00Z', ...bindRow(rootPlanId, 'gatelab', 'sealed') },
+        { v: 1, ts: '2026-08-15T00:00:01Z', ...bindRow(implId, 'gatelab', 'handoff', { provenance: { sealed: rootPlanId } }) },
+        // Deliberately NO exit — this process's registry never heard of
         // either sessionId, which is what "unobserved death" means.
       ];
-      await fs.writeFile(ledgerFile(), lines.map(e => JSON.stringify(e)).join('\n') + '\n');
+      await fs.writeFile(eventLogFile(), lines.map(e => JSON.stringify(e)).join('\n') + '\n');
     },
   });
   try {
@@ -894,15 +883,14 @@ test('a reboot cannot wedge a workers:"one" stage: capacity counts live processe
       `a reboot-orphaned slot must not wedge the run permanently: ${JSON.stringify(second)}`);
     assert.notEqual(second.sessionId, implId, 'a genuinely new worker was spawned, not the dead one reused');
 
-    // No repair was written to free it: the only new event is the fresh spawn's
-    // own `spawn` (plus its birth/enforcement bookkeeping) — no `retire` for
-    // `implId` anywhere. This is 2026-0149's guarantee preserved BY CONSTRUCTION
-    // rather than by a boot-time writer: a mutant reviving reconcileOrphans()
-    // would still pass the assertions above but fails this one.
+    // No repair was written to free it: no exit for either seeded session
+    // anywhere — the guarantee holds BY CONSTRUCTION rather than by a boot-time
+    // writer: a mutant reviving one would still pass the assertions above but
+    // fails this one.
     const evs = await t.events();
-    assert.equal(evs.filter(e => e.kind === 'retire').length, 0,
-      'no retire may be written for a session this process never observed exiting');
-    assert.deepEqual(evs.slice(0, before.length), before, 'every pre-existing event is untouched');
+    assert.equal(evs.filter(e => isExit(e) && (e.subject === implId || e.subject === rootPlanId)).length, 0,
+      'no exit may be written for a session this process never observed exiting');
+    assert.deepEqual(evs.slice(0, before.length), before, 'every pre-existing row is untouched');
   } finally { await t.close(); }
 });
 
@@ -936,7 +924,7 @@ test('enforce: a stage with no outgoing edge and both write doors shut cannot se
       'TOOL_DENIED_IN_STAGE');
     assert.equal(instForSession(t.instances, planner.sessionId).mode, 'plan',
       'the planner must still be in plan mode — approve_plan never ran');
-    assert.equal(foldProjection(await t.events()).bySession.get(planner.sessionId).stage, 'sealed');
+    assert.equal(foldPlaybookState(await t.events()).bySession.get(planner.sessionId).stage, 'sealed');
 
     // The handoff is a FORWARD, not a kill: the successor spawns onto the
     // planner's worktree and the plan is forwarded out of the planner. The
@@ -955,7 +943,7 @@ test('enforce: a stage with no outgoing edge and both write doors shut cannot se
     // than incidental.
     refused(await t.call('spawn_instance', handoff), 'STAGE_AT_CAPACITY');
 
-    let folded = foldProjection(await t.events());
+    let folded = foldPlaybookState(await t.events());
     assert.equal(t.instances.isSessionLive(planner.sessionId), true,
       'the planner is still live at the handoff — that is the point of liveness:"any"');
     assert.equal(folded.bySession.get(dev.sessionId).playbook, 'gatelab', 'playbook inherited via needs');
@@ -968,11 +956,11 @@ test('enforce: a stage with no outgoing edge and both write doors shut cannot se
     // different refusal from the one under test.)
     await t.call('kill_instance', { sessionId: planner.sessionId });
     await t.call('kill_instance', { sessionId: dev.sessionId });
-    await waitFor(async () => (await t.events()).filter(e => e.kind === 'retire').length >= 2);
+    await waitFor(async () => (await t.events()).filter(e => isExit(e)).length >= 2);
     const dev2 = await t.spawnWorker(handoff);
     assert.ok(dev2.sessionId);
     assert.notEqual(dev2.sessionId, dev.sessionId);
-    folded = foldProjection(await t.events());
+    folded = foldPlaybookState(await t.events());
     assert.equal(t.instances.isSessionLive(planner.sessionId), false);
     assert.equal(folded.bySession.get(dev2.sessionId).playbook, 'gatelab');
 
@@ -995,17 +983,17 @@ test('warn: an illegal move proceeds but is recorded as a refusal', async () => 
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'skip ahead', stage: 'build',
     })).ok, undefined, 'warn allows the call');
-    const refusals = (await t.events()).filter(e => e.kind === 'refusal');
+    const refusals = (await t.events()).filter(e => isRefusal(e));
     assert.equal(refusals.length, 1, 'warn still records what it let through');
-    assert.equal(refusals[0].code, 'TRANSITION_ILLEGAL');
+    assert.equal(refusals[0].refusal.code, 'TRANSITION_ILLEGAL');
     assert.equal(refusals[0].tool, 'send_prompt');
     // Allowed-but-refused means the move did NOT happen — no transition event,
     // so the worker is still in `draft`.
-    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'draft');
+    assert.equal(foldPlaybookState(await t.events()).bySession.get(impl.sessionId).stage, 'draft');
   } finally { await t.close(); }
 });
 
-// warn's whole point is to warn a human, and the ledger has no reader — so the
+// warn's whole point is to warn a human, and the log has no reader — so the
 // refusal is also pushed to the CONDUCTOR's own event stream as a UI-only
 // system bubble. It made the call, and a refusal may name no worker at all.
 
@@ -1032,14 +1020,14 @@ test('warn: an illegal move pushes a playbook_warn event to the conductor\'s str
     });
     assert.match(m.ev.data.reason, /\S/, 'the refusal reason is carried, not blank');
     assert.equal(m.ev.data.reason,
-      (await t.events()).find(e => e.kind === 'refusal').reason,
-      'the bubble and the ledger row state the same reason');
+      (await t.events()).find(e => isRefusal(e)).refusal.reason,
+      'the bubble and the logged row state the same reason');
 
-    // Additive: the ledger row and warn's proceed-anyway semantics are intact.
-    const refusals = (await t.events()).filter(e => e.kind === 'refusal');
+    // Additive: the logged row and warn's proceed-anyway semantics are intact.
+    const refusals = (await t.events()).filter(e => isRefusal(e));
     assert.equal(refusals.length, 1, 'the append is not replaced by the emit');
-    assert.equal(refusals[0].code, 'TRANSITION_ILLEGAL');
-    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'draft');
+    assert.equal(refusals[0].refusal.code, 'TRANSITION_ILLEGAL');
+    assert.equal(foldPlaybookState(await t.events()).bySession.get(impl.sessionId).stage, 'draft');
     assert.equal(c.warnings().length, 1, 'exactly one bubble per refusal');
   } finally { if (c) await c.close(); await t.close(); }
 });
@@ -1075,9 +1063,9 @@ test('enforce: a refusal pushes no playbook_warn — the caller already got it',
     refused(await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'skip ahead', stage: 'build',
     }), 'TRANSITION_ILLEGAL');
-    // The refusal reached the ledger, so the gate ran — the emit is what's
+    // The refusal reached the log, so the gate ran — the emit is what's
     // absent, which pins it INSIDE the warn branch rather than above it.
-    assert.equal((await t.events()).filter(e => e.kind === 'refusal').length, 1);
+    assert.equal((await t.events()).filter(e => isRefusal(e)).length, 1);
     await c.expectNoWarning();
   } finally { if (c) await c.close(); await t.close(); }
 });
@@ -1111,13 +1099,13 @@ test('policy applies only to the conductor: the same calls from a worker or no c
     assert.ok(asRogue.sessionId, 'only the conductor is governed, whatever a worker\'s own setting says');
 
     // The rogue must also be invisible to the AUDIT trail, which is a separate
-    // guard from the one above: the birth-event path lives on the status stream,
+    // guard from the one above: the birth path lives on the session stream,
     // not in check(), so the spawn refusal alone leaves it unobserved. The only
     // enforcement event may be the conductor's own birth — a rogue birth event
     // would make a non-conductor look like a governed actor to anything reading
     // projection.enforcement.
     const own = await expectEnforcementEvents(t, 1);
-    assert.equal(own[0].conductorSessionId, t.instances.get(t.conductorId).sessionId,
+    assert.equal(own[0].subject, t.instances.get(t.conductorId).sessionId,
       'the one enforcement event belongs to the real conductor');
     await expectNoMoreEnforcement(t, 1);
 
@@ -1129,7 +1117,7 @@ test('policy applies only to the conductor: the same calls from a worker or no c
 
 // ── the toggle ─────────────────────────────────────────────────────────────
 
-test('the enforcement toggle takes effect on the next call and lands in the ledger', async () => {
+test('the enforcement toggle takes effect on the next call and lands in the event log', async () => {
   // Starts at `warn` — the OFF position of the menu toggle — where an unlabelled
   // spawn is allowed through, so the flip has something observable to change.
   const t = await setup({ enforcement: 'warn' });
@@ -1149,7 +1137,9 @@ test('the enforcement toggle takes effect on the next call and lands in the ledg
     const toggles = await expectEnforcementEvents(t, 2);
     assert.equal(toggles[1].from, 'warn', 'the change is recorded so backtracking can explain it');
     assert.equal(toggles[1].to, 'enforce');
-    assert.equal(toggles[1].conductorSessionId, t.instances.get(t.conductorId).sessionId);
+    assert.equal(toggles[1].subject, t.instances.get(t.conductorId).sessionId);
+    assert.deepEqual(toggles[1].actor, { type: 'human' }, 'the UI toggle is a human acting');
+    assert.deepEqual(toggles[0].actor, { type: 'system' }, 'the birth is nobody\'s act');
 
     // A no-op re-set writes nothing more.
     await t.setEnforcement('enforce');
@@ -1163,16 +1153,15 @@ test('the enforcement toggle takes effect on the next call and lands in the ledg
   } finally { await t.close(); }
 });
 
-test('a conductor born at enforce records a birth event with from:null, not from:warn', async () => {
+test('a conductor born at enforce records a birth with no `from`, not from:warn', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const birth = (await expectEnforcementEvents(t, 1))[0];
     assert.equal(birth.to, 'enforce');
-    // The whole point: `null` says "born this way". Naming the other level would
-    // assert a past the conductor never had.
-    assert.equal(birth.from, null);
-    assert.equal('from' in birth, true, 'the key is present-and-null, so a reader can tell a birth from a missing field');
-    assert.equal(birth.conductorSessionId, t.instances.get(t.conductorId).sessionId);
+    // The whole point: no `from` says "born this way". Naming the other level
+    // would assert a past the conductor never had.
+    assert.equal('from' in birth, false, 'a birth carries no `from` key at all');
+    assert.equal(birth.subject, t.instances.get(t.conductorId).sessionId);
 
     // A later change is a change: its `from` is the mode that actually held.
     await t.setEnforcement('warn');
@@ -1181,18 +1170,18 @@ test('a conductor born at enforce records a birth event with from:null, not from
 
     // Folding treats the birth as setting the initial mode, so the projection
     // agrees with the live instance either way.
-    assert.equal(foldProjection(await t.events()).enforcement.get(birth.conductorSessionId), 'warn');
+    assert.equal(foldPlaybookState(await t.events()).enforcement.get(birth.subject), 'warn');
   } finally { await t.close(); }
 });
 
-test('a conductor born at warn records its birth and materialises the ledger', async () => {
+test('a conductor born at warn records its birth and materialises the event log', async () => {
   const t = await setup({ enforcement: 'warn' });
   try {
     // No level is inert, so the permissive one is audited too — a `warn` session
-    // that is never flipped must still be explicable from the ledger alone.
+    // that is never flipped must still be explicable from the log alone.
     const [birth] = await expectEnforcementEvents(t, 1);
-    assert.deepEqual({ from: birth.from, to: birth.to }, { from: null, to: 'warn' });
-    assert.equal(await t.ledgerExists(), true);
+    assert.deepEqual({ from: birth.from, to: birth.to }, { from: undefined, to: 'warn' });
+    assert.equal(await t.logExists(), true);
   } finally { await t.close(); }
 });
 
@@ -1237,8 +1226,8 @@ async function killedBoundWorker(t) {
   await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), backingSessionId);
   await t.call('kill_instance', { sessionId: w.sessionId });
   await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
-  // The retire lands off the status stream, asynchronously from the kill's reply.
-  await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+  // The exit row lands off the session stream, asynchronously from the kill's reply.
+  await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === w.sessionId));
   return { ...w, backingSessionId };
 }
 
@@ -1253,23 +1242,32 @@ test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker'
       `a bare resume of a playbook-tracked worker must not be refused: ${JSON.stringify(back)}`);
     assert.equal(back.sessionId, w.sessionId, 'a resume keeps the session id');
 
-    // ONE non-empty read backs every claim below, so a mutation that breaks ledger
+    // ONE non-empty read backs every claim below, so a mutation that breaks log
     // writing entirely cannot pass the absence assertions by writing nothing.
     const evs = await waitFor(async () => {
       const all = await t.events();
-      return all.some(e => e.kind === 'resume' && e.sessionId === w.sessionId) ? all : false;
+      return all.some(e => isResume(e) && e.subject === w.sessionId) ? all : false;
     });
-    assert.ok(evs.length > 0, 'the ledger read must be non-empty');
-    assert.equal(evs.filter(e => e.kind === 'resume' && e.sessionId === w.sessionId).length, 1,
+    assert.ok(evs.length > 0, 'the log read must be non-empty');
+    assert.equal(evs.filter(e => isResume(e) && e.subject === w.sessionId).length, 1,
       'exactly one resume event');
-    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId).length, 1,
+    assert.equal(evs.filter(e => isBind(e) && e.subject === w.sessionId).length, 1,
       'and no SECOND spawn event — a resume must not re-declare the binding');
-    assert.deepEqual(evs.filter(e => e.kind === 'refusal' && e.code === 'PLAYBOOK_UNKNOWN'), [],
+    assert.deepEqual(evs.filter(e => isRefusal(e) && e.refusal.code === 'PLAYBOOK_UNKNOWN'), [],
       'the bug\'s fingerprint: a bare resume must record no PLAYBOOK_UNKNOWN refusal');
+    // INVARIANT: the resume's `session` row precedes the call's own `call` row
+    // in line order — the launch happens inside the handler, the call row at
+    // commit.
+    const exitAt = evs.findIndex(e => isExit(e) && e.subject === w.sessionId);
+    const resumeAt = evs.findIndex(e => isResume(e) && e.subject === w.sessionId);
+    const callAt = evs.findIndex((e, i) => i > exitAt && isCall(e, 'ok') && e.tool === 'spawn_instance' && e.subject === w.sessionId);
+    assert.ok(resumeAt > exitAt && callAt > exitAt, 'premise: both rows follow the exit');
+    assert.ok(resumeAt < callAt, `session resume (line ${resumeAt}) precedes its ok call row (line ${callAt})`);
+    assert.equal(evs[resumeAt].actor.type, 'conductor');
 
     // The oracle has it live again, so its stage slot is counted and its
     // eventual exit will retire it.
-    const st = foldProjection(evs).bySession.get(w.sessionId);
+    const st = foldPlaybookState(evs).bySession.get(w.sessionId);
     assert.deepEqual({ stage: st.stage, history: st.stageHistory },
       { stage: 'loose', history: ['loose'] });
     assert.equal(t.instances.isSessionLive(w.sessionId), true);
@@ -1301,7 +1299,7 @@ async function killedPinnedWorker(t) {
   await seedSessionJsonl(localPlace(cwd), backingSessionId);
   await t.call('kill_instance', { sessionId: w.sessionId });
   await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
-  await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+  await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === w.sessionId));
   return { ...w, backingSessionId, cwd };
 }
 
@@ -1328,10 +1326,10 @@ test('enforce: a resume of a worker bound to a PINNED stage neither re-spawns no
     assert.equal(instForSession(t.instances, w.sessionId).cwd, w.cwd);
 
     const evs = await t.events();
-    assert.equal(evs.filter(e => e.kind === 'resume' && e.sessionId === w.sessionId).length, 1);
-    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId).length, 1,
+    assert.equal(evs.filter(e => isResume(e) && e.subject === w.sessionId).length, 1);
+    assert.equal(evs.filter(e => isBind(e) && e.subject === w.sessionId).length, 1,
       'no second spawn — a resume must not re-declare the binding');
-    assert.deepEqual(evs.filter(e => e.kind === 'refusal' && e.code === 'PLAYBOOK_UNKNOWN'), [],
+    assert.deepEqual(evs.filter(e => isRefusal(e) && e.refusal.code === 'PLAYBOOK_UNKNOWN'), [],
       "the bug's fingerprint: the resume must record no PLAYBOOK_UNKNOWN refusal");
   } finally { await t.close(); }
 });
@@ -1358,7 +1356,7 @@ test('enforce: worktree stays undefined through the gate, so the project/worktre
 
 // A pin-free second graph, so a resume can name a binding that DIFFERS from the
 // recorded one without the difference being masked by a pin refusal. Its entry
-// stage deliberately pins nothing: the corruption under test is a ledger write,
+// stage deliberately pins nothing: the corruption under test is a log write,
 // and a stage that also pinned `createWorktree` would refuse the call before it
 // ever got there.
 const OTHERPB = {
@@ -1369,7 +1367,7 @@ const OTHERPB = {
 };
 
 test('enforce: a resume never re-declares a binding, however the caller spelled the id', async () => {
-  // INVARIANT: a `spawn` ledger event never overwrites an existing binding.
+  // INVARIANT: a bind never overwrites an existing binding.
   // The incident input — a FULL BACKING id, the form the schema used to demand —
   // is one the projection is keyed against public ids for, so the decision layer
   // reads a tracked worker as a fresh run root and (with an explicit
@@ -1380,7 +1378,7 @@ test('enforce: a resume never re-declares a binding, however the caller spelled 
     const w = await killedBoundWorker(t);
 
     // Premise: the graph named below really is loaded and really is enterable, so
-    // a refusal here would be about the ledger rather than about a bad fixture.
+    // a refusal here would be about the log rather than about a bad fixture.
     const listed = await t.call('list_playbooks', {});
     const other = listed.playbooks.find(p => p.id === 'otherpb');
     assert.ok(other?.spawnableStages?.includes('alt'),
@@ -1390,13 +1388,13 @@ test('enforce: a resume never re-declares a binding, however the caller spelled 
 
     await t.call('spawn_instance', { resume: w.backingSessionId, playbook: 'otherpb', stage: 'alt' });
 
-    // commit()/refusal appends are awaited inside dispatch(), so the ledger has
+    // commit()/refusal appends are awaited inside dispatch(), so the log has
     // already settled by the time the call returns.
     const evs = await t.events();
-    assert.ok(evs.length > 0, 'the ledger read must be non-empty');
-    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId).length, 1,
+    assert.ok(evs.length > 0, 'the log read must be non-empty');
+    assert.equal(evs.filter(e => isBind(e) && e.subject === w.sessionId).length, 1,
       'the original binding spawn, and no second one');
-    const st = foldProjection(evs).bySession.get(w.sessionId);
+    const st = foldPlaybookState(evs).bySession.get(w.sessionId);
     assert.deepEqual(
       { playbook: st.playbook, stage: st.stage, history: st.stageHistory },
       { playbook: 'gatelab', stage: 'loose', history: ['loose'] },
@@ -1583,14 +1581,14 @@ test('warn: a denied forward SOURCE is recorded and warned, naming BOTH workers,
     assert.equal(res.forwarded, 1, 'and it really forwarded the source\'s output');
 
     const refusals = await waitFor(async () => {
-      const evs = (await t.events()).filter(e => e.kind === 'refusal');
+      const evs = (await t.events()).filter(e => isRefusal(e));
       return evs.length > 0 ? evs : false;
     });
     assert.equal(refusals.length, 1, 'exactly one refusal row');
-    assert.equal(refusals[0].code, 'FORWARD_DENIED_IN_STAGE');
+    assert.equal(refusals[0].refusal.code, 'FORWARD_DENIED_IN_STAGE');
     assert.equal(refusals[0].tool, 'send_prompt');
-    assert.equal(refusals[0].sessionId, target, 'the row names the target');
-    assert.equal(refusals[0].forwardSessionId, source, '...and the forward source');
+    assert.equal(refusals[0].subject, target, 'the row names the target');
+    assert.equal(refusals[0].forward, source, '...and the forward source');
 
     const m = await c.waitForWarning();
     assert.equal(m.id, t.conductorId, 'the bubble lands on the conductor that made the call');
@@ -1601,7 +1599,7 @@ test('warn: a denied forward SOURCE is recorded and warned, naming BOTH workers,
       sessionId: target,
       forwardSessionId: source,
     });
-    assert.equal(m.ev.data.reason, refusals[0].reason, 'the bubble and the row state the same reason');
+    assert.equal(m.ev.data.reason, refusals[0].refusal.reason, 'the bubble and the row state the same reason');
     assert.equal(c.warnings().length, 1, 'exactly one bubble per refusal');
   } finally { if (c) await c.close(); await t.close(); }
 });
@@ -1622,7 +1620,7 @@ test('enforce: a denied forward SOURCE refuses the call as a normal result, with
       sessionId: target, text: 'act on this', stage: 'reader',
     })).ok, undefined);
 
-    assert.equal((await t.events()).filter(e => e.kind === 'refusal').length, 1);
+    assert.equal((await t.events()).filter(e => isRefusal(e)).length, 1);
     await c.expectNoWarning();
   } finally { if (c) await c.close(); await t.close(); }
 });
@@ -1638,17 +1636,17 @@ test('enforce: a refusal about the TARGET still records the forward source — o
       sessionId: target, text: 'act on this', stage: 'mute', forward: { sessionId: source },
     }), 'TOOL_DENIED_IN_STAGE');
 
-    const refusals = (await t.events()).filter(e => e.kind === 'refusal');
+    const refusals = (await t.events()).filter(e => isRefusal(e));
     assert.equal(refusals.length, 1);
-    assert.equal(refusals[0].code, 'TOOL_DENIED_IN_STAGE', 'the target\'s own permission answers first');
-    assert.equal(refusals[0].sessionId, target);
-    assert.equal(refusals[0].forwardSessionId, source,
+    assert.equal(refusals[0].refusal.code, 'TOOL_DENIED_IN_STAGE', 'the target\'s own permission answers first');
+    assert.equal(refusals[0].subject, target);
+    assert.equal(refusals[0].forward, source,
       'the source is stamped whenever the call named one, not only on a FORWARD_DENIED_IN_STAGE');
   } finally { await t.close(); }
 });
 
 // The gate's grip on the forward source does not depend on that source still
-// breathing. `checkForwardSource` resolves it from the ledger PROJECTION, which
+// breathing. `checkForwardSource` resolves it from the playbook PROJECTION, which
 // never asked about liveness — and since 2026-0142 a forward serves a retired
 // source from its transcript, so this is now the only thing standing between a
 // denied stage and that worker's output.
@@ -1668,7 +1666,7 @@ test('enforce: a retired forward SOURCE is still governed — policy, not livene
 
     // Retire both sources identically: seed the transcript the CLI would have
     // written, then kill the subprocess. Non-temp, so each stays in byId and in
-    // the ledger projection — exactly the shape §A9 flagged.
+    // the playbook projection — exactly the shape §A9 flagged.
     for (const w of [denied, allowed]) {
       const inst = instForSession(t.instances, w.sessionId);
       await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), inst.backingSessionId, [
@@ -1698,9 +1696,9 @@ test('enforce: a retired forward SOURCE is still governed — policy, not livene
     assert.equal(ok.ok, undefined, `a permitted retired source must forward: ${JSON.stringify(ok)}`);
     assert.equal(ok.forwarded, 1);
 
-    const refusals = (await t.events()).filter(e => e.kind === 'refusal');
+    const refusals = (await t.events()).filter(e => isRefusal(e));
     assert.equal(refusals.length, 1, 'exactly the one refusal');
-    assert.equal(refusals[0].forwardSessionId, denied.sessionId);
+    assert.equal(refusals[0].forward, denied.sessionId);
   } finally { await t.close(); }
 });
 
@@ -1876,7 +1874,7 @@ test('enforce: a bare resume of a worker in a stage pinning {model, backend} lan
     await seedSessionJsonl(localPlace(path.join(t.projectsRoot, 'demo')), backingSessionId);
     await t.call('kill_instance', { sessionId: w.sessionId });
     await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+    await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === w.sessionId));
 
     const back = await t.call('spawn_instance', { resume: w.sessionId });
     assert.notEqual(back.ok, false, `a bare resume must not be refused: ${JSON.stringify(back)}`);
@@ -1884,5 +1882,81 @@ test('enforce: a bare resume of a worker in a stage pinning {model, backend} lan
     assert.equal(back.backend, 'p');
     assert.equal(back.model, 'mine:v1');
     assert.equal(back.contextWindowTokens, 222_000);
+  } finally { await t.close(); }
+});
+
+// ── actors on routes and sends ─────────────────────────────────────────────
+
+test('a forced worktree deletion records its running sessions\' exits with actor human', async () => {
+  const t = await setup({ enforcement: 'warn' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', mode: 'bypassPermissions', createWorktree: true });
+    const wt = w.worktree?.worktreeName;
+    assert.ok(wt, `premise: the worker is in a worktree: ${JSON.stringify(w)}`);
+    const del = await api(t.baseUrl, 'DELETE', `/api/projects/demo/worktrees/${encodeURIComponent(wt)}?force=1`);
+    assert.equal(del.status, 200, JSON.stringify(del.body));
+    await waitFor(async () => (await t.events()).some(e => isExit(e) && e.subject === w.sessionId));
+    assert.deepEqual((await t.events()).filter(e => isExit(e) && e.subject === w.sessionId).map(e => e.actor),
+      [{ type: 'human' }]);
+  } finally { await t.close(); }
+});
+
+test('a NON-ROOT conductor\'s send is attributed to itself, not to the root conductor', async () => {
+  // INVARIANT: a conductor-authored turn's actor is the MCP caller that sent
+  // the prompt. A section lead S, itself a worker of the root conductor C,
+  // prompts its own worker W: W's root owner is C, but the turn is S's.
+  const t = await setup({ enforcement: 'warn' });
+  try {
+    const conductorSid = t.instances.get(t.conductorId).sessionId;
+    const lead = await t.spawnWorker({ project: 'demo', mode: 'bypassPermissions' });
+    const w = await t.callAs(lead.sessionId, 'spawn_instance', { project: 'demo', mode: 'bypassPermissions' });
+    assert.ok(w.sessionId, JSON.stringify(w));
+    const wInst = await waitFor(() => instForSession(t.instances, w.sessionId));
+    await waitFor(() => wInst.status === 'idle');
+    assert.equal(wInst.rootOwnerSessionId, conductorSid, 'premise: W\'s root owner is the root conductor');
+
+    const sent = await t.callAs(lead.sessionId, 'send_prompt', { sessionId: w.sessionId, text: 'go' });
+    assert.notEqual(sent.ok, false, JSON.stringify(sent));
+    const start = await waitFor(async () =>
+      (await t.events()).find(e => e.kind === 'turn' && e.event === 'start' && e.subject === w.sessionId) ?? false);
+    assert.deepEqual(start.actor, { type: 'conductor', sessionId: lead.sessionId });
+  } finally { await t.close(); }
+});
+
+test('every MCP format records each governed call exactly once: text and JSON tools/call and the REST alias, ok and handler-ok:false alike', async () => {
+  // INVARIANT: one call core (runTool) serves every format, and the gate
+  // commits from the result's DATA (`value.json` for a dual result), so each
+  // governed call yields exactly one `call` row whichever transport carried it
+  // — and a handler's soft refusal (`ok:false`) is that row's `failed` outcome.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const conductorSid = t.instances.get(t.conductorId).sessionId;
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
+    const source = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
+    let rpcId = 9000;
+    const sid = encodeURIComponent(conductorSid);
+    const viaRpc = (format) => async (name, args) => {
+      const res = await fetch(`${t.baseUrl}/mcp/${sid}${format === 'text' ? '?format=text' : ''}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      assert.equal(res.status, 200);
+    };
+    const viaRest = async (name, args) => {
+      const res = await fetch(`${t.baseUrl}/mcp/${sid}/tools/${name}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args),
+      });
+      assert.equal(res.status, 200, await res.clone().text());
+    };
+    const mine = async () => (await t.events()).filter(e => isCall(e) && e.subject === w.sessionId);
+    for (const [label, call] of [['text', viaRpc('text')], ['json', viaRpc('json')], ['rest', viaRest]]) {
+      const before = (await mine()).length;
+      await call('set_idle_timeout', { sessionId: w.sessionId, timeoutSeconds: 600 });
+      await call('send_prompt', { sessionId: w.sessionId, text: 'x', stage: 'loose', forward: { sessionId: source.sessionId } });
+      const rows = (await mine()).slice(before);
+      assert.deepEqual(rows.map(r => [r.tool, r.outcome, r.failure?.code]),
+        [['set_idle_timeout', 'ok', undefined], ['send_prompt', 'failed', 'NOTHING_TO_FORWARD']], label);
+      assert.ok(rows.every(r => r.actor.sessionId === conductorSid), `${label}: the caller from the /mcp/<sessionId> path`);
+    }
   } finally { await t.close(); }
 });

@@ -3,7 +3,7 @@
 // plans against — plus locateValidationError (src/playbooks.ts), the
 // message → stage/edge mapping the validate route attaches.
 //
-// Booted through buildRoutes (the real mount) with a fake gate, so the ledger
+// Booted through buildRoutes (the real mount) with a fake gate, so the event log
 // is never touched; definitions come from this file's own user overlay and a
 // plugin record injected through setPluginPlaybooksProvider.
 
@@ -19,11 +19,11 @@ import {
   loadToolIndex, governableToolNames, validatePlaybook, locateValidationError, setPluginPlaybooksProvider,
   SEED_PLAYBOOK_IDS, DEFAULT_PLAYBOOK_ID, PIN_FORBIDDEN_KEYS, STAGE_KEYS, NEEDS_KEYS, TRANSITION_KEYS,
 } from '../src/playbooks.ts';
-import { liveSessionsOnPlaybook, createPlaybookLedger } from '../src/playbookLedger.ts';
+import { liveSessionsOnPlaybook } from '../src/playbookState.ts';
 import { createPlaybookGate } from '../src/mcp/playbookGate.ts';
 import { listPlaybooks } from '../src/mcp/handlers.ts';
 import { freshProjectsRoot } from './helpers.mjs';
-import { proj } from './playbook-fixtures.mjs';
+import { proj, bindRow, OPEN_LEASE } from './playbook-fixtures.mjs';
 
 // `plan` pins/denies/wildcards; `implement` is fully populated (every stage
 // key, a defaulted needs entry); `review` is "*"-only (NOT spawnable), and
@@ -91,15 +91,15 @@ async function boot(playbookGate) {
 // composition (liveSessionsOnPlaybook over its projection and isLive).
 const LIVE = new Set(['s-mine-live', 's-other-live']);
 const PROJ = proj([
-  { kind: 'spawn', sessionId: 's-mine-live', playbook: 'mine', stage: 'plan' },
-  { kind: 'spawn', sessionId: 's-mine-dead', playbook: 'mine', stage: 'plan' },
-  { kind: 'spawn', sessionId: 's-other-live', playbook: OVERRIDDEN, stage: 'plan' },
+  bindRow('s-mine-live', 'mine', 'plan'),
+  bindRow('s-mine-dead', 'mine', 'plan'),
+  bindRow('s-other-live', OVERRIDDEN, 'plan'),
 ]);
 function fakeGate({ fail = false } = {}) {
   const isLive = sid => LIVE.has(sid);
   return {
     async readLiveWorkers(playbook) {
-      if (fail) throw new Error('ledger read failed');
+      if (fail) throw new Error('event log read failed');
       return liveSessionsOnPlaybook(PROJ, playbook, isLive);
     },
     isLive,
@@ -109,7 +109,7 @@ function fakeGate({ fail = false } = {}) {
 let api; // with the fake gate
 let apiNoGate;
 let apiFailingGate;
-let apiRealBrokenGate; // the real gate over a ledger path that cannot be read
+let apiRealBrokenGate; // the real gate over an event-log path that cannot be read
 
 before(async () => {
   await freshProjectsRoot();
@@ -132,11 +132,11 @@ before(async () => {
   api = await boot(fakeGate());
   apiNoGate = await boot(null);
   apiFailingGate = await boot(fakeGate({ fail: true }));
-  const brokenLedger = path.join(orchStoreRoot(), 'broken-ledger.jsonl');
-  await fs.mkdir(brokenLedger, { recursive: true }); // a directory: readFile fails EISDIR
+  const brokenLog = path.join(orchStoreRoot(), 'broken-events.jsonl');
+  await fs.mkdir(brokenLog, { recursive: true }); // a directory: readFile fails EISDIR
   apiRealBrokenGate = await boot(createPlaybookGate({
     instances: { on() {}, emit() {}, liveForSession: () => null, anyForSession: () => null, isSessionLive: () => true },
-    ledger: createPlaybookLedger({ file: () => brokenLedger }),
+    lease: OPEN_LEASE, file: () => brokenLog,
   }));
 });
 
@@ -292,7 +292,7 @@ test('detail: liveWorkers counts live workers bound to the id; null without a ga
   assert.equal(warnings.length, 1);
 });
 
-test('detail: the real gate\'s ledger load failure reaches the route as liveWorkers null with one warning, never 0', async () => {
+test('detail: the real gate\'s event-log load failure reaches the route as liveWorkers null with one warning, never 0', async () => {
   const warnings = [];
   const origWarn = console.warn;
   console.warn = (...args) => warnings.push(args);

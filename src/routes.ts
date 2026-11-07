@@ -785,7 +785,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       const proj = await getProjectForDelete(req.params.name);
       const deleteDirectory = jsonBody(req).deleteDirectory === true;
       let killed = 0;
-      if (instances) killed = await instances.removeAllForProject(proj.name);
+      if (instances) killed = await instances.removeAllForProject(proj.name, { actor: { type: 'human' } });
       // One `projects` signal for the whole cascade, every worktree included.
       const deleted = await projectsOperation(async () => {
         await removeAllWorktreesForProject(proj.name);
@@ -952,7 +952,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       );
     }
     if (force) {
-      await Promise.all(running.map(i => instances.remove(i.id).catch(() => {})));
+      await Promise.all(running.map(i => instances.remove(i.id, { actor: { type: 'human' } }).catch(() => {})));
     }
     const stale = attached.filter(i => !i.proc);
     await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
@@ -1255,7 +1255,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         }
         // With force, kill any attached instances before removing.
         if (force) {
-          await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
+          await Promise.all(running.map(i => i.kill({ graceMs: 300, actor: { type: 'human' } }).catch(() => {})));
         }
       }
       // INVALIDATE ON THE THROW PATH TOO, because the removal MUTATES before it
@@ -1483,11 +1483,11 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   });
 
   if (instances) {
-    // A ledger read failure must not break the instance list this drives the
+    // An event-log read failure must not break the instance list this drives the
     // whole UI from — it degrades EVERY row's playbook/stage to null instead,
     // with one warning per request rather than one per row. One batch read
-    // through the gate's own lookup (never playbookLedger.ts directly — see
-    // tests/playbook-ledger-chokepoint.test.mjs), which is the SAME gate
+    // through the gate's own lookup (never the event log directly — see
+    // tests/event-log-chokepoint.test.mjs), which is the SAME gate
     // `createServer` hands the MCP router, so this list reflects whatever the
     // MCP side just wrote.
     async function playbookBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>> {
@@ -1524,7 +1524,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
 
     r.post('/instances/:id/respawn', async (req, res, next) => {
       try {
-        const inst = await instances.respawn(req.params.id);
+        const inst = await instances.respawn(req.params.id, { actor: { type: 'human' } });
         res.json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -1619,7 +1619,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         // derivation of the respawn arguments live on the instance alongside its
         // rewind/prune siblings; the route only spawns what it hands back.
         const { newSessionId, droppedText, createArgs } = await inst.forkAtUserMessage(idx, body.text);
-        const newInst = await instances.create(createArgs);
+        const newInst = await instances.create({ ...createArgs, actor: { type: 'human' }, launchCause: 'fork' });
         res.status(201).json({
           ok: true,
           newSessionId,
@@ -1676,7 +1676,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
 
     r.delete('/instances/:id', async (req, res, next) => {
       try {
-        await instances.remove(req.params.id);
+        await instances.remove(req.params.id, { actor: { type: 'human' } });
         res.json({ ok: true });
       } catch (e) { next(e); }
     });

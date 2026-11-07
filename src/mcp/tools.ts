@@ -370,7 +370,7 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
           idleTimeoutSeconds: { ...IDLE_TIMEOUT_SECONDS_PROP },
           stage: {
             type: 'string',
-            description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal, and ledgered only where the playbook declares that self-loop. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge\'s `via` (describe_playbook) names a tool other than send_prompt, which must drive it instead.',
+            description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge\'s `via` (describe_playbook) names a tool other than send_prompt, which must drive it instead.',
           },
           provenance: {
             type: 'object',
@@ -1022,12 +1022,13 @@ function coreTools(limits: FormatLimits): Array<Omit<Tool, 'outputSchema'>> {
         'Where a run actually is, and what it may legally do next — the insight + backtrack surface. ' +
         'Two shapes, chosen by whether you pass sessionId. WITH sessionId: ' +
         '{tracked, worker, run, nextMoves, history, historyTruncated, enforcement}, where `worker` ' +
-        'carries {stage, stageHistory, provenance, live, runRoot}, `run` is {root, members} (the connected ' +
+        'carries {stage, stageHistory (stage changes, never a repeat), provenance, live, runRoot}, `run` is {root, members} (the connected ' +
         'component over `provenance` edges), `nextMoves` is every outgoing edge as ' +
         '{to, via, ok, code?, reason?} — each ANSWERED BY THE SAME CHECK THAT ENFORCES, so a move ' +
         'reported ok:false comes back with the exact code and reason you would get for attempting it — ' +
-        'and `history` is the run\'s stage-audit ledger events (spawn, transition, retire, resume, refusal, ' +
-        'enforcement; interaction and wake activity is not included) oldest-first (capped; see historyTruncated). ' +
+        'and `history` is the run\'s event-log rows — `call` (one per governed call, with `outcome`; `bind`/`move` ' +
+        'when it bound or moved a worker), `session` (start/resume/exit) and your own `config` (enforcement) rows; ' +
+        'no turn or wake rows — oldest-first (capped; see historyTruncated). ' +
         'Each move is evaluated as the BARE call, with no `provenance` supplied, so an edge into a stage ' +
         'that declares `needs` reads ok:false (NEEDS_UNSATISFIED) even when a satisfying worker exists ' +
         '— the `reason` names what to pass and which workers of the run satisfy it, or that none does. ' +

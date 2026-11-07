@@ -35,7 +35,7 @@ const EXEMPT = {
   'src/instances.ts': ["'claude-stdin.jsonl'", "'claude-stdout.jsonl'"],
   // Orchestrator-owned append-only logs under <store>/, not session files.
   'src/costTracking.ts': ["'costs.jsonl'"],
-  'src/playbookLedger.ts': ["'playbook-ledger.jsonl'"],
+  'src/eventLog.ts': ["'events.jsonl'"],
 };
 
 async function sourceFiles() {

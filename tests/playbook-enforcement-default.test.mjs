@@ -162,7 +162,7 @@ test('a conductor spawned with no explicit level starts at the persisted default
   await setDefaultPlaybookEnforcement(OTHER);
   const id = await spawnConductor();
   assert.equal(instances.get(id).playbookEnforcement, OTHER);
-  // It reaches the client too — the gate ledgers off the status stream.
+  // It reaches the client too, on the status stream.
   assert.equal(instances.get(id).summary().playbookEnforcement, OTHER);
 });
 

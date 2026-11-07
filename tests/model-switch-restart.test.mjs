@@ -221,6 +221,43 @@ test('a switch frame during a running turn is refused and kills nothing', async 
   } finally { await c.close(); }
 });
 
+test('a restart switch is recorded as an exit then a resume with cause model-switch', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const seen = [];
+  const onLaunch = (a) => { if (a.sessionId === inst.sessionId) seen.push(['launch', a.event, a.cause]); };
+  const onExit = (x) => { if (x.sessionId === inst.sessionId) seen.push(['exit']); };
+  instances.on('session_launched', onLaunch);
+  instances.on('session_exited', onExit);
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await settled(inst);
+  } finally {
+    instances.off('session_launched', onLaunch);
+    instances.off('session_exited', onExit);
+  }
+  assert.equal(inst.model, B, 'premise: the switch landed');
+  assert.deepEqual(seen, [['exit'], ['launch', 'resume', 'model-switch']]);
+});
+
+test('a failed restart switch\'s fallback re-resume is recorded with cause model-switch too', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  launcher.plan.push({ crash: 'boom on beta' });
+  const launches = [];
+  const onLaunch = (a) => { if (a.sessionId === inst.sessionId) launches.push([a.event, a.cause]); };
+  instances.on('session_launched', onLaunch);
+  try {
+    await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
+    await settled(inst);
+  } finally {
+    instances.off('session_launched', onLaunch);
+  }
+  assert.equal(inst.model, A, 'premise: the switch failed back onto the old model');
+  assert.ok(inst.proc, 'premise: the fallback re-resume is running');
+  assert.deepEqual(launches, [['resume', 'model-switch'], ['resume', 'model-switch']]);
+});
+
 test('a switch is refused while background agent tasks or bash jobs run', async () => {
   const inst = await spawnSub();
   const launches = launcher.count;
