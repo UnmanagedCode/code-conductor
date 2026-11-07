@@ -112,4 +112,15 @@ describe('the static builder', () => {
       expect(text).not.toMatch(/animat/i);
     }
   });
+
+  it('the favicons draw their face white, and the larger static art keeps the theme ink', async () => {
+    // Invariant: FAV16 and FAV32_BORDER draw the terminal face in the white screen ink (FAV32_BORDER beside its inverse ring); FAV32, the PWA icons' art, draws nothing white.
+    const { FAV16, FAV32, FAV32_BORDER } = await vi.importActual<typeof import('./logoArt')>('./logoArt');
+    // In the light palette the screen (#ffffff) and the ink (#15171c) differ, so a white shape is the screen face or FAV32_BORDER's inverse ring.
+    const white = (art: Art) => [...parse(artToSvgString(art, { palette: 'light', size: 32 })).querySelectorAll('path, rect')]
+      .filter((e) => !e.closest('mask') && e.getAttribute('fill') === '#ffffff');
+    expect(white(FAV16).length, 'the 16px favicon draws one white shape, its face').toBe(1);
+    expect(white(FAV32_BORDER).map((e) => e.getAttribute('width')), 'the 32px favicon draws its inverse ring, then the white face').toEqual(['19', '17']);
+    expect(white(FAV32), 'the PWA icon art draws nothing white').toEqual([]);
+  });
 });
