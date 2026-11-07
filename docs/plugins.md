@@ -526,7 +526,7 @@ Two edges, both deliberate:
    | `text` | typed | `{text, meta?}` and no other key | raw text blocks, as in [Raw-text results](#plugin-mcp-forwarding--child-wire-contract-pinned) |
    | `text` | untyped | `{result}` or `{text, meta?}` (legacy; `text` wins) | as above |
 
-   A `structured` whose object has `ok: false` (and passes its schema) reads as a refusal, as for core tools — so, like any refusal, its echoed strings take `JSON_ECHO_CAP`; prefer `{error, code}`.
+   A `structured` whose object has `ok: false` (and passes its schema) reads as a refusal, as for core tools — so, like any refusal, its echoed strings take `JSON_ECHO_CAP`; prefer an error refusal (rule 6).
 3. **Schema rules.** `outputSchema` uses only the vocabulary `checkSchema` (`src/mcp/jsonSchemaSubset.ts`) accepts: `type` (a string or a union list), `properties`, `required`, `additionalProperties` (boolean or schema), `items`, `enum`, `const`, `anyOf`, `description`. The root is `type: "object"` (one string). **Every** object schema, nested ones included, states `additionalProperties`. Anything else — `$ref`, `oneOf`, `allOf`, `not`, `pattern`, `minimum`, `format`, … — makes the manifest invalid at load.
 4. **Runtime validation.** cc validates every `structured` against the declared schema before answering (it advertises that schema in the JSON `tools/list` and in `GET /mcp/tools`). These replies are refused `PLUGIN_REPLY_INVALID` (a tool error carrying `statusCode: 500`, logged by cc; the reason names the plugin and tool):
    - json: any key besides `structured` (`result`, `text`, `meta`, …); a `structured` that is not a JSON object; a `structured` that fails the schema (the reason quotes the first validation errors with their `$.path`);
