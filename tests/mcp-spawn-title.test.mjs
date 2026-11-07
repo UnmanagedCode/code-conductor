@@ -51,6 +51,15 @@ async function callToolRaw(baseUrl, name, args) {
   assert.ok(body?.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
   return body.result;
 }
+// The JSON format carries a refusal as a JSON-RPC error whose data holds the code.
+async function callToolJson(baseUrl, name, args) {
+  const res = await fetch(baseUrl + '/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  return res.json();
+}
 async function callTool(baseUrl, name, args) {
   const result = await callToolRaw(baseUrl, name, args);
   assert.ok(!result.isError, `tools/call ${name} errored: ${result.content?.[0]?.text}`);
@@ -101,12 +110,14 @@ test('a title is durable when the worker is killed before it is ever prompted', 
 
 for (const [label, title] of [['empty', ''], ['whitespace-only', ' \t '], ['over-long', 'x'.repeat(MAX_TITLE_LEN + 1)]]) {
   test(`an ${label} title is refused before any side effect: no worker, no titled record, no worktree`, async () => {
-    // Pins: ARGS_INVALID comes from the schema, ahead of worktree creation and create().
+    // Pins: ARGS_INVALID (JSON-RPC error data.code) comes from the schema, ahead of worktree creation and create().
     await withServer(async (srv, repo) => {
       const liveBefore = srv.instances.list().length;
       const wtBefore = await git(repo, 'worktree', 'list');
       const res = await callToolRaw(srv.baseUrl, 'spawn_instance', { project: 'demo', createWorktree: true, title });
       assert.equal(res.isError, true, JSON.stringify(res));
+      const json = await callToolJson(srv.baseUrl, 'spawn_instance', { project: 'demo', createWorktree: true, title });
+      assert.equal(json.error?.data?.code, 'ARGS_INVALID', JSON.stringify(json));
       assert.equal(srv.instances.list().length, liveBefore);
       assert.deepEqual(await titledRecords(), []);
       assert.equal(await git(repo, 'worktree', 'list'), wtBefore);

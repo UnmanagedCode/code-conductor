@@ -1944,6 +1944,7 @@ test('a stage pinning `title` names the worker at spawn, a bare resume keeps a l
     const raw = await t.callRaw('spawn_instance', { project: 'demo', playbook: 'titlelab', stage: 'toolong' });
     assert.equal(raw.isError, true, JSON.stringify(raw));
     assert.match(raw.content[0].text, /title/);
+    assert.equal(JSON.parse(raw.content[1].text).code, 'ARGS_INVALID');
     assert.equal(t.instances.list().length, before, 'no worker was created');
   } finally { await t.close(); }
 });
