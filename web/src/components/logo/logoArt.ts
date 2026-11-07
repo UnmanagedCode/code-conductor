@@ -8,7 +8,7 @@
 // backdrop shows through. knockoutTree turns each one into an SVG mask over what
 // was drawn before it, so the gaps are transparent on any surface.
 
-export type Ink = 'coral' | 'deep' | 'ink' | 'inverse' | 'screen' | 'tile';
+export type Ink = 'coral' | 'deep' | 'ink' | 'screen' | 'tile';
 
 export type LogoElement = {
   tag: 'path' | 'rect';
@@ -17,6 +17,8 @@ export type LogoElement = {
   /** Absent on a knockout, which paints nothing. */
   ink?: Ink;
   ko?: true;
+  /** Drawn as an outline: the ink is the stroke's colour (width and caps in `attrs`) and the fill is none. */
+  stroke?: true;
   /** The prompt's `_`, the one part that blinks. */
   cursor?: true;
 };
@@ -30,10 +32,10 @@ export type Art = {
 
 export type Palette = 'light' | 'dark';
 
-/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER's ring; `screen` is the white terminal face, the same in both palettes. */
+/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `screen` is the white terminal face, the same in both palettes. */
 export const PALETTES: Record<Palette, Record<Ink, string>> = {
-  light: { coral: '#f07456', deep: '#c8482c', ink: '#15171c', inverse: '#ffffff', screen: '#ffffff', tile: '#f7e5de' },
-  dark: { coral: '#f07456', deep: '#c8482c', ink: '#ffffff', inverse: '#15171c', screen: '#ffffff', tile: '#291812' },
+  light: { coral: '#f07456', deep: '#c8482c', ink: '#15171c', screen: '#ffffff', tile: '#f7e5de' },
+  dark: { coral: '#f07456', deep: '#c8482c', ink: '#ffffff', screen: '#ffffff', tile: '#291812' },
 };
 
 /** The inks the app's arts use: coral never changes, `screen` (the tile's face) is white in both themes, the rest follow the theme. */
@@ -91,9 +93,6 @@ const BATON = path('M42.75 4.5L42.75 -7.25A1.25 1.25 0 0 1 44 -8.5L44 -8.5A1.25 
 
 /** The prompt, legs, arm and baton: everything drawn over the screen. */
 const overScreen = (cursor: LogoElement) => [...GLYPHS, cursor, ...FRONT_LEGS, ARM, BATON];
-const OVER_SCREEN = overScreen(CURSOR);
-/** The small sizes' layers around `face`: no screen ring, the screen cut into the body. */
-const smallLayers = (face: LogoElement) => [...BACK_LEGS, BAND_KO, BODY_WITH_SCREEN, face, ...OVER_SCREEN];
 
 /** The full mark: landing, empty chat, About. */
 export const MARK: Art = {
@@ -101,31 +100,51 @@ export const MARK: Art = {
   elements: [...BACK_LEGS, BAND_KO, BODY, SCREEN_RING_KO, SCREEN, ...overScreen({ ...CURSOR, cursor: true })],
 };
 
-const small16 = (face: LogoElement): Art => ({
-  viewBox: '0 0 16 16',
-  elements: under('translate(2.256 2.325) scale(0.273504)', smallLayers(face)),
+const legStroke = (d: string, ink: Ink, width: string): LogoElement => ({
+  tag: 'path', attrs: { d, 'stroke-width': width, 'stroke-linecap': 'round' }, ink, stroke: true,
 });
-
-/** The 16px art: the favicon and the app switcher's Conductor entry, both with the white face. */
-export const FAV16: Art = small16(WHITE_SCREEN);
+const TILE_TRANSFORM = 'translate(6.469 6.858) scale(0.4539)';
+const strokeLegSide = (transform: string, width: string) => [
+  legStroke('M2.75 35.25A4 4 0 0 1 -1.25 39.25', 'deep', width),
+  legStroke('M11.25 28V42A4 4 0 0 1 7.25 46', 'coral', width),
+].map((e) => ({ ...e, attrs: { ...e.attrs, transform } }));
+/** The 3-leg stroked set (a side pair and the centre) in `transform`'s space, strokes `width` wide: thick round-capped strokes, all drawn under the body, that stay legible at 32px. */
+const strokeLegs = (transform: string, width = '5.5'): LogoElement[] => [
+  ...strokeLegSide(transform, width),
+  ...strokeLegSide(`${transform} matrix(-1 0 0 1 40 0)`, width),
+  ...under(transform, [legStroke('M20 35.25V43.25', 'deep', width)]),
+];
+/** What the stroked-leg arts draw over the screen: the prompt, arm and baton (the legs sit under the body). */
+const OVER_SCREEN_NO_LEGS = [...GLYPHS, CURSOR, ARM, BATON];
 
 /** The sidebar header's tile, its face white. */
 export const TILE: Art = {
   viewBox: '0 0 32 32',
   base: [{ tag: 'rect', attrs: { width: '32', height: '32', rx: '8' }, ink: 'tile' }],
-  elements: under('translate(7.385 7.487) scale(0.410256)', smallLayers(WHITE_SCREEN)),
+  elements: [
+    ...strokeLegs(TILE_TRANSFORM),
+    ...under(TILE_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...OVER_SCREEN_NO_LEGS]),
+  ],
+};
+
+/** The 16px art: the favicon and the app switcher's Conductor entry. Its transform snaps the body and the white face to whole pixels, and its legs are thicker (about 2px) so they stay distinct. */
+const FAV16_TRANSFORM = 'translate(2 2.8) scale(0.275)';
+export const FAV16: Art = {
+  viewBox: '0 0 16 16',
+  elements: [
+    ...strokeLegs(FAV16_TRANSFORM, '7'),
+    ...under(FAV16_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...OVER_SCREEN_NO_LEGS]),
+  ],
 };
 
 const FAV32_TRANSFORM = 'translate(4.513 4.65) scale(0.547009)';
 
-/** The 32px favicon: a whole-pixel inverse ring around the screen. */
-export const FAV32_BORDER: Art = {
+/** The 32px favicon: the stroked-leg squid with the white face set straight into the body. */
+export const FAV32_FAVICON: Art = {
   viewBox: '0 0 32 32',
   elements: [
-    ...under(FAV32_TRANSFORM, [...BACK_LEGS, BAND_KO, BODY]),
-    { tag: 'rect', attrs: { x: '6', y: '8', width: '19', height: '12', 'shape-rendering': 'crispEdges' }, ink: 'inverse' },
-    { tag: 'rect', attrs: { x: '7', y: '9', width: '17', height: '10', 'shape-rendering': 'crispEdges' }, ink: 'screen' },
-    ...under(FAV32_TRANSFORM, OVER_SCREEN),
+    ...strokeLegs(FAV32_TRANSFORM),
+    ...under(FAV32_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...OVER_SCREEN_NO_LEGS]),
   ],
 };
 
@@ -174,7 +193,7 @@ export function viewBoxRect(viewBox: string): Record<'x' | 'y' | 'width' | 'heig
 const XMLNS = 'http://www.w3.org/2000/svg';
 
 const attrString = (attrs: Record<string, string>) => Object.entries(attrs).map(([k, v]) => ` ${k}="${v}"`).join('');
-const elString = (el: LogoElement, fill: string) => `<${el.tag}${attrString(el.attrs)} fill="${fill}"/>`;
+const elString = (el: LogoElement, fill: string) => `<${el.tag}${attrString(el.attrs)}${el.stroke ? ` fill="none" stroke="${fill}"` : ` fill="${fill}"`}/>`;
 
 /** The art's own `<svg>` text, with masks named `k<n>` (one per document). */
 function artSvg(art: Art, inks: Record<Ink, string>, frame: Record<string, string>): string {

@@ -67,15 +67,16 @@ describe('Logo', () => {
       }
     });
 
-    it.each(['light', 'dark'])("changes only the small mark's face: every other shape keeps its fill, in %s mode", (theme) => {
-      // Invariant: the 16px small mark differs from its previous art in its face alone. Its coral and deep are fixed hex, its body and baton follow the theme's ink through var(--logo-ink), and both stay so in either theme.
+    it.each(['light', 'dark'])("the small mark's shapes keep their inks: the face is white, the rest coral, deep or the theme ink, in %s mode", (theme) => {
+      // Invariant: the 16px small mark paints its legs as strokes and everything else as fills; its coral and deep are fixed hex and its baton follows the theme's ink through var(--logo-ink), in either theme.
       if (theme === 'dark') document.documentElement.classList.add('dark');
       const { container } = render(<LogoSmall />);
-      const fills = painted(container.querySelector('svg[data-logo="small"]')!).map((e) => e.getAttribute('fill'));
+      // A stroked leg's colour is its stroke; its fill is none.
+      const fills = painted(container.querySelector('svg[data-logo="small"]')!).map((e) => (e.getAttribute('fill') === 'none' ? e.getAttribute('stroke') : e.getAttribute('fill')));
       const face = fills.indexOf('#ffffff');
       expect(face, 'fixture check: the small mark draws one white face').toBeGreaterThan(-1);
-      // Document order: the back legs (deep), the body and the over-screen coral (the glyphs, cursor, front legs, arm), the baton (ink).
-      expect(fills.filter((_, i) => i !== face)).toEqual([DEEP, DEEP, DEEP, ...Array<string>(9).fill(CORAL), INK]);
+      // Document order: the legs (a deep curl then a coral leg per side, then the deep centre leg), the body and the over-screen coral (the glyphs, cursor, arm), the baton (ink).
+      expect(fills.filter((_, i) => i !== face)).toEqual([DEEP, CORAL, DEEP, CORAL, DEEP, ...Array<string>(5).fill(CORAL), INK]);
     });
   });
 
