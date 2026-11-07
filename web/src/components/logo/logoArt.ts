@@ -106,10 +106,7 @@ const small16 = (face: LogoElement): Art => ({
   elements: under('translate(2.256 2.325) scale(0.273504)', smallLayers(face)),
 });
 
-/** The 16px design: the Apps menu. */
-export const SMALL16: Art = small16(SCREEN);
-
-/** The 16px favicon: the 16px design with the white face. */
+/** The 16px art: the favicon and the app switcher's Conductor entry, both with the white face. */
 export const FAV16: Art = small16(WHITE_SCREEN);
 
 /** The sidebar header's tile, its face white. */

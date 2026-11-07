@@ -3,7 +3,7 @@
 // carries a <style>, and only a blinking mark carries an animation class.
 import * as React from 'react';
 import {
-  APP_INKS, knockoutTree, LOCKUP, MARK, SMALL16, TILE, viewBoxRect, WORDMARK, type Art, type KnockoutNode, type LogoElement,
+  APP_INKS, FAV16, knockoutTree, LOCKUP, MARK, TILE, viewBoxRect, WORDMARK, type Art, type KnockoutNode, type LogoElement,
 } from './logoArt';
 
 const BLINK = 'animate-cursor-blink motion-reduce:animate-none';
@@ -66,9 +66,9 @@ export function LogoTile({ className }: { className?: string }) {
   return <LogoSvg art={TILE} name="tile" className={className} />;
 }
 
-/** The 16px design, for menu rows. */
+/** The 16px favicon's art, for menu rows: its face is white. */
 export function LogoSmall({ className }: { className?: string }) {
-  return <LogoSvg art={SMALL16} name="small" className={className} />;
+  return <LogoSvg art={FAV16} name="small" className={className} />;
 }
 
 /** "Code Conductor" outlined; decorative, so its container carries the text. */

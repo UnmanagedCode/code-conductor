@@ -10,6 +10,10 @@ const animated = (root: Element) => [root, ...root.querySelectorAll('*')].filter
 const VARIANTS = [
   ['a still mark', <LogoMark />], ['the tile', <LogoTile />], ['the small mark', <LogoSmall />], ['the wordmark', <Wordmark />], ['the lockup', <LogoLockup />],
 ] as const;
+/** The app's fixed coral and deep, and the theme ink every picture's dark parts follow. */
+const CORAL = '#f07456';
+const DEEP = '#c8482c';
+const INK = 'var(--logo-ink)';
 
 describe('Logo', () => {
   it('a blinking mark animates its cursor alone, and stills it under reduced motion', () => {
@@ -43,20 +47,35 @@ describe('Logo', () => {
     const painted = (svg: Element) => [...svg.querySelectorAll('path, rect')].filter((e) => !e.closest('mask'));
     const white = (svg: Element) => painted(svg).filter((e) => e.getAttribute('fill') === '#ffffff');
 
-    it.each(['light', 'dark'])('is white in the sidebar tile and the theme ink in the other app pictures, in %s mode', (theme) => {
-      // Invariant: the tile alone draws its face #ffffff; the mark, the lockup and the small mark draw that same face in the theme's ink and nothing in white, whatever the theme.
+    it.each(['light', 'dark'])('is white in the sidebar tile and the 16px small mark, and the theme ink in the mark and lockup, in %s mode', (theme) => {
+      // Invariant: the tile and the small mark each draw one white shape, the face, in the same geometry; the mark and the lockup draw that face in the theme's ink and nothing in white, whatever the theme.
       if (theme === 'dark') document.documentElement.classList.add('dark');
       const { container } = render(<><LogoTile /><LogoMark /><LogoLockup /><LogoSmall /></>);
       const picture = (name: string) => container.querySelector(`svg[data-logo="${name}"]`)!;
-      const [face] = white(picture('tile'));
-      expect(white(picture('tile')).length, 'fixture check: the tile draws one white shape, its face').toBe(1);
-      const d = face.getAttribute('d');
-      for (const name of ['mark', 'lockup', 'small']) {
+      for (const name of ['tile', 'small']) {
+        expect(white(picture(name)).length, `fixture check: the ${name} draws one white shape, its face`).toBe(1);
+      }
+      const [tileFace] = white(picture('tile'));
+      const [smallFace] = white(picture('small'));
+      expect(smallFace.getAttribute('d'), "the small mark wears the tile's face").toBe(tileFace.getAttribute('d'));
+      const d = tileFace.getAttribute('d');
+      for (const name of ['mark', 'lockup']) {
         expect(white(picture(name)), `${name} draws nothing white`).toEqual([]);
         const drawn = picture(name).querySelectorAll(`path[d="${d}"]`);
         expect(drawn.length, `${name} draws the face once`).toBe(1);
         expect(drawn[0].getAttribute('fill'), name).toBe('var(--logo-ink)');
       }
+    });
+
+    it.each(['light', 'dark'])("changes only the small mark's face: every other shape keeps its fill, in %s mode", (theme) => {
+      // Invariant: the 16px small mark differs from its previous art in its face alone. Its coral and deep are fixed hex, its body and baton follow the theme's ink through var(--logo-ink), and both stay so in either theme.
+      if (theme === 'dark') document.documentElement.classList.add('dark');
+      const { container } = render(<LogoSmall />);
+      const fills = painted(container.querySelector('svg[data-logo="small"]')!).map((e) => e.getAttribute('fill'));
+      const face = fills.indexOf('#ffffff');
+      expect(face, 'fixture check: the small mark draws one white face').toBeGreaterThan(-1);
+      // Document order: the back legs (deep), the body and the over-screen coral (the glyphs, cursor, front legs, arm), the baton (ink).
+      expect(fills.filter((_, i) => i !== face)).toEqual([DEEP, DEEP, DEEP, ...Array<string>(9).fill(CORAL), INK]);
     });
   });
 
