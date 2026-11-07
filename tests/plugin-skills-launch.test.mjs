@@ -1,9 +1,9 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject, seedSessionJsonl } from './helpers.mjs';
 import { CORE_CLAUDE_PLUGIN_ROOT } from '../src/coreClaudePlugin.ts';
 
@@ -18,7 +18,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plugin-skills.json');
 
 let ctx, baseUrl, instances, pluginHost, home;
-const tmpDirs = [];
 
 before(async () => {
   ctx = await bootServer({ scenarioPath: SCENARIO });
@@ -35,14 +34,7 @@ afterEach(async () => {
   instances._coreClaudePluginRoot = CORE_CLAUDE_PLUGIN_ROOT;
   await instances.shutdown();
   await rmrf(home);
-  for (const d of tmpDirs.splice(0)) await rmrf(d);
 });
-
-async function tmpDir() {
-  const d = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-core-skills-'));
-  tmpDirs.push(d);
-  return d;
-}
 
 // The value after each `--plugin-dir`, in argv order.
 function pluginDirArgs(argv) {
@@ -115,7 +107,7 @@ test('missing .claude-plugin/plugin.json → plugin root dropped, built-in root 
 
 test('a skill under the built-in root is listed by the CLI under the shipped namespace', async () => {
   const name = await realCoreName();
-  const root = path.join(await tmpDir(), 'claude-plugin');
+  const root = path.join(await mkdtemp('cc-core-skills-'), 'claude-plugin');
   await fs.cp(CORE_CLAUDE_PLUGIN_ROOT, root, { recursive: true });
   const skillDir = path.join(root, 'skills', 'fixture-skill');
   await fs.mkdir(skillDir, { recursive: true });
@@ -135,7 +127,7 @@ test('a skill under the built-in root is listed by the CLI under the shipped nam
 });
 
 test('broken built-in root → warned by path, left out, session still launches', async () => {
-  const broken = await tmpDir();
+  const broken = await mkdtemp('cc-core-skills-');
   instances._coreClaudePluginRoot = broken;
   const warnings = [];
   const origWarn = console.warn;
