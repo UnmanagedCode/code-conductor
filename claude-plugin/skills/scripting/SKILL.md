@@ -1,14 +1,15 @@
 ---
 name: scripting
-description: "Use when one cc task needs the same tool across many projects, cards or sessions, or a chain of reads ending in a digest: script the calls instead of one tool call each."
+description: "Use when cc tool results need filtering or aggregating before you read them, or later calls depend on earlier results: script the calls and print only the digest."
 ---
 
 # Scripting cc
 
-Script cc when one task needs the same tool across many targets, or several chained reads that end in one summary:
-- read-only fan-out: `project_status` of every project, `describe_session` of every live worker;
-- multi-step recon: list, filter, read, then print a digest;
-- bulk board operations: move, update or log many cards.
+Two shapes call for a script:
+- aggregating: `project_status` of every project, `describe_session` of every live worker — many full results, of which you need only the digest;
+- chaining: list, filter, then read or act on only what passed (move, update or log the matching cards), with a follow-up call only where a result calls for one.
+
+A few small, independent reads need no script: make them as parallel tool calls.
 
 Print only the digest, because the script's stdout is what lands in your context. Run the script from a heredoc (`node --input-type=module - <<'EOF'`, `python3 - <<'EOF'`) so no file lands in a project tree.
 
