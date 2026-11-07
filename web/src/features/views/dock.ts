@@ -57,7 +57,7 @@ dockStore.subscribe(() => {
   try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ id, subpath, mode })); } catch { /* storage unavailable */ }
 });
 
-/** Full and split never coexist: entering the full view (a pick, Expand, a link while no split shows, the address bar, Forward) ends split, so leaving it lands on Conductor. Only the transition clears, so Dock to side can select while the route is still leaving the plugin. */
+/** Full and split never coexist: entering the full view (a pick, Expand, a link while no split shows, the address bar, Forward) ends split, so every exit but Collapse lands on Conductor. Only the transition into the plugin view clears, so Dock to side and `collapseFullView` can select while the route is still leaving it, and then land on the session with the plugin docked. */
 let inPlugin = routeStore.get().route.view === 'plugin';
 if (inPlugin && dockStore.get().id !== null) closeDock();
 routeStore.subscribe(() => {
