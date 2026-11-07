@@ -131,6 +131,14 @@ function errCode(e: unknown): string | undefined {
   return typeof c === 'string' ? c : undefined;
 }
 
+// The `details` object on a thrown value (a plugin refusal's machine-readable
+// extras, set by src/plugins/mcpBridge.ts), or undefined.
+function errDetails(e: unknown): Record<string, unknown> | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const d = (e as { details?: unknown }).details;
+  return isJsonRecord(d) ? d : undefined;
+}
+
 // The message prose for the tools/call error envelope: a thrown value's
 // `message` when it has one (Error or not), else its String() coercion —
 // matches the original `e?.message ?? String(e)` reading.
@@ -482,15 +490,16 @@ function serializeText(o: Exclude<Outcome, { kind: 'internal' }>, ctx: McpCtx): 
     call = { result: { content: textContent(o.value) }, tool: o.tool, outcome: 'result' };
   } else {
     // Errors read best as prose for an LLM (content[0]); a structured
-    // {error, code, statusCode} block follows for machine handling.
+    // {error, code, statusCode, details} block follows for machine handling.
     const sc = errStatus(o.error);
     const code = errCode(o.error) ?? codeForStatus(sc);
+    const details = errDetails(o.error);
     const msg = errMsg(o.error);
     call = {
       result: {
         content: [
           { type: 'text', text: sc ? `${msg} (HTTP ${sc})` : msg },
-          { type: 'text', text: JSON.stringify({ error: msg, ...(code ? { code } : {}), ...(sc ? { statusCode: sc } : {}) }) },
+          { type: 'text', text: JSON.stringify({ error: msg, ...(code ? { code } : {}), ...(sc ? { statusCode: sc } : {}), ...(details ? { details } : {}) }) },
         ],
         isError: true,
       },
@@ -528,15 +537,21 @@ function refusalBody(v: Record<string, unknown>, cap: number): Record<string, un
 }
 
 // A thrown handler error as the refusal schema: the same code the text view's
-// {error, code, statusCode} block carries, else TOOL_ERROR.
+// {error, code, statusCode} block carries, else TOOL_ERROR. A plugin refusal's
+// `details` is added after the echo cap, so json passes it through uncut;
+// `truncated` speaks for `reason` alone.
 function errorBody(e: unknown, cap: number): Record<string, unknown> {
   const sc = errStatus(e);
-  return capRefusal({
-    ok: false,
-    code: errCode(e) ?? codeForStatus(sc) ?? 'TOOL_ERROR',
-    reason: errMsg(e),
-    ...(sc ? { statusCode: sc } : {}),
-  }, cap);
+  const details = errDetails(e);
+  return {
+    ...capRefusal({
+      ok: false,
+      code: errCode(e) ?? codeForStatus(sc) ?? 'TOOL_ERROR',
+      reason: errMsg(e),
+      ...(sc ? { statusCode: sc } : {}),
+    }, cap),
+    ...(details ? { details } : {}),
+  };
 }
 
 // The JSON-format view of a non-fault outcome: the structured value, and

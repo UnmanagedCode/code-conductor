@@ -69,10 +69,14 @@ function extend(base: Schema, props: Record<string, Schema>, { optional = [] as 
 // ---------- shared fragments ----------
 
 // The refusal every isError:true structuredContent carries: a soft refusal's
-// own fields ride along (sessionId, matches, dependents, …), so it is open.
+// own fields ride along (sessionId, matches, dependents, …), so it is open. A
+// plugin refusal's `details`, when present, is an object.
 export const REFUSAL_SCHEMA: Schema = {
   type: 'object',
-  properties: { ok: lit(false), code: str, reason: str, statusCode: int, truncated: lit(true) },
+  properties: {
+    ok: lit(false), code: str, reason: str, statusCode: int, truncated: lit(true),
+    details: open("A plugin refusal's own machine-readable fields, passed through untouched."),
+  },
   required: ['ok', 'code'],
   additionalProperties: true,
 };
