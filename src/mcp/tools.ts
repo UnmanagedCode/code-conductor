@@ -103,8 +103,9 @@ interface Tool {
 
 // The registry for one output format: the format's limits set the one
 // input-schema field that differs by format (project_read's maxBytes bound),
-// its `fmt` clauses each description's result clause, and every tool gets its
-// outputSchema — a core tool without one is a build-time failure.
+// its `fmt` clauses set each description's result clause, and every tool gets
+// its outputSchema (in both formats; tools/list shows it in JSON only) — a core
+// tool without one is a build-time failure.
 export function buildTools(format: McpFormat = 'text'): Tool[] {
   return coreTools(format).map(t => {
     const outputSchema = OUTPUT_SCHEMAS[t.name];

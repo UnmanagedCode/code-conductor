@@ -31,7 +31,7 @@ Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts
 
 ## Formats
 
-Each core tool's **description** states its purpose once; only its result clause differs per format. The text format's describes the text view (renderings, content blocks, context caps); the JSON format's leaves the shape to the tool's **`outputSchema`**, which is the contract (`fmt` in `coreTools`, `src/mcp/tools.ts`).
+Each core tool's **description** states its purpose once; the text format's result clause describes the text view (renderings, content blocks, context caps) and the JSON format's leaves the shape to the tool's **`outputSchema`**, which is the contract; a few parameter descriptions carry the same kind of per-format clause (`fmt` in `coreTools`, `src/mcp/tools.ts`).
 
 How JSON format differs from text:
 - `tools/list` adds an `outputSchema` per core tool (`OUTPUT_SCHEMAS`, `src/mcp/outputSchemas.ts`).
