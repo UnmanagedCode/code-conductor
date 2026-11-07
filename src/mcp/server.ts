@@ -16,6 +16,7 @@ import { validateProjectRef } from '../projects.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { hostPlatform, type PlatformCapabilities } from '../platform/index.ts';
+import { TEXT_LIMITS, limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -42,6 +43,11 @@ interface McpCtx {
   callerId: string | null;
   playbookGate: PlaybookGate;
   capabilities: PlatformCapabilities;
+  // The output format this request asked for (`?format=`), and its caps
+  // (src/mcp/limits.ts). Handlers read `limits`; only the serializers read
+  // `format`.
+  format: McpFormat;
+  limits: FormatLimits;
 }
 
 // The tool shape the transport itself needs — deliberately broader than the
@@ -202,7 +208,7 @@ export function boundResult(
 // one: the head plus a tail of at most ECHO_TAIL chars — a quarter of a smaller
 // cap — so an error's "(HTTP 404)" suffix survives, joined by an in-band marker
 // carrying the full length.
-const ECHO_CAP = MCP_RESULT_CHAR_BUDGET / 8;
+const ECHO_CAP = TEXT_LIMITS.echoCap;
 const ECHO_TAIL = 64;
 export function capEcho(s: string, cap = ECHO_CAP): string {
   if (s.length <= cap) return s;
@@ -488,6 +494,32 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
   }
 }
 
+// A URL-level fault: the request is refused before anything is dispatched, as
+// one JSON-RPC error object whatever the body held.
+interface UrlFault { code: string; rpcCode: number; reason: string }
+
+// The query parameters /mcp accepts. Identity is not one of them: anything
+// else is refused rather than ignored, so a stale spelling fails loudly.
+const ACCEPTED_QUERY = new Set(['format', 'caller']);
+
+// The request preamble every /mcp route shares: the output format, from the
+// query string only (never Accept or Content-Type).
+function resolveFormat(query: Record<string, unknown>): McpFormat | UrlFault {
+  for (const k of Object.keys(query)) {
+    if (!ACCEPTED_QUERY.has(k)) {
+      return { code: 'QUERY_PARAM_UNKNOWN', rpcCode: -32600, reason: `unknown query parameter '${capEcho(k, 256)}' — /mcp accepts only ?format=text` };
+    }
+  }
+  const f = query.format;
+  if (f === undefined || f === 'text') return 'text';
+  return { code: 'FORMAT_INVALID', rpcCode: -32600, reason: `format must be 'text', got ${capEcho(JSON.stringify(f) ?? String(f), 256)}` };
+}
+
+function urlFaultReply(body: unknown, fault: UrlFault): JsonRpcResponse {
+  const id = isJsonRecord(body) && body.id !== undefined ? body.id : null;
+  return rpcError(id, fault.rpcCode, fault.reason, { ok: false, code: fault.code, reason: fault.reason });
+}
+
 export function buildMcpRouter(
   { instances, pluginHost, playbookGate, capabilities = hostPlatform.capabilities }:
   { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null; playbookGate: PlaybookGate; capabilities?: PlatformCapabilities },
@@ -506,6 +538,11 @@ export function buildMcpRouter(
     // session in place (the baked instanceId never changes; its sessionId does).
     // An absent param, or a handle that names no live instance, yields callerId=null
     // and any caller-dependent tool errors with a clear message.
+    const format = resolveFormat(req.query as Record<string, unknown>);
+    if (typeof format !== 'string') {
+      res.json(urlFaultReply(req.body, format));
+      return;
+    }
     const callerHandle = typeof req.query.caller === 'string' && req.query.caller
       ? req.query.caller : null;
     const callerId = instances ? instances.callerSessionId(callerHandle) : null;
@@ -523,7 +560,7 @@ export function buildMcpRouter(
         console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
       }
     }
-    const ctx: McpCtx = { instances, tools, coreTools: coreToolSet, callerId, playbookGate, capabilities };
+    const ctx: McpCtx = { instances, tools, coreTools: coreToolSet, callerId, playbookGate, capabilities, format, limits: limitsFor(format) };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {

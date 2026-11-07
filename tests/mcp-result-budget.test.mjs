@@ -65,7 +65,7 @@ test('dispatch: an overflowing core read tool answers RESULT_OVER_BUDGET instead
     await registerLocalProject('wide', dir);
     await Promise.all(Array.from({ length: 2500 }, (_, i) =>
       fs.writeFile(path.join(dir, `a-rather-long-file-name-${String(i).padStart(5, '0')}.txt`), '')));
-    const res = await fetch(ctx.baseUrl + '/mcp', {
+    const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'project_status', arguments: { project: 'wide' } } }),
@@ -88,7 +88,7 @@ const HUGE = 60_000;
 const contentChars = result => result.content.reduce((n, c) => n + c.text.length, 0);
 const MARKER = / … \[cut: \d+ chars\] … /;
 async function rpcRaw(baseUrl, method, params, caller) {
-  const res = await fetch(baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : ''), {
+  const res = await fetch(baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}&format=text` : '?format=text'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),

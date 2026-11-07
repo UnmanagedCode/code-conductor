@@ -394,7 +394,7 @@ wtest('W2 MCP output is untouched: get_transcript, get_recent_messages and forwa
   }
 
   const rpc = async (name, args) => {
-    const res = await fetch(ctx.baseUrl + '/mcp', { method: 'POST', headers: { 'content-type': 'application/json' },
+    const res = await fetch(ctx.baseUrl + '/mcp?format=text', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
     return (await res.json()).result;
   };

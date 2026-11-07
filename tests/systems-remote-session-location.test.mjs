@@ -97,7 +97,7 @@ describe('a session on a project on a system', () => {
   });
 
   async function callTool(name, args) {
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),

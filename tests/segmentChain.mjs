@@ -196,7 +196,7 @@ export async function bootLiveAcrossSeams({ ctx, project, publicId, segments, li
 // One MCP tool call over JSON-RPC, unwrapped to the tool's JSON result.
 let nextRpcId = 1;
 export async function mcpTool(ctx, name, args) {
-  const res = await fetch(ctx.baseUrl + '/mcp', {
+  const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),

@@ -382,7 +382,7 @@ describe('the spawn response waits for the spawn-time store facts', () => {
 describe('tier → {backend,model} resolution (MCP spawn)', () => {
   let rpcId = 1;
   async function callTool(name, args) {
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
@@ -416,7 +416,7 @@ describe('tier → {backend,model} resolution (MCP spawn)', () => {
 describe('role → {backend,model} resolution (MCP spawn)', () => {
   let rpcId = 1;
   async function callTool(name, args) {
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
@@ -508,7 +508,7 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
 
   test('an unknown role/model is refused (BAD_MODEL), spawns nothing', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'p', mode: 'bypassPermissions', model: 'ghost-role' } } }),
@@ -539,7 +539,7 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
     setPluginRolesProvider(() => []);
     try {
       await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-      const res = await fetch(baseUrl + '/mcp', {
+      const res = await fetch(baseUrl + '/mcp?format=text', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1001, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' } } }),
@@ -591,7 +591,7 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
     setPluginRolesProvider(() => []); // disable
     try {
       await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-      const res = await fetch(baseUrl + '/mcp', {
+      const res = await fetch(baseUrl + '/mcp?format=text', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1002, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' } } }),
@@ -1035,7 +1035,7 @@ describe('resume recovers the tagged model from the backend store', () => {
 describe('MCP resume restores the recorded backend', () => {
   let rpcId = 1;
   async function callTool(name, args) {
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
@@ -1239,7 +1239,7 @@ describe('MCP resume restores the recorded backend', () => {
 describe('a model id on several backends (MCP spawn)', () => {
   let rpcId = 1;
   async function callTool(name, args) {
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),

@@ -193,7 +193,7 @@ export function wsPrompt(wsUrl, id, text, attachments) {
 }
 
 async function rpc(base, method, params) {
-  const r = await api(base, 'POST', '/mcp', { jsonrpc: '2.0', id: 1, method, params });
+  const r = await api(base, 'POST', '/mcp?format=text', { jsonrpc: '2.0', id: 1, method, params });
   if (r.status !== 200) throw new Error(`/mcp ${method} → ${r.status} ${JSON.stringify(r.body)}`);
   return r.body;
 }

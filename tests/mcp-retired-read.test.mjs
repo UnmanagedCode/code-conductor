@@ -23,7 +23,7 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args, { caller } = {}) {
-  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : '');
+  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}&format=text` : '?format=text');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

@@ -362,7 +362,7 @@ test('two merges into one project at once run their hooks one at a time', async 
 // ── Surfaces ───────────────────────────────────────────────────────────────
 
 async function mcp(method, params) {
-  const r = await fetch(`${baseUrl}/mcp`, {
+  const r = await fetch(`${baseUrl}/mcp?format=text`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),

@@ -92,7 +92,7 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) 
   await waitFor(() => ctx.instances.get(conductorId)?.status === 'idle');
 
   async function callAs(handle, name, args) {
-    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
+    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

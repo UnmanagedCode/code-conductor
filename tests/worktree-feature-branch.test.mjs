@@ -108,7 +108,7 @@ async function mergeCommitCount(cwd, branch, notOn) {
 // --- MCP helpers (mirroring tests/mcp.test.mjs) ---
 let nextRpcId = 1;
 async function rpc(method, params) {
-  const res = await fetch(baseUrl + '/mcp', {
+  const res = await fetch(baseUrl + '/mcp?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method, params }),

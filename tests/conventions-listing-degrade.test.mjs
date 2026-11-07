@@ -172,7 +172,7 @@ describe('the conventions listings and the project created from them, over a deg
   // which drops an array's own property exactly as `.map()` does.
   let nextRpcId = 1;
   async function callTool(name) {
-    const res = await fetch(baseUrl + '/mcp', {
+    const res = await fetch(baseUrl + '/mcp?format=text', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: {} } }),

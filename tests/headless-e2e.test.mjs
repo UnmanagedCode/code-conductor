@@ -131,7 +131,7 @@ async function runWithBrokenCosts(t, finishRun) {
 test('a cost read that fails on completion: still one completed object, costUsd null, the failure on stderr', async (t) => {
   const { code, out } = await runWithBrokenCosts(t, async ({ base, row }) => {
     // send_prompt with no caller is the user's own send; it ends the open root turn.
-    const res = await fetch(`${base}/mcp`, {
+    const res = await fetch(`${base}/mcp?format=text`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_prompt', arguments: { sessionId: row.sessionId, text: 'wrap up' } } }),

@@ -462,7 +462,7 @@ export function buildTools(): Tool[] {
         'you automatically. This tool changes only how often that ping arrives. It re-arms a heartbeat that is ' +
         'already running; `armed:true` in the result means a wake from the target was pending and its live ' +
         'heartbeat was re-armed. The ceiling is the ' +
-        'default, so this can only shorten. Caller identity is taken from the MCP URL (?caller=<sessionId>), ' +
+        'default, so this can only shorten. Caller identity is taken from the MCP URL path (`/mcp/<sessionId>`), ' +
         'so this only works for orchestrator-spawned instances.',
       inputSchema: {
         type: 'object',

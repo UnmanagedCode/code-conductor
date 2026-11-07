@@ -103,7 +103,7 @@ function collapseGaps(evs) {
 
 let nextRpcId = 1;
 async function getTranscript(args) {
-  const res = await fetch(ctx.baseUrl + '/mcp', {
+  const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name: 'get_transcript', arguments: args } }),

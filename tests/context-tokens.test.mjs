@@ -113,7 +113,7 @@ async function runScenario(t, scenarioPath = SCENARIO, onCleanup = cleanups(t)) 
   const events = ws.messages.filter(m => m.t === 'event' && m.id === id).map(m => m.ev);
   let n = 0;
   const mcpText = async (name, args) => {
-    const res = await fetch(ctx.baseUrl + '/mcp', {
+    const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: ++n, method: 'tools/call', params: { name, arguments: args } }),
     });

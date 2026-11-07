@@ -135,7 +135,7 @@ export async function rpc(baseUrl, method, params, { caller } = {}) {
   // translate a caller sessionId to it. Unresolved values pass through so the
   // no-caller / bogus-caller refusal paths still fire.
   const handle = caller ? (instForSession(ctx.instances, caller)?.id ?? caller) : null;
-  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
+  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

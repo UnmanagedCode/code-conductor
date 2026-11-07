@@ -1407,7 +1407,7 @@ export async function setIdleTimeout({ sessionId, timeoutSeconds }: { sessionId:
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
-      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'caller identity missing — call the MCP URL as `/mcp/<sessionId>`. ' +
       'Spawn this instance through the orchestrator so its MCP config carries the caller sessionId.',
     );
   }
@@ -1426,7 +1426,7 @@ export async function setSessionTitle({ title }: { title: string }, { instances,
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
-      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'caller identity missing — call the MCP URL as `/mcp/<sessionId>`. ' +
       'set_session_title titles the calling session, so it only works for a code-conductor-managed instance.',
     );
   }
@@ -1460,7 +1460,7 @@ export async function renewSession(
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
-      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'caller identity missing — call the MCP URL as `/mcp/<sessionId>`. ' +
       'renew_session acts on the calling session, so it only works for a ' +
       'code-conductor-managed instance whose MCP config carries the caller sessionId.',
     );

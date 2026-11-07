@@ -75,7 +75,7 @@ async function setup({ enforcement } = {}) {
   await waitFor(() => ctx.instances.get(conductorId)?.status === 'idle');
 
   async function callAs(handle, name, args) {
-    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
+    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -90,7 +90,7 @@ async function setup({ enforcement } = {}) {
 
   // Same call, but hands back the raw single text block instead of parsing it.
   async function callRawAs(handle, name, args) {
-    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
+    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}&format=text` : '?format=text');
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -380,7 +380,7 @@ test('the read tools create no ledger when there is nothing to read', async () =
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const rawCall = async (name, args) => {
-      const res = await fetch(ctx.baseUrl + '/mcp', {
+      const res = await fetch(ctx.baseUrl + '/mcp?format=text', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
