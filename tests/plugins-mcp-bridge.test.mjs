@@ -16,10 +16,13 @@ import { buildMcpRouter } from '../src/mcp/server.ts';
 import { isTextPayload, isTextResult } from '../src/mcp/content.ts';
 
 const PLUGIN_ID = 'testplug';
+const TOOL = `${PLUGIN_ID}__run`;
 
-// Stand up a child that answers every POST with `body`, and return a handler
-// bound to it. `body` may be swapped between calls via the returned setter.
-async function withChild(body, fn) {
+// Stand up a child that answers every POST with `body`, and hand `fn` both the
+// bridge handler bound to it and an MCP router mounted over the same bridge.
+// `body` may be swapped between calls via the setter; `opts.tool` merges into
+// the manifest tool (e.g. `{outputSchema}` makes it a typed tool).
+async function withChild(body, fn, { tool = {} } = {}) {
   let current = body;
   const seen = [];
   const server = http.createServer((req, res) => {
@@ -43,7 +46,7 @@ async function withChild(body, fn) {
         mcp: {
           endpoint: '/api/mcp',
           timeoutMs: 5000,
-          tools: [{ name: 'run', description: 'test tool', inputSchema: { type: 'object' } }],
+          tools: [{ name: 'run', description: 'test tool', inputSchema: { type: 'object' }, ...tool }],
         },
       },
     }],
@@ -54,8 +57,8 @@ async function withChild(body, fn) {
 
   const tools = bridge.toolsFor();
   assert.equal(tools.length, 1);
-  assert.equal(tools[0].name, `${PLUGIN_ID}__run`);
-  const call = (args = {}) => tools[0].handler(args, { callerId: null });
+  assert.equal(tools[0].name, TOOL);
+  const call = (args = {}, { format = 'text' } = {}) => tools[0].handler(args, { callerId: null, format });
 
   const router = buildMcpRouter({
     instances: null,
@@ -67,22 +70,29 @@ async function withChild(body, fn) {
   const mcpServer = await new Promise(resolve => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
-  const mcpPort = mcpServer.address().port;
+  const base = `http://127.0.0.1:${mcpServer.address().port}/mcp`;
   let rpcId = 0;
-  const callMcp = async (args = {}) => {
-    const res = await fetch(`http://127.0.0.1:${mcpPort}/mcp?format=text`, {
+  const rpc = async (format, method, params) => {
+    const res = await fetch(`${base}?format=${format}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: ++rpcId, method: 'tools/call',
-        params: { name: `${PLUGIN_ID}__run`, arguments: args },
-      }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
     });
-    return (await res.json()).result;
+    return res.json();
   };
+  // The whole JSON-RPC response of a tools/call on the plugin tool.
+  const callMcp = (args = {}, { format = 'text' } = {}) => rpc(format, 'tools/call', { name: TOOL, arguments: args });
+  const listMcp = async format => (await rpc(format, 'tools/list', {})).result.tools;
+  const callRest = async (args = {}) => {
+    const res = await fetch(`${base}/tools/${TOOL}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+  const listRest = async () => (await fetch(`${base}/tools`)).json();
 
   try {
-    await fn({ call, callMcp, seen, set: v => { current = v; } });
+    await fn({ call, callMcp, callRest, listMcp, listRest, seen, set: v => { current = v; } });
   } finally {
     await new Promise(resolve => mcpServer.close(resolve));
     await new Promise(resolve => server.close(resolve));
@@ -171,7 +181,7 @@ const block = text => ({ type: 'text', text });
 
 test('wire: {text} with no meta → exactly one raw text block', async () => {
   await withChild({ text: 'line one\nline two' }, async ({ callMcp }) => {
-    const r = await callMcp();
+    const r = (await callMcp()).result;
     assert.ok(!r.isError);
     assert.deepEqual(r.content, [block('line one\nline two')]);
   });
@@ -179,7 +189,7 @@ test('wire: {text} with no meta → exactly one raw text block', async () => {
 
 test('wire: {meta: null, text} → exactly one raw text block', async () => {
   await withChild({ meta: null, text: 'x' }, async ({ callMcp }) => {
-    const r = await callMcp();
+    const r = (await callMcp()).result;
     assert.ok(!r.isError);
     assert.deepEqual(r.content, [block('x')]);
   });
@@ -187,7 +197,7 @@ test('wire: {meta: null, text} → exactly one raw text block', async () => {
 
 test('wire: {meta, text} keeps the compact-JSON meta block then raw bodies', async () => {
   await withChild({ meta: { page: 'Intro' }, text: ['first', 'second'] }, async ({ callMcp }) => {
-    const r = await callMcp();
+    const r = (await callMcp()).result;
     assert.ok(!r.isError);
     assert.deepEqual(r.content, [block('{"page":"Intro"}'), block('first'), block('second')]);
   });
@@ -195,7 +205,7 @@ test('wire: {meta, text} keeps the compact-JSON meta block then raw bodies', asy
 
 test('wire: a text list with no meta keeps its null meta block', async () => {
   await withChild({ text: ['a', 'b'] }, async ({ callMcp }) => {
-    const r = await callMcp();
+    const r = (await callMcp()).result;
     assert.ok(!r.isError);
     assert.deepEqual(r.content, [block('null'), block('a'), block('b')]);
   });
@@ -203,8 +213,40 @@ test('wire: a text list with no meta keeps its null meta block', async () => {
 
 test('wire: {result} stays one compact-JSON block', async () => {
   await withChild({ result: { x: 1 } }, async ({ callMcp }) => {
-    const r = await callMcp();
+    const r = (await callMcp()).result;
     assert.ok(!r.isError);
     assert.deepEqual(r.content, [block('{"x":1}')]);
+  });
+});
+
+// Every legacy body an untyped tool can answer, through text JSON-RPC, against
+// the WHOLE result — the agent view must stay byte-identical. One subtest per
+// row so no row hides behind another.
+const LEGACY_TEXT = [
+  ['{result}', { result: { x: 1 } }, { content: [block('{"x":1}')] }],
+  ['{text} single string', { text: 'a\nb' }, { content: [block('a\nb')] }],
+  ['{meta, text:[…]}', { meta: { p: 1 }, text: ['a', 'b'] }, { content: [block('{"p":1}'), block('a'), block('b')] }],
+  ['{text:[…]} no meta', { text: ['a', 'b'] }, { content: [block('null'), block('a'), block('b')] }],
+  ['{result, text}: text wins', { result: { x: 1 }, text: 'raw' }, { content: [block('raw')] }],
+  ['{meta} only → null', { meta: { p: 1 } }, { content: [block('null')] }],
+  ['degenerate {text:42} is stringified', { text: 42 }, { content: [block('null'), block('42')] }],
+  ['{error}', { error: 'boom' }, { content: [block('boom'), block('{"error":"boom"}')], isError: true }],
+];
+
+test('text format: legacy bodies reply byte-identically', async t => {
+  for (const [name, body, expected] of LEGACY_TEXT) {
+    await t.test(name, async () => {
+      await withChild(body, async ({ callMcp }) => {
+        assert.deepEqual((await callMcp()).result, expected);
+      });
+    });
+  }
+});
+
+test('text format: an untyped tool is listed with no outputSchema key', async () => {
+  await withChild({ result: {} }, async ({ listMcp }) => {
+    const entry = (await listMcp('text')).find(t => t.name === TOOL);
+    assert.ok(entry, 'listed in text');
+    assert.equal('outputSchema' in entry, false);
   });
 });
