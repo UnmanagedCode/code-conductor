@@ -24,7 +24,6 @@ import { mcpUrl } from './mcpClient.mjs';
 import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { checkSchema, validate } from './jsonSchemaSubset.mjs';
 import { buildTools } from '../src/mcp/tools.ts';
-import { JSON_LIMITS } from '../src/mcp/limits.ts';
 import { REFUSAL_SCHEMA } from '../src/mcp/outputSchemas.ts';
 import { buildMcpRouter } from '../src/mcp/server.ts';
 import { encodeCwd, archiveSessionForCwd, localPlace } from '../src/projects.ts';
@@ -396,7 +395,7 @@ test('a bridged plugin tool passes through untouched, in both formats', async ()
 // ---------- completeness ----------
 
 test('every core tool was driven, and every listed tool has a valid outputSchema', () => {
-  const expected = buildTools(JSON_LIMITS)
+  const expected = buildTools('json')
     .filter(t => !t.requires || hostPlatform.capabilities[t.requires])
     .map(t => t.name).sort();
   assert.deepEqual([...driven].sort(), expected, 'a core tool has no driver here');

@@ -31,11 +31,12 @@ Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts
 
 ## Formats
 
-The **descriptions** in `tools/list` are the same in both formats and describe the **text view**. In JSON format the contract is each tool's **`outputSchema`**: where a description talks about text blocks, renderings or `content[0]`, read the schema instead.
+Each core tool's **description** states its purpose once; only its result clause differs per format. The text format's describes the text view (renderings, content blocks, context caps); the JSON format's leaves the shape to the tool's **`outputSchema`**, which is the contract (`fmt` in `coreTools`, `src/mcp/tools.ts`).
 
 How JSON format differs from text:
 - `tools/list` adds an `outputSchema` per core tool (`OUTPUT_SCHEMAS`, `src/mcp/outputSchemas.ts`).
-- `project_read`'s `maxBytes` input schema has a larger maximum and default (`JSON_READ_BODY_CAP`; the registries are `buildTools(TEXT_LIMITS)` / `buildTools(JSON_LIMITS)`).
+- `tools/list` descriptions carry the JSON result clause (no text layout, no context caps).
+- `project_read`'s `maxBytes` input schema has a larger maximum and default (`JSON_READ_BODY_CAP`; the registries are `buildTools('text')` / `buildTools('json')`).
 - `tools/call` returns `structuredContent`.
 - The context caps do not apply; only the safety ceilings below do.
 - Faults are JSON-RPC errors (`data:{ok:false, code, reason}`), not `isError` results.
@@ -108,7 +109,7 @@ How JSON format differs from text:
 - **Content type:** `content-type: application/json` is required, empty body included, and is checked before anything else.
 - **No Origin or Host check.** `/mcp` has none either. The only cross-site barrier is that a browser's "simple" POST cannot send `application/json`, and the alias refuses anything else with `415` rather than ignoring the body.
 
-**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`buildTools(JSON_LIMITS)`, capability-filtered); the caller's plugin tools follow with `outputSchema: null`.
+**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`buildTools('json')`, capability-filtered); the caller's plugin tools follow with `outputSchema: null`.
 
 ## Env vars
 
@@ -144,7 +145,6 @@ Unchanged in both formats:
 ## Limitations
 
 - **Plugin tools are untyped.** They pass through, and the alias returns their MCP envelope.
-- **Descriptions describe the text view.** In JSON format, `outputSchema` is the contract.
 - **A remote worker gets no `CONDUCTOR_MCP_URL`.**
 - **No auth.** Any local process can call as any live session.
 - **No streaming.** Every result is buffered whole; a JSON result can reach the ceilings above.
