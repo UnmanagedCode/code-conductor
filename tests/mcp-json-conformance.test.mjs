@@ -433,3 +433,11 @@ test('every core tool was driven, and every listed tool has a valid outputSchema
   }
   checkSchema(REFUSAL_SCHEMA);
 });
+
+test('REFUSAL_SCHEMA: a details key, when present, must be an object', () => {
+  assert.deepEqual(validate(REFUSAL_SCHEMA, { ok: false, code: 'X', details: {} }), []);
+  assert.deepEqual(validate(REFUSAL_SCHEMA, { ok: false, code: 'X', details: { a: [1] } }), []);
+  for (const bad of [[], 'x', null, 1]) {
+    assert.notDeepEqual(validate(REFUSAL_SCHEMA, { ok: false, code: 'X', details: bad }), [], JSON.stringify(bad));
+  }
+});

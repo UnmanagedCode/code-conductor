@@ -64,7 +64,7 @@ for p in cc.list_projects()['projects']:
 - Arguments use the tool's own names. In Node they go in one object; in Python they are keywords, and a name that is a Python keyword takes a `_` suffix (`from_=`).
 - Leave an argument out rather than passing `None`/`null`, which is sent as a value. A worktree from `list_projects` is `worktrees[i].worktreeName`, passed as `worktree`; the main checkout takes no `worktree`.
 - A method returns the tool's JSON result. Before you guess at field names, grep the method in `conductor_client.mjs` / `.py`: its doc comment and its `<Tool>Result` type list them.
-- Plugin tools have no method. A plugin tool is scriptable only if its manifest declares an `outputSchema`: `GET $CONDUCTOR_MCP_URL/tools` lists exactly those, with their schemas, and `cc.call('<plugin-id>__<tool>', {…})` returns its JSON object. Any other plugin tool raises `ConductorError` `TOOL_UNAVAILABLE_IN_FORMAT` — call it as a direct MCP tool instead. A plugin's tool-level failure raises `ConductorError` with the plugin's code, or `TOOL_ERROR` when it sends none.
+- Plugin tools have no method. A plugin tool is scriptable only if its manifest declares an `outputSchema`: `GET $CONDUCTOR_MCP_URL/tools` lists exactly those, with their schemas, and `cc.call('<plugin-id>__<tool>', {…})` returns its JSON object. Any other plugin tool raises `ConductorError` `TOOL_UNAVAILABLE_IN_FORMAT` — call it as a direct MCP tool instead. A plugin's tool-level failure raises `ConductorError` with the plugin's code, or `TOOL_ERROR` when it sends none; its `details` object, if the plugin sent one, is `e.body.details` / `e.body['details']`.
 
 ## Rules
 

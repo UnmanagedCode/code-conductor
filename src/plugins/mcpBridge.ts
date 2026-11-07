@@ -11,12 +11,13 @@
 // Wire contract with the child (pinned; docs/plugins.md): POST <endpoint> with
 // {tool, arguments, caller:{sessionId, project}, format:'text'|'json'} → HTTP
 // 200 for EVERY well-formed tool invocation — unknown tool, bad args and
-// tool-level failures are all 200+{error, code?}. A non-200 from the child
+// tool-level failures are all 200+{error, code?, details?}. A non-200 from the child
 // means a transport-level failure only (malformed envelope, plugin bug) and
 // maps to an HTTP-coded error. The 200 body, checked in this order:
-//   1. {error, code?}  (any format) — a tool error. A `code` matching
-//      PLUGIN_ERROR_CODE_RE rides on the thrown error; a malformed one is
-//      PLUGIN_REPLY_INVALID.
+//   1. {error, code?, details?}  (any format) — a tool error. A `code`
+//      matching PLUGIN_ERROR_CODE_RE and a `details` JSON object ride on the
+//      thrown error; a malformed code or a non-object details is
+//      PLUGIN_REPLY_INVALID. Any other key is dropped.
 //   2. format json     — {structured} only, an object valid against the tool's
 //      outputSchema; returned as is (the server's structuredContent).
 //   3. format text, typed tool   — {text, meta?} only.
@@ -145,8 +146,13 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
         if (code != null && (typeof code !== 'string' || !PLUGIN_ERROR_CODE_RE.test(code))) {
           throw replyInvalid(`${where}: error carries an invalid code ${JSON.stringify(code)} (must match ${PLUGIN_ERROR_CODE_RE.source}): ${String(rec.error)}`);
         }
+        if ('details' in rec && !isRecord(rec.details)) {
+          throw replyInvalid(`${where}: error carries an invalid details (must be a JSON object, got ${kindOf(rec.details)}): ${String(rec.error)}`);
+        }
         // No HTTP status: a tool-level failure.
-        throw Object.assign(new Error(String(rec.error)), code != null ? { code } : {});
+        throw Object.assign(new Error(String(rec.error)),
+          code != null ? { code } : {},
+          'details' in rec ? { details: rec.details } : {});
       }
       // 2. json: the structured view alone, held to the advertised schema.
       if (ctx.format === 'json' && outputSchema) {

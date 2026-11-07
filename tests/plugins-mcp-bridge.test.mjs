@@ -14,6 +14,9 @@ import express from 'express';
 import { createMcpBridge } from '../src/plugins/mcpBridge.ts';
 import { buildMcpRouter } from '../src/mcp/server.ts';
 import { isTextPayload, isTextResult } from '../src/mcp/content.ts';
+import { validate } from '../src/mcp/jsonSchemaSubset.ts';
+import { JSON_ECHO_CAP } from '../src/mcp/limits.ts';
+import { REFUSAL_SCHEMA } from '../src/mcp/outputSchemas.ts';
 
 const PLUGIN_ID = 'testplug';
 const TOOL = `${PLUGIN_ID}__run`;
@@ -416,6 +419,14 @@ test('a plugin error code rides on all three channels; a malformed one is PLUGIN
       assert.deepEqual((await callMcp()).result, { content: [block('gone'), block('{"error":"gone","code":"NOT_FOUND"}')], isError: true });
       assert.deepEqual(await callRest({}), { status: 200, body: { ok: false, code: 'NOT_FOUND', reason: 'gone' } });
     });
+    await t.test('no code and no details', async () => {
+      set({ error: 'gone' });
+      const j = await callMcp({}, { format: 'json' });
+      assert.deepEqual(j.result.structuredContent, { ok: false, code: 'TOOL_ERROR', reason: 'gone' });
+      assert.equal(j.result.isError, true);
+      assert.deepEqual((await callMcp()).result, { content: [block('gone'), block('{"error":"gone"}')], isError: true });
+      assert.deepEqual(await callRest({}), { status: 200, body: { ok: false, code: 'TOOL_ERROR', reason: 'gone' } });
+    });
     for (const code of ['nope', 42]) {
       await t.test(`code ${JSON.stringify(code)}`, async () => {
         set({ error: 'boom', code });
@@ -452,4 +463,89 @@ test('json: a large structured reply arrives complete on JSON-RPC and REST — n
     assert.equal(hasTruncated(rest.body), false);
     assert.deepEqual(rest.body, input);
   }, { tool: { outputSchema: schema } });
+});
+
+// ---------- plugin refusal details ----------
+
+const DETAILS = { retry_after_ms: 1500, available_actions: ['wait', 'end'], fix: { hint: 'x' } };
+
+test('a plugin error\'s details ride untouched on all three channels', async t => {
+  await withChild(null, async ({ callMcp, callRest, set }) => {
+    for (const [name, body, code] of [
+      ['with a code', { error: 'slow down', code: 'RATE_LIMITED', details: DETAILS }, 'RATE_LIMITED'],
+      ['with no code → TOOL_ERROR', { error: 'slow down', details: DETAILS }, 'TOOL_ERROR'],
+    ]) {
+      await t.test(name, async () => {
+        set(body);
+        const expected = { ok: false, code, reason: 'slow down', details: DETAILS };
+        const j = (await callMcp({}, { format: 'json' })).result;
+        assert.deepEqual(j.structuredContent, expected);
+        assert.equal(j.isError, true);
+        assert.deepEqual(validate(REFUSAL_SCHEMA, j.structuredContent), []);
+        assert.deepEqual(await callRest({}), { status: 200, body: expected });
+        const textBlock = { error: 'slow down', ...(body.code ? { code } : {}), details: DETAILS };
+        assert.deepEqual((await callMcp()).result,
+          { content: [block('slow down'), block(JSON.stringify(textBlock))], isError: true });
+      });
+    }
+  }, TYPED);
+});
+
+test('an untyped tool\'s error details render in its text error block', async () => {
+  await withChild({ error: 'slow down', code: 'RATE_LIMITED', details: DETAILS }, async ({ callMcp }) => {
+    assert.deepEqual((await callMcp()).result, {
+      content: [block('slow down'), block(JSON.stringify({ error: 'slow down', code: 'RATE_LIMITED', details: DETAILS }))],
+      isError: true,
+    });
+  });
+});
+
+test('json: a plugin refusal\'s details is never cut; its reason still is', async t => {
+  const details = { blob: 'x'.repeat(JSON_ECHO_CAP + 1000), nested: ['z'.repeat(JSON_ECHO_CAP + 1)] };
+  await withChild(null, async ({ callMcp, callRest, set }) => {
+    await t.test('a long reason is cut and flagged; details stays whole', async () => {
+      const reason = 'y'.repeat(JSON_ECHO_CAP + 1000);
+      set({ error: reason, code: 'BIG', details });
+      const j = (await callMcp({}, { format: 'json' })).result.structuredContent;
+      const r = await callRest({});
+      assert.equal(r.status, 200);
+      for (const got of [j, r.body]) {
+        assert.deepEqual(got.details, details);
+        assert.ok(got.reason.length < reason.length, 'the reason is cut');
+        assert.equal(got.truncated, true);
+      }
+    });
+    await t.test('a short reason: no truncated flag, details whole', async () => {
+      set({ error: 'short', code: 'BIG', details });
+      const j = (await callMcp({}, { format: 'json' })).result.structuredContent;
+      const r = (await callRest({})).body;
+      for (const got of [j, r]) {
+        assert.deepEqual(got, { ok: false, code: 'BIG', reason: 'short', details });
+        assert.equal(hasTruncated(got), false);
+      }
+    });
+  }, TYPED);
+});
+
+test('PLUGIN_REPLY_INVALID: an error whose details is not a JSON object', async t => {
+  const cases = [[[], 'array'], ['x', 'string'], [null, 'null'], [42, 'number'], [true, 'boolean']];
+  const reFor = kind => new RegExp(`error carries an invalid details \\(must be a JSON object, got ${kind}\\): boom`);
+  await withChild(null, async ({ callMcp, callRest, set }) => {
+    for (const [details, kind] of cases) {
+      await t.test(`typed tool, details ${JSON.stringify(details)}`, async () => {
+        set({ error: 'boom', code: 'RATE_LIMITED', details });
+        assertInvalid(await invalidOnJsonRpc(callMcp), reFor(kind));
+        assertInvalid(await invalidOnRest(callRest), reFor(kind));
+        assertInvalid(await invalidOnText(callMcp), reFor(kind));
+      });
+    }
+  }, TYPED);
+  await withChild(null, async ({ callMcp, set }) => {
+    for (const [details, kind] of cases) {
+      await t.test(`untyped tool, details ${JSON.stringify(details)}`, async () => {
+        set({ error: 'boom', details });
+        assertInvalid(await invalidOnText(callMcp), reFor(kind));
+      });
+    }
+  });
 });
