@@ -783,10 +783,10 @@ test('a conductor reading the session mid-switch sees the confirmed model, not t
   await inst.switchModel({ model: B, backend: 'ollama', effort: 'low' });
   await inGrace(inst);
   assert.equal(inst.summary().model, B, 'premise: the summary already names the target');
-  const during = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  const during = (await describeSession({ sessionId: inst.sessionId }, { instances })).text().text;
   assert.match(during, /model ollama\/alpha:cloud/);
   await settled(inst);
-  const after = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  const after = (await describeSession({ sessionId: inst.sessionId }, { instances })).text().text;
   assert.match(after, /model ollama\/beta:cloud/);
 });
 
@@ -1198,14 +1198,14 @@ test('mid cross switch the summary names both backends, and a conductor sees the
   await waitFor(() => inst.proc && inst.status === 'idle' && inst.modelSwitch && inst.model === A);
   assert.deepEqual(inst.summary().modelSwitch, { from: HAIKU, to: A, fromBackend: 'claude', toBackend: 'ollama' });
   assert.equal(inst.summary().backend, 'ollama', 'premise: the summary already names the target backend');
-  const during = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  const during = (await describeSession({ sessionId: inst.sessionId }, { instances })).text().text;
   assert.match(during, /model claude\/claude-haiku-4-5\b/);
   const refused = await sendPrompt({ sessionId: inst.sessionId, text: 'x' }, { instances });
   assert.equal(refused.code, 'SESSION_SWITCHING_MODEL');
   assert.deepEqual([refused.fromBackend, refused.toBackend], ['claude', 'ollama']);
   assert.match(refused.reason, /switch model claude-haiku-4-5 on claude → alpha:cloud on ollama;/);
   await settled(inst);
-  const after = (await describeSession({ sessionId: inst.sessionId }, { instances })).text;
+  const after = (await describeSession({ sessionId: inst.sessionId }, { instances })).text().text;
   assert.match(after, /model ollama\/alpha:cloud/);
 });
 

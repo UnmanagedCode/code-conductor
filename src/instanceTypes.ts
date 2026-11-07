@@ -25,6 +25,7 @@ import type { TurnMarks } from './sessionStore.ts';
 import type { BackgroundJob } from './backgroundJobs.ts';
 import type { Response } from 'express';
 import type { LineageSource } from './lineagePager.ts';
+import type { HumanPromptQuote } from './promptAuthor.ts';
 import type { PristineTracker } from './pristine.ts';
 
 // One backing segment's claim on the ring's seq space: ring content with
@@ -382,7 +383,7 @@ export interface InstanceManagerLike {
   // The human prompts the caller's next wakes about the target will report (its
   // held deferred wakes, then the target's pending list), quoted — read by the
   // conductor sends' `humanPrompts` result field.
-  pendingHumanPrompts(instanceId: string, callerInstanceId?: string | null): string[];
+  pendingHumanPrompts(instanceId: string, callerInstanceId?: string | null, quote?: HumanPromptQuote | null): string[];
   // `replayed`: jsonl history (kept out of the wake hubs); `pullOnly`: kept off
   // every socket (wsHub) — see Instance._emitUi.
   on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null; replayed?: boolean; pullOnly?: boolean }) => void): void;

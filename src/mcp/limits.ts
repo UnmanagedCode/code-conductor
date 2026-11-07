@@ -20,6 +20,12 @@ export type McpFormat = 'json' | 'text';
 
 export const MCP_FORMATS: readonly McpFormat[] = ['json', 'text'];
 
+// Text-format caps that have a name of their own (the project_bash /
+// system_bash descriptions cite BASH_OUTPUT_CAP).
+export const BASH_OUTPUT_CAP = MCP_BODY_BUDGET;
+export const DIRTY_CAP = 500;
+export const HISTORY_CAP = 200;
+
 // JSON-format safety ceilings. Each is far above any context budget and exists
 // only so one call cannot buffer an unbounded body into one response.
 export const JSON_READ_BODY_CAP = 8 * 1024 * 1024;
@@ -59,11 +65,11 @@ export interface FormatLimits {
 export const TEXT_LIMITS: FormatLimits = Object.freeze({
   resultBudget: MCP_RESULT_CHAR_BUDGET,
   readBody: MCP_BODY_BUDGET,
-  bashOutput: MCP_BODY_BUDGET,
+  bashOutput: BASH_OUTPUT_CAP,
   diffPageBytes: null,
   diffSideListChars: MCP_RESULT_CHAR_BUDGET / 8,
-  dirtyCap: 500,
-  historyCap: 200,
+  dirtyCap: DIRTY_CAP,
+  historyCap: HISTORY_CAP,
   msgTextCap: MSG_TEXT_CAP,
   toolArgValueCap: TOOL_ARG_VALUE_CAP,
   humanPromptQuote: Object.freeze({ maxChars: HUMAN_PROMPT_QUOTE_MAX_CHARS, maxCount: HUMAN_PROMPT_QUOTE_MAX_COUNT }),

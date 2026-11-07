@@ -125,7 +125,7 @@ import { defaultClaudeLauncher, RealClaudeLauncher, resolveClaudeBin, resolveBac
 import { hostPlatform, type Platform } from './platform/index.ts';
 import type { CreateInstanceInput, ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary, ModelSwitchState, RewriteKind, RingSeam, SubtreeRow } from './instanceTypes.ts';
 import type { UiEvent, UiEventOf, UserEchoAttachment, PromptAuthor } from '../shared/uiEvent.ts';
-import { authorMarkerBlock, combineAuthors, quoteHumanPrompts } from './promptAuthor.ts';
+import { authorMarkerBlock, combineAuthors, quoteHumanPrompts, type HumanPromptQuote } from './promptAuthor.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
@@ -5333,8 +5333,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // The human's prompts into this instance that the caller's next wake about it
   // will report, quoted for a send-time result (src/promptAuthor.ts). Read-only:
   // the wake still carries them.
-  pendingHumanPrompts(instanceId: string, callerInstanceId: string | null = null): string[] {
-    return quoteHumanPrompts(this._idleHub.peekHumanPrompts(instanceId, callerInstanceId));
+  pendingHumanPrompts(instanceId: string, callerInstanceId: string | null = null, quote?: HumanPromptQuote | null): string[] {
+    return quoteHumanPrompts(this._idleHub.peekHumanPrompts(instanceId, callerInstanceId), quote);
   }
 
   setServerPort(port: number): void {

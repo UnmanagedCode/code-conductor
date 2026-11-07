@@ -201,7 +201,7 @@ test('a malformed record does not take down the unfiltered list_sessions scan', 
   await fs.copyFile(path.join(__dirname, 'fixtures', 'session-sample.jsonl'),
     path.join(dir, '11111111-2222-3333-4444-555555555555.jsonl'));
 
-  const res = await mcp.listSessions({}, { instances, playbookGate: null });
+  const res = (await mcp.listSessions({}, { instances, playbookGate: null })).text();
   assert.notEqual(res?.ok, false, JSON.stringify(res));
   assert.match(res.text, /▸ healthy/,
     `the healthy project must still be scanned: ${res.text}`);

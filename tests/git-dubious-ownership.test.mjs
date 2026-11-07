@@ -116,7 +116,8 @@ async function makeRepo(dir) {
 }
 
 const fixLine = (p) => `git config --global --add safe.directory ${p}`;
-const text = (r) => r.text;
+// The handler's text view (its dualResult's rendering).
+const text = (r) => r.text().text;
 function projectBlock(listText, name) {
   const block = listText.split(/^▸ /m).find(b => b.startsWith(`${name}  `));
   assert.ok(block, `no list_projects block for ${name}`);

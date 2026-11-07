@@ -85,6 +85,28 @@ export function isTextResult(v: unknown): v is TextResult {
   return !!v && typeof v === 'object' && (v as Partial<TextResult>)[TEXT_RESULT] === true;
 }
 
+// A result with two views, built from ONE build of the data: `json` is the
+// application view (the tool's outputSchema; `structuredContent` in JSON
+// format) and `text` the agent view (a textResult, a textPayload or a plain
+// value, serialized exactly as a handler returning it directly would be). The
+// thunk runs only in text format, so a rendering is never paid for in JSON.
+// Same Symbol-tag discipline as textPayload.
+const DUAL = Symbol('mcpDualResult');
+
+export interface DualResult {
+  [DUAL]: true;
+  json: Record<string, unknown>;
+  text: () => unknown;
+}
+
+export function dualResult(json: Record<string, unknown>, text: () => unknown): DualResult {
+  return { [DUAL]: true, json, text };
+}
+
+export function isDual(v: unknown): v is DualResult {
+  return !!v && typeof v === 'object' && (v as Partial<DualResult>)[DUAL] === true;
+}
+
 // Flatten a (meta, bodies) payload into the single string an LLM would read off
 // the wire: the compact-JSON metadata block followed by each raw body block, in
 // order — mirroring how the MCP server emits them as separate content[] blocks

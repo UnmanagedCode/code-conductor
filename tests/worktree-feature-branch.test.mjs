@@ -509,6 +509,8 @@ const BASE_WORKTREE_WRITES = {
   'src/mcp/handlers.ts': ['baseWorktree: args.baseWorktree'],
   // MCP input-schema property declarations (create_worktree, spawn_instance).
   'src/mcp/tools.ts': ['baseWorktree: {'],
+  // MCP output-schema property declaration (the JSON-format worktree view).
+  'src/mcp/outputSchemas.ts': ['baseWorktree: str'],
 };
 
 async function tsSourceFiles() {

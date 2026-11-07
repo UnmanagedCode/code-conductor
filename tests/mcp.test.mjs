@@ -192,10 +192,23 @@ test('tools/list returns the full expected tool catalog', async () => {
     'system_bash', 'system_transfer',
   ].sort();
   assert.deepEqual(names, expected);
-  // Every tool carries a schema.
+  // Every tool carries a schema; the text format lists no outputSchema.
   for (const t of body.result.tools) {
     assert.equal(t.inputSchema.type, 'object');
     assert.ok(typeof t.description === 'string' && t.description.length > 0);
+    assert.equal(t.outputSchema, undefined, `${t.name}: text format lists no outputSchema`);
+  }
+  // The JSON format lists the same tools, same descriptions, plus an outputSchema each.
+  const res = await fetch(baseUrl + '/mcp?format=json', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/list' }),
+  });
+  const json = (await res.json()).result.tools;
+  assert.deepEqual(json.map(t => t.name).sort(), expected);
+  for (const t of json) {
+    assert.equal(t.outputSchema?.type, 'object', `${t.name}: JSON format lists an outputSchema`);
+    assert.equal(t.description, body.result.tools.find(x => x.name === t.name).description);
   }
 });
 

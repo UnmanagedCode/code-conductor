@@ -9,14 +9,14 @@
 
 import express from 'express';
 import { buildTools } from './tools.ts';
-import { isTextPayload, isTextResult, codeForStatus, MCP_RESULT_CHAR_BUDGET } from './content.ts';
+import { isTextPayload, isTextResult, isDual, codeForStatus, MCP_RESULT_CHAR_BUDGET } from './content.ts';
 import { validateArgs } from './argValidation.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
 import { validateProjectRef } from '../projects.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { hostPlatform, type PlatformCapabilities } from '../platform/index.ts';
-import { TEXT_LIMITS, limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
+import { TEXT_LIMITS, JSON_ECHO_CAP, JSON_LIMITS, limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -60,6 +60,7 @@ interface McpTool {
   name: string;
   description: string;
   inputSchema: unknown;
+  outputSchema?: unknown;
   handler(args: unknown, ctx: McpCtx): Promise<unknown>;
   annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean; destructiveHint?: boolean };
 }
@@ -270,37 +271,38 @@ export function boundToolCall(call: ToolCall, coreTools: ReadonlySet<McpTool>): 
   };
 }
 
-// One tools/call, up to (not including) the response boundary: the result and
-// how the call ended — refused before any handler ran (unknown tool, argument
-// validation, prefix ambiguity, playbook policy), the handler's own result, or a
-// thrown handler error. boundToolCall reads `outcome` to bound it.
+// A text-format tools/call result on its way through the response boundary,
+// with how the call ended — boundToolCall reads `outcome` to bound it.
 interface ToolCall {
   result: { content: TextContent; isError?: boolean };
   tool: McpTool | null;
   outcome: 'refused' | 'result' | 'error';
 }
-function refused(tool: McpTool | null, result: ToolCall['result']): ToolCall {
-  return { result, tool, outcome: 'refused' };
-}
 
-async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
-  const p = asRecord(params);
-  const name = p.name;
-  let args: unknown = p.arguments ?? {};
+// One tools/call, up to (not including) the response: how it ended, in a
+// format-neutral shape both serializers (and the REST alias) read.
+//   - fault:   refused before anything ran because the CALL is malformed —
+//              no such tool, or arguments its inputSchema refuses;
+//   - refused: refused before the handler, as a soft refusal (prefix
+//              ambiguity, playbook policy);
+//   - result:  the handler's own return, a soft refusal ({ok:false}) included;
+//   - error:   the handler threw.
+type Outcome =
+  | { kind: 'fault'; code: 'TOOL_UNKNOWN' | 'ARGS_INVALID'; reason: string; tool: McpTool | null }
+  | { kind: 'refused'; body: Record<string, unknown>; tool: McpTool }
+  | { kind: 'result'; value: unknown; tool: McpTool }
+  | { kind: 'error'; error: unknown; tool: McpTool };
+
+// THE tools/call core: lookup → argument validation → the four prefix-
+// resolution passes → playbook policy → project-ref validation → handler →
+// ledger commit. Shared by JSON-RPC tools/call and the REST alias, so both run
+// one validation, one gate and one handler path.
+async function runTool(name: unknown, rawArgs: unknown, ctx: McpCtx): Promise<Outcome> {
+  let args: unknown = rawArgs ?? {};
   const tool = ctx.tools.find(t => t.name === name);
-  if (!tool) {
-    return refused(null, {
-      content: [{ type: 'text', text: `unknown tool: ${name}` }],
-      isError: true,
-    });
-  }
+  if (!tool) return { kind: 'fault', code: 'TOOL_UNKNOWN', reason: `unknown tool: ${name}`, tool: null };
   const v = validateArgs(tool.inputSchema, args, name);
-  if (v) {
-    return refused(tool, {
-      content: [{ type: 'text', text: v }],
-      isError: true,
-    });
-  }
+  if (v) return { kind: 'fault', code: 'ARGS_INVALID', reason: v, tool };
   // sessionId prefix resolution — the single, uniform chokepoint for every
   // worker-addressing tool. Accept any unambiguous prefix of a sessionId in
   // place of the full 36-char UUID, resolved to the canonical full id before
@@ -315,9 +317,7 @@ async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
       && typeof args.sessionId === 'string' && args.sessionId) {
     const ref = ctx.instances.resolveSessionRef(args.sessionId);
     if (ref && 'ambiguous' in ref) {
-      return refused(tool, {
-        content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.sessionId, 'sessionId')) }],
-      });
+      return { kind: 'refused', body: ambiguousRefusal(ref, args.sessionId, 'sessionId'), tool };
     }
     if (ref?.sessionId && ref.sessionId !== args.sessionId) {
       args = { ...args, sessionId: ref.sessionId };
@@ -337,9 +337,7 @@ async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
       if (typeof value !== 'string' || !value) continue;
       const ref = ctx.instances.resolveSessionRef(value);
       if (ref && 'ambiguous' in ref) {
-        return refused(tool, {
-          content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, value, `provenance.${stage}`)) }],
-        });
+        return { kind: 'refused', body: ambiguousRefusal(ref, value, `provenance.${stage}`), tool };
       }
       if (ref?.sessionId) resolved[stage] = ref.sessionId;
     }
@@ -357,9 +355,7 @@ async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
       && typeof args.forward.sessionId === 'string' && args.forward.sessionId) {
     const ref = ctx.instances.resolveSessionRef(args.forward.sessionId);
     if (ref && 'ambiguous' in ref) {
-      return refused(tool, {
-        content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.forward.sessionId, 'forward.sessionId')) }],
-      });
+      return { kind: 'refused', body: ambiguousRefusal(ref, args.forward.sessionId, 'forward.sessionId'), tool };
     }
     if (ref?.sessionId) args = { ...args, forward: { ...args.forward, sessionId: ref.sessionId } };
   }
@@ -384,9 +380,7 @@ async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
       && typeof args.resume === 'string' && args.resume) {
     const ref = await ctx.instances.resolveResumeRef(args.resume);
     if (ref && 'ambiguous' in ref) {
-      return refused(tool, {
-        content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.resume, 'resume')) }],
-      });
+      return { kind: 'refused', body: ambiguousRefusal(ref, args.resume, 'resume'), tool };
     }
     if (ref) {
       resumeHandle = ref.handle;
@@ -398,9 +392,7 @@ async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
   // the handler. Inert unless the caller is a conductor with enforcement on;
   // see src/mcp/playbookGate.ts.
   const gate = await ctx.playbookGate.check({ toolName: name, args, callerId: ctx.callerId, resumeHandle });
-  if ('refusal' in gate) {
-    return refused(tool, { content: [{ type: 'text', text: JSON.stringify(gate.refusal) }] });
-  }
+  if ('refusal' in gate) return { kind: 'refused', body: { ...gate.refusal }, tool };
   args = gate.args;
   try {
     // Every core tool's `project` names an existing project (creation takes
@@ -411,33 +403,53 @@ async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
     if (ctx.coreTools.has(tool) && isJsonRecord(args) && typeof args.project === 'string' && args.project !== '') {
       validateProjectRef(args.project);
     }
-    const result = await tool.handler(args, ctx);
+    const value = await tool.handler(args, ctx);
     // Ledger the move only now that it has actually happened. A throw skips
     // this entirely (see the catch below); a soft refusal is filtered inside
-    // commit().
-    if (gate.commit) await gate.commit(result);
-    let content: TextContent;
-    if (isTextResult(result)) {
-      // The rendering IS the whole result — one raw block, no metadata
-      // block to parse (src/mcp/content.ts).
-      content = [{ type: 'text', text: result.text }];
-    } else if (isTextPayload(result)) {
-      // Multi-block: compact-JSON metadata block, then one raw text block
-      // per body, in order. Lets the LLM read file/diff/message bodies
-      // un-escaped while still parsing structured metadata from content[0].
-      content = [{ type: 'text', text: JSON.stringify(result.meta ?? null) }];
-      for (const b of result.bodies) content.push({ type: 'text', text: String(b) });
-    } else {
-      content = [{ type: 'text', text: JSON.stringify(result ?? null) }];
-    }
-    return { result: { content }, tool, outcome: 'result' };
+    // commit(). The gate reads the data, never a rendering.
+    if (gate.commit) await gate.commit(isDual(value) ? value.json : value);
+    return { kind: 'result', value, tool };
   } catch (e) {
+    return { kind: 'error', error: e, tool };
+  }
+}
+
+// A handler's return as text-format content blocks — the agent view.
+function textContent(value: unknown): TextContent {
+  const v = isDual(value) ? value.text() : value;
+  if (isTextResult(v)) {
+    // The rendering IS the whole result — one raw block, no metadata
+    // block to parse (src/mcp/content.ts).
+    return [{ type: 'text', text: v.text }];
+  }
+  if (isTextPayload(v)) {
+    // Multi-block: compact-JSON metadata block, then one raw text block
+    // per body, in order. Lets the LLM read file/diff/message bodies
+    // un-escaped while still parsing structured metadata from content[0].
+    const content: TextContent = [{ type: 'text', text: JSON.stringify(v.meta ?? null) }];
+    for (const b of v.bodies) content.push({ type: 'text', text: String(b) });
+    return content;
+  }
+  return [{ type: 'text', text: JSON.stringify(v ?? null) }];
+}
+
+// The text-format tools/call result, byte-identical to what the agent view has
+// always been, then bounded by the response boundary (boundToolCall).
+function serializeText(o: Outcome, ctx: McpCtx): ToolCall['result'] {
+  let call: ToolCall;
+  if (o.kind === 'fault') {
+    call = { result: { content: [{ type: 'text', text: o.reason }], isError: true }, tool: o.tool, outcome: 'refused' };
+  } else if (o.kind === 'refused') {
+    call = { result: { content: [{ type: 'text', text: JSON.stringify(o.body) }] }, tool: o.tool, outcome: 'refused' };
+  } else if (o.kind === 'result') {
+    call = { result: { content: textContent(o.value) }, tool: o.tool, outcome: 'result' };
+  } else {
     // Errors read best as prose for an LLM (content[0]); a structured
     // {error, code, statusCode} block follows for machine handling.
-    const sc = errStatus(e);
-    const code = errCode(e) ?? codeForStatus(sc);
-    const msg = errMsg(e);
-    return {
+    const sc = errStatus(o.error);
+    const code = errCode(o.error) ?? codeForStatus(sc);
+    const msg = errMsg(o.error);
+    call = {
       result: {
         content: [
           { type: 'text', text: sc ? `${msg} (HTTP ${sc})` : msg },
@@ -445,15 +457,97 @@ async function toolsCall(params: unknown, ctx: McpCtx): Promise<ToolCall> {
         ],
         isError: true,
       },
-      tool,
+      tool: o.tool,
       outcome: 'error',
     };
   }
+  return boundToolCall(call, ctx.coreTools);
+}
+
+// Cap every echoed string in a refusal/error body at the JSON echo ceiling;
+// `truncated:true` says one was cut.
+function capRefusal(body: Record<string, unknown>, cap: number): Record<string, unknown> {
+  let cut = false;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') {
+      const c = capEcho(v, cap);
+      if (c !== v) cut = true;
+      return c;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (isJsonRecord(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  const out = walk(body) as Record<string, unknown>;
+  if (cut) console.error(`mcp: a refusal's echoed strings were cut at the JSON echo cap (${cap} chars)`);
+  return cut ? { ...out, truncated: true } : out;
+}
+
+// The refusal body for a soft refusal: its own fields, with a `code` always.
+// A handler refusal with none (sync_worktree's system-refusal and git-status
+// arms) is REFUSED.
+function refusalBody(v: Record<string, unknown>, cap: number): Record<string, unknown> {
+  return capRefusal(typeof v.code === 'string' ? v : { ...v, code: 'REFUSED' }, cap);
+}
+
+// A thrown handler error as the refusal schema: the same code the text view's
+// {error, code, statusCode} block carries, else TOOL_ERROR.
+function errorBody(e: unknown, cap: number): Record<string, unknown> {
+  const sc = errStatus(e);
+  return capRefusal({
+    ok: false,
+    code: errCode(e) ?? codeForStatus(sc) ?? 'TOOL_ERROR',
+    reason: errMsg(e),
+    ...(sc ? { statusCode: sc } : {}),
+  }, cap);
+}
+
+// The JSON-format view of a non-fault outcome: the structured value, and
+// whether it is a refusal. A plugin-bridged tool (not core) has no structured
+// view — its own content blocks pass through, `structured` null.
+type JsonView =
+  | { structured: Record<string, unknown>; isError: boolean }
+  | { structured: null; passthrough: ToolCall['result'] };
+function jsonView(o: Exclude<Outcome, { kind: 'fault' }>, ctx: McpCtx): JsonView {
+  const cap = ctx.limits.echoCap;
+  if (o.kind === 'refused') return { structured: refusalBody(o.body, cap), isError: true };
+  if (o.kind === 'error') return { structured: errorBody(o.error, cap), isError: true };
+  if (!ctx.coreTools.has(o.tool)) return { structured: null, passthrough: { content: textContent(o.value) } };
+  const value = isDual(o.value) ? o.value.json : o.value;
+  if (!isJsonRecord(value)) {
+    // Every core tool returns an object in JSON format; anything else is a cc
+    // defect, surfaced rather than reshaped.
+    throw new Error(`${o.tool.name} returned a non-object JSON result`);
+  }
+  if (value.ok === false) return { structured: refusalBody(value, cap), isError: true };
+  return { structured: value, isError: false };
+}
+
+// A tools/call fault as a JSON-RPC error carrying the refusal shape.
+function faultError(id: unknown, o: Extract<Outcome, { kind: 'fault' }>): JsonRpcResponse {
+  const body = capRefusal({ ok: false, code: o.code, reason: o.reason }, JSON_ECHO_CAP);
+  return rpcError(id, -32602, body.reason as string, body);
+}
+
+// The JSON-format tools/call reply: structuredContent + one text block holding
+// its JSON. No result budget and no backstop — JSON's ceilings are its own
+// (src/mcp/limits.ts).
+function serializeJson(id: unknown, o: Outcome, ctx: McpCtx): JsonRpcResponse {
+  if (o.kind === 'fault') return faultError(id, o);
+  const view = jsonView(o, ctx);
+  if (view.structured === null) return rpcResult(id, view.passthrough);
+  return rpcResult(id, {
+    content: [{ type: 'text', text: JSON.stringify(view.structured) }],
+    structuredContent: view.structured,
+    ...(view.isError ? { isError: true } : {}),
+  });
 }
 
 async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
+  const json = ctx.format === 'json';
   if (!isJsonRecord(msg) || msg.jsonrpc !== JSONRPC) {
-    return rpcError(rpcRequestId(msg) ?? null, -32600, 'invalid JSON-RPC request');
+    const reason = 'invalid JSON-RPC request';
+    return rpcError(rpcRequestId(msg) ?? null, -32600, reason, json ? { ok: false, code: 'REQUEST_INVALID', reason } : undefined);
   }
   const { id, method, params } = msg;
   const isNotification = id === undefined || id === null;
@@ -479,18 +573,23 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
+        ...(json && t.outputSchema ? { outputSchema: t.outputSchema } : {}),
         ...(t.annotations ? { annotations: t.annotations } : {}),
       }));
       return rpcResult(id, { tools });
     }
     if (method === 'tools/call') {
-      return rpcResult(id, boundToolCall(await toolsCall(params, ctx), ctx.coreTools));
+      const p = asRecord(params);
+      const outcome = await runTool(p.name, p.arguments, ctx);
+      return json ? serializeJson(id, outcome, ctx) : rpcResult(id, serializeText(outcome, ctx));
     }
     if (isNotification) return null;
-    return rpcError(id, -32601, `method not found: ${method}`);
+    const reason = `method not found: ${method}`;
+    return rpcError(id, -32601, reason, json ? { ok: false, code: 'METHOD_UNKNOWN', reason: capEcho(reason) } : undefined);
   } catch (e) {
     if (isNotification) return null;
-    return rpcError(id, -32603, errMessage(e) ?? 'internal error');
+    const reason = errMessage(e) ?? 'internal error';
+    return rpcError(id, -32603, reason, json ? { ok: false, code: 'INTERNAL', reason: capEcho(reason) } : undefined);
   }
 }
 
@@ -517,9 +616,10 @@ function resolveFormat(query: Record<string, unknown>): McpFormat | UrlFault {
     }
   }
   const f = query.format;
-  if (f === undefined || f === 'text') return 'text';
+  if (f === undefined) return 'text';
+  if (f === 'text' || f === 'json') return f;
   return { code: 'FORMAT_INVALID', rpcCode: -32600,
-    reason: `format must be 'text', got ${capEcho(JSON.stringify(f) ?? String(f), URL_ECHO_CAP)}` };
+    reason: `format must be 'json' or 'text', got ${capEcho(JSON.stringify(f) ?? String(f), URL_ECHO_CAP)}` };
 }
 
 function resolveCaller(instances: InstanceManagerLike | null | undefined, sid: string | undefined): string | null | UrlFault {
@@ -548,21 +648,31 @@ export function buildMcpRouter(
   const r = express.Router();
   r.use(express.json({ limit: '8mb' }));
 
-  const coreTools = buildTools().filter(t => !t.requires || capabilities[t.requires]);
-  const coreToolSet: ReadonlySet<McpTool> = new Set<McpTool>(coreTools);
+  // One core registry per format: they differ only in the limits baked into
+  // an input schema (project_read's maxBytes), and tools/list shows the
+  // outputSchema in JSON only.
+  const registry = (limits: FormatLimits) => {
+    const tools: McpTool[] = buildTools(limits).filter(t => !t.requires || capabilities[t.requires]);
+    return { tools, set: new Set<McpTool>(tools) as ReadonlySet<McpTool> };
+  };
+  const registries: Record<McpFormat, { tools: McpTool[]; set: ReadonlySet<McpTool> }> = {
+    text: registry(TEXT_LIMITS),
+    json: registry(JSON_LIMITS),
+  };
 
   // Per-request tool composition: core tools + the plugin tools visible to
   // this caller. init() is memoized — after the first request it's a resolved
   // promise. A plugin-subsystem failure must never take the core tools down
   // with it.
-  async function composeTools(): Promise<McpTool[]> {
-    if (!pluginHost) return coreTools;
+  async function composeTools(format: McpFormat): Promise<McpTool[]> {
+    const core = registries[format].tools;
+    if (!pluginHost) return core;
     try {
       await pluginHost.init();
-      return [...coreTools, ...pluginHost.toolsFor()];
+      return [...core, ...pluginHost.toolsFor()];
     } catch (e) {
       console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
-      return coreTools;
+      return core;
     }
   }
 
@@ -574,8 +684,8 @@ export function buildMcpRouter(
     if (isUrlFault(format)) { res.json(urlFaultReply(req.body, format)); return; }
     const callerId = resolveCaller(instances, sid);
     if (isUrlFault(callerId)) { res.json(urlFaultReply(req.body, callerId)); return; }
-    const tools = await composeTools();
-    const ctx: McpCtx = { instances, tools, coreTools: coreToolSet, callerId, playbookGate, capabilities, format, limits: limitsFor(format) };
+    const tools = await composeTools(format);
+    const ctx: McpCtx = { instances, tools, coreTools: registries[format].set, callerId, playbookGate, capabilities, format, limits: limitsFor(format) };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {

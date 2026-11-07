@@ -15,7 +15,9 @@ import path from 'node:path';
 import { bootServer, registerLocalProject, api, waitFor } from './helpers.mjs';
 import { buildTools } from '../src/mcp/tools.ts';
 import { boundResult, boundToolCall, capEcho } from '../src/mcp/server.ts';
-import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { MCP_RESULT_CHAR_BUDGET, MCP_BODY_BUDGET } from '../src/mcp/content.ts';
 
 test('every core tool: over-budget content becomes RESULT_OVER_BUDGET, at-budget content passes', async (t) => {
   const tools = buildTools();
@@ -81,9 +83,52 @@ test('dispatch: an overflowing core read tool answers RESULT_OVER_BUDGET instead
   } finally { console.error = origError; await ctx.close(); }
 });
 
+// Invariant: the result budget is a TEXT-format (context) cap. The same
+// overflowing project_status in JSON format comes back whole — every file and
+// every dirty line, nothing withheld or cut — and so does a read past the text
+// body budget, which text format cuts at MCP_BODY_BUDGET.
+test('JSON format: no result budget — project_status and project_read come back whole', async () => {
+  const ctx = await bootServer({});
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    const dir = path.join(ctx.projectsRoot, 'wide');
+    await fs.mkdir(dir, { recursive: true });
+    await registerLocalProject('wide', dir);
+    await execFileP('git', ['-C', dir, 'init', '-q']);
+    await Promise.all(Array.from({ length: 2500 }, (_, i) =>
+      fs.writeFile(path.join(dir, `a-rather-long-file-name-${String(i).padStart(5, '0')}.txt`), '')));
+    const call = async (format, name, args) => {
+      const res = await fetch(`${ctx.baseUrl}/mcp?format=${format}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      return (await res.json()).result;
+    };
+    const textStatus = await call('text', 'project_status', { project: 'wide' });
+    assert.equal(JSON.parse(textStatus.content[0].text).code, 'RESULT_OVER_BUDGET');
+    const status = (await call('json', 'project_status', { project: 'wide' })).structuredContent;
+    assert.equal(status.files.length, 2500);
+    assert.equal(status.dirty.length, 2500);
+    assert.equal(status.dirtyTruncated, false);
+    assert.equal(status.dirtyTotal, undefined);
+
+    const big = `${'z'.repeat(99)}\n`.repeat(1024);
+    await fs.writeFile(path.join(dir, 'big.txt'), big);
+    const textRead = await call('text', 'project_read', { project: 'wide', relativePath: 'big.txt' });
+    assert.equal(JSON.parse(textRead.content[0].text).truncated, true);
+    assert.equal(textRead.content[1].text.length, MCP_BODY_BUDGET);
+    const read = (await call('json', 'project_read', { project: 'wide', relativePath: 'big.txt' })).structuredContent;
+    assert.equal(read.truncated, false);
+    assert.equal(read.body, big);
+  } finally { console.error = origError; await ctx.close(); }
+});
+
 // ── the response boundary: refusals and errors echoing caller strings ──────
 // Every tools/call response and every JSON-RPC error passes one boundary
 // (boundToolCall / rpcError in src/mcp/server.ts). One test per branch shape.
+const execFileP = promisify(execFile);
 const HUGE = 60_000;
 const contentChars = result => result.content.reduce((n, c) => n + c.text.length, 0);
 const MARKER = / … \[cut: \d+ chars\] … /;

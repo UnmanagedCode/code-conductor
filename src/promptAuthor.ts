@@ -56,17 +56,21 @@ const HUMAN_NOTICE = 'The user prompted this worker directly since your last wak
   + 'Treat their words as the user\'s instruction to it; don\'t re-steer over them without checking '
   + 'with the user. Their message(s), oldest first:';
 
-function cutPrompt(text: string): string {
+// The quote cut: per prompt in code points, and how many of the most recent.
+export interface HumanPromptQuote { maxChars: number; maxCount: number }
+const DEFAULT_QUOTE: HumanPromptQuote = { maxChars: HUMAN_PROMPT_QUOTE_MAX_CHARS, maxCount: HUMAN_PROMPT_QUOTE_MAX_COUNT };
+
+function cutPrompt(text: string, maxChars: number): string {
   const cps = Array.from(text);
-  if (cps.length <= HUMAN_PROMPT_QUOTE_MAX_CHARS) return text;
-  return `${cps.slice(0, HUMAN_PROMPT_QUOTE_MAX_CHARS).join('')}… `
-    + `[+${cps.length - HUMAN_PROMPT_QUOTE_MAX_CHARS} chars — get_transcript has it in full]`;
+  if (cps.length <= maxChars) return text;
+  return `${cps.slice(0, maxChars).join('')}… `
+    + `[+${cps.length - maxChars} chars — get_transcript has it in full]`;
 }
 
-function selectPrompts(texts: readonly string[]): { omitted: number; kept: string[] } {
+function selectPrompts(texts: readonly string[], { maxChars, maxCount }: HumanPromptQuote = DEFAULT_QUOTE): { omitted: number; kept: string[] } {
   return {
-    omitted: Math.max(0, texts.length - HUMAN_PROMPT_QUOTE_MAX_COUNT),
-    kept: texts.slice(-HUMAN_PROMPT_QUOTE_MAX_COUNT).map(cutPrompt),
+    omitted: Math.max(0, texts.length - maxCount),
+    kept: texts.slice(-maxCount).map(t => cutPrompt(t, maxChars)),
   };
 }
 
@@ -74,9 +78,12 @@ const omissionLine = (n: number): string =>
   `(${n} earlier user message(s) not shown — get_transcript has them)`;
 
 // The prompts as the send-time `humanPrompts` field carries them: oldest first,
-// each cut, led by an omission entry when older ones were dropped.
-export function quoteHumanPrompts(texts: readonly string[]): string[] {
-  const { omitted, kept } = selectPrompts(texts);
+// each cut, led by an omission entry when older ones were dropped. A null
+// `quote` (the JSON-format MCP result, src/mcp/limits.ts) quotes every prompt
+// whole.
+export function quoteHumanPrompts(texts: readonly string[], quote: HumanPromptQuote | null = DEFAULT_QUOTE): string[] {
+  if (quote === null) return [...texts];
+  const { omitted, kept } = selectPrompts(texts, quote);
   return omitted ? [omissionLine(omitted), ...kept] : kept;
 }
 
