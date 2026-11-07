@@ -1199,12 +1199,14 @@ export class IdleSubscriptionHub {
     this._flushDeferredWakes(callerInstanceId);
   }
 
-  // One delivery finished (sent, refused, or abandoned). When that leaves the
-  // caller with nothing armed, nothing deferred and nothing in flight, announce
-  // the change: a refused send leaves it idle, and nothing else would say so.
-  // A refused or abandoned send is also a wait that ended without a turn, so it
-  // may release wakes the caller was holding; a sent one has already put the
-  // caller into a turn, which makes the release a no-op.
+  // One in-flight wake ended: sent and taken in (directly, or by _releaseParked /
+  // the park backstop), or abandoned because the caller has no process. When that
+  // leaves the caller with nothing armed, nothing deferred and nothing in flight,
+  // announce the change — an abandoned delivery leaves it idle and nothing else
+  // would say so. A refused send to a live caller is requeued on _deferredWakes
+  // before this runs, so the caller still counts and nothing is announced. An
+  // ended wait may release wakes the caller was holding; a sent one has already
+  // put the caller into a turn, which makes the release a no-op.
   _endInFlight(callerInstanceId: string, targetInstanceId: string): void {
     const n = (this._inFlight.get(callerInstanceId) ?? 0) - 1;
     if (n > 0) this._inFlight.set(callerInstanceId, n);

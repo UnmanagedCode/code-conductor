@@ -1417,3 +1417,33 @@ test('a model-less session\'s re-resume after a failed switch launches with no -
   assert.ok(!inst._spawnArgv.includes('--model'), `no --model: ${JSON.stringify(inst._spawnArgv)}`);
   assert.ok(!inst._spawnArgv.includes(ACCOUNT_DEFAULT));
 });
+
+// Invariant: a restart model switch ends with `prompts_unblocked`, emitted after
+// rewriteBlocksPrompts clears — on success and on a failed (re-resumed) switch —
+// so a wake held for the whole switch is flushed.
+test('a restart switch ends with prompts_unblocked, emitted after rewriteBlocksPrompts clears', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  const blockedAtEmit = [];
+  inst.on('prompts_unblocked', () => blockedAtEmit.push(inst.rewriteBlocksPrompts));
+  const c = await wsClient(wsUrl);
+  try {
+    assert.equal((await frame(c, inst, 'balanced', 'u1')).ok, true);
+    await settled(inst);
+    assert.deepEqual(blockedAtEmit, [false]);
+  } finally { await c.close(); }
+});
+
+test('a failed restart switch also ends with prompts_unblocked after rewriteBlocksPrompts clears', async () => {
+  const inst = await spawnSub();
+  await seedTurn(inst);
+  launcher.plan.push({ crash: `Error: model '${B}' not found` });
+  const blockedAtEmit = [];
+  inst.on('prompts_unblocked', () => blockedAtEmit.push(inst.rewriteBlocksPrompts));
+  const c = await wsClient(wsUrl);
+  try {
+    assert.equal((await frame(c, inst, 'balanced', 'u2')).ok, true);
+    await settled(inst);
+    assert.deepEqual(blockedAtEmit, [false]);
+  } finally { await c.close(); }
+});

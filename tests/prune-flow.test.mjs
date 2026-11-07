@@ -605,3 +605,36 @@ test('prune is refused mid-turn and on a session with nothing to cut', async () 
     }
   } finally { await ctx.close(); }
 });
+
+// Invariant: a prune ends with `prompts_unblocked`, emitted after
+// rewriteBlocksPrompts clears — on success and on the error path. Prune comes up
+// idle with no turn, so a wake held while prompt() refused has no other flush.
+for (const [name, fail] of [['succeeds', false], ['fails', true]]) {
+  test(`a prune that ${name} ends with prompts_unblocked, emitted after rewriteBlocksPrompts clears`, async () => {
+    const ctx = await bootServer({ scenarioPath: SCENARIO });
+    try {
+      const sid = fail ? 'aaaaaaa8-2222-3333-4444-555555555555' : 'aaaaaaa7-2222-3333-4444-555555555555';
+      await seedSession({ ctx, projectName: 'pruneunblocks', sid, lines: sessionLines() });
+      const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+        project: 'pruneunblocks', mode: 'bypassPermissions', resume: sid,
+      });
+      const id = r.body.id;
+      await waitFor(() => ctx.instances.get(id).status === 'idle');
+      const inst = ctx.instances.get(id);
+      if (fail) {
+        const realLaunch = inst.launch.bind(inst);
+        let calls = 0;
+        inst.launch = async (opts) => {
+          calls += 1;
+          if (calls === 1) throw new Error('simulated launch failure');
+          return realLaunch(opts);
+        };
+      }
+      const blockedAtEmit = [];
+      inst.on('prompts_unblocked', () => blockedAtEmit.push(inst.rewriteBlocksPrompts));
+      const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 1 });
+      assert.equal(pr.status, fail ? 500 : 200);
+      assert.deepEqual(blockedAtEmit, [false]);
+    } finally { await ctx.close(); }
+  });
+}

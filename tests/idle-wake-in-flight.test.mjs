@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { posixPlatform } from '../src/platform/posix.ts';
 import { InstanceManager } from '../src/instances.ts';
+import { PARKED_BACKSTOP_MS } from '../src/idleSubscriptions.ts';
 
 const mkFake = (id, sessionId, over = {}) => ({
   id, sessionId, project: 'p', proc: { pid: 1 }, status: 'idle', acceptsMidTurnSteering: true,
@@ -301,5 +302,15 @@ test('a release cancels the backstop', async () => {
   r.conductor.queuedPromptPending = false;
   r.instances.emit('event', { id: 'c', ev: { kind: 'system', subtype: 'exit', data: { code: 1, signal: null } } });
   assert.equal(r.timers[0].cleared, true);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: the backstop is armed with PARKED_BACKSTOP_MS, and that delay clears
+// the measured worst case (dequeue max 9.5 s in conductor session jsonls) — a
+// shorter one would release the hold inside the result → message_start window.
+test('the backstop is armed with PARKED_BACKSTOP_MS, which exceeds the measured dequeue maximum', async () => {
+  const r = await parkedRig();
+  assert.equal(r.timers[0].ms, PARKED_BACKSTOP_MS);
+  assert.ok(PARKED_BACKSTOP_MS > 9_500, `${PARKED_BACKSTOP_MS} must exceed the 9.5 s dequeue max`);
   await r.instances.shutdown().catch(() => {});
 });
