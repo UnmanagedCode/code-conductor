@@ -28,6 +28,9 @@ const { CONDUCT_PROJECT_NAME } = await import('../src/conduct.ts');
 
 const fx = (n) => path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', n);
 const ROOT_GATED = fx('scenario-headless-root-gated.json');
+// The same gated root, but a prompt written into its open turn is queued by the CLI
+// (the open turn ends, then a new turn answers it) rather than ending the open turn.
+const ROOT_GATED_QUEUED = fx('scenario-headless-root-gated-queued.json');
 const WORKER_GATED = fx('scenario-headless-worker-gated.json');
 const ROOT_PLAN = fx('scenario-headless-root-plan.json');
 const ROOT_ERROR = fx('scenario-headless-root-error.json');
@@ -190,7 +193,7 @@ test('a root AskUserQuestion gets the canned answer, once', async () => {
 });
 
 test('a worker\'s AskUserQuestion is not answered by the runner; it reaches the root as a wake', async () => {
-  const r = await start({ scenario: ROOT_GATED });
+  const r = await start({ scenario: ROOT_GATED_QUEUED });
   await waitFor(() => r.root.status === 'turn');
   const workerLog = path.join(home, 'worker-stdin.jsonl');
   const worker = await spawnWorker(r.root, QUESTION, workerLog);

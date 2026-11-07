@@ -9,6 +9,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { api, waitFor, instForSession, driveTurn } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import {
@@ -21,6 +23,11 @@ import {
 // The two handles every test body below reads. Bound inside the harness's own
 // `before`, which is the only place they are guaranteed booted — see
 // setupIdleWake() in ./idleWakeCase.mjs.
+// A caller whose every turn ends: the wake it is owed is written into a turn that
+// finishes, so the CLI takes it in (a caller left in a never-ending turn would
+// legitimately keep a queued wake owed).
+const SCENARIO_TURN_ENDS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'scenario-turn-ends.json');
+
 let baseUrl, instances;
 setupIdleWake(c => { ({ baseUrl, instances } = c); });
 
@@ -266,7 +273,7 @@ test('an UNPROMPTED turn re-arms: the auto-approved-plan gap', async () => {
 
 test('awaitingWake tracks the TURN, not a registration', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnReadyWithScenario('p', SCENARIO_TURN_ENDS);
   // The LONG fixture, not the paced one: this test must observe a heartbeat while
   // the turn is still running, and the 1s window (the MCP minimum) does not fit
   // inside the paced turn's ~1.2s span with room to read the flag afterwards.

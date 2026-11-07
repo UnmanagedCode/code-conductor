@@ -208,12 +208,19 @@ export class IdleSubscriptionHub {
   // and carried, because it belongs to the wake that was deferred, not to
   // whatever else that pair does in between.
   _deferredWakes: Map<string, Array<{ targetInstanceId: string; opts?: DeliverOpts; note: string | null }>>;
-  // Wakes consumed but not yet SENT, keyed by callerInstanceId → count. deliver()
-  // sends on a microtask after (for a folded stub) an async transcript read, so
-  // between the consume and the send the conductor is idle with no armed wake —
-  // a state indistinguishable from "finished". isCaller() counts these, so
-  // `awaitingWake` holds until prompt() has run (status has left idle) or failed.
+  // Wakes consumed but not yet taken in by the CLI, keyed by callerInstanceId →
+  // count. deliver() sends on a microtask after (for a folded stub) an async
+  // transcript read, so between the consume and the send the conductor is idle
+  // with no armed wake — a state indistinguishable from "finished". isCaller()
+  // counts these, so `awaitingWake` holds until prompt() has run and the CLI has
+  // the message: the status left idle, or (for a send into a running turn) the
+  // caller's queuedPromptPending cleared — see _parked.
   _inFlight: Map<string, number>;
+  // In-flight wakes whose send went into a RUNNING turn that may queue it past
+  // the turn's end: callerInstanceId → target ids. Each entry stays counted in
+  // `_inFlight` until _releaseParked sees the caller's queuedPromptPending clear
+  // (a fold at a top-level tool_result, the queued turn's start, or exit).
+  _parked: Map<string, string[]>;
   // Targets whose current turn put a question or a plan to the user (a top-level
   // AskUserQuestion, or an ExitPlanMode that was not auto-approved). Such a turn
   // end is never held. Cleared with the abort qualifier — at a turn start no
@@ -248,6 +255,7 @@ export class IdleSubscriptionHub {
     this._pendingDeclines = new Map();
     this._deferredWakes = new Map();
     this._inFlight = new Map();
+    this._parked = new Map();
     this._asked = new Set();
     this._suspended = false;
     this._holding = new Set();
@@ -278,6 +286,9 @@ export class IdleSubscriptionHub {
   // arrived while the target was idle, set its idleWindowDirty flag — the two
   // structural signals the settle path uses to avoid firing early.
   onEvent({ id, ev }: { id: string; ev: UiEvent | null }): void {
+    // A top-level tool_result (a fold) or the exit clears the caller's
+    // queuedPromptPending before its event reaches here.
+    this._releaseParked(id);
     if (ev && askFactsOfEvent(ev).some(f => f.t === 'toolAsk')) this._asked.add(id);
     if (ev?.kind === 'user_echo' && ev.author === 'human' && !ev.parentToolUseId) {
       const texts = this._humanPrompts.get(id) ?? [];
@@ -713,6 +724,8 @@ export class IdleSubscriptionHub {
   // one wake per live owner; owners already armed are left alone, which is what
   // makes a mid-turn steer deliver ONE wake rather than two.
   onTurnStart(targetInstanceId: string): void {
+    // As CALLER: a queued wake's turn has started, so the CLI took it in.
+    this._releaseParked(targetInstanceId);
     // Read BEFORE arming: did a wake survive from the previous turn into this
     // transition? That is the discriminator for the abort qualifier's third and
     // last hole. If something WAS armed, it is the deferred wake of the aborted
@@ -912,6 +925,7 @@ export class IdleSubscriptionHub {
     // target to its raw id and still reports honestly.)
     this._deferredWakes.delete(instanceId);
     this._inFlight.delete(instanceId);
+    this._parked.delete(instanceId);
     this._pendingDeclines.delete(instanceId); // …and every note about it
     // As CALLER: a note filed for this instance under some other target can no
     // longer reach anyone either.
@@ -1025,7 +1039,9 @@ export class IdleSubscriptionHub {
     // idle report is not urgent, and aborting a conductor mid-turn would sever
     // whatever orchestration it has in flight. The decline note is taken NOW,
     // synchronously, because it belongs to this wake (see noteRenewalDeclined).
-    if (caller.status === 'turn' && caller.acceptsMidTurnSteering === false) {
+    // …and a recipient whose rewrite (rewind, prune, model switch) makes prompt()
+    // refuse is held the same way, released by onPromptsUnblocked.
+    if ((caller.status === 'turn' && caller.acceptsMidTurnSteering === false) || caller.rewriteBlocksPrompts) {
       const queue = this._deferredWakes.get(callerInstanceId) ?? [];
       queue.push({ targetInstanceId, opts, note: this._takeDecline(targetInstanceId, callerInstanceId) });
       this._deferredWakes.set(callerInstanceId, queue);
@@ -1057,6 +1073,7 @@ export class IdleSubscriptionHub {
       // belongs to exactly one wake. A deferred wake already took its note at
       // defer time and carries it in `opts`.
       const note = opts?.note ?? this._takeDecline(targetInstanceId, callerInstanceId);
+      let parked = false;
       try {
         if (!caller.proc) return;
         // The jobs live NOW, at build time — a deferred wake lists what is still
@@ -1077,6 +1094,16 @@ export class IdleSubscriptionHub {
         // clean steering stub (its WAKE_CALLBACK_MARKER still leads the echoed
         // text, so the UI renders the wake bubble unchanged).
         await caller.prompt(stub, [], { internal: true, annotateIfMidTurn: false });
+        // Decided from the flag AFTER the send, not from the status read at
+        // delivery time: an idle caller can have gone `turn` before this ran.
+        // Written into a running turn, the CLI may still queue the message past
+        // that turn's end, so the wait is not over until it is taken in.
+        if (caller.queuedPromptPending) {
+          const ids = this._parked.get(callerInstanceId) ?? [];
+          ids.push(targetInstanceId);
+          this._parked.set(callerInstanceId, ids);
+          parked = true;
+        }
         // Only a wake that reached the caller. The playbook gate logs it; this
         // module never imports the event log.
         if (wakeTarget && typeof caller.sessionId === 'string' && caller.sessionId) {
@@ -1086,17 +1113,43 @@ export class IdleSubscriptionHub {
           });
         }
       } catch (err) {
+        // A caller that still has a process is owed this wake — it is the only
+        // report the conductor will get of that worker's turn — so it goes back
+        // on the deferred queue, redelivered at the caller's next boundary. Queued
+        // BEFORE finally releases the in-flight count, so isCaller never dips.
+        const requeue = !!caller.proc;
+        if (requeue) {
+          const queue = this._deferredWakes.get(callerInstanceId) ?? [];
+          queue.push({ targetInstanceId, opts, note });
+          this._deferredWakes.set(callerInstanceId, queue);
+        }
         caller._emitUi({
           kind: 'system', subtype: 'stderr',
-          data: { line: `idle-callback delivery failed: ${(err as Error).message}` },
+          data: { line: `idle-callback delivery failed: ${(err as Error).message}${requeue ? ' — the wake will be redelivered' : ''}` },
         });
       } finally {
-        this._endInFlight(callerInstanceId, targetInstanceId);
+        if (!parked) this._endInFlight(callerInstanceId, targetInstanceId);
       }
     };
     // A mid-turn caller receives the wake live (steering); an idle caller gets
     // it folded. Either way it goes out on the next microtask.
     queueMicrotask(deliver);
+  }
+
+  // Release the parked in-flight wakes of `id` once the CLI has taken them in
+  // (queuedPromptPending clear) or the instance is gone.
+  _releaseParked(id: string): void {
+    const ids = this._parked.get(id);
+    if (!ids) return;
+    if (this.manager.byId.get(id)?.queuedPromptPending) return;
+    this._parked.delete(id);
+    for (const target of ids) this._endInFlight(id, target);
+  }
+
+  // The caller's rewrite (rewind, prune, model switch) ended: deliver the wakes
+  // held while prompt() refused.
+  onPromptsUnblocked(callerInstanceId: string): void {
+    this._flushDeferredWakes(callerInstanceId);
   }
 
   // One delivery finished (sent, refused, or abandoned). When that leaves the
@@ -1232,7 +1285,7 @@ export class IdleSubscriptionHub {
   // wake (_holds), and it is due a report when that wait ends. This is what the sidebar's accent idle dot reads (surfaced as
   // `awaitingWake`), and it stays true across a heartbeat, because a heartbeat
   // reports without consuming. It also stays true from a wake's
-  // consume until its send has run (`_inFlight`), and while a wake is held for a
+  // consume until the CLI has taken it in (`_inFlight`, `_parked`), and while a wake is held for a
   // mid-turn recipient (`_deferredWakes`): the conductor is idle with nothing armed
   // in that gap, which must not read as finished.
   isCaller(instanceId: string): boolean {
