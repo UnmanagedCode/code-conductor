@@ -541,7 +541,11 @@ export function createPluginHost(opts: {
         PROJECTS_ROOT: projectsRoot(),
         CONDUCTOR_PROJECT_DIR: selfProjectDir(),
         CONDUCTOR_PLUGIN_DATA_DIR: pluginDataDir(id),
-        ...(serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {}),
+        ...(serverPort ? {
+          CONDUCTOR_URL: `http://127.0.0.1:${serverPort}`,
+          // The MCP server, anonymous and JSON by default (docs/mcp-applications.md).
+          CONDUCTOR_MCP_URL: `http://127.0.0.1:${serverPort}/mcp`,
+        } : {}),
       };
       let rec;
       try { rec = await supervisor.start({ id, manifest: { backend }, cwd, env }); }
