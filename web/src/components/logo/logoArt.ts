@@ -115,19 +115,26 @@ const legStroke = (d: string, ink: Ink): LogoElement => ({
   tag: 'path', attrs: { d, 'stroke-width': '5.5', 'stroke-linecap': 'round' }, ink, stroke: true,
 });
 const TILE_TRANSFORM = 'translate(7.385 7.487) scale(0.410256)';
-const tileSideLegs = (transform: string) => [
+const strokeLegSide = (transform: string) => [
   legStroke('M2.75 35.25A4 4 0 0 1 -1.25 39.25', 'deep'),
   legStroke('M11.25 28V44A4 4 0 0 1 7.25 48', 'coral'),
 ].map((e) => ({ ...e, attrs: { ...e.attrs, transform } }));
+/** The 3-leg stroked set (a side pair and the centre) in `transform`'s space: thick round-capped strokes, all drawn under the body, that stay legible at 32px. */
+const strokeLegs = (transform: string): LogoElement[] => [
+  ...strokeLegSide(transform),
+  ...strokeLegSide(`${transform} matrix(-1 0 0 1 40 0)`),
+  ...under(transform, [legStroke('M20 35.25V45.25', 'deep')]),
+];
+/** What the stroked-leg arts draw over the screen: the prompt, arm and baton (the legs sit under the body). */
+const OVER_SCREEN_NO_LEGS = [...GLYPHS, CURSOR, ARM, BATON];
 
-/** The sidebar header's tile, its face white: a few thick round-capped stroke legs, all under the body, that stay legible at 32px. */
+/** The sidebar header's tile, its face white. */
 export const TILE: Art = {
   viewBox: '0 0 32 32',
   base: [{ tag: 'rect', attrs: { width: '32', height: '32', rx: '8' }, ink: 'tile' }],
   elements: [
-    ...tileSideLegs(TILE_TRANSFORM),
-    ...tileSideLegs(`${TILE_TRANSFORM} matrix(-1 0 0 1 40 0)`),
-    ...under(TILE_TRANSFORM, [legStroke('M20 35.25V45.25', 'deep'), BODY_WITH_SCREEN, WHITE_SCREEN, ...GLYPHS, CURSOR, ARM, BATON]),
+    ...strokeLegs(TILE_TRANSFORM),
+    ...under(TILE_TRANSFORM, [BODY_WITH_SCREEN, WHITE_SCREEN, ...OVER_SCREEN_NO_LEGS]),
   ],
 };
 
@@ -137,10 +144,11 @@ const FAV32_TRANSFORM = 'translate(4.513 4.65) scale(0.547009)';
 export const FAV32_BORDER: Art = {
   viewBox: '0 0 32 32',
   elements: [
-    ...under(FAV32_TRANSFORM, [...BACK_LEGS, BAND_KO, BODY]),
+    ...strokeLegs(FAV32_TRANSFORM),
+    ...under(FAV32_TRANSFORM, [BODY]),
     { tag: 'rect', attrs: { x: '6', y: '8', width: '19', height: '12', 'shape-rendering': 'crispEdges' }, ink: 'inverse' },
     { tag: 'rect', attrs: { x: '7', y: '9', width: '17', height: '10', 'shape-rendering': 'crispEdges' }, ink: 'screen' },
-    ...under(FAV32_TRANSFORM, OVER_SCREEN),
+    ...under(FAV32_TRANSFORM, OVER_SCREEN_NO_LEGS),
   ],
 };
 
