@@ -777,6 +777,22 @@ test('enforce: a conductor\'s prompt to a tracked worker is an interaction, and 
   } finally { await t.close(); }
 });
 
+test('enforce: a same-stage send_prompt on a built-in is an interaction, not a transition', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'forge', stage: 'plan' });
+    assert.ok(w.sessionId, JSON.stringify(w));
+    const forge = JSON.parse(await fs.readFile(new URL('../playbooks/forge.json', import.meta.url), 'utf8'));
+    assert.equal(forge.transitions.some(e => e.from === 'plan' && e.to === 'plan'), false,
+      'premise: forge declares no plan->plan self-loop');
+    const sent = await t.call('send_prompt', { sessionId: w.sessionId, text: 'next round' });
+    assert.notEqual(sent.ok, false, JSON.stringify(sent));
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'interaction' && e.tool === 'send_prompt'));
+    const evs = await t.events();
+    assert.equal(evs.filter(e => e.kind === 'transition').length, 0);
+  } finally { await t.close(); }
+});
+
 // The restart window: a worker bound by a PREVIOUS run of the orchestrator exits
 // before this process has made any governed call. The retire path must fold the
 // ledger itself rather than assume enforcement already did, or that worker never

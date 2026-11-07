@@ -31,8 +31,5 @@
     }
   },
 
-  "transitions": [
-    { "from": "implement", "to": "implement" },
-    { "from": "review", "to": "review" }
-  ]
+  "transitions": []
 }
