@@ -236,3 +236,70 @@ test('a heartbeat delivery leaves the armed wake and emits nothing on completion
   r.hub.subscribers.clear();
   await r.instances.shutdown().catch(() => {});
 });
+
+// A parked rig whose backstop timer is captured instead of scheduled, so the
+// tests fire it by hand and never sleep.
+async function parkedRig() {
+  const r = rig({ status: 'turn', queuedPromptPending: false });
+  const timers = [];
+  r.hub._setTimer = (fn, ms) => { const h = { fn, ms, cleared: false }; timers.push(h); return h; };
+  r.hub._clearTimer = (h) => { h.cleared = true; };
+  r.conductor.prompt = async () => { r.conductor.queuedPromptPending = true; };
+  r.finishWorker();
+  await r.settle();
+  assert.equal(r.instances.isIdleCaller('c'), true, 'premise: parked');
+  r.conductor.status = 'idle';
+  r.instances.emit('event', { id: 'c', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  return { ...r, timers };
+}
+
+// Invariant: a parked hold whose queued turn never starts is released by the
+// backstop armed at the caller's turn_end, with subscription_changed and one
+// stderr line saying so.
+test('the backstop releases a parked hold whose queued turn never starts', async () => {
+  const r = await parkedRig();
+  const lines = [];
+  r.conductor._emitUi = (ev) => lines.push(ev);
+  assert.equal(r.timers.length, 1, 'armed at the caller\'s turn_end');
+  assert.equal(r.instances.isIdleCaller('c'), true, 'still held before it fires');
+  assert.deepEqual(r.changes, []);
+  r.timers[0].fn();
+  assert.equal(r.instances.isIdleCaller('c'), false, 'released');
+  assert.equal(r.hub._parked.has('c'), false);
+  assert.ok(r.changes.length > 0, 'subscription_changed fired');
+  assert.equal(lines.filter((e) => e.subtype === 'stderr' && /backstop/.test(e.data.line)).length, 1);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a queued turn that starts before the backstop cancels it — it never
+// fires afterwards, so there is no second release and no late emit.
+test('a queued turn starting before the backstop cancels it', async () => {
+  const r = await parkedRig();
+  r.conductor.status = 'turn';
+  r.conductor.queuedPromptPending = false;
+  r.hub.onTurnStart('c');
+  assert.equal(r.timers[0].cleared, true, 'cancelled');
+  const emitted = r.changes.length;
+  assert.equal(r.instances.isIdleCaller('c'), false);
+  r.timers[0].fn(); // a timer that fired anyway finds nothing to release
+  assert.equal(r.changes.length, emitted, 'no late emit');
+  assert.equal(r.hub._inFlight.has('c'), false, 'no double release');
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: purge cancels the backstop.
+test('purge cancels the backstop', async () => {
+  const r = await parkedRig();
+  r.hub.purge('c');
+  assert.equal(r.timers[0].cleared, true);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a release (the flag cleared at an event) cancels the backstop.
+test('a release cancels the backstop', async () => {
+  const r = await parkedRig();
+  r.conductor.queuedPromptPending = false;
+  r.instances.emit('event', { id: 'c', ev: { kind: 'system', subtype: 'exit', data: { code: 1, signal: null } } });
+  assert.equal(r.timers[0].cleared, true);
+  await r.instances.shutdown().catch(() => {});
+});

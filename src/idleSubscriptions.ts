@@ -104,6 +104,16 @@ export const DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS = Math.floor(DEFAULT_SUBSCRIBE_TI
 // no turn is coming. 5s is enormous headroom over that ms-scale gap (even
 // under heavy device throttle — the gap is process-local, never API-bound)
 // while still waking ~360x sooner than the 30-min heartbeat would report.
+// How long a parked wake hold (`_parked`) may outlive its caller's turn_end before
+// the backstop releases it. The hold normally clears when the queued turn starts,
+// and that follows the old turn's `result` by one CLI dequeue plus one API
+// time-to-first-byte. Measured over conductor session jsonls (wakes queued past a
+// running turn's end): `dequeue` max 9.5 s, first assistant record of the queued
+// turn p90 6.8 s, max under 15 s. 30 s clears the measured tail with margin, so
+// the backstop fires only for a queue the CLI never started (a model of the CLI
+// that is wrong for some case), where a stuck "awaiting a wake" would otherwise
+// last forever and hide a real finish.
+export const PARKED_BACKSTOP_MS = 30_000;
 export const IDLE_DRAIN_SETTLE_MS = Number(process.env.ORCH_IDLE_DRAIN_SETTLE_MS) || 5_000;
 
 // An ARMED wake for a single caller→target pair: the repeating heartbeat and the
@@ -221,6 +231,12 @@ export class IdleSubscriptionHub {
   // `_inFlight` until _releaseParked sees the caller's queuedPromptPending clear
   // (a fold at a top-level tool_result, the queued turn's start, or exit).
   _parked: Map<string, string[]>;
+  // The per-caller PARKED_BACKSTOP_MS timers, armed at a parked caller's turn_end.
+  // Cancelled on turn start, release, purge and exit. The scheduler is a field so
+  // a test captures the callback instead of waiting.
+  _parkTimers: Map<string, unknown>;
+  _setTimer: (fn: () => void, ms: number) => unknown;
+  _clearTimer: (handle: unknown) => void;
   // Targets whose current turn put a question or a plan to the user (a top-level
   // AskUserQuestion, or an ExitPlanMode that was not auto-approved). Such a turn
   // end is never held. Cleared with the abort qualifier — at a turn start no
@@ -256,6 +272,9 @@ export class IdleSubscriptionHub {
     this._deferredWakes = new Map();
     this._inFlight = new Map();
     this._parked = new Map();
+    this._parkTimers = new Map();
+    this._setTimer = (fn, ms) => { const h = setTimeout(fn, ms); h.unref(); return h; };
+    this._clearTimer = (h) => clearTimeout(h as NodeJS.Timeout);
     this._asked = new Set();
     this._suspended = false;
     this._holding = new Set();
@@ -296,6 +315,7 @@ export class IdleSubscriptionHub {
       this._humanPrompts.set(id, texts);
     }
     if (ev?.kind === 'turn_end') {
+      this._armParkBackstop(id);
       this._onTurnEnd(id);
       // …and, as the RECIPIENT of a held-back wake, this is the boundary that
       // makes it deliverable. Synchronously, so a steer queued on this instance
@@ -725,6 +745,7 @@ export class IdleSubscriptionHub {
   // makes a mid-turn steer deliver ONE wake rather than two.
   onTurnStart(targetInstanceId: string): void {
     // As CALLER: a queued wake's turn has started, so the CLI took it in.
+    this._cancelParkBackstop(targetInstanceId);
     this._releaseParked(targetInstanceId);
     // Read BEFORE arming: did a wake survive from the previous turn into this
     // transition? That is the discriminator for the abort qualifier's third and
@@ -926,6 +947,7 @@ export class IdleSubscriptionHub {
     this._deferredWakes.delete(instanceId);
     this._inFlight.delete(instanceId);
     this._parked.delete(instanceId);
+    this._cancelParkBackstop(instanceId);
     this._pendingDeclines.delete(instanceId); // …and every note about it
     // As CALLER: a note filed for this instance under some other target can no
     // longer reach anyone either.
@@ -1143,7 +1165,32 @@ export class IdleSubscriptionHub {
     if (!ids) return;
     if (this.manager.byId.get(id)?.queuedPromptPending) return;
     this._parked.delete(id);
+    this._cancelParkBackstop(id);
     for (const target of ids) this._endInFlight(id, target);
+  }
+
+  // A parked caller just ended its turn: the queued wake's turn should start
+  // shortly. If nothing releases the hold within PARKED_BACKSTOP_MS, release it.
+  _armParkBackstop(id: string): void {
+    if (!this._parked.has(id) || this._parkTimers.has(id)) return;
+    this._parkTimers.set(id, this._setTimer(() => {
+      this._parkTimers.delete(id);
+      const ids = this._parked.get(id);
+      if (!ids) return;
+      this._parked.delete(id);
+      this.manager.byId.get(id)?._emitUi({
+        kind: 'system', subtype: 'stderr',
+        data: { line: `idle-callback hold released by the backstop: the queued wake's turn did not start within ${PARKED_BACKSTOP_MS} ms` },
+      });
+      for (const target of ids) this._endInFlight(id, target);
+    }, PARKED_BACKSTOP_MS));
+  }
+
+  _cancelParkBackstop(id: string): void {
+    const h = this._parkTimers.get(id);
+    if (h === undefined) return;
+    this._parkTimers.delete(id);
+    this._clearTimer(h);
   }
 
   // The caller's rewrite (rewind, prune, model switch) ended: deliver the wakes
