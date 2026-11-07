@@ -6,6 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
+import * as projects from '../src/projects.ts';
 import { isArchived } from '../src/sessionStore.ts';
 import { setDebugByDefault } from '../src/appSettings.ts';
 
@@ -722,7 +723,7 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
   }
 });
 
-test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv and CONDUCTOR_MCP_URL from its env', async () => {
+test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv and CONDUCTOR_MCP_URL / CONDUCTOR_MCP_CLIENT_DIR from its env', async () => {
   await setupWithProject();
   const fsp = (await import('node:fs')).promises;
   const argvPath = `${home}/argv.txt`;
@@ -730,6 +731,7 @@ test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv and CON
   process.env.ORCH_DISABLE_MCP_AUTOREGISTER = '1';
   // Planted, so "absent" means removed rather than never inherited.
   process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
+  process.env.CONDUCTOR_MCP_CLIENT_DIR = '/outer/planted/mcp-client';
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
     const id = r.body.id;
@@ -741,28 +743,55 @@ test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv and CON
       `--mcp-config should be absent when ORCH_DISABLE_MCP_AUTOREGISTER=1; argv was: ${argv.join(' ')}`);
     assert.equal(instances.get(id)._spawnEnv.CONDUCTOR_MCP_URL, undefined,
       'no MCP server to name, and the outer value is not inherited');
+    assert.equal(instances.get(id)._spawnEnv.CONDUCTOR_MCP_CLIENT_DIR, undefined,
+      'the client dir travels with the URL, and the outer value is not inherited');
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     delete process.env.ORCH_DISABLE_MCP_AUTOREGISTER;
     delete process.env.CONDUCTOR_MCP_URL;
+    delete process.env.CONDUCTOR_MCP_CLIENT_DIR;
   }
 });
 
 // A worker's scripts reach its own session's MCP URL through CONDUCTOR_MCP_URL
 // (docs/mcp-applications.md): the base URL plus the public sessionId — the
-// same URL the CLI's --mcp-config names, without the text-format query. An
-// outer cc's value in the server's own env never reaches the worker.
-test('a spawned worker\'s env carries CONDUCTOR_MCP_URL naming its own session, never an inherited one', async () => {
+// same URL the CLI's --mcp-config names, without the text-format query — and
+// the generated client through CONDUCTOR_MCP_CLIENT_DIR. An outer cc's values
+// in the server's own env never reach the worker.
+test('a spawned worker\'s env carries CONDUCTOR_MCP_URL naming its own session and CONDUCTOR_MCP_CLIENT_DIR, never inherited ones', async () => {
   await setupWithProject();
   process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
+  process.env.CONDUCTOR_MCP_CLIENT_DIR = '/outer/planted/mcp-client';
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
     const inst = instances.get(id);
     assert.equal(inst._spawnEnv.CONDUCTOR_MCP_URL, `${baseUrl}/mcp/${inst.sessionId}`);
+    assert.equal(inst._spawnEnv.CONDUCTOR_MCP_CLIENT_DIR, projects.mcpClientDir());
   } finally {
     delete process.env.CONDUCTOR_MCP_URL;
+    delete process.env.CONDUCTOR_MCP_CLIENT_DIR;
+  }
+});
+
+// The conductor is a local Instance too: its scripts get both vars, for its own
+// session.
+test('a conductor\'s env carries CONDUCTOR_MCP_URL for its own session and CONDUCTOR_MCP_CLIENT_DIR', async () => {
+  process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
+  process.env.CONDUCTOR_MCP_CLIENT_DIR = '/outer/planted/mcp-client';
+  try {
+    await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+    assert.equal(inst._spawnEnv.CONDUCTOR_MCP_URL, `${baseUrl}/mcp/${inst.sessionId}`);
+    assert.equal(inst._spawnEnv.CONDUCTOR_MCP_CLIENT_DIR, projects.mcpClientDir());
+  } finally {
+    delete process.env.CONDUCTOR_MCP_URL;
+    delete process.env.CONDUCTOR_MCP_CLIENT_DIR;
   }
 });
 

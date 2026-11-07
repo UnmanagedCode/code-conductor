@@ -144,6 +144,7 @@ Child env:
 - `CONDUCTOR_PLUGIN_ID`.
 - `CONDUCTOR_URL` — `http://127.0.0.1:<conductor-port>`.
 - `CONDUCTOR_MCP_URL` — `$CONDUCTOR_URL/mcp`: cc's MCP server, anonymous, JSON by default — call any core tool by JSON-RPC or the REST alias (`POST $CONDUCTOR_MCP_URL/tools/<name>`); contract in [mcp-applications.md](mcp-applications.md). Set together with `CONDUCTOR_URL`; never inherited from the conductor's own env.
+- `CONDUCTOR_MCP_CLIENT_DIR` — absolute `<PROJECTS_ROOT>/.code-conductor/mcp-client`: the generated Python/Node client for `CONDUCTOR_MCP_URL` ([mcp-applications.md → Client libraries](mcp-applications.md#client-libraries)). Set together with `CONDUCTOR_MCP_URL`; never inherited from the conductor's own env.
 - `PROJECTS_ROOT` — the conductor's *resolved* projects root, injected explicitly, so it carries the default even when the conductor's own env never set the var.
 - `CONDUCTOR_PROJECT_DIR` — the conductor's own running checkout dir, holding its `server.ts`/`package.json`; may be outside `PROJECTS_ROOT`.
 - `CONDUCTOR_PLUGIN_DATA_DIR` — the plugin's own data dir, `<PROJECTS_ROOT>/.code-conductor/plugins/data/<id>` (`pluginDataDir`, `src/plugins/store.ts`).

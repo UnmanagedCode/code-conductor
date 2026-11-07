@@ -7,7 +7,7 @@ import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
 import { RetiredPagers } from './retiredPagers.ts';
 import type { LineageSource } from './lineagePager.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, mcpClientDir, type TranscriptPlacement } from './projects.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import { CORE_CLAUDE_PLUGIN_ROOT, withCoreClaudePlugin } from './coreClaudePlugin.ts';
 
@@ -2712,14 +2712,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // and their redirected Bash runs on the remote without cc's env.
     spawnEnv.CC_PROJECTS_ROOT = path.resolve(projectsRoot());
     // The same session's MCP URL for a script the worker runs (JSON by default —
-    // docs/mcp-applications.md). Local placement only: a remote worker's Bash
-    // runs on the remote without cc's env, and the loopback URL would not reach
-    // cc from there anyway. Deleted otherwise so an outer cc's value never leaks
-    // into a worker it does not describe.
+    // docs/mcp-applications.md), and the directory holding the generated client
+    // that defaults to it; the two always travel together. Local placement
+    // only: a remote worker's Bash runs on the remote without cc's env, cannot
+    // read cc's store, and the loopback URL would not reach cc from there
+    // anyway. Deleted otherwise so an outer cc's values never leak into a
+    // worker they do not describe.
     if (this.mcpServerUrl && this.sessionId && this.transcriptPlace.system === LOCAL_SYSTEM_ID) {
       spawnEnv.CONDUCTOR_MCP_URL = `${this.mcpServerUrl}/${encodeURIComponent(this.sessionId)}`;
+      spawnEnv.CONDUCTOR_MCP_CLIENT_DIR = mcpClientDir();
     } else {
       delete spawnEnv.CONDUCTOR_MCP_URL;
+      delete spawnEnv.CONDUCTOR_MCP_CLIENT_DIR;
     }
     // Settings → Models → Task tools. The CLI offers TaskCreate/Get/List/Update
     // only on its own model allowlist (Claude ≤4.x) unless this is truthy; the env

@@ -12,7 +12,7 @@
 // (`POST /mcp[/<sessionId>]/tools/<name>`) runs the same call core.
 
 import express from 'express';
-import { buildTools } from './tools.ts';
+import { capableTools } from './tools.ts';
 import { isTextPayload, isTextResult, isDual, codeForStatus, MCP_RESULT_CHAR_BUDGET } from './content.ts';
 import { validateArgs } from './argValidation.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
@@ -715,7 +715,7 @@ export function buildMcpRouter(
   // input schema (project_read's maxBytes) and in each description's result
   // clause, and tools/list shows the outputSchema in JSON only.
   const registry = (format: McpFormat) => {
-    const tools: McpTool[] = buildTools(format).filter(t => !t.requires || capabilities[t.requires]);
+    const tools: McpTool[] = capableTools(format, capabilities);
     return { tools, set: new Set<McpTool>(tools) as ReadonlySet<McpTool> };
   };
   const registries: Record<McpFormat, { tools: McpTool[]; set: ReadonlySet<McpTool> }> = {

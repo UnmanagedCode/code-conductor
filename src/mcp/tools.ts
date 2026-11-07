@@ -114,6 +114,13 @@ export function buildTools(format: McpFormat = 'text'): Tool[] {
   });
 }
 
+// The registry one host serves: buildTools minus the tools whose platform
+// capability is off. The /mcp router and the generated client
+// (src/mcp/client/) both read it, so they cannot disagree on the tool set.
+export function capableTools(format: McpFormat, capabilities: PlatformCapabilities): Tool[] {
+  return buildTools(format).filter(t => !t.requires || capabilities[t.requires]);
+}
+
 function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
   const limits = limitsFor(format);
   // A description's one per-format span. The purpose around it is written once;
