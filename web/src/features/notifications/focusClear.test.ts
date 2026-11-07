@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { __setSwRegistrationForTests, initNotifications } from './notifications';
+import { __setSwRegistrationForTests, closeAllOnFocus, fire, initNotifications } from './notifications';
 
 function setVisibility(state: 'visible' | 'hidden') {
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
@@ -33,5 +33,26 @@ describe('focusing the tab', () => {
     expect(open[1].close).toHaveBeenCalledTimes(1);
     expect(open[2].close).toHaveBeenCalledTimes(1);
     expect(open[3].close).not.toHaveBeenCalled();
+  });
+
+  it('a ping whose show is still in flight is closed by the focus clear, not left behind it', async () => {
+    // Invariant: every service-worker call runs in order, so a focus clear lands after the show queued before it.
+    const tray: { tag: string; close(): void }[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    (globalThis as any).Notification = class { static permission = 'granted'; };
+    __setSwRegistrationForTests({
+      showNotification: async (_t: string, opts: NotificationOptions) => {
+        await gate;
+        const n = { tag: opts.tag!, close: () => { tray.splice(tray.indexOf(n), 1); } };
+        tray.push(n);
+      },
+      getNotifications: async () => [...tray],
+    } as unknown as ServiceWorkerRegistration);
+    fire({ title: 't', body: '', tag: 'session:s-z', data: { project: 'p', instanceId: 'i', sessionId: 's-z' } });
+    const cleared = closeAllOnFocus();
+    release();
+    await cleared;
+    expect(tray).toEqual([]);
   });
 });

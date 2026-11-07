@@ -76,11 +76,10 @@ export type NotificationPayload = { title: string; body: string; tag: string; da
 export function fire({ title, body, tag, data }: NotificationPayload): unknown {
   if (!isNotificationAPIAvailable() || Notification.permission !== 'granted') return null;
   const opts: NotificationOptions = { body, tag, icon: NOTIFICATION_ICON, data };
-  if (swRegistration) {
-    try {
-      void swRegistration.showNotification(title, opts);
-      return true;
-    } catch { /* fall through to the page-level constructor */ }
+  const reg = swRegistration;
+  if (reg) {
+    enqueueSw('show a ping', () => reg.showNotification(title, opts));
+    return true;
   }
   try {
     const n = new Notification(title, opts);
@@ -95,48 +94,90 @@ export function fire({ title, body, tag, data }: NotificationPayload): unknown {
   }
 }
 
-/** With two or more session pings open, one summary names how many and which projects. */
-export function summarizeOpenNotifications(notifications: { tag?: string; data?: any }[] | null) {
-  const ours = (notifications || []).filter((n) => typeof n?.tag === 'string' && n.tag.startsWith('session:'));
-  if (ours.length < 2) return { shouldFire: false as const };
-  const projects: string[] = [];
-  const seen = new Set<string>();
-  for (const n of ours) {
-    const p = n?.data?.project;
-    if (!p || seen.has(p)) continue;
-    seen.add(p);
-    projects.push(p);
-  }
+type ShowOptions = NotificationOptions & { renotify?: boolean };
+
+/**
+ * Every service-worker notification call runs through this chain, so a close
+ * can never overtake the show it targets. A failed step warns and the chain
+ * goes on.
+ */
+let swQueue: Promise<void> = Promise.resolve();
+function enqueueSw(what: string, step: () => Promise<unknown>) {
+  swQueue = swQueue.then(step).then(() => {}, (err) => { console.warn(`notifications: could not ${what}`, err); });
+}
+
+/** Resolves once every queued service-worker call has run. Test seam. */
+export function __notificationsSettledForTests() { return swQueue; }
+
+/** The summary's wording for the sessions it names (`where` of each ping). */
+export function summaryText(names: readonly string[]) {
+  const projects = [...new Set(names.filter(Boolean))];
   const shown = projects.slice(0, SUMMARY_PROJECT_LIMIT);
   const overflow = projects.length - shown.length;
   let body = shown.join(', ');
   if (overflow > 0) body += ` …+${overflow} more`;
-  return { shouldFire: true as const, title: `${ours.length} sessions need you`, body };
+  return { title: `${names.length} sessions need you`, body };
 }
 
-async function getOpenNotifications() {
-  if (!swRegistration) return null;
-  try { return await swRegistration.getNotifications(); } catch { return null; }
+export type SummaryAction =
+  | { kind: 'close' }
+  | { kind: 'none' }
+  | { kind: 'alert'; title: string; body: string }
+  | { kind: 'refresh'; title: string; body: string };
+
+/**
+ * What the summary notification does when the announced set moves from `prev`
+ * (the set the last decision saw) to `next` (sessionId → where): alert when a
+ * session joined, refresh quietly when it only shrank, close below two.
+ */
+export function summaryAction(prev: ReadonlySet<string>, next: ReadonlyMap<string, string>): SummaryAction {
+  if (next.size < 2) return { kind: 'close' };
+  const text = summaryText([...next.values()]);
+  for (const sid of next.keys()) if (!prev.has(sid)) return { kind: 'alert', ...text };
+  return next.size < prev.size ? { kind: 'refresh', ...text } : { kind: 'none' };
 }
 
-export async function maybeUpdateSummary() {
+async function openByTag(reg: ServiceWorkerRegistration, tag: string) {
+  return reg.getNotifications({ tag });
+}
+
+/** Close one session's ping. SW path only. */
+function closePing(sessionId: string) {
   const reg = swRegistration;
   if (!reg) return;
-  const open = await getOpenNotifications();
-  if (open == null) return;
-  const summary = summarizeOpenNotifications(open);
-  if (summary.shouldFire) {
-    try { void reg.showNotification(summary.title, { body: summary.body, tag: SUMMARY_TAG, icon: NOTIFICATION_ICON }); } catch { /* ignore */ }
-  } else {
-    for (const n of open) if (n.tag === SUMMARY_TAG) n.close();
-  }
+  enqueueSw('close a ping', async () => { for (const n of await openByTag(reg, `session:${sessionId}`)) n.close(); });
 }
 
-/** Coming back to the tab dismisses the pings it already answers. */
-export async function closeAllOnFocus() {
-  const open = await getOpenNotifications();
-  if (open == null) return;
-  for (const n of open) if (n.tag === SUMMARY_TAG || n.tag.startsWith('session:')) n.close();
+/** Apply the summary decision to the tray. SW path only. */
+function applySummary(action: SummaryAction) {
+  const reg = swRegistration;
+  if (!reg || action.kind === 'none') return;
+  if (action.kind === 'close') {
+    enqueueSw('close the summary', async () => { for (const n of await openByTag(reg, SUMMARY_TAG)) n.close(); });
+    return;
+  }
+  const { title, body } = action;
+  if (action.kind === 'alert') {
+    const opts: ShowOptions = { body, tag: SUMMARY_TAG, icon: NOTIFICATION_ICON, renotify: true };
+    enqueueSw('show the summary', () => reg.showNotification(title, opts));
+    return;
+  }
+  // A shrink updates an open summary in place, silently; a dismissed one stays dismissed.
+  enqueueSw('refresh the summary', async () => {
+    if ((await openByTag(reg, SUMMARY_TAG)).length === 0) return;
+    const opts: ShowOptions = { body, tag: SUMMARY_TAG, icon: NOTIFICATION_ICON, silent: true };
+    await reg.showNotification(title, opts);
+  });
+}
+
+/** Coming back to the tab dismisses the pings it already answers. Queued behind any pending show. */
+export function closeAllOnFocus() {
+  const reg = swRegistration;
+  if (!reg) return swQueue;
+  enqueueSw('close the pings on focus', async () => {
+    for (const n of await reg.getNotifications()) if (n.tag === SUMMARY_TAG || n.tag.startsWith('session:')) n.close();
+  });
+  return swQueue;
 }
 
 export type AttentionTransition = {
@@ -163,26 +204,39 @@ export function attentionNotification(t: AttentionTransition): NotificationPaylo
   };
 }
 
-/** Gate, fire and refresh the summary for one transition; null when suppressed. */
+/** Gate and fire one transition; null when suppressed. */
 export function notifyAttention({ transition, onScreen }: { transition: AttentionTransition; onScreen: boolean }) {
   const { permission, globalEnabled } = notificationStore.get();
   if (!shouldNotify({ permission, globalEnabled, muted: isSessionMuted(transition.sessionId), onScreen })) return null;
-  const result = fire(attentionNotification(transition));
-  void maybeUpdateSummary();
-  return result;
+  return fire(attentionNotification(transition));
 }
 
 /**
- * Owns the attention tracker. A transition is consumed whether or not it
- * notifies, so one suppressed by focus, mute or the bell is never replayed.
+ * Owns the attention tracker and the summary's set: the sessions this tab
+ * pinged that are still in the strip's Waiting or Finished group. A
+ * transition is consumed whether or not it notifies, so one suppressed by
+ * focus, mute or the bell is never replayed.
  */
 export function createAttentionNotifier({ isOnScreen }: { isOnScreen: (sessionId: string) => boolean }) {
   const tracker = createAttentionTracker();
+  const announced = new Map<string, string>(); // sessionId → where
+  let named = new Set<string>(); // the set the summary decision last saw
   return {
     observe(instances: readonly AttentionInstance[]) {
       for (const transition of tracker.observe(instances)) {
-        notifyAttention({ transition, onScreen: isOnScreen(transition.sessionId) });
+        const payload = attentionNotification(transition);
+        if (notifyAttention({ transition, onScreen: isOnScreen(transition.sessionId) }) != null) {
+          announced.set(transition.sessionId, payload.data.project);
+        }
       }
+      const needs = tracker.needsYou();
+      for (const sid of [...announced.keys()]) {
+        if (needs.has(sid)) continue;
+        announced.delete(sid);
+        closePing(sid);
+      }
+      applySummary(summaryAction(named, announced));
+      named = new Set(announced.keys());
     },
   };
 }

@@ -34,7 +34,7 @@ async function boot({ view, active }: { view: string; active: string }) {
     appStore.set({ instances, activeId: active });
     emit('instances');
   };
-  return { feed, pings: () => shown.filter((s) => s.tag !== 'cc-summary') };
+  return { feed, pings: async () => { await n.__notificationsSettledForTests(); return shown.filter((s) => s.tag !== 'cc-summary'); } };
 }
 
 describe('the real on-screen predicate', () => {
@@ -49,7 +49,7 @@ describe('the real on-screen predicate', () => {
     const { feed, pings } = await boot({ view: '#session=s7', active: 'i-s7' });
     feed([inst('s7'), inst('s8')]);
     feed([done('s7'), done('s8')]);
-    expect(pings().map((p) => p.tag)).toEqual(['session:s8']);
+    expect((await pings()).map((p) => p.tag)).toEqual(['session:s8']);
   });
 
   it('a hidden tab counts as not on screen even with that session active', async () => {
@@ -58,7 +58,7 @@ describe('the real on-screen predicate', () => {
     const { feed, pings } = await boot({ view: '#session=s7', active: 'i-s7' });
     feed([inst('s7')]);
     feed([done('s7')]);
-    expect(pings().map((p) => p.tag)).toEqual(['session:s7']);
+    expect((await pings()).map((p) => p.tag)).toEqual(['session:s7']);
   });
 
   it('a full-page view counts as not on screen even with that session active', async () => {
@@ -66,6 +66,6 @@ describe('the real on-screen predicate', () => {
     const { feed, pings } = await boot({ view: '#costs', active: 'i-s7' });
     feed([inst('s7')]);
     feed([done('s7')]);
-    expect(pings().map((p) => p.tag)).toEqual(['session:s7']);
+    expect((await pings()).map((p) => p.tag)).toEqual(['session:s7']);
   });
 });
