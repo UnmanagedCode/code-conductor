@@ -1316,6 +1316,13 @@ function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): Soft
   };
 }
 
+// The event-log actor of a conductor's send: the MCP caller that sent it, so a
+// non-root conductor (a section lead) is attributed to itself. Empty with no
+// caller, which leaves Instance.prompt's root-owner fallback.
+function senderActor(callerId: string | null | undefined): { actor?: { type: 'conductor'; sessionId: string } } {
+  return callerId ? { actor: { type: 'conductor', sessionId: callerId } } : {};
+}
+
 export async function sendPrompt(
   { sessionId, text, idleTimeoutSeconds, forward }: {
     sessionId: string; text: string; idleTimeoutSeconds?: number;
@@ -1393,7 +1400,7 @@ export async function sendPrompt(
 
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(composedText, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(composedText, [], { author: 'conductor', ...senderActor(ctx.callerId) });
   return { sessionId: inst.sessionId, status: inst.status, ...forwardedField, ...humanPrompts };
 }
 
@@ -1575,7 +1582,7 @@ export async function renewSession(
     // A normal (non-internal) prompt, like sendPrompt — but the guard above means
     // it can be neither a mid-turn delivery nor an overage-queued one, so this
     // always opens a turn of its own.
-    await inst.prompt(buildRenewRequest({ directive }), [], { author: 'conductor' });
+    await inst.prompt(buildRenewRequest({ directive }), [], { author: 'conductor', ...senderActor(callerId) });
   } catch (e) {
     instances.dropSessionRenewRequest(inst.id);
     throw e;
@@ -1709,7 +1716,7 @@ export async function approvePlan(
   const text = buildApprovePrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor', ...senderActor(callerId) });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
@@ -1731,7 +1738,7 @@ export async function rejectPlan(
   const text = buildRejectPrompt(feedback);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor', ...senderActor(callerId) });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 
@@ -1846,7 +1853,7 @@ export async function answerQuestion(
   const text = formatUserQuestionAnswers(questions, states);
   noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   const humanPrompts = humanPromptsField(ctx, inst);
-  await inst.promptOrQueueSteer(text, [], { author: 'conductor' });
+  await inst.promptOrQueueSteer(text, [], { author: 'conductor', ...senderActor(callerId) });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...humanPrompts };
 }
 

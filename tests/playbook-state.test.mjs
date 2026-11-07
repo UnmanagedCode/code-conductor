@@ -67,6 +67,17 @@ test('session, turn and wake rows and refused/failed calls fold nothing, even fo
   assert.equal(proj(rows).bySession.has('ghost'), false);
 });
 
+test('a move onto the stage the worker already holds folds nothing — stageHistory never repeats (defensive dedupe)', () => {
+  const p = proj([
+    bindRow('w', 'pb', 'plan'),
+    moveRow('w', 'plan', 'impl', { provenance: { plan: 'x' } }),
+    moveRow('w', 'plan', 'impl', { provenance: { other: 'y' } }),
+  ]);
+  const st = p.bySession.get('w');
+  assert.deepEqual([st.stage, st.stageHistory, st.provenance], ['impl', ['plan', 'impl'], { plan: 'x' }]);
+  assert.equal(sameRun(p, 'w', 'y'), false, 'the skipped move adds no run edge either');
+});
+
 test('a move for an unknown worker is folded as a no-op rather than materialising one', () => {
   const p = proj([moveRow('ghost', 'a', 'b')]);
   assert.equal(p.bySession.size, 0);

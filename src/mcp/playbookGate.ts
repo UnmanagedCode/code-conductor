@@ -302,13 +302,18 @@ export function createPlaybookGate(
 
     // A real move carries `move` (from !== to by construction — a same-stage
     // send resolves to `self`, which moves nothing). Everything else is the
-    // plain row.
+    // plain row. DECIDED IN THE CHAIN (a thunk), like the bind: two calls
+    // decided against the same stage both name it as `from`, and only the first
+    // to append still finds the worker there — the second writes its call row
+    // without `move`, so neither a stale `from` nor a repeated stage is written.
     if (move.kind === 'transition' && move.from && move.to) {
+      const { from, to } = move;
       const provenance = suppliedProvenance(args.provenance);
-      await append({
-        ...base, outcome: 'ok',
-        move: { from: move.from, to: move.to, ...(Object.keys(provenance).length > 0 ? { provenance } : {}) },
-      });
+      const moveField = { from, to, ...(Object.keys(provenance).length > 0 ? { provenance } : {}) };
+      const subject = base.subject;
+      await append(() => (subject && proj.bySession.get(subject)?.stage === from
+        ? { ...base, outcome: 'ok', move: moveField }
+        : { ...base, outcome: 'ok' }));
       return;
     }
     await append({ ...base, outcome: 'ok' });

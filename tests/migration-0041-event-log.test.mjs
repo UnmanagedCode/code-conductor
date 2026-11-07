@@ -148,9 +148,46 @@ test('a backup name already taken gets a timestamp suffix rather than overwritin
   assert.equal(await fs.readFile(path.join(path.dirname(backup(root)), stamped[0]), 'utf8'), RAW);
 });
 
-test('an events.jsonl that differs from the conversion is refused: both files stay untouched', async () => {
+test('STRAGGLER: a ledger recreated after the conversion (an old server\'s late exit rows) is moved aside unconverted and boot continues', async () => {
+  // INVARIANT: once events.jsonl and the backup both exist, a reappearing
+  // playbook-ledger.jsonl never aborts boot and never touches events.jsonl.
+  const root = await mkRoot();
+  await m0041.run({ root });
+  const events = await fs.readFile(newFile(root), 'utf8');
+  const straggler = JSON.stringify({ seq: 99, ts: ts(59), kind: 'retire', sessionId: W0, reason: 'subprocess exited' }) + '\n';
+  await fs.writeFile(oldFile(root), straggler);
+  const logs = [];
+  const r = await m0041.run({ root, log: (m) => logs.push(m) });
+  assert.equal(r.applied, true);
+  assert.equal(r.summary.straggler, true);
+  assert.equal(r.summary.lines, 1);
+  assert.match(path.basename(r.summary.movedTo), /^playbook-ledger\.straggler-\d+\.jsonl$/);
+  assert.equal(path.dirname(r.summary.movedTo), path.dirname(backup(root)));
+  assert.equal(await fs.readFile(r.summary.movedTo, 'utf8'), straggler, 'moved byte-for-byte, unconverted');
+  assert.equal(await exists(oldFile(root)), false);
+  assert.equal(await fs.readFile(newFile(root), 'utf8'), events, 'the event log is untouched');
+  assert.equal(await fs.readFile(backup(root), 'utf8'), RAW, 'the original backup is untouched');
+  assert.equal(logs.length, 1, 'the move is reported');
+  // …and the whole chain over that store is silent afterwards.
+  const chainLogs = [];
+  await runMigrations({ root, log: (m) => chainLogs.push(m) });
+  assert.deepEqual(chainLogs, []);
+});
+
+test('a straggler through the whole chain: runMigrations does not throw on a recreated ledger', async () => {
+  const root = await mkRoot();
+  await runMigrations({ root, log: () => {} });
+  await fs.writeFile(oldFile(root), JSON.stringify({ seq: 1, ts: ts(1), kind: 'retire', sessionId: W2, reason: 'subprocess exited' }) + '\n');
+  await runMigrations({ root, log: () => {} });
+  assert.equal(await exists(oldFile(root)), false);
+});
+
+test('CONFLICT: an events.jsonl that differs from the conversion, with NO backup yet, is refused: both files stay untouched', async () => {
+  // INVARIANT: the throw is kept for the one genuine conflict — two files,
+  // neither converted from the other.
   const root = await mkRoot();
   await fs.writeFile(newFile(root), '{"v":1,"ts":"2026-11-01T00:00:00Z","kind":"wake","actor":{"type":"system"},"subject":"x","recipient":"y"}\n');
+  assert.equal(await exists(backup(root)), false, 'premise: no conversion has happened');
   const before = await fs.readFile(newFile(root), 'utf8');
   await assert.rejects(m0041.run({ root }), /both exist and differ/);
   assert.equal(await fs.readFile(newFile(root), 'utf8'), before);

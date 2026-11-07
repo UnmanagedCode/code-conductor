@@ -28,7 +28,7 @@ Every row carries these keys, serialised first and in this order:
 
 | `type` | When | `sessionId` |
 |---|---|---|
-| `conductor` | A `call` row (the MCP caller); a `session` `start`/`resume` from `spawn_instance`; a `session` `exit` from `kill_instance`; a `turn` `start` whose prompt had `author:'conductor'` | `call`: the caller. `session`: the MCP caller. `turn`: the worker's root conductor (`rootOwnerSessionId`). Absent only on migrated rows. |
+| `conductor` | A `call` row (the MCP caller); a `session` `start`/`resume` from `spawn_instance`; a `session` `exit` from `kill_instance`; a `turn` `start` a conductor's prompt opened (`send_prompt`, `approve_plan`, `reject_plan`, `answer_question`, `renew_session`'s request, and the reseed carrying a `renew_session` `followUp`) | `call`, `session`: the MCP caller. `turn`: the conductor that sent the prompt — the MCP caller, so a section lead prompting its own worker is the section lead; the worker's root conductor (`rootOwnerSessionId`) only for a conductor-authored prompt that names no sender. Absent only on migrated rows. |
 | `human` | A `session` `start`/`resume` from `POST /api/instances` (new or `resume`), `POST /api/instances/:id/fork` or `POST /api/instances/:id/respawn`, and from a headless run; a `session` `exit` from the UI (`kill` over the WebSocket, `DELETE /api/instances/:id`, the project/worktree deletion routes); a `turn` `start` whose prompt had `author:'human'`; a `config` change from the UI toggle (`playbook_enforcement` over the WebSocket) | — |
 | `system` | Everything else: crashes and spontaneous exits, restore after restart, prune/rewind/model-switch relaunches, unprompted turns and turns an orchestrator-injected (`internal`) prompt started (an idle-wake stub, the overage auto-resume), every `turn` `end`, every `wake`, every `config` birth | — |
 
@@ -59,7 +59,7 @@ A human steer mid-turn starts no turn and writes nothing. A UI interrupt writes 
   - `failed` — the handler returned `ok:false` or threw. No `move`, no `bind`.
   - `ok` — the handler succeeded.
 - **Calls with no row:** a governed read-only call that is not refused (`get_recent_messages`, `get_transcript`, `describe_session`, `playbook_state`); a call transport-refused before policy (bad arguments, an ambiguous prefix); a call by a non-conductor; an unrefused interaction call naming no `sessionId`.
-- **`move`** is present only when the stage changed: `from !== to` always. A same-stage `send_prompt` — declared self-loop or not — has no `move`.
+- **`move`** is present only when the stage changed: `from !== to` always. A same-stage `send_prompt` — declared self-loop or not — has no `move`. The move is re-checked when the row is appended: it is written only while the worker still holds `move.from`, so of two concurrent calls decided against the same stage only the first carries a `move`; the second is its plain `ok` row. A reader folding a `move` whose `to` is the stage the worker already holds folds nothing.
 - **`bind`** is present on a `spawn_instance` that bound a session to a playbook stage, at either enforcement level, and only when the session was not already bound (a spawn whose result names an already-bound session writes its `call` without `bind`). A second `bind` for one session replaces its state.
 
 ## Semantics for a timeline reader
@@ -68,7 +68,8 @@ A human steer mid-turn starts no turn and writes nothing. A UI interrupt writes 
 - **Lifecycle.** A rotation that kills and relaunches the process (prune, rewind, model switch) is an `exit` then a `resume` with that cause; an in-place rotation (renew, typed `/clear`) writes neither.
 - **Ordering.**
   - A `kill_instance` `call` follows the `exit` its kill produced.
-  - The `session` `resume` for a `spawn_instance({resume})` precedes that call's `call` row; a fresh spawn's `session` `start` precedes its `call`.
+  - A `call` row written at commit (`ok`, or `failed` after the handler ran) follows every row the handler caused: the `session` `resume` for a `spawn_instance({resume})`, a fresh spawn's `session` `start`.
+  - A `refused` row is written before the handler runs, so under `warn` (where the call proceeds) it precedes the rows the call then causes.
   - A conductor's `config` birth directly follows its first `session` row.
   - A synthesized `turn` `end` directly precedes the `exit` of the death that interrupted the turn.
   - A `wake` is written after the stub reaches the conductor.
@@ -96,4 +97,5 @@ Additions (a kind, an optional field) are additive and keep `v`. Renaming or rem
 - Rows the old server observes after offering a restart handover (exits of the workers it tears down) are dropped and logged, never written.
 - A `session` `start`/`resume` is written when a launch begins, after its pre-spawn refusal checks. A launch that fails afterwards (a failed FUSE mount, an immediate crash) leaves it followed by an `exit`.
 - No `wake` row when the woken worker has left the registry with no recorded exit.
+- **A straggler ledger is not converted.** During an upgrade restart the old server keeps appending to `playbook-ledger.jsonl` after migration 0041 moved it away (exits of the workers it tears down). On the next boot 0041 finds the conversion already done (`events.jsonl` and `migrated-backup-0041/playbook-ledger.jsonl` both exist), moves the recreated file, unconverted, to `migrated-backup-0041/playbook-ledger.straggler-<ms>.jsonl`, logs it, and boot continues — its rows are not in the event log.
 - **Migrated rows** (migration `0041-event-log`): their `call` rows carry `actor: {type:'conductor'}` with no `sessionId` unless the source row named the conductor; their `session`, `config` and `wake` rows are `system`; a same-stage round carries no `move`; there are no `turn` rows and no `session` `start` for sessions that began before the migration.

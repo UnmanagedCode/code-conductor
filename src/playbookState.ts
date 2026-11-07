@@ -110,7 +110,10 @@ export function applyRow(p: Projection, row: EventRow): void {
       for (const target of Object.values(provenance)) union(p.parent, target, sid);
     } else if (row.move) {
       const st = p.bySession.get(sid);
-      if (st) {
+      // A move onto the stage the worker already holds folds nothing — the
+      // writer never produces one (it re-checks `from` at append time), and a
+      // repeat would put the same stage twice in a row in stageHistory.
+      if (st && st.stage !== row.move.to) {
         st.stage = row.move.to;
         st.stageHistory.push(row.move.to);
         const prov = row.move.provenance;

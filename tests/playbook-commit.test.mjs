@@ -26,12 +26,20 @@ const READLAB = {
   stages: { watch: { description: 'No reading.', tools: { spawn_instance: 'allow', get_recent_messages: 'deny' } } },
   transitions: [],
 };
+// `forklab` has two edges out of one stage, for the concurrent-move case.
+const FORKLAB = {
+  id: 'forklab', name: 'Forklab', description: 'Test-only: one stage, two exits.',
+  entryStages: ['a'],
+  stages: { a: { description: 'Fork.', tools: { spawn_instance: 'allow' } }, b: { description: 'Left.' }, c: { description: 'Right.' } },
+  transitions: [{ from: 'a', to: 'b' }, { from: 'a', to: 'c' }],
+};
 process.env.PROJECTS_ROOT = await mkdtemp('cc-pbcommit-root-');
 {
   const dir = path.join(orchStoreRoot(), 'playbooks');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'gatelab.json'), JSON.stringify(GATELAB));
   await fs.writeFile(path.join(dir, 'readlab.json'), JSON.stringify(READLAB));
+  await fs.writeFile(path.join(dir, 'forklab.json'), JSON.stringify(FORKLAB));
 }
 
 const CONDUCTOR_ID = 'conductor-1';
@@ -141,6 +149,39 @@ test('two CONCURRENT commits naming the same session: two call rows, only the fi
   assert.deepEqual(st.stageHistory, ['loose']);
 });
 
+// Two moves decided against the same stage: `check()` runs outside the chain,
+// so both name the same `from`. The move is re-decided INSIDE the chain.
+async function allowed(r, toolName, args) {
+  const outcome = await check(r, toolName, args);
+  assert.ok(!('refusal' in outcome), `premise: ${toolName} allowed; got ${JSON.stringify(outcome.refusal)}`);
+  return outcome;
+}
+
+test('two CONCURRENT moves to the SAME target: two call rows, exactly one move, no repeated stage', async () => {
+  // INVARIANT: a move is written only while the subject still holds move.from.
+  const r = await rig([bindRow('w1', 'gatelab', 'draft')], { live: ['w1'] });
+  const a = await allowed(r, 'approve_plan', { sessionId: 'w1' });
+  const b = await allowed(r, 'approve_plan', { sessionId: 'w1' });
+  await Promise.all([a.commit({}), b.commit({})]);
+  await r.settle();
+  const rows = await r.rows();
+  assert.equal(rows.length, 2, 'each call still gets its one row');
+  assert.deepEqual(rows.map(x => x.move ?? null), [{ from: 'draft', to: 'build' }, null]);
+  assert.deepEqual(foldPlaybookState(await r.all()).bySession.get('w1').stageHistory, ['draft', 'build']);
+});
+
+test('two CONCURRENT moves to DIFFERENT targets: only the first moves; the second\'s stale `from` is never written', async () => {
+  const r = await rig([bindRow('w1', 'forklab', 'a')], { live: ['w1'] });
+  const toB = await allowed(r, 'send_prompt', { sessionId: 'w1', text: 'left', stage: 'b' });
+  const toC = await allowed(r, 'send_prompt', { sessionId: 'w1', text: 'right', stage: 'c' });
+  await Promise.all([toB.commit({}), toC.commit({})]);
+  await r.settle();
+  assert.deepEqual((await r.rows()).map(x => x.move ?? null), [{ from: 'a', to: 'b' }, null]);
+  const st = foldPlaybookState(await r.all()).bySession.get('w1');
+  assert.deepEqual([st.stage, st.stageHistory], ['b', ['a', 'b']]);
+  assert.equal(r.emitted.filter(e => e.event === 'playbook_changed').length, 1, 'only the real move notifies');
+});
+
 test('a tracked worker\'s resume writes one ok call row on the resumed id, with no bind', async () => {
   const r = await rig(RUN, { live: ['w1', 'a1'] });
   await committed(r, 'spawn_instance', { resume: 'w1' }, { sessionId: 'w1' }, { resumeHandle: 'w1' });
@@ -246,6 +287,17 @@ test('a governed READ-ONLY call that runs writes nothing, and carries no commit 
   const outcome = await committed(r, 'get_recent_messages', { sessionId: 'u9' });
   assert.equal(outcome.commit, undefined);
   assert.equal(outcome.fail, undefined);
+  assert.deepEqual(await r.rows(), []);
+});
+
+test('an unrefused interaction call naming no sessionId (a bare renew_session) writes no row, and carries no commit or fail', async () => {
+  const { loadInteractionTools } = await import('../src/playbooks.ts');
+  assert.ok((await loadInteractionTools()).has('renew_session'), 'premise: renew_session is an interaction tool');
+  const r = await rig(RUN);
+  const outcome = await allowed(r, 'renew_session', { summary: 'handoff' });
+  assert.equal(outcome.commit, undefined);
+  assert.equal(outcome.fail, undefined);
+  await r.settle();
   assert.deepEqual(await r.rows(), []);
 });
 

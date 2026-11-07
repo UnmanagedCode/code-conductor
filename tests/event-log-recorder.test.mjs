@@ -171,3 +171,59 @@ test('an enforcement change carries `from` (the logged level) and the actor; an 
     { kind: 'config', actor: HUMAN, subject: 'c1', key: 'enforcement', from: 'warn', to: 'enforce' },
   ]);
 });
+
+// ── event_log_blocked: who gets the bubble ──────────────────────────────────
+//
+// A refused write's bubble lands on the live conductor the FIRST dropped row
+// names — its actor's sessionId, else its subject — and nowhere when neither is
+// a live conductor. Driven through a lease that always refuses.
+async function blockedRig(live) {
+  const dir = await mkdtemp('cc-evrec-blocked-');
+  const listeners = new Map();
+  const bubbles = [];
+  const inst = (sid, project) => ({ sessionId: sid, project, _emitUi: (ev) => bubbles.push({ on: sid, ev }) });
+  const instances = {
+    on(event, cb) { listeners.set(event, [...(listeners.get(event) ?? []), cb]); },
+    emit() {},
+    liveForSession(sid) { return live[sid] ? inst(sid, live[sid]) : null; },
+    isSessionLive() { return false; },
+  };
+  const gate = createPlaybookGate({ instances, lease: { check: () => 'a newer server holds the projects root (generation 2)' }, file: () => path.join(dir, 'events.jsonl') });
+  const fire = (event, arg) => { for (const cb of listeners.get(event) ?? []) cb(arg); };
+  const settle = async () => { await gate.readProjection(); await new Promise(r => setTimeout(r, 20)); };
+  return { fire, settle, bubbles };
+}
+
+function quiet(t) {
+  const orig = { error: console.error, warn: console.warn };
+  console.error = console.warn = () => {};
+  t.after(() => Object.assign(console, orig));
+}
+
+test('blocked: the bubble lands on the live conductor named by the row\'s actor, once per episode', async (t) => {
+  quiet(t);
+  const r = await blockedRig({ c1: CONDUCT_PROJECT_NAME, c2: CONDUCT_PROJECT_NAME });
+  r.fire('session_launched', launched('c2', conductor, { actor: { type: 'conductor', sessionId: 'c1' } }));
+  r.fire('session_launched', launched('c2', conductor, { event: 'resume', actor: { type: 'conductor', sessionId: 'c1' } }));
+  await r.settle();
+  assert.deepEqual(r.bubbles.map(b => [b.on, b.ev.subtype, b.ev.data.reason]),
+    [['c1', 'event_log_blocked', 'a newer server holds the projects root (generation 2)']],
+    'the actor wins over a conductor subject, and a second drop in the episode adds no bubble');
+});
+
+test('blocked: with no live conductor actor, the bubble lands on a live conductor subject', async (t) => {
+  quiet(t);
+  const r = await blockedRig({ c2: CONDUCT_PROJECT_NAME });
+  r.fire('session_launched', launched('c2', conductor, { actor: { type: 'conductor', sessionId: 'c-gone' } }));
+  await r.settle();
+  assert.deepEqual(r.bubbles.map(b => b.on), ['c2']);
+});
+
+test('blocked: no bubble anywhere when neither the actor nor the subject is a live conductor', async (t) => {
+  quiet(t);
+  const r = await blockedRig({ w1: 'demo' }); // live, but not a conductor
+  r.fire('session_launched', launched('w1', worker, { actor: { type: 'conductor', sessionId: 'c-gone' } }));
+  r.fire('session_exited', { sessionId: 'w1', ...worker, status: 'exited', actor: SYS });
+  await r.settle();
+  assert.deepEqual(r.bubbles, []);
+});

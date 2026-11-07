@@ -244,7 +244,7 @@ export interface InstanceLike {
   retryRotationWrite(): void;
   summary(): InstanceSummary;
   _emitUi(ev: UiEvent): void;
-  prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor }): Promise<unknown>;
+  prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor; actor?: Actor }): Promise<unknown>;
   // False when this session's model cannot take a message injected into a running
   // turn; such a send is routed through queueSteerAfterStop instead (a block-edge
   // stop, then a fresh turn). `steerPending` is true while one is parked — read by
@@ -252,8 +252,8 @@ export interface InstanceLike {
   readonly acceptsMidTurnSteering: boolean;
   readonly steerPending: boolean;
   readonly needsPostStopSteer: boolean;
-  queueSteerAfterStop(text: string, opts?: { attachments?: unknown[]; author?: PromptAuthor }): Promise<void>;
-  promptOrQueueSteer(text: string, attachments?: unknown[], opts?: { author?: PromptAuthor }): Promise<void>;
+  queueSteerAfterStop(text: string, opts?: { attachments?: unknown[]; author?: PromptAuthor; actor?: Actor }): Promise<void>;
+  promptOrQueueSteer(text: string, attachments?: unknown[], opts?: { author?: PromptAuthor; actor?: Actor }): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   // The WS "Change model" dispatcher: live for Claude→Claude, a restart onto
   // the target backend for every other pair.

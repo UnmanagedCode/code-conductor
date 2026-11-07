@@ -110,7 +110,7 @@ describe('session lifecycle relays', () => {
     assert.deepEqual(launches.map(l => [l.event, l.cause, l.actor.type]), [['resume', 'respawn', 'human']]);
   });
 
-  test('an exit with no commanded actor is attributed to system, and the next launch clears a stale kill actor', async () => {
+  test('an exit with no commanded actor is attributed to system', async () => {
     const name = await project();
     const r = await api(baseUrl, 'POST', '/api/instances', { project: name, mode: 'bypassPermissions' });
     const id = r.body.id;
@@ -124,6 +124,48 @@ describe('session lifecycle relays', () => {
     await settle();
     const exits = of(inst.sessionId, from).filter(x => x.e === 'session_exited');
     assert.deepEqual(exits.map(x => x.actor), [{ type: 'system' }]);
+  });
+
+  test('dead -> alive -> dead emits TWO exits, and a relaunch clears a kill actor left on the dead instance', async () => {
+    // INVARIANTS: (1) a session this process resumed and that dies again gets a
+    // second exit — one per announced launch; (2) a kill actor set while there is
+    // no process (no edge consumes it) does not survive the next launch.
+    const name = await project();
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: name, mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await idle(id);
+    const inst = instances.get(id);
+    const sid = inst.sessionId;
+    await inst.prompt('hello');
+    await waitFor(() => inst.status === 'idle');
+    const from = seen.length;
+    await inst.kill({ graceMs: 50, actor: { type: 'conductor', sessionId: 'c-first' } });
+    await dead(id);
+    // A kill with no process: nothing exits, so nothing consumes this actor.
+    await inst.kill({ graceMs: 50, actor: { type: 'conductor', sessionId: 'c-stale' } });
+    await instances.respawn(id);
+    await idle(id);
+    await inst.kill({ graceMs: 50 });
+    await dead(id);
+    await settle();
+    const mine = of(sid, from).filter(x => x.e === 'session_exited' || x.e === 'session_launched');
+    assert.deepEqual(mine.map(x => [x.e, x.event, x.actor]), [
+      ['session_exited', undefined, { type: 'conductor', sessionId: 'c-first' }],
+      ['session_launched', 'resume', { type: 'system' }],
+      ['session_exited', undefined, { type: 'system' }],
+    ]);
+  });
+
+  test('a project deletion emits the exit of its running sessions with actor human', async () => {
+    const name = await project();
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: name, mode: 'bypassPermissions' });
+    await idle(r.body.id);
+    const sid = instances.get(r.body.id).sessionId;
+    const from = seen.length;
+    const del = await api(baseUrl, 'DELETE', `/api/projects/${name}`, {});
+    assert.equal(del.status, 200, JSON.stringify(del.body));
+    await settle();
+    assert.deepEqual(of(sid, from).filter(x => x.e === 'session_exited').map(x => x.actor), [{ type: 'human' }]);
   });
 
   test('a DELETE emits the exit with actor human', async () => {

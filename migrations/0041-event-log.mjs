@@ -27,11 +27,22 @@
 // ── PROBE ──────────────────────────────────────────────────────────────────
 // No playbook-ledger.jsonl → no-op.
 //
+// ── STRAGGLER ──────────────────────────────────────────────────────────────
+// An upgrade restart keeps the OLD build running until its replacement adopts
+// the root, and that build appends to playbook-ledger.jsonl on every worker
+// exit it observes — recreating the file after this migration moved it away.
+// So once the conversion has happened (events.jsonl AND the backup both exist),
+// a playbook-ledger.jsonl is a straggler: it is moved, unconverted, into the
+// backup dir as `playbook-ledger.straggler-<ms>.jsonl` and boot continues.
+// Its rows are the ones a server observes after offering the handover, which
+// the event log drops by design.
+//
 // ── CRASH RESUME ───────────────────────────────────────────────────────────
 // The conversion is deterministic (fixed key order, copied `ts`), so an
 // events.jsonl byte-identical to it is this migration's own output from a run
 // that died before the move-aside: the move-aside completes. An events.jsonl
-// that differs is refused — both files exist and neither may be dropped.
+// that differs, with no backup yet, is refused — both files exist, neither has
+// been converted from the other, and neither may be dropped.
 //
 // Frozen artifact — do not edit. Uses Node built-ins only.
 
@@ -174,8 +185,17 @@ export async function run({ root, log = () => {} } = {}) {
 
   const raw = await readOrNull(oldFile);
   if (raw === null) return { applied: false };
-  const { text, summary } = convertLedger(raw);
 
+  const backupDir = path.join(store, 'migrated-backup-0041');
+  const backupFile = path.join(backupDir, 'playbook-ledger.jsonl');
+  if (await exists(newFile) && await exists(backupFile)) {
+    const dest = path.join(backupDir, `playbook-ledger.straggler-${Date.now()}.jsonl`);
+    await fs.rename(oldFile, dest);
+    log(`  ! ${name}: ${oldFile} reappeared after the conversion (an old server's late writes); moved it, unconverted, to ${dest}`);
+    return { applied: true, summary: { straggler: true, movedTo: dest, lines: raw.split('\n').filter(l => l.trim()).length } };
+  }
+
+  const { text, summary } = convertLedger(raw);
   const existing = await readOrNull(newFile);
   if (existing !== null) {
     if (existing !== text) {
@@ -194,9 +214,8 @@ export async function run({ root, log = () => {} } = {}) {
     await fs.rename(tmp, newFile);
   }
 
-  const backupDir = path.join(store, 'migrated-backup-0041');
   await fs.mkdir(backupDir, { recursive: true });
-  let dest = path.join(backupDir, 'playbook-ledger.jsonl');
+  let dest = backupFile;
   if (await exists(dest)) dest = path.join(backupDir, `playbook-ledger.jsonl-${Date.now()}`);
   await fs.rename(oldFile, dest);
 

@@ -202,6 +202,7 @@ interface PendingSteer {
   text: string;
   attachments?: unknown[];
   author?: PromptAuthor;
+  actor?: Actor;
   resolve: () => void;
   reject: (e: Error) => void;
 }
@@ -3482,7 +3483,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // marker block on the line and on the echo (src/promptAuthor.ts); omitted for a
   // server- or CLI-injected prompt, which has no author.
   // `idleNudge` marks the turn as the idle-renewal nudge (see `_turnNudgeChain`).
-  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote, author, idleNudge = false }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor; idleNudge?: boolean } = {}): Promise<void> {
+  // `actor` names who sent the prompt, for the event log's turn row — the MCP
+  // caller on a conductor send. See the turn-actor assignment below.
+  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote, author, idleNudge = false, actor }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string; author?: PromptAuthor; idleNudge?: boolean; actor?: Actor } = {}): Promise<void> {
     // A rewind/prune is rewriting this session's jsonl. The `!this.proc`
     // check below already rejects for most of that window (the subprocess is
     // killed first), but not for the sliver between the caller's idle check and
@@ -3653,12 +3656,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._turnForceAborted = false;
     // Who started the turn, read by _setStatus's `turn_start` and cleared at
     // once, so a steer into a running turn (no transition) leaks no actor. An
+    // explicit `actor` (the sending conductor) wins; otherwise an
     // orchestrator-injected prompt (`internal`) is the system's, whatever
-    // authors it carries.
-    this._turnActor = internal ? null
+    // authors it carries, and a conductor-authored one falls back to the root
+    // owner.
+    this._turnActor = actor ?? (internal ? null
       : author === 'human' ? { type: 'human' }
       : author === 'conductor' ? { type: 'conductor', ...(this.rootOwnerSessionId ? { sessionId: this.rootOwnerSessionId } : {}) }
-      : null;
+      : null);
     this._setStatus('turn');
     this._turnActor = null;
     // A real message steered into a chain turn makes it real.
@@ -4463,13 +4468,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // wrapper: callers must be able to await the send and run in the SAME microtask
   // its completion lands in: the idle wake ARMS inside prompt() → _setStatus, so a
   // caller that resumed a tick later could not observe the turn it just started.
-  promptOrQueueSteer(text: string, attachments: unknown[] = [], { author }: { author?: PromptAuthor } = {}): Promise<void> {
+  promptOrQueueSteer(text: string, attachments: unknown[] = [], { author, actor }: { author?: PromptAuthor; actor?: Actor } = {}): Promise<void> {
     this._endPristine();
     if (this.needsPostStopSteer) {
-      void this.queueSteerAfterStop(text, { attachments, author }).catch(() => {});
+      void this.queueSteerAfterStop(text, { attachments, author, actor }).catch(() => {});
       return Promise.resolve();
     }
-    return this.prompt(text, attachments, { author });
+    return this.prompt(text, attachments, { author, actor });
   }
 
   // Deliver `text` to a model that cannot take a mid-turn injection: stop the
@@ -4485,8 +4490,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // Every mid-turn injection site routes here on a model that needs it, through
   // promptOrQueueSteer.
-  async queueSteerAfterStop(text: string, opts: { attachments?: unknown[]; author?: PromptAuthor } = {}): Promise<void> {
-    const entry: PendingSteer = { text, attachments: opts.attachments, author: opts.author, resolve: () => {}, reject: () => {} };
+  async queueSteerAfterStop(text: string, opts: { attachments?: unknown[]; author?: PromptAuthor; actor?: Actor } = {}): Promise<void> {
+    const entry: PendingSteer = { text, attachments: opts.attachments, author: opts.author, actor: opts.actor, resolve: () => {}, reject: () => {} };
     const p = new Promise<void>((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
     this._pendingSteers.push(entry);
     if (this.status !== 'turn') queueMicrotask(() => this._flushPendingSteers());
@@ -4505,7 +4510,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     const atts = entries.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
     // One line, one marker: see combineAuthors.
     const author = combineAuthors(entries.map(e => e.author));
-    this.prompt(entries.map(e => e.text).join('\n\n'), atts, { midTurnNote: POST_STOP_STEER_NOTE, author }).then(
+    // The turn's actor survives the batching only when every parked steer had
+    // the same one; otherwise it falls back to the combined author.
+    const first = entries[0].actor;
+    const actor = first && entries.every(e => JSON.stringify(e.actor) === JSON.stringify(first)) ? first : undefined;
+    this.prompt(entries.map(e => e.text).join('\n\n'), atts, { midTurnNote: POST_STOP_STEER_NOTE, author, ...(actor ? { actor } : {}) }).then(
       () => {
         for (const e of entries) e.resolve();
         // prompt() can return WITHOUT starting a turn (the overage queue
