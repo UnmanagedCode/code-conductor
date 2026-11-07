@@ -1214,3 +1214,21 @@ test('a resume drops a pinned `backend` along with the pinned `model`, on both r
   assert.equal('backend' in adopted.patchedArgs, false);
   assert.equal(adopted.patchedArgs.mode, 'bypassPermissions');
 });
+
+test('a stage pin on `title` fills a spawn, is dropped on a tracked and an adopted resume, and never conflicts with a supplied title', () => {
+  // INVARIANT: `title` names the session at birth (SPAWN_SHAPE_PINS), so a resume
+  // neither fills it (that would undo a rename) nor checks a supplied one.
+  const titled = pb({
+    id: 'titled', name: 'Titled', description: 'a stage pinning a title', entryStages: ['a'],
+    stages: { a: { tools: { spawn_instance: { pin: { title: 'Pinned title' } } } } },
+    transitions: [],
+  });
+  const P = pbs(titled);
+  const events = [bindRow('w-titled-01', 'titled', 'a')];
+  const run = args => decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: P, isLive: isLiveFromEvents(events) });
+
+  assert.equal(allowed(run({ playbook: 'titled', stage: 'a' })).patchedArgs.title, 'Pinned title');
+  assert.equal('title' in allowed(run({ resume: 'w-titled-01' })).patchedArgs, false);
+  assert.equal('title' in allowed(run({ resume: 'w-nobody-01', playbook: 'titled', stage: 'a' })).patchedArgs, false);
+  assert.equal(allowed(run({ resume: 'w-titled-01', title: 'Other' })).patchedArgs.title, 'Other');
+});

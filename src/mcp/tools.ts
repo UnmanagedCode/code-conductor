@@ -19,7 +19,7 @@ import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // The summary structure has ONE home (src/sessionRenew.ts) — the request prompt a
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
-import { MAX_TITLE_LEN } from '../sessionTitles.ts';
+import { TITLE_SCHEMA } from '../sessionTitles.ts';
 import { limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
 import { OUTPUT_SCHEMAS } from './outputSchemas.ts';
 
@@ -379,6 +379,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
             description: 'Requires createWorktree:true (else refused). Names the new WORKTREE, not the session — see create_worktree\'s schema.',
           },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
+          title: { ...TITLE_SCHEMA, description: "The worker session's display title — what set_session_title sets." },
           playbook: {
             type: 'string',
             description: 'Playbook id (list_playbooks / describe_playbook). REQUIRED on a run root — a spawn with no `provenance`. On a non-root spawn it is inherited from the workers named in `provenance`, and on a resume of a playbook-tracked session from that session\'s record; supplying a different one is refused PLAYBOOK_MISMATCH.',
@@ -550,7 +551,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       inputSchema: {
         type: 'object',
         properties: {
-          title: { type: 'string', pattern: '\\S', maxLength: MAX_TITLE_LEN },
+          title: TITLE_SCHEMA,
         },
         required: ['title'],
       },

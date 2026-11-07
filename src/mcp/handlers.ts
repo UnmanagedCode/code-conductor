@@ -79,7 +79,8 @@ import { isDeadStatus } from '../instances.ts';
 // sessionLineage.ts imports orchStoreRoot from projects.ts, and nothing imports
 // this module.
 import { publicIdFor } from '../sessionLineage.ts';
-import { applySessionTitle } from '../sessionTitles.ts';
+import { applySessionTitle, TITLE_SCHEMA } from '../sessionTitles.ts';
+import { validateArgs } from './argValidation.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import { buildForwardFrame } from '../../shared/forwardFrame.ts';
 import { contextReading } from '../sessionPrune.ts';
@@ -1052,6 +1053,7 @@ interface SpawnArgs {
   createWorktree?: boolean;
   baseWorktree?: string;
   name?: string;
+  title?: string;
   debug?: boolean;
   // Playbook-policy inputs. Declared so the router's unknown-argument rejection
   // admits them; consumed entirely by src/mcp/playbookGate.ts before this
@@ -1169,6 +1171,13 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
   // callerId is the conductor's public sessionId (the /mcp/<sessionId> path). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
+  // A caller's title was schema-checked before the gate; a playbook-PINNED one
+  // is merged in after that check, so it is re-checked here, before any side
+  // effect, against the same schema.
+  if (args.title !== undefined) {
+    const msg = validateArgs({ type: 'object', properties: { title: TITLE_SCHEMA } }, { title: args.title }, 'spawn_instance');
+    if (msg) throw Object.assign(new Error(msg), { statusCode: 400, code: 'ARGS_INVALID' });
+  }
   let inst;
   try {
     const { model, backend, tier, role } = resolveSpawnModel(args.model, { resume: args.resume, backend: args.backend });
@@ -1255,6 +1264,16 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       };
     }
     throw e;
+  }
+  // The record exists once create() resolves (minted before the process spawns),
+  // so the title is durable before the conductor sees the result. A failed write
+  // must not orphan a live worker whose sessionId the conductor never got.
+  if (args.title !== undefined && inst.sessionId) {
+    try {
+      await applySessionTitle(instances, inst.sessionId, args.title);
+    } catch (e) {
+      console.error(`spawn_instance: could not title session ${inst.sessionId}:`, e);
+    }
   }
   return toConductorView(inst.summary());
 }

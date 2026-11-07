@@ -1,5 +1,5 @@
 // The session-title vocabulary, and the one title write behind the REST
-// rename, the MCP set_session_title and a fork's starting title. The title itself is a session-level
+// rename, the MCP set_session_title, spawn_instance's `title` and a fork's starting title. The title itself is a session-level
 // fact on the session's record in the unified store (src/sessionStore.ts), so a
 // rotation never strands it.
 
@@ -7,6 +7,9 @@ import { setTitle } from './sessionStore.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
 
 export const MAX_TITLE_LEN = 100;
+
+// The JSON schema of a title argument, shared by every MCP tool that takes one.
+export const TITLE_SCHEMA = { type: 'string', pattern: '\\S', maxLength: MAX_TITLE_LEN } as const;
 
 export const FORK_TITLE_PREFIX = 'fork: ';
 

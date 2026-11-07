@@ -1533,8 +1533,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Update the cached custom session title and broadcast the new
   // summary so all subscribed clients re-render the active header chip.
   // Pass null/'' to clear. This only updates the in-memory mirror: the one
-  // store writer is applySessionTitle (the PUT route, MCP set_session_title
-  // and forkAtUserMessage); the resume path's _hydrateTitle only reads the
+  // store writer is applySessionTitle (the PUT route, MCP set_session_title,
+  // spawn_instance's `title` and forkAtUserMessage); the resume path's _hydrateTitle only reads the
   // store into memory.
   setTitle(title: string | null): void {
     const next = (typeof title === 'string' && title.trim()) ? title.trim() : null;
