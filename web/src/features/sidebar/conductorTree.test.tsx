@@ -4,7 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { CLOSE_TITLES } from '@shared/closeAction';
-import { barOf, blockOf, conductor, conductorDotOf, conductorOpenOf, conductorRowOf, el, hand, inactiveGroup, proj, sectionLeadFleet, seed, treeOf, worker, wt, type Fleet } from '@/test/sidebarFleet';
+import { barOf, blockOf, conductor, conductorDotOf, conductorOpenOf, conductorRowOf, el, hand, inactiveGroup, proj, sectionLead, sectionLeadFleet, seed, treeOf, worker, wt, type Fleet } from '@/test/sidebarFleet';
 import { conductorColor } from '@shared/conductorColor';
 import { pickProjectMenuItem, pickWorktreeMenuItem } from '@/test/rowMenu';
 
@@ -572,6 +572,19 @@ describe('section leads', () => {
   const patch = (f: Fleet, sid: string, over: Record<string, any>) => {
     f.instances = f.instances.map((i) => (i.sessionId === sid ? { ...i, ...over } : i));
   };
+  /** Two live section leads of L (SL2 the newer, so listed first) and a second worker of L in gamma; L's live chips are .conduct, alpha, gamma. */
+  const twoLeads = (f: Fleet) => {
+    f.projects = [proj('alpha'), proj('beta'), proj('gamma')];
+    f.instances.push(
+      { ...sectionLead('SL2', 'L', { title: 'Section two' }), lastResponseAt: 2000 },
+      { ...worker('LW2', 'L', 'gamma'), lastResponseAt: 1 },
+    );
+  };
+  /** A lead's tree's direct children in order: `lead:<sid>` for a nested section-lead block, else `project:<name>` for a project group. */
+  const children = (sid: string) => [...treeOf(sid)!.children].map((li) => {
+    const lead = li.getAttribute('data-conductor');
+    return lead ? `lead:${lead}` : `project:${li.querySelector('[data-project-row]')!.getAttribute('data-project-row')}`;
+  });
 
   it('the Conductors tab\'s top-level blocks are exactly the non-conducted conductors', async () => {
     // Invariant: a section lead (conducted, in .conduct) gets no top-level block; its block exists only inside its lead's tree, and its disk row makes no Inactive group.
@@ -596,15 +609,52 @@ describe('section leads', () => {
     expect(document.querySelector('[data-session-row="SL"]')).toBeNull();
   });
 
-  it('the lead\'s tree has no .conduct row and no Section leads heading, and the section lead\'s block follows the lead\'s project groups', async () => {
-    // Invariant: the conductor project draws no project group in a lead's tree; the nested section-lead blocks come after every project group.
+  it('the lead\'s tree has no .conduct row and no Section leads heading, and the section lead\'s block precedes the lead\'s project groups', async () => {
+    // Invariant: the conductor project draws no project group in a lead's tree; the nested section-lead blocks come before every project group.
     await setup();
     const tree = expand('L');
     expect(tree.querySelector('[data-project-row=".conduct"]')).toBeNull();
     expect(tree.textContent).not.toContain('Section leads');
-    expect(tree.lastElementChild).toBe(blockOf('SL'));
+    expect(tree.firstElementChild).toBe(blockOf('SL'));
     const alpha = projectItem(tree, 'alpha')!;
-    expect(alpha.compareDocumentPosition(blockOf('SL')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(alpha.compareDocumentPosition(blockOf('SL')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  });
+
+  it('a lead\'s tree lists its section-lead blocks first, newest first, then its project groups in chip order', async () => {
+    // Invariant: a lead's tree is conductor → section leads → direct workers: its nested section-lead blocks, most recently active first, come before its project groups, which keep chip order.
+    await setup(twoLeads);
+    expand('L');
+    expect(chipsOf('L').chips).toEqual(['.conduct:live', 'alpha:live', 'gamma:live']);
+    expect(children('L')).toEqual(['lead:SL2', 'lead:SL', 'project:alpha', 'project:gamma']);
+  });
+
+  it('section-lead blocks start collapsed, the caret toggles one without the other, and the expansion survives an update and the lead collapsing', async () => {
+    // Invariant: a nested section-lead block starts collapsed with its worker hidden; expanding one leaves its sibling collapsed; an open one stays open through a store update and through its lead collapsing and reopening, and closing it hides its worker again.
+    await setup(twoLeads);
+    expand('L');
+    for (const x of ['SL', 'SL2']) {
+      expect(caretOf(x).getAttribute('aria-expanded')).toBe('false');
+      expect(treeOf(x)).toBeNull();
+    }
+    expect(document.querySelector('[data-session-row="SW"]')).toBeNull();
+
+    fireEvent.click(caretOf('SL'));
+    expect(caretOf('SL').getAttribute('aria-expanded')).toBe('true');
+    expect(treeRows('SL')).toEqual(['project:beta', 'worker:SW']);
+    expect(caretOf('SL2').getAttribute('aria-expanded')).toBe('false');
+    expect(treeOf('SL2')).toBeNull();
+
+    act(() => appStore.set({ instances: [...appStore.get().instances] }));
+    expect(caretOf('SL').getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(caretOf('L'));
+    fireEvent.click(caretOf('L'));
+    expect(caretOf('SL').getAttribute('aria-expanded')).toBe('true');
+    expect(treeRows('SL')).toEqual(['project:beta', 'worker:SW']);
+
+    fireEvent.click(caretOf('SL'));
+    expect(caretOf('SL').getAttribute('aria-expanded')).toBe('false');
+    expect(treeOf('SL')).toBeNull();
+    expect(document.querySelector('[data-session-row="SW"]')).toBeNull();
   });
 
   it('the nested block has no chip row; the lead keeps .conduct and drops its section lead\'s project', async () => {
