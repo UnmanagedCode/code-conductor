@@ -10,10 +10,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { bootServer, api, registerLocalProject } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as projects from '../src/projects.ts';
 
 const SKILL = path.join(import.meta.dirname, '..', 'claude-plugin', 'skills', 'scripting', 'SKILL.md');
@@ -47,7 +47,7 @@ test('the scripting skill samples report each project\'s dirty state', async (t)
   assert.equal(s.python.length, 1, 'SKILL.md must carry exactly one python sample');
 
   const srv = await bootServer({});
-  const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-skill-plain-'));
+  const plainDir = await mkdtemp('cc-skill-plain-');
   try {
     await gitProject(srv, 'clean');
     const dirty = await gitProject(srv, 'dirty');
@@ -74,6 +74,5 @@ test('the scripting skill samples report each project\'s dirty state', async (t)
     }
   } finally {
     await srv.close();
-    await fs.rm(plainDir, { recursive: true, force: true });
   }
 });
