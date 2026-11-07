@@ -174,6 +174,56 @@ test('STRAGGLER: a ledger recreated after the conversion (an old server\'s late 
   assert.deepEqual(chainLogs, []);
 });
 
+test('STRAGGLER, audit-only: every kind that converts to no playbook state is moved aside', async () => {
+  // INVARIANT: retire, resume, wake, interaction, refusal and a same-stage
+  // transition convert to session / wake / plain call rows — nothing a fold
+  // reads — so such a straggler never blocks boot.
+  const root = await mkRoot();
+  await m0041.run({ root });
+  const rows = [
+    { kind: 'retire', sessionId: W0, reason: 'subprocess exited' },
+    { kind: 'resume', sessionId: W0 },
+    { kind: 'wake', sessionId: W0, conductorSessionId: C1 },
+    { kind: 'interaction', tool: 'set_mode', sessionId: W0, conductorSessionId: C1 },
+    { kind: 'refusal', tool: 'send_prompt', sessionId: W0, code: 'X', reason: 'y' },
+    { kind: 'transition', sessionId: W0, from: 'refine', to: 'refine', via: 'send_prompt' },
+  ];
+  const straggler = rows.map((r, i) => JSON.stringify({ seq: 100 + i, ts: ts(i), ...r })).join('\n') + '\n';
+  await fs.writeFile(oldFile(root), straggler);
+  const r = await m0041.run({ root, log: () => {} });
+  assert.equal(r.summary.straggler, true);
+  assert.equal(r.summary.lines, rows.length);
+  assert.equal(await fs.readFile(r.summary.movedTo, 'utf8'), straggler);
+});
+
+test('STRAGGLER holding playbook state — a spawn, a real transition or an enforcement row — is refused, and nothing moves', async (t) => {
+  // INVARIANT: a straggler is only dropped when it carries no state the
+  // projection would need; one row of binding, stage move or enforcement
+  // makes it a conflict to resolve by hand.
+  const cases = {
+    spawn: { kind: 'spawn', sessionId: W3, playbook: 'classic', stage: 'plan' },
+    transition: { kind: 'transition', sessionId: W0, from: 'refine', to: 'review', via: 'send_prompt' },
+    enforcement: { kind: 'enforcement', conductorSessionId: C1, from: 'enforce', to: 'warn' },
+  };
+  for (const [kind, row] of Object.entries(cases)) {
+    await t.test(kind, async () => {
+      const root = await mkRoot();
+      await m0041.run({ root });
+      const events = await fs.readFile(newFile(root), 'utf8');
+      const straggler = [
+        JSON.stringify({ seq: 100, ts: ts(1), kind: 'retire', sessionId: W2, reason: 'subprocess exited' }),
+        JSON.stringify({ seq: 101, ts: ts(2), ...row }),
+      ].join('\n') + '\n';
+      await fs.writeFile(oldFile(root), straggler);
+      await assert.rejects(m0041.run({ root }), /holds playbook state .* resolve it by hand/);
+      assert.equal(await fs.readFile(oldFile(root), 'utf8'), straggler, 'the straggler stays where it is');
+      assert.equal(await fs.readFile(newFile(root), 'utf8'), events, 'the event log is untouched');
+      const backups = await fs.readdir(path.dirname(backup(root)));
+      assert.deepEqual(backups, ['playbook-ledger.jsonl'], 'nothing was moved aside');
+    });
+  }
+});
+
 test('a straggler through the whole chain: runMigrations does not throw on a recreated ledger', async () => {
   const root = await mkRoot();
   await runMigrations({ root, log: () => {} });

@@ -4510,10 +4510,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     const atts = entries.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
     // One line, one marker: see combineAuthors.
     const author = combineAuthors(entries.map(e => e.author));
-    // The turn's actor survives the batching only when every parked steer had
-    // the same one; otherwise it falls back to the combined author.
-    const first = entries[0].actor;
-    const actor = first && entries.every(e => JSON.stringify(e.actor) === JSON.stringify(first)) ? first : undefined;
+    // The turn's actor: the one sender when every parked steer had the same one.
+    // Steers from DIFFERENT conductors open a turn no single conductor owns —
+    // `{type:'conductor'}` with no sessionId, never the root owner, who may be
+    // neither sender. Any other mix falls back to the combined author.
+    const same = entries.every(e => JSON.stringify(e.actor) === JSON.stringify(entries[0].actor));
+    const actor: Actor | undefined = same ? entries[0].actor : author === 'conductor' ? { type: 'conductor' } : undefined;
     this.prompt(entries.map(e => e.text).join('\n\n'), atts, { midTurnNote: POST_STOP_STEER_NOTE, author, ...(actor ? { actor } : {}) }).then(
       () => {
         for (const e of entries) e.resolve();

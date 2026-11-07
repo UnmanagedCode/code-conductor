@@ -35,7 +35,10 @@
 // a playbook-ledger.jsonl is a straggler: it is moved, unconverted, into the
 // backup dir as `playbook-ledger.straggler-<ms>.jsonl` and boot continues.
 // Its rows are the ones a server observes after offering the handover, which
-// the event log drops by design.
+// the event log drops by design — but ONLY when they are audit rows. A
+// straggler that converts to any playbook state (a `bind`, a `move` or a
+// `config` row — an old build run against this store, a downgrade then an
+// upgrade) is refused: dropping it would boot on a stale projection.
 //
 // ── CRASH RESUME ───────────────────────────────────────────────────────────
 // The conversion is deterministic (fixed key order, copied `ts`), so an
@@ -189,6 +192,13 @@ export async function run({ root, log = () => {} } = {}) {
   const backupDir = path.join(store, 'migrated-backup-0041');
   const backupFile = path.join(backupDir, 'playbook-ledger.jsonl');
   if (await exists(newFile) && await exists(backupFile)) {
+    const stateful = convertLedger(raw).text.split('\n').filter(Boolean).map(l => JSON.parse(l))
+      .filter(r => r.kind === 'config' || r.bind || r.move);
+    if (stateful.length > 0) {
+      throw new Error(`${name}: ${oldFile} reappeared after the conversion and holds playbook state `
+        + `(${stateful.length} binding, stage-move or enforcement row(s)) that the event log does not have — `
+        + 'resolve it by hand: fold its rows into events.jsonl or move the file aside, then restart');
+    }
     const dest = path.join(backupDir, `playbook-ledger.straggler-${Date.now()}.jsonl`);
     await fs.rename(oldFile, dest);
     log(`  ! ${name}: ${oldFile} reappeared after the conversion (an old server's late writes); moved it, unconverted, to ${dest}`);

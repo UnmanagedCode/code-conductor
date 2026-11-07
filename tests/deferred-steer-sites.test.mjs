@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
 import { addCustomModel } from '../src/appSettings.ts';
-import { approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
+import { approvePlan, rejectPlan, answerQuestion, sendPrompt } from '../src/mcp/handlers.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../shared/planApproval.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -275,4 +275,82 @@ test('C-T6 flagged but IDLE takes the ordinary prompt path', async () => {
   assert.equal(interruptsIn(lines).length, 0, 'an idle send arms no stop');
   assert.deepEqual(textsOf(userLinesIn(lines)[0]), [text],
     'a single verbatim block — neither MID_TURN_NOTE nor POST_STOP_STEER_NOTE');
+});
+
+// ── event-log attribution of the steered turn ───────────────────────────────
+//
+// INVARIANT: the turn a parked steer opens (queueSteerAfterStop →
+// _flushPendingSteers → prompt) is attributed to the conductor that SENT it —
+// the MCP caller, carried through the steer queue — not the worker's root
+// owner. Each worker is given a root owner that is NOT the sender (the
+// section-lead shape), so a send site that drops its actor falls back to that
+// root owner and fails here rather than being masked.
+
+const ROOT_OWNER = 'c-root-owner-not-the-sender';
+
+// A live second session to send as — a section lead, not the worker's root.
+async function leadSession() {
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const lead = instances.get(r.body.id);
+  await waitFor(() => lead.status === 'idle' && lead.sessionId);
+  return lead.sessionId;
+}
+
+// Run `send` against `inst`, drive the stop + turn end, and return the actor of
+// the turn the flushed steer opens.
+async function steeredTurnActor(inst, send) {
+  inst.rootOwnerSessionId = ROOT_OWNER;
+  const starts = [];
+  const onStart = (t) => { if (t.sessionId === inst.sessionId) starts.push(t.actor); };
+  instances.on('turn_started', onStart);
+  cleanupListeners.push(() => instances.off('turn_started', onStart));
+  await send();
+  assert.equal(inst.steerPending, true, 'premise: the send was parked, not delivered mid-turn');
+  inject(inst, blockStop(0));
+  inject(inst, turnEnd());
+  await waitFor(() => starts.length >= 1);
+  return starts;
+}
+
+test('ATTR-1 send_prompt parked behind a stop: the steered turn is the sender\'s', async () => {
+  const inst = await busyMidTextBlock();
+  const lead = await leadSession();
+  const starts = await steeredTurnActor(inst, () =>
+    sendPrompt({ sessionId: inst.sessionId, text: 'steer me' }, { instances, callerId: lead }));
+  assert.deepEqual(starts, [{ type: 'conductor', sessionId: lead }]);
+});
+
+test('ATTR-2 steers parked by TWO conductors open one turn owned by neither: {type:conductor}, no sessionId', async () => {
+  const inst = await busyMidTextBlock();
+  const leadA = await leadSession();
+  const leadB = await leadSession();
+  const starts = await steeredTurnActor(inst, async () => {
+    await sendPrompt({ sessionId: inst.sessionId, text: 'from A' }, { instances, callerId: leadA });
+    await sendPrompt({ sessionId: inst.sessionId, text: 'from B' }, { instances, callerId: leadB });
+  });
+  assert.deepEqual(starts, [{ type: 'conductor' }], 'not the root owner, who sent neither');
+});
+
+test('ATTR-3 approve_plan: the steered turn is the calling conductor\'s', async () => {
+  const inst = await busyMidTextBlock();
+  const lead = await leadSession();
+  const starts = await steeredTurnActor(inst, () =>
+    approvePlan({ sessionId: inst.sessionId }, { instances, callerId: lead }));
+  assert.deepEqual(starts, [{ type: 'conductor', sessionId: lead }]);
+});
+
+test('ATTR-4 reject_plan: the steered turn is the calling conductor\'s', async () => {
+  const inst = await busyMidTextBlock();
+  const lead = await leadSession();
+  const starts = await steeredTurnActor(inst, () =>
+    rejectPlan({ sessionId: inst.sessionId, feedback: 'tighten it' }, { instances, callerId: lead }));
+  assert.deepEqual(starts, [{ type: 'conductor', sessionId: lead }]);
+});
+
+test('ATTR-5 answer_question: the steered turn is the calling conductor\'s', async () => {
+  const inst = await busyWithPendingQuestion();
+  const lead = await leadSession();
+  const starts = await steeredTurnActor(inst, () =>
+    answerQuestion({ sessionId: inst.sessionId, answers: [{ option: 'Apple' }] }, { instances, callerId: lead }));
+  assert.deepEqual(starts, [{ type: 'conductor', sessionId: lead }]);
 });

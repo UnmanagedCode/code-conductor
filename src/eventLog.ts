@@ -32,7 +32,8 @@ export function eventLogFile(): string {
 }
 
 export type Actor =
-  // `sessionId` is the acting session's public id; absent only on migrated rows.
+  // `sessionId` is the acting session's public id; absent only on migrated
+  // rows and on a turn opened by parked steers from several conductors.
   | { type: 'conductor'; sessionId?: string }
   | { type: 'human' }
   | { type: 'system' };
