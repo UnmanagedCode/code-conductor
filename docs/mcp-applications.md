@@ -88,7 +88,8 @@ How JSON format differs from text:
 - JSON-RPC errors carry `data:{ok:false, code, reason}`.
 - Every `runTool` failure is an outcome, never an escaped rejection, and every async route forwards a stray rejection to the router's error middleware (`buildMcpRouter`), so no `/mcp` request can take the server down or reach Express's HTML error page.
 - URL-level faults (`CALLER_UNKNOWN`, `FORMAT_INVALID`, `QUERY_PARAM_UNKNOWN`) carry `data` in both formats.
-- In text format the `-32600`, `-32601` and `-32603` replies carry no `data`, a tool fault is an `isError` result whose text is the reason, and a refusal or error is the text view described in protocol.md.
+- In text format the `-32600`, `-32601` and `-32603` replies `dispatch` emits (and the router error middleware's `-32603`) carry no `data`. The body-parser faults (`PARSE_ERROR`, `PAYLOAD_TOO_LARGE`, body `REQUEST_INVALID`) carry `data` in both formats, as the URL-level faults do: the body is refused before any format applies.
+- In text format a tool fault is an `isError` result whose text is the reason, and a refusal or error is the text view described in protocol.md.
 - Every echoed string in a JSON refusal is cut at `JSON_ECHO_CAP`, and the refusal then carries `truncated:true`.
 
 ## REST alias

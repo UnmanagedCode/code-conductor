@@ -322,6 +322,15 @@ test('worktree landing: sync, merge, delete', async () => {
   await fs.writeFile(path.join(lagging.worktreePath, 'wip.txt'), 'wip\n');
   const blocked = await ok('sync_worktree', { project: 'demo', worktree: 'lagging' });
   assert.equal(blocked.action, 'commit-required');
+
+  // fast-forwarded: a clean worktree with no commits of its own, whose base
+  // gains a commit.
+  await ok('create_worktree', { project: 'demo', name: 'follower' });
+  await fs.writeFile(path.join(repoPath, 'later2.txt'), 'later two\n');
+  await git(repoPath, 'add', 'later2.txt');
+  await git(repoPath, 'commit', '-q', '-m', 'more on main');
+  const ff = await ok('sync_worktree', { project: 'demo', worktree: 'follower' });
+  assert.equal(ff.action, 'fast-forwarded');
 });
 
 // ---------- refusals, faults, pass-through ----------

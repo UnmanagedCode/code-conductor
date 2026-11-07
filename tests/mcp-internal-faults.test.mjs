@@ -83,7 +83,7 @@ test('a rejection from an async route outside runTool reaches the error middlewa
   await stillServing();
 });
 
-test('an oversized body is 413 PAYLOAD_TOO_LARGE, an unreadable one 400 REQUEST_INVALID — JSON, never HTML', async () => {
+test('an oversized body is 413 PAYLOAD_TOO_LARGE, an unreadable one REQUEST_INVALID — JSON with data in both formats, never HTML', async () => {
   const huge = JSON.stringify({ pad: 'x'.repeat(9 * 1024 * 1024) });
   const rpc = await post('/mcp', huge);
   assert.equal(rpc.status, 413);
@@ -96,6 +96,16 @@ test('an oversized body is 413 PAYLOAD_TOO_LARGE, an unreadable one 400 REQUEST_
   assert.equal(charset.body.code, 'REQUEST_INVALID');
   const rpcCharset = await post('/mcp', '{}', { 'content-type': 'application/json; charset=klingon' });
   assert.equal(rpcCharset.body.error.data.code, 'REQUEST_INVALID');
+  // The body is refused before any format applies: text format gets the same
+  // JSON-RPC error, `data` included.
+  const textHuge = await post('/mcp?format=text', huge);
+  assert.equal(textHuge.status, 413);
+  assert.equal(textHuge.body.error.code, -32600);
+  assert.deepEqual(textHuge.body.error.data, { ok: false, code: 'PAYLOAD_TOO_LARGE', reason: textHuge.body.error.message });
+  const textCharset = await post('/mcp?format=text', '{}', { 'content-type': 'application/json; charset=klingon' });
+  assert.equal(textCharset.status, 415);
+  assert.equal(textCharset.body.error.code, -32600);
+  assert.deepEqual(textCharset.body.error.data, { ok: false, code: 'REQUEST_INVALID', reason: textCharset.body.error.message });
   await stillServing();
 });
 
