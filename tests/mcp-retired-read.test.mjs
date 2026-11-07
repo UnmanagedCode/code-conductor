@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn } from './helpers.mjs';
+import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { orchStoreRoot, localPlace} from '../src/projects.ts';
 import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 
@@ -254,7 +255,8 @@ test('the worker-addressing tools still refuse a retired worker SESSION_NOT_LIVE
 // bypass: a stage that denies get_recent_messages still denies it for a worker
 // whose subprocess is gone.
 test('a stage that denies get_recent_messages still denies it for a retired worker, before any disk read', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  // OPEN_LEASE: the worker's binding is a written event-log row.
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS, eventLogLease: OPEN_LEASE });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
     await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
