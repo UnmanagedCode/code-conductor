@@ -31,7 +31,7 @@ import {
 afterEach(() => endHost());
 
 describe('a boot on a plugin\'s full view with a split stored', () => {
-  it('drops the stored split, so Escape from the full view lands on Conductor', async () => {
+  it('drops the stored split selection at load, so Escape from the full view gives the rail on that plugin', async () => {
     // Invariant: the full view the page boots on ends the stored split before anything reads it.
     expect(JSON.parse(localStorage.getItem(DOCK_STORAGE_KEY) ?? 'null')?.mode, 'fixture check: split stored').toBe('split');
     expect(dockStore.get().id, 'the split selection cleared at load').toBeNull();
@@ -44,8 +44,9 @@ describe('a boot on a plugin\'s full view with a split stored', () => {
     await act(async () => { fireEvent.keyDown(window, { key: 'Escape' }); });
     await settle();
     expect(location.hash).toBe(`#session=${ACTIVE.sessionId}`);
-    expect(column()!.dataset.dockMode).toBe('hidden');
+    expect(column()!.dataset.dockMode).toBe('rail');
     expect(sessionShown()).toBe(true);
-    expect(await checkedNow()).toEqual(['conductor']);
+    expect(dockStore.get(), 'alpha docked, the stored mode kept').toMatchObject({ id: 'alpha', mode: 'split' });
+    expect(await checkedNow()).toEqual(['alpha']);
   });
 });

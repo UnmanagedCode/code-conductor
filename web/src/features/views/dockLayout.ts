@@ -50,15 +50,18 @@ export function shownApp(i: Where): string | null {
   return null;
 }
 
-/** The column's mode (a collapsed split beside a session is the rail, which always fits), the plugin it shows, and the mode toggle it offers (only when the toggle's target layout is reachable). */
-export function dockLayout(i: Where & { available: number | null; collapsed: boolean }): { mode: DockMode; shownId: string | null; toggle: 'dock' | 'expand' | null } {
+/** The bar's far-right control: Collapse (to the rail) wherever a rail can show beside the session, Close plugin where none can (below md, or a plugin the switcher does not list); none in the rail, which has its own Expand, or when hidden. */
+export type Dismiss = 'collapse' | 'close';
+
+/** The column's mode (a collapsed split beside a session is the rail, which always fits), the plugin it shows, the mode toggle it offers (only when the toggle's target layout is reachable) and the bar's dismiss control. */
+export function dockLayout(i: Where & { available: number | null; collapsed: boolean }): { mode: DockMode; shownId: string | null; toggle: 'dock' | 'expand' | null; dismiss: Dismiss | null } {
   const shownId = shownApp(i);
-  if (shownId === null) return { mode: 'hidden', shownId, toggle: null };
+  if (shownId === null) return { mode: 'hidden', shownId, toggle: null, dismiss: null };
   if (i.view === 'plugin') {
     const dockable = i.desktop && i.catalogIds.includes(shownId) && canSplit(i.available);
-    return { mode: 'full', shownId, toggle: dockable ? 'dock' : null };
+    return { mode: 'full', shownId, toggle: dockable ? 'dock' : null, dismiss: i.desktop && i.catalogIds.includes(shownId) ? 'collapse' : 'close' };
   }
-  if (i.collapsed) return { mode: 'rail', shownId, toggle: null };
-  if (canSplit(i.available)) return { mode: 'split', shownId, toggle: 'expand' };
-  return { mode: 'full', shownId, toggle: null };
+  if (i.collapsed) return { mode: 'rail', shownId, toggle: null, dismiss: null };
+  if (canSplit(i.available)) return { mode: 'split', shownId, toggle: 'expand', dismiss: 'collapse' };
+  return { mode: 'full', shownId, toggle: null, dismiss: 'collapse' };
 }
