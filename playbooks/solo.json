@@ -34,8 +34,6 @@
 
   "transitions": [
     { "from": "plan", "to": "implement", "on": "approve_plan" },
-    { "from": "implement", "to": "refine" },
-    { "from": "refine", "to": "refine" },
-    { "from": "review", "to": "review" }
+    { "from": "implement", "to": "refine" }
   ]
 }

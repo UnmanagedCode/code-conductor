@@ -47,11 +47,5 @@
     }
   },
 
-  "transitions": [
-    { "from": "plan", "to": "plan" },
-    { "from": "plan-rival", "to": "plan-rival" },
-    { "from": "plan-verify", "to": "plan-verify" },
-    { "from": "implement", "to": "implement" },
-    { "from": "review", "to": "review" }
-  ]
+  "transitions": []
 }
