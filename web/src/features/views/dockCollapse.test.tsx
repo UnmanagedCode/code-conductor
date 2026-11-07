@@ -142,20 +142,20 @@ describe('the plugin dock collapse', () => {
     expect(starts()).toBe(startsBefore);
   });
 
-  it('Close plugin after a collapse round trip still ends a plain frame and hides a keep-alive one', async () => {
-    // Invariant: Close behaves as before after a collapse.
+  it('the switcher\'s Conductor after a collapse round trip still ends a plain frame and hides a keep-alive one', async () => {
+    // Invariant: a collapse round trip leaves the Conductor pick's teardown intact: a plain frame ends, a keep-alive one stays resident hidden.
     await mountApp();
     await dockSplit('alpha');
     await press(COLLAPSE);
     await press(EXPAND);
-    await pressColumn('Close plugin');
+    await pickApp('conductor');
     expect(sharedFrame()).toBeNull();
     expect(mode()).toBe('hidden');
     await pickApp('beta');
     const frame = residentFrame('beta')!;
     await press(COLLAPSE);
     await press(EXPAND);
-    await pressColumn('Close plugin');
+    await pickApp('conductor');
     expect(residentFrame('beta') === frame && frame.hidden, 'resident hidden, not removed').toBe(true);
   });
 
@@ -201,7 +201,7 @@ describe('the plugin dock collapse', () => {
     await press(COLLAPSE);
     await go('#plugin/alpha/');
     expect(mode()).toBe('full');
-    expect(columnButtons()).toEqual(['Dock to side', 'Switch app', 'Close plugin']);
+    expect(columnButtons()).toEqual(['Dock to side', 'Switch app']);
     expect(localStorage.getItem(COLLAPSED_KEY)).toBe('false');
     await pressColumn('Dock to side');
     expect(mode()).toBe('split');
@@ -290,6 +290,6 @@ describe('the plugin dock collapse', () => {
     expect(mode(), 'back above md the rail returns').toBe('rail');
     await cross(false);
     await pickApp('beta');
-    expect(columnButtons()).toEqual(['Open sidebar', 'Switch app', 'Close plugin']);
+    expect(columnButtons()).toEqual(['Open sidebar', 'Switch app']);
   });
 });

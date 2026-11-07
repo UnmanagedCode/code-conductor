@@ -1,7 +1,7 @@
 // The plugin view's top bar: on drawer viewports the drawer button sits in a bar above the
 // plugin's page, never over it, and stays reachable while the start overlay is up; on desktop
-// the same bar carries Dock to side. Every viewport's bar holds the app switcher (labelled
-// with the plugin's name) and ends in Close plugin.
+// the same bar carries Dock to side. Every viewport's bar ends in the app switcher (labelled
+// with the plugin's name) and holds no Close plugin.
 // The bodies are shared by the per-project spec files.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './harness/fixtures.ts';
@@ -54,7 +54,7 @@ async function longLabel(page: Page) {
   });
 }
 
-// Invariant: below md the view has a bar with the drawer button, the app switcher (even with a long name) and Close plugin, each hit at its centre; the frame starts under it, nothing covers the frame's top-left corner, and the drawer then holds a static title, not a second switcher.
+// Invariant: below md the view has a bar with the drawer button and the app switcher (even with a long name), each hit at its centre, and no Close plugin; the frame starts under it, nothing covers the frame's top-left corner, and the drawer then holds a static title, not a second switcher.
 /** Drawer viewports: the bar, the frame under it, an uncovered corner, and the button opens the drawer. */
 export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
   test.skip(isDesktop(), 'a desktop has no phone top bar');
@@ -84,16 +84,11 @@ export async function barAboveFrameFlow({ page }: Ctx): Promise<void> {
   expect(await hitIs(page, frameBox.x + 4, frameBox.y + 4, 'iframe'), 'the frame owns its top-left corner').toBe(true);
   expect(await hitIs(page, menuBox.x + menuBox.width / 2, menuBox.y + menuBox.height / 2, 'button[aria-label="Open sidebar"]'), 'the button is hit at its centre').toBe(true);
 
-  const close = bar.getByRole('button', { name: 'Close plugin', exact: true });
-  await expect(close).toBeVisible();
-  const closeBox = await boxOf(close, 'Close plugin');
-  expect(closeBox.x >= barBox.x - 0.5 && closeBox.y >= barBox.y - 0.5 && closeBox.x + closeBox.width <= barBox.x + barBox.width + 0.5 && closeBox.y + closeBox.height <= barBox.y + barBox.height + 0.5, 'Close within the bar').toBe(true);
-  expect(await hitIs(page, closeBox.x + closeBox.width / 2, closeBox.y + closeBox.height / 2, 'button[aria-label="Close plugin"]'), 'Close is hit at its centre').toBe(true);
+  await expect(bar.getByRole('button', { name: 'Close plugin', exact: true }), 'no Close plugin in the bar').toHaveCount(0);
 
   const swBox = await boxOf(sw, 'the switcher');
   expect(swBox.x >= barBox.x - 0.5 && swBox.y >= barBox.y - 0.5 && swBox.x + swBox.width <= barBox.x + barBox.width + 0.5 && swBox.y + swBox.height <= barBox.y + barBox.height + 0.5, 'the switcher within the bar').toBe(true);
   expect(swBox.x, 'the switcher is right of Open sidebar').toBeGreaterThanOrEqual(menuBox.x + menuBox.width - 0.5);
-  expect(swBox.x + swBox.width, 'the switcher is left of Close').toBeLessThanOrEqual(closeBox.x + 0.5);
   expect(await hitIs(page, swBox.x + swBox.width / 2, swBox.y + swBox.height / 2, 'button[aria-label="Switch app"]'), 'the switcher is hit at its centre').toBe(true);
 
   const shot = test.info().outputPath('plugin-view.png');
@@ -128,8 +123,8 @@ export async function overlayBelowBarFlow({ page }: Ctx): Promise<void> {
   await drawerOpensFrom(page, menu);
 }
 
-// Invariant: on desktop the view's bar holds the app switcher (the plugin's name), Dock to side and Close plugin, no drawer button, and the frame fills the rest of the view below it.
-/** Desktop: the bar with the switcher, Dock to side and Close plugin, no drawer button, and the frame from the bar's bottom to the view's. */
+// Invariant: on desktop the view's bar holds the app switcher (the plugin's name) and Dock to side, no Close plugin and no drawer button, and the frame fills the rest of the view below it.
+/** Desktop: the bar with the switcher and Dock to side, no Close plugin and no drawer button, and the frame from the bar's bottom to the view's. */
 export async function desktopStripFlow({ page }: Ctx): Promise<void> {
   test.skip(!isDesktop(), 'drawer viewports have the phone bar');
   await page.goto(`/#plugin/${PROBE.id}/`);
@@ -140,7 +135,7 @@ export async function desktopStripFlow({ page }: Ctx): Promise<void> {
   await expect(bar).toBeVisible();
   await expect(bar.getByRole('button', { name: 'Switch app', exact: true })).toContainText(PROBE.name);
   await expect(bar.getByRole('button', { name: 'Dock to side', exact: true })).toBeVisible();
-  await expect(bar.getByRole('button', { name: 'Close plugin', exact: true })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Close plugin', exact: true }), 'no Close plugin in the bar').toHaveCount(0);
   const barBox = await boxOf(bar, 'the bar');
   const viewBox = await boxOf(v, 'the view');
   const frameBox = await boxOf(v.locator('iframe:visible'), 'the frame');
