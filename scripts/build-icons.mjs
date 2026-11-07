@@ -17,7 +17,9 @@ const icon = iconSvg();
 /** [file, size, svg text, check] — `size` is the PNG's width and height. */
 const PNGS = [
   ['favicon-16.png', 16, artToSvgString(FAV16, { palette: 'light', size: 16 }), 'favicon'],
+  ['favicon-16-dark.png', 16, artToSvgString(FAV16, { palette: 'dark', size: 16 }), 'favicon'],
   ['favicon-32.png', 32, artToSvgString(FAV32_FAVICON, { palette: 'light', size: 32 }), 'favicon'],
+  ['favicon-32-dark.png', 32, artToSvgString(FAV32_FAVICON, { palette: 'dark', size: 32 }), 'favicon'],
   ['icon-192.png', 192, icon, 'any'],
   ['icon-512.png', 512, icon, 'any'],
   ['apple-touch-icon.png', 180, pwaIconSvg('apple', 180), 'apple'],
