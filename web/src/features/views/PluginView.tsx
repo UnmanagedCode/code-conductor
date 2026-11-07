@@ -2,10 +2,10 @@
 // keep-alive frames survive and no mode change moves a frame. Its width is its
 // mode (dockLayout.ts): hidden, a split beside the session, a rail, or the whole
 // row — the full view (`#plugin/<id>/<subpath>`), or a split too narrow to fit.
-// Its bar carries Collapse, the one full ⇄ split toggle, the app switcher (labelled with the plugin's name) and Close plugin
-// (the switcher's Conductor pick, which hides a keep-alive page and stops nothing).
+// Its bar carries Collapse (split only), the one full ⇄ split toggle and the app switcher (labelled with the plugin's name),
+// whose Conductor pick closes the plugin (hiding a keep-alive page, stopping nothing).
 import * as React from 'react';
-import { LoaderCircleIcon, Maximize2Icon, MenuIcon, PanelRightCloseIcon, PanelRightIcon, PanelRightOpenIcon, PlugIcon, RotateCwIcon, XIcon } from 'lucide-react';
+import { LoaderCircleIcon, Maximize2Icon, MenuIcon, PanelRightCloseIcon, PanelRightIcon, PanelRightOpenIcon, PlugIcon, RotateCwIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSignal, useStore } from '@/state/createStore';
@@ -15,7 +15,7 @@ import { pluginsChangedSignal, pluginsChangeStore } from '@/features/settings/pl
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { RESIZE_HANDLE_CLASS, useResizableWidth } from '@/lib/useResizableWidth';
 import { leaveView, useEscapeToClose } from './ViewShell';
-import { AppSwitcher, exitToConductor } from './AppSwitcher';
+import { AppSwitcher } from './AppSwitcher';
 import { appLabel, catalogStore, hashMirror, overlayStore, pluginFrames, refreshCatalog } from './plugins';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_RAIL_WIDTH, dockLayout, maxPanel } from './dockLayout';
 import { closeDock, DOCK_WIDTH_STORAGE_KEY, dockBesideStore, dockCollapsedStore, dockFullView, dockModeStore, dockMirror, dockStore, expandDock, followFrameLink, setDockCollapsed } from './dock';
@@ -191,16 +191,6 @@ export function PluginView() {
           <div data-plugin-title className="flex min-w-0 flex-1">
             <AppSwitcher slot="pane" title={title} className="hover:bg-accent" fallback={<h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</h1>} />
           </div>
-          {shownId && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" aria-label="Close plugin" onClick={exitToConductor}>
-                  <XIcon />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Close plugin</TooltipContent>
-            </Tooltip>
-          )}
         </header>
         {/* Positioned: the frames and the start overlay fill the area below the bar. */}
         <div className="relative min-h-0 flex-1">

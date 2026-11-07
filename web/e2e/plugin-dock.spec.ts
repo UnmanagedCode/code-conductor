@@ -8,7 +8,7 @@ import {
 test.use({ ccOptions: { server: 'plugin-dock' } });
 test.beforeAll(async ({ cc }) => { await installProbes(cc); });
 
-test('the column holds Collapse and its mode toggle left of the plugin\'s name and Close at the strip\'s end in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
+test('the column holds Collapse and its mode toggle left of the plugin\'s name in a header strip: across the row in full, beside the session in split, gone on Conductor', toggleGeometryFlow);
 test('Dock to side and Expand to full view never reload a plain plugin\'s page', noReloadFlow(PLAIN));
 test('Dock to side and Expand to full view never reload a keep-alive plugin\'s page', noReloadFlow(KEEP));
 test('Back and Escape from the full view land on Conductor, never on split, and a switch in full costs no entry', fullExitFlow);
@@ -22,6 +22,6 @@ test('a session width holds beside the dock', sessionWidthFlow);
 test('a docked plugin page fills the side pane whatever the session width, and the full view follows the setting', dockWidthFlow);
 test('the session handles stay clear of the dock and sidebar handles and the scrollbar, and each grab moves only its own box', sessionHandleCoexistFlow);
 test('below md the plugin view is full-page whatever the remembered mode, with no toggle', phoneFlow);
-test('a toast sits below the strip and never covers its toggle or Close', toastClearsToggleFlow);
+test('a toast sits below the strip and never covers its toggle or the switcher', toastClearsToggleFlow);
 test('a _top link in a docked plugin\'s page to another plugin shows it in the dock with no URL or history change, and from the full view navigates as the browser does', pluginLinkFlow);
 test('a cc.internal link in a docked plugin\'s page is the bridge\'s whatever its target: no target steers the page in place, _blank opens no tab and shows the plugin in the dock', internalLinkFlow);

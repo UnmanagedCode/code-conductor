@@ -1,10 +1,10 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true}}
-// The plugin bar's Close plugin button, over the real controller: where it sits
-// (after the mode toggle, or alone where no toggle shows), that it is the
-// switcher's Conductor pick, and that it never stops a keep-alive plugin.
+// The plugin bar's exit, over the real controller: the bar holds no Close plugin
+// in any layout, the switcher's Conductor pick returns to Conductor without ever
+// stopping a keep-alive plugin, and with nothing listed the sidebar leaves the view.
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, within } from '@testing-library/react';
+import { act, within } from '@testing-library/react';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
 vi.mock('@/app/sessionActions', () => ({
@@ -15,11 +15,12 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-view="session" /> }));
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
+import { selectInstance } from '@/app/controller';
 import { uiStore } from '@/app/ui';
 import { dockStore, readDockState } from './dock';
 import {
-  checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, net, pickApp, plainRow,
-  pressColumn, resetHost, residentFrame, sessionShown, settle, viewOpen,
+  ACTIVE, checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, net, pickApp, plainRow,
+  pressColumn, resetHost, residentFrame, sessionShown, settle, switcher, viewOpen,
 } from './test/pluginHost';
 
 const ANCHOR = '#session=sess-1';
@@ -29,16 +30,8 @@ const posts = () => net.calls.filter((c) => c.startsWith('POST ')).length;
 /** Every request that starts, stops, restarts or disables a plugin. */
 const lifecycle = () => net.calls.filter((c) => /\/api\/plugins\/[^/]+\/(stop|disable|restart|start)$/.test(c)).length;
 const starts = () => net.calls.filter((c) => c.endsWith('/start')).length;
-const closeBtn = () => within(column()!).getByRole('button', { name: 'Close plugin' });
+/** The column holds no button named Close plugin. */
 const noClose = () => within(column()!).queryByRole('button', { name: 'Close plugin' }) === null;
-async function close() {
-  await act(async () => { fireEvent.click(closeBtn()); });
-  await settle();
-}
-/** Everything a return to Conductor decides. */
-const snapshot = () => ({
-  hash: location.hash, dock: dockStore.get(), mode: column()!.dataset.dockMode, entries: history.length, session: sessionShown(),
-});
 
 beforeEach(() => {
   localStorage.clear();
@@ -52,20 +45,21 @@ afterEach(async () => {
   await endHost();
 });
 
-describe('the plugin bar\'s Close plugin', () => {
-  it('Close plugin ends the bar, after the mode toggle and the switcher, in split and in full', async () => {
-    // Invariant: the bar's buttons are Collapse (split only), the mode toggle, the switcher, then Close plugin, in that order.
+describe('the plugin bar\'s exit', () => {
+  it('the bar holds no Close plugin in split and in full: Collapse (split only), the mode toggle, then the switcher', async () => {
+    // Invariant: the bar's buttons are Collapse (split only), the mode toggle and the switcher, in that order, and no Close plugin.
     await mountApp();
     await dockSplit('beta');
-    expect(columnButtons(), 'split').toEqual(['Collapse plugin dock', 'Expand to full view', 'Switch app', 'Close plugin']);
-    expect(closeBtn(), 'Close is a button named Close plugin').toBeTruthy();
+    expect(columnButtons(), 'split').toEqual(['Collapse plugin dock', 'Expand to full view', 'Switch app']);
+    expect(noClose(), 'split: no Close plugin').toBe(true);
     await pressColumn('Expand to full view');
     expect(location.hash, 'fixture check: expanded').toBe('#plugin/beta/');
-    expect(columnButtons(), 'full').toEqual(['Dock to side', 'Switch app', 'Close plugin']);
+    expect(columnButtons(), 'full').toEqual(['Dock to side', 'Switch app']);
+    expect(noClose(), 'full: no Close plugin').toBe(true);
   });
 
-  it('Close from the full view returns to Conductor and keeps a keep-alive frame: same node, hidden, same src, no request that starts or stops it', async () => {
-    // Invariant: Close is a return to Conductor, never a stop: the keep-alive page stays resident and the server hears nothing.
+  it('the switcher\'s Conductor from the full view returns to Conductor and keeps a keep-alive frame: same node, hidden, same src, no request that starts or stops it', async () => {
+    // Invariant: the Conductor pick is a return to Conductor, never a stop: the keep-alive page stays resident and the server hears nothing.
     await mountApp();
     await pickApp('beta');
     expect(location.hash, 'fixture check: Beta in the full view').toBe('#plugin/beta/');
@@ -76,7 +70,7 @@ describe('the plugin bar\'s Close plugin', () => {
     const l = lifecycle();
     const s = starts();
 
-    await close();
+    await pickApp('conductor');
     expect(location.hash, 'back on the session anchor').toBe(ANCHOR);
     expect(column()!.dataset.dockMode, 'the column hidden').toBe('hidden');
     expect(sessionShown(), 'the session shown').toBe(true);
@@ -86,7 +80,6 @@ describe('the plugin bar\'s Close plugin', () => {
     expect(frame.getAttribute('src'), 'the same src').toBe('/plugins/beta/');
     expect(posts() - p, 'no POST').toBe(0);
     expect(lifecycle() - l, 'no start/stop/restart/disable').toBe(0);
-    expect(noClose(), 'no Close once the column is hidden').toBe(true);
 
     await pickApp('beta');
     expect(residentFrame('beta') === frame, 're-entry: the same frame node').toBe(true);
@@ -94,48 +87,47 @@ describe('the plugin bar\'s Close plugin', () => {
     expect(starts(), 're-entry: no start').toBe(s);
   });
 
-  it('Close in split matches the switcher\'s Conductor pick: same hash, dock state, mode, history and session', async () => {
-    // Invariant: Close and the switcher's Conductor are one action; from split both keep split as the remembered mode.
+  it('the switcher\'s Conductor from split hides the column, keeps split remembered and the keep-alive frame resident, and stops nothing', async () => {
+    // Invariant: from split the Conductor pick empties the dock but keeps split as the remembered mode, and never stops the plugin.
     await mountApp();
     await dockSplit('beta');
     const frame = residentFrame('beta')!;
     expect(frame, 'fixture check: Beta\'s resident frame').not.toBeNull();
     const l = lifecycle();
 
-    await close();
-    const viaClose = snapshot();
-    expect(viaClose.dock, 'nothing docked, split remembered').toEqual({ id: null, subpath: '/', mode: 'split' });
-    expect(viaClose.mode, 'the column hidden').toBe('hidden');
-    expect(viaClose.session, 'the session shown').toBe(true);
-    expect(residentFrame('beta') === frame, 'after Close: the same frame node').toBe(true);
-
-    await pickApp('beta');
-    expect(viewOpen() && sessionShown(), 'fixture check: Beta re-docked in split').toBe(true);
-    expect(residentFrame('beta') === frame, 're-docked: the same frame node').toBe(true);
     await pickApp('conductor');
-    expect(snapshot(), 'the switcher\'s Conductor ends where Close did').toEqual(viaClose);
-    expect(residentFrame('beta') === frame, 'after Conductor: the same frame node').toBe(true);
+    expect(dockStore.get(), 'nothing docked, split remembered').toEqual({ id: null, subpath: '/', mode: 'split' });
+    expect(column()!.dataset.dockMode, 'the column hidden').toBe('hidden');
+    expect(sessionShown(), 'the session shown').toBe(true);
+    expect(residentFrame('beta') === frame, 'the same frame node').toBe(true);
     expect(lifecycle() - l, 'no start/stop/restart/disable').toBe(0);
   });
 
-  it('with nothing shown the column holds no Close', async () => {
-    // Invariant: Close exists only while the column shows a plugin.
-    await mountApp();
-    expect(location.hash, 'fixture check: on the session').toBe(ANCHOR);
-    expect(column()!.dataset.dockMode, 'fixture check: hidden').toBe('hidden');
-    expect(noClose()).toBe(true);
-  });
-
-  it('a plugin the switcher does not list shows no toggle but still Close, and Close leaves its view', async () => {
-    // Invariant: Close does not depend on the toggle: an unlisted plugin has no toggle but still has Close.
+  it('a plugin the switcher does not list shows no toggle, and the switcher\'s Conductor leaves its view', async () => {
+    // Invariant: with other apps listed, an unlisted plugin's bar still holds the switcher, whose Conductor pick leaves the view.
     net.status.ghost = plainRow();
     await mountApp();
     await go('#plugin/ghost/');
     expect(viewOpen(), 'fixture check: Ghost shown').toBe(true);
-    expect(columnButtons(), 'the switcher and Close, no toggle').toEqual(['Switch app', 'Close plugin']);
-    await close();
+    expect(columnButtons(), 'only the switcher, no toggle').toEqual(['Switch app']);
+    await pickApp('conductor');
     expect(location.hash).toBe(ANCHOR);
     expect(column()!.dataset.dockMode).toBe('hidden');
+  });
+
+  it('with nothing listed the bar holds no button, and selecting a session from the sidebar leaves the view', async () => {
+    // Invariant: with no switcher and no Close the sidebar's session pick is the on-screen way out of the plugin view.
+    net.catalog = [];
+    net.status.zeta = plainRow();
+    await mountApp();
+    await go('#plugin/zeta/');
+    expect(column()!.dataset.dockMode, 'fixture check: full').toBe('full');
+    expect(columnButtons(), 'no button in the bar').toEqual([]);
+    expect(noClose(), 'no Close plugin').toBe(true);
+    await act(async () => { selectInstance(ACTIVE.id); });
+    await settle();
+    expect(location.hash, 'back on the session anchor').toBe(ANCHOR);
+    expect(column()!.dataset.dockMode, 'the column hidden').toBe('hidden');
   });
 });
 
@@ -152,21 +144,21 @@ function barName(): Element {
 }
 
 describe('the plugin bar\'s order', () => {
-  it('in split the bar reads Collapse plugin dock, Expand to full view, the plugin\'s name, then Close plugin', async () => {
-    // Invariant: the layout controls sit together at the bar's inner edge, left of the plugin's name; Close ends the bar.
+  it('in split the bar reads Collapse plugin dock, Expand to full view, then the plugin\'s name', async () => {
+    // Invariant: the layout controls sit together at the bar's inner edge, left of the plugin's name.
     await mountApp();
     await dockSplit('beta');
     expect(inOrder({
-      Close: barButton('Close plugin'), name: barName(), Expand: barButton('Expand to full view'), Collapse: barButton('Collapse plugin dock'),
-    })).toEqual(['Collapse', 'Expand', 'name', 'Close']);
+      name: barName(), Expand: barButton('Expand to full view'), Collapse: barButton('Collapse plugin dock'),
+    })).toEqual(['Collapse', 'Expand', 'name']);
   });
 
-  it('in the full view the bar reads Dock to side, the plugin\'s name, then Close plugin', async () => {
-    // Invariant: in full the mode toggle is the bar's first control, left of the plugin's name; Close ends the bar.
+  it('in the full view the bar reads Dock to side, then the plugin\'s name', async () => {
+    // Invariant: in full the mode toggle is the bar's first control, left of the plugin's name.
     await mountApp();
     await pickApp('beta');
     expect(location.hash, 'fixture check: Beta in the full view').toBe('#plugin/beta/');
-    expect(inOrder({ Close: barButton('Close plugin'), name: barName(), Dock: barButton('Dock to side') })).toEqual(['Dock', 'name', 'Close']);
+    expect(inOrder({ name: barName(), Dock: barButton('Dock to side') })).toEqual(['Dock', 'name']);
   });
 });
 
@@ -179,18 +171,21 @@ describe('below md', () => {
   });
   afterEach(() => { happyDOM().setViewport(prev); });
 
-  it('the bar holds Open sidebar, the switcher, then Close plugin, and Close returns to Conductor keeping the keep-alive frame', async () => {
-    // Invariant: on a drawer viewport Close is in the bar too, and is the same non-stopping return to Conductor.
+  it('the bar holds Open sidebar then the switcher, no Close plugin, and the switcher\'s Conductor returns to Conductor keeping the keep-alive frame', async () => {
+    // Invariant: on a drawer viewport the bar's switcher is the way out, the same non-stopping return to Conductor, with the drawer left closed.
     await mountApp();
     await go('#plugin/beta/');
     expect(viewOpen(), 'fixture check: Beta shown').toBe(true);
-    expect(columnButtons()).toEqual(['Open sidebar', 'Switch app', 'Close plugin']);
+    expect(columnButtons()).toEqual(['Open sidebar', 'Switch app']);
+    expect(noClose(), 'no Close plugin').toBe(true);
+    expect(column()!.contains(switcher()), 'the switcher sits in the bar, with the drawer closed').toBe(true);
+    expect(uiStore.get().sidebarOpen, 'fixture check: the drawer closed').toBe(false);
     const frame = residentFrame('beta')!;
     expect(frame, 'fixture check: Beta\'s resident frame').not.toBeNull();
     const p = posts();
     const l = lifecycle();
 
-    await close();
+    await pickApp('conductor');
     expect(location.hash).toBe(ANCHOR);
     expect(uiStore.get().sidebarOpen, 'the drawer stays closed').toBe(false);
     expect(residentFrame('beta') === frame, 'the same frame node').toBe(true);
