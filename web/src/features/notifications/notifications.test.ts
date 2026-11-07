@@ -286,6 +286,27 @@ describe('the summary notification', () => {
     expect(r.summaryAlerts()).toHaveLength(alerts + 1);
   });
 
+  it('closes a summary left in the tray by an earlier page when a fresh notifier sees fewer than two', async () => {
+    // Invariant: 4 — below two there is no summary, even one this page never showed.
+    const r = rig();
+    r.seed('cc-summary');
+    await r.observe([inst('X')]);
+    expect(r.summary()).toBeUndefined();
+  });
+
+  it('alerts when a session joins while the summary is open', async () => {
+    // Invariant: 3 — growth alerts even when it replaces an open summary.
+    const r = rig();
+    await r.observe([inst('X'), inst('C'), inst('W')]);
+    await r.observe([done('X'), inst('C'), inst('W')]);
+    await r.observe([done('X'), done('C'), inst('W')]);
+    expect(r.summary()).toMatchObject({ title: '2 sessions need you' });
+    const alerts = r.summaryAlerts().length;
+    await r.observe([done('X'), done('C'), done('W')]);
+    expect(r.summary()).toMatchObject({ title: '3 sessions need you' });
+    expect(r.summaryAlerts()).toHaveLength(alerts + 1);
+  });
+
   it('closes the summary when fewer than two sessions are left, and keeps it closed', async () => {
     // Invariant: 4 — below two there is no summary.
     const r = rig();

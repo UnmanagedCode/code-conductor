@@ -170,16 +170,14 @@ function applySummary(action: SummaryAction) {
   });
 }
 
-async function getOpenNotifications() {
-  if (!swRegistration) return null;
-  try { return await swRegistration.getNotifications(); } catch { return null; }
-}
-
-/** Coming back to the tab dismisses the pings it already answers. */
-export async function closeAllOnFocus() {
-  const open = await getOpenNotifications();
-  if (open == null) return;
-  for (const n of open) if (n.tag === SUMMARY_TAG || n.tag.startsWith('session:')) n.close();
+/** Coming back to the tab dismisses the pings it already answers. Queued behind any pending show. */
+export function closeAllOnFocus() {
+  const reg = swRegistration;
+  if (!reg) return swQueue;
+  enqueueSw('close the pings on focus', async () => {
+    for (const n of await reg.getNotifications()) if (n.tag === SUMMARY_TAG || n.tag.startsWith('session:')) n.close();
+  });
+  return swQueue;
 }
 
 export type AttentionTransition = {
@@ -237,8 +235,7 @@ export function createAttentionNotifier({ isOnScreen }: { isOnScreen: (sessionId
         announced.delete(sid);
         closePing(sid);
       }
-      const action = summaryAction(named, announced);
-      if (action.kind !== 'close' || named.size >= 2) applySummary(action);
+      applySummary(summaryAction(named, announced));
       named = new Set(announced.keys());
     },
   };
