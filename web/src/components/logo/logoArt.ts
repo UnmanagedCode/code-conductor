@@ -30,7 +30,7 @@ export type Art = {
 
 export type Palette = 'light' | 'dark';
 
-/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER's ring; `screen` is the white face of the tile and FAV16, the same in both palettes. */
+/** The static files' inks. The app's `ink` and `tile` follow the theme through index.css's `--logo-*`, which carry these same values; `inverse` draws only FAV32_BORDER's ring; `screen` is the white terminal face, the same in both palettes. */
 export const PALETTES: Record<Palette, Record<Ink, string>> = {
   light: { coral: '#f07456', deep: '#c8482c', ink: '#15171c', inverse: '#ffffff', screen: '#ffffff', tile: '#f7e5de' },
   dark: { coral: '#f07456', deep: '#c8482c', ink: '#ffffff', inverse: '#15171c', screen: '#ffffff', tile: '#291812' },
@@ -127,7 +127,7 @@ export const FAV32_BORDER: Art = {
   elements: [
     ...under(FAV32_TRANSFORM, [...BACK_LEGS, BAND_KO, BODY]),
     { tag: 'rect', attrs: { x: '6', y: '8', width: '19', height: '12', 'shape-rendering': 'crispEdges' }, ink: 'inverse' },
-    { tag: 'rect', attrs: { x: '7', y: '9', width: '17', height: '10', 'shape-rendering': 'crispEdges' }, ink: 'ink' },
+    { tag: 'rect', attrs: { x: '7', y: '9', width: '17', height: '10', 'shape-rendering': 'crispEdges' }, ink: 'screen' },
     ...under(FAV32_TRANSFORM, OVER_SCREEN),
   ],
 };
