@@ -51,7 +51,9 @@ const DEFAULT_KILL_GRACE_MS = 100;
 // gives up on unended streams the command's process group gets the same
 // SIGTERM → SIGKILL a timeout sends, so a background child that stayed in the
 // group is stopped (one that detached into its own group escapes it, as it
-// does a timeout's kill).
+// does a timeout's kill) — but only where the child leads a group at all. On
+// Windows it does not, and its pid is already gone, so a kill rooted at it
+// could only miss or hit a reused pid: the drain reaps nothing there.
 const STDIO_DRAIN_GRACE_MS = 250;
 
 // The hard ceiling on the drain, counted from the direct child's exit: re-arming
@@ -146,6 +148,8 @@ export function runGroupedCommand(
       proc.stdin?.end(input);
     }
 
+    // A POSIX `group` child is its own group leader, so `-pgid` outlives it.
+    const leadsGroup = platform.spawnOptions('group').detached === true;
     let reads = 0;
     proc.stdout?.on('data', (chunk: Buffer) => { reads++; collector.push('out', chunk); });
     proc.stderr?.on('data', (chunk: Buffer) => { reads++; collector.push('err', chunk); });
@@ -197,7 +201,7 @@ export function runGroupedCommand(
             const unended = !(proc.stdout?.readableEnded ?? true) || !(proc.stderr?.readableEnded ?? true);
             proc.stdout?.destroy();
             proc.stderr?.destroy();
-            if (unended) kill();
+            if (unended && leadsGroup) kill();
             finish(code ?? 1, undefined, unended);
           });
         }, STDIO_DRAIN_GRACE_MS);

@@ -3100,7 +3100,7 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult, output
   // stopped the process unless it had detached from the command's group).
   if (r.outputMayBeIncomplete) meta.outputMayBeIncomplete = true;
   const body = (r.outputMayBeIncomplete
-    ? `${output.trimEnd()}\n… [output may be incomplete: a background process held the output open after the command exited, and was stopped]`
+    ? `${output.trimEnd()}\n… [output may be incomplete: a background process held the output open after the command exited, so output it wrote later is missing]`
     : output.trimEnd());
   return dualResult({ ...meta, output: body }, () => textPayload(meta, body));
 }
