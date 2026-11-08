@@ -49,6 +49,14 @@ const BASH_DESCRIPTION_PROP = {
   description: 'Clear, concise description of what this command does in active voice. Shown in the transcript in place of the command, so it has to identify it. Brief (5-10 words) for a simple command — `git status` → "Show working tree status". For one that is hard to parse at a glance (piped commands, obscure flags, etc.), say enough to make it clear — `git reset --hard origin/main` → "Discard all local changes and match remote main".',
 };
 
+// run_code's own `description` argument: the transcript card's subject line
+// (web/src/conversation/format.ts). Not BASH_DESCRIPTION_PROP, whose text is
+// about a command.
+const RUN_CODE_DESCRIPTION_PROP = {
+  type: 'string',
+  description: 'Clear, concise description of what this program does in active voice (5-10 words), e.g. "Count open cards per epic". Shown in the transcript in place of the code, so it has to identify it.',
+};
+
 // The OUTPUT half of project_bash's and system_bash's descriptions. Both tools
 // return the payload `bashPayload` (mcp/handlers.ts) builds, so every claim here
 // is a claim about that ONE function and cannot be allowed to differ between
@@ -1413,6 +1421,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         type: 'object',
         properties: {
           code: { type: 'string', minLength: 1, description: 'The body of an async function; `cc` is in scope.' },
+          description: RUN_CODE_DESCRIPTION_PROP,
           timeoutMs: { type: 'integer', minimum: 1, default: RUN_CODE_DEFAULT_TIMEOUT_MS, description: 'Wall-clock limit in milliseconds.' },
         },
         required: ['code'],

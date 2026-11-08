@@ -56,14 +56,48 @@ describe('tool cards', () => {
     expect(root.textContent).toContain('2 lines');
   });
 
+  describe('run_code', () => {
+    const RC = 'mcp__code-conductor__run_code';
+    // Quotes, backslashes, newlines and a regex: escaped JSON and a faithful rendering differ on all of them.
+    const SCRIPT = 'const s = "say \\"hi\\"\\n";\n// a \'quoted\' comment\nreturn s.replace(/\\\\n/g, \'\\\\\') + `${1}`;';
+
+    it('shows its description as the summary and its script verbatim, highlighted, with the other args listed', async () => {
+      expect(SCRIPT.includes('\n') && SCRIPT.includes('"') && SCRIPT.includes('\\')).toBe(true);
+      const { root } = await shown(tool('m1', 0, 't1', RC, { result: null, input: { code: SCRIPT, description: 'Escape a greeting', timeoutMs: 5000 } }));
+      expandAll(root);
+      const trigger = root.querySelector('[data-tool-trigger]')!;
+      expect(trigger.textContent).toContain('Escape a greeting');
+      expect(trigger.textContent).not.toContain('const s');
+      const pre = root.querySelector('[data-run-code-script]')!;
+      expect(pre.textContent).toBe(SCRIPT);
+      expect(root.querySelector('[data-tool-args]')).toBeNull();
+      expect(within(root).getByRole('button', { name: /^Copy script$/ })).toBeTruthy();
+      expect(pre.querySelector('[data-tok="comment"]')!.textContent).toBe("// a 'quoted' comment");
+      expect([...pre.querySelectorAll('[data-tok="keyword"]')].map((e) => e.textContent)).toContain('const');
+      expect(pre.querySelector('[data-tok="regex"]')!.textContent!.startsWith('/')).toBe(true);
+      expect(root.querySelector('[data-run-code-arg="timeoutMs"]')!.textContent).toContain('5000');
+      expect(root.querySelectorAll('[data-run-code-arg]').length).toBe(1);
+    });
+
+    it('without a description the summary is the code and no extra args are listed', async () => {
+      const { root } = await shown(tool('m1', 0, 't1', RC, { result: null, input: { code: SCRIPT } }));
+      expandAll(root);
+      const desc = root.querySelector('[data-tool-desc]')!.textContent!;
+      expect(desc.startsWith('const s = "say')).toBe(true);
+      expect(desc.startsWith('code=')).toBe(false);
+      expect(root.querySelectorAll('[data-run-code-arg]').length).toBe(0);
+      expect(root.querySelector('[data-run-code-script]')!.textContent).toBe(SCRIPT);
+    });
+  });
+
   it('an unknown tool, or a shell call with a non-string command, falls back to a collapsed JSON dump', async () => {
-    for (const [name, input] of [['SomeFutureTool', { foo: 1 }], ['PowerShell', { command: 42 }]] as const) {
+    for (const [name, input] of [['SomeFutureTool', { foo: 1 }], ['PowerShell', { command: 42 }], ['mcp__code-conductor__run_code', { code: 42 }]] as const) {
       const { root } = await shown(tool('m1', 0, 't1', name, { result: null, input }));
       expandAll(root);
       const details = root.querySelector('details') as HTMLDetailsElement;
       expect(details.textContent).toContain('Arguments');
       expect(details.open).toBe(false);
-      expect(details.querySelector('pre')!.textContent).toMatch(/"(foo|command)"/);
+      expect(details.querySelector('pre')!.textContent).toMatch(/"(foo|command|code)"/);
     }
   });
 

@@ -2,7 +2,7 @@ import * as React from 'react';
 import {
   BrainIcon, ChevronRightIcon, FileTextIcon, PencilLineIcon, TerminalIcon, SearchIcon, GlobeIcon,
   BotIcon, ListTodoIcon, FilePlusIcon, NotebookPenIcon, WrenchIcon, CircleCheckIcon, CircleAlertIcon,
-  LoaderCircleIcon, HandIcon, CircleDashedIcon, SendIcon, SparklesIcon, PlugIcon, CornerDownRightIcon,
+  LoaderCircleIcon, HandIcon, CircleDashedIcon, SendIcon, SparklesIcon, PlugIcon, CornerDownRightIcon, CodeIcon,
 } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Badge } from '@/components/ui/badge';
@@ -13,8 +13,9 @@ import { lineDiff, diffStats } from '@shared/diff';
 import { formatTokens } from '@shared/usage';
 import { cn } from '@/lib/utils';
 import type { ConversationModel, GroupChild, GroupNode, ResultNode, ThinkingNode, ToolNode, CallUsageNode } from './model';
-import { CALL_USAGE_TITLE, callUsageText, describeToolInput, formatElapsed, renderKindFor, splitResultContent, type DescribeCtx } from './format';
+import { CALL_USAGE_TITLE, callUsageText, describeToolInput, formatElapsed, renderKindFor, RUN_CODE_TOOL, splitResultContent, type DescribeCtx } from './format';
 import { ImageZoom } from './ImageZoom';
+import { tokenizeJs, type JsTokenKind } from './jsTokens';
 
 export type RenderCtx = {
   model: ConversationModel;
@@ -25,6 +26,7 @@ export type RenderCtx = {
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   Bash: TerminalIcon,
+  [RUN_CODE_TOOL]: CodeIcon,
   Read: FileTextIcon,
   Edit: PencilLineIcon,
   Write: FilePlusIcon,
@@ -242,11 +244,36 @@ function ToolBlock({ node, ctx }: { node: ToolNode; ctx: RenderCtx }) {
   );
 }
 
-function CommandBox({ text }: { text: string }) {
+function CommandBox({ text, copyLabel = 'Copy command', preProps, children }: { text: string; copyLabel?: string; preProps?: Record<string, string>; children?: React.ReactNode }) {
   return (
     <div className="group/cmd relative rounded-lg bg-muted/70">
-      <CopyButton getText={() => text} label="Copy command" className="absolute top-1 right-1 opacity-0 group-hover/cmd:opacity-100 [@media(hover:none)]:opacity-100" />
-      <pre className="overflow-x-auto py-2 pr-10 pl-3 font-mono text-xs leading-5 whitespace-pre-wrap">{text}</pre>
+      <CopyButton getText={() => text} label={copyLabel} className="absolute top-1 right-1 opacity-0 group-hover/cmd:opacity-100 [@media(hover:none)]:opacity-100" />
+      <pre {...preProps} className="overflow-x-auto py-2 pr-10 pl-3 font-mono text-xs leading-5 whitespace-pre-wrap">{children ?? text}</pre>
+    </div>
+  );
+}
+
+const TOKEN_CLASS: Partial<Record<JsTokenKind, string>> = {
+  comment: 'text-muted-foreground italic',
+  string: 'text-success',
+  regex: 'text-success',
+  number: 'text-info',
+  keyword: 'text-plan',
+};
+
+/** run_code's script, syntax-coloured as text children only, then its other arguments one per line. */
+function RunCodeArgs({ input }: { input: Record<string, any> }) {
+  const code: string = input.code;
+  const tokens = React.useMemo(() => tokenizeJs(code), [code]);
+  const others = Object.entries(input).filter(([k]) => k !== 'code' && k !== 'description');
+  return (
+    <div className="flex flex-col gap-1.5">
+      <CommandBox text={code} copyLabel="Copy script" preProps={{ 'data-run-code-script': '' }}>
+        {tokens.map((t, i) => (t.kind === 'plain' ? t.text : <span key={i} data-tok={t.kind} className={TOKEN_CLASS[t.kind]}>{t.text}</span>))}
+      </CommandBox>
+      {others.map(([k, v]) => (
+        <div key={k} data-run-code-arg={k} className="font-mono text-xs text-muted-foreground">{k}: {JSON.stringify(v)}</div>
+      ))}
     </div>
   );
 }
@@ -282,6 +309,7 @@ function renderArgs(node: ToolNode, model: ConversationModel): React.ReactNode {
     const kind = renderKindFor(node.name);
     if (kind === 'Bash' && typeof input.command === 'string') return <CommandBox text={input.command} />;
     if (node.name === 'mcp__code-conductor__send_prompt' && typeof input.text === 'string') return <CommandBox text={input.text} />;
+    if (node.name === RUN_CODE_TOOL && typeof input.code === 'string') return <RunCodeArgs input={input} />;
     if (kind === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
       const ops = lineDiff(input.old_string, input.new_string);
       const { adds, dels } = diffStats(ops);
