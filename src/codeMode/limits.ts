@@ -21,9 +21,12 @@ export function clampRunCodeTimeoutMs(timeout: unknown): number {
 export const RUN_CODE_TIMEOUT_GRACE_MS = 60_000;
 export const CC_MCP_SERVER_TIMEOUT_MS = RUN_CODE_MAX_TIMEOUT_MS + RUN_CODE_TIMEOUT_GRACE_MS;
 
-// What one run_code result may carry. Their sum plus RUN_META_HEADROOM stays
-// inside MCP_RESULT_CHAR_BUDGET (src/mcp/content.ts), so the result backstop
-// never fires for it.
+// What one run_code result may carry. The result's cut text is at most
+// RUN_RESULT_MAX_CHARS (the cap plus its marker) and the logs RUN_LOGS_CAP; the
+// error's message, name and code are capped on their JSON-escaped width (they
+// ride in the metadata block). Those four plus RUN_META_HEADROOM stay inside
+// MCP_RESULT_CHAR_BUDGET (src/mcp/content.ts), so the result backstop never
+// fires for run_code.
 export const RUN_RESULT_CAP = 24_000;
 export const RUN_LOGS_CAP = 16_384;
 export const RUN_ERROR_MESSAGE_CAP = 4_000;
@@ -41,6 +44,20 @@ export function cutChars(s: string, n: number): string {
   if (s.length <= n) return s;
   const end = n > 0 && s.charCodeAt(n - 1) >= 0xd800 && s.charCodeAt(n - 1) <= 0xdbff ? n - 1 : n;
   return s.slice(0, end);
+}
+
+// A cut that keeps the string's JSON-escaped width (what it costs inside the
+// metadata block, where a control character is six characters) within `n`.
+export function cutEscaped(s: string, n: number): string {
+  const width = (t: string) => JSON.stringify(t).length - 2;
+  if (width(s) <= n) return s;
+  let lo = 0;
+  let hi = Math.min(s.length, n);
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (width(cutChars(s, mid)) <= n) lo = mid; else hi = mid - 1;
+  }
+  return cutChars(s, lo);
 }
 
 // A result cut at RUN_RESULT_CAP, ending in the marker that says so. `fullChars`

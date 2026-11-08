@@ -82,7 +82,9 @@ test('a regular-expression literal is not code, so a call-shaped pattern is not 
   assert.deepEqual(paths('const re = /cc.list_cards(x)/; return re.test(s);'), []);
   assert.deepEqual(paths('if (/cc\\.a\\(/.test(s)) await cc.real();'), ['cc.real']);
   assert.deepEqual(paths('return /[/]cc.nope()/g.test(s)'), []);
-  assert.deepEqual(paths('x = s.replace(/"/g, "") + cc.after_regex_quote()'), ['cc.after_regex_quote'], 'a quote inside a pattern does not open a string');
+  // A pattern holding a quote is read as division and left as code: whatever
+  // follows is then simply not found, never refused.
+  assert.deepEqual(paths('x = s.replace(/"/g, "") + cc.after_regex_quote()'), []);
 });
 
 test('a division is still code: a call after it is found', () => {
@@ -103,4 +105,28 @@ test('a program that binds its own cc is not pre-checked', () => {
 
 test('passing the injected cc along is not a binding: the call sites are still checked', () => {
   assert.deepEqual(paths('helper(cc); await cc.nope();'), ['cc.nope']);
+});
+
+test('a division is never read as a regex that ends inside a later string', () => {
+  assert.deepEqual(paths('const pct = (a + b) / total; const label = "w/xy cc.nope() here"; await cc.list_projects();'), ['cc.list_projects']);
+  assert.deepEqual(paths('const half = xs[0] / 2; const s = "a/bc cc.nope()"; await cc.real();'), ['cc.real']);
+  assert.deepEqual(paths("const r = n / 2; const t = 'x/y cc.nope()';"), []);
+});
+
+test('a condition that merely mentions cc is not a binding: the pre-check still runs', () => {
+  for (const head of ['if (cfg.cc) {', 'if (cc.ready) {', 'while (cc) {', 'switch (cfg.cc) {', 'if (helper(cc)) {']) {
+    assert.deepEqual(paths(`${head} await cc.real(); }`), ['cc.real'], head);
+  }
+});
+
+test('every real binding position disables the pre-check', () => {
+  for (const code of [
+    'async function run(a, cc) { return cc.nope(); }',
+    'const f = (a, cc) => cc.nope();',
+    'try { x(); } catch (cc) { cc.nope(); }',
+    'for (const cc of list) { cc.nope(); }',
+    'const [cc] = list; cc.nope();',
+    'var a = 1, cc = make(); cc.nope();',
+    'class cc {} cc.nope();',
+  ]) assert.deepEqual(paths(code), [], code);
 });

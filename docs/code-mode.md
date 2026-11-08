@@ -112,10 +112,10 @@ All in `src/codeMode/limits.ts`.
 
 | Constant | Bounds |
 |---|---|
-| `RUN_CODE_DEFAULT_TIMEOUT_MS`, `RUN_CODE_MAX_TIMEOUT_MS` | the run's wall clock; at the limit the whole process group is signalled (SIGTERM, then SIGKILL after the grace period). The call returns once the direct child has exited and its stdio has drained for a short grace (`STDIO_DRAIN_GRACE_MS`, `src/groupedCommand.ts`): a detached descendant holding the pipes does not hold the call or the token open |
+| `RUN_CODE_DEFAULT_TIMEOUT_MS`, `RUN_CODE_MAX_TIMEOUT_MS` | the run's wall clock; at the limit the whole process group is signalled (SIGTERM, then SIGKILL after the grace period). The call returns once the direct child has exited and its stdio has drained for a short grace (`STDIO_DRAIN_GRACE_MS`, `src/groupedCommand.ts`): a detached descendant holding the pipes does not hold the call or the token open. The grace waits out a stalled event loop and re-arms while output keeps arriving (never past the timeout); when it does destroy an unended stream the result is `truncated` |
 | `RUN_RESULT_CAP`, `RUN_LOGS_CAP`, `RUN_ERROR_MESSAGE_CAP`, `RUN_ERROR_FIELD_CAP` | the result text, the retained logs (bytes, head-kept), an error message, an error's `name` and `code`. cc re-applies them to whatever a run delivers (`capOutcome`, `src/codeMode/runs.ts`), so a program posting its own outcome cannot exceed them |
 | `RUN_RESULT_BODY_LIMIT_BYTES` | the largest `/run-result` body accepted (`413` past it), in place of `MCP_REQUEST_BODY_LIMIT` |
-| `RUN_META_HEADROOM` | the room left for metadata: the three caps plus it stay inside `MCP_RESULT_CHAR_BUDGET` (`src/mcp/content.ts`), so `boundResult` never fires for `run_code`. The caps apply in JSON format too |
+| `RUN_RESULT_MAX_CHARS`, `RUN_META_HEADROOM` | the result as cut at cc's boundary (the cap plus its marker), and the room left for the rest of the metadata. The result, the logs and the four error-field caps — the error's fields counted on their JSON-escaped width, since they ride in the metadata block — plus the headroom stay inside `MCP_RESULT_CHAR_BUDGET` (`src/mcp/content.ts`), so `boundResult` never fires for `run_code`. The caps apply in JSON format too |
 | `CC_MCP_SERVER_TIMEOUT_MS` | the per-server `timeout` in the `--mcp-config` entry cc writes for every worker (`buildMcpConfigJSON`, `src/settings.ts`): `RUN_CODE_MAX_TIMEOUT_MS` plus `RUN_CODE_TIMEOUT_GRACE_MS` |
 | `PROGRESS_HEARTBEAT_MS`, `PROGRESS_MIN_INTERVAL_MS`, `PROGRESS_LINE_CAP` | progress cadence, below |
 

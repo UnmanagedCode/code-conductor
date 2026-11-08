@@ -107,14 +107,16 @@ export class ExecOutputCollector {
   // it without either clobbering real output.
   result(
     code: number,
-    { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive, abandonedAfterMs }: {
-      timedOut: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode; transportFailure?: true;
+    { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive, abandonedAfterMs, outputMayBeCut }: {
+      // `outputMayBeCut`: the runner stopped reading before the streams ended
+      // (a descendant held them open), so `truncated` is set.
+      timedOut: boolean; outputMayBeCut?: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode; transportFailure?: true;
       durationMs: number; descendantsMaySurvive?: boolean; abandonedAfterMs?: number;
     },
   ): ExecResult {
     let stderr = this.#stderr;
     let output = this.#output;
-    let truncated = this.#truncated;
+    let truncated = this.#truncated || outputMayBeCut === true;
     if (spawnError) {
       if (!stderr) stderr = spawnError;
       if (!output) output = spawnError;

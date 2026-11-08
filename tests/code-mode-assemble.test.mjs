@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { assembleResult } from '../src/codeMode/runCode.ts';
 import { MCP_RESULT_CHAR_BUDGET } from '../src/mcp/content.ts';
 import {
-  RUN_RESULT_CAP, RUN_LOGS_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, RUN_META_HEADROOM,
+  RUN_LOGS_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, RUN_META_HEADROOM, RUN_RESULT_MAX_CHARS,
 } from '../src/codeMode/limits.ts';
 
 const exec = (over = {}) => ({
@@ -52,20 +52,25 @@ test('a delivered error wins over the process facts', () => {
   assert.deepEqual(r.json.error, { name: 'E', message: 'm' });
 });
 
-test('a hostile delivery is re-capped: result, error name, message and code', () => {
+test('a hostile delivery is re-capped: result, and the error name, message and code on their escaped width', () => {
+  const ctl = (n) => '\u0001'.repeat(n);
   const r = assembleResult(exec({ output: 'l'.repeat(RUN_LOGS_CAP * 2), truncated: true, code: 1 }), {
     result: 'r'.repeat(500_000), resultChars: 1, truncated: false,
-    error: { name: 'N'.repeat(60_000), message: 'm'.repeat(60_000), code: 'C'.repeat(60_000), status: 200 },
+    error: { name: ctl(60_000), message: ctl(60_000), code: ctl(60_000), status: 200 },
   }, false);
   assert.equal(r.json.truncated, true, 'an oversize result is flagged cut');
   assert.equal(r.json.resultChars, 500_000, 'with its real length');
-  assert.ok(r.json.result.length <= RUN_RESULT_CAP + 120);
+  assert.ok(r.json.result.length <= RUN_RESULT_MAX_CHARS);
   assert.match(r.json.result, /… \[result cut at \d+ of 500000 chars — return less\]$/);
-  assert.equal(r.json.error.name.length, RUN_ERROR_FIELD_CAP);
-  assert.equal(r.json.error.code.length, RUN_ERROR_FIELD_CAP);
-  assert.equal(r.json.error.message.length, RUN_ERROR_MESSAGE_CAP);
+  const width = (s) => JSON.stringify(s).length - 2;
+  assert.ok(width(r.json.error.name) <= RUN_ERROR_FIELD_CAP && r.json.error.name.length > 0);
+  assert.ok(width(r.json.error.code) <= RUN_ERROR_FIELD_CAP && r.json.error.code.length > 0);
+  assert.ok(width(r.json.error.message) <= RUN_ERROR_MESSAGE_CAP && r.json.error.message.length > 0);
   assert.ok(textChars(r) <= MCP_RESULT_CHAR_BUDGET, `${textChars(r)} chars`);
-  assert.ok(RUN_RESULT_CAP + 120 + RUN_LOGS_CAP + RUN_ERROR_MESSAGE_CAP + 2 * RUN_ERROR_FIELD_CAP + RUN_META_HEADROOM <= MCP_RESULT_CHAR_BUDGET, 'the caps still sum inside the budget');
+});
+
+test('the caps, at their boundary widths, sum inside the budget with the headroom', () => {
+  assert.ok(RUN_RESULT_MAX_CHARS + RUN_LOGS_CAP + RUN_ERROR_MESSAGE_CAP + 2 * RUN_ERROR_FIELD_CAP + RUN_META_HEADROOM <= MCP_RESULT_CHAR_BUDGET);
 });
 
 test('a well-formed delivery passes through unchanged', () => {

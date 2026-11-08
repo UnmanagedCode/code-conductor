@@ -11,10 +11,31 @@ export interface LiteralPath { path: string; segments: string[] }
 
 const KEYWORDS_BEFORE_REGEX = new Set(['return', 'typeof', 'case', 'in', 'of', 'delete', 'void', 'throw', 'new', 'await', 'yield', 'else', 'do']);
 
-// A program that binds its own `cc` (a declaration, a parameter, a
-// destructuring, an assignment) is not calling the injected object, so its call
-// sites are not looked up.
-const OWN_CC = /\b(?:const|let|var|function|class)\s+cc\b|\bcc\s*=>|\([^()]*\bcc\b[^()]*\)\s*(?:=>|\{)|\b(?:const|let|var)\s*[{[][^}\]]*\bcc\b[^}\]]*[}\]]|(?<![.\w$])cc\s*=(?![=>])/;
+// A program that binds its own `cc` is not calling the injected object, so its
+// call sites are not looked up. Only real binding positions count: a
+// `function`'s parameter list, arrow parameters, `catch (cc)`, a `for` head's
+// declaration, `const`/`let`/`var` (destructuring included), `function cc` /
+// `class cc`, and a plain `cc =`. `if (cc) {`, `while (cfg.cc) {` and call
+// arguments are not bindings. A destructuring assignment `({ cc } = obj)` goes
+// undetected, which only means the pre-check still runs.
+const BARE_CC = /(?<![.\w$])cc(?![\w$])/;
+const OWN_CC_SHAPES: RegExp[] = [
+  /\b(?:const|let|var)\s+cc(?![\w$])/,
+  /\b(?:const|let|var)\s*[{[][^}\]]*(?<![.\w$])cc(?![\w$])[^}\]]*[}\]]/,
+  /\b(?:function|class)\s*\*?\s*cc(?![\w$])/,
+  /(?<![.\w$])cc\s*=>/,
+  /\bcatch\s*\(\s*cc(?![\w$])/,
+  /\bfor\s*\(\s*(?:const|let|var)\s+cc(?![\w$])/,
+  /(?<![.\w$])cc\s*=(?![=>])/,
+];
+function bindsOwnCc(clean: string): boolean {
+  if (OWN_CC_SHAPES.some(re => re.test(clean))) return true;
+  // Parameter lists: `function f(…cc…)` and `(…cc…) =>`.
+  for (const m of clean.matchAll(/\bfunction\s*\*?\s*[\w$]*\s*\(([^()]*)\)|\(([^()]*)\)\s*=>/g)) {
+    if (BARE_CC.test(m[1] ?? m[2] ?? '')) return true;
+  }
+  return false;
+}
 
 const IDENT_START = /[A-Za-z_$]/;
 
@@ -48,6 +69,9 @@ function blankNonCode(code: string): string {
     while (j < code.length && code[j] !== '\n') {
       const c = code[j];
       if (c === '\\') j += 2;
+      // A quote before the closing `/` means this was division, not a pattern:
+      // read as one, its span could end inside a string.
+      else if (c === '"' || c === "'" || c === '`') return -1;
       else if (c === '[') { inClass = true; j++; }
       else if (c === ']') { inClass = false; j++; }
       else if (c === '/' && !inClass) { j++; while (j < code.length && /[a-z]/i.test(code[j])) j++; return j; }
@@ -108,7 +132,7 @@ const CALL_SITE = /(?<![\w$.])cc\s*\.\s*([A-Za-z_$][\w$]*)(?:\s*\.\s*([A-Za-z_$]
 
 export function literalPaths(code: string): LiteralPath[] {
   const clean = blankNonCode(code);
-  if (OWN_CC.test(clean)) return [];
+  if (bindsOwnCc(clean)) return [];
   const seen = new Set<string>();
   const paths: LiteralPath[] = [];
   for (const m of clean.matchAll(CALL_SITE)) {

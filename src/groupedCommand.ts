@@ -42,9 +42,12 @@ const DEFAULT_KILL_GRACE_MS = 100;
 
 // How long after the DIRECT child has exited the runner still waits for its
 // stdio to close. A descendant that outlives it holding the pipes (a daemon
-// started with inherited stdio) would otherwise keep the call open forever:
-// past this grace the streams are destroyed and the call resolves with what was
-// buffered, the exit code being the direct child's.
+// started with inherited stdio) would otherwise keep the call open forever.
+// Past the grace — and only once a poll phase has passed with nothing read, so
+// a stalled event loop never discards data already in a pipe — the streams are
+// destroyed and the call resolves with what was buffered, flagged `truncated`
+// when a stream had not ended, and the direct child's exit code. A descendant
+// that keeps writing re-arms the grace, but never past the command's timeout.
 const STDIO_DRAIN_GRACE_MS = 250;
 
 // The local implementation of the System `exec` primitive: its result and
@@ -130,8 +133,9 @@ export function runGroupedCommand(
       proc.stdin?.end(input);
     }
 
-    proc.stdout?.on('data', (chunk: Buffer) => collector.push('out', chunk));
-    proc.stderr?.on('data', (chunk: Buffer) => collector.push('err', chunk));
+    let reads = 0;
+    proc.stdout?.on('data', (chunk: Buffer) => { reads++; collector.push('out', chunk); });
+    proc.stderr?.on('data', (chunk: Buffer) => { reads++; collector.push('err', chunk); });
 
     let timedOut = false;
     const kill = () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig), platform });
@@ -150,21 +154,34 @@ export function runGroupedCommand(
 
     let settled = false;
     let drainTimer: NodeJS.Timeout | null = null;
-    const finish = (code: number, spawnError?: string): void => {
+    const finish = (code: number, spawnError?: string, outputMayBeCut?: boolean): void => {
       if (settled) return;
       settled = true;
       if (drainTimer) clearTimeout(drainTimer);
       if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      resolve(collector.result(code, { timedOut, spawnError, durationMs: Date.now() - start }));
+      resolve(collector.result(code, { timedOut, spawnError, outputMayBeCut, durationMs: Date.now() - start }));
     };
 
     proc.on('exit', (code) => {
-      drainTimer = setTimeout(() => {
-        proc.stdout?.destroy();
-        proc.stderr?.destroy();
-        finish(code ?? 1);
-      }, STDIO_DRAIN_GRACE_MS);
+      // Never wait past the timeout's own kill plus one grace.
+      const hardStop = timeoutMs === undefined ? Infinity : start + timeoutMs + (killGraceMs ?? DEFAULT_KILL_GRACE_MS) + STDIO_DRAIN_GRACE_MS;
+      const arm = (): void => {
+        const seen = reads;
+        drainTimer = setTimeout(() => {
+          // A poll phase runs before the check phase, so anything already in a
+          // pipe is read first; only a grace with no read at all gives up.
+          setImmediate(() => {
+            if (settled) return;
+            if (reads !== seen && Date.now() < hardStop) { arm(); return; }
+            const unended = !(proc.stdout?.readableEnded ?? true) || !(proc.stderr?.readableEnded ?? true);
+            proc.stdout?.destroy();
+            proc.stderr?.destroy();
+            finish(code ?? 1, undefined, unended);
+          });
+        }, STDIO_DRAIN_GRACE_MS);
+      };
+      arm();
     });
     proc.on('close', (code) => finish(code ?? 1));
     proc.on('error', (e) => finish(1, e.message));

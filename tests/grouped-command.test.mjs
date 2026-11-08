@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { readFileSync } from 'node:fs';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../src/groupedCommand.ts';
 import { posixPlatform } from '../src/platform/index.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -189,5 +190,45 @@ test('a descendant that outlives the command holding its stdio does not hold the
   assert.equal(r.code, 0);
   assert.equal(r.timedOut, false);
   assert.match(r.output, /direct-output/, 'what was buffered is kept');
+  assert.equal(r.truncated, true, 'the streams were destroyed unended, so the output may be cut');
   assert.ok(alive(pid), 'the detached grandchild is not the runner\'s to kill');
+});
+
+test('on the drain path the direct child\'s nonzero exit code is the result', async (t) => {
+  const dir = await mkdtemp('cc-grouped-drain-code-');
+  const pidFile = path.join(dir, 'pid');
+  const code = `const c = require('node:child_process').spawn('sleep', ['30'], { detached: true, stdio: 'inherit' }); c.unref();`
+    + ` require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); process.exit(3);`;
+  const r = await runGroupedCommand({ argv: [process.execPath, '-e', code] }, { cwd: dir }, posixPlatform);
+  t.after(() => { try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } });
+  assert.equal(r.code, 3);
+  assert.equal(r.timedOut, false);
+});
+
+test('on the drain path the runner closes its ends of the pipes while the descendant lives', async (t) => {
+  const dir = await mkdtemp('cc-grouped-drain-pipe-');
+  const pidFile = path.join(dir, 'pid');
+  const outFile = path.join(dir, 'late');
+  // The descendant writes to its inherited stdout well after the grace. With the
+  // read end closed the write fails EPIPE; with it still open it would succeed.
+  const descendant = `setTimeout(() => { let r; try { require('node:fs').writeSync(1, 'late'); r = 'ok'; } catch (e) { r = e.code; }`
+    + ` require('node:fs').writeFileSync(${JSON.stringify(outFile)}, r); }, 1200);`;
+  const code = `const c = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { detached: true, stdio: 'inherit' });`
+    + ` c.unref(); require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid));`;
+  await runGroupedCommand({ argv: [process.execPath, '-e', code] }, { cwd: dir }, posixPlatform);
+  const pid = Number(await fs.readFile(pidFile, 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+  assert.ok(alive(pid), 'the descendant outlived the call');
+  for (let i = 0; i < 100 && !(await fs.stat(outFile).catch(() => null)); i++) await sleep(50);
+  assert.equal(await fs.readFile(outFile, 'utf8'), 'EPIPE');
+});
+
+test('an event-loop stall past the drain grace never discards output already in the pipe', async () => {
+  const block = (ms) => { const end = Date.now() + ms; while (Date.now() < end); };
+  const timer = setTimeout(() => block(340), 60);
+  const r = await runGroupedCommand(
+    { shell: `( sleep 0.1; yes Z | head -c 200000 ) & exit 0` }, { cwd: os.tmpdir() }, posixPlatform);
+  clearTimeout(timer);
+  assert.equal(r.output.length, 200_000, 'every byte written before the stall ended was kept');
+  assert.equal(r.truncated, false, 'the pipe ended on its own, so nothing was cut');
 });

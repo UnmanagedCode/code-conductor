@@ -4,7 +4,7 @@
 
 import { randomBytes } from 'node:crypto';
 import {
-  RUN_RESULT_MAX_CHARS, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutChars, cutResult,
+  RUN_RESULT_MAX_CHARS, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutEscaped, cutResult,
 } from './limits.ts';
 
 // What the child posts to /run-result: the function's outcome, already capped.
@@ -26,8 +26,8 @@ export function capOutcome(o: RunOutcome): RunOutcome {
   }
   const out: RunOutcome = { result, resultChars, truncated };
   if (o.error) {
-    out.error = { name: cutChars(o.error.name, RUN_ERROR_FIELD_CAP), message: cutChars(o.error.message, RUN_ERROR_MESSAGE_CAP) };
-    if (o.error.code !== undefined) out.error.code = cutChars(o.error.code, RUN_ERROR_FIELD_CAP);
+    out.error = { name: cutEscaped(o.error.name, RUN_ERROR_FIELD_CAP), message: cutEscaped(o.error.message, RUN_ERROR_MESSAGE_CAP) };
+    if (o.error.code !== undefined) out.error.code = cutEscaped(o.error.code, RUN_ERROR_FIELD_CAP);
     if (o.error.status !== undefined) out.error.status = o.error.status;
   }
   return out;
