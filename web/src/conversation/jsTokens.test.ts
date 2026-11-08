@@ -89,6 +89,9 @@ describe('tokenizeJs kinds', () => {
     const src = '`${ {k: 1}.k }`';
     expect(ofKind(src, 'string')).toEqual(['`', '`']);
   });
+  it('a nested closing brace lowers the depth, so the substitution ends at its own brace and later text is string', () => {
+    expect(ofKind('`${ {a:1} }a${y}`', 'string')).toEqual(['`', 'a', '`']);
+  });
   it('a slash after an operand divides', () => {
     expect(ofKind('a / b / c', 'regex')).toEqual([]);
   });
