@@ -314,7 +314,7 @@ function recordingLog() {
   return { log, deps: (link) => ({ link, log: { info: (m) => log.info.push(m), warn: (m) => log.warn.push(m) } }) };
 }
 
-for (const code of ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV']) {
+for (const code of ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EACCES', 'EXDEV']) {
   test(`a probe link failing ${code} selects the in-place create, which is exclusive and leaves no temp file`, async () => {
     const dir = await tmpDir();
     try {
@@ -336,7 +336,7 @@ for (const code of ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV']) {
   });
 }
 
-for (const code of ['EACCES', 'EROFS', 'ENOSPC', 'EIO', 'EMLINK']) {
+for (const code of ['EROFS', 'ENOSPC', 'EIO', 'EMLINK']) {
   test(`a probe link failing ${code} is a real failure: it propagates and is not cached`, async () => {
     const dir = await tmpDir();
     try {
@@ -505,14 +505,22 @@ test('a probe file swept mid-probe (link fails ENOENT, source gone) is retried, 
   }
 });
 
-test('a store the probe cannot write to fails naming the directory and the code, not a probe file', async (t) => {
+test('a probe write failing EACCES (a store it cannot write to) propagates naming the directory and the code, and is not cached', async (t) => {
   if (process.getuid?.() === 0) { t.skip('root ignores directory permissions'); return; }
   const dir = await tmpDir();
   try {
     await fs.chmod(dir, 0o555);
-    assert.throws(() => createLockFileSync(path.join(dir, 'x.lock'), '{}'), (e) =>
+    const { deps } = recordingLog();
+    assert.throws(() => createLockFileSync(path.join(dir, 'x.lock'), '{}', deps(linkSync)), (e) =>
       e.code === 'EACCES' && e.message.includes(dir) && e.message.includes('EACCES')
       && !e.message.includes(LINK_PROBE_PREFIX) && e.cause?.code === 'EACCES');
+    assert.deepEqual(await fs.readdir(dir), [], 'no probe file left');
+    await fs.chmod(dir, 0o755);
+    let links = 0;
+    const d = deps((a, b) => { links++; linkSync(a, b); });
+    assert.equal(createLockFileSync(path.join(dir, 'x.lock'), '{}', d), true, 'the next create probes again');
+    assert.ok(links >= 2, 'the probe linked again, then the publish linked');
+    assert.deepEqual(await fs.readdir(dir), ['x.lock']);
   } finally {
     await fs.chmod(dir, 0o755);
     await fs.rm(dir, { recursive: true, force: true });
