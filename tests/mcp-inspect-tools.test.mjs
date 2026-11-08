@@ -187,7 +187,7 @@ describe('project_bash', () => {
     assert.ok(!r.timedOut);
   });
 
-  test('a command that backgrounds a silent process is not "truncated at the cap": it says output may be incomplete, and the process is stopped', async (t) => {
+  test('a command that backgrounds a silent process is not "truncated at the cap": it says output may be incomplete, and (on POSIX) the process is stopped', async (t) => {
     await makeRealRepo('demo');
     const pidFile = path.join(await mkdtemp('cc-bash-held-'), 'pid');
     const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -199,7 +199,7 @@ describe('project_bash', () => {
     assert.ok(!r.truncated, 'no cap was hit');
     assert.ok(!r.timedOut);
     assert.match(r.output, /hello/);
-    assert.match(r.output, /output may be incomplete: a background process held the output open after the command exited, and was stopped/);
+    assert.match(r.output, /output may be incomplete: a background process held the output open after the command exited, so output it wrote later is missing/);
     assert.doesNotMatch(r.output, /truncated at the output cap/);
     for (let i = 0; i < 100 && alive(pid); i++) await new Promise(res => setTimeout(res, 50));
     assert.equal(alive(pid), false, 'the held-open background process was stopped, so no process outlives the test');

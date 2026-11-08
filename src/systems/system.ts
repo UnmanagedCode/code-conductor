@@ -150,9 +150,9 @@ export interface ExecResult {
   truncated: boolean;
   // The command exited but a descendant kept its output pipes open, so the
   // local runner stopped waiting (src/groupedCommand.ts, STDIO_DRAIN_MAX_MS),
-  // signalled the command's process group (a descendant in it is stopped; a
-  // detached one is not) and output the descendant wrote later is not in
-  // `output`. Set only by that runner: a provider never sets it, and an absent
+  // signalled the command's process group where the platform has one (POSIX: a
+  // descendant in it is stopped, a detached one is not; Windows: nothing is
+  // stopped) and output the descendant wrote later is not in `output`. Set only by that runner: a provider never sets it, and an absent
   // field means false.
   outputMayBeIncomplete?: true;
   durationMs: number;

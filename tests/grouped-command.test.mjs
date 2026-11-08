@@ -308,3 +308,23 @@ test('a timeout sooner than the ceiling bounds the drain, and reaching it is sti
   assert.equal(c.r.outputMayBeIncomplete, true);
   assert.ok(c.ms >= 900 && c.ms < 2000, `bounded by the timeout, not the 3 s ceiling (${c.ms} ms)`);
 });
+
+test('the drain\'s give-up kills the process group only where the child leads one', async (t) => {
+  const dir = await mkdtemp('cc-grouped-platform-');
+  const run = async (name, spawnOptions) => {
+    const kills = [];
+    const platform = { ...posixPlatform, spawnOptions, killGroup: (pid, sig) => { kills.push([pid, sig]); } };
+    const pidFile = path.join(dir, name);
+    const r = await runGroupedCommand({ shell: `( exec sleep 30 ) & echo $! > ${pidFile}; exit 0` }, { cwd: dir }, platform);
+    t.after(() => { try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } });
+    return { r, kills };
+  };
+  // win32's `group` role is not detached: no group exists to signal.
+  const win = await run('win', () => ({ windowsHide: true }));
+  assert.equal(win.r.outputMayBeIncomplete, true, 'the drain still gave up on the unended streams');
+  assert.deepEqual(win.kills, [], 'and sent no kill rooted at a pid that has already exited');
+  // Control: a POSIX-shaped platform does signal the group, SIGTERM first.
+  const posix = await run('posix', () => ({ detached: true }));
+  assert.equal(posix.r.outputMayBeIncomplete, true);
+  assert.equal(posix.kills[0][1], 'SIGTERM');
+});
