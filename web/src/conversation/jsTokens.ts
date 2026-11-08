@@ -15,6 +15,10 @@ const KEYWORDS = new Set((
 // A `/` after one of these opens a regex rather than dividing.
 const REGEX_AFTER_KEYWORD = new Set('return typeof case in of delete void throw new await yield else do'.split(' '));
 
+// Template nesting past this depth is not scanned: the rest of the input is one
+// `string` token, so recursion (one frame pair per level) stays bounded.
+const MAX_TEMPLATE_DEPTH = 100;
+
 const isIdStart = (c: string) => /[A-Za-z_$]/.test(c);
 const isIdChar = (c: string) => /[\w$]/.test(c);
 const isDigit = (c: string) => c >= '0' && c <= '9';
@@ -28,6 +32,7 @@ export function tokenizeJs(src: string): JsToken[] {
     else out.push({ kind, text });
   };
   let i = 0;
+  let templateDepth = 0;
 
   // Previous significant token, for the regex-vs-division decision.
   let prev: { kind: 'none' | 'punct' | 'closer' | 'word' | 'other'; text: string } = { kind: 'none', text: '' };
@@ -110,11 +115,13 @@ export function tokenizeJs(src: string): JsToken[] {
   // At a backtick: text parts are strings, `${ … }` bodies are code.
   const scanTemplate = () => {
     let start = i;
+    if (templateDepth >= MAX_TEMPLATE_DEPTH) { push('string', src.slice(i)); i = src.length; return; }
+    templateDepth++;
     i++;
     while (i < src.length) {
       const c = src[i];
       if (c === '\\') { i = Math.min(i + 2, src.length); continue; }
-      if (c === '`') { i++; push('string', src.slice(start, i)); return; }
+      if (c === '`') { i++; push('string', src.slice(start, i)); templateDepth--; return; }
       if (c === '$' && src[i + 1] === '{') {
         push('string', src.slice(start, i));
         push('plain', '${'); i += 2;
@@ -127,6 +134,7 @@ export function tokenizeJs(src: string): JsToken[] {
       i++;
     }
     push('string', src.slice(start, i));
+    templateDepth--;
   };
 
   scanCode(false);

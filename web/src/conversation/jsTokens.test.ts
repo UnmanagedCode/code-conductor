@@ -52,6 +52,19 @@ describe('tokenizeJs is lossless', () => {
   });
 });
 
+describe('tokenizeJs on pathological nesting', () => {
+  it('stays lossless, terminates and hands the over-deep remainder back as one string token', () => {
+    const src = '`${'.repeat(20000) + 'tail';
+    const toks = tokenizeJs(src);
+    expect(toks.map((t) => t.text).join('')).toBe(src);
+    expect(toks.every((t) => t.text.length > 0)).toBe(true);
+    expect(toks.length).toBeLessThan(1000);
+    const last = toks[toks.length - 1];
+    expect(last.kind).toBe('string');
+    expect(last.text.endsWith('tail')).toBe(true);
+  });
+});
+
 describe('tokenizeJs kinds', () => {
   it('splits adjacent strings at their own closing quotes', () => {
     expect(ofKind(FIXTURES['escaped quotes'], 'string')).toEqual(["'it\\'s'", '"a\\"b"']);
@@ -71,6 +84,10 @@ describe('tokenizeJs kinds', () => {
     expect(strs).toContain('`a ');
     expect(strs).toContain(' d`');
     expect(strs.join('')).not.toContain('c');
+  });
+  it('a substitution ends only at its own unmatched brace, not at one nested in it', () => {
+    const src = '`${ {k: 1}.k }`';
+    expect(ofKind(src, 'string')).toEqual(['`', '`']);
   });
   it('a slash after an operand divides', () => {
     expect(ofKind('a / b / c', 'regex')).toEqual([]);
