@@ -196,6 +196,12 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-gantt',
+    name: 'Code Gantt',
+    description: 'Shows conductor sessions as a Gantt chart: one bar per session, grouped by project, conductor, section lead and worker, with the links between them.',
+    repo: 'https://github.com/UnmanagedCode/code-gantt',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
