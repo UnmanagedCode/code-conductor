@@ -114,7 +114,7 @@ describe("the reader's clicks inside an open group", () => {
     }
     fireEvent.click(root.querySelector('[data-sub-trigger]') as HTMLElement);
     await flush();
-    expect(agent.reader, 'fixture check: every click landed on what it hit').toEqual({ open: true, subOpen: false, argsOpen: true });
+    expect(agent.reader, 'fixture check: every click landed on what it hit').toEqual({ open: true, subOpen: false, argsOpen: true, argsFolds: {} });
     expect(agent.result!.reader.open, 'fixture check: the Result was collapsed').toBe(false);
     expect(g.userToggled).toBe(false);
 

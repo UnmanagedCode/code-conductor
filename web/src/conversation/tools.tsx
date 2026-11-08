@@ -18,7 +18,7 @@ import { ImageZoom } from './ImageZoom';
 import { tokenizeJs, type JsTokenKind } from './jsTokens';
 import { SYNTAX_CLASS } from './syntaxClass';
 import { JsonTree } from './JsonTree';
-import { defaultOpen, toResultParts, type JsonContainer } from './jsonTree';
+import { defaultOpen, detectJson, toResultParts, type JsonContainer } from './jsonTree';
 
 export type RenderCtx = {
   model: ConversationModel;
@@ -329,15 +329,20 @@ function renderArgs(node: ToolNode, model: ConversationModel): React.ReactNode {
       const label = `${input.notebook_path ?? ''}${input.cell_id ? ` · cell ${input.cell_id}` : ''}${input.edit_mode ? ` · ${input.edit_mode}` : ''}`;
       return <DiffTable head={label} stats={`+${adds} −${dels}`} lines={ops.map((o) => ({ type: opType(o.op), text: o.text }))} />;
     }
-    let json = '';
-    try { json = JSON.stringify(input, null, 2); } catch { json = node.partialJson; }
-    return <ArgsJson text={json} node={node} model={model} />;
+    try { return <ArgsJson text={JSON.stringify(input, null, 2)} parsed node={node} model={model} />; } catch { return <ArgsJson text={node.partialJson} node={node} model={model} />; }
   }
   if (node.partialJson) return <ArgsJson text={node.partialJson} node={node} model={model} />;
   return null;
 }
 
-function ArgsJson({ text, node, model }: { text: string; node: ToolNode; model: ConversationModel }) {
+function ArgsJson({ text, parsed = false, node, model }: { text: string; parsed?: boolean; node: ToolNode; model: ConversationModel }) {
+  const doc = React.useMemo(() => (parsed ? detectJson(text) : null), [parsed, text]);
+  const folds = node.reader.argsFolds;
+  const isOpen = React.useCallback((n: JsonContainer) => folds[n.id] ?? (doc ? defaultOpen(n, doc) : false), [folds, doc]);
+  const onToggle = React.useCallback(
+    (n: JsonContainer, open: boolean) => model.setReader(node, { argsFolds: { ...node.reader.argsFolds, [n.id]: open } }),
+    [model, node],
+  );
   return (
     <details
       open={node.reader.argsOpen}
@@ -346,7 +351,9 @@ function ArgsJson({ text, node, model }: { text: string; node: ToolNode; model: 
       data-tool-args
     >
       <summary className="cursor-pointer text-xs text-muted-foreground select-none hover:text-foreground">Arguments</summary>
-      <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs leading-5">{text}</pre>
+      {doc
+        ? <div className="mt-1 max-h-80 overflow-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs leading-5"><JsonTree doc={doc} source={text} isOpen={isOpen} onToggle={onToggle} /></div>
+        : <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs leading-5">{text}</pre>}
     </details>
   );
 }
