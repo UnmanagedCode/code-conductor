@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -111,4 +111,50 @@ test('a background_tasks_changed read after the exit event does not re-add a job
     assert.deepEqual(afterCrash.filter((s) => (s.backgroundJobs?.length ?? 0) > 0), [],
       'no status edge after crashed reports a job');
   } finally { await ctx.close(); }
+});
+
+// The guard is per launch: a respawn of the same Instance starts a launch whose
+// frames count, while the dead launch's reader, still attached, keeps
+// ignoring its late frames. Converse: the old launch's own delayed terminal
+// event does not stop the new launch's task_started from counting.
+test('after a respawn, a late task_started on the old launch\'s stdout is ignored and the new launch\'s own is counted', async () => {
+  const { ctx, inst } = await idleWithRunningMcpTask();
+  const old = inst.proc;
+  try {
+    await seedSessionJsonl(inst.transcriptPlace, inst.backingSessionId);
+    old.emit('exit', null, 'SIGKILL');
+    await waitFor(() => inst.status === 'crashed' && !inst.proc);
+    await ctx.instances.respawn(inst.id);
+    await waitFor(() => inst.status === 'idle' && inst.proc && inst.proc !== old);
+    assert.equal(inst.activeAgentTaskCount, 0, 'premise: the new launch starts with no agent tasks');
+
+    const edges = [];
+    inst.on('status', (s) => edges.push(s));
+    const parsed = new Set();
+    inst.on('event', (ev) => { if (ev?.kind === 'system' && ev.subtype === 'task_started') parsed.add(ev.data?.task_id); });
+    old.stdout.write(JSON.stringify({
+      type: 'system', subtype: 'task_started', task_id: 'old-t', tool_use_id: 'old-tu', task_type: 'mcp_task',
+      description: 'late, old launch', session_id: inst.sessionId,
+    }) + '\n');
+    await waitFor(() => parsed.has('old-t'));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(inst.activeAgentTaskCount, 0);
+    assert.equal(inst.summary().displayStatus, 'idle');
+    assert.deepEqual(edges.filter((s) => s.activeAgentTasks > 0 || s.displayStatus === 'running'), [],
+      'no status edge reports a running agent for the old launch\'s frame');
+
+    // Converse: the old launch's delayed second terminal event, then the new
+    // launch's own task_started.
+    old.emit('close', null, 'SIGKILL');
+    inst.proc.stdout.write(JSON.stringify({
+      type: 'system', subtype: 'task_started', task_id: 'new-t', tool_use_id: 'new-tu', task_type: 'mcp_task',
+      description: 'new launch', session_id: inst.sessionId,
+    }) + '\n');
+    await waitFor(() => parsed.has('new-t'));
+    assert.equal(inst.activeAgentTaskCount, 1, 'the new launch\'s own task is counted');
+    assert.equal(inst.summary().displayStatus, 'running');
+  } finally {
+    old.kill('SIGKILL');
+    await ctx.close();
+  }
 });
