@@ -135,5 +135,5 @@ test('a refusal carries no nudge', async () => {
   const caller = await callerSession();
   const r = await callTool('spawn_instance', { project: 'demo', resume: 'bogus-session-id' }, { caller });
   assert.equal(r.code, 'SESSION_UNKNOWN');
-  assert.equal(hasNudge(r), false);
+  assert.equal(Object.hasOwn(r, 'titleNudge'), false);
 });
