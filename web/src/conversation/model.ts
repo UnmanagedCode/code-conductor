@@ -59,8 +59,8 @@ export type ToolNode = Base & {
   agentUsage: { tokens: number; toolUses: number | null } | null;
   result: ResultNode | null;
   sub: ConversationModel | null;
-  /** The card, its sub-agent section, and its Arguments. */
-  reader: { open: boolean; subOpen: boolean; argsOpen: boolean };
+  /** The card, its sub-agent section, and its Arguments. `argsFolds`: the reader's folds in the Arguments JSON tree, keyed by container id; absent = the default. */
+  reader: { open: boolean; subOpen: boolean; argsOpen: boolean; argsFolds: Record<string, boolean> };
 };
 export type CallUsageNode = Base & { type: 'call_usage'; ev: UiEventOf<'call_usage'> };
 export type GroupChild = ThinkingNode | ToolNode | ResultNode | CallUsageNode;
@@ -913,7 +913,7 @@ export class ConversationModel {
     const block = this.make<ToolNode>({
       type: 'tool', name: ev.name ?? 'tool', toolUseId: ev.toolUseId ?? null, partialJson: '', input: null,
       status: 'streaming', startedAt: null, elapsedMs: null, agentUsage: null, result: null, sub: null,
-      reader: { open: false, subOpen: true, argsOpen: false },
+      reader: { open: false, subOpen: true, argsOpen: false, argsFolds: {} },
     }, null);
     this.blocksByKey.set(`${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`, block);
     if (ev.toolUseId) this.toolBlocks.set(ev.toolUseId, block);

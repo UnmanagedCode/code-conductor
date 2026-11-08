@@ -97,7 +97,7 @@ describe('tool cards', () => {
       const details = root.querySelector('details') as HTMLDetailsElement;
       expect(details.textContent).toContain('Arguments');
       expect(details.open).toBe(false);
-      expect(details.querySelector('pre')!.textContent).toMatch(/"(foo|command|code)"/);
+      expect(details.textContent).toMatch(/"(foo|command|code)"/);
     }
   });
 
