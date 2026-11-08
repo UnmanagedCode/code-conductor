@@ -98,7 +98,7 @@ type Tools = {
 function tools(root: Element): Tools {
   const agent = cardRoot(root, 'Agent');
   const grep = cardRoot(root, 'Grep');
-  const inner = grep && ([...grep.querySelectorAll('[data-json-node]')] as HTMLElement[])[1];
+  const inner = grep && ([...grep.querySelectorAll('[data-tool-result] [data-json-node]')] as HTMLElement[])[1];
   return {
     group: stateOf(groupTrigger(root)),
     agent: stateOf(cardTrigger(root, 'Agent')),
@@ -153,7 +153,7 @@ async function setTools(root: Element) {
   await click(within(agent).getByRole('button', { name: 'Show full output' }));
   await clickSummary(q(agent, '[data-tool-result]')!);
   await click(cardTrigger(root, 'Grep')!);
-  await click(q(cardRoot(root, 'Grep')!, '[data-json-node="object"] [data-json-node="object"] [data-json-header]')!);
+  await click(q(cardRoot(root, 'Grep')!, '[data-tool-result] [data-json-node="object"] [data-json-node="object"] [data-json-header]')!);
   await click(q(root, '[data-thinking="summary"]')!);
 }
 const TOOLS_SET: Tools = { group: 'open', agent: 'open', sub: 'closed', args: true, result: false, full: true, read: 'closed', thinking: 'open', grep: 'open', json: false };

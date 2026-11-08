@@ -65,7 +65,7 @@ describe('tool card bodies', () => {
       await apply(m, evs);
       expect(q(root, '[data-tool-args]'), `${name}: the same element`).toBe(args);
       expect(args.open, `${name}: still open`).toBe(true);
-      expect(args.querySelector('pre')?.textContent, `${name}: the payload`).toContain('"foo"');
+      expect(args.textContent, `${name}: the payload`).toContain('"foo"');
     }
     expect(q(root, '[data-tool-trigger] [title="done"]'), 'fixture check: the result re-rendered the card').not.toBeNull();
   });
