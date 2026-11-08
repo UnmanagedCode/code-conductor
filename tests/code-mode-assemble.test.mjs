@@ -79,3 +79,11 @@ test('a well-formed delivery passes through unchanged', () => {
   assert.equal(r.json.truncated, false);
   assert.equal(r.json.resultChars, undefined);
 });
+
+test('logsTruncated covers both causes: a cap cut, and output a background process held open', () => {
+  assert.equal(assembleResult(exec({ truncated: true }), { result: '1', resultChars: 1, truncated: false }, false).json.logsTruncated, true);
+  const held = assembleResult(exec({ outputMayBeIncomplete: true }), { result: '1', resultChars: 1, truncated: false }, false);
+  assert.equal(held.json.logsTruncated, true);
+  assert.equal(held.json.truncated, false, 'the result itself was not cut');
+  assert.equal(assembleResult(exec(), { result: '1', resultChars: 1, truncated: false }, false).json.logsTruncated, undefined);
+});

@@ -19,7 +19,7 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 | `timedOut` | the process group was killed at the limit |
 | `truncated` | `result` was cut at `RUN_RESULT_CAP`; it then ends `… [result cut at N of M chars — return less]` |
 | `resultChars` | present only when `truncated`: the full length |
-| `logsTruncated` | present only when `logs` was cut at `RUN_LOGS_CAP` |
+| `logsTruncated` | present only when `logs` may be incomplete: cut at `RUN_LOGS_CAP`, or a background process the program started held the output open after the program exited (`ExecResult.outputMayBeIncomplete`) so output it wrote later was not read |
 | `durationMs` | wall time |
 | `error` | `{name, message, code?, status?}`: what the program threw or why the run ended; `message` is cut at `RUN_ERROR_MESSAGE_CAP` |
 
@@ -90,7 +90,7 @@ Output `{tools: Entry[]}` in registry order (the script's `cc.describe_tools()` 
 
 Before anything spawns, `literalPaths` scans the program (comments, strings and template literals blanked) for literal `cc.<tool>(` and `cc.<ns>.<tool>(` call sites and `checkPaths` looks each up in the live registry, text-only plugin tools included. One unknown path refuses the **whole** program, so a typo cannot stop it half-way through side effects.
 
-- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, anything inside a `${…}` substitution and regular-expression literals (where a `/` could be a regex or a division it is read as a regex) are not checked and fall through to the runtime's `TOOL_UNKNOWN`. A program that binds its own `cc` (a declaration, parameter, destructuring or assignment) is not pre-checked at all.
+- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, anything inside a `${…}` substitution and regular-expression literals (where a `/` could be a regex or a division it is read as a regex, and when that reading finds no closing `/` before a quote or the end of the line the rest of the line is not checked) are not checked and fall through to the runtime's `TOOL_UNKNOWN`. A program that binds its own `cc` (a declaration, parameter, destructuring or assignment) is not pre-checked at all.
 - A core path is known when a core tool of that name (or a reserved method) exists. For `cc.a.b(`: skipped when `a` is a core tool or reserved, else `<a with _→->__<b>` must be a registered plugin tool.
 - `unknown[].suggestions` holds up to three nearest names (edit distance or substring), as method paths.
 
@@ -112,7 +112,7 @@ All in `src/codeMode/limits.ts`.
 
 | Constant | Bounds |
 |---|---|
-| `RUN_CODE_DEFAULT_TIMEOUT_MS`, `RUN_CODE_MAX_TIMEOUT_MS` | the run's wall clock; at the limit the whole process group is signalled (SIGTERM, then SIGKILL after the grace period). The call returns once the direct child has exited and its stdio has drained for a short grace (`STDIO_DRAIN_GRACE_MS`, `src/groupedCommand.ts`): a detached descendant holding the pipes does not hold the call or the token open. The grace waits out a stalled event loop and re-arms while output keeps arriving (never past the timeout); when it does destroy an unended stream the result is `truncated` |
+| `RUN_CODE_DEFAULT_TIMEOUT_MS`, `RUN_CODE_MAX_TIMEOUT_MS` | the run's wall clock; at the limit the whole process group is signalled (SIGTERM, then SIGKILL after the grace period). The call returns once the direct child has exited and its stdio has drained for a short grace (`STDIO_DRAIN_GRACE_MS`, `src/groupedCommand.ts`): a detached descendant holding the pipes does not hold the call or the token open. The grace waits out a stalled event loop and re-arms while output keeps arriving, but never past `STDIO_DRAIN_MAX_MS` after the child's exit (or the timeout, if sooner); reaching that ceiling destroys the streams, resolves with the child's exit code (not `timedOut`) and flags `logsTruncated` |
 | `RUN_RESULT_CAP`, `RUN_LOGS_CAP`, `RUN_ERROR_MESSAGE_CAP`, `RUN_ERROR_FIELD_CAP` | the result text, the retained logs (bytes, head-kept), an error message, an error's `name` and `code`. cc re-applies them to whatever a run delivers (`capOutcome`, `src/codeMode/runs.ts`), so a program posting its own outcome cannot exceed them |
 | `RUN_RESULT_BODY_LIMIT_BYTES` | the largest `/run-result` body accepted (`413` past it), in place of `MCP_REQUEST_BODY_LIMIT` |
 | `RUN_RESULT_MAX_CHARS`, `RUN_META_HEADROOM` | the result as cut at cc's boundary (the cap plus its marker), and the room left for the rest of the metadata. The result, the logs and the four error-field caps — the error's fields counted on their JSON-escaped width, since they ride in the metadata block — plus the headroom stay inside `MCP_RESULT_CHAR_BUDGET` (`src/mcp/content.ts`), so `boundResult` never fires for `run_code`. The caps apply in JSON format too |

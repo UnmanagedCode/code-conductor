@@ -187,6 +187,18 @@ describe('project_bash', () => {
     assert.ok(!r.timedOut);
   });
 
+  test('a command that backgrounds a silent process is not "truncated at the cap": it says output may be incomplete', async () => {
+    await makeRealRepo('demo');
+    const r = unwrapBash(await callTool('project_bash', { project: 'demo', command: 'echo hello; ( sleep 2 ) & exit 0' }));
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.outputMayBeIncomplete, true);
+    assert.ok(!r.truncated, 'no cap was hit');
+    assert.ok(!r.timedOut);
+    assert.match(r.output, /hello/);
+    assert.match(r.output, /output may be incomplete: a background process held the output open/);
+    assert.doesNotMatch(r.output, /truncated at the output cap/);
+  });
+
   test('project_bash runs inside a worktree cwd', async () => {
     await makeRealRepo('demo');
     const wt = await makeWorktree('demo');

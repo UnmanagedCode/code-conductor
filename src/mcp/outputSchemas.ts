@@ -223,8 +223,8 @@ const DIFF_FILE = obj({ path: str, status: str, additions: int, deletions: int, 
 const DIFF_TOTALS = obj({ files: int, additions: int, deletions: int });
 const DIFF_HEAD = { project: str, worktree: str, baseRef: str, head: nullable(str), ahead: nullable(int) };
 
-const BASH_RESULT = { exitCode: nullable(int), durationMs: num, truncated: lit(true), timedOut: lit(true), descendantsMaySurvive: lit(true), output: str };
-const BASH_RESULT_OPTIONAL = ['truncated', 'timedOut', 'descendantsMaySurvive'];
+const BASH_RESULT = { exitCode: nullable(int), durationMs: num, truncated: lit(true), timedOut: lit(true), descendantsMaySurvive: lit(true), outputMayBeIncomplete: lit(true), output: str };
+const BASH_RESULT_OPTIONAL = ['truncated', 'timedOut', 'descendantsMaySurvive', 'outputMayBeIncomplete'];
 const BASH_SPAWN_ERROR = { exitCode: lit(null), durationMs: num, error: lit(true), output: str };
 function bashSchema(place: Record<string, Schema>): Schema {
   return variants(

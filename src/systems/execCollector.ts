@@ -109,14 +109,14 @@ export class ExecOutputCollector {
     code: number,
     { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive, abandonedAfterMs, outputMayBeCut }: {
       // `outputMayBeCut`: the runner stopped reading before the streams ended
-      // (a descendant held them open), so `truncated` is set.
+      // (a descendant held them open): `outputMayBeIncomplete`, not `truncated`.
       timedOut: boolean; outputMayBeCut?: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode; transportFailure?: true;
       durationMs: number; descendantsMaySurvive?: boolean; abandonedAfterMs?: number;
     },
   ): ExecResult {
     let stderr = this.#stderr;
     let output = this.#output;
-    let truncated = this.#truncated || outputMayBeCut === true;
+    let truncated = this.#truncated;
     if (spawnError) {
       if (!stderr) stderr = spawnError;
       if (!output) output = spawnError;
@@ -142,6 +142,7 @@ export class ExecOutputCollector {
       ...(descendantsMaySurvive ? { descendantsMaySurvive: true as const } : {}),
       ...(abandonedAfterMs === undefined ? {} : { abandonedAfterMs }),
       ...(this.#overflowed ? { outputOverflowed: true as const } : {}),
+      ...(outputMayBeCut ? { outputMayBeIncomplete: true as const } : {}),
       ...(this.#bytes ? { stdoutBytes: Buffer.concat(this.#bytes.out), stderrBytes: Buffer.concat(this.#bytes.err) } : {}),
     };
   }

@@ -190,7 +190,8 @@ test('a descendant that outlives the command holding its stdio does not hold the
   assert.equal(r.code, 0);
   assert.equal(r.timedOut, false);
   assert.match(r.output, /direct-output/, 'what was buffered is kept');
-  assert.equal(r.truncated, true, 'the streams were destroyed unended, so the output may be cut');
+  assert.equal(r.outputMayBeIncomplete, true, 'the streams were destroyed unended, so output may be missing');
+  assert.equal(r.truncated, false, 'no cap was hit: the two causes are told apart');
   assert.ok(alive(pid), 'the detached grandchild is not the runner\'s to kill');
 });
 
@@ -230,5 +231,50 @@ test('an event-loop stall past the drain grace never discards output already in 
     { shell: `( sleep 0.1; yes Z | head -c 200000 ) & exit 0` }, { cwd: os.tmpdir() }, posixPlatform);
   clearTimeout(timer);
   assert.equal(r.output.length, 200_000, 'every byte written before the stall ended was kept');
-  assert.equal(r.truncated, false, 'the pipe ended on its own, so nothing was cut');
+  assert.equal(r.outputMayBeIncomplete, undefined, 'the pipe ended on its own, so nothing was cut');
+});
+
+test('a stall in the check phase, which the grace timer follows with no poll between, keeps what is in the pipe', async () => {
+  // The next loop iteration starts with timers: the grace timer is already due
+  // and fires BEFORE the poll phase that would read the pipe. Giving up there
+  // would discard data that was written before the deadline.
+  const block = (ms) => { const end = Date.now() + ms; while (Date.now() < end); };
+  const timer = setTimeout(() => setImmediate(() => block(400)), 60);
+  const r = await runGroupedCommand(
+    { shell: `( sleep 0.1; yes Z | head -c 200000 ) & exit 0` }, { cwd: os.tmpdir() }, posixPlatform);
+  clearTimeout(timer);
+  assert.equal(r.output.length, 200_000);
+  assert.equal(r.outputMayBeIncomplete, undefined);
+});
+
+// A descendant that writes until it is killed. Its subshell pid goes to a file
+// so the test can end it; the call must not wait for it.
+async function chatty(dir, opts = {}) {
+  const pidFile = path.join(dir, `pid-${Math.random().toString(36).slice(2)}`);
+  const t0 = Date.now();
+  const r = await runGroupedCommand(
+    { shell: `( while :; do echo tick; sleep 0.05; done ) & echo $! > ${pidFile}; exit 4` }, { cwd: dir, ...opts }, posixPlatform);
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  return { r, pid, ms: Date.now() - t0 };
+}
+
+test('a descendant that writes forever is cut at the drain ceiling: the child\'s exit code, output flagged, not a timeout', async (t) => {
+  const dir = await mkdtemp('cc-grouped-ceiling-');
+  const [none, withTimeout] = await Promise.all([chatty(dir), chatty(dir, { timeoutMs: 60_000 })]);
+  for (const c of [none, withTimeout]) t.after(() => { try { process.kill(c.pid, 'SIGKILL'); } catch { /* gone */ } });
+  for (const [label, c] of [['no timeout', none], ['a 60 s timeout', withTimeout]]) {
+    assert.equal(c.r.code, 4, label);
+    assert.equal(c.r.timedOut, false, `${label}: reaching the ceiling is not a timeout`);
+    assert.equal(c.r.outputMayBeIncomplete, true, label);
+    assert.match(c.r.output, /tick/, `${label}: what was read is kept`);
+    assert.ok(c.ms >= 2500 && c.ms < 10_000, `${label}: bounded by the ceiling, not the writer or the timeout (${c.ms} ms)`);
+  }
+});
+
+test('a ticking descendant that stops before the ceiling is drained in full', async () => {
+  const dir = await mkdtemp('cc-grouped-ticker-');
+  const r = await runGroupedCommand(
+    { shell: `( for i in 1 2 3 4 5 6 7 8; do echo t$i; sleep 0.15; done ) & exit 0` }, { cwd: dir }, posixPlatform);
+  assert.deepEqual(r.output.trim().split('\n'), ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8']);
+  assert.equal(r.outputMayBeIncomplete, undefined, 'the pipe ended by itself');
 });

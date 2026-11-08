@@ -108,9 +108,22 @@ test('passing the injected cc along is not a binding: the call sites are still c
 });
 
 test('a division is never read as a regex that ends inside a later string', () => {
-  assert.deepEqual(paths('const pct = (a + b) / total; const label = "w/xy cc.nope() here"; await cc.list_projects();'), ['cc.list_projects']);
-  assert.deepEqual(paths('const half = xs[0] / 2; const s = "a/bc cc.nope()"; await cc.real();'), ['cc.real']);
+  // The ambiguous reading bails at the quote and the rest of the LINE is left
+  // unchecked (a miss, never a refusal); the next line is scanned again.
+  assert.deepEqual(paths('const pct = (a + b) / total; const label = "w/xy cc.nope() here"; await cc.maybe();\nawait cc.list_projects();'), ['cc.list_projects']);
+  assert.deepEqual(paths('const half = xs[0] / 2; const s = "a/bc cc.nope()";\nawait cc.real();'), ['cc.real']);
   assert.deepEqual(paths("const r = n / 2; const t = 'x/y cc.nope()';"), []);
+});
+
+test('a quote inside a regex pattern never lets a later string be read as code', () => {
+  for (const quote of ['"', "'", '`']) {
+    assert.deepEqual(paths(`const out = s.replace(/${quote}/g, "see cc.nope() here"); await cc.list_projects();`), [], quote);
+    assert.deepEqual(paths(`text.replace(/${quote}/g, "x") + "call cc.nope()"`), [], quote);
+  }
+});
+
+test('a quote-bearing regex does not make a later "const cc" string disable the check', () => {
+  assert.deepEqual(paths('s.replace(/"/g, "const cc = 1");\nawait cc.nope();'), ['cc.nope']);
 });
 
 test('a condition that merely mentions cc is not a binding: the pre-check still runs', () => {
@@ -128,5 +141,10 @@ test('every real binding position disables the pre-check', () => {
     'const [cc] = list; cc.nope();',
     'var a = 1, cc = make(); cc.nope();',
     'class cc {} cc.nope();',
+    'const o = { m(cc) { return cc.foo(); } };',
+    'class K { m(cc) { return cc.foo(); } }',
+    'class K { async m(a, cc) { return cc.foo(); } }',
+    'let cc; cc ||= make(); await cc.nope();',
+    'let cc; cc.nope();',
   ]) assert.deepEqual(paths(code), [], code);
 });

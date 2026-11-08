@@ -144,8 +144,15 @@ export interface ExecResult {
   // stdout + stderr interleaved in arrival order — what a human reads in a log.
   output: string;
   timedOut: boolean;
-  // True when a cap clipped the output (so a caller can add a "…truncated" marker).
+  // True when a CAP clipped the output (so a caller can add a "…truncated"
+  // marker). Nothing else sets it: output a runner stopped reading is
+  // `outputMayBeIncomplete`.
   truncated: boolean;
+  // The command exited but a descendant kept its output pipes open, so the
+  // local runner stopped waiting (src/groupedCommand.ts, STDIO_DRAIN_MAX_MS) and
+  // output the descendant wrote later is not in `output`. Set only by that
+  // runner: a provider never sets it, and an absent field means false.
+  outputMayBeIncomplete?: true;
   durationMs: number;
   // The spawn error message when the command never started (ENOENT, EACCES),
   // else null. Distinguishes "failed to launch" from "ran and exited 1", which

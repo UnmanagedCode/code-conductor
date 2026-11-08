@@ -13,11 +13,12 @@ const KEYWORDS_BEFORE_REGEX = new Set(['return', 'typeof', 'case', 'in', 'of', '
 
 // A program that binds its own `cc` is not calling the injected object, so its
 // call sites are not looked up. Only real binding positions count: a
-// `function`'s parameter list, arrow parameters, `catch (cc)`, a `for` head's
-// declaration, `const`/`let`/`var` (destructuring included), `function cc` /
-// `class cc`, and a plain `cc =`. `if (cc) {`, `while (cfg.cc) {` and call
+// `function`'s parameter list, arrow parameters, a method shorthand's,
+// `catch (cc)`, `const`/`let`/`var` (destructuring included, a `for` head's
+// included), `function cc` / `class cc`, and a plain `cc =`. `if (cc) {`, `while (cfg.cc) {` and call
 // arguments are not bindings. A destructuring assignment `({ cc } = obj)` goes
 // undetected, which only means the pre-check still runs.
+const CONTROL_KEYWORDS = ['if', 'while', 'for', 'switch', 'catch', 'with', 'return', 'typeof', 'await', 'function', 'else', 'do', 'new', 'delete', 'void', 'throw', 'in', 'of', 'yield', 'case'];
 const BARE_CC = /(?<![.\w$])cc(?![\w$])/;
 const OWN_CC_SHAPES: RegExp[] = [
   /\b(?:const|let|var)\s+cc(?![\w$])/,
@@ -25,14 +26,20 @@ const OWN_CC_SHAPES: RegExp[] = [
   /\b(?:function|class)\s*\*?\s*cc(?![\w$])/,
   /(?<![.\w$])cc\s*=>/,
   /\bcatch\s*\(\s*cc(?![\w$])/,
-  /\bfor\s*\(\s*(?:const|let|var)\s+cc(?![\w$])/,
   /(?<![.\w$])cc\s*=(?![=>])/,
 ];
+const METHOD_SHORTHAND = new RegExp(
+  `(?<![.\\w$])(?!(?:${CONTROL_KEYWORDS.join('|')})(?![\\w$]))[A-Za-z_$][\\w$]*\\s*\\(([^()]*)\\)\\s*\\{`, 'g');
 function bindsOwnCc(clean: string): boolean {
   if (OWN_CC_SHAPES.some(re => re.test(clean))) return true;
   // Parameter lists: `function f(…cc…)` and `(…cc…) =>`.
   for (const m of clean.matchAll(/\bfunction\s*\*?\s*[\w$]*\s*\(([^()]*)\)|\(([^()]*)\)\s*=>/g)) {
     if (BARE_CC.test(m[1] ?? m[2] ?? '')) return true;
+  }
+  // Method shorthand: `m(cc) {` in an object literal or a class body. A control
+  // keyword before the parentheses (`if (cc) {`) is a condition, not a method.
+  for (const m of clean.matchAll(METHOD_SHORTHAND)) {
+    if (BARE_CC.test(m[1])) return true;
   }
   return false;
 }
@@ -98,8 +105,14 @@ function blankNonCode(code: string): string {
         blank(i, end);
         i = end;
       } else if (c === '/' && startsRegex(i)) {
+        // Read as a regex, or — when that reading bails — blanked to the end of
+        // the line: resuming after the `/` could pair a quote inside the span with
+        // a later string and expose that string's text as code. Blanking can only
+        // miss a call, never refuse a valid program.
         const end = regexEnd(i);
-        if (end > i) { blank(i, end); i = end; } else i++;
+        const stop = end > i ? end : Math.max(i + 1, code.indexOf('\n', i) === -1 ? code.length : code.indexOf('\n', i));
+        blank(i, stop);
+        i = stop;
       } else if (c === '"' || c === "'") {
         let j = i + 1;
         while (j < code.length && code[j] !== c && code[j] !== '\n') j += code[j] === '\\' ? 2 : 1;

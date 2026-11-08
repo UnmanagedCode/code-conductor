@@ -45,10 +45,19 @@ const DEFAULT_KILL_GRACE_MS = 100;
 // started with inherited stdio) would otherwise keep the call open forever.
 // Past the grace — and only once a poll phase has passed with nothing read, so
 // a stalled event loop never discards data already in a pipe — the streams are
-// destroyed and the call resolves with what was buffered, flagged `truncated`
-// when a stream had not ended, and the direct child's exit code. A descendant
-// that keeps writing re-arms the grace, but never past the command's timeout.
+// destroyed and the call resolves with what was buffered, flagged
+// `outputMayBeIncomplete` when a stream had not ended, and the direct child's
+// exit code. A descendant that keeps writing re-arms the grace.
 const STDIO_DRAIN_GRACE_MS = 250;
+
+// The hard ceiling on the drain, counted from the direct child's exit: re-arming
+// never goes past it, so a descendant that writes forever cannot hold a call
+// (`runGit` has no timeout) once its command is done. Long enough that a loaded
+// event loop still delivers the command's own last output and a slow-flushing
+// shell's trailing lines; short enough that a caller never waits visibly on a
+// process that is no longer the command. When there is a timeout the drain also
+// stops there, if that comes sooner. Reaching the ceiling is not a timeout.
+const STDIO_DRAIN_MAX_MS = 3000;
 
 // The local implementation of the System `exec` primitive: its result and
 // option shapes ARE the interface's (src/systems/system.ts), so LocalSystem
@@ -164,8 +173,15 @@ export function runGroupedCommand(
     };
 
     proc.on('exit', (code) => {
-      // Never wait past the timeout's own kill plus one grace.
-      const hardStop = timeoutMs === undefined ? Infinity : start + timeoutMs + (killGraceMs ?? DEFAULT_KILL_GRACE_MS) + STDIO_DRAIN_GRACE_MS;
+      // The command is done: its timeout no longer applies, and what remains is
+      // only the drain, bounded by its own ceiling (or the timeout, if sooner).
+      const wasTimedOut = timedOut;
+      if (timer) clearTimeout(timer);
+      const exitedAt = Date.now();
+      const deadline = Math.min(
+        exitedAt + STDIO_DRAIN_MAX_MS,
+        timeoutMs !== undefined && !wasTimedOut ? start + timeoutMs : Infinity,
+      );
       const arm = (): void => {
         const seen = reads;
         drainTimer = setTimeout(() => {
@@ -173,7 +189,7 @@ export function runGroupedCommand(
           // pipe is read first; only a grace with no read at all gives up.
           setImmediate(() => {
             if (settled) return;
-            if (reads !== seen && Date.now() < hardStop) { arm(); return; }
+            if (reads !== seen && Date.now() < deadline) { arm(); return; }
             const unended = !(proc.stdout?.readableEnded ?? true) || !(proc.stderr?.readableEnded ?? true);
             proc.stdout?.destroy();
             proc.stderr?.destroy();

@@ -42,7 +42,9 @@ export interface RunCodeCtx extends CodeModeCtx {
 export function assembleResult(r: ExecResult, deliveredRaw: RunOutcome | undefined, cancelled: boolean): DualResult {
   const delivered = deliveredRaw && capOutcome(deliveredRaw);
   const logs = utf8Prefix(r.output, RUN_LOGS_CAP);
-  const logsTruncated = r.truncated || logs.length < r.output.length;
+  // One flag, two causes: a cap cut the logs, or a background process held the
+  // output open after the program exited, so later output was not read.
+  const logsTruncated = r.truncated || r.outputMayBeIncomplete === true || logs.length < r.output.length;
   const killed = r.timedOut || cancelled;
   const meta: Record<string, unknown> = {
     exitCode: killed || r.spawnError ? null : r.code,
