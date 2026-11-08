@@ -24,6 +24,8 @@ const inst = (id: string): Instance => ({ id, project: 'p', status: 'idle', sess
 
 /** A tool result past the truncation, so its card offers the full output. */
 const LONG = 'y'.repeat(5000);
+/** A JSON tool result whose nested object the reader can fold. */
+const JSON_RESULT = '{"outer":{"inner":1}}';
 
 /**
  * One transcript with every reader toggle: an action group holding an Agent card (sub-agent,
@@ -37,8 +39,10 @@ const TRANSCRIPT: UiEvent[] = [
   { kind: 'text_delta', msgId: 'c1', blockIdx: 0, text: 'child one', parentToolUseId: 'A' },
   toolResult({ toolUseId: 'A', content: LONG }),
   ...tool('m1', 1, 'B', 'Read', { input: { file_path: '/b' }, result: 'b contents' }),
-  ...thinking('m1', 2, 'deep thought'),
-  ...text('m1', 3, 'reply'),
+  ...tool('m1', 2, 'C', 'Grep', { input: { pattern: 'x' }, result: null }),
+  toolResult({ toolUseId: 'C', content: [{ type: 'text', text: JSON_RESULT }] }),
+  ...thinking('m1', 3, 'deep thought'),
+  ...text('m1', 4, 'reply'),
   turnEnd({ subtype: 'success' }),
   { kind: 'user_echo', text: buildForwardFrame({ messages: ['forwarded body'], instruction: 'please **review**' }), userIndex: 1 },
   { kind: 'user_echo', text: buildWakeStub({ targetSessionId: 'w1', payloadText: '{"sessionId":"w1"}\nwake **body**' }), userIndex: 2 },
@@ -87,10 +91,14 @@ const openOf = (el: Element | null) => (el ? (el as HTMLDetailsElement).open : n
 type Tools = {
   group: string | null; agent: string | null; sub: string | null; args: boolean | null; result: boolean | null;
   full: boolean | null; read: string | null; thinking: string | null;
+  /** The Grep card's state, and whether its JSON result's nested object is open (null while the card is closed). */
+  grep: string | null; json: boolean | null;
 };
 /** The action group and what it holds; null for what is not rendered. */
 function tools(root: Element): Tools {
   const agent = cardRoot(root, 'Agent');
+  const grep = cardRoot(root, 'Grep');
+  const inner = grep && ([...grep.querySelectorAll('[data-json-node]')] as HTMLElement[])[1];
   return {
     group: stateOf(groupTrigger(root)),
     agent: stateOf(cardTrigger(root, 'Agent')),
@@ -100,6 +108,8 @@ function tools(root: Element): Tools {
     full: agent && q(agent, '[data-tool-result] pre') ? q(agent, '[data-tool-result] pre')!.textContent === LONG : null,
     read: stateOf(cardTrigger(root, 'Read')),
     thinking: stateOf(q(root, '[data-thinking="summary"]')),
+    grep: stateOf(cardTrigger(root, 'Grep')),
+    json: inner ? inner.getAttribute('data-json-open') === 'true' : null,
   };
 }
 
@@ -123,7 +133,7 @@ function folds(root: Element): Folds {
   };
 }
 
-const TOOLS_START: Tools = { group: 'open', agent: 'closed', sub: 'open', args: null, result: null, full: null, read: 'closed', thinking: 'closed' };
+const TOOLS_START: Tools = { group: 'open', agent: 'closed', sub: 'open', args: null, result: null, full: null, read: 'closed', thinking: 'closed', grep: 'closed', json: null };
 const FOLDS_START: Folds = {
   prompt: false, instruction: false, forward: 'closed', forwardRaw: false,
   wake: 'closed', wakeRaw: false, task: false, compaction: 'closed', compactionRaw: false,
@@ -142,9 +152,11 @@ async function setTools(root: Element) {
   await clickSummary(q(agent, '[data-tool-args]')!);
   await click(within(agent).getByRole('button', { name: 'Show full output' }));
   await clickSummary(q(agent, '[data-tool-result]')!);
+  await click(cardTrigger(root, 'Grep')!);
+  await click(q(cardRoot(root, 'Grep')!, '[data-json-node="object"] [data-json-node="object"] [data-json-header]')!);
   await click(q(root, '[data-thinking="summary"]')!);
 }
-const TOOLS_SET: Tools = { group: 'open', agent: 'open', sub: 'closed', args: true, result: false, full: true, read: 'closed', thinking: 'open' };
+const TOOLS_SET: Tools = { group: 'open', agent: 'open', sub: 'closed', args: true, result: false, full: true, read: 'closed', thinking: 'open', grep: 'open', json: false };
 
 /** Flips every fold and raw view away from where it starts. */
 async function setFolds(root: Element) {
@@ -186,7 +198,7 @@ afterEach(() => {
 });
 
 describe('a full-page view round trip', () => {
-  it('keeps the tool cards and thinking blocks the reader set: the card, its sub-agent section, Arguments, Result and full output, and the thinking', async () => {
+  it('keeps the tool cards and thinking blocks the reader set: the card, its sub-agent section, Arguments, Result and full output, the fold of a JSON result, and the thinking', async () => {
     const first = mount();
     await snapshot('i1', TRANSCRIPT);
     await setTools(first.el);

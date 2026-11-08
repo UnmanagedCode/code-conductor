@@ -43,8 +43,8 @@ export type ResultNode = Base & {
   isError: boolean;
   yielded: boolean;
   agentUsage: { tokens: number; toolUses: number | null } | null;
-  /** `full`: the reader asked for the whole of a truncated output. */
-  reader: { open: boolean; full: boolean };
+  /** `full`: the reader asked for the whole of a truncated output. `folds`: the reader's JSON-tree folds, keyed `part:nodeId`; absent = the default. */
+  reader: { open: boolean; full: boolean; folds: Record<string, boolean> };
 };
 export type ToolStatus = 'streaming' | 'running' | 'done' | 'errored' | 'handed to user' | 'incomplete';
 export type ToolNode = Base & {
@@ -955,7 +955,7 @@ export class ConversationModel {
       : null;
     const result = this.make<ResultNode>({
       type: 'result', toolUseId: ev.toolUseId ?? null, content: ev.content, isError: !!ev.isError, yielded: !!ev.yielded, agentUsage,
-      reader: { open: !!block || looseResultOpens(ev), full: false },
+      reader: { open: !!block || looseResultOpens(ev), full: false, folds: {} },
     }, null);
     if (block) {
       result.parent = block;
