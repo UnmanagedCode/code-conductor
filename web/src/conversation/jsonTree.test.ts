@@ -39,11 +39,11 @@ describe('parseJsonTree fidelity', () => {
   });
 
   it('keeps the raw text of scalars: big integers, trailing zeros, exponents, escapes', () => {
-    const doc = parseJsonTree('[12345678901234567890,1.0,1e3,-0,"a\\nb\\u00e9",true,false,null]')!;
+    const doc = parseJsonTree('[12345678901234567890,1.0,1e3,-0,"a\\nb\\u00e9","  a  b ",true,false,null]')!;
     const items = doc.root.kind === 'array' ? doc.root.items : [];
     expect(items.map((i) => [i.kind, 'text' in i ? i.text : ''])).toEqual([
       ['number', '12345678901234567890'], ['number', '1.0'], ['number', '1e3'], ['number', '-0'],
-      ['string', '"a\\nb\\u00e9"'], ['boolean', 'true'], ['boolean', 'false'], ['null', 'null'],
+      ['string', '"a\\nb\\u00e9"'], ['string', '"  a  b "'], ['boolean', 'true'], ['boolean', 'false'], ['null', 'null'],
     ]);
   });
 

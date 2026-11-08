@@ -177,6 +177,8 @@ async function expectDefaults(root: Element, what: string) {
   expect(folds(root), `${what}: the folds and raw views`).toEqual(FOLDS_START);
   await click(groupTrigger(root)!);
   expect(tools(root), `${what}: what the group holds`).toEqual(TOOLS_START);
+  await click(cardTrigger(root, 'Grep')!);
+  expect(tools(root).json, `${what}: the JSON result's nested object, back at its default (open)`).toBe(true);
 }
 
 beforeEach(() => {

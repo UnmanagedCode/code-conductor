@@ -39,17 +39,17 @@ const resultPres = (root: Element) => qa(root, '[data-tool-result] pre');
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('a JSON tool result', () => {
-  const SRC = '{"name":"x","n":1.50,"ok":true,"none":null,"list":[1,"a"],"obj":{}}';
+  const SRC = '{"name":"x","note":"  a  b ","n":1.50,"ok":true,"none":null,"list":[1,"a"],"obj":{}}';
 
   it('renders as an indented tree with a token kind per value, losslessly', async () => {
     const { root } = await shown([text(SRC)]);
     const tree = q(root, '[data-json-tree]')!;
     expect(qa(tree, '[data-tok]').map((t) => [t.getAttribute('data-tok'), t.textContent])).toEqual([
-      ['key', '"name"'], ['string', '"x"'], ['key', '"n"'], ['number', '1.50'], ['key', '"ok"'], ['boolean', 'true'],
+      ['key', '"name"'], ['string', '"x"'], ['key', '"note"'], ['string', '"  a  b "'], ['key', '"n"'], ['number', '1.50'], ['key', '"ok"'], ['boolean', 'true'],
       ['key', '"none"'], ['null', 'null'], ['key', '"list"'], ['number', '1'], ['string', '"a"'], ['key', '"obj"'],
     ]);
     const lineOf = (tok: Element) => tok.parentElement!.textContent!;
-    expect(lineOf(qa(tree, '[data-tok="key"]')[1])).toMatch(/^ {2}"n"/);
+    expect(lineOf(qa(tree, '[data-tok="key"]')[2])).toMatch(/^ {2}"n"/);
     expect(lineOf(qa(tree, '[data-tok="number"]')[1])).toMatch(/^ {4}1,/);
     const strip = (s: string) => s.replace(/\s+/g, '');
     expect(strip(tree.textContent!)).toBe(strip(SRC));
@@ -74,6 +74,19 @@ describe('a JSON tool result', () => {
     await click(header(root, '"list"'));
     expect(btn().getAttribute('aria-expanded')).toBe('true');
     expect(root.textContent).toContain('"a"');
+  });
+
+  it('a collapsed object reads {…} with its key count; singular counts read 1 key and 1 item', async () => {
+    const { root } = await shown([text('{"o":{"p":1,"q":2},"one":{"r":1},"arr":[1]}')]);
+    const summaryOf = async (label: string) => {
+      await click(header(root, label));
+      const h = header(root, label);
+      const summary = q(h, '[data-json-summary]')!.textContent!;
+      return [summary, h.textContent!.slice(h.textContent!.indexOf(summary) + summary.length).trim().replace(/,$/, '')];
+    };
+    expect(await summaryOf('"o"')).toEqual(['{…}', '2 keys']);
+    expect(await summaryOf('"one"')).toEqual(['{…}', '1 key']);
+    expect(await summaryOf('"arr"')).toEqual(['[…]', '1 item']);
   });
 
   it("the chevron button toggles exactly once (its click bubbles to the header)", async () => {
@@ -192,6 +205,26 @@ describe('Copy JSON', () => {
     expect(q(root, '[data-json-node]')!.getAttribute('data-json-open')).toBe('false');
     await click(within(root).getByRole('button', { name: 'Copy JSON' }));
     expect(writeText).toHaveBeenCalledWith(src);
+  });
+});
+
+describe('a depth-capped keyed container', () => {
+  it('keeps its key and trailing comma on the raw line when it has a following sibling', async () => {
+    const N = 120;
+    // Every level has a following sibling, so the container capped at MAX_TREE_DEPTH is not the last member of its parent.
+    const src = '{"a":'.repeat(N) + '1' + ',"s":0}'.repeat(N);
+    const { root, m, result } = await shown([text(src)]);
+    const folds: Record<string, boolean> = {};
+    for (let id = 0; id < 3 * N; id++) folds[`0:${id}`] = true;
+    m.setReader(result(), { folds });
+    await flush();
+    const raw = qa(root, '[data-tok="raw"]');
+    expect(raw).toHaveLength(1);
+    const line = raw[0].parentElement!;
+    expect(line.querySelector('[data-tok="key"]')!.textContent).toBe('"a"');
+    expect(line.textContent!.endsWith('},')).toBe(true);
+    const left = N - MAX_TREE_DEPTH;
+    expect(raw[0].textContent).toBe('{"a":'.repeat(left) + '1' + ',"s":0}'.repeat(left));
   });
 });
 
