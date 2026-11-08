@@ -57,16 +57,19 @@ const BASH_DESCRIPTION_PROP = {
 // the two tools never sees the other's text. `fmt` is coreTools' per-format
 // clause helper.
 type Fmt = (text: string, json: string) => string;
-const bashOutputDescription = (metaKeys: string, fmt: Fmt) =>
+const bashOutputDescription = (metaKeys: string, fmt: Fmt, { heldOpen = false } = {}) =>
   fmt(`OUTPUT: a compact-JSON metadata block (content[0]) {${metaKeys}} PLUS a separate raw, un-escaped `
     + 'text block (content[1]) carrying ', '`output` is ')
   + 'the combined stdout+stderr output, in arrival order. A non-zero '
   + 'exitCode is a normal result, not a tool error. truncated:true means retained output was capped at '
   + fmt('the bash output cap (`BASH_OUTPUT_CAP`)', 'the safety ceiling (`JSON_BASH_OUTPUT_CAP`)')
   + ' — the command still ran to completion; assume later output '
-  + 'beyond the cap was lost, not that the process was killed. outputMayBeIncomplete:true means a '
-  + 'background process the command started held the output open after the command exited, so output it '
-  + 'wrote later is missing. timeout is milliseconds (default per the '
+  + 'beyond the cap was lost, not that the process was killed. '
+  + (heldOpen
+    ? 'outputMayBeIncomplete:true means a background process the command started held the output open '
+      + 'after the command exited, so output it wrote later is missing. '
+    : '')
+  + 'timeout is milliseconds (default per the '
   + 'schema, clamped to the max enforced in `clampBashTimeoutMs` — larger values are clamped); on '
   + 'timeout (the only hard kill) the whole process group is killed, exitCode is null, and timedOut:true '
   + '— except that descendantsMaySurvive:true means only the direct child could be signalled, so what it '
@@ -1269,7 +1272,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'Mirrors project/worktree for cwd scoping plus the ' +
         'meaningful subset of the built-in Bash tool (command/description/timeout). Replaces ' +
         'grep/glob — use rg/grep/find through this tool for search. ' +
-        bashOutputDescription('project, worktree, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, outputMayBeIncomplete?, error?', fmt),
+        bashOutputDescription('project, worktree, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, outputMayBeIncomplete?, error?', fmt, { heldOpen: true }),
       inputSchema: {
         type: 'object',
         properties: {
@@ -1298,7 +1301,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'remoteIds it is configured for, where its provider can say. ' +
         'Refuses system:"local" with code SYSTEM_IS_LOCAL — use your own Bash tool for ' +
         'cc\'s own machine. The command runs in a plain login shell on that system. ' +
-        bashOutputDescription('system, remoteId, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, outputMayBeIncomplete?, error?', fmt),
+        bashOutputDescription('system, remoteId, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?', fmt),
       inputSchema: {
         type: 'object',
         properties: {

@@ -231,9 +231,11 @@ test('both bash tools document exactly the metadata keys their shared payload se
   // The identity keys each tool names its target by, then the payload-generic
   // half every field `bashPayload` can set — the optionals marked `?` because
   // each is absent unless it happened.
-  const SHARED = ['exitCode', 'durationMs', 'truncated?', 'timedOut?', 'descendantsMaySurvive?', 'error?'];
-  assert.deepEqual(keysIn('project_bash'), ['project', 'worktree', 'cwd', ...SHARED]);
-  assert.deepEqual(keysIn('system_bash'), ['system', 'remoteId', 'cwd', ...SHARED]);
+  const SHARED = ['exitCode', 'durationMs', 'truncated?', 'timedOut?', 'descendantsMaySurvive?'];
+  // `outputMayBeIncomplete` is set only by the LOCAL runner, which project_bash
+  // reaches on a local project and system_bash never does (a provider cannot set it).
+  assert.deepEqual(keysIn('project_bash'), ['project', 'worktree', 'cwd', ...SHARED, 'outputMayBeIncomplete?', 'error?']);
+  assert.deepEqual(keysIn('system_bash'), ['system', 'remoteId', 'cwd', ...SHARED, 'error?']);
 });
 
 test('unknown method yields a JSON-RPC error envelope', async () => {
