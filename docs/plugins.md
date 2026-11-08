@@ -146,7 +146,6 @@ Child env:
 - `CONDUCTOR_PLUGIN_ID`.
 - `CONDUCTOR_URL` — `http://127.0.0.1:<conductor-port>`.
 - `CONDUCTOR_MCP_URL` — `$CONDUCTOR_URL/mcp`: cc's MCP server, anonymous, JSON by default — call any core tool by JSON-RPC or the REST alias (`POST $CONDUCTOR_MCP_URL/tools/<name>`); contract in [mcp-applications.md](mcp-applications.md). Set together with `CONDUCTOR_URL`; never inherited from the conductor's own env.
-- `CONDUCTOR_MCP_CLIENT_DIR` — absolute `<PROJECTS_ROOT>/.code-conductor/mcp-client`: the generated Python/Node client for `CONDUCTOR_MCP_URL` ([mcp-applications.md → Client libraries](mcp-applications.md#client-libraries)). Set together with `CONDUCTOR_MCP_URL`; never inherited from the conductor's own env.
 - `PROJECTS_ROOT` — the conductor's *resolved* projects root, injected explicitly, so it carries the default even when the conductor's own env never set the var.
 - `CONDUCTOR_PROJECT_DIR` — the conductor's own running checkout dir, holding its `server.ts`/`package.json`; may be outside `PROJECTS_ROOT`.
 - `CONDUCTOR_PLUGIN_DATA_DIR` — the plugin's own data dir, `<PROJECTS_ROOT>/.code-conductor/plugins/data/<id>` (`pluginDataDir`, `src/plugins/store.ts`).
@@ -515,7 +514,7 @@ Two edges, both deliberate:
 
 ### Typed plugin tools (both formats)
 
-**JSON visibility.** A tool is served in JSON format (`/mcp?format=json`, the REST alias, the generated script clients) **only if** its manifest entry declares an `outputSchema`. A tool without one is text-only: it is absent from the JSON `tools/list` and from `GET /mcp/tools`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT` (JSON-RPC error `-32602`, REST `404`) **without contacting the child**. A tool whose manifest stops declaring its `outputSchema` between the tool set's composition and the forward is refused by the bridge instead, as a tool error with the same code (JSON-RPC `result` with `isError:true`, REST `200` + the refusal object); the tool is never forwarded. Text format lists and calls every tool.
+**JSON visibility.** A tool is served in JSON format (`/mcp?format=json`, the REST alias, `run_code` scripts) **only if** its manifest entry declares an `outputSchema`. A tool without one is text-only: it is absent from the JSON `tools/list` and from `GET /mcp/tools`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT` (JSON-RPC error `-32602`, REST `404`) **without contacting the child**. A tool whose manifest stops declaring its `outputSchema` between the tool set's composition and the forward is refused by the bridge instead, as a tool error with the same code (JSON-RPC `result` with `isError:true`, REST `200` + the refusal object); the tool is never forwarded. Text format lists and calls every tool.
 
 1. **The request.** Every forward carries `format: "text" | "json"`. Build only the view asked for.
 2. **Reply shapes — exactly one per format, no combined bodies.**
