@@ -9,6 +9,13 @@ import { RESERVED_METHODS } from './runtimeApi.ts';
 
 export interface LiteralPath { path: string; segments: string[] }
 
+const KEYWORDS_BEFORE_REGEX = new Set(['return', 'typeof', 'case', 'in', 'of', 'delete', 'void', 'throw', 'new', 'await', 'yield', 'else', 'do']);
+
+// A program that binds its own `cc` (a declaration, a parameter, a
+// destructuring, an assignment) is not calling the injected object, so its call
+// sites are not looked up.
+const OWN_CC = /\b(?:const|let|var|function|class)\s+cc\b|\bcc\s*=>|\([^()]*\bcc\b[^()]*\)\s*(?:=>|\{)|\b(?:const|let|var)\s*[{[][^}\]]*\bcc\b[^}\]]*[}\]]|(?<![.\w$])cc\s*=(?![=>])/;
+
 const IDENT_START = /[A-Za-z_$]/;
 
 // `code` with every comment and string/template literal blanked to spaces
@@ -18,6 +25,36 @@ function blankNonCode(code: string): string {
   const blank = (from: number, to: number) => {
     for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ';
   };
+  // Whether the `/` at `i` may open a regular-expression literal. Where regex
+  // and division are both readable the answer is yes: a literal is blanked, so
+  // that reading can only fail to refuse, never refuse wrongly. Only an operand
+  // before it (an identifier, a number) that is not a keyword makes it a division.
+  function startsRegex(i: number): boolean {
+    let j = i - 1;
+    while (j >= 0 && /\s/.test(code[j])) j--;
+    if (j < 0) return true;
+    if (/[\w$]/.test(code[j])) {
+      let k = j;
+      while (k >= 0 && /[\w$]/.test(code[k])) k--;
+      return KEYWORDS_BEFORE_REGEX.has(code.slice(k + 1, j + 1));
+    }
+    return true;
+  }
+  // The index just past a regex literal opening at `i` (flags included), or -1
+  // when no closing `/` precedes the end of the line.
+  function regexEnd(i: number): number {
+    let j = i + 1;
+    let inClass = false;
+    while (j < code.length && code[j] !== '\n') {
+      const c = code[j];
+      if (c === '\\') j += 2;
+      else if (c === '[') { inClass = true; j++; }
+      else if (c === ']') { inClass = false; j++; }
+      else if (c === '/' && !inClass) { j++; while (j < code.length && /[a-z]/i.test(code[j])) j++; return j; }
+      else j++;
+    }
+    return -1;
+  }
   // Scans code from `i` until `endBrace` closes (a template substitution) or
   // the input ends; returns the index it stopped at.
   function scan(start: number, inSubstitution: boolean): number {
@@ -36,6 +73,9 @@ function blankNonCode(code: string): string {
         const end = e === -1 ? code.length : e + 2;
         blank(i, end);
         i = end;
+      } else if (c === '/' && startsRegex(i)) {
+        const end = regexEnd(i);
+        if (end > i) { blank(i, end); i = end; } else i++;
       } else if (c === '"' || c === "'") {
         let j = i + 1;
         while (j < code.length && code[j] !== c && code[j] !== '\n') j += code[j] === '\\' ? 2 : 1;
@@ -68,6 +108,7 @@ const CALL_SITE = /(?<![\w$.])cc\s*\.\s*([A-Za-z_$][\w$]*)(?:\s*\.\s*([A-Za-z_$]
 
 export function literalPaths(code: string): LiteralPath[] {
   const clean = blankNonCode(code);
+  if (OWN_CC.test(clean)) return [];
   const seen = new Set<string>();
   const paths: LiteralPath[] = [];
   for (const m of clean.matchAll(CALL_SITE)) {

@@ -80,7 +80,9 @@ test('a SyntaxError in the program is reported as the run\'s error', async () =>
 
 test('an uncaught rejection after the function returned still reports one result', async () => {
   const { body } = await run('Promise.reject(new Error("late")); await new Promise(r => setTimeout(r, 50)); return 1;');
-  assert.ok(body.error || body.result === '1', 'one outcome was delivered');
+  assert.equal(body.error.name, 'Error', 'the rejection is the delivered outcome, not NoResult');
+  assert.equal(body.error.message, 'late');
+  assert.equal(body.result, null);
 });
 
 test('an oversize return is cut with a marker, truncated, and its full length', async () => {
@@ -140,6 +142,9 @@ test('timeout kills the whole process group, reports timedOut with a null exit c
   `, { timeoutMs: 2000 });
   assert.equal(body.timedOut, true);
   assert.equal(body.exitCode, null);
+  assert.equal(body.error, undefined, 'a timeout is not NoResult');
+  assert.ok('result' in body);
+  assert.equal(body.result, null);
   const { pid, child } = JSON.parse(body.logs.trim().split('\n')[0]);
   await waitFor(() => !pidAlive(pid) && !pidAlive(child));
   const health = await fetch(`${srv.baseUrl}/api/health`);
@@ -225,4 +230,57 @@ test('a program whose event loop empties before it returns is reported NoResult'
   assert.equal(body.error.name, 'NoResult');
   assert.notEqual(body.exitCode, 0);
   assert.equal(body.timedOut, false);
+});
+
+test('a program\'s own oversize outcome posted with the token is re-capped at cc', async () => {
+  const { body } = await run(`
+    await fetch(process.env.CC_RUN_URL + '/run-result', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cc-run-token': process.env.CC_RUN_TOKEN },
+      body: JSON.stringify({ result: 'x'.repeat(100000), resultChars: 1, truncated: false,
+        error: { name: 'N'.repeat(5000), message: 'm', code: 'C'.repeat(5000) } }) });
+  `);
+  assert.equal(body.truncated, true);
+  assert.ok(body.result.length <= RUN_RESULT_CAP + 120);
+  assert.ok(body.error.name.length <= 200 && body.error.code.length <= 200);
+});
+
+test('a run-result body past what the caps allow is refused 413 before it is parsed', async () => {
+  const { body } = await run(`
+    const res = await fetch(process.env.CC_RUN_URL + '/run-result', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cc-run-token': process.env.CC_RUN_TOKEN },
+      body: JSON.stringify({ result: 'x'.repeat(2_000_000), resultChars: 1, truncated: false }) });
+    console.log(res.status);
+    return 'fallback';
+  `);
+  assert.equal(body.logs.trim().split('\n')[0], '413');
+  assert.equal(body.result, '"fallback"', 'the refused body delivered nothing, so the later one is the result');
+});
+
+test('a detached grandchild holding the pipes does not hold the call or its token past the run', async (t) => {
+  const t0 = Date.now();
+  const { body } = await run(`
+    const { spawn } = await import('node:child_process');
+    const c = spawn('sleep', ['30'], { detached: true, stdio: 'inherit' });
+    console.log(JSON.stringify({ child: c.pid, url: process.env.CC_RUN_URL, token: process.env.CC_RUN_TOKEN }));
+    return 'done';
+  `);
+  const info = JSON.parse(body.logs.trim().split('\n')[0]);
+  t.after(() => { try { process.kill(info.child, 'SIGKILL'); } catch { /* gone */ } });
+  assert.ok(Date.now() - t0 < 10_000, 'returned long before the grandchild ended');
+  assert.equal(body.result, '"done"');
+  const res = await fetch(`${info.url}/tools/list_projects`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cc-run-token': info.token }, body: '{}' });
+  assert.equal(res.status, 403, 'the token was revoked with the run');
+});
+
+test('a timeout bounds the call even when a detached grandchild holds the pipes', async (t) => {
+  const t0 = Date.now();
+  const { body } = await run(`
+    const { spawn } = await import('node:child_process');
+    const c = spawn('sleep', ['30'], { detached: true, stdio: 'inherit' });
+    console.log(c.pid);
+    while (true) {}
+  `, { timeoutMs: 1500 });
+  t.after(() => { try { process.kill(Number(body.logs.trim().split('\n')[0]), 'SIGKILL'); } catch { /* gone */ } });
+  assert.equal(body.timedOut, true);
+  assert.ok(Date.now() - t0 < 10_000);
 });

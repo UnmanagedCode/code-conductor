@@ -90,7 +90,7 @@ Output `{tools: Entry[]}` in registry order (the script's `cc.describe_tools()` 
 
 Before anything spawns, `literalPaths` scans the program (comments, strings and template literals blanked) for literal `cc.<tool>(` and `cc.<ns>.<tool>(` call sites and `checkPaths` looks each up in the live registry, text-only plugin tools included. One unknown path refuses the **whole** program, so a typo cannot stop it half-way through side effects.
 
-- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, and anything inside a `${…}` substitution are not checked and fall through to the runtime's `TOOL_UNKNOWN`.
+- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, anything inside a `${…}` substitution and regular-expression literals (where a `/` could be a regex or a division it is read as a regex) are not checked and fall through to the runtime's `TOOL_UNKNOWN`. A program that binds its own `cc` (a declaration, parameter, destructuring or assignment) is not pre-checked at all.
 - A core path is known when a core tool of that name (or a reserved method) exists. For `cc.a.b(`: skipped when `a` is a core tool or reserved, else `<a with _→->__<b>` must be a registered plugin tool.
 - `unknown[].suggestions` holds up to three nearest names (edit distance or substring), as method paths.
 
@@ -112,8 +112,9 @@ All in `src/codeMode/limits.ts`.
 
 | Constant | Bounds |
 |---|---|
-| `RUN_CODE_DEFAULT_TIMEOUT_MS`, `RUN_CODE_MAX_TIMEOUT_MS` | the run's wall clock; at the limit the whole process group is signalled (SIGTERM, then SIGKILL after the grace period) |
-| `RUN_RESULT_CAP`, `RUN_LOGS_CAP`, `RUN_ERROR_MESSAGE_CAP` | the result text, the retained logs (bytes, head-kept), an error message |
+| `RUN_CODE_DEFAULT_TIMEOUT_MS`, `RUN_CODE_MAX_TIMEOUT_MS` | the run's wall clock; at the limit the whole process group is signalled (SIGTERM, then SIGKILL after the grace period). The call returns once the direct child has exited and its stdio has drained for a short grace (`STDIO_DRAIN_GRACE_MS`, `src/groupedCommand.ts`): a detached descendant holding the pipes does not hold the call or the token open |
+| `RUN_RESULT_CAP`, `RUN_LOGS_CAP`, `RUN_ERROR_MESSAGE_CAP`, `RUN_ERROR_FIELD_CAP` | the result text, the retained logs (bytes, head-kept), an error message, an error's `name` and `code`. cc re-applies them to whatever a run delivers (`capOutcome`, `src/codeMode/runs.ts`), so a program posting its own outcome cannot exceed them |
+| `RUN_RESULT_BODY_LIMIT_BYTES` | the largest `/run-result` body accepted (`413` past it), in place of `MCP_REQUEST_BODY_LIMIT` |
 | `RUN_META_HEADROOM` | the room left for metadata: the three caps plus it stay inside `MCP_RESULT_CHAR_BUDGET` (`src/mcp/content.ts`), so `boundResult` never fires for `run_code`. The caps apply in JSON format too |
 | `CC_MCP_SERVER_TIMEOUT_MS` | the per-server `timeout` in the `--mcp-config` entry cc writes for every worker (`buildMcpConfigJSON`, `src/settings.ts`): `RUN_CODE_MAX_TIMEOUT_MS` plus `RUN_CODE_TIMEOUT_GRACE_MS` |
 | `PROGRESS_HEARTBEAT_MS`, `PROGRESS_MIN_INTERVAL_MS`, `PROGRESS_LINE_CAP` | progress cadence, below |

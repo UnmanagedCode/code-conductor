@@ -34,6 +34,7 @@ before(async () => {
   const sessions = {
     local1: { mode: 'bypassPermissions', cwd, transcriptPlace: { system: 'local' } },
     remote1: { mode: 'bypassPermissions', cwd, transcriptPlace: { system: 'box' } },
+    broken1: { mode: 'bypassPermissions', cwd: path.join(cwd, 'no-such-dir'), transcriptPlace: { system: 'local' } },
   };
   const router = buildMcpRouter({
     instances: {
@@ -184,4 +185,12 @@ test('a session on another system is refused SCRIPT_UNAVAILABLE_REMOTE and nothi
   assert.equal(body.ok, false);
   assert.equal(body.code, 'SCRIPT_UNAVAILABLE_REMOTE');
   await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+});
+
+test('a launch that fails reports SpawnError with the message and a null exit code', async () => {
+  const body = await runAs('broken1', 'return 1');
+  assert.equal(body.error.name, 'SpawnError');
+  assert.match(body.error.message, /ENOENT/);
+  assert.equal(body.exitCode, null);
+  assert.equal(body.result, null);
 });

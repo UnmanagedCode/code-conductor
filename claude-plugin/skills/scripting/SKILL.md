@@ -11,8 +11,6 @@ Two shapes call for a `run_code` program:
 
 A few small, independent reads need no program: make them as parallel tool calls.
 
-Return only the digest, because the return value is what lands in your context.
-
 ```js
 const out = [];
 for (const { name } of (await cc.list_projects()).projects) {

@@ -16,7 +16,7 @@ import {
 import { startProgressPump, type ProgressPump } from './progressPump.ts';
 import { literalPaths, checkPaths } from './precheck.ts';
 import { RUN_URL_ENV, RUN_TOKEN_ENV } from './runtimeApi.ts';
-import type { RunOutcome } from './runs.ts';
+import { capOutcome, type RunOutcome } from './runs.ts';
 
 const RUNTIME_PATH = fileURLToPath(new URL('./runtime.ts', import.meta.url));
 
@@ -39,7 +39,8 @@ export interface RunCodeCtx extends CodeModeCtx {
 
 // The tool result from the process's exit and what it delivered. `cancelled`
 // is the caller going away (cancel notification or closed connection).
-export function assembleResult(r: ExecResult, delivered: RunOutcome | undefined, cancelled: boolean): DualResult {
+export function assembleResult(r: ExecResult, deliveredRaw: RunOutcome | undefined, cancelled: boolean): DualResult {
+  const delivered = deliveredRaw && capOutcome(deliveredRaw);
   const logs = utf8Prefix(r.output, RUN_LOGS_CAP);
   const logsTruncated = r.truncated || logs.length < r.output.length;
   const killed = r.timedOut || cancelled;
@@ -91,17 +92,20 @@ export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: n
       { unknown });
   }
   if (!ctx.runs || !ctx.selfUrl) throw new Error('run_code: the MCP router did not provide the run channel');
-  const token = ctx.runs.open(ctx.callerId);
-  const pump: ProgressPump | null = ctx.progress
-    ? startProgressPump({
-      emit: ctx.progress,
-      heartbeatMs: ctx.codeModeTiming?.heartbeatMs ?? PROGRESS_HEARTBEAT_MS,
-      minIntervalMs: ctx.codeModeTiming?.minIntervalMs ?? PROGRESS_MIN_INTERVAL_MS,
-    })
-    : null;
+  const runs = ctx.runs;
+  let token: string | null = null;
+  let pump: ProgressPump | null = null;
   let result: ExecResult;
   let delivered: RunOutcome | undefined;
   try {
+    token = runs.open(ctx.callerId);
+    const live = pump = ctx.progress
+      ? startProgressPump({
+        emit: ctx.progress,
+        heartbeatMs: ctx.codeModeTiming?.heartbeatMs ?? PROGRESS_HEARTBEAT_MS,
+        minIntervalMs: ctx.codeModeTiming?.minIntervalMs ?? PROGRESS_MIN_INTERVAL_MS,
+      })
+      : null;
     result = await localSystem().exec({ argv: childArgv(inst.mode === 'plan') }, {
       cwd: inst.cwd,
       timeoutMs: clampRunCodeTimeoutMs(timeoutMs),
@@ -109,11 +113,11 @@ export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: n
       headCapBytes: RUN_LOGS_CAP,
       signal: ctx.signal,
       envOverlay: { [RUN_URL_ENV]: `${ctx.selfUrl}/${encodeURIComponent(ctx.callerId)}`, [RUN_TOKEN_ENV]: token },
-      onChunk: pump ? (text) => pump.onOutput(text) : undefined,
+      onChunk: live ? (text) => live.onOutput(text) : undefined,
     });
   } finally {
     pump?.stop();
-    delivered = ctx.runs.close(token);
+    if (token !== null) delivered = runs.close(token);
   }
   return assembleResult(result, delivered, ctx.signal?.aborted === true);
 }

@@ -28,7 +28,9 @@ function callBody(id, code, meta) {
 }
 function sseEvents(text) {
   return text.split('\n\n').filter(Boolean).map(block => {
-    const data = block.split('\n').find(l => l.startsWith('data: '));
+    const lines = block.split('\n');
+    assert.ok(lines.includes('event: message'), `every SSE block names its event: ${block.slice(0, 80)}`);
+    const data = lines.find(l => l.startsWith('data: '));
     return JSON.parse(data.slice('data: '.length));
   });
 }

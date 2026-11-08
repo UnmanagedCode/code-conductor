@@ -7,7 +7,7 @@ import {
   createCc, serializeOutcome, ConductorError, RUN_TOKEN_HEADER,
 } from '../src/codeMode/runtimeApi.ts';
 import { createRunRegistry } from '../src/codeMode/runs.ts';
-import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP } from '../src/codeMode/limits.ts';
+import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP } from '../src/codeMode/limits.ts';
 
 function recorder(reply) {
   const calls = [];
@@ -111,6 +111,13 @@ test('serializeOutcome: a thrown ConductorError keeps name, code and status; the
   assert.equal(o.error.code, 'X_CODE');
   assert.equal(o.error.status, 200);
   assert.equal(o.error.message.length, RUN_ERROR_MESSAGE_CAP);
+});
+
+test('serializeOutcome: a thrown error\'s name and code are capped too', () => {
+  const e = Object.assign(new Error('m'), { name: 'N'.repeat(60_000), code: 'C'.repeat(60_000) });
+  const o = serializeOutcome({ thrown: e });
+  assert.equal(o.error.name.length, RUN_ERROR_FIELD_CAP);
+  assert.equal(o.error.code.length, RUN_ERROR_FIELD_CAP);
 });
 
 test('serializeOutcome: a thrown non-Error is stringified', () => {

@@ -26,6 +26,7 @@ import { TEXT_LIMITS, JSON_ECHO_CAP, JSON_LIMITS, limitsFor, type FormatLimits, 
 import { createCallStream } from './callStream.ts';
 import { createRunRegistry, type RunOutcome } from '../codeMode/runs.ts';
 import { RUN_TOKEN_HEADER } from '../codeMode/runtimeApi.ts';
+import { RUN_RESULT_BODY_LIMIT_BYTES } from '../codeMode/limits.ts';
 import { describeToolsTool } from '../codeMode/describeTools.ts';
 import type { CodeModeCtx, ProgressTiming } from '../codeMode/ctx.ts';
 
@@ -788,7 +789,10 @@ export function buildMcpRouter(
     codeModeTiming?: ProgressTiming },
 ): express.Router {
   const r = express.Router();
-  r.use(express.json({ limit: MCP_REQUEST_BODY_LIMIT }));
+  // A run result is bounded by the caps that shape it, not by the general body limit.
+  const generalParser = express.json({ limit: MCP_REQUEST_BODY_LIMIT });
+  const runResultParser = express.json({ limit: RUN_RESULT_BODY_LIMIT_BYTES });
+  r.use((req, res, next) => (/^\/[^/]+\/run-result$/.test(req.path) ? runResultParser : generalParser)(req, res, next));
   const runs = createRunRegistry();
   const inflight = new Map<string, AbortController>();
 

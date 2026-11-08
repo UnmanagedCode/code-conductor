@@ -2,7 +2,7 @@
 // program sees, and the serialization of its outcome. Imports only limits.ts —
 // the child must not pull the server in.
 
-import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP } from './limits.ts';
+import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutChars, cutResult } from './limits.ts';
 
 // The run's token travels in this header on every call and on the result
 // delivery; the server revokes it when the run's process settles.
@@ -92,20 +92,13 @@ export interface SerializedOutcome {
   error?: { name: string; message: string; code?: string; status?: number };
 }
 
-// A cut that never splits a surrogate pair.
-function cut(s: string, n: number): string {
-  if (s.length <= n) return s;
-  const end = n > 0 && s.charCodeAt(n - 1) >= 0xd800 && s.charCodeAt(n - 1) <= 0xdbff ? n - 1 : n;
-  return s.slice(0, end);
-}
-
 export function serializeError(e: unknown): NonNullable<SerializedOutcome['error']> {
   const rec = isRecord(e) ? e : {};
   const err: NonNullable<SerializedOutcome['error']> = {
-    name: typeof rec.name === 'string' ? rec.name : 'Error',
-    message: cut(typeof rec.message === 'string' ? rec.message : String(e), RUN_ERROR_MESSAGE_CAP),
+    name: cutChars(typeof rec.name === 'string' ? rec.name : 'Error', RUN_ERROR_FIELD_CAP),
+    message: cutChars(typeof rec.message === 'string' ? rec.message : String(e), RUN_ERROR_MESSAGE_CAP),
   };
-  if (typeof rec.code === 'string') err.code = rec.code;
+  if (typeof rec.code === 'string') err.code = cutChars(rec.code, RUN_ERROR_FIELD_CAP);
   if (typeof rec.status === 'number' && Number.isInteger(rec.status)) err.status = rec.status;
   return err;
 }
@@ -121,7 +114,7 @@ export function serializeOutcome(o: { value: unknown } | { thrown: unknown }): S
   if (text === undefined) return { result: null, resultChars: 0, truncated: false };
   if (text.length <= RUN_RESULT_CAP) return { result: text, resultChars: text.length, truncated: false };
   return {
-    result: `${cut(text, RUN_RESULT_CAP)}… [result cut at ${RUN_RESULT_CAP} of ${text.length} chars — return less]`,
+    result: cutResult(text, text.length),
     resultChars: text.length,
     truncated: true,
   };

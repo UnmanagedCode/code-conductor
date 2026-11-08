@@ -1387,7 +1387,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         '`await cc.<tool>(args)` calls a core tool, `await cc.<plugin_ns>.<tool>(args)` a plugin tool (the plugin ' +
         'id with `-` written `_`), `cc.call(name, args)` a computed name. Each call returns the tool\'s JSON result ' +
         'and runs as your own session — your limits and refusals apply unchanged, and a refusal throws an error ' +
-        'whose `code` names it (`status` 200: the tool refused; 400 and up: the call was malformed). Look tools up ' +
+        'whose `code` names it. Look tools up ' +
         'instead of guessing names or result fields: `return await cc.describe_tools({query, namespace, names, ' +
         'detail})` — detail `names`, `summary` (default) or `full`, which adds a TypeScript signature with the ' +
         'result type. A literal call to an unknown tool refuses the whole program before any of it runs. ' +

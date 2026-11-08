@@ -3,6 +3,9 @@
 // it is minted when the run starts and revoked when the process settles.
 
 import { randomBytes } from 'node:crypto';
+import {
+  RUN_RESULT_MAX_CHARS, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutChars, cutResult,
+} from './limits.ts';
 
 // What the child posts to /run-result: the function's outcome, already capped.
 export interface RunOutcome {
@@ -10,6 +13,24 @@ export interface RunOutcome {
   resultChars: number;
   truncated: boolean;
   error?: { name: string; message: string; code?: string; status?: number };
+}
+
+// What a delivery may carry, re-applied at cc's boundary: the child caps its own
+// outcome, but a program holding the run token can post any body.
+export function capOutcome(o: RunOutcome): RunOutcome {
+  let { result, truncated, resultChars } = o;
+  if (result !== null && result.length > RUN_RESULT_MAX_CHARS) {
+    resultChars = Math.max(resultChars, result.length);
+    result = cutResult(result, resultChars);
+    truncated = true;
+  }
+  const out: RunOutcome = { result, resultChars, truncated };
+  if (o.error) {
+    out.error = { name: cutChars(o.error.name, RUN_ERROR_FIELD_CAP), message: cutChars(o.error.message, RUN_ERROR_MESSAGE_CAP) };
+    if (o.error.code !== undefined) out.error.code = cutChars(o.error.code, RUN_ERROR_FIELD_CAP);
+    if (o.error.status !== undefined) out.error.status = o.error.status;
+  }
+  return out;
 }
 
 export interface RunRegistry {

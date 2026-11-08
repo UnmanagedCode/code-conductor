@@ -71,6 +71,13 @@ test('the message is elapsed time plus the last non-empty line, cut at the line 
   assert.equal(last.length, '1m5s · '.length + PROGRESS_LINE_CAP);
 });
 
+test('a multi-line chunk reports its last non-empty line', () => {
+  const { pump, events, advance } = rig({ heartbeatMs: 10_000, minIntervalMs: 0 });
+  advance(1000);
+  pump.onOutput('first\nsecond\n');
+  assert.match(events.at(-1).message, / · second$/);
+});
+
 test('with no output the message is the elapsed time alone', () => {
   const { events, advance } = rig();
   advance(1000);

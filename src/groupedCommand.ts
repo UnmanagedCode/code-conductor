@@ -40,6 +40,13 @@ export const RESULT_TAIL_CAP = 4000;
 // script to unwind, short enough that a wedged one doesn't hold the caller.
 const DEFAULT_KILL_GRACE_MS = 100;
 
+// How long after the DIRECT child has exited the runner still waits for its
+// stdio to close. A descendant that outlives it holding the pipes (a daemon
+// started with inherited stdio) would otherwise keep the call open forever:
+// past this grace the streams are destroyed and the call resolves with what was
+// buffered, the exit code being the direct child's.
+const STDIO_DRAIN_GRACE_MS = 250;
+
 // The local implementation of the System `exec` primitive: its result and
 // option shapes ARE the interface's (src/systems/system.ts), so LocalSystem
 // delegates here without a translation layer. The aliases keep this module's
@@ -141,12 +148,24 @@ export function runGroupedCommand(
       else signal.addEventListener('abort', onAbort, { once: true });
     }
 
+    let settled = false;
+    let drainTimer: NodeJS.Timeout | null = null;
     const finish = (code: number, spawnError?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (drainTimer) clearTimeout(drainTimer);
       if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       resolve(collector.result(code, { timedOut, spawnError, durationMs: Date.now() - start }));
     };
 
+    proc.on('exit', (code) => {
+      drainTimer = setTimeout(() => {
+        proc.stdout?.destroy();
+        proc.stderr?.destroy();
+        finish(code ?? 1);
+      }, STDIO_DRAIN_GRACE_MS);
+    });
     proc.on('close', (code) => finish(code ?? 1));
     proc.on('error', (e) => finish(1, e.message));
   });

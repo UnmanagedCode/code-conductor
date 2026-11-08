@@ -9,7 +9,7 @@
 // and nothing writes or reads the directory any more.
 //
 // ── PROBE ──────────────────────────────────────────────────────────────────
-// No mcp-client directory → no-op. The move removes it, so a second run is one.
+// No mcp-client directory → no-op. The move removes it, so a second run is a no-op.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

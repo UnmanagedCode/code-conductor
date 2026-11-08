@@ -73,3 +73,34 @@ test('closeMatches returns at most three, nearest first', () => {
   assert.deepEqual(closeMatches('read_card', ['read_cards', 'read_cart', 'read_carp', 'read_card_log', 'zzz']).length, 3);
   assert.deepEqual(closeMatches('abc', ['xyz']), []);
 });
+
+test('an escaped quote does not end a string literal', () => {
+  assert.deepEqual(paths(String.raw`const s = "a \" cc.nope() b"; const t = 'it\'s cc.nope2()';`), []);
+});
+
+test('a regular-expression literal is not code, so a call-shaped pattern is not a call site', () => {
+  assert.deepEqual(paths('const re = /cc.list_cards(x)/; return re.test(s);'), []);
+  assert.deepEqual(paths('if (/cc\\.a\\(/.test(s)) await cc.real();'), ['cc.real']);
+  assert.deepEqual(paths('return /[/]cc.nope()/g.test(s)'), []);
+  assert.deepEqual(paths('x = s.replace(/"/g, "") + cc.after_regex_quote()'), ['cc.after_regex_quote'], 'a quote inside a pattern does not open a string');
+});
+
+test('a division is still code: a call after it is found', () => {
+  assert.deepEqual(paths('const half = total / 2; await cc.real(); const q = n / m;'), ['cc.real']);
+});
+
+test('a program that binds its own cc is not pre-checked', () => {
+  for (const code of [
+    'const cc = makeClient(); await cc.nope();',
+    'let cc; cc = other(); await cc.nope();',
+    'function run(cc) { return cc.nope(); }',
+    'const f = (cc) => cc.nope();',
+    'const f = async cc => cc.nope();',
+    'const { cc } = holder; await cc.nope();',
+    'function cc() {} cc.nope();',
+  ]) assert.deepEqual(paths(code), [], code);
+});
+
+test('passing the injected cc along is not a binding: the call sites are still checked', () => {
+  assert.deepEqual(paths('helper(cc); await cc.nope();'), ['cc.nope']);
+});

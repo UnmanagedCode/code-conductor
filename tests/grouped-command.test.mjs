@@ -174,3 +174,20 @@ test('onChunk stops at the maxBufferBytes fence, and the fence is still a failur
 test('GROUP_OUTPUT_CAP is the single owner of the 16K tail cap', () => {
   assert.equal(GROUP_OUTPUT_CAP, 16 * 1024);
 });
+
+test('a descendant that outlives the command holding its stdio does not hold the call open', async (t) => {
+  const dir = await mkdtemp('cc-grouped-drain-');
+  const pidFile = path.join(dir, 'pid');
+  // The direct child exits at once; a detached grandchild inherits its pipes.
+  const code = `const c = require('node:child_process').spawn('sleep', ['30'], { detached: true, stdio: 'inherit' }); c.unref();`
+    + ` require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); console.log('direct-output');`;
+  const t0 = Date.now();
+  const r = await runGroupedCommand({ argv: [process.execPath, '-e', code] }, { cwd: dir }, posixPlatform);
+  const pid = Number(await fs.readFile(pidFile, 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+  assert.ok(Date.now() - t0 < 10_000, 'returned long before the grandchild ended');
+  assert.equal(r.code, 0);
+  assert.equal(r.timedOut, false);
+  assert.match(r.output, /direct-output/, 'what was buffered is kept');
+  assert.ok(alive(pid), 'the detached grandchild is not the runner\'s to kill');
+});
