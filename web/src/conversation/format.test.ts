@@ -14,6 +14,13 @@ describe('describeToolInput', () => {
     expect(describeToolInput('Bash', null)).toBe('');
   });
 
+  it('run_code summarises as its description, falling back to its code on one line', () => {
+    const RC = 'mcp__code-conductor__run_code';
+    expect(describeToolInput(RC, { code: 'return 1', description: 'Count projects' })).toBe('Count projects');
+    expect(describeToolInput(RC, { code: 'const a = 1;\nreturn a', description: '   ' })).toBe('const a = 1; return a');
+    expect(describeToolInput(RC, { code: 'x'.repeat(200) })).toBe('x'.repeat(120) + '…');
+  });
+
   it('project_bash / system_bash keep their scope prefix', () => {
     const p = 'mcp__code-conductor__project_bash';
     const s = 'mcp__code-conductor__system_bash';

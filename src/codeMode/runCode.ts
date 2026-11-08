@@ -68,7 +68,7 @@ function refusal(code: string, reason: string, extra: Record<string, unknown> = 
   return { ok: false, code, reason, ...extra };
 }
 
-export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: number }, ctx: RunCodeCtx) {
+export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: number; description?: string }, ctx: RunCodeCtx) {
   if (ctx.run) {
     return refusal('SCRIPT_NESTED', 'run_code cannot be called from inside a run_code program — call the tool directly from the program with cc.<tool>(args)');
   }

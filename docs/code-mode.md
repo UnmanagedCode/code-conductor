@@ -9,6 +9,7 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 | Input | Type | Meaning |
 |---|---|---|
 | `code` | string, required | the body of an async function with `cc` in scope; its `return` value is the result |
+| `description` | string | a short label for the run, shown as the transcript card's summary in place of the code; the run never reads it |
 | `timeoutMs` | integer | wall-clock limit; default `RUN_CODE_DEFAULT_TIMEOUT_MS`, clamped (never refused) to `RUN_CODE_MAX_TIMEOUT_MS` by `clampRunCodeTimeoutMs` |
 
 | Output field | Meaning |

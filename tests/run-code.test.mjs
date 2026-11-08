@@ -159,6 +159,21 @@ test('the run token is revoked once the run ends', async () => {
   assert.equal((await res.json()).code, 'RUN_TOKEN_INVALID');
 });
 
+test('a description is accepted and does not change the run', async () => {
+  const { status, body } = await run('return 6 * 7', { description: 'Multiply six by seven' });
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.equal(body.error, undefined);
+  assert.equal(body.result, '42');
+});
+
+test('a non-string description is refused ARGS_INVALID as a type error', async () => {
+  const { status, body } = await run('return 1', { description: 42 });
+  assert.equal(status, 400);
+  assert.equal(body.code, 'ARGS_INVALID');
+  assert.match(body.reason, /type|string/i);
+  assert.doesNotMatch(body.reason, /unexpected argument/);
+});
+
 test('run_code inside a program is refused SCRIPT_NESTED', async () => {
   const { body } = await run("await cc.run_code({ code: 'return 1' });");
   assert.equal(body.error.code, 'SCRIPT_NESTED');

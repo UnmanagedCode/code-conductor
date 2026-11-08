@@ -8,10 +8,14 @@ import type { SystemData, UiEventOf } from '@shared/uiEvent';
 export const SHELL_TOOLS = new Set(['Bash', 'PowerShell', 'mcp__code-conductor__project_bash', 'mcp__code-conductor__system_bash']);
 export const renderKindFor = (name: string) => (SHELL_TOOLS.has(name) ? 'Bash' : name);
 
-function bashSubject(input: any) {
+export const RUN_CODE_TOOL = 'mcp__code-conductor__run_code';
+
+/** The call's trimmed `description` when it has one, else `fallback`. */
+function describedOr(input: any, fallback: unknown) {
   const desc = typeof input.description === 'string' ? input.description.trim() : '';
-  return desc || input.command;
+  return desc || fallback;
 }
+const bashSubject = (input: any) => describedOr(input, input.command);
 
 export type DescribeCtx = {
   resolveTaskSubject?: (id: string | null) => string | null;
@@ -68,6 +72,7 @@ export function describeToolInput(name: string, input: any, ctx: DescribeCtx = {
     if (typeof input.forward?.sessionId === 'string') out += ` forward=${input.forward.sessionId.slice(0, 8)}`;
     return out;
   }
+  if (name === RUN_CODE_TOOL) return trunc(describedOr(input, input.code));
   switch (renderKindFor(name)) {
     case 'Bash':
       return trunc(bashSubject(input));

@@ -8,7 +8,8 @@
 // is recorded, and playbook_state describes `history` as event-log rows and
 // `stageHistory` as stage changes (docs/event-log.md) — and the one added entry,
 // `run_code` (docs/code-mode.md), last in the registry — and project_bash's
-// `outputMayBeIncomplete?` metadata key and its sentence.
+// `outputMayBeIncomplete?` metadata key and its sentence — and `run_code`'s
+// optional `description`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
