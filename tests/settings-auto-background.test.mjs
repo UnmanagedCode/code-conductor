@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { bootServer, api } from './helpers.mjs';
 import {
   getAutoBackground, setAutoBackground, setDebugByDefault, getDebugByDefault, setTaskToolsEnabled, getTaskToolsEnabled,
@@ -12,6 +13,7 @@ import {
 } from '../src/appSettings.ts';
 import { RUN_CODE_MAX_TIMEOUT_MS, CC_MCP_SERVER_TIMEOUT_MS } from '../src/codeMode/limits.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { orchStoreRoot } from '../src/projects.ts';
 
 const prefs = (baseUrl, body) => api(baseUrl, 'POST', '/api/settings/spawn/prefs', body);
 const spawnGet = async (baseUrl) => (await api(baseUrl, 'GET', '/api/settings/spawn')).body;
@@ -104,5 +106,22 @@ test('setAutoBackground round-trips through getAutoBackground and throws on an i
   } finally {
     if (saved === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = saved;
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a hand-edited stored threshold outside the bounds or not an integer reads as the default', async () => {
+  for (const stored of [AUTO_BACKGROUND_MIN_MS - 1, AUTO_BACKGROUND_MAX_MS + 1, 12_500.5, '30000']) {
+    const root = await mkdtemp('cc-settings-autobg-edit-');
+    const saved = process.env.PROJECTS_ROOT;
+    process.env.PROJECTS_ROOT = root;
+    try {
+      await fs.mkdir(orchStoreRoot(), { recursive: true });
+      await fs.writeFile(path.join(orchStoreRoot(), 'settings.json'),
+        JSON.stringify({ spawn: { autoBackground: true, autoBackgroundMs: stored } }));
+      assert.deepEqual(getAutoBackground(), { enabled: true, thresholdMs: AUTO_BACKGROUND_DEFAULT_MS }, JSON.stringify(stored));
+    } finally {
+      if (saved === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = saved;
+      await fs.rm(root, { recursive: true, force: true });
+    }
   }
 });

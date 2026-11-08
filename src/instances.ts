@@ -2850,9 +2850,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.pid = this.proc.pid ?? null;
 
     const outRl = readline.createInterface({ input: this.proc.stdout as NodeJS.ReadableStream, crlfDelay: Infinity });
+    // `ended` is this launch's exit latch (below). Node can fire 'exit' before
+    // stdout drains, so a line can still arrive after _handleExit ran.
     outRl.on('line', (line) => {
       this._debugLog('stdout', line);
-      this._handleStdoutLine(line);
+      this._handleStdoutLine(line, ended);
     });
 
     const errRl = readline.createInterface({ input: this.proc.stderr as NodeJS.ReadableStream, crlfDelay: Infinity });
@@ -2929,7 +2931,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     return facts;
   }
 
-  _handleStdoutLine(line: string): void {
+  // `launchEnded`: the line was read after its launch's exit latch fired. It is
+  // still parsed and recorded like any other; only the running task/job
+  // bookkeeping ignores it, so a dead CLI's late frame cannot re-add what
+  // _handleExit cleared.
+  _handleStdoutLine(line: string, launchEnded = false): void {
     const events = this.parser.handleLine(line);
     // Track the latest event uuid we've seen — used as the leaf marker we
     // append to the session jsonl so `claude --resume` from the shell can
@@ -3199,14 +3205,14 @@ export class Instance extends EventEmitter implements InstanceLike {
       // by _taskNotificationPending, which is task-type-agnostic on purpose.
       // Background Bash jobs are tracked in _backgroundJobs, from
       // the `background_tasks_changed` snapshot below, not from these frames.
-      if (ev.kind === 'system' && ev.subtype === 'background_tasks_changed') {
+      if (ev.kind === 'system' && ev.subtype === 'background_tasks_changed' && !launchEnded) {
         const next = reconcileBackgroundJobs(this._backgroundJobs, evData(ev)?.tasks, Date.now());
         if (next) {
           this._backgroundJobs = next;
           this.emit('status', this.summary());
         }
       }
-      if (ev.kind === 'system' && ev.subtype === 'task_started') {
+      if (ev.kind === 'system' && ev.subtype === 'task_started' && !launchEnded) {
         const data = evData(ev);
         if (data?.task_id && data.task_type !== 'local_bash') {
           const grew = this._activeAgentTasks.size === 0;

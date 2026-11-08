@@ -6,6 +6,10 @@
 //
 // The task is injected as the CLI's own `system/task_started` stdout frame
 // (an auto-backgrounded MCP call's `mcp_task`) once the instance is idle.
+//
+// Node can fire a child's `exit` before its stdout has drained, so task and
+// job frames can still be parsed after _handleExit has run. Those late frames
+// must not grow either count back.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,5 +68,47 @@ test('a commanded kill clears the count too', async () => {
     assert.equal(inst.status, 'exited');
     assert.equal(inst.activeAgentTaskCount, 0);
     assert.equal(inst.summary().activeAgentTasks, 0);
+  } finally { await ctx.close(); }
+});
+
+// Stages Node's exit-before-drain order: the exit event fires first, then
+// `frame` (still in the pipe) is read. Returns the status summaries emitted
+// after the crash edge.
+async function lateFrameAfterExit(inst, frame) {
+  const child = inst.proc;
+  const afterCrash = [];
+  let crashed = false;
+  inst.on('status', (s) => { if (crashed) afterCrash.push(s); if (s.status === 'crashed') crashed = true; });
+  let parsed = false;
+  inst.on('event', (ev) => { if (ev?.kind === 'system' && ev.subtype === frame.subtype) parsed = true; });
+  child.emit('exit', null, 'SIGKILL');
+  await waitFor(() => inst.status === 'crashed');
+  child.stdout.write(JSON.stringify({ session_id: inst.sessionId, ...frame }) + '\n');
+  await waitFor(() => parsed);
+  await new Promise((r) => setImmediate(r));
+  child.kill('SIGKILL');
+  return afterCrash;
+}
+
+test('a task_started read after the exit event does not re-add a running agent', async () => {
+  const { ctx, inst } = await idleWithRunningMcpTask();
+  try {
+    const afterCrash = await lateFrameAfterExit(inst,
+      { type: 'system', subtype: 'task_started', task_id: 't2', tool_use_id: 'tu2', task_type: 'mcp_task', description: 'late' });
+    assert.equal(inst.activeAgentTaskCount, 0);
+    assert.equal(inst.summary().displayStatus, 'crashed');
+    assert.deepEqual(afterCrash.filter((s) => s.activeAgentTasks > 0 || s.displayStatus === 'running'), [],
+      'no status edge after crashed reports a running agent');
+  } finally { await ctx.close(); }
+});
+
+test('a background_tasks_changed read after the exit event does not re-add a job', async () => {
+  const { ctx, inst } = await idleWithRunningMcpTask();
+  try {
+    const afterCrash = await lateFrameAfterExit(inst,
+      { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1', task_type: 'local_bash', description: 'late job' }] });
+    assert.equal(inst.backgroundJobs.length, 0);
+    assert.deepEqual(afterCrash.filter((s) => (s.backgroundJobs?.length ?? 0) > 0), [],
+      'no status edge after crashed reports a job');
   } finally { await ctx.close(); }
 });

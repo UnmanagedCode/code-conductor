@@ -209,12 +209,16 @@ export const AUTO_BACKGROUND_MAX_MS = RUN_CODE_MAX_TIMEOUT_MS;
 
 export interface AutoBackground { enabled: boolean; thresholdMs: number }
 
+const isAutoBackgroundMs = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= AUTO_BACKGROUND_MIN_MS && v <= AUTO_BACKGROUND_MAX_MS;
+
 export function getAutoBackground(): AutoBackground {
   const s = loadSync().spawn;
   const ms = s?.autoBackgroundMs;
   return {
     enabled: Boolean(s?.autoBackground),
-    thresholdMs: typeof ms === 'number' ? ms : AUTO_BACKGROUND_DEFAULT_MS,
+    // A hand-edited value out of bounds is never served or launched with.
+    thresholdMs: isAutoBackgroundMs(ms) ? ms : AUTO_BACKGROUND_DEFAULT_MS,
   };
 }
 
@@ -224,8 +228,7 @@ export function autoBackgroundPatchError(v: unknown): string | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return 'autoBackground must be an object';
   const { enabled, thresholdMs } = v as { enabled?: unknown; thresholdMs?: unknown };
   if (enabled !== undefined && typeof enabled !== 'boolean') return 'autoBackground.enabled must be a boolean';
-  if (thresholdMs !== undefined && (typeof thresholdMs !== 'number' || !Number.isInteger(thresholdMs)
-      || thresholdMs < AUTO_BACKGROUND_MIN_MS || thresholdMs > AUTO_BACKGROUND_MAX_MS)) {
+  if (thresholdMs !== undefined && !isAutoBackgroundMs(thresholdMs)) {
     return `autoBackground.thresholdMs must be an integer number of milliseconds from ${AUTO_BACKGROUND_MIN_MS / 1000} s to ${AUTO_BACKGROUND_MAX_MS / 1000} s`;
   }
   return null;

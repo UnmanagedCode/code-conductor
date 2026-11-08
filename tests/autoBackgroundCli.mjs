@@ -50,8 +50,10 @@ class RoutingLauncher {
 }
 
 // Runs the scenario with the toggle `enabled` or off; `done(ctx)` says when
-// to stop watching. Returns what cc observed for the worker.
-export async function runRealWorker({ enabled, done, timeout = 75_000 }) {
+// to stop watching. `timeout` leaves room inside the runner's per-file
+// watchdog, so a regression fails as an assertion, not a kill. Returns what cc
+// observed for the worker.
+export async function runRealWorker({ enabled, done, timeout = 55_000 }) {
   const srv = await bootServer({ scenarioPath: SCENARIO_WS, claudeLauncher: new RoutingLauncher() });
   const { instances, baseUrl } = srv;
   const hub = instances._idleHub;

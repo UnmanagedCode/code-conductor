@@ -8,12 +8,20 @@ import { replayCell, firstPrompt, turnEnded, pause, SETTLE_WAIT_MS } from './aut
 
 test('SIGTERM with a pending MCP task: terminal frames clear the count before exit; one EXITED wake', async () => {
   const cell = 'mcp-bg-sigterm-flag1';
+  let premise;
+  let countBeforeExit;
   const out = await replayCell(cell, async (c) => {
     await c.dispatch(firstPrompt(cell));
     await turnEnded(c); await c.idle(); await pause(3000);
+    premise = c.worker.activeAgentTaskCount;
+    // The count as of the CLI's exit event, read ahead of cc's own exit
+    // listener (and so before _handleExit's clear).
+    c.worker.proc.prependOnceListener('exit', () => { countBeforeExit = c.worker.activeAgentTaskCount; });
     c.worker.proc.kill('SIGTERM');
     await c.gone(); await pause(SETTLE_WAIT_MS);
   });
+  assert.equal(premise, 1, 'premise: the MCP task was counted when the CLI was signalled');
+  assert.equal(countBeforeExit, 0, 'the terminal task frames cleared the count before the CLI exited');
   assert.equal(out.wakes.length, 1);
   assert.equal(out.wakes[0].opts.exited, true);
   assert.equal(out.final.status, 'crashed');

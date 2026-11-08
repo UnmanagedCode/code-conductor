@@ -14,6 +14,6 @@ Each line is one of: `{t, line}` (a stdout frame, `t` = seconds since the first 
 Scrubbed on capture and copy:
 
 - session ids are `S1` (the replay substitutes the live one), cwd is `/tmp/CWD`, CLI temp paths are `<CLI_TMP>`;
-- every `system/init`'s `mcp_servers` keeps only the capture's own `slow` test server;
+- every `system/init`'s `mcp_servers` keeps only the capture's own `slow` test server, and is `[]` where the capture had none (both inits of `agent-fg-flag1`);
 - only the keys listed above are kept (no wall-clock timestamps);
 - stream deltas, thinking blocks, init `tools` and hook events were dropped; `message_start` / `message_stop` and `system/status` are kept.
