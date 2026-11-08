@@ -6,7 +6,8 @@
 // instead of the `?caller=` query parameter — and the event log's two
 // description edits: send_prompt's `stage` no longer says a declared self-loop
 // is recorded, and playbook_state describes `history` as event-log rows and
-// `stageHistory` as stage changes (docs/event-log.md).
+// `stageHistory` as stage changes (docs/event-log.md) — and the one added entry,
+// `run_code` (docs/code-mode.md), last in the registry.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

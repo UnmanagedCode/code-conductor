@@ -26,6 +26,7 @@ import { TEXT_LIMITS, JSON_ECHO_CAP, JSON_LIMITS, limitsFor, type FormatLimits, 
 import { createCallStream } from './callStream.ts';
 import { createRunRegistry, type RunOutcome } from '../codeMode/runs.ts';
 import { RUN_TOKEN_HEADER } from '../codeMode/runtimeApi.ts';
+import { describeToolsTool } from '../codeMode/describeTools.ts';
 import type { CodeModeCtx, ProgressTiming } from '../codeMode/ctx.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -923,7 +924,11 @@ export function buildMcpRouter(
     if (!name) { restFault(res, 404, 'TOOL_UNKNOWN', 'no tool named — POST /mcp/tools/<name>'); return; }
     const args: unknown = req.body;
     if (!isJsonRecord(args)) { restFault(res, 400, 'ARGS_INVALID', 'the request body must be a JSON object of the tool\'s arguments'); return; }
-    const { tools, textOnly } = await composeTools('json');
+    const composed = await composeTools('json');
+    const { textOnly } = composed;
+    // describe_tools is run-scoped: composed in only for a call carrying a run
+    // token, so it is in neither tools/list nor the listing.
+    const tools = pre.token === null ? composed.tools : [...composed.tools, describeToolsTool];
     const ac = new AbortController();
     res.on('close', () => { if (!res.writableFinished) ac.abort(); });
     const ctx: McpCtx = {

@@ -277,6 +277,11 @@ export const OUTPUT_SCHEMAS: Record<string, Schema> = {
   answer_question: SENT,
   set_idle_timeout: obj({ sessionId: str, armed: bool }),
   set_session_title: obj({ sessionId: str, title: nullable(str) }),
+  run_code: obj({
+    result: nullable(str), logs: str, exitCode: nullable(int), timedOut: bool, truncated: bool, durationMs: num,
+    resultChars: int, logsTruncated: lit(true),
+    error: obj({ name: str, message: str, code: str, status: int }, { optional: ['code', 'status'] }),
+  }, { optional: ['resultChars', 'logsTruncated', 'error'] }),
   renew_session: variants(
     obj({ ok: lit(true), sessionId: str, willClearAtTurnEnd: lit(true), message: str }),
     obj({ requested: lit(true), sessionId: nullable(str), note: str }),
