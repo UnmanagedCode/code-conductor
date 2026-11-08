@@ -363,3 +363,35 @@ test('rewind with out-of-range index returns 400', async () => {
   const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 5, text: 'only' });
   assert.equal(rew.status, 400);
 });
+
+// Invariant: when a rewind ends, the instance announces `prompts_unblocked`
+// with the prompt block already lifted, so a wake held while prompt() refused
+// is flushed against an instance that accepts it.
+test('a rewind ends with prompts_unblocked, emitted after rewriteBlocksPrompts clears', async () => {
+  const sid = 'rrrrrrrr-9999-3333-4444-555555555555';
+  await seedSession({
+    projectName: 'unblocks', sid,
+    lines: [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'text', text: 'first reply' },
+      ] } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second prompt' } },
+      { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [
+        { type: 'text', text: 'second reply' },
+      ] } },
+    ],
+  });
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'unblocks', mode: 'bypassPermissions', resume: sid,
+  });
+  assert.equal(r.status, 201);
+  const id = r.body.id;
+  await waitFor(() => instances.get(id).status === 'idle');
+  const inst = instances.get(id);
+  const blockedAtEmit = [];
+  inst.on('prompts_unblocked', () => blockedAtEmit.push(inst.rewriteBlocksPrompts));
+  const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1, text: 'second prompt' });
+  assert.equal(rew.status, 200);
+  assert.deepEqual(blockedAtEmit, [false]);
+});

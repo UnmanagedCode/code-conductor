@@ -907,6 +907,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _activeAgentTasks: Map<string, string | null>;
   _backgroundJobs: Map<string, BackgroundJob>;
   _taskNotificationPending: boolean;
+  _queuedPromptPending: boolean;
   _idleWindowDirty: boolean;
   _turnFirstReqCacheRead: number | null;
   _turnFirstReqCacheCreation: number | null;
@@ -1296,6 +1297,19 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (Idle-time completions that get NO re-invocation turn at all are the
     // hub's idle task-drain settle path — see IdleSubscriptionHub.onEvent.)
     this._taskNotificationPending = false;
+    // A prompt written into a RUNNING turn that the CLI has not taken in yet.
+    // The CLI folds a mid-turn message only at a top-level tool round-trip; with
+    // none before the turn ends it opens a new turn for it, so the turn's own
+    // result is followed by system/init + message_start before the status
+    // returns to `turn` (measured over conductor session jsonls: queued
+    // enqueue → dequeue → new turn after the old turn's end_turn, vs enqueue →
+    // remove + queued_command attachment in the same turn). A fold leaves no
+    // stdout signal, so this is a model, not an observation: SET by a mid-turn
+    // prompt() after the send, CLEARED by any top-level tool_result (a fold),
+    // by the next idle→turn transition (the queued turn started; see
+    // _setStatus), and on (re)spawn and exit. Read by IdleSubscriptionHub: while
+    // set, a delivered wake is not yet taken in, so its caller still awaits it.
+    this._queuedPromptPending = false;
     // True when any NON-task-lifecycle event was processed while this
     // instance was idle — i.e. the current idle window is not pure background-
     // task bookkeeping. The load-bearing case: an unprompted re-invocation
@@ -1379,6 +1393,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Read by IdleSubscriptionHub as a second defer reason alongside
   // activeAgentTaskCount.
   get taskNotificationPending(): boolean { return this._taskNotificationPending; }
+
+  // True while a prompt written into a running turn may still be queued in the
+  // CLI — see the _queuedPromptPending comment.
+  get queuedPromptPending(): boolean { return this._queuedPromptPending; }
 
   // True when the current idle window contains non-task-lifecycle activity
   // (see the _idleWindowDirty comment). Read by IdleSubscriptionHub to refuse
@@ -1803,7 +1821,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the re-invocation payload) is being delivered right now. Mid-turn
     // message_starts never reach here (status is already 'turn'), so agent-loop
     // steps inside a turn can't falsely clear it.
-    if (next === 'turn') this._taskNotificationPending = false;
+    if (next === 'turn') { this._taskNotificationPending = false; this._queuedPromptPending = false; }
     if (next === 'turn') this._liveAsk.onTurnStart();
     // A new turn starts: clear the per-turn cache-miss capture so the next
     // message_start is treated as this turn's first request (see the
@@ -2486,6 +2504,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._clearInterruptArm();
     this._turnForceAborted = false;
     this._taskNotificationPending = false;
+    this._queuedPromptPending = false;
     this._idleWindowDirty = false;
     // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
     // state (_prevTurnPrefix, _prefixBaselineInvalid) is NOT reset here: a
@@ -3228,6 +3247,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // conversation — they must not clear the flag.
       if (ev.kind === 'tool_result' && !ev.parentToolUseId) {
         this._taskNotificationPending = false;
+        this._queuedPromptPending = false;
       }
       // Track the plan files the model wrote, so an upcoming ExitPlanMode
       // plan_request can be enriched with the file's path (and, when the tool
@@ -3343,6 +3363,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.proc = null;
     this._lastExitReport = { code, signal, stderr: settledStderr, spawnError: this._spawnError };
     this._closeDrainWindow();
+    this._queuedPromptPending = false;
     const crashed = !(code === 0 && !signal);
     this._emitUi({ kind: 'system', subtype: 'exit', data: { code, signal } });
     // A SUBSTITUTION-backend subprocess that crashed on its own (not a commanded
@@ -3672,6 +3693,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       : null);
     this._setStatus('turn');
     this._turnActor = null;
+    // Written into a running turn: the CLI may queue it past this turn's end.
+    if (wasTurn) this._queuedPromptPending = true;
     // A real message steered into a chain turn makes it real.
     this._turnNudgeChain = wasTurn ? (this._turnNudgeChain && chain) : chain;
   }
@@ -3710,6 +3733,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // so they can never reach the copy (forkAtUserMessage).
   // A restart model switch blocks for its whole run, grace window included: a
   // prompt there would start a turn on a model not yet confirmed.
+  // Release the rewrite claim and tell the hub prompts are accepted again: a wake
+  // held while rewriteBlocksPrompts was true is flushed on this event.
+  _endMutation(): void {
+    this._mutating = null;
+    this.emit('prompts_unblocked');
+  }
+
   get rewriteBlocksPrompts(): boolean {
     return this._mutating === 'rewind' || this._mutating === 'prune' || this._mutating === 'model_switch';
   }
@@ -4101,7 +4131,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._modelSwitchFailure = { from, to, fromBackend, toBackend, error };
       console.warn(`instances: model switch ${fromName} → ${toName} on ${this.sessionId} failed: ${error}`);
     } finally {
-      this._mutating = null;
+      this._endMutation();
       this._modelSwitch = null;
       this._endRelaunch();
     }
@@ -4739,7 +4769,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         refusal && typeof err.code === 'string' ? { code: err.code } : {},
       );
     } finally {
-      this._mutating = null;
+      this._endMutation();
       if (windowOpen) this._endRelaunch();
     }
   }
@@ -4839,7 +4869,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         await this._awaitForkSourceGrowth(pin, snap.size, deadline);
       }
     } finally {
-      this._mutating = null;
+      this._endMutation();
     }
     // The fork starts titled after its source (forkTitle). Written before the
     // caller's create() so spawn's _hydrateTitle finds it on the new record.
@@ -5099,7 +5129,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
       throw e;
     } finally {
-      this._mutating = null;
+      this._endMutation();
       // Prune comes up IDLE with no turn, so the completion event is the ONLY wake
       // point — including on the failure path, where the recovery relaunch also
       // lands idle and an owner must not be left hanging on heartbeats. Ahead of
@@ -6584,6 +6614,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       this._guardOverageTurnStart(inst);
       if (inst.sessionId) this.emit('turn_started', { sessionId: inst.sessionId, conducted: inst.conducted, project: inst.project, actor: turnActor });
     });
+    inst.on('prompts_unblocked', () => this._idleHub.onPromptsUnblocked(inst.id));
     inst.on('turn_ended', ({ stopReason }: { stopReason?: string }) => {
       if (inst.sessionId) {
         this.emit('turn_ended', { sessionId: inst.sessionId, conducted: inst.conducted, project: inst.project, ...(stopReason !== undefined ? { stopReason } : {}) });

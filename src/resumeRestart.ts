@@ -180,8 +180,8 @@ export async function drainToIdle({ instances, log = console, graceMs = RESUME_D
   // an armed wake is PENDING, which is wider than "its worker is mid-turn" and
   // deliberately covers the held states, a deferred turn_end and a dropped
   // idle-drain settle, where the target is already idle), and a wake already
-  // consumed but not yet sent, or held for a mid-turn recipient (`_inFlight` /
-  // `_deferredWakes` in the idle hub). Such a conductor has
+  // consumed but not yet taken in by the CLI, or held for a mid-turn recipient
+  // (`_inFlight` / `_parked` / `_deferredWakes` in the idle hub). Such a conductor has
   // durable re-conduct work (re-spawn workers, re-drive them) even
   // though it's idle, so it must still receive its restart prompt. A restart
   // widens this for top-level sessions whose background work it kills — in

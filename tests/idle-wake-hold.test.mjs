@@ -433,24 +433,44 @@ test('disarming the child\'s last wait releases the owner\'s held wake', async (
   await r.teardown();
 });
 
-// Invariant: a wake to the child that is refused ends the child's wait without a
-// turn and releases the owner; one that is sent opens a turn and keeps holding.
-test('a refused wake to the child releases the owner; a sent one keeps holding', async (t) => {
-  for (const [name, refuse, wakes] of [['refused', true, 1], ['sent', false, 0]]) {
-    await t.test(name, async () => {
-      const r = rig();
-      const { P, C, G } = chain(r);
-      if (refuse) C.prompt = async () => { throw new Error('refused'); };
-      // Back-to-back in one synchronous run: the wake to C is in flight (its send
-      // is a queued microtask) when C's turn ends.
-      r.end(G);
-      r.end(C);
-      assert.equal(P.calls.length, 0, 'held on the in-flight wake');
-      await tick();
-      assert.equal(P.calls.length, wakes);
-      await r.teardown();
-    });
-  }
+// Invariant: a wake to the child that is refused while the child still has a
+// process is requeued, so the owner stays held; the child's next turn end
+// redelivers it, and the owner is woken once the turn that opens ends.
+test('a refused wake to a live child keeps the owner held until it is redelivered', async () => {
+  const r = rig();
+  const { P, C, G } = chain(r);
+  const send = C.prompt;
+  C.prompt = async () => { throw new Error('refused'); };
+  // Back-to-back in one synchronous run: the wake to C is in flight (its send
+  // is a queued microtask) when C's turn ends.
+  r.end(G);
+  r.end(C);
+  assert.equal(P.calls.length, 0, 'held on the in-flight wake');
+  await tick();
+  assert.equal(P.calls.length, 0, 'the refusal did not release the owner');
+  assert.equal(r.hub._deferredWakes.get('C')?.length, 1, 'the wake is owed again');
+  C.prompt = send;
+  r.end(C);
+  await tick();
+  assert.equal(C.calls.length, 1, 'redelivered at the next turn end');
+  assert.equal(P.calls.length, 0, 'the owner waits on the turn the wake opened');
+  r.end(C);
+  await tick();
+  assert.equal(P.calls.length, 1);
+  await r.teardown();
+});
+
+// Invariant: a wake that is sent opens a turn and keeps the owner holding.
+test('a sent wake to the child opens a turn and keeps the owner holding', async () => {
+  const r = rig();
+  const { P, C, G } = chain(r);
+  r.end(G);
+  r.end(C);
+  assert.equal(P.calls.length, 0, 'held on the in-flight wake');
+  await tick();
+  assert.equal(C.calls.length, 1);
+  assert.equal(P.calls.length, 0);
+  await r.teardown();
 });
 
 // Invariant: a wake deferred to a child that cannot take a mid-turn message holds

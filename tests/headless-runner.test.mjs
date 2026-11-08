@@ -28,6 +28,9 @@ const { CONDUCT_PROJECT_NAME } = await import('../src/conduct.ts');
 
 const fx = (n) => path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', n);
 const ROOT_GATED = fx('scenario-headless-root-gated.json');
+// The same gated root, but a prompt written into its open turn is queued by the CLI
+// (the open turn ends, then a new turn answers it) rather than ending the open turn.
+const ROOT_GATED_QUEUED = fx('scenario-headless-root-gated-queued.json');
 const WORKER_GATED = fx('scenario-headless-worker-gated.json');
 const ROOT_PLAN = fx('scenario-headless-root-plan.json');
 const ROOT_ERROR = fx('scenario-headless-root-error.json');
@@ -189,8 +192,15 @@ test('a root AskUserQuestion gets the canned answer, once', async () => {
   assert.ok(rootIn[1].endsWith(HEADLESS_QUESTION_ANSWER), rootIn[1]);
 });
 
-test('a worker\'s AskUserQuestion is not answered by the runner; it reaches the root as a wake', async () => {
-  const r = await start({ scenario: ROOT_GATED });
+test('a worker\'s AskUserQuestion is not answered by the runner; it reaches the root as a wake', async (t) => {
+  const r = await start({ scenario: ROOT_GATED_QUEUED });
+  // The park backstop never fires here: the run must complete because the queued
+  // turn's start released the hold, not because the backstop did.
+  const hub = server.instances._idleHub;
+  const { _setTimer, _clearTimer } = hub;
+  t.after(() => { hub._setTimer = _setTimer; hub._clearTimer = _clearTimer; });
+  hub._setTimer = () => ({});
+  hub._clearTimer = () => {};
   await waitFor(() => r.root.status === 'turn');
   const workerLog = path.join(home, 'worker-stdin.jsonl');
   const worker = await spawnWorker(r.root, QUESTION, workerLog);

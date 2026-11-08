@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { posixPlatform } from '../src/platform/posix.ts';
 import { InstanceManager } from '../src/instances.ts';
+import { PARKED_BACKSTOP_MS } from '../src/idleSubscriptions.ts';
 
 const mkFake = (id, sessionId, over = {}) => ({
   id, sessionId, project: 'p', proc: { pid: 1 }, status: 'idle', acceptsMidTurnSteering: true,
@@ -58,15 +59,120 @@ test('awaitingWake holds across the consume → wake-turn-start gap and clears o
   await r.instances.shutdown().catch(() => {});
 });
 
-// Invariant: a refused send does not strand the conductor in "on a worker".
-test('a refused send clears awaitingWake and emits', async () => {
+// Invariant: a delivery that fails against a caller that still has a process
+// keeps the conductor waiting — the wake goes back on the deferred queue and the
+// caller's next turn_end redelivers it (the same stub), after which it clears.
+test('a refused send to a live caller requeues the wake and the next turn_end redelivers it', async () => {
   const r = rig();
-  r.conductor.prompt = async () => { throw new Error('refused'); };
+  const sent = [];
+  let refuse = true;
+  r.conductor.prompt = async (text) => {
+    sent.push(text);
+    if (refuse) throw new Error('refused');
+    r.conductor.status = 'turn';
+  };
   r.finishWorker();
   r.release();
   await r.settle();
+  assert.deepEqual(sent, ['stub'], 'the first attempt was made');
+  assert.equal(r.hub._deferredWakes.get('c')?.length, 1, 'the wake is owed again');
+  assert.equal(r.instances.isIdleCaller('c'), true, 'still waiting after the refusal');
+  assert.deepEqual(r.changes, [], 'no clear was announced');
+  refuse = false;
+  r.instances.emit('event', { id: 'c', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  await r.settle();
+  assert.deepEqual(sent, ['stub', 'stub'], 'redelivered with the stub');
+  assert.equal(r.hub._deferredWakes.has('c'), false);
+  assert.equal(r.instances.isIdleCaller('c'), false, 'cleared once delivered');
+  assert.ok(r.changes.length > 0, 'the clearing emitted subscription_changed');
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a wake sent into a RUNNING turn that the CLI may queue keeps the
+// conductor waiting through that turn's own turn_end (status idle), and the
+// hold is released, with an announcement, only when the queued turn starts.
+test('a wake written into a running turn stays awaiting through the caller\'s turn_end until its queued turn starts', async () => {
+  const r = rig({ status: 'turn', queuedPromptPending: false });
+  r.conductor.prompt = async () => { r.conductor.queuedPromptPending = true; };
+  r.finishWorker();
+  await r.settle();
+  assert.equal(r.hub._parked.get('c')?.length, 1, 'premise: parked after the send');
+  assert.equal(r.instances.isIdleCaller('c'), true, 'sent mid-turn, not yet taken in');
+  r.conductor.status = 'idle';
+  r.instances.emit('event', { id: 'c', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  assert.equal(r.instances.isIdleCaller('c'), true, 'the caller\'s own turn_end does not release it');
+  assert.deepEqual(r.changes, []);
+  r.conductor.status = 'turn';
+  r.conductor.queuedPromptPending = false;
+  r.hub.onTurnStart('c');
+  assert.equal(r.instances.isIdleCaller('c'), false, 'released at the queued turn\'s start');
+  assert.ok(r.changes.length > 0, 'the release emitted subscription_changed');
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a wake the CLI folded into the running turn (a top-level
+// tool_result cleared the flag) releases the hold mid-turn, so the later
+// turn_end reads not awaiting.
+test('a fold (flag cleared at a tool_result event) releases the hold before the caller\'s turn_end', async () => {
+  const r = rig({ status: 'turn', queuedPromptPending: false });
+  r.conductor.prompt = async () => { r.conductor.queuedPromptPending = true; };
+  r.finishWorker();
+  await r.settle();
+  assert.equal(r.instances.isIdleCaller('c'), true, 'premise: parked');
+  r.instances.emit('event', { id: 'c', ev: { kind: 'tool_result', toolUseId: 't' } });
+  assert.equal(r.instances.isIdleCaller('c'), true, 'flag still set: an unrelated event does not release');
+  r.conductor.queuedPromptPending = false;
+  r.instances.emit('event', { id: 'c', ev: { kind: 'tool_result', toolUseId: 't' } });
+  assert.equal(r.instances.isIdleCaller('c'), false, 'released mid-turn');
+  r.conductor.status = 'idle';
+  r.instances.emit('event', { id: 'c', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  assert.equal(r.instances.isIdleCaller('c'), false, 'the turn_end snapshot reads not awaiting');
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a parked hold does not outlive its caller — purge drops it, and an
+// exit event with the flag cleared releases it.
+test('a parked hold is dropped by purge and released by an exit event', async () => {
+  const a = rig({ status: 'turn', queuedPromptPending: false });
+  a.conductor.prompt = async () => { a.conductor.queuedPromptPending = true; };
+  a.finishWorker();
+  await a.settle();
+  assert.equal(a.instances.isIdleCaller('c'), true, 'premise: parked');
+  a.conductor.queuedPromptPending = false;
+  a.instances.emit('event', { id: 'c', ev: { kind: 'system', subtype: 'exit', data: { code: 1, signal: null } } });
+  assert.equal(a.hub._parked.has('c'), false);
+  assert.equal(a.hub._inFlight.has('c'), false, 'exit released the count');
+  await a.instances.shutdown().catch(() => {});
+
+  const b = rig({ status: 'turn', queuedPromptPending: false });
+  b.conductor.prompt = async () => { b.conductor.queuedPromptPending = true; };
+  b.finishWorker();
+  await b.settle();
+  assert.equal(b.hub._parked.get('c')?.length, 1, 'premise: parked');
+  b.hub.purge('c');
+  assert.equal(b.hub._parked.has('c'), false);
+  assert.equal(b.hub._inFlight.has('c'), false);
+  await b.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a wake for a caller whose rewrite (rewind, prune, model switch)
+// makes prompt() refuse is held without calling prompt, and the unblock event
+// delivers it.
+test('a wake to a caller with rewriteBlocksPrompts is held and delivered on prompts_unblocked', async () => {
+  const r = rig({ rewriteBlocksPrompts: true });
+  const sent = [];
+  r.conductor.prompt = async (text) => { sent.push(text); r.conductor.status = 'turn'; };
+  r.finishWorker();
+  r.release();
+  await r.settle();
+  assert.deepEqual(sent, [], 'prompt was not called');
+  assert.equal(r.hub._deferredWakes.get('c')?.length, 1, 'held');
+  assert.equal(r.instances.isIdleCaller('c'), true);
+  r.conductor.rewriteBlocksPrompts = false;
+  r.hub.onPromptsUnblocked('c');
+  await r.settle();
+  assert.deepEqual(sent, ['stub']);
   assert.equal(r.instances.isIdleCaller('c'), false);
-  assert.ok(r.changes.length > 0, 'an event announced the clear');
   await r.instances.shutdown().catch(() => {});
 });
 
@@ -82,6 +188,20 @@ test('an abandoned delivery (conductor gone before the send) clears awaitingWake
   r.release();
   await r.settle();
   assert.equal(prompted, false, 'nothing was sent');
+  assert.equal(r.instances.isIdleCaller('c'), false);
+  assert.ok(r.changes.length > 0);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a failed delivery whose caller lost its process meanwhile is
+// dropped, not requeued, and the in-flight count clears.
+test('a refused send to a caller that died meanwhile is dropped, not requeued', async () => {
+  const r = rig();
+  r.conductor.prompt = async () => { r.conductor.proc = null; throw new Error('gone'); };
+  r.finishWorker();
+  r.release();
+  await r.settle();
+  assert.equal(r.hub._deferredWakes.has('c'), false, 'nothing requeued');
   assert.equal(r.instances.isIdleCaller('c'), false);
   assert.ok(r.changes.length > 0);
   await r.instances.shutdown().catch(() => {});
@@ -115,5 +235,105 @@ test('a heartbeat delivery leaves the armed wake and emits nothing on completion
   assert.equal(r.instances.isIdleCaller('c'), true);
   assert.deepEqual(r.changes, []);
   r.hub.subscribers.clear();
+  await r.instances.shutdown().catch(() => {});
+});
+
+// A parked rig whose backstop timer is captured instead of scheduled, so the
+// tests fire it by hand and never sleep.
+async function parkedRig() {
+  const r = rig({ status: 'turn', queuedPromptPending: false });
+  const timers = [];
+  r.hub._setTimer = (fn, ms) => { const h = { fn, ms, cleared: false }; timers.push(h); return h; };
+  r.hub._clearTimer = (h) => { h.cleared = true; };
+  r.conductor.prompt = async () => { r.conductor.queuedPromptPending = true; };
+  r.finishWorker();
+  await r.settle();
+  assert.equal(r.instances.isIdleCaller('c'), true, 'premise: parked');
+  r.conductor.status = 'idle';
+  r.instances.emit('event', { id: 'c', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  return { ...r, timers };
+}
+
+// Invariant: a parked hold whose queued turn never starts is released by the
+// backstop armed at the caller's turn_end, with subscription_changed and one
+// stderr line saying so.
+test('the backstop releases a parked hold whose queued turn never starts', async () => {
+  const r = await parkedRig();
+  const lines = [];
+  r.conductor._emitUi = (ev) => lines.push(ev);
+  assert.equal(r.timers.length, 1, 'armed at the caller\'s turn_end');
+  assert.equal(r.instances.isIdleCaller('c'), true, 'still held before it fires');
+  assert.deepEqual(r.changes, []);
+  r.timers[0].fn();
+  assert.equal(r.instances.isIdleCaller('c'), false, 'released');
+  assert.equal(r.hub._parked.has('c'), false);
+  assert.ok(r.changes.length > 0, 'subscription_changed fired');
+  assert.equal(lines.filter((e) => e.subtype === 'stderr' && /backstop/.test(e.data.line)).length, 1);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a queued turn that starts before the backstop cancels it — it never
+// fires afterwards, so there is no second release and no late emit.
+test('a queued turn starting before the backstop cancels it', async () => {
+  const r = await parkedRig();
+  r.conductor.status = 'turn';
+  r.conductor.queuedPromptPending = false;
+  r.hub.onTurnStart('c');
+  assert.equal(r.timers[0].cleared, true, 'cancelled');
+  const emitted = r.changes.length;
+  assert.equal(r.instances.isIdleCaller('c'), false);
+  r.timers[0].fn(); // a timer that fired anyway finds nothing to release
+  assert.equal(r.changes.length, emitted, 'no late emit');
+  assert.equal(r.hub._inFlight.has('c'), false, 'no double release');
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: purge cancels the backstop.
+test('purge cancels the backstop', async () => {
+  const r = await parkedRig();
+  r.hub.purge('c');
+  assert.equal(r.timers[0].cleared, true);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: a release (the flag cleared at an event) cancels the backstop.
+test('a release cancels the backstop', async () => {
+  const r = await parkedRig();
+  r.conductor.queuedPromptPending = false;
+  r.instances.emit('event', { id: 'c', ev: { kind: 'system', subtype: 'exit', data: { code: 1, signal: null } } });
+  assert.equal(r.timers[0].cleared, true);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: the backstop is armed with PARKED_BACKSTOP_MS, and that delay clears
+// the measured worst case (dequeue max 9.5 s in conductor session jsonls) — a
+// shorter one would release the hold inside the result → message_start window.
+test('the backstop is armed with PARKED_BACKSTOP_MS, which exceeds the measured dequeue maximum', async () => {
+  const r = await parkedRig();
+  assert.equal(r.timers[0].ms, PARKED_BACKSTOP_MS);
+  assert.ok(PARKED_BACKSTOP_MS > 9_500, `${PARKED_BACKSTOP_MS} must exceed the 9.5 s dequeue max`);
+  await r.instances.shutdown().catch(() => {});
+});
+
+// Invariant: whether a send was written into a running turn is decided from the
+// caller's flag AFTER prompt(), not from the status read at dispatch. A caller
+// idle at dispatch that is `turn` by the time the send runs parks the hold, and
+// the hold survives that caller's turn_end until its queued turn starts.
+test('a caller idle at dispatch but in a turn by send time parks the hold until its queued turn starts', async () => {
+  const r = rig();
+  assert.equal(r.conductor.status, 'idle', 'premise: idle at dispatch');
+  r.conductor.prompt = async () => { r.conductor.queuedPromptPending = true; };
+  r.finishWorker();
+  r.conductor.status = 'turn'; // the caller starts a turn before the send's microtask runs
+  r.release();
+  await r.settle();
+  assert.equal(r.hub._parked.get('c')?.length, 1, 'parked, though the stub was built for an idle caller');
+  r.conductor.status = 'idle';
+  r.instances.emit('event', { id: 'c', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  assert.equal(r.instances.isIdleCaller('c'), true, 'survives the caller\'s turn_end');
+  r.conductor.status = 'turn';
+  r.conductor.queuedPromptPending = false;
+  r.hub.onTurnStart('c');
+  assert.equal(r.instances.isIdleCaller('c'), false, 'released at the queued turn\'s start');
   await r.instances.shutdown().catch(() => {});
 });

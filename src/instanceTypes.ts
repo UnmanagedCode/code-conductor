@@ -189,6 +189,9 @@ export interface InstanceLike {
   readonly activeAgentTaskCount: number;
   readonly backgroundJobs: BackgroundJob[];
   readonly taskNotificationPending: boolean;
+  // True while a prompt written into a running turn may still be queued in the
+  // CLI (not yet folded at a tool round-trip nor started as its own turn).
+  readonly queuedPromptPending: boolean;
   // True when the current idle window contains non-task-lifecycle activity —
   // read by IdleSubscriptionHub to refuse arming an idle task-drain settle.
   readonly idleWindowDirty: boolean;
