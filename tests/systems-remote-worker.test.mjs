@@ -27,7 +27,7 @@ import { rotate } from './segmentChain.mjs';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { addBackend, addCustomModel, setTaskToolsEnabled } from '../src/appSettings.ts';
+import { addBackend, addCustomModel, setTaskToolsEnabled, setAutoBackground } from '../src/appSettings.ts';
 import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
 
 const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
@@ -116,6 +116,25 @@ describe('a worker session on a remote system', () => {
     } finally {
       await setTaskToolsEnabled(false);
       if (saved !== undefined) process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS = saved;
+    }
+  });
+
+  // Auto-background setting reaches a remote worker's launch env: a remote-system worker is a worker.
+  test('the auto-background env vars ride on a remote worker launch when the setting is on', async () => {
+    const vars = ['CLAUDE_AUTO_BACKGROUND_TASKS', 'CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS'];
+    const saved = Object.fromEntries(vars.map((k) => [k, process.env[k]]));
+    for (const k of vars) delete process.env[k];
+    try {
+      await setAutoBackground({ enabled: true, thresholdMs: 20_000 });
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const inst = instances.get(r.body.id);
+      await waitFor(() => inst.status === 'idle' && inst._spawnEnv);
+      assert.equal(inst._spawnEnv.CLAUDE_AUTO_BACKGROUND_TASKS, '1');
+      assert.equal(inst._spawnEnv.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS, '20000');
+    } finally {
+      await setAutoBackground({ enabled: false, thresholdMs: 120_000 });
+      for (const k of vars) if (saved[k] !== undefined) process.env[k] = saved[k];
     }
   });
 

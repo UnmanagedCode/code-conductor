@@ -77,6 +77,7 @@ import {
   getBackends, getSubstitutionBackends, backendModels, addBackend, updateBackend, removeBackend,
   getSystems, addSystem, updateSystem, removeSystem,
   getDebugByDefault, setDebugByDefault, getTaskToolsEnabled, setTaskToolsEnabled,
+  getAutoBackground, setAutoBackground, autoBackgroundPatchError, AUTO_BACKGROUND_MIN_MS, AUTO_BACKGROUND_MAX_MS,
 } from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
@@ -509,17 +510,31 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
 
   // Settings → Models spawn prefs: debugByDefault (whether newly spawned
   // instances default to debug capture when a spawn call doesn't name `debug`;
-  // an explicit per-spawn value always wins) and taskTools (opt every launched
-  // session into the CLI's task tools; see Instance.spawn).
+  // an explicit per-spawn value always wins), taskTools (opt every launched
+  // session into the CLI's task tools; see Instance.spawn) and autoBackground
+  // (opt worker launches into the CLI's MCP auto-background, with its threshold
+  // and the bounds the client's slider reads; see Instance.spawn).
+  const spawnPrefs = () => ({
+    debugByDefault: getDebugByDefault(),
+    taskTools: getTaskToolsEnabled(),
+    autoBackground: { ...getAutoBackground(), minMs: AUTO_BACKGROUND_MIN_MS, maxMs: AUTO_BACKGROUND_MAX_MS },
+  });
   r.get('/settings/spawn', async (req, res, next) => {
-    try { res.json({ debugByDefault: getDebugByDefault(), taskTools: getTaskToolsEnabled() }); } catch (e) { next(e); }
+    try { res.json(spawnPrefs()); } catch (e) { next(e); }
   });
   r.post('/settings/spawn/prefs', async (req, res, next) => {
     try {
       const body = jsonBody(req);
+      // The whole body is validated before any write: a refused autoBackground
+      // leaves the request's other fields unsaved too.
+      if (body.autoBackground !== undefined) {
+        const error = autoBackgroundPatchError(body.autoBackground);
+        if (error) { res.status(400).json({ error }); return; }
+      }
       if (body.debugByDefault !== undefined) await setDebugByDefault(body.debugByDefault);
       if (body.taskTools !== undefined) await setTaskToolsEnabled(body.taskTools);
-      res.json({ debugByDefault: getDebugByDefault(), taskTools: getTaskToolsEnabled() });
+      if (body.autoBackground !== undefined) await setAutoBackground(body.autoBackground);
+      res.json(spawnPrefs());
     } catch (e) { next(e); }
   });
 

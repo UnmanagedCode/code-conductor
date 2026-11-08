@@ -17,7 +17,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend, settle } from './helpers.mjs';
-import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend, setTaskToolsEnabled,
+import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend, setTaskToolsEnabled, setAutoBackground,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier, setTierEffort,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
 import { getSessionBackend, setSessionBackend, sessionsFile, isTemp, isConducted, getSessionMode } from '../src/sessionStore.ts';
@@ -306,6 +306,33 @@ describe('substitution-backend spawn command/args', () => {
       const { env } = await spawnOnBackend({ model: 'st:v1', backend: 'shadow-tasks' });
       assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, '1', 'cc-managed value wins over the user env pair');
     } finally { await setTaskToolsEnabled(false); }
+  });
+
+  // Pins: the auto-background set runs AFTER Object.assign(backendEnvVars), so cc's values win.
+  test('cc\'s auto-background vars beat same-named backend env pairs when the setting is on', async () => {
+    await addBackend({
+      id: 'shadow-autobg', label: 'Shadow autobg', template: 'shadowctl claude --model {model} --',
+      env: [{ key: 'CLAUDE_AUTO_BACKGROUND_TASKS', value: '0' }, { key: 'CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS', value: '5000' }],
+    });
+    await addCustomModel({ label: 'SA', model: 'sa:v1', backend: 'shadow-autobg', contextWindow: 128_000 });
+    await setAutoBackground({ enabled: true, thresholdMs: 60_000 });
+    try {
+      const { env } = await spawnOnBackend({ model: 'sa:v1', backend: 'shadow-autobg' });
+      assert.equal(env.CLAUDE_AUTO_BACKGROUND_TASKS, '1', 'cc-managed flag wins over the user env pair');
+      assert.equal(env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS, '60000', 'cc-managed threshold wins over the user env pair');
+    } finally { await setAutoBackground({ enabled: false }); }
+  });
+
+  // Pins: the auto-background strip runs AFTER Object.assign(backendEnvVars), so a pair cannot opt a worker in.
+  test('a backend env pair naming an auto-background var is stripped from a worker launch when the setting is off', async () => {
+    await addBackend({
+      id: 'shadow-autobg-off', label: 'Shadow autobg off', template: 'shadowctl claude --model {model} --',
+      env: [{ key: 'CLAUDE_AUTO_BACKGROUND_TASKS', value: '1' }, { key: 'CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS', value: '5000' }],
+    });
+    await addCustomModel({ label: 'SAO', model: 'sao:v1', backend: 'shadow-autobg-off', contextWindow: 128_000 });
+    const { env } = await spawnOnBackend({ model: 'sao:v1', backend: 'shadow-autobg-off' });
+    assert.equal('CLAUDE_AUTO_BACKGROUND_TASKS' in env, false);
+    assert.equal('CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS' in env, false);
   });
 });
 

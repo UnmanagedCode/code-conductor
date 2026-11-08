@@ -94,7 +94,7 @@ import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // applied at the ingress boundaries — the spawn route and the WS toggle — not here.
 import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbooks.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getConductorIdleNudge, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getTaskToolsEnabled, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getConductorIdleNudge, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getTaskToolsEnabled, getAutoBackground, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { ConductorReadNudge, readNudgeEvent } from './conductorReadNudge.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
@@ -1264,7 +1264,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // fire while this is still non-empty — that's the whole point: `status`
     // stays the true process lifecycle value, while `summary().displayStatus`
     // (see below) overlays `running` for as long as this map is non-empty.
-    // Reset on (re)spawn so a stale entry never survives a respawn/resume.
+    // Reset on (re)spawn and cleared in _handleExit, so a stale entry never
+    // survives a respawn/resume and a dead CLI never reports a running agent.
     this._activeAgentTasks = new Map<string, string | null>();
     // Running background Bash jobs, keyed by task_id, from the CLI's
     // `background_tasks_changed` snapshot (src/backgroundJobs.ts). Display-only:
@@ -2741,6 +2742,20 @@ export class Instance extends EventEmitter implements InstanceLike {
     // allow-rules). Unset when off, so the launch is exactly what it was without
     // the setting.
     if (getTaskToolsEnabled()) spawnEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
+    // Settings → Models → MCP auto-background, WORKERS ONLY (never the
+    // conductor). cc-managed on every launch: an inherited host value or a
+    // backend pair is deleted first, so the setting alone decides. The CLI
+    // ignores the threshold without the flag; with it, an MCP call (and an Agent
+    // call with run_in_background:false) running past the threshold moves to the
+    // background and the CLI starts its own turn when it completes. Measured
+    // against Claude Code 2.1.316.
+    delete spawnEnv.CLAUDE_AUTO_BACKGROUND_TASKS;
+    delete spawnEnv.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS;
+    const autoBackground = getAutoBackground();
+    if (autoBackground.enabled && !isConductorInstance(this)) {
+      spawnEnv.CLAUDE_AUTO_BACKGROUND_TASKS = '1';
+      spawnEnv.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS = String(autoBackground.thresholdMs);
+    }
     // REDIRECTED SESSIONS ONLY: pin the CLI's per-uid tmp root to a cc-owned
     // per-session directory.
     //
@@ -3393,8 +3408,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     this.emit('exit_cause', this.lastExit);
     // Before the status change, so the exit's own 'status' emission already
-    // carries no jobs: a CLI killed outright never sends the empty snapshot.
+    // carries no jobs and no agent tasks: a CLI killed outright sends neither
+    // the empty snapshot nor terminal task frames. After `exit_cause`, whose
+    // wake does not read the count; clearing emits no event, so no task wake.
     this._backgroundJobs = new Map<string, BackgroundJob>();
+    this._activeAgentTasks = new Map<string, string | null>();
     this._setStatus(crashed ? 'crashed' : 'exited');
     for (const p of this._pending.values()) {
       clearTimeout(p.timer);
