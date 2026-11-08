@@ -62,14 +62,19 @@ async function spawnIdle(project, mode = 'bypassPermissions') {
   return inst.sessionId;
 }
 // Any identified session may be the caller; a plain project session avoids the conductor playbook gate.
-const conductor = (mode) => spawnIdle('demo', mode);
+const callerSession = (mode) => spawnIdle('demo', mode);
 const spawn = (caller, args = {}) => callTool('spawn_instance', { project: 'demo', mode: 'bypassPermissions', ...args }, { caller });
 const isNudge = (v) => { assert.equal(typeof handlers.SELF_TITLE_NUDGE, 'string'); assert.equal(v.titleNudge, handlers.SELF_TITLE_NUDGE); };
-const hasNudge = (v) => Object.hasOwn(v, 'titleNudge');
+// A negative row must come from a spawn that succeeded, not a refusal.
+const hasNudge = (v) => {
+  assert.notEqual(v.ok, false, `spawn was refused: ${JSON.stringify(v)}`);
+  assert.equal(typeof v.sessionId, 'string', `spawn returned no sessionId: ${JSON.stringify(v)}`);
+  return Object.hasOwn(v, 'titleNudge');
+};
 
 // INVARIANT: an untitled, non-plan, identified caller's successful spawn carries exactly SELF_TITLE_NUDGE beside the conductor view.
-test('an untitled conductor caller is nudged', async () => {
-  const caller = await conductor();
+test('an untitled caller is nudged', async () => {
+  const caller = await callerSession();
   const v = await spawn(caller);
   isNudge(v);
   assert.deepEqual(Object.keys(v).sort(), [...handlers.CONDUCTOR_VIEW_KEYS, 'titleNudge'].sort());
@@ -77,7 +82,7 @@ test('an untitled conductor caller is nudged', async () => {
 
 // INVARIANT: the nudge stops once the caller has a stored title.
 test('the nudge stops once the caller is titled', async () => {
-  const caller = await conductor();
+  const caller = await callerSession();
   assert.equal(hasNudge(await spawn(caller)), true);
   await callTool('set_session_title', { title: 'X' }, { caller });
   assert.equal(hasNudge(await spawn(caller)), false);
@@ -85,7 +90,7 @@ test('the nudge stops once the caller is titled', async () => {
 
 // INVARIANT: the caller's CURRENT mode decides, not its spawn-time mode.
 test('the caller current mode decides', async () => {
-  const caller = await conductor();
+  const caller = await callerSession();
   await callTool('set_mode', { sessionId: caller, mode: 'plan' });
   assert.equal(hasNudge(await spawn(caller)), false);
   await callTool('set_mode', { sessionId: caller, mode: 'bypassPermissions' });
@@ -94,19 +99,20 @@ test('the caller current mode decides', async () => {
 
 // INVARIANT: a caller in plan mode from birth is never nudged.
 test('a plan-mode caller from birth is not nudged', async () => {
-  const caller = await conductor('plan');
+  const caller = await callerSession('plan');
   assert.equal(hasNudge(await spawn(caller)), false);
 });
 
 // INVARIANT: an anonymous call gets exactly the conductor view.
 test('an anonymous spawn carries no nudge', async () => {
   const v = await spawn(undefined);
+  assert.equal(hasNudge(v), false);
   assert.deepEqual(Object.keys(v).sort(), [...handlers.CONDUCTOR_VIEW_KEYS].sort());
 });
 
 // INVARIANT: a successful resume is nudged like a fresh spawn.
 test('a resume is nudged too', async () => {
-  const caller = await conductor();
+  const caller = await callerSession();
   const w = await spawn(caller);
   const inst = instForSession(instances, w.sessionId);
   await seedSessionJsonl(localPlace(inst.cwd), inst.backingSessionId);
@@ -118,7 +124,7 @@ test('a resume is nudged too', async () => {
 
 // INVARIANT: the worker's `title` argument never titles the caller, so the caller is still nudged.
 test('a worker title does not stand in for the caller title', async () => {
-  const caller = await conductor();
+  const caller = await callerSession();
   const v = await spawn(caller, { title: 'Worker' });
   isNudge(v);
   assert.equal(await getTitle(caller), null);
@@ -126,7 +132,7 @@ test('a worker title does not stand in for the caller title', async () => {
 
 // INVARIANT: a refused spawn keeps its refusal shape and carries no nudge.
 test('a refusal carries no nudge', async () => {
-  const caller = await conductor();
+  const caller = await callerSession();
   const r = await callTool('spawn_instance', { project: 'demo', resume: 'bogus-session-id' }, { caller });
   assert.equal(r.code, 'SESSION_UNKNOWN');
   assert.equal(hasNudge(r), false);
