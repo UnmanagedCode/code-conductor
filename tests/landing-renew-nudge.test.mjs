@@ -1,6 +1,6 @@
 // The landing renewal nudge: a conductor's MCP delete_worktree of a worktree
-// whose work landed carries `renewNudge` on its result when the opt-in setting
-// is on. "Landed" = the in-memory landing record (set by a successful
+// whose work landed carries `renewNudge` on its result when the setting is on
+// (the default). "Landed" = the in-memory landing record (set by a successful
 // merge) AND no commits left ahead of the base, measured before removal.
 //
 // One top-level test per row: the root afterEach shuts instances down around
@@ -18,7 +18,7 @@ import { createWorktree, getWorktree, worktreeWorkLanded } from '../src/worktree
 import {
   recordWorktreeLanding, worktreeLandingRecorded, forgetWorktreeLandings, clearWorktreeLandings,
 } from '../src/worktreeLandings.ts';
-import { removeProjectStoreDir } from '../src/projects.ts';
+import { removeProjectStoreDir, orchStoreRoot } from '../src/projects.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { LANDING_RENEW_NUDGE } from '../src/mcp/handlers.ts';
 
@@ -142,8 +142,26 @@ test('on, conductor caller, landed: the delete result carries renewNudge', async
   assert.deepEqual(await del(wt, caller), { ...expected(wt), renewNudge: LANDING_RENEW_NUDGE });
 });
 
+// INVARIANT: absent means on: with nothing saved, a landed conductor delete carries renewNudge.
+test('default (nothing saved), conductor caller, landed: the delete result carries renewNudge', async () => {
+  const caller = await conductor();
+  const { wt } = await fixture({ merge: true });
+  assert.deepEqual(await del(wt, caller), { ...expected(wt), renewNudge: LANDING_RENEW_NUDGE });
+});
+
+// INVARIANT: only models.landingRenewNudgeOn is read: a value saved under the
+// retired key does not suppress the nudge.
+test('a value saved under models.landingRenewNudgeEnabled does not suppress the nudge', async () => {
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  await fs.writeFile(path.join(orchStoreRoot(), 'settings.json'), JSON.stringify({ models: { landingRenewNudgeEnabled: false } }));
+  const caller = await conductor();
+  const { wt } = await fixture({ merge: true });
+  assert.deepEqual(await del(wt, caller), { ...expected(wt), renewNudge: LANDING_RENEW_NUDGE });
+});
+
 // INVARIANT: with the setting off the delete result is byte-identical to today's.
 test('off, same fixture: the delete result is exactly {project, worktree}', async () => {
+  await setNudge(false);
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
   assert.deepEqual(await del(wt, caller), expected(wt));
@@ -238,6 +256,7 @@ const aheadCountCalls = (calls) => calls.filter(c => c.includes('rev-list') && c
 
 // INVARIANT: with the setting off, delete_worktree makes no landing check (no ahead/behind git call).
 test('off: a landed delete by a conductor runs no ahead/behind comparison', async () => {
+  await setNudge(false);
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
   const calls = await gitCallsDuring(() => del(wt, caller));

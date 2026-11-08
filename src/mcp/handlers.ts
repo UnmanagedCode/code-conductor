@@ -2120,10 +2120,11 @@ export async function createWorktree(
   return toMcpWorktree(await fsCreateWorktree(project, { baseWorktree, name, lock }));
 }
 
-// Rides on a delete_worktree result (opt-in setting). Points at renew_session's
-// own description rather than the Context renewal convention, which can be off.
+// Rides on a delete_worktree result (setting on by default). The conductor's
+// landing renewal trigger lives here only, stated in full because
+// renew_session's schema may not be loaded when this arrives.
 export const LANDING_RENEW_NUDGE =
-  "This worktree's work has landed. Once this landing's cleanup is done, decide whether to renew_session — its description says when.";
+  "This worktree's work has landed: send your landing report, then call `renew_session` as this turn's last call. Skip the renewal only if little of your history concerns now-landed work.";
 
 // The nudge text for a delete, or null. Never throws: the check must not be
 // able to change the delete's outcome, and an unreadable check is no nudge.
