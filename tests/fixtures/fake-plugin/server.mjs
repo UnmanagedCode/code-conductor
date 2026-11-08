@@ -47,7 +47,6 @@ const server = http.createServer(async (req, res) => {
       port: PORT,
       conductorUrl: process.env.CONDUCTOR_URL ?? null,
       mcpUrl: process.env.CONDUCTOR_MCP_URL ?? null,
-      mcpClientDir: process.env.CONDUCTOR_MCP_CLIENT_DIR ?? null,
       pluginId: process.env.CONDUCTOR_PLUGIN_ID ?? null,
       projectsRoot: process.env.PROJECTS_ROOT ?? null,
       conductorProjectDir: process.env.CONDUCTOR_PROJECT_DIR ?? null,

@@ -272,18 +272,14 @@ test('readiness via healthPath; child gets $PORT and reaches ready', async (t) =
   assert.ok(rec.startedAt);
 });
 
-// An outer cc's CONDUCTOR_MCP_URL / CONDUCTOR_MCP_CLIENT_DIR (this server itself
-// running as a worker) never reach a plugin child: only the env the registry
-// hands over names them.
-test('a plugin child gets CONDUCTOR_MCP_URL and CONDUCTOR_MCP_CLIENT_DIR from its env only, never inherited', async (t) => {
-  const saved = { url: process.env.CONDUCTOR_MCP_URL, dir: process.env.CONDUCTOR_MCP_CLIENT_DIR };
+// An outer cc's CONDUCTOR_MCP_URL (this server itself running as a worker)
+// never reaches a plugin child: only the env the registry hands over names it.
+test('a plugin child gets CONDUCTOR_MCP_URL from its env only, never inherited', async (t) => {
+  const saved = process.env.CONDUCTOR_MCP_URL;
   process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
-  process.env.CONDUCTOR_MCP_CLIENT_DIR = '/outer/planted/mcp-client';
   t.after(() => {
-    if (saved.url === undefined) delete process.env.CONDUCTOR_MCP_URL;
-    else process.env.CONDUCTOR_MCP_URL = saved.url;
-    if (saved.dir === undefined) delete process.env.CONDUCTOR_MCP_CLIENT_DIR;
-    else process.env.CONDUCTOR_MCP_CLIENT_DIR = saved.dir;
+    if (saved === undefined) delete process.env.CONDUCTOR_MCP_URL;
+    else process.env.CONDUCTOR_MCP_URL = saved;
   });
   const sup = createSupervisor();
   const bare = await startAndSettle(t, sup, {
@@ -294,7 +290,6 @@ test('a plugin child gets CONDUCTOR_MCP_URL and CONDUCTOR_MCP_CLIENT_DIR from it
   });
   const env = await (await fetch(`http://127.0.0.1:${bare.rec.port}/env`)).json();
   assert.equal(env.mcpUrl, null);
-  assert.equal(env.mcpClientDir, null);
 });
 
 test('readiness via readyWhen stdout regex', async (t) => {

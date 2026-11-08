@@ -7,7 +7,6 @@ import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
 import { buildRoutes, type RelaunchOptions } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
-import { writeMcpClientFiles } from './src/mcp/client/files.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
 import type { WriteLease } from './src/eventLog.ts';
 
@@ -325,11 +324,6 @@ async function startHolding(rootLock: RootLock, {
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
   const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
-  // The generated /mcp client (docs/mcp-applications.md → Client libraries),
-  // from the registry this server serves. Before listen, so no worker, plugin
-  // or resumed session can import a client older than this server. Fatal on
-  // failure: a stale or missing client must not be served silently.
-  await writeMcpClientFiles(platform.capabilities);
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)

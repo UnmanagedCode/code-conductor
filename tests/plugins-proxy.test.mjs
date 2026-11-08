@@ -31,7 +31,6 @@ test('proxy: lazy start, prefix strip, query + X-Forwarded passthrough', async (
     assert.equal(env.pluginId, 'fake-plugin');
     assert.equal(env.conductorUrl, boot.baseUrl);
     assert.equal(env.mcpUrl, boot.baseUrl + '/mcp', 'the plugin is handed the MCP URL');
-    assert.equal(env.mcpClientDir, projects.mcpClientDir(), 'and the generated client\'s directory');
   } finally {
     await boot.close();
   }

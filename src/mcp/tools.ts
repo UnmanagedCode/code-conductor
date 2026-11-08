@@ -115,8 +115,8 @@ export function buildTools(format: McpFormat = 'text'): Tool[] {
 }
 
 // The registry one host serves: buildTools minus the tools whose platform
-// capability is off. The /mcp router and the generated client
-// (src/mcp/client/) both read it, so they cannot disagree on the tool set.
+// capability is off. The /mcp router reads it, so every
+// surface agrees on the tool set.
 export function capableTools(format: McpFormat, capabilities: PlatformCapabilities): Tool[] {
   return buildTools(format).filter(t => !t.requires || capabilities[t.requires]);
 }
