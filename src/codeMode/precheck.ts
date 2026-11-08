@@ -110,7 +110,11 @@ function blankNonCode(code: string): string {
         // a later string and expose that string's text as code. Blanking can only
         // miss a call, never refuse a valid program.
         const end = regexEnd(i);
-        const stop = end > i ? end : Math.max(i + 1, code.indexOf('\n', i) === -1 ? code.length : code.indexOf('\n', i));
+        // Inside a template substitution the fallback is one character: blanking
+        // to the end of the line would skip the substitution's closing `}` and
+        // leave the scan running to the end of the program.
+        const eol = code.indexOf('\n', i) === -1 ? code.length : code.indexOf('\n', i);
+        const stop = end > i ? end : inSubstitution ? i + 1 : Math.max(i + 1, eol);
         blank(i, stop);
         i = stop;
       } else if (c === '"' || c === "'") {

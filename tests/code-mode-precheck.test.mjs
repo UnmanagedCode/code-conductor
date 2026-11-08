@@ -148,3 +148,9 @@ test('every real binding position disables the pre-check', () => {
     'let cc; cc.nope();',
   ]) assert.deepEqual(paths(code), [], code);
 });
+
+test('a division inside a template substitution does not swallow the rest of the program', () => {
+  assert.deepEqual(
+    paths("const pct = `ratio ${ (a + b) / c }`; await cc.create_workspace({name:'side'}); await cc.nope();"),
+    ['cc.create_workspace', 'cc.nope']);
+});

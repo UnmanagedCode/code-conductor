@@ -67,7 +67,7 @@ const bashOutputDescription = (metaKeys: string, fmt: Fmt, { heldOpen = false } 
   + 'beyond the cap was lost, not that the process was killed. '
   + (heldOpen
     ? 'outputMayBeIncomplete:true means a background process the command started held the output open '
-      + 'after the command exited, so output it wrote later is missing. '
+      + 'after the command exited: it was stopped (unless it detached), and output it wrote later is missing. '
     : '')
   + 'timeout is milliseconds (default per the '
   + 'schema, clamped to the max enforced in `clampBashTimeoutMs` — larger values are clamped); on '

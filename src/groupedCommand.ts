@@ -47,7 +47,11 @@ const DEFAULT_KILL_GRACE_MS = 100;
 // a stalled event loop never discards data already in a pipe — the streams are
 // destroyed and the call resolves with what was buffered, flagged
 // `outputMayBeIncomplete` when a stream had not ended, and the direct child's
-// exit code. A descendant that keeps writing re-arms the grace.
+// exit code. A descendant that keeps writing re-arms the grace. When the drain
+// gives up on unended streams the command's process group gets the same
+// SIGTERM → SIGKILL a timeout sends, so a background child that stayed in the
+// group is stopped (one that detached into its own group escapes it, as it
+// does a timeout's kill).
 const STDIO_DRAIN_GRACE_MS = 250;
 
 // The hard ceiling on the drain, counted from the direct child's exit: re-arming
@@ -193,6 +197,7 @@ export function runGroupedCommand(
             const unended = !(proc.stdout?.readableEnded ?? true) || !(proc.stderr?.readableEnded ?? true);
             proc.stdout?.destroy();
             proc.stderr?.destroy();
+            if (unended) kill();
             finish(code ?? 1, undefined, unended);
           });
         }, STDIO_DRAIN_GRACE_MS);

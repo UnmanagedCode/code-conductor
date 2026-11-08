@@ -149,9 +149,11 @@ export interface ExecResult {
   // `outputMayBeIncomplete`.
   truncated: boolean;
   // The command exited but a descendant kept its output pipes open, so the
-  // local runner stopped waiting (src/groupedCommand.ts, STDIO_DRAIN_MAX_MS) and
-  // output the descendant wrote later is not in `output`. Set only by that
-  // runner: a provider never sets it, and an absent field means false.
+  // local runner stopped waiting (src/groupedCommand.ts, STDIO_DRAIN_MAX_MS),
+  // signalled the command's process group (a descendant in it is stopped; a
+  // detached one is not) and output the descendant wrote later is not in
+  // `output`. Set only by that runner: a provider never sets it, and an absent
+  // field means false.
   outputMayBeIncomplete?: true;
   durationMs: number;
   // The spawn error message when the command never started (ENOENT, EACCES),

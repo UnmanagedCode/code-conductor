@@ -3096,10 +3096,11 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult, output
   // lock, a port or the CPU, and nothing else will ever say so.
   if (r.descendantsMaySurvive) meta.descendantsMaySurvive = true;
   // Not a cap: the command exited while a background process still held its
-  // output open, so what that process wrote afterwards was not read.
+  // output open, so what that process wrote afterwards was not read (the runner
+  // stopped the process unless it had detached from the command's group).
   if (r.outputMayBeIncomplete) meta.outputMayBeIncomplete = true;
   const body = (r.outputMayBeIncomplete
-    ? `${output.trimEnd()}\n… [output may be incomplete: a background process held the output open after the command exited]`
+    ? `${output.trimEnd()}\n… [output may be incomplete: a background process held the output open after the command exited, and was stopped]`
     : output.trimEnd());
   return dualResult({ ...meta, output: body }, () => textPayload(meta, body));
 }

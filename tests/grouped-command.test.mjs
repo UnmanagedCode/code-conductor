@@ -278,3 +278,33 @@ test('a ticking descendant that stops before the ceiling is drained in full', as
   assert.deepEqual(r.output.trim().split('\n'), ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8']);
   assert.equal(r.outputMayBeIncomplete, undefined, 'the pipe ended by itself');
 });
+
+test('a same-group background child holding the pipes is stopped when the drain gives up; a detached one is not', async (t) => {
+  const dir = await mkdtemp('cc-grouped-reap-');
+  const sameFile = path.join(dir, 'same');
+  const detachedFile = path.join(dir, 'detached');
+  // `exec sleep` makes the recorded pid the sleeper itself; `setsid` puts the
+  // second one in a group of its own, out of the command's reach.
+  const r = await runGroupedCommand({
+    shell: `( exec sleep 30 ) & echo $! > ${sameFile}; setsid sleep 30 & echo $! > ${detachedFile}; exit 0`,
+  }, { cwd: dir }, posixPlatform);
+  const same = Number(readFileSync(sameFile, 'utf8'));
+  const detached = Number(readFileSync(detachedFile, 'utf8'));
+  t.after(() => { for (const p of [same, detached]) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } });
+  assert.equal(r.code, 0);
+  assert.equal(r.outputMayBeIncomplete, true);
+  assert.equal(r.timedOut, false);
+  for (let i = 0; i < 100 && alive(same); i++) await sleep(50);
+  assert.equal(alive(same), false, 'the same-group child holding the pipes was reaped');
+  assert.ok(alive(detached), 'a descendant in its own group escapes, as it does a timeout\'s kill');
+});
+
+test('a timeout sooner than the ceiling bounds the drain, and reaching it is still not a timeout', async (t) => {
+  const dir = await mkdtemp('cc-grouped-sooner-');
+  const c = await chatty(dir, { timeoutMs: 1000 });
+  t.after(() => { try { process.kill(c.pid, 'SIGKILL'); } catch { /* gone */ } });
+  assert.equal(c.r.code, 4);
+  assert.equal(c.r.timedOut, false, 'the command had already exited');
+  assert.equal(c.r.outputMayBeIncomplete, true);
+  assert.ok(c.ms >= 900 && c.ms < 2000, `bounded by the timeout, not the 3 s ceiling (${c.ms} ms)`);
+});
