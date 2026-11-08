@@ -13,9 +13,12 @@ import { lineDiff, diffStats } from '@shared/diff';
 import { formatTokens } from '@shared/usage';
 import { cn } from '@/lib/utils';
 import type { ConversationModel, GroupChild, GroupNode, ResultNode, ThinkingNode, ToolNode, CallUsageNode } from './model';
-import { CALL_USAGE_TITLE, callUsageText, describeToolInput, formatElapsed, renderKindFor, RUN_CODE_TOOL, splitResultContent, type DescribeCtx } from './format';
+import { CALL_USAGE_TITLE, callUsageText, describeToolInput, formatElapsed, renderKindFor, RUN_CODE_TOOL, splitResultBlocks, type DescribeCtx } from './format';
 import { ImageZoom } from './ImageZoom';
 import { tokenizeJs, type JsTokenKind } from './jsTokens';
+import { SYNTAX_CLASS } from './syntaxClass';
+import { JsonTree } from './JsonTree';
+import { defaultOpen, toResultParts, type JsonContainer } from './jsonTree';
 
 export type RenderCtx = {
   model: ConversationModel;
@@ -254,11 +257,11 @@ function CommandBox({ text, copyLabel = 'Copy command', preProps, children }: { 
 }
 
 const TOKEN_CLASS: Partial<Record<JsTokenKind, string>> = {
-  comment: 'text-muted-foreground italic',
-  string: 'text-success',
-  regex: 'text-success',
-  number: 'text-info',
-  keyword: 'text-plan',
+  comment: SYNTAX_CLASS.comment,
+  string: SYNTAX_CLASS.string,
+  regex: SYNTAX_CLASS.string,
+  number: SYNTAX_CLASS.number,
+  keyword: SYNTAX_CLASS.keyword,
 };
 
 /** run_code's script, syntax-coloured as text children only, then its other arguments one per line. */
@@ -353,9 +356,17 @@ function ArgsJson({ text, node, model }: { text: string; node: ToolNode; model: 
 const RESULT_TRUNC = 4000;
 
 export function ResultBlock({ node, model }: { node: ResultNode; model: ConversationModel }) {
-  const { text, images } = React.useMemo(() => splitResultContent(node.content), [node.content]);
+  const { texts, images } = React.useMemo(() => splitResultBlocks(node.content), [node.content]);
+  const parts = React.useMemo(() => toResultParts(texts), [texts]);
+  const hasJson = parts.some((p) => p.kind === 'json');
+  const text = hasJson ? '' : (parts[0]?.text ?? '');
   const failed = node.isError && !node.yielded;
   const truncated = text.length > RESULT_TRUNC && !node.reader.full;
+  const partCut = (t: string) => t.length > RESULT_TRUNC && !node.reader.full;
+  const anyCut = hasJson && parts.some((p) => p.kind === 'text' && partCut(p.text));
+  const showText = (t: string) => (partCut(t) ? `${t.slice(0, RESULT_TRUNC)}\n…` : t);
+  const onToggleFold = (part: number, n: JsonContainer, open: boolean) =>
+    model.setReader(node, { folds: { ...node.reader.folds, [`${part}:${n.id}`]: open } });
   const label = node.yielded ? 'Handed to user'
     : failed ? 'Error'
     : images.length ? `Result · ${images.length} image${images.length === 1 ? '' : 's'}` : 'Result';
@@ -373,7 +384,28 @@ export function ResultBlock({ node, model }: { node: ResultNode; model: Conversa
         <ChevronRightIcon className="size-3 transition-transform group-open/res:rotate-90" />
         {label}
       </summary>
-      {text && (
+      {hasJson ? (
+        <div className={cn('mt-1 overflow-hidden rounded-lg', failed ? 'bg-destructive/8 ring-1 ring-destructive/20' : 'bg-muted/60')}>
+          <div className="max-h-96 space-y-2 overflow-auto px-3 py-2 font-mono text-xs leading-5">
+            {parts.map((p, i) => p.kind === 'text'
+              ? <pre key={i} className="whitespace-pre-wrap">{showText(p.text)}</pre>
+              : (
+                <JsonTree
+                  key={i}
+                  doc={p.doc}
+                  source={p.text}
+                  isOpen={(n) => node.reader.folds[`${i}:${n.id}`] ?? defaultOpen(n, p.doc)}
+                  onToggle={(n, open) => onToggleFold(i, n, open)}
+                />
+              ))}
+          </div>
+          {anyCut && (
+            <div className="border-t px-2 py-1">
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => model.setReader(node, { full: true })}>Show full output</Button>
+            </div>
+          )}
+        </div>
+      ) : text && (
         <div className={cn('mt-1 overflow-hidden rounded-lg', failed ? 'bg-destructive/8 ring-1 ring-destructive/20' : 'bg-muted/60')}>
           <pre className="max-h-96 overflow-auto px-3 py-2 font-mono text-xs leading-5 whitespace-pre-wrap">
             {truncated ? `${text.slice(0, RESULT_TRUNC)}\n…` : text}

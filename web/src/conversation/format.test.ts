@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { callUsageText, describeToolInput, splitResultContent, systemLine, taskNotificationHeadline, turnEndParts } from './format';
+import { callUsageText, describeToolInput, splitResultBlocks, splitResultContent, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { shouldRenderSystem } from './model';
 import type { UiEvent, UiEventOf } from '@shared/uiEvent';
 
@@ -121,6 +121,22 @@ describe('tool results', () => {
     expect(splitResultContent('total 22\nfile1\n')).toEqual({ text: 'total 22\nfile1\n', images: [] });
     const r = splitResultContent([{ type: 'tool_reference', tool_name: 'WebFetch' }, { type: 'tool_reference', tool_name: 'WebSearch' }]);
     expect(r.text).toBe('Loaded 2 tool schemas: WebFetch, WebSearch');
+  });
+});
+
+describe('splitResultBlocks', () => {
+  it('keeps each text block apart in order, the tool-reference line last; splitResultContent joins them as before', () => {
+    const content = [
+      { type: 'text', text: '{"a":1}' },
+      { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
+      { type: 'text', text: 'plain' },
+      { type: 'tool_reference', tool_name: 'WebFetch' },
+    ];
+    expect(splitResultBlocks(content)).toEqual({ texts: ['{"a":1}', 'plain', 'Loaded 1 tool schema: WebFetch'], images: ['https://example.com/a.png'] });
+    expect(splitResultContent(content).text).toBe('{"a":1}\nplain\nLoaded 1 tool schema: WebFetch');
+    expect(splitResultBlocks('one\ntwo').texts).toEqual(['one\ntwo']);
+    expect(splitResultBlocks({ x: 1 }).texts).toEqual(['{"x":1}']);
+    expect(splitResultBlocks(null).texts).toEqual([]);
   });
 });
 

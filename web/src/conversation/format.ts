@@ -259,8 +259,8 @@ export function compactionLabel({ state, trigger = null, preTokens = null, postT
   return parts.join(' · ');
 }
 
-/** Split tool_result content into text, safe image sources and tool references. */
-export function splitResultContent(content: unknown): { text: string; images: string[] } {
+/** Split tool_result content into per-block texts (a tool-reference line last) and safe image sources. */
+export function splitResultBlocks(content: unknown): { texts: string[]; images: string[] } {
   const textParts: string[] = [];
   const images: string[] = [];
   const refs: string[] = [];
@@ -278,7 +278,13 @@ export function splitResultContent(content: unknown): { text: string; images: st
   } else if (content != null) {
     textParts.push(JSON.stringify(content));
   }
-  return { text: textParts.join('\n'), images };
+  return { texts: textParts, images };
+}
+
+/** The same split with the text blocks joined by newlines. */
+export function splitResultContent(content: unknown): { text: string; images: string[] } {
+  const { texts, images } = splitResultBlocks(content);
+  return { text: texts.join('\n'), images };
 }
 
 // base64 → data: URL (never SVG, which can carry script); url → http(s)/file only.
