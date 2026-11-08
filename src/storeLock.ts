@@ -3,7 +3,7 @@
 // (src/systems/fuse/build.ts).
 //
 // Uses an exclusively created lockfile (a hard-link publish, or an O_EXCL
-// create where the filesystem has no hard links — see "Creating a lockfile"
+// create where the directory gives no usable hard links — see "Creating a lockfile"
 // below) to serialise read-modify-write mutations across concurrent Node
 // processes on the same machine.
 //
@@ -99,8 +99,9 @@ export function mintLockToken(): string {
 // reader then never sees a created-but-unwritten lockfile, however long the
 // creator is starved between the two calls.
 //
-// Where it has none (FAT/exFAT, Android shared storage), the lockfile is
-// created in place: O_EXCL open, write, close. A reader can then see it empty
+// Where the directory gives no usable hard links — the filesystem has none
+// (FAT/exFAT, Android shared storage) or the OS denies them (Android app
+// storage, where link() fails EACCES) — the lockfile is created in place: O_EXCL open, write, close. A reader can then see it empty
 // for a moment, and a creator killed in that gap leaves an empty lockfile that
 // must be deleted by hand. Both callers are safe with that: withLock never
 // reclaims a record without a pid, and the root lock treats any unparseable
@@ -111,9 +112,11 @@ export function mintLockToken(): string {
 
 type CreateMode = 'link' | 'open';
 
-// A link failure meaning "this filesystem has no hard links". Every other code
-// (EACCES, EROFS, ENOSPC, EIO…) is a real failure and propagates.
-const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
+// A link failure, after the probe file was created, meaning this directory
+// gives no hard links: the filesystem has none, or the OS denies them (Android
+// reports that denial as EACCES). Every other code (EROFS, ENOSPC, EIO,
+// EMLINK…) is a real failure and propagates.
+const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EACCES']);
 
 // The capability probe's temp files. The root lock sweeps them from its dir.
 export const LINK_PROBE_PREFIX = '.cc-link-probe-';
