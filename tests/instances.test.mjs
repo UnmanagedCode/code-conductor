@@ -9,6 +9,7 @@ import { encodeCwd } from '../src/projects.ts';
 import * as projects from '../src/projects.ts';
 import { isArchived } from '../src/sessionStore.ts';
 import { setDebugByDefault } from '../src/appSettings.ts';
+import { CC_MCP_SERVER_TIMEOUT_MS } from '../src/codeMode/limits.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -710,6 +711,9 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
     const mcpCfg = JSON.parse(argv[mcp + 1]);
     assert.ok(mcpCfg.mcpServers?.['code-conductor'], 'mcp-config registers a `code-conductor` server');
     assert.equal(mcpCfg.mcpServers['code-conductor'].type, 'http');
+    // Claude Code aborts an MCP call whose response headers are late by this
+    // per-server timeout (60 s unset), which a long run_code call outlives.
+    assert.equal(mcpCfg.mcpServers['code-conductor'].timeout, CC_MCP_SERVER_TIMEOUT_MS);
     // The URL path names the spawned session's PUBLIC id (`/mcp/<sessionId>`) so
     // the MCP server can identify the caller (it is the idle-wake ownership
     // edge), and asks for the text view — the CLI's consumer is the model.

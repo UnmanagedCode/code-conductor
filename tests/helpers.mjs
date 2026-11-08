@@ -44,7 +44,7 @@ export async function makeTmpHome() {
 // `eventLogLease` / `relaunch` pass through to createServer: with neither, the
 // server holds no projects-root lock and its event log writes nothing (a test
 // that reads rows passes OPEN_LEASE from playbook-fixtures.mjs).
-export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform, webDistDir, eventLogLease, relaunch } = {}) {
+export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform, webDistDir, eventLogLease, relaunch, codeModeTiming } = {}) {
   // Reset the projects git-facts cache so stale entries from a previous test
   // can't bleed into this one. TTL=0 gives pure-coalescing semantics:
   // concurrent requests coalesce but sequential requests always recompute,
@@ -84,7 +84,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   // subprocess is spawned, but swaps the launcher itself).
   if (claudeLauncherOverride) claudeLauncher = claudeLauncherOverride;
 
-  const { server, wss, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform, webDistDir, eventLogLease, relaunch });
+  const { server, wss, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform, webDistDir, eventLogLease, relaunch, codeModeTiming });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);

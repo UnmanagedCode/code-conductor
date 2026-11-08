@@ -7,6 +7,7 @@ import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
 import { buildRoutes, type RelaunchOptions } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
+import type { ProgressTiming } from './src/codeMode/ctx.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
 import type { WriteLease } from './src/eventLog.ts';
 
@@ -60,7 +61,7 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(hostSecurityHeaders());
@@ -149,7 +150,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
     instances, serverCtx, relaunch, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
     claudeLogin, claudeAuthStatus: claudeAuthStatus.get,
   }));
-  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
+  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities, codeModeTiming }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
   // Plugin pages load the bridge and the host theme (/pluginTheme.css + its

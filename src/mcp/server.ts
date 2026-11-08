@@ -1,6 +1,8 @@
 // MCP (Model Context Protocol) server, mounted at /mcp on the orchestrator's
-// existing http server. Streamable HTTP transport, JSON-RPC 2.0 over POST,
-// no SSE — every tool result fits in a single application/json response.
+// existing http server. Streamable HTTP transport, JSON-RPC 2.0 over POST.
+// A tool result is one application/json response, except that a single
+// tools/call whose client accepts text/event-stream may stream progress before
+// it (src/mcp/callStream.ts, docs/code-mode.md).
 //
 // Exposes the orchestrator's verbs (spawn / list / send_prompt / read
 // transcript / worktree ops) as MCP tools, to applications and agents alike.
@@ -21,6 +23,10 @@ import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { hostPlatform, type PlatformCapabilities } from '../platform/index.ts';
 import { TEXT_LIMITS, JSON_ECHO_CAP, JSON_LIMITS, limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
+import { createCallStream } from './callStream.ts';
+import { createRunRegistry, type RunOutcome } from '../codeMode/runs.ts';
+import { RUN_TOKEN_HEADER } from '../codeMode/runtimeApi.ts';
+import type { CodeModeCtx, ProgressTiming } from '../codeMode/ctx.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -38,7 +44,7 @@ interface JsonRpcResponse {
 // per-request composition (core tools + this caller's plugin tools) that both
 // tools/list and tools/call read; `instances`/`callerId` are the caller-
 // resolved handles the handlers consume.
-interface McpCtx {
+interface McpCtx extends CodeModeCtx {
   instances?: InstanceManagerLike | null;
   tools: McpTool[];
   // The core tools (buildTools()), the ones boundResult guards. Plugin bridge
@@ -47,7 +53,7 @@ interface McpCtx {
   // Plugin tools left out of `tools` because this format cannot serve them (a
   // tool with no outputSchema, in json) — named so a call to one is refused
   // TOOL_UNAVAILABLE_IN_FORMAT rather than TOOL_UNKNOWN.
-  textOnlyTools: ReadonlySet<string>;
+  textOnlyTools: ReadonlyMap<string, McpTool>;
   callerId: string | null;
   playbookGate: PlaybookGate;
   capabilities: PlatformCapabilities;
@@ -56,6 +62,9 @@ interface McpCtx {
   // `format`.
   format: McpFormat;
   limits: FormatLimits;
+  // Aborts the in-flight tools/call of this caller whose JSON-RPC id is
+  // `requestId` (notifications/cancelled).
+  cancel?: (requestId: unknown) => void;
 }
 
 // The tool shape the transport itself needs — deliberately broader than the
@@ -618,6 +627,10 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
   if (method === 'notifications/initialized' || method === 'initialized') {
     return null;
   }
+  if (method === 'notifications/cancelled') {
+    ctx.cancel?.(asRecord(params).requestId);
+    return null;
+  }
 
   try {
     if (method === 'initialize') {
@@ -728,12 +741,55 @@ function bodyParserFault(err: unknown): { status: number; rpcCode: number; code:
   return { status, rpcCode: -32600, code: 'REQUEST_INVALID', reason: `request body could not be read (${capEcho(err.type, URL_ECHO_CAP)})` };
 }
 
+// The per-call key of an in-flight tools/call: the caller and the JSON-RPC id,
+// so one caller can cancel only its own calls.
+function inflightKey(callerId: string, requestId: unknown): string {
+  return `${callerId}\0${JSON.stringify(requestId)}`;
+}
+
+// `<origin>/mcp` on the interface the request arrived on — where a run_code
+// child reaches this server, whatever address the server listens on.
+function selfUrlOf(req: express.Request): string {
+  const addr = req.socket.localAddress ?? '127.0.0.1';
+  const host = addr.includes(':') ? `[${addr}]` : addr;
+  return `http://${host}:${req.socket.localPort}${req.baseUrl}`;
+}
+
+function progressTokenOf(msg: Record<string, unknown>): string | number | undefined {
+  const t = asRecord(asRecord(msg.params)._meta).progressToken;
+  return typeof t === 'string' || typeof t === 'number' ? t : undefined;
+}
+
+// The body a run_code child posts to /run-result, or null when it is not that
+// shape.
+function parseRunOutcome(v: unknown): RunOutcome | null {
+  if (!isJsonRecord(v)) return null;
+  if (!(v.result === null || typeof v.result === 'string')) return null;
+  if (typeof v.resultChars !== 'number' || !Number.isInteger(v.resultChars) || v.resultChars < 0) return null;
+  if (typeof v.truncated !== 'boolean') return null;
+  const outcome: RunOutcome = { result: v.result, resultChars: v.resultChars, truncated: v.truncated };
+  if (v.error !== undefined) {
+    const e = v.error;
+    if (!isJsonRecord(e) || typeof e.name !== 'string' || typeof e.message !== 'string') return null;
+    if (e.code !== undefined && typeof e.code !== 'string') return null;
+    if (e.status !== undefined && !(typeof e.status === 'number' && Number.isInteger(e.status))) return null;
+    outcome.error = { name: e.name, message: e.message };
+    if (e.code !== undefined) outcome.error.code = e.code;
+    if (e.status !== undefined) outcome.error.status = e.status;
+  }
+  return outcome;
+}
+
 export function buildMcpRouter(
-  { instances, pluginHost, playbookGate, capabilities = hostPlatform.capabilities }:
-  { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null; playbookGate: PlaybookGate; capabilities?: PlatformCapabilities },
+  { instances, pluginHost, playbookGate, capabilities = hostPlatform.capabilities, codeModeTiming }:
+  { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null; playbookGate: PlaybookGate; capabilities?: PlatformCapabilities;
+    // Test seam: the progress cadence (defaults in src/codeMode/limits.ts).
+    codeModeTiming?: ProgressTiming },
 ): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: MCP_REQUEST_BODY_LIMIT }));
+  const runs = createRunRegistry();
+  const inflight = new Map<string, AbortController>();
 
   // One core registry per format: they differ in the limits baked into an
   // input schema (project_read's maxBytes) and in each description's result
@@ -752,8 +808,8 @@ export function buildMcpRouter(
   // outputSchema; the others are named in `textOnly`. init() is memoized —
   // after the first request it's a resolved promise. A plugin-subsystem
   // failure must never take the core tools down with it.
-  const NONE: ReadonlySet<string> = new Set();
-  async function composeTools(format: McpFormat): Promise<{ tools: McpTool[]; textOnly: ReadonlySet<string> }> {
+  const NONE: ReadonlyMap<string, McpTool> = new Map();
+  async function composeTools(format: McpFormat): Promise<{ tools: McpTool[]; textOnly: ReadonlyMap<string, McpTool> }> {
     const core = registries[format].tools;
     if (!pluginHost) return { tools: core, textOnly: NONE };
     try {
@@ -762,7 +818,7 @@ export function buildMcpRouter(
       if (format === 'text') return { tools: [...core, ...plugin], textOnly: NONE };
       return {
         tools: [...core, ...plugin.filter(t => t.outputSchema)],
-        textOnly: new Set(plugin.filter(t => !t.outputSchema).map(t => t.name)),
+        textOnly: new Map(plugin.filter(t => !t.outputSchema).map(t => [t.name, t])),
       };
     } catch (e) {
       console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
@@ -779,7 +835,11 @@ export function buildMcpRouter(
     const callerId = resolveCaller(instances, sid);
     if (isUrlFault(callerId)) { res.json(urlFaultReply(req.body, callerId)); return; }
     const { tools, textOnly } = await composeTools(format);
-    const ctx: McpCtx = { instances, tools, coreTools: registries[format].set, textOnlyTools: textOnly, callerId, playbookGate, capabilities, format, limits: limitsFor(format) };
+    const ctx: McpCtx = {
+      instances, tools, coreTools: registries[format].set, textOnlyTools: textOnly, callerId, playbookGate, capabilities,
+      format, limits: limitsFor(format), runs, selfUrl: selfUrlOf(req), codeModeTiming,
+      cancel: callerId ? (requestId) => { inflight.get(inflightKey(callerId, requestId))?.abort(); } : undefined,
+    };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {
@@ -793,6 +853,25 @@ export function buildMcpRouter(
         return;
       }
       res.json(out);
+      return;
+    }
+    // A single tools/call may stream progress and be cancelled, by a
+    // notifications/cancelled naming its id or by its connection closing.
+    if (isJsonRecord(body) && body.method === 'tools/call') {
+      const hasId = body.id !== undefined && body.id !== null;
+      const sse = hasId && String(req.headers.accept ?? '').includes('text/event-stream');
+      const stream = createCallStream(res, { sse, progressToken: progressTokenOf(body) });
+      const ac = new AbortController();
+      const key = callerId && hasId ? inflightKey(callerId, body.id) : null;
+      if (key) inflight.set(key, ac);
+      res.on('close', () => { if (!res.writableFinished) ac.abort(); });
+      try {
+        const reply = await dispatch(body, { ...ctx, progress: stream.progress, signal: ac.signal });
+        if (!reply) { res.status(202).end(); return; }
+        stream.send(reply);
+      } finally {
+        if (key && inflight.get(key) === ac) inflight.delete(key);
+      }
       return;
     }
     const r1 = await dispatch(body, ctx);
@@ -813,7 +892,9 @@ export function buildMcpRouter(
     res.status(status).json({ ok: false, code, reason: capEcho(reason, JSON_ECHO_CAP) });
   };
   // The alias preamble: format (absent or json only), then the caller.
-  function restPreamble(req: express.Request, res: express.Response, sid: string | undefined): { callerId: string | null } | null {
+  // `run` is set when the request carries a valid run token (a run_code child);
+  // a token that is unknown, spent, or another caller's is refused.
+  function restPreamble(req: express.Request, res: express.Response, sid: string | undefined): { callerId: string | null; token: string | null } | null {
     const format = resolveFormat(req.query as Record<string, unknown>);
     if (isUrlFault(format)) { restFault(res, urlFaultStatus(format), format.code, format.reason); return null; }
     if (format !== 'json') {
@@ -822,7 +903,12 @@ export function buildMcpRouter(
     }
     const callerId = resolveCaller(instances, sid);
     if (isUrlFault(callerId)) { restFault(res, urlFaultStatus(callerId), callerId.code, callerId.reason); return null; }
-    return { callerId };
+    const token = req.get(RUN_TOKEN_HEADER) ?? null;
+    if (token !== null && runs.get(token)?.callerId !== callerId) {
+      restFault(res, 403, 'RUN_TOKEN_INVALID', 'the run token is unknown, spent, or belongs to another session');
+      return null;
+    }
+    return { callerId, token };
   }
 
   async function restCall(req: express.Request, res: express.Response, sid: string | undefined, name: string | undefined) {
@@ -838,7 +924,13 @@ export function buildMcpRouter(
     const args: unknown = req.body;
     if (!isJsonRecord(args)) { restFault(res, 400, 'ARGS_INVALID', 'the request body must be a JSON object of the tool\'s arguments'); return; }
     const { tools, textOnly } = await composeTools('json');
-    const ctx: McpCtx = { instances, tools, coreTools: registries.json.set, textOnlyTools: textOnly, callerId: pre.callerId, playbookGate, capabilities, format: 'json', limits: JSON_LIMITS };
+    const ac = new AbortController();
+    res.on('close', () => { if (!res.writableFinished) ac.abort(); });
+    const ctx: McpCtx = {
+      instances, tools, coreTools: registries.json.set, textOnlyTools: textOnly, callerId: pre.callerId, playbookGate, capabilities,
+      format: 'json', limits: JSON_LIMITS, runs, selfUrl: selfUrlOf(req), codeModeTiming, signal: ac.signal,
+      run: pre.token === null ? null : { callerId: pre.callerId as string },
+    };
     const outcome = await runTool(name, args, ctx);
     if (outcome.kind === 'fault') {
       // A text-only plugin tool is absent from this alias's own listing: a
@@ -868,10 +960,29 @@ export function buildMcpRouter(
     })));
   }
 
+  // The one place a run_code child delivers its outcome (the program's return
+  // value or what it threw). Token-gated; the first delivery wins.
+  async function runResult(req: express.Request, res: express.Response, sid: string | undefined) {
+    if (!req.is('application/json')) {
+      restFault(res, 415, 'CONTENT_TYPE_UNSUPPORTED', 'the run result is a JSON body — send content-type: application/json');
+      return;
+    }
+    const pre = restPreamble(req, res, sid);
+    if (!pre) return;
+    if (pre.token === null) { restFault(res, 403, 'RUN_TOKEN_INVALID', `a run result needs the ${RUN_TOKEN_HEADER} header`); return; }
+    const outcome = parseRunOutcome(req.body);
+    if (!outcome) { restFault(res, 400, 'ARGS_INVALID', 'the run result body is not {result, resultChars, truncated, error?}'); return; }
+    const status = runs.deliver(pre.token, outcome);
+    if (status === 'delivered') { restFault(res, 409, 'RUN_RESULT_DELIVERED', 'this run already delivered its result'); return; }
+    if (status === 'unknown') { restFault(res, 403, 'RUN_TOKEN_INVALID', 'the run token is unknown or spent'); return; }
+    res.status(204).end();
+  }
+
   // GET would be the SSE long-poll channel for server→client notifications.
-  // We don't emit any, so reject explicitly rather than hanging the client.
+  // Server messages ride only on a POSTed tools/call's own SSE response, so
+  // reject explicitly rather than hanging the client.
   const getRejected = (_req: express.Request, res: express.Response) => {
-    res.status(405).json({ error: 'GET /mcp not supported (no server notifications in v1)' });
+    res.status(405).json({ error: 'GET /mcp not supported — server notifications ride only on a POSTed tools/call\'s text/event-stream response' });
   };
 
   // Express 4 does not catch a rejected async handler: an escaped rejection
@@ -892,6 +1003,7 @@ export function buildMcpRouter(
   r.get('/:sid/tools', safe((req, res) => restListing(req, res, req.params.sid)));
   r.post('/:sid/tools', safe((req, res) => restCall(req, res, req.params.sid, undefined)));
   r.post('/:sid/tools/:name', safe((req, res) => restCall(req, res, req.params.sid, req.params.name)));
+  r.post('/:sid/run-result', safe((req, res) => runResult(req, res, req.params.sid)));
 
   // Nothing under /mcp falls through to the web UI's HTML.
   r.all('*', (req, res) => {
@@ -904,7 +1016,7 @@ export function buildMcpRouter(
   // never Express's HTML page.
   r.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) { next(err); return; }
-    const rest = /^\/(?:[^/]+\/)?tools(?:\/|$)/.test(req.path);
+    const rest = /^\/(?:[^/]+\/)?tools(?:\/|$)/.test(req.path) || /^\/[^/]+\/run-result$/.test(req.path);
     const fault = bodyParserFault(err);
     if (fault) {
       if (rest) { restFault(res, fault.status, fault.code, fault.reason); return; }
