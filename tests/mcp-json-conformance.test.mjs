@@ -245,6 +245,7 @@ test('systems', { skip: !REMOTE && 'no remoteSystems capability on this host' },
 let worker;
 test('a worker: spawn, list, describe, drive, read', async () => {
   const view = await ok('spawn_instance', { project: 'demo', mode: 'bypassPermissions' }, { caller: callerSid });
+  assert.equal(typeof view.titleNudge, 'string', 'the nudge-bearing shape is the one validated');
   worker = view.sessionId;
   await idle(worker);
   await ok('list_sessions', {});

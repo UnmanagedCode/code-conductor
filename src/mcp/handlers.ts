@@ -80,6 +80,7 @@ import { isDeadStatus } from '../instances.ts';
 // this module.
 import { publicIdFor } from '../sessionLineage.ts';
 import { applySessionTitle, TITLE_SCHEMA } from '../sessionTitles.ts';
+import { getTitle } from '../sessionStore.ts';
 import { validateArgs } from './argValidation.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import { buildForwardFrame } from '../../shared/forwardFrame.ts';
@@ -1166,7 +1167,27 @@ export function resolveSpawnModel(
   return { model, backend, ...(tier ? { tier } : {}), ...(role ? { role } : {}) };
 }
 
-export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
+// Rides on a spawn_instance result whose caller is untitled and not in plan
+// mode. The fact plus the tool, nothing more: the rule lives in the conductor
+// core, which a non-conductor caller may not have loaded.
+export const SELF_TITLE_NUDGE = "You haven't named your session yet — `set_session_title`.";
+
+// The nudge text for a spawn's caller, or null. Never throws: the check must
+// not be able to change the spawn's outcome.
+async function selfTitleNudge({ instances, callerId }: McpCtx): Promise<string | null> {
+  try {
+    if (!instances || !callerId) return null;
+    const caller = instances.liveForSession(callerId);
+    if (!caller || caller.mode === 'plan') return null;
+    return (await getTitle(callerId)) === null ? SELF_TITLE_NUDGE : null;
+  } catch (err) {
+    console.warn(`[mcp] self-title nudge check failed for caller '${callerId}':`, err);
+    return null;
+  }
+}
+
+export async function spawnInstance(args: SpawnArgs, ctx: McpCtx) {
+  const { instances, callerId } = ctx;
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   // callerId is the conductor's public sessionId (the /mcp/<sessionId> path). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
@@ -1275,7 +1296,9 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       console.error(`spawn_instance: could not title session ${inst.sessionId}:`, e);
     }
   }
-  return toConductorView(inst.summary());
+  const view = toConductorView(inst.summary());
+  const titleNudge = await selfTitleNudge(ctx);
+  return titleNudge ? { ...view, titleNudge } : view;
 }
 
 // Record the caller's OWNERSHIP of the target before every turn-starting call,
