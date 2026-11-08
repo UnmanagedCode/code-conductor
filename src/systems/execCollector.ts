@@ -107,8 +107,10 @@ export class ExecOutputCollector {
   // it without either clobbering real output.
   result(
     code: number,
-    { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive, abandonedAfterMs }: {
-      timedOut: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode; transportFailure?: true;
+    { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive, abandonedAfterMs, outputMayBeCut }: {
+      // `outputMayBeCut`: the runner stopped reading before the streams ended
+      // (a descendant held them open): `outputMayBeIncomplete`, not `truncated`.
+      timedOut: boolean; outputMayBeCut?: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode; transportFailure?: true;
       durationMs: number; descendantsMaySurvive?: boolean; abandonedAfterMs?: number;
     },
   ): ExecResult {
@@ -140,6 +142,7 @@ export class ExecOutputCollector {
       ...(descendantsMaySurvive ? { descendantsMaySurvive: true as const } : {}),
       ...(abandonedAfterMs === undefined ? {} : { abandonedAfterMs }),
       ...(this.#overflowed ? { outputOverflowed: true as const } : {}),
+      ...(outputMayBeCut ? { outputMayBeIncomplete: true as const } : {}),
       ...(this.#bytes ? { stdoutBytes: Buffer.concat(this.#bytes.out), stderrBytes: Buffer.concat(this.#bytes.err) } : {}),
     };
   }

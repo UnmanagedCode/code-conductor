@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { readFileSync } from 'node:fs';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../src/groupedCommand.ts';
 import { posixPlatform } from '../src/platform/index.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -173,4 +174,157 @@ test('onChunk stops at the maxBufferBytes fence, and the fence is still a failur
 
 test('GROUP_OUTPUT_CAP is the single owner of the 16K tail cap', () => {
   assert.equal(GROUP_OUTPUT_CAP, 16 * 1024);
+});
+
+test('a descendant that outlives the command holding its stdio does not hold the call open', async (t) => {
+  const dir = await mkdtemp('cc-grouped-drain-');
+  const pidFile = path.join(dir, 'pid');
+  // The direct child exits at once; a detached grandchild inherits its pipes.
+  const code = `const c = require('node:child_process').spawn('sleep', ['30'], { detached: true, stdio: 'inherit' }); c.unref();`
+    + ` require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); console.log('direct-output');`;
+  const t0 = Date.now();
+  const r = await runGroupedCommand({ argv: [process.execPath, '-e', code] }, { cwd: dir }, posixPlatform);
+  const pid = Number(await fs.readFile(pidFile, 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+  assert.ok(Date.now() - t0 < 10_000, 'returned long before the grandchild ended');
+  assert.equal(r.code, 0);
+  assert.equal(r.timedOut, false);
+  assert.match(r.output, /direct-output/, 'what was buffered is kept');
+  assert.equal(r.outputMayBeIncomplete, true, 'the streams were destroyed unended, so output may be missing');
+  assert.equal(r.truncated, false, 'no cap was hit: the two causes are told apart');
+  assert.ok(alive(pid), 'the detached grandchild is not the runner\'s to kill');
+});
+
+test('on the drain path the direct child\'s nonzero exit code is the result', async (t) => {
+  const dir = await mkdtemp('cc-grouped-drain-code-');
+  const pidFile = path.join(dir, 'pid');
+  const code = `const c = require('node:child_process').spawn('sleep', ['30'], { detached: true, stdio: 'inherit' }); c.unref();`
+    + ` require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); process.exit(3);`;
+  const r = await runGroupedCommand({ argv: [process.execPath, '-e', code] }, { cwd: dir }, posixPlatform);
+  t.after(() => { try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } });
+  assert.equal(r.code, 3);
+  assert.equal(r.timedOut, false);
+});
+
+test('on the drain path the runner closes its ends of the pipes while the descendant lives', async (t) => {
+  const dir = await mkdtemp('cc-grouped-drain-pipe-');
+  const pidFile = path.join(dir, 'pid');
+  const outFile = path.join(dir, 'late');
+  // The descendant writes to its inherited stdout well after the grace. With the
+  // read end closed the write fails EPIPE; with it still open it would succeed.
+  const descendant = `setTimeout(() => { let r; try { require('node:fs').writeSync(1, 'late'); r = 'ok'; } catch (e) { r = e.code; }`
+    + ` require('node:fs').writeFileSync(${JSON.stringify(outFile)}, r); }, 1200);`;
+  const code = `const c = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { detached: true, stdio: 'inherit' });`
+    + ` c.unref(); require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid));`;
+  await runGroupedCommand({ argv: [process.execPath, '-e', code] }, { cwd: dir }, posixPlatform);
+  const pid = Number(await fs.readFile(pidFile, 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+  assert.ok(alive(pid), 'the descendant outlived the call');
+  for (let i = 0; i < 100 && !(await fs.stat(outFile).catch(() => null)); i++) await sleep(50);
+  assert.equal(await fs.readFile(outFile, 'utf8'), 'EPIPE');
+});
+
+test('an event-loop stall past the drain grace never discards output already in the pipe', async () => {
+  const block = (ms) => { const end = Date.now() + ms; while (Date.now() < end); };
+  const timer = setTimeout(() => block(340), 60);
+  const r = await runGroupedCommand(
+    { shell: `( sleep 0.1; yes Z | head -c 200000 ) & exit 0` }, { cwd: os.tmpdir() }, posixPlatform);
+  clearTimeout(timer);
+  assert.equal(r.output.length, 200_000, 'every byte written before the stall ended was kept');
+  assert.equal(r.outputMayBeIncomplete, undefined, 'the pipe ended on its own, so nothing was cut');
+});
+
+test('a stall in the check phase, which the grace timer follows with no poll between, keeps what is in the pipe', async () => {
+  // The next loop iteration starts with timers: the grace timer is already due
+  // and fires BEFORE the poll phase that would read the pipe. Giving up there
+  // would discard data that was written before the deadline.
+  const block = (ms) => { const end = Date.now() + ms; while (Date.now() < end); };
+  const timer = setTimeout(() => setImmediate(() => block(400)), 60);
+  const r = await runGroupedCommand(
+    { shell: `( sleep 0.1; yes Z | head -c 200000 ) & exit 0` }, { cwd: os.tmpdir() }, posixPlatform);
+  clearTimeout(timer);
+  assert.equal(r.output.length, 200_000);
+  assert.equal(r.outputMayBeIncomplete, undefined);
+});
+
+// A descendant that writes until it is killed. Its subshell pid goes to a file
+// so the test can end it; the call must not wait for it.
+async function chatty(dir, opts = {}) {
+  const pidFile = path.join(dir, `pid-${Math.random().toString(36).slice(2)}`);
+  const t0 = Date.now();
+  const r = await runGroupedCommand(
+    { shell: `( while :; do echo tick; sleep 0.05; done ) & echo $! > ${pidFile}; exit 4` }, { cwd: dir, ...opts }, posixPlatform);
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  return { r, pid, ms: Date.now() - t0 };
+}
+
+test('a descendant that writes forever is cut at the drain ceiling: the child\'s exit code, output flagged, not a timeout', async (t) => {
+  const dir = await mkdtemp('cc-grouped-ceiling-');
+  const [none, withTimeout] = await Promise.all([chatty(dir), chatty(dir, { timeoutMs: 60_000 })]);
+  for (const c of [none, withTimeout]) t.after(() => { try { process.kill(c.pid, 'SIGKILL'); } catch { /* gone */ } });
+  for (const [label, c] of [['no timeout', none], ['a 60 s timeout', withTimeout]]) {
+    assert.equal(c.r.code, 4, label);
+    assert.equal(c.r.timedOut, false, `${label}: reaching the ceiling is not a timeout`);
+    assert.equal(c.r.outputMayBeIncomplete, true, label);
+    assert.match(c.r.output, /tick/, `${label}: what was read is kept`);
+    assert.ok(c.ms >= 2500 && c.ms < 10_000, `${label}: bounded by the ceiling, not the writer or the timeout (${c.ms} ms)`);
+  }
+});
+
+test('a ticking descendant that stops before the ceiling is drained in full', async () => {
+  const dir = await mkdtemp('cc-grouped-ticker-');
+  const r = await runGroupedCommand(
+    { shell: `( for i in 1 2 3 4 5 6 7 8; do echo t$i; sleep 0.15; done ) & exit 0` }, { cwd: dir }, posixPlatform);
+  assert.deepEqual(r.output.trim().split('\n'), ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8']);
+  assert.equal(r.outputMayBeIncomplete, undefined, 'the pipe ended by itself');
+});
+
+test('a same-group background child holding the pipes is stopped when the drain gives up; a detached one is not', async (t) => {
+  const dir = await mkdtemp('cc-grouped-reap-');
+  const sameFile = path.join(dir, 'same');
+  const detachedFile = path.join(dir, 'detached');
+  // `exec sleep` makes the recorded pid the sleeper itself; `setsid` puts the
+  // second one in a group of its own, out of the command's reach.
+  const r = await runGroupedCommand({
+    shell: `( exec sleep 30 ) & echo $! > ${sameFile}; setsid sleep 30 & echo $! > ${detachedFile}; exit 0`,
+  }, { cwd: dir }, posixPlatform);
+  const same = Number(readFileSync(sameFile, 'utf8'));
+  const detached = Number(readFileSync(detachedFile, 'utf8'));
+  t.after(() => { for (const p of [same, detached]) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } });
+  assert.equal(r.code, 0);
+  assert.equal(r.outputMayBeIncomplete, true);
+  assert.equal(r.timedOut, false);
+  for (let i = 0; i < 100 && alive(same); i++) await sleep(50);
+  assert.equal(alive(same), false, 'the same-group child holding the pipes was reaped');
+  assert.ok(alive(detached), 'a descendant in its own group escapes, as it does a timeout\'s kill');
+});
+
+test('a timeout sooner than the ceiling bounds the drain, and reaching it is still not a timeout', async (t) => {
+  const dir = await mkdtemp('cc-grouped-sooner-');
+  const c = await chatty(dir, { timeoutMs: 1000 });
+  t.after(() => { try { process.kill(c.pid, 'SIGKILL'); } catch { /* gone */ } });
+  assert.equal(c.r.code, 4);
+  assert.equal(c.r.timedOut, false, 'the command had already exited');
+  assert.equal(c.r.outputMayBeIncomplete, true);
+  assert.ok(c.ms >= 900 && c.ms < 2000, `bounded by the timeout, not the 3 s ceiling (${c.ms} ms)`);
+});
+
+test('the drain\'s give-up kills the process group only where the child leads one', async (t) => {
+  const dir = await mkdtemp('cc-grouped-platform-');
+  const run = async (name, spawnOptions) => {
+    const kills = [];
+    const platform = { ...posixPlatform, spawnOptions, killGroup: (pid, sig) => { kills.push([pid, sig]); } };
+    const pidFile = path.join(dir, name);
+    const r = await runGroupedCommand({ shell: `( exec sleep 30 ) & echo $! > ${pidFile}; exit 0` }, { cwd: dir }, platform);
+    t.after(() => { try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } });
+    return { r, kills };
+  };
+  // win32's `group` role is not detached: no group exists to signal.
+  const win = await run('win', () => ({ windowsHide: true }));
+  assert.equal(win.r.outputMayBeIncomplete, true, 'the drain still gave up on the unended streams');
+  assert.deepEqual(win.kills, [], 'and sent no kill rooted at a pid that has already exited');
+  // Control: a POSIX-shaped platform does signal the group, SIGTERM first.
+  const posix = await run('posix', () => ({ detached: true }));
+  assert.equal(posix.r.outputMayBeIncomplete, true);
+  assert.equal(posix.kills[0][1], 'SIGTERM');
 });

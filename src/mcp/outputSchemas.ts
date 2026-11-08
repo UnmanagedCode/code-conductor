@@ -223,8 +223,8 @@ const DIFF_FILE = obj({ path: str, status: str, additions: int, deletions: int, 
 const DIFF_TOTALS = obj({ files: int, additions: int, deletions: int });
 const DIFF_HEAD = { project: str, worktree: str, baseRef: str, head: nullable(str), ahead: nullable(int) };
 
-const BASH_RESULT = { exitCode: nullable(int), durationMs: num, truncated: lit(true), timedOut: lit(true), descendantsMaySurvive: lit(true), output: str };
-const BASH_RESULT_OPTIONAL = ['truncated', 'timedOut', 'descendantsMaySurvive'];
+const BASH_RESULT = { exitCode: nullable(int), durationMs: num, truncated: lit(true), timedOut: lit(true), descendantsMaySurvive: lit(true), outputMayBeIncomplete: lit(true), output: str };
+const BASH_RESULT_OPTIONAL = ['truncated', 'timedOut', 'descendantsMaySurvive', 'outputMayBeIncomplete'];
 const BASH_SPAWN_ERROR = { exitCode: lit(null), durationMs: num, error: lit(true), output: str };
 function bashSchema(place: Record<string, Schema>): Schema {
   return variants(
@@ -277,6 +277,11 @@ export const OUTPUT_SCHEMAS: Record<string, Schema> = {
   answer_question: SENT,
   set_idle_timeout: obj({ sessionId: str, armed: bool }),
   set_session_title: obj({ sessionId: str, title: nullable(str) }),
+  run_code: obj({
+    result: nullable(str), logs: str, exitCode: nullable(int), timedOut: bool, truncated: bool, durationMs: num,
+    resultChars: int, logsTruncated: lit(true),
+    error: obj({ name: str, message: str, code: str, status: int }, { optional: ['code', 'status'] }),
+  }, { optional: ['resultChars', 'logsTruncated', 'error'] }),
   renew_session: variants(
     obj({ ok: lit(true), sessionId: str, willClearAtTurnEnd: lit(true), message: str }),
     obj({ requested: lit(true), sessionId: nullable(str), note: str }),

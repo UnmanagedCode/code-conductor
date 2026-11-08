@@ -3095,7 +3095,14 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult, output
   // next move depends on it: the tree it just timed out may still be holding a
   // lock, a port or the CPU, and nothing else will ever say so.
   if (r.descendantsMaySurvive) meta.descendantsMaySurvive = true;
-  const body = output.trimEnd();
+  // Not a cap: the command exited while a background process still held its
+  // output open, so what that process wrote afterwards was not read (on POSIX
+  // the runner also stops the process unless it detached from the command's
+  // group; on Windows it is left running).
+  if (r.outputMayBeIncomplete) meta.outputMayBeIncomplete = true;
+  const body = (r.outputMayBeIncomplete
+    ? `${output.trimEnd()}\n… [output may be incomplete: a background process held the output open after the command exited, so output it wrote later is missing]`
+    : output.trimEnd());
   return dualResult({ ...meta, output: body }, () => textPayload(meta, body));
 }
 

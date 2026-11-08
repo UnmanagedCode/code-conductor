@@ -7,7 +7,6 @@ import { WebSocket } from 'ws';
 import { bootServer, waitFor, registerLocalProject } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.ts';
-import * as projects from '../src/projects.ts';
 
 // Boot the full server (helpers tmp root) with the fake plugin installed as
 // a project and enabled — every test drives the real /plugins proxy.
@@ -31,7 +30,6 @@ test('proxy: lazy start, prefix strip, query + X-Forwarded passthrough', async (
     assert.equal(env.pluginId, 'fake-plugin');
     assert.equal(env.conductorUrl, boot.baseUrl);
     assert.equal(env.mcpUrl, boot.baseUrl + '/mcp', 'the plugin is handed the MCP URL');
-    assert.equal(env.mcpClientDir, projects.mcpClientDir(), 'and the generated client\'s directory');
   } finally {
     await boot.close();
   }

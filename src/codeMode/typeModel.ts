@@ -1,18 +1,19 @@
-// The language-neutral model the generated /mcp clients render from: each
-// tool's parameters and result as a small type tree, plus every named object
-// type those trees reference. Both renderers (python.ts, node.ts) read it, so
-// the JSON-Schema semantics live here once.
+// The language-neutral model a tool's TypeScript signature renders from
+// (tsSignature.ts): its parameters and result as a small type tree, plus every
+// named object type those trees reference. Built per tool, so type names
+// cannot collide across tools.
 //
 // The accepted vocabulary is closed: the typing keywords outputSchemas.ts
 // declares, plus the annotation keywords an input schema may carry. Anything
-// else throws, naming the tool and the schema path — a schema the generator
-// would mistype fails boot instead of shipping a wrong client.
+// else throws, naming the tool and the schema path; describe_tools catches it
+// per tool and degrades that one entry.
 
-export interface ClientToolSpec {
+export interface ToolSpec {
   name: string;
   description: string;
-  inputSchema: Record<string, unknown>;
-  outputSchema: Record<string, unknown>;
+  inputSchema: unknown;
+  // Absent means the tool declares no result shape: the result type is `unknown`.
+  outputSchema?: unknown;
 }
 
 export type TypeNode =
@@ -28,6 +29,8 @@ export interface Field {
   type: TypeNode;
   optional: boolean;
   description?: string;
+  hasDefault?: boolean;
+  default?: unknown;
 }
 
 // In post-order: every declaration comes after the ones it references.
@@ -35,49 +38,22 @@ export type Declaration =
   | { kind: 'object'; name: string; fields: Field[] }
   | { kind: 'alias'; name: string; type: TypeNode };
 
-export interface Param extends Field {
-  hasDefault: boolean;
-  default?: unknown;
-}
-
 export interface ToolModel {
-  name: string;
-  description: string;
-  params: Param[];
-  resultName: string;
-}
-
-export interface ClientModel {
-  tools: ToolModel[];
+  // The named type of the arguments object, or null when the tool takes no
+  // declared properties.
+  args: { name: string; optional: boolean } | null;
+  result: TypeNode;
   declarations: Declaration[];
 }
-
-// Names the client classes already use for their own members (Node's
-// constructor, Python's __init__): a tool so named would shadow one.
-export const CLIENT_MEMBERS: readonly string[] = ['call', 'url', 'constructor', '__init__'];
-
-// The hard keywords of Python 3.11: a parameter named one is spelled with a
-// trailing `_` in the Python client.
-export const PY_KEYWORDS: ReadonlySet<string> = new Set([
-  'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue',
-  'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in',
-  'is', 'lambda', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield',
-]);
 
 const TYPING_KEYWORDS = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const', 'anyOf', 'description']);
 const ANNOTATION_KEYWORDS = new Set(['minLength', 'maxLength', 'minimum', 'maximum', 'pattern', 'default']);
 const SCALARS: Record<string, TypeNode> = {
   string: { kind: 'str' }, integer: { kind: 'int' }, number: { kind: 'num' }, boolean: { kind: 'bool' }, null: { kind: 'null' },
 };
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export function pascal(s: string): string {
-  return s.split('_').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('');
-}
-
-// A Python parameter's spelling of the wire name `key`.
-export function pyParamName(key: string): string {
-  return PY_KEYWORDS.has(key) ? `${key}_` : key;
+  return s.split(/[_-]/).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('');
 }
 
 type Schema = Record<string, unknown>;
@@ -87,14 +63,14 @@ class Builder {
   readonly #names = new Set<string>();
 
   declare(d: Declaration): void {
-    if (this.#names.has(d.name)) throw new Error(`mcp client: type name '${d.name}' is generated twice`);
+    if (this.#names.has(d.name)) throw new Error(`code mode: type name '${d.name}' is generated twice`);
     this.#names.add(d.name);
     this.declarations.push(d);
   }
 }
 
 function fail(where: string, what: string): never {
-  throw new Error(`mcp client: ${what} at ${where}`);
+  throw new Error(`code mode: ${what} at ${where}`);
 }
 
 function checkKeywords(s: Schema, where: string, input: boolean): void {
@@ -104,11 +80,7 @@ function checkKeywords(s: Schema, where: string, input: boolean): void {
   }
 }
 
-// A literal type. Its JSON spelling is the type text in a JSDoc comment, which
-// a `*/` inside it would close.
-function literal(v: unknown, where: string): TypeNode {
-  const text = JSON.stringify(v);
-  if (text.includes('*/')) fail(where, `a literal ${text} containing '*/'`);
+function literal(v: unknown): TypeNode {
   return { kind: 'lit', value: v as string | number | boolean | null };
 }
 
@@ -127,20 +99,20 @@ function fieldsOf(s: Schema, name: string, where: string, b: Builder, input: boo
   const required = Array.isArray(s.required) ? s.required as string[] : [];
   return Object.entries(props).map(([key, raw]) => {
     const at = `${where}.properties.${key}`;
-    if (!IDENTIFIER.test(key)) fail(at, `property name '${key}' is not an identifier`);
     const prop = asSchema(raw, at);
     const field: Field = { key, type: toType(prop, name + pascal(key), at, b, input), optional: !required.includes(key) };
     if (typeof prop.description === 'string') field.description = prop.description;
+    if ('default' in prop) { field.hasDefault = true; field.default = prop.default; }
     return field;
   });
 }
 
 function toType(s: Schema, name: string, where: string, b: Builder, input: boolean): TypeNode {
   checkKeywords(s, where, input);
-  if ('const' in s) return literal(s.const, where);
+  if ('const' in s) return literal(s.const);
   if ('enum' in s) {
     if (!Array.isArray(s.enum)) fail(where, "an 'enum' that is not an array");
-    return union(s.enum.map(v => literal(v, where)));
+    return union(s.enum.map(v => literal(v)));
   }
   if ('anyOf' in s) {
     if ('properties' in s) fail(where, "'anyOf' together with 'properties'");
@@ -173,32 +145,29 @@ function toType(s: Schema, name: string, where: string, b: Builder, input: boole
   return { kind: 'any' };
 }
 
-function paramsOf(t: ClientToolSpec, b: Builder): Param[] {
-  const where = `${t.name}.inputSchema`;
-  const s = asSchema(t.inputSchema, where);
-  checkKeywords(s, where, true);
-  if (s.type !== 'object') fail(where, "an input schema whose 'type' is not 'object'");
-  if (!('properties' in s)) return [];
-  return fieldsOf(s, `${pascal(t.name)}Args`, where, b, true).map(f => {
-    if (f.key === 'self') fail(`${where}.properties.self`, "a parameter named 'self'");
-    const prop = (s.properties as Record<string, Schema>)[f.key];
-    const p: Param = { ...f, hasDefault: 'default' in prop };
-    if (p.hasDefault) p.default = prop.default;
-    return p;
-  });
-}
-
-export function buildClientModel(tools: ClientToolSpec[]): ClientModel {
+export function buildToolModel(t: ToolSpec): ToolModel {
   const b = new Builder();
-  const out: ToolModel[] = [];
-  for (const t of tools) {
-    if (CLIENT_MEMBERS.includes(t.name)) fail(t.name, `a tool named '${t.name}', which is a client member`);
-    if (!IDENTIFIER.test(t.name)) fail(t.name, `tool name '${t.name}' is not an identifier`);
-    const params = paramsOf(t, b);
-    const resultName = `${pascal(t.name)}Result`;
-    const result = toType(asSchema(t.outputSchema, `${t.name}.outputSchema`), resultName, `${t.name}.outputSchema`, b, false);
-    if (!(result.kind === 'ref' && result.name === resultName)) b.declare({ kind: 'alias', name: resultName, type: result });
-    out.push({ name: t.name, description: t.description, params, resultName });
+  const base = pascal(t.name);
+  const where = `${t.name}.inputSchema`;
+  const input = asSchema(t.inputSchema, where);
+  checkKeywords(input, where, true);
+  if (input.type !== 'object') fail(where, "an input schema whose 'type' is not 'object'");
+  let args: ToolModel['args'] = null;
+  if ('properties' in input) {
+    const name = `${base}Args`;
+    const fields = fieldsOf(input, name, where, b, true);
+    b.declare({ kind: 'object', name, fields });
+    args = { name, optional: fields.every(f => f.optional) };
   }
-  return { tools: out, declarations: b.declarations };
+  let result: TypeNode = { kind: 'any' };
+  if (t.outputSchema !== undefined) {
+    const resultName = `${base}Result`;
+    const at = `${t.name}.outputSchema`;
+    result = toType(asSchema(t.outputSchema, at), resultName, at, b, false);
+    if (!(result.kind === 'ref' && result.name === resultName)) {
+      b.declare({ kind: 'alias', name: resultName, type: result });
+      result = { kind: 'ref', name: resultName };
+    }
+  }
+  return { args, result, declarations: b.declarations };
 }

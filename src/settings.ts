@@ -22,6 +22,7 @@
 // All inputs are pure JS values — no Instance state involved.
 
 import { READ_NUDGE_MATCHER } from './conductorReadNudge.ts';
+import { CC_MCP_SERVER_TIMEOUT_MS } from './codeMode/limits.ts';
 
 // Message returned to the model when the orchestrator denies an interactive
 // tool's `can_use_tool` request — tells it the request was delivered despite
@@ -155,6 +156,6 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor
 // in-flight transcripts and tool-allowlist patterns.
 export function buildMcpConfigJSON({ url, name = 'code-conductor' }: { url?: string; name?: string } = {}): string {
   return JSON.stringify({
-    mcpServers: { [name]: { type: 'http', url } },
+    mcpServers: { [name]: { type: 'http', url, timeout: CC_MCP_SERVER_TIMEOUT_MS } },
   });
 }

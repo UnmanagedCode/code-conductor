@@ -2024,3 +2024,33 @@ test('every MCP format records each governed call exactly once: text and JSON to
     }
   } finally { await t.close(); }
 });
+
+// A program the conductor runs through run_code is gated exactly like the same
+// call made directly: the child calls back in as the conductor, so the policy
+// checkpoint and the event log see an identical call.
+test('enforce: a call made inside run_code is denied by the stage and logged exactly like the direct call', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
+    const wtName = impl.worktree.worktreeName;
+    await t.call('approve_plan', { sessionId: impl.sessionId });
+    const rev = await t.spawnWorker({
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName, provenance: { build: impl.sessionId },
+    });
+    const args = { sessionId: rev.sessionId, timeoutSeconds: 30 };
+    const denied = (rows) => rows.filter(e => e.kind === 'call' && e.tool === 'set_idle_timeout' && e.outcome === 'refused');
+
+    refused(await t.call('set_idle_timeout', args), 'TOOL_DENIED_IN_STAGE');
+    const [direct] = denied(await t.events());
+    assert.ok(direct, 'the direct call left a refused row');
+
+    const run = await t.call('run_code', { code: `await cc.set_idle_timeout(${JSON.stringify(args)});` });
+    assert.equal(run.error.code, 'TOOL_DENIED_IN_STAGE');
+    assert.equal(run.error.status, 200);
+
+    const rows = denied(await t.events());
+    assert.equal(rows.length, 2, 'the nested call is recorded once');
+    const shape = ({ ts: _ts, ...rest }) => rest;
+    assert.deepEqual(shape(rows[1]), shape(rows[0]), 'same actor, subject, tool, refusal');
+  } finally { await t.close(); }
+});

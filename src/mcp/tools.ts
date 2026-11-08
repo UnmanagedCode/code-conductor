@@ -22,6 +22,11 @@ import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
 import { TITLE_SCHEMA } from '../sessionTitles.ts';
 import { limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
 import { OUTPUT_SCHEMAS } from './outputSchemas.ts';
+import { runCode } from '../codeMode/runCode.ts';
+import type { CodeModeCtx } from '../codeMode/ctx.ts';
+import {
+  RUN_RESULT_CAP, RUN_LOGS_CAP, RUN_CODE_DEFAULT_TIMEOUT_MS, RUN_CODE_MAX_TIMEOUT_MS, describeDuration,
+} from '../codeMode/limits.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
@@ -52,21 +57,26 @@ const BASH_DESCRIPTION_PROP = {
 // the two tools never sees the other's text. `fmt` is coreTools' per-format
 // clause helper.
 type Fmt = (text: string, json: string) => string;
-const bashOutputDescription = (metaKeys: string, fmt: Fmt) =>
+const bashOutputDescription = (metaKeys: string, fmt: Fmt, { heldOpen = false } = {}) =>
   fmt(`OUTPUT: a compact-JSON metadata block (content[0]) {${metaKeys}} PLUS a separate raw, un-escaped `
     + 'text block (content[1]) carrying ', '`output` is ')
   + 'the combined stdout+stderr output, in arrival order. A non-zero '
   + 'exitCode is a normal result, not a tool error. truncated:true means retained output was capped at '
   + fmt('the bash output cap (`BASH_OUTPUT_CAP`)', 'the safety ceiling (`JSON_BASH_OUTPUT_CAP`)')
   + ' — the command still ran to completion; assume later output '
-  + 'beyond the cap was lost, not that the process was killed. timeout is milliseconds (default per the '
+  + 'beyond the cap was lost, not that the process was killed. '
+  + (heldOpen
+    ? 'outputMayBeIncomplete:true means a background process the command started held the output open '
+      + 'after the command exited, so output it wrote later is missing (on POSIX the process is also stopped unless it detached; on Windows it keeps running). '
+    : '')
+  + 'timeout is milliseconds (default per the '
   + 'schema, clamped to the max enforced in `clampBashTimeoutMs` — larger values are clamped); on '
   + 'timeout (the only hard kill) the whole process group is killed, exitCode is null, and timedOut:true '
   + '— except that descendantsMaySurvive:true means only the direct child could be signalled, so what it '
   + 'started may still be running. stdin is not connected — an interactive command hangs until timeout.';
 
 // The per-call context the MCP server injects next to the args (mcp/server.ts).
-interface ToolCtx {
+interface ToolCtx extends CodeModeCtx {
   instances?: InstanceManagerLike | null;
   callerId?: string | null;
   capabilities?: PlatformCapabilities;
@@ -115,10 +125,17 @@ export function buildTools(format: McpFormat = 'text'): Tool[] {
 }
 
 // The registry one host serves: buildTools minus the tools whose platform
-// capability is off. The /mcp router and the generated client
-// (src/mcp/client/) both read it, so they cannot disagree on the tool set.
+// capability is off. The /mcp router reads it, so every
+// surface agrees on the tool set.
+//
+// run_code's description ends with the core methods this host serves, generated
+// here so the list cannot drift from the registry.
 export function capableTools(format: McpFormat, capabilities: PlatformCapabilities): Tool[] {
-  return buildTools(format).filter(t => !t.requires || capabilities[t.requires]);
+  const tools = buildTools(format).filter(t => !t.requires || capabilities[t.requires]);
+  const methods = tools.map(t => t.name).filter(n => n !== 'run_code');
+  return tools.map(t => t.name === 'run_code'
+    ? { ...t, description: `${t.description} Core methods (cc.<name>): ${methods.join(', ')}.` }
+    : t);
 }
 
 function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
@@ -1255,7 +1272,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'Mirrors project/worktree for cwd scoping plus the ' +
         'meaningful subset of the built-in Bash tool (command/description/timeout). Replaces ' +
         'grep/glob — use rg/grep/find through this tool for search. ' +
-        bashOutputDescription('project, worktree, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?', fmt),
+        bashOutputDescription('project, worktree, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, outputMayBeIncomplete?, error?', fmt, { heldOpen: true }),
       inputSchema: {
         type: 'object',
         properties: {
@@ -1366,6 +1383,42 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       },
       handler: h.projectRead,
       annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'run_code',
+      description:
+        'Code mode — chain or batch cc tool calls in one JavaScript program, filter or aggregate their results, ' +
+        'and return only the digest. `code` is the body of an async function with `cc` in scope: ' +
+        '`await cc.<tool>(args)` calls a core tool, `await cc.<plugin_ns>.<tool>(args)` a plugin tool (the plugin ' +
+        'id with `-` written `_`), `cc.call(name, args)` a computed name. Each call returns the tool\'s JSON result ' +
+        'and runs as your own session — your limits and refusals apply unchanged, and a refusal throws an error ' +
+        'whose `code` names it. Look tools up ' +
+        'instead of guessing names or result fields: `return await cc.describe_tools({query, namespace, names, ' +
+        'detail})` — detail `names`, `summary` (default) or `full`, which adds a TypeScript signature with the ' +
+        'result type. A literal call to an unknown tool refuses the whole program before any of it runs. ' +
+        `The \`return\` value is the result, as JSON capped at ${RUN_RESULT_CAP} chars — when it is cut, return ` +
+        `less; console output comes back separately as logs, capped at ${RUN_LOGS_CAP} bytes. An uncaught throw ` +
+        'is reported in `error` (name, message, code), not as a failed call. Node built-ins load by dynamic ' +
+        'import of a `node:` specifier; the working directory is your checkout, and in plan mode the program can ' +
+        'read but not write files or start processes. A program cannot wait for a worker: spawn_instance and ' +
+        'send_prompt return at once, and the worker\'s turn end wakes you as usual. ' +
+        `\`timeoutMs\` defaults to ${describeDuration(RUN_CODE_DEFAULT_TIMEOUT_MS)} and is clamped to at most ` +
+        `${describeDuration(RUN_CODE_MAX_TIMEOUT_MS)}; on timeout the whole process group is killed and timedOut ` +
+        'is true. ' +
+        fmt('OUTPUT: a compact-JSON metadata block (content[0]) {exitCode, timedOut, truncated, durationMs, ' +
+          'resultChars?, logsTruncated?, error?} PLUS two raw, un-escaped text blocks: content[1] the result\'s JSON ' +
+          'text (empty when nothing was returned), content[2] the logs.',
+        '`result` is the return value\'s JSON text (null when nothing was returned) and `logs` the console output.'),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', minLength: 1, description: 'The body of an async function; `cc` is in scope.' },
+          timeoutMs: { type: 'integer', minimum: 1, default: RUN_CODE_DEFAULT_TIMEOUT_MS, description: 'Wall-clock limit in milliseconds.' },
+        },
+        required: ['code'],
+      },
+      handler: runCode,
+      // No readOnlyHint: a program may call any tool, mutating ones included.
     },
   ];
 }

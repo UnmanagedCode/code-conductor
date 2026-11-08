@@ -226,6 +226,13 @@ test('worktrees, reads, diff and bash', async () => {
   assert.equal(bash.exitCode, 0);
 });
 
+test('run_code: a program\'s return value is `result`, its console output `logs`', async () => {
+  const r = await ok('run_code', { code: "console.log('hi'); return (await cc.list_projects()).projects.length" }, { caller: callerSid });
+  assert.equal(r.exitCode, 0);
+  assert.match(r.result, /^\d+$/);
+  assert.equal(r.logs, 'hi\n');
+});
+
 test('systems', { skip: !REMOTE && 'no remoteSystems capability on this host' }, async () => {
   await ok('enumerate_remotes', {});
   const r = await ok('system_bash', { system: remote.id, command: 'echo there', description: 'Say there' });

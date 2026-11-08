@@ -130,15 +130,6 @@ export function pluginsRoot(): string {
   return path.join(projectsRoot(), PLUGINS_DIRNAME);
 }
 
-// Where cc writes its generated /mcp client (src/mcp/client/files.ts), handed
-// to local workers and plugin backends as CONDUCTOR_MCP_CLIENT_DIR. Absolute
-// and recomputed per call, so it follows PROJECTS_ROOT.
-export const MCP_CLIENT_DIRNAME = 'mcp-client';
-
-export function mcpClientDir(): string {
-  return path.resolve(orchStoreRoot(), MCP_CLIENT_DIRNAME);
-}
-
 export function projectStoreDir(name: string): string {
   return path.join(orchStoreRoot(), 'projects', name);
 }

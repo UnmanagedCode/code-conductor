@@ -1,0 +1,121 @@
+// The half of code mode the child process loads: the `cc` object a run_code
+// program sees, and the serialization of its outcome. Imports only limits.ts —
+// the child must not pull the server in.
+
+import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutChars, cutResult } from './limits.ts';
+
+// The run's token travels in this header on every call and on the result
+// delivery; the server revokes it when the run's process settles.
+export const RUN_TOKEN_HEADER = 'x-cc-run-token';
+export const RUN_URL_ENV = 'CC_RUN_URL';
+export const RUN_TOKEN_ENV = 'CC_RUN_TOKEN';
+
+// Names on `cc` that are not tools: a plugin namespace spelled one of these is
+// reached with `cc.call('<id>__<tool>', args)`.
+export const RESERVED_METHODS: readonly string[] = ['call', 'describe_tools', 'then'];
+
+// A call a tool refused or that failed. `status` 200 is a soft refusal (the
+// tool answered `{ok:false, code, …}`); 400 and above is a fault (unknown
+// tool, bad arguments, a server error).
+export class ConductorError extends Error {
+  code: string;
+  reason: string;
+  status: number;
+  details?: unknown;
+  constructor(code: string, reason: string, status: number, details?: unknown) {
+    super(`${code}: ${reason}`);
+    this.name = 'ConductorError';
+    this.code = code;
+    this.reason = reason;
+    this.status = status;
+    if (details !== undefined) this.details = details;
+  }
+}
+
+export interface CcOptions {
+  // `<server>/mcp/<sessionId>`
+  url: string;
+  token: string;
+  fetch?: typeof fetch;
+}
+
+export type CallFn = (name: string, args?: unknown) => Promise<unknown>;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+// `cc.<tool>(args)`, `cc.<plugin_ns>.<tool>(args)`, `cc.call(name, args)` and
+// `cc.describe_tools(args)`. Dispatch needs no listing: the server's live
+// registry resolves every name.
+export function createCc(opts: CcOptions): unknown {
+  const doFetch = opts.fetch ?? fetch;
+  const call: CallFn = async (name, args = {}) => {
+    const res = await doFetch(`${opts.url}/tools/${encodeURIComponent(name)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [RUN_TOKEN_HEADER]: opts.token },
+      body: JSON.stringify(args ?? {}),
+    });
+    const text = await res.text();
+    let body: unknown = null;
+    try { body = JSON.parse(text); } catch { /* reported below */ }
+    if (res.status >= 400 || (isRecord(body) && body.ok === false)) {
+      if (isRecord(body) && typeof body.code === 'string') {
+        throw new ConductorError(body.code, String(body.reason ?? ''), res.status, body.details);
+      }
+      throw new ConductorError(`HTTP_${res.status}`, text.slice(0, 500), res.status);
+    }
+    return body;
+  };
+  const describe = async (args: unknown = {}) => (await call('describe_tools', args) as { tools: unknown }).tools;
+
+  const member = (x: string) => new Proxy((args?: unknown) => call(x, args), {
+    get(_t, y) {
+      if (typeof y !== 'string' || y === 'then') return undefined;
+      return (args?: unknown) => call(`${x.replaceAll('_', '-')}__${y}`, args);
+    },
+  });
+  return new Proxy(function cc() {}, {
+    get(_t, x) {
+      if (typeof x !== 'string' || x === 'then') return undefined;
+      if (x === 'call') return call;
+      if (x === 'describe_tools') return describe;
+      return member(x);
+    },
+  });
+}
+
+export interface SerializedOutcome {
+  result: string | null;
+  resultChars: number;
+  truncated: boolean;
+  error?: { name: string; message: string; code?: string; status?: number };
+}
+
+export function serializeError(e: unknown): NonNullable<SerializedOutcome['error']> {
+  const rec = isRecord(e) ? e : {};
+  const err: NonNullable<SerializedOutcome['error']> = {
+    name: cutChars(typeof rec.name === 'string' ? rec.name : 'Error', RUN_ERROR_FIELD_CAP),
+    message: cutChars(typeof rec.message === 'string' ? rec.message : String(e), RUN_ERROR_MESSAGE_CAP),
+  };
+  if (typeof rec.code === 'string') err.code = cutChars(rec.code, RUN_ERROR_FIELD_CAP);
+  if (typeof rec.status === 'number' && Number.isInteger(rec.status)) err.status = rec.status;
+  return err;
+}
+
+// The function's return value (or what it threw) as the run-result body. A
+// value that is not JSON-serializable is the run's error, not a crash.
+export function serializeOutcome(o: { value: unknown } | { thrown: unknown }): SerializedOutcome {
+  if ('thrown' in o) return { result: null, resultChars: 0, truncated: false, error: serializeError(o.thrown) };
+  let text: string | undefined;
+  try { text = JSON.stringify(o.value); } catch (e) {
+    return { result: null, resultChars: 0, truncated: false, error: serializeError(e) };
+  }
+  if (text === undefined) return { result: null, resultChars: 0, truncated: false };
+  if (text.length <= RUN_RESULT_CAP) return { result: text, resultChars: text.length, truncated: false };
+  return {
+    result: cutResult(text, text.length),
+    resultChars: text.length,
+    truncated: true,
+  };
+}

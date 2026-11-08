@@ -7,7 +7,7 @@ import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
 import { buildRoutes, type RelaunchOptions } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
-import { writeMcpClientFiles } from './src/mcp/client/files.ts';
+import type { ProgressTiming } from './src/codeMode/ctx.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
 import type { WriteLease } from './src/eventLog.ts';
 
@@ -61,7 +61,7 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(hostSecurityHeaders());
@@ -150,7 +150,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
     instances, serverCtx, relaunch, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
     claudeLogin, claudeAuthStatus: claudeAuthStatus.get,
   }));
-  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities }));
+  app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities, codeModeTiming }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
   // Plugin pages load the bridge and the host theme (/pluginTheme.css + its
@@ -325,11 +325,6 @@ async function startHolding(rootLock: RootLock, {
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
   const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
-  // The generated /mcp client (docs/mcp-applications.md → Client libraries),
-  // from the registry this server serves. Before listen, so no worker, plugin
-  // or resumed session can import a client older than this server. Fatal on
-  // failure: a stale or missing client must not be served silently.
-  await writeMcpClientFiles(platform.capabilities);
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)

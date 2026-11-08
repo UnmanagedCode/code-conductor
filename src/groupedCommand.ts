@@ -40,6 +40,31 @@ export const RESULT_TAIL_CAP = 4000;
 // script to unwind, short enough that a wedged one doesn't hold the caller.
 const DEFAULT_KILL_GRACE_MS = 100;
 
+// How long after the DIRECT child has exited the runner still waits for its
+// stdio to close. A descendant that outlives it holding the pipes (a daemon
+// started with inherited stdio) would otherwise keep the call open forever.
+// Past the grace — and only once a poll phase has passed with nothing read, so
+// a stalled event loop never discards data already in a pipe — the streams are
+// destroyed and the call resolves with what was buffered, flagged
+// `outputMayBeIncomplete` when a stream had not ended, and the direct child's
+// exit code. A descendant that keeps writing re-arms the grace. When the drain
+// gives up on unended streams the command's process group gets the same
+// SIGTERM → SIGKILL a timeout sends, so a background child that stayed in the
+// group is stopped (one that detached into its own group escapes it, as it
+// does a timeout's kill) — but only where the child leads a group at all. On
+// Windows it does not, and its pid is already gone, so a kill rooted at it
+// could only miss or hit a reused pid: the drain reaps nothing there.
+const STDIO_DRAIN_GRACE_MS = 250;
+
+// The hard ceiling on the drain, counted from the direct child's exit: re-arming
+// never goes past it, so a descendant that writes forever cannot hold a call
+// (`runGit` has no timeout) once its command is done. Long enough that a loaded
+// event loop still delivers the command's own last output and a slow-flushing
+// shell's trailing lines; short enough that a caller never waits visibly on a
+// process that is no longer the command. When there is a timeout the drain also
+// stops there, if that comes sooner. Reaching the ceiling is not a timeout.
+const STDIO_DRAIN_MAX_MS = 3000;
+
 // The local implementation of the System `exec` primitive: its result and
 // option shapes ARE the interface's (src/systems/system.ts), so LocalSystem
 // delegates here without a translation layer. The aliases keep this module's
@@ -123,8 +148,11 @@ export function runGroupedCommand(
       proc.stdin?.end(input);
     }
 
-    proc.stdout?.on('data', (chunk: Buffer) => collector.push('out', chunk));
-    proc.stderr?.on('data', (chunk: Buffer) => collector.push('err', chunk));
+    // A POSIX `group` child is its own group leader, so `-pgid` outlives it.
+    const leadsGroup = platform.spawnOptions('group').detached === true;
+    let reads = 0;
+    proc.stdout?.on('data', (chunk: Buffer) => { reads++; collector.push('out', chunk); });
+    proc.stderr?.on('data', (chunk: Buffer) => { reads++; collector.push('err', chunk); });
 
     let timedOut = false;
     const kill = () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig), platform });
@@ -141,12 +169,45 @@ export function runGroupedCommand(
       else signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    const finish = (code: number, spawnError?: string): void => {
+    let settled = false;
+    let drainTimer: NodeJS.Timeout | null = null;
+    const finish = (code: number, spawnError?: string, outputMayBeCut?: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (drainTimer) clearTimeout(drainTimer);
       if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      resolve(collector.result(code, { timedOut, spawnError, durationMs: Date.now() - start }));
+      resolve(collector.result(code, { timedOut, spawnError, outputMayBeCut, durationMs: Date.now() - start }));
     };
 
+    proc.on('exit', (code) => {
+      // The command is done: its timeout no longer applies, and what remains is
+      // only the drain, bounded by its own ceiling (or the timeout, if sooner).
+      const wasTimedOut = timedOut;
+      if (timer) clearTimeout(timer);
+      const exitedAt = Date.now();
+      const deadline = Math.min(
+        exitedAt + STDIO_DRAIN_MAX_MS,
+        timeoutMs !== undefined && !wasTimedOut ? start + timeoutMs : Infinity,
+      );
+      const arm = (): void => {
+        const seen = reads;
+        drainTimer = setTimeout(() => {
+          // A poll phase runs before the check phase, so anything already in a
+          // pipe is read first; only a grace with no read at all gives up.
+          setImmediate(() => {
+            if (settled) return;
+            if (reads !== seen && Date.now() < deadline) { arm(); return; }
+            const unended = !(proc.stdout?.readableEnded ?? true) || !(proc.stderr?.readableEnded ?? true);
+            proc.stdout?.destroy();
+            proc.stderr?.destroy();
+            if (unended && leadsGroup) kill();
+            finish(code ?? 1, undefined, unended);
+          });
+        }, STDIO_DRAIN_GRACE_MS);
+      };
+      arm();
+    });
     proc.on('close', (code) => finish(code ?? 1));
     proc.on('error', (e) => finish(1, e.message));
   });

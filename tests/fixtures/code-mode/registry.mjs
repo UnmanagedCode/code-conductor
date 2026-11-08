@@ -1,7 +1,7 @@
-// A small tool registry for tests/mcp-client-generator.test.mjs that exercises
-// every schema construct the client generator maps (src/mcp/client/typeModel.ts).
-// Its rendering is snapshotted in ./expected/, so the snapshot does not move
-// when a real tool's description or schema does.
+// A small tool registry for tests/code-mode-signatures.test.mjs that exercises
+// every schema construct the TypeScript renderer maps (src/codeMode/typeModel.ts).
+// It is independent of the real tools, so the assertions do not move when a
+// real tool's description or schema does.
 
 const str = { type: 'string' };
 const int = { type: 'integer' };
@@ -9,7 +9,7 @@ const int = { type: 'integer' };
 export const FIXTURE_TOOLS = [
   {
     name: 'make_thing',
-    description: 'Make a thing.\nA second line with a """ triple quote, a */ comment end and a \\ backslash.',
+    description: 'Make a thing.\nA second line with a */ comment end and a \\ backslash.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -18,7 +18,7 @@ export const FIXTURE_TOOLS = [
         label: { type: ['string', 'null'], description: 'A label, or null to clear it.' },
         kind: { type: 'string', enum: ['small', 'large'], description: 'Which kind.' },
         extra: { type: 'object', description: 'Free-form {key: value} pairs.' },
-        from: { type: 'string', description: 'Where it comes from.' },
+        'x-origin': { type: 'string', description: 'Where it comes from.' },
         tags: { type: 'array', items: str },
       },
       required: ['name'],
