@@ -269,7 +269,7 @@ export const OUTPUT_SCHEMAS: Record<string, Schema> = {
     events: arr(open('a transcript event (the UI event union, shared/uiEvent.ts), passed through')),
     lastSeq: int, trimmedBefore: int, hasMore: bool, nextFrom: int,
   }),
-  spawn_instance: CONDUCTOR_VIEW,
+  spawn_instance: extend(CONDUCTOR_VIEW, { titleNudge: str }, { optional: ['titleNudge'] }),
   send_prompt: obj({ sessionId: nullable(str), status: str, forwarded: int, humanPrompts: HUMAN_PROMPTS }, { optional: ['forwarded', 'humanPrompts'] }),
   set_mode: obj({ sessionId: nullable(str), mode: str }),
   approve_plan: SENT,
