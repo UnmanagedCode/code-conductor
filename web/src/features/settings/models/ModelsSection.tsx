@@ -554,6 +554,45 @@ function TaskToolsCard() {
   );
 }
 
+type AutoBackground = { enabled: boolean; thresholdMs: number; minMs: number; maxMs: number };
+// Slider granularity only; the server's bounds (from GET /api/settings/spawn) sit on this grid.
+const THRESHOLD_STEP_S = 10;
+const fmtThreshold = (s: number) => {
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m} min ${r} s` : `${m} min`;
+};
+
+function AutoBackgroundCard() {
+  const [ab, setAb] = React.useState<AutoBackground | null>(null);
+  const [seconds, setSeconds] = React.useState(0);
+  const apply = (d: { autoBackground?: AutoBackground }) => {
+    if (!d.autoBackground) return;
+    setAb(d.autoBackground);
+    setSeconds(d.autoBackground.thresholdMs / 1000);
+  };
+  React.useEffect(() => {
+    json<{ autoBackground?: AutoBackground }>('/api/settings/spawn').then(apply).catch(() => { /* card stays hidden */ });
+  }, []);
+  if (!ab) return null;
+  const save = (patch: { enabled?: boolean; thresholdMs?: number }) =>
+    post<{ autoBackground?: AutoBackground }>('/api/settings/spawn/prefs', { autoBackground: patch }).then(apply).catch(() => { /* next open re-syncs */ });
+  return (
+    <SettingsCard
+      title="MCP auto-background"
+      description="When on, a worker's MCP call or explicit-foreground subagent that runs past the threshold moves to the background, and the worker is re-invoked when it finishes. Applies to project sessions, not the conductor; takes effect at a session's next launch. Off by default."
+      action={<Switch checked={ab.enabled} aria-label="Enable MCP auto-background for workers" onCheckedChange={(v) => void save({ enabled: v })} />}
+    >
+      <RangeField
+        id="auto-background-threshold" label="Background after"
+        min={ab.minMs / 1000} max={ab.maxMs / 1000} step={THRESHOLD_STEP_S} value={seconds} disabled={!ab.enabled}
+        format={fmtThreshold} onInput={setSeconds} onCommit={(s) => void save({ thresholdMs: s * 1000 })}
+      />
+    </SettingsCard>
+  );
+}
+
 export function ModelsSection() {
   const { data, error, status } = useStore(modelsSettingsStore, (s) => s);
   return (
@@ -573,6 +612,7 @@ export function ModelsSection() {
             <LandingRenewNudgeCard data={data} />
             <DebugDefaultCard />
             <TaskToolsCard />
+            <AutoBackgroundCard />
           </div>
         </>
       )}
