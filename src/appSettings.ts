@@ -47,7 +47,7 @@ interface StoredSettings {
     conductorCompactWindowEnabled?: unknown;
     conductorCompactWindowK?: unknown;
     conductorIdleNudgeEnabled?: unknown;
-    landingRenewNudgeOn?: unknown;
+    landingRenewNudgeEnabled?: unknown;
     conductorIdleNudgeMinutes?: unknown;
     overageThresholdEnabled?: unknown;
     overageThresholdPct?: unknown;
@@ -1426,13 +1426,13 @@ export async function setConductorIdleNudge(input: { enabled: unknown; value: un
 // (src/mcp/handlers.ts). On unless saved off. Read at each delete, so no sync
 // hook is needed.
 export function getLandingRenewNudge(): boolean {
-  const stored = loadSync().models?.landingRenewNudgeOn;
+  const stored = loadSync().models?.landingRenewNudgeEnabled;
   return typeof stored === 'boolean' ? stored : true;
 }
 
 export async function setLandingRenewNudge(on: boolean): Promise<boolean> {
   const cur  = loadSync();
-  await writeSettings({ ...cur, models: { ...(cur.models || {}), landingRenewNudgeOn: on } });
+  await writeSettings({ ...cur, models: { ...(cur.models || {}), landingRenewNudgeEnabled: on } });
   return on;
 }
 

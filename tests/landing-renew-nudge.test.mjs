@@ -18,7 +18,7 @@ import { createWorktree, getWorktree, worktreeWorkLanded } from '../src/worktree
 import {
   recordWorktreeLanding, worktreeLandingRecorded, forgetWorktreeLandings, clearWorktreeLandings,
 } from '../src/worktreeLandings.ts';
-import { removeProjectStoreDir, orchStoreRoot } from '../src/projects.ts';
+import { removeProjectStoreDir } from '../src/projects.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { LANDING_RENEW_NUDGE } from '../src/mcp/handlers.ts';
 
@@ -144,16 +144,6 @@ test('on, conductor caller, landed: the delete result carries renewNudge', async
 
 // INVARIANT: absent means on: with nothing saved, a landed conductor delete carries renewNudge.
 test('default (nothing saved), conductor caller, landed: the delete result carries renewNudge', async () => {
-  const caller = await conductor();
-  const { wt } = await fixture({ merge: true });
-  assert.deepEqual(await del(wt, caller), { ...expected(wt), renewNudge: LANDING_RENEW_NUDGE });
-});
-
-// INVARIANT: only models.landingRenewNudgeOn is read: a value saved under the
-// retired key does not suppress the nudge.
-test('a value saved under models.landingRenewNudgeEnabled does not suppress the nudge', async () => {
-  await fs.mkdir(orchStoreRoot(), { recursive: true });
-  await fs.writeFile(path.join(orchStoreRoot(), 'settings.json'), JSON.stringify({ models: { landingRenewNudgeEnabled: false } }));
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
   assert.deepEqual(await del(wt, caller), { ...expected(wt), renewNudge: LANDING_RENEW_NUDGE });
