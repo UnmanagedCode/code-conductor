@@ -25,6 +25,7 @@ import {
   MANAGED_SYSTEMS, MANAGED_SYSTEM_IDS, disposeSystemHandle, probeSystemLaunch,
   type SystemRecord,
 } from './systems/registry.ts';
+import { RUN_CODE_MAX_TIMEOUT_MS } from './codeMode/limits.ts';
 
 // The on-disk settings document, typed loosely: every leaf is `unknown` because
 // the file is app-owned but pre-dates this module's conversion and can hold
@@ -52,7 +53,7 @@ interface StoredSettings {
     overageThresholdEnabled?: unknown;
     overageThresholdPct?: unknown;
   };
-  spawn?: { debugByDefault?: unknown; taskTools?: unknown };
+  spawn?: { debugByDefault?: unknown; taskTools?: unknown; autoBackground?: unknown; autoBackgroundMs?: unknown };
   systems?: { registry?: unknown };
   plugins?: { libraryDirs?: unknown; builtinLibrary?: unknown };
 }
@@ -192,6 +193,57 @@ export async function setTaskToolsEnabled(enabled: unknown): Promise<boolean> {
   const cur = loadSync();
   await writeSettings({ ...cur, spawn: { ...(cur.spawn || {}), taskTools: !!enabled } });
   return !!enabled;
+}
+
+// Spawn group: autoBackground opts WORKER launches into the CLI's MCP
+// auto-background (CLAUDE_AUTO_BACKGROUND_TASKS + CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS,
+// set in Instance.spawn); autoBackgroundMs is the threshold. Read at each
+// spawn/resume. Off by default.
+export const AUTO_BACKGROUND_MIN_MS = 10_000;
+// The CLI's own default when the flag is on and no threshold is set (2.1.316).
+export const AUTO_BACKGROUND_DEFAULT_MS = 120_000;
+// run_code's ceiling, so the threshold stays below cc's per-server MCP timeout
+// (CC_MCP_SERVER_TIMEOUT_MS) by RUN_CODE_TIMEOUT_GRACE_MS: a call the CLI has
+// not aborted can still be backgrounded.
+export const AUTO_BACKGROUND_MAX_MS = RUN_CODE_MAX_TIMEOUT_MS;
+
+export interface AutoBackground { enabled: boolean; thresholdMs: number }
+
+const isAutoBackgroundMs = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= AUTO_BACKGROUND_MIN_MS && v <= AUTO_BACKGROUND_MAX_MS;
+
+export function getAutoBackground(): AutoBackground {
+  const s = loadSync().spawn;
+  const ms = s?.autoBackgroundMs;
+  return {
+    enabled: Boolean(s?.autoBackground),
+    // A hand-edited value out of bounds is never served or launched with.
+    thresholdMs: isAutoBackgroundMs(ms) ? ms : AUTO_BACKGROUND_DEFAULT_MS,
+  };
+}
+
+// The one validator for an autoBackground patch: null when valid, else the
+// reason. Out-of-range is refused, never clamped.
+export function autoBackgroundPatchError(v: unknown): string | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return 'autoBackground must be an object';
+  const { enabled, thresholdMs } = v as { enabled?: unknown; thresholdMs?: unknown };
+  if (enabled !== undefined && typeof enabled !== 'boolean') return 'autoBackground.enabled must be a boolean';
+  if (thresholdMs !== undefined && !isAutoBackgroundMs(thresholdMs)) {
+    return `autoBackground.thresholdMs must be an integer number of milliseconds from ${AUTO_BACKGROUND_MIN_MS / 1000} s to ${AUTO_BACKGROUND_MAX_MS / 1000} s`;
+  }
+  return null;
+}
+
+export async function setAutoBackground(patch: unknown): Promise<AutoBackground> {
+  const err = autoBackgroundPatchError(patch);
+  if (err) throw new Error(err);
+  const { enabled, thresholdMs } = patch as { enabled?: boolean; thresholdMs?: number };
+  const cur = loadSync();
+  const spawn = { ...(cur.spawn || {}) };
+  if (enabled !== undefined) spawn.autoBackground = enabled;
+  if (thresholdMs !== undefined) spawn.autoBackgroundMs = thresholdMs;
+  await writeSettings({ ...cur, spawn });
+  return getAutoBackground();
 }
 
 // ── Plugin Library ───────────────────────────────────────────────────────

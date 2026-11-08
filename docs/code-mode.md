@@ -121,7 +121,7 @@ All in `src/codeMode/limits.ts`.
 | `PROGRESS_HEARTBEAT_MS`, `PROGRESS_MIN_INTERVAL_MS`, `PROGRESS_LINE_CAP` | progress cadence, below |
 
 - **Why the server timeout exists.** Claude Code aborts an HTTP MCP request whose response headers have not arrived within the per-server `timeout` (60 s when none is set) and treats it as a hard wall-clock limit per call. cc's entry sets it above the longest call cc holds open, so cc's own timeout always fires first and answers `timedOut`. It also covers `project_bash` past 60 s.
-- **No automatic backgrounding.** A `run_code` call holds its caller's turn until it returns, is cancelled or times out. Claude Code backgrounds a long MCP call only in an interactive session or under `CLAUDE_AUTO_BACKGROUND_TASKS`, and cc sets neither for a worker.
+- **Backgrounding is opt-in.** By default a `run_code` call holds its caller's turn until it returns, is cancelled or times out. With the **MCP auto-background** toggle on (Settings → Models, off by default), cc launches workers with `CLAUDE_AUTO_BACKGROUND_TASKS` and a threshold: a `run_code` call still running at the threshold is moved to the background, the worker's turn ends, and the worker is re-invoked when the call finishes. The conductor's own calls are never backgrounded. Details and known limitations: the **MCP auto-background** card under Settings page → Models in [features.md](features.md).
 
 ## Plan mode
 

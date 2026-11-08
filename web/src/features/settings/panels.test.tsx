@@ -714,6 +714,55 @@ describe('Models', () => {
     await waitFor(() => expect(sw.getAttribute('aria-checked')).toBe('true'));
   });
 
+  const AB = { enabled: false, thresholdMs: 120_000, minMs: 10_000, maxMs: 1_800_000 };
+
+  it('the auto-background card serves its slider bounds from the server and disables the slider while off', async () => {
+    mockFetch({ 'GET /api/settings/spawn': () => ({ debugByDefault: false, taskTools: false, autoBackground: { ...AB, minMs: 20_000, maxMs: 600_000 } }) });
+    modelsSettingsStore.set({ data: models() as any });
+    wrap(<ModelsSection />);
+    const slider = await screen.findByRole('slider', { name: 'Background after' }) as HTMLInputElement;
+    expect(slider.min).toBe('20');
+    expect(slider.max).toBe('600');
+    expect(slider.value).toBe('120');
+    expect(slider.disabled).toBe(true);
+    expect(screen.getByRole('switch', { name: 'Enable MCP auto-background for workers' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('toggling auto-background on posts only autoBackground.enabled and enables the slider', async () => {
+    const calls = mockFetch({
+      'GET /api/settings/spawn': () => ({ debugByDefault: false, taskTools: false, autoBackground: AB }),
+      'POST /api/settings/spawn/prefs': () => ({ debugByDefault: false, taskTools: false, autoBackground: { ...AB, enabled: true } }),
+    });
+    modelsSettingsStore.set({ data: models() as any });
+    wrap(<ModelsSection />);
+    fireEvent.click(await screen.findByRole('switch', { name: 'Enable MCP auto-background for workers' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ autoBackground: { enabled: true } }));
+    await waitFor(() => expect((screen.getByRole('slider', { name: 'Background after' }) as HTMLInputElement).disabled).toBe(false));
+  });
+
+  it('committing the threshold slider posts thresholdMs in milliseconds', async () => {
+    const calls = mockFetch({
+      'GET /api/settings/spawn': () => ({ autoBackground: { ...AB, enabled: true } }),
+      'POST /api/settings/spawn/prefs': () => ({ autoBackground: { ...AB, enabled: true, thresholdMs: 300_000 } }),
+    });
+    modelsSettingsStore.set({ data: models() as any });
+    wrap(<ModelsSection />);
+    const slider = await screen.findByRole('slider', { name: 'Background after' });
+    fireEvent.change(slider, { target: { value: '300' } });
+    fireEvent.keyUp(slider);
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ autoBackground: { thresholdMs: 300_000 } }));
+  });
+
+  it('the auto-background card renders nothing when the spawn payload lacks it', async () => {
+    const calls = mockFetch({ 'GET /api/settings/spawn': () => ({ debugByDefault: false, taskTools: false }) });
+    modelsSettingsStore.set({ data: models() as any });
+    wrap(<ModelsSection />);
+    await screen.findByRole('switch', { name: 'Enable the task tools for every session' });
+    await waitFor(() => expect(calls.filter((c) => c.url.startsWith('/api/settings/spawn')).length).toBeGreaterThanOrEqual(3));
+    expect(screen.queryByRole('switch', { name: 'Enable MCP auto-background for workers' })).toBeNull();
+    expect(screen.queryByRole('slider', { name: 'Background after' })).toBeNull();
+  });
+
   it('changing a tier\'s effort posts tierEffort; the last enabled tier cannot be switched off', async () => {
     const calls = mockFetch({ 'GET /api/settings/spawn': () => ({}), 'POST /api/settings/models/prefs': () => models() });
     modelsSettingsStore.set({ data: models({ enabledTiers: { fast: false, powerful: true } }) as any });
