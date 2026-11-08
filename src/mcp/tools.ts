@@ -1393,8 +1393,8 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'result type. A literal call to an unknown tool refuses the whole program before any of it runs. ' +
         `The \`return\` value is the result, as JSON capped at ${RUN_RESULT_CAP} chars — when it is cut, return ` +
         `less; console output comes back separately as logs, capped at ${RUN_LOGS_CAP} bytes. An uncaught throw ` +
-        'is reported in `error` (name, message, code), not as a failed call. Node built-ins load with ' +
-        '`await import(\'node:…\')`; the working directory is your checkout, and in plan mode the program can ' +
+        'is reported in `error` (name, message, code), not as a failed call. Node built-ins load by dynamic ' +
+        'import of a `node:` specifier; the working directory is your checkout, and in plan mode the program can ' +
         'read but not write files or start processes. A program cannot wait for a worker: spawn_instance and ' +
         'send_prompt return at once, and the worker\'s turn end wakes you as usual. ' +
         `\`timeoutMs\` defaults to ${describeDuration(RUN_CODE_DEFAULT_TIMEOUT_MS)} and is clamped to at most ` +

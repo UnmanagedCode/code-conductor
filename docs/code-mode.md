@@ -41,7 +41,7 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 - **Reserved names** (`RESERVED_METHODS`, `src/codeMode/runtimeApi.ts`): `call`, `describe_tools`, `then`. `then` and symbol keys read as `undefined`, so `await cc.x` is never a thenable.
 - Every call is `POST <run url>/tools/<name>` on the REST alias, as the session. It returns the tool's JSON result.
 - **`ConductorError`** (`name`, `message` = `<code>: <reason>`, `code`, `reason`, `status`, `details?`) is thrown when the HTTP status is ≥ 400 or the body is `{ok:false}`. `status` 200 is the **tool's own refusal** (`PLAYBOOK_UNKNOWN`, `TOOL_DENIED_IN_STAGE`, `SESSION_UNKNOWN`, a plugin's code, …); 400 and up is a fault in the call (`TOOL_UNKNOWN` 404, `TOOL_UNAVAILABLE_IN_FORMAT` 404 for an untyped plugin tool, `ARGS_INVALID` 400). Answers that read like failures but are results are returned: a non-zero `exitCode`, `sync_worktree`'s `action`.
-- Node built-ins load with `await import('node:…')`. The working directory is the session's own checkout.
+- Node built-ins load by dynamic import of a `node:` specifier. The working directory is the session's own checkout.
 - `run_code` called from inside a program is refused [`SCRIPT_NESTED`](#refusals).
 - A program cannot wait for a worker: `spawn_instance` and `send_prompt` return at once, and the worker's turn end wakes the session as usual.
 
