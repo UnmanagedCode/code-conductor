@@ -2121,8 +2121,8 @@ export async function createWorktree(
 }
 
 // Rides on a delete_worktree result (setting on by default). The conductor's
-// landing renewal trigger lives here only, stated in full because
-// renew_session's schema may not be loaded when this arrives.
+// landing renewal trigger, stated in full because renew_session's schema may
+// not be loaded when this arrives; the context-renewal convention carries none.
 export const LANDING_RENEW_NUDGE =
   "This worktree's work has landed: send your landing report, then call `renew_session` as this turn's last call. Skip the renewal only if little of your history concerns now-landed work.";
 
