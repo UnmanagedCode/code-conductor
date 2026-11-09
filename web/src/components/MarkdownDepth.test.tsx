@@ -1,9 +1,12 @@
-// Markdown's nesting cap: micromark's parse cost grows with characters × open-container depth, so a document nested
-// past MAX_NESTING (lists or quotes) shows its raw source without ever being parsed, and one at the cap renders.
+// Markdown's nesting cap (COMPLEXITY_LIMITS.nesting): micromark's parse cost grows with characters × open-container
+// depth, so a document nested past it (lists or quotes) shows its raw source without ever being parsed, and one at the cap renders.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import { Markdown } from './Markdown';
-import { MAX_NESTING, nestingDepth } from './markdown/complexity';
+import { COMPLEXITY_LIMITS, measureComplexity } from './markdown/complexity';
+
+const MAX_NESTING = COMPLEXITY_LIMITS.nesting;
+const nestingDepth = (text: string) => measureComplexity(text).nesting;
 
 // Counts the renders that reach the markdown pipeline; otherwise the real module.
 const parses = vi.hoisted(() => ({ count: 0 }));

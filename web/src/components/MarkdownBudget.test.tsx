@@ -90,6 +90,8 @@ describe('restarts bound what micromark parses', () => {
     '- a\r  - b\r- c\r\n  - d',
     '```\nx\n```\n> a\n\n> b',
     '- ```\n> a\n\n- b',
+    '- - - - x\n      ***\n    ***\n  ***\n***',
+    '- a\n  - b\n    - c\n      d\n    e\n  f\ng',
   ])('%j', (text) => {
     const { host } = mount(text);
     expect(host.querySelector(':scope > pre'), 'fixture check: the text renders').toBeNull();
