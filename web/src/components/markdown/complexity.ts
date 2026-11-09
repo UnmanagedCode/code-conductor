@@ -4,7 +4,8 @@
 // - delimiters, brackets: every `*`/`_` run, and every `]`, walks back over the earlier ones in its paragraph;
 // - definitions: each link reference definition is costly (~0.1–0.2 ms);
 // - restarts: each container that closes while the document goes on, and each setext heading, splices micromark's
-//   document-wide event list.
+//   document-wide event list;
+// - size: past the other limits cost is linear, but its constant makes a very large paste freeze too.
 //
 // No measure may fall below what micromark parses: lines end where micromark ends them (LF, CRLF, a lone CR), a
 // leading BOM is skipped, tabs expand to 4-column stops, and only lines micromark certainly reads as fenced code are
@@ -22,6 +23,8 @@ export const COMPLEXITY_LIMITS = {
   definitions: 256,
   /** Lines that change or leave the open containers, quotes resumed after a blank line, and setext underline candidates. */
   restarts: 512,
+  /** Characters in the document. */
+  size: 256 * 1024,
 } as const;
 
 export type Complexity = { -readonly [K in keyof typeof COMPLEXITY_LIMITS]: number };
@@ -168,7 +171,7 @@ function underline(text: string, i: number, end: number): boolean {
 
 /** Every measure COMPLEXITY_LIMITS bounds. Linear in `text`. */
 export function measureComplexity(text: string): Complexity {
-  const m: Complexity = { nesting: 0, delimiters: 0, brackets: 0, definitions: 0, restarts: 0 };
+  const m: Complexity = { nesting: 0, delimiters: 0, brackets: 0, definitions: 0, restarts: 0, size: text.length };
   let fence: Fence | null = null;
   // An open HTML block: the marker that ends it, or null when a blank line does. No fence opens inside one.
   let html: RegExp | null | undefined;

@@ -737,7 +737,8 @@
     - `nesting` — parse cost grows with characters × open-container depth;
     - `delimiters`, `brackets` (per paragraph) — each `*`/`_` run and each `]` walks back over the earlier ones in its paragraph;
     - `definitions` — each link reference definition is costly;
-    - `restarts` — each container exit, and each setext heading, copies micromark's document-wide event list (`EditMap.consume`).
+    - `restarts` — each container exit, and each setext heading, copies micromark's document-wide event list (`EditMap.consume`);
+    - `size` — a backstop: under the other limits cost is linear in characters, but its constant still freezes on a very large paste.
     The scan follows micromark's line model (LF, CRLF and a lone CR end a line; a leading BOM is skipped; tabs to 4-column stops), skips only lines micromark certainly reads as fenced code (a fence ends with its quote or list item, and none opens inside an HTML block), and otherwise counts, so a measure can only exceed micromark's. Each limit sits well above the largest value real transcripts reach, while the worst shape just under it still parses in tens of milliseconds; `MarkdownBudget.test.tsx` and `MarkdownDepth.test.tsx` pin one past and at each limit.
   - **Bundle** — the markdown packages are the `markdown` chunk (`MARKDOWN_PACKAGES` in `web/vite.config.ts`), statically imported, so the entry stays under `build.test.ts`'s per-chunk budget.
 - **shared/** — the modules shared by `web/` (through the `@shared` alias), `src/` and the node tests: one home because each runs in more than one runtime — compiled by Vite for the browser, type-stripped by Node for the node tests, and for the server where `src/` imports one (`promptOrigin.ts` and the text formats it reads). All strict TypeScript, no `.js`; `shared/tsconfig.json` checks them (see TypeScript toolchain under Testing). Nothing here is served.
