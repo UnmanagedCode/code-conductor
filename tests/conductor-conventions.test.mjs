@@ -13,7 +13,7 @@ import {
   addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,
   setPluginConductorConventionsProvider, composeConductParts,
 } from '../src/conductorConventions.ts';
-import { splitSkillPart } from '../src/skillPart.ts';
+import { splitSkillPart } from '../shared/skillPart.ts';
 import { loadPlaybooks, SEED_PLAYBOOK_IDS } from '../src/playbooks.ts';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

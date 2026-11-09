@@ -26,25 +26,30 @@ export interface ScopeSkills {
 }
 
 // The Claude Code plugin name a skill is delivered under: `cc-<scope>` for a
-// built-in or core, `cc-<scope>-<plugin-id>` for a plugin's. A skill is invoked
-// as `<namespace>:<name>`.
-export function skillNamespace(scope: ConventionScope, plugin?: string): string {
-  return plugin ? `cc-${scope}-${plugin}` : `cc-${scope}`;
+// built-in or core, `cc-custom-<scope>` for a Settings-authored convention's,
+// `cc-<scope>-<plugin-id>` for a plugin's. A skill is invoked as
+// `<namespace>:<name>`. No scope is named `custom`, so the three forms are
+// disjoint.
+export function skillNamespace(scope: ConventionScope, src: { plugin?: string; custom?: boolean } = {}): string {
+  if (src.plugin) return `cc-${scope}-${src.plugin}`;
+  return src.custom ? `cc-custom-${scope}` : `cc-${scope}`;
 }
 
 // Replace `dir` with one plugin root per non-empty namespace and return the
 // roots in `--plugin-dir` order: every group's built-in root (group order),
-// then each plugin's root (first-appearance order). Writes nothing, and returns
-// [], when no group carries a skill — a session with no skill part in force
-// gets the argv it would have had without this feature.
+// then each custom root, then each plugin's root (first-appearance order).
+// Writes nothing, and returns [], when no group carries a skill — a session
+// with no skill part in force gets the argv it would have had without this
+// feature.
 export async function writeConventionSkills(dir: string, groups: ScopeSkills[]): Promise<string[]> {
   await fsp.rm(dir, { recursive: true, force: true });
   const builtins = new Map<string, ConventionSkill[]>();
+  const customs = new Map<string, ConventionSkill[]>();
   const plugins = new Map<string, ConventionSkill[]>();
   for (const { scope, skills } of groups) {
     for (const s of skills) {
-      const into = s.plugin ? plugins : builtins;
-      const ns = skillNamespace(scope, s.plugin);
+      const into = s.plugin ? plugins : s.custom ? customs : builtins;
+      const ns = skillNamespace(scope, s);
       const list = into.get(ns) ?? [];
       // A repeated name inside one namespace would be one skill dir written
       // twice; the composers already deliver each slug once.
@@ -53,7 +58,7 @@ export async function writeConventionSkills(dir: string, groups: ScopeSkills[]):
     }
   }
   const roots: string[] = [];
-  for (const [ns, skills] of [...builtins, ...plugins]) {
+  for (const [ns, skills] of [...builtins, ...customs, ...plugins]) {
     const root = path.join(dir, ns);
     await fsp.mkdir(path.join(root, '.claude-plugin'), { recursive: true });
     await fsp.writeFile(path.join(root, '.claude-plugin', 'plugin.json'),

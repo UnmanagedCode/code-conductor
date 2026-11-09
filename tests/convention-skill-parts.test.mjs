@@ -1,4 +1,4 @@
-// The skill-part grammar (src/skillPart.ts) and its one consumer inside the
+// The skill-part grammar (shared/skillPart.ts) and its one consumer inside the
 // fragment catalog (src/fragmentCatalog.ts): which text is inline, which is a
 // skill, and that one selection yields both parts. No server.
 
@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
-import { splitSkillPart } from '../src/skillPart.ts';
+import { splitSkillPart } from '../shared/skillPart.ts';
 import { createFragmentCatalog, readCoreFragment, skillsOf } from '../src/fragmentCatalog.ts';
 import {
   composeConductParts, composeCurrentConductParts, SEED_CONVENTIONS as CONDUCTOR_SEEDS, setPluginConductorConventionsProvider,
@@ -135,12 +135,99 @@ test('a plugin entry\'s skill is named by its plugin-local slug and carries the 
   assert.deepEqual(skillsOf(await catalog.getCatalog(), ['gone/x', 'my-plug/rule']).map(s => s.name), ['rule']);
 });
 
-test('a Settings-authored custom body is never split', async () => {
+const CUSTOM_BODY = '## Custom\nShort rule.\n\n<!-- cc:skill Use when customising. -->\n\nCUSTOM-SKILL-BODY\n';
+
+test('a custom body splits like a fragment: body is inline, skill is set, source is the stored text', async () => {
   const dir = await seedTree({ 'plain.md': '## P\n', 'split.md': '## S\n', 'other.md': '## O\n' });
   const catalog = catalogOver(dir);
-  const body = '## Custom\n<!-- cc:skill looks like a marker -->\nstays inline';
+  await catalog.addCustom({ slug: 'custom', name: 'C', description: 'd', body: CUSTOM_BODY });
+  const entry = (await catalog.getCatalog()).find(e => e.slug === 'custom');
+  assert.equal(entry.body, '## Custom\nShort rule.');
+  assert.deepEqual(entry.skill, { description: 'Use when customising.', body: 'CUSTOM-SKILL-BODY' });
+  assert.equal(entry.source, CUSTOM_BODY);
+  assert.equal(entry.skillError, undefined);
+  const got = await catalog.composeWithMeta(['custom']);
+  assert.equal(got.text, '\n## Custom\nShort rule.\n');
+  assert.deepEqual(got.skills, [{ name: 'custom', custom: true, description: 'Use when customising.', body: 'CUSTOM-SKILL-BODY' }]);
+});
+
+test('a custom body with no marker keeps its stored text byte for byte, trailing newline included', async () => {
+  const dir = await seedTree({ 'plain.md': '## P\n', 'split.md': '## S\n', 'other.md': '## O\n' });
+  const catalog = catalogOver(dir);
+  const body = '## Plain custom\n- rule\n\n';
   await catalog.addCustom({ slug: 'custom', name: 'C', description: 'd', body });
+  const entry = (await catalog.getCatalog()).find(e => e.slug === 'custom');
+  assert.equal(entry.body, body);
+  assert.equal(entry.source, body);
+  assert.equal(entry.skill, undefined);
   assert.deepEqual(await catalog.composeWithMeta(['custom']), { text: `\n${body}\n`, degraded: false, skills: [] });
+});
+
+test('a catalog without skillParts keeps a custom marker verbatim and does not validate it', async () => {
+  const dir = await seedTree({ 'plain.md': '## P\n', 'split.md': '## S\n', 'other.md': '## O\n' });
+  const catalog = catalogOver(dir, { skillParts: false });
+  const body = '{"a":1}\n<!-- cc:skill -->\nx';
+  await catalog.addCustom({ slug: 'custom', name: 'C', description: 'd', body });
+  const entry = (await catalog.getCatalog()).find(e => e.slug === 'custom');
+  assert.equal(entry.body, body);
+  assert.equal(entry.skill, undefined);
+});
+
+test('add and update refuse a malformed, repeated, description-less, body-less or named marker with 400', async () => {
+  const dir = await seedTree({ 'plain.md': '## P\n', 'split.md': '## S\n', 'other.md': '## O\n' });
+  const catalog = catalogOver(dir);
+  await catalog.addCustom({ slug: 'ok', name: 'C', description: 'd', body: '## fine' });
+  const bad = {
+    malformed: ['## A\n<!-- cc:skill d', /malformed skill marker/],
+    repeated: ['<!-- cc:skill a -->\nx\n<!-- cc:skill b -->\ny', /second skill marker/],
+    emptyDescription: ['## A\n<!-- cc:skill -->\nx', /empty description/],
+    emptyBody: ['## A\n<!-- cc:skill d -->\n\n', /empty skill body/],
+    named: ['<!-- cc:skill:foo d -->\nx', /names its skill/],
+  };
+  for (const [label, [body, re]] of Object.entries(bad)) {
+    await assert.rejects(catalog.addCustom({ slug: `n-${label.toLowerCase()}`, name: 'C', description: 'd', body }),
+      e => e.statusCode === 400 && re.test(e.message) && /^convention body: /.test(e.message), `add ${label}`);
+    await assert.rejects(catalog.updateCustom('ok', { body }),
+      e => e.statusCode === 400 && re.test(e.message), `update ${label}`);
+  }
+  assert.equal((await catalog.getCatalog()).find(e => e.slug === 'ok').body, '## fine', 'a refused update stores nothing');
+});
+
+test('a stored custom body whose marker does not parse stays whole and inline, with skillError and one warning', async () => {
+  const dir = await seedTree({ 'plain.md': '## P\n', 'split.md': '## S\n', 'other.md': '## O\n' });
+  const storeFile = path.join(dir, 'hand-edited.json');
+  const body = '## Hand\n<!-- cc:skill -->\nwhole';
+  await fs.writeFile(storeFile, JSON.stringify({ rules: [{ slug: 'hand', name: 'H', description: 'd', body }] }));
+  const catalog = catalogOver(dir, { storeFile: () => storeFile });
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (...a) => warns.push(a.join(' '));
+  let entry, composed;
+  try {
+    entry = (await catalog.getCatalog()).find(e => e.slug === 'hand');
+    composed = await catalog.composeWithMeta(['hand']);
+  } finally { console.warn = orig; }
+  assert.ok(entry, 'the entry is not dropped');
+  assert.equal(entry.body, body);
+  assert.equal(entry.skill, undefined);
+  assert.match(entry.skillError, /empty description/);
+  assert.equal(composed.text, `\n${body}\n`);
+  assert.deepEqual(composed.skills, []);
+  const mine = warns.filter(w => w.includes(storeFile) && w.includes('hand'));
+  assert.equal(mine.length, 2, 'one warning per catalog read (two reads happened)');
+});
+
+test('skillsOf marks a custom entry custom:true and a seed or plugin entry not', async () => {
+  const dir = await seedTree({
+    'plain.md': '## P\n', 'split.md': '## S\n<!-- cc:skill Seed skill. -->\nSEED', 'other.md': '## O\n',
+  });
+  const catalog = catalogOver(dir, {
+    extraProvider: async () => [{ slug: 'pl/x', name: 'X', description: 'd', body: '## X', plugin: 'pl', skill: { description: 'Pl.', body: 'PL' } }],
+  });
+  await catalog.addCustom({ slug: 'custom', name: 'C', description: 'd', body: CUSTOM_BODY });
+  const skills = skillsOf(await catalog.getCatalog(), ['split', 'custom', 'pl/x']);
+  assert.deepEqual(skills.map(s => [s.name, s.custom === true, s.plugin ?? null]),
+    [['split', false, null], ['custom', true, null], ['x', false, 'pl']]);
 });
 
 test('a catalog without skillParts (the playbook shape) composes a marker verbatim', async () => {

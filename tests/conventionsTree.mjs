@@ -6,7 +6,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { splitSkillPart } from '../src/skillPart.ts';
+import { splitSkillPart } from '../shared/skillPart.ts';
 
 export const SHIPPED_CONVENTIONS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions');
 export const SCOPES = ['conductor', 'workspace', 'project'];

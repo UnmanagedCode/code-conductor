@@ -4,7 +4,7 @@ import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
 import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
 import { checkSchema } from '../mcp/jsonSchemaSubset.ts';
 import type { System } from '../systems/system.ts';
-import { splitSkillPart } from '../skillPart.ts';
+import { splitSkillPart } from '../../shared/skillPart.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.

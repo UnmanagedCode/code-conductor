@@ -269,3 +269,77 @@ test('a seed fragment edited on disk is re-read on the next compose', async () =
       'and so does the catalog entry the settings UI renders');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+// ── Custom scaffolds (a `scaffolds` catalog only) ───────────────────────────
+
+async function mkScaffoldFixture({ scaffolds = true } = {}) {
+  const dir = await mkdtemp('cc-fragcat-sc-');
+  const seedDir = path.join(dir, 'seeds');
+  await fs.mkdir(seedDir, { recursive: true });
+  await fs.writeFile(path.join(seedDir, 'foo.md'), '## Foo\n');
+  const storeFile = path.join(dir, 'store.json');
+  const catalog = createFragmentCatalog({
+    seeds: [{ slug: 'foo', name: 'Foo', description: 'the foo' }],
+    seedDir, storeFile: () => storeFile, noun: 'thing', scaffolds,
+  });
+  return { dir, catalog, storeFile };
+}
+
+test('scaffold CRUD: add and update store it trimmed, an empty string clears it, and it reaches the catalog entry', async () => {
+  const { dir, catalog, storeFile } = await mkScaffoldFixture();
+  try {
+    const added = await catalog.addCustom({ slug: 'sc', name: 'S', description: 'd', body: '## S', scaffold: '  Do the setup  ' });
+    assert.equal(added.scaffold, 'Do the setup');
+    assert.equal((await catalog.getCatalog()).find(e => e.slug === 'sc').scaffold, 'Do the setup');
+    assert.equal(JSON.parse(await fs.readFile(storeFile, 'utf8')).rules[0].scaffold, 'Do the setup');
+
+    const edited = await catalog.updateCustom('sc', { scaffold: 'Other setup' });
+    assert.equal(edited.scaffold, 'Other setup');
+    assert.equal(edited.body, '## S', 'a patch without body keeps it');
+
+    const cleared = await catalog.updateCustom('sc', { scaffold: '' });
+    assert.equal('scaffold' in cleared, false);
+    assert.equal('scaffold' in JSON.parse(await fs.readFile(storeFile, 'utf8')).rules[0], false, 'the key is removed from the store');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a scaffold-only record is valid and contributes no text; neither body nor scaffold → 400', async () => {
+  const { dir, catalog } = await mkScaffoldFixture();
+  try {
+    const only = await catalog.addCustom({ slug: 'only', name: 'O', description: 'd', body: '', scaffold: 'Set up' });
+    assert.equal(only.scaffold, 'Set up');
+    assert.equal(await catalog.compose(['only']), '');
+    await expectStatus(() => catalog.addCustom({ slug: 'none', name: 'N', description: 'd', body: '  ', scaffold: ' ' }), 400);
+    await expectStatus(() => catalog.addCustom({ slug: 'none', name: 'N', description: 'd', body: '' }), 400);
+    // Clearing the scaffold of a body-less record leaves nothing → 400.
+    await expectStatus(() => catalog.updateCustom('only', { scaffold: '' }), 400);
+    // name and description stay required with a scaffold present.
+    await expectStatus(() => catalog.addCustom({ slug: 'nn', name: '', description: 'd', body: '', scaffold: 'x' }), 400);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a catalog without scaffolds refuses a non-empty scaffold with 400 and accepts an empty one', async () => {
+  const { dir, catalog } = await mkScaffoldFixture({ scaffolds: false });
+  try {
+    await assert.rejects(catalog.addCustom({ slug: 'sc', name: 'S', description: 'd', body: '## S', scaffold: 'x' }),
+      e => e.statusCode === 400 && /scaffolds are project-scope only/.test(e.message));
+    await catalog.addCustom({ slug: 'ok', name: 'S', description: 'd', body: '## S', scaffold: '' });
+    await assert.rejects(catalog.updateCustom('ok', { scaffold: 'x' }),
+      e => e.statusCode === 400 && /scaffolds are project-scope only/.test(e.message));
+    assert.equal((await catalog.getCatalog()).find(e => e.slug === 'ok').scaffold, undefined);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a stored scaffold survives the store round-trip through normalizeRules (rule edit, state patch)', async () => {
+  const { dir, catalog, storeFile } = await mkScaffoldFixture();
+  try {
+    await catalog.addCustom({ slug: 'sc', name: 'S', description: 'd', body: '## S', scaffold: 'Keep me' });
+    await catalog.patchState({ enabled: ['foo'] });
+    await catalog.addCustom({ slug: 'two', name: 'T', description: 'd', body: '## T' });
+    const rules = JSON.parse(await fs.readFile(storeFile, 'utf8')).rules;
+    assert.equal(rules.find(r => r.slug === 'sc').scaffold, 'Keep me');
+    // A non-string stored scaffold is dropped on read.
+    await fs.writeFile(storeFile, JSON.stringify({ rules: [{ slug: 'bad', name: 'B', description: 'd', body: 'x', scaffold: 7 }] }));
+    assert.equal((await catalog.getCatalog()).find(e => e.slug === 'bad').scaffold, undefined);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
