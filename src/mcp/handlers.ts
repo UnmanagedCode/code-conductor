@@ -1168,8 +1168,9 @@ export function resolveSpawnModel(
 }
 
 // Rides on a spawn_instance result whose caller is untitled and not in plan
-// mode. The fact plus the tool, nothing more: the rule lives in the conductor
-// core, which a non-conductor caller may not have loaded.
+// mode. The fact plus the tool, nothing more: this nudge is what prompts the
+// naming, and set_session_title's own description carries how to choose a
+// title and when to set it again.
 export const SELF_TITLE_NUDGE = "You haven't named your session yet — `set_session_title`.";
 
 // The nudge text for a spawn's caller, or null. Never throws: the check must
