@@ -10,7 +10,12 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { splitSkillPart } from '../src/skillPart.ts';
 import { createFragmentCatalog, readCoreFragment, skillsOf } from '../src/fragmentCatalog.ts';
-import { composeConductParts, SEED_CONVENTIONS as CONDUCTOR_SEEDS } from '../src/conductorConventions.ts';
+import {
+  composeConductParts, composeCurrentConductParts, SEED_CONVENTIONS as CONDUCTOR_SEEDS, setPluginConductorConventionsProvider,
+} from '../src/conductorConventions.ts';
+import { materializeCurrentConduct, conductConventionsPath } from '../src/conduct.ts';
+import { createContributions } from '../src/plugins/contributions.ts';
+import { localSystem } from '../src/systems/registry.ts';
 import { composeWorkspaceParts, SEED_CONVENTIONS as WORKSPACE_SEEDS } from '../src/workspaceConventions.ts';
 import { copyConventions, addSkill, useConventionsDir } from './conventionsTree.mjs';
 
@@ -194,3 +199,86 @@ for (const [scope, compose, seeds] of [
     } finally { restore(); await rmrf(home); }
   });
 }
+
+// A provider whose answer changes on every read: generation N contributes body
+// `TEXT-N` with skill body `SKILL-N` under one fixed slug. Text and skills
+// agree on N only if both came off the same catalog read.
+function churningProvider() {
+  let n = 0;
+  const provider = async () => {
+    n++;
+    return [{ slug: 'churn/rule', name: 'R', description: 'd', plugin: 'churn',
+      body: `## TEXT-${n}`, skill: { description: 'd', body: `SKILL-${n}` } }];
+  };
+  return { provider, reads: () => n };
+}
+
+const generationOf = (re, s) => Number(re.exec(s)?.[1]);
+
+test('one selection read gives both parts: text and skills agree even when the provider changes between reads', async () => {
+  const dir = await seedTree({ 'plain.md': '## P\n', 'split.md': '## S\n', 'other.md': '## O\n' });
+  const { provider, reads } = churningProvider();
+  const catalog = catalogOver(dir, { extraProvider: provider });
+  for (let i = 0; i < 3; i++) {
+    const { text, skills } = await catalog.composeWithMeta(['churn/rule']);
+    assert.equal(generationOf(/SKILL-(\d+)/, skills[0].body), generationOf(/TEXT-(\d+)/, text), `round ${i}: ${text} vs ${skills[0].body}`);
+  }
+  assert.ok(reads() >= 3, 'fixture check: the provider answered differently across reads');
+});
+
+test('one selection read gives both parts through the conductor composer and materializer', async () => {
+  const { home } = await freshProjectsRoot();
+  const root = await copyConventions({ stripSkills: true });
+  const restore = useConventionsDir(root);
+  const { provider, reads } = churningProvider();
+  setPluginConductorConventionsProvider(provider);
+  try {
+    const { text, skills } = await composeCurrentConductParts();
+    const skill = skills.find(s => s.plugin === 'churn');
+    assert.ok(skill, 'fixture check: the churning plugin convention is selected');
+    assert.equal(generationOf(/SKILL-(\d+)/, skill.body), generationOf(/TEXT-(\d+)/, text));
+
+    const before = reads();
+    const skillsDir = path.join(home, 'skills');
+    await materializeCurrentConduct(skillsDir);
+    assert.ok(reads() > before + 1, 'fixture check: materializing read the provider more than once');
+    const doc = await fs.readFile(conductConventionsPath(), 'utf8');
+    const md = await fs.readFile(path.join(skillsDir, 'cc-conductor-churn', 'skills', 'rule', 'SKILL.md'), 'utf8');
+    assert.equal(generationOf(/SKILL-(\d+)/, md), generationOf(/TEXT-(\d+)/, doc), 'the written doc and SKILL.md agree');
+  } finally { setPluginConductorConventionsProvider(null); restore(); await rmrf(home); }
+});
+
+// A plugin fragment that was well-formed at manifest load and turned malformed
+// since: the compose-time path drops the entry WHOLE, so neither its inline
+// text nor its skill reaches any scope.
+test('a plugin fragment malformed after load is dropped whole at compose time', async () => {
+  const dir = await mkdtemp('cc-contrib-');
+  await fs.mkdir(path.join(dir, 'conventions'), { recursive: true });
+  const file = path.join(dir, 'conventions', 'r.md');
+  await fs.writeFile(file, '## Rule\nINLINE\n<!-- cc:skill d -->\nSKILL\n');
+  const entry = { id: 'plug', project: 'plug-project', manifest: { conventions: [
+    { slug: 'r', name: 'R', description: 'd', file: 'conventions/r.md', scope: 'conductor' },
+    { slug: 'kept', name: 'K', description: 'd', scaffold: { text: 'do it' }, scope: 'conductor' },
+  ] } };
+  const contributions = createContributions({
+    ensureInit: async () => {},
+    contributingEntries: () => [entry],
+    resolvePlacement: async () => ({ kind: 'ok', system: localSystem(), dir, cwd: dir }),
+    discoveryDegraded: () => false,
+  });
+  const loaded = (await contributions.conventions()).conductor;
+  assert.deepEqual(loaded.find(e => e.slug === 'plug/r')?.skill, { description: 'd', body: 'SKILL' }, 'fixture check: loads with its skill');
+
+  await fs.writeFile(file, '## Rule\nINLINE\n<!-- cc:skill -->\nSKILL\n');
+  contributions.invalidate();
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => { warnings.push(a.join(' ')); };
+  let after;
+  try { after = (await contributions.conventions()).conductor; }
+  finally { console.warn = origWarn; }
+  assert.equal(after.find(e => e.slug === 'plug/r'), undefined, 'neither text nor skill: the entry is gone');
+  assert.ok(after.some(e => e.slug === 'plug/kept'), 'the plugin\'s other conventions still ship');
+  assert.equal(after.degraded, undefined, 'a malformed file is not a transient outage');
+  assert.ok(warnings.some(w => w.includes("'plug/r'") && /empty description/.test(w)), JSON.stringify(warnings));
+});

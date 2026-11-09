@@ -189,9 +189,12 @@ async function readPlaybookBodies(
 }
 
 // Verify every convention fragment / scaffold-facet `file` ref resolves to a
-// readable file under `dir`, and that every fragment `file`'s skill marker (if
-// any) parses — a malformed one makes the plugin `invalid` at load rather than
-// shipping half a convention. Returns a (possibly empty) list of errors.
+// file under `dir`, and that every fragment `file`'s skill marker (if any)
+// parses — a malformed one makes the plugin `invalid` at load rather than
+// shipping half a convention. Only a PARSE error does: a fragment that exists
+// but cannot be read right now (EACCES, a transient System error) loads, and is
+// skipped with a warning at compose time like any unreadable body. Returns a
+// (possibly empty) list of errors.
 async function checkFragmentFiles(system: System, dir: string, manifest: PluginManifest): Promise<string[]> {
   const refs: Array<[string, string, boolean]> = [];
   for (const g of manifest.conventions ?? []) {
@@ -203,7 +206,10 @@ async function checkFragmentFiles(system: System, dir: string, manifest: PluginM
     const abs = path.join(dir, rel);
     if (!(await system.stat(abs))) { errors.push(`${label} '${rel}' not found`); continue; }
     if (!fragment) continue;
-    try { splitSkillPart(await system.readFile(abs)); }
+    let text: string;
+    try { text = await system.readFile(abs); }
+    catch { continue; }
+    try { splitSkillPart(text); }
     catch (e) { errors.push(`${label} '${rel}': ${(e as Error).message}`); }
   }
   return errors;

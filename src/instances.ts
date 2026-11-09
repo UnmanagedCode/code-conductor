@@ -2310,15 +2310,24 @@ export class Instance extends EventEmitter implements InstanceLike {
     //
     // The convention SKILL roots are regenerated here too, off the same
     // selection reads as the inline text (src/conventionSkills.ts): the doc is
-    // rewritten at every launch, renewals included, so skills frozen at create
-    // would outlive a convention switched off since. A conductor's come out of
-    // the same materialize call as its role doc; any other session's follow its
-    // own CONVENTIONS.md, read through its project's System.
+    // rewritten at every launch — resume, respawn and rewind included — so
+    // skills frozen at create would outlive a convention switched off since. A
+    // renewal is an in-process `/clear`, not a launch, so it refreshes neither.
+    // A conductor's come out of the same materialize call as its role doc (and
+    // fail its launch with it); any other session's follow its own
+    // CONVENTIONS.md, read through its project's System — and a failure there
+    // costs that session its convention skills, never its launch: a worker
+    // could start before this feature existed, and must still.
     if (isConductorInstance(this)) {
       this._conventionPluginDirs = await materializeCurrentConduct(this._conventionSkillsDir);
     } else if (this._conventionSkillsDir !== null) {
-      const groups = await projectSessionConventionSkills(await resolveSystem(this.project), this.cwd);
-      this._conventionPluginDirs = await writeConventionSkills(this._conventionSkillsDir, groups);
+      try {
+        const groups = await projectSessionConventionSkills(await resolveSystem(this.project), this.cwd);
+        this._conventionPluginDirs = await writeConventionSkills(this._conventionSkillsDir, groups);
+      } catch (e) {
+        this._conventionPluginDirs = [];
+        console.warn(`instances: convention skills for session ${this.id} (${this.cwd}) unavailable — launching without them: ${(e as Error).message}`);
+      }
     }
     // BUILD OR REFRESH THIS REMOTE'S CLI CONFIG DIRECTORY before the process
     // starts. Here rather than in spawn() for the same reason as the line

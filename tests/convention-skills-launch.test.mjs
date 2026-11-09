@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, registerLocalProject } from './helpers.mjs';
 import { CORE_CLAUDE_PLUGIN_ROOT } from '../src/coreClaudePlugin.ts';
-import { conventionSkillsDir, sweepConventionSkillDirs, renderSkill } from '../src/conventionSkills.ts';
+import { conventionSkillsDir, sweepConventionSkillDirs } from '../src/conventionSkills.ts';
 import { conductConventionsPath } from '../src/conduct.ts';
 import { regenerateAllProjectConventions } from '../src/projectClaudeMd.ts';
 import { copyConventions, addSkill, useConventionsDir } from './conventionsTree.mjs';
@@ -84,7 +84,9 @@ async function headingOf(scope, slug) {
   return (await fs.readFile(path.join(conventionsRoot, scope, `${slug}.md`), 'utf8')).split('\n')[0];
 }
 
-const CORE_SKILL = { name: 'fixture-core', description: 'Core fixture skill.', body: 'CORE-SKILL-BODY' };
+// The core's description carries a double quote, a colon and `---` — each of
+// which breaks YAML frontmatter unless the description is quoted and escaped.
+const CORE_SKILL = { name: 'fixture-core', description: 'Core "fixture": a skill --- with traps.', body: 'CORE-SKILL-BODY\n\nSecond paragraph.' };
 const WS_SKILL = { description: 'Workspace fixture skill.', body: 'WS-SKILL-BODY' };
 const COND_SKILL = { description: 'Conductor fixture skill.', body: 'COND-SKILL-BODY' };
 const PROJ_SKILL = { description: 'Project fixture skill.', body: 'PROJ-SKILL-BODY' };
@@ -112,10 +114,17 @@ test('conductor: core, workspace and conductor skills are delivered and the role
   assert.deepEqual(conventionSkills(await initSkills(inst)),
     ['cc-conductor:fixture-core', 'cc-conductor:worker-prompts', 'cc-workspace:git-hygiene']);
 
-  assert.equal(await fs.readFile(path.join(dir, 'cc-conductor', 'skills', 'fixture-core', 'SKILL.md'), 'utf8'),
-    renderSkill(CORE_SKILL));
+  // Literal SKILL.md bytes, spelled out here rather than produced by the
+  // renderer under test: frontmatter `name`, a double-quoted description with
+  // its quotes escaped (so the `:` and `---` stay inside the scalar), then the
+  // fixture fragment's skill body verbatim.
+  const coreMd = await fs.readFile(path.join(dir, 'cc-conductor', 'skills', 'fixture-core', 'SKILL.md'), 'utf8');
+  assert.equal(coreMd,
+    '---\nname: fixture-core\ndescription: "Core \\"fixture\\": a skill --- with traps."\n---\n\nCORE-SKILL-BODY\n\nSecond paragraph.\n');
+  assert.equal(JSON.parse(/^description: (.*)$/m.exec(coreMd)[1]), CORE_SKILL.description, 'the description round-trips');
+  assert.equal(coreMd.split('\n').filter(l => l === '---').length, 2, 'exactly two frontmatter fences');
   assert.equal(await fs.readFile(path.join(dir, 'cc-workspace', 'skills', 'git-hygiene', 'SKILL.md'), 'utf8'),
-    renderSkill({ name: 'git-hygiene', ...WS_SKILL }));
+    '---\nname: git-hygiene\ndescription: "Workspace fixture skill."\n---\n\nWS-SKILL-BODY\n');
 
   const doc = await fs.readFile(conductConventionsPath(), 'utf8');
   for (const [scope, slug] of [['conductor', 'worker-prompts'], ['workspace', 'git-hygiene']]) {
@@ -204,7 +213,7 @@ test('plugin gate: enabled delivers both scopes\' skills; disabled delivers neit
   const worker = await spawnIn('p');
   assert.deepEqual(conventionSkills(await initSkills(worker)), ['cc-project-skill-conv:proj-rule']);
   assert.equal(await fs.readFile(path.join(conventionSkillsDir(worker.id), 'cc-project-skill-conv', 'skills', 'proj-rule', 'SKILL.md'), 'utf8'),
-    renderSkill({ name: 'proj-rule', description: 'Plugin project skill.', body: 'PLUGIN-PROJ-BODY' }));
+    '---\nname: proj-rule\ndescription: "Plugin project skill."\n---\n\nPLUGIN-PROJ-BODY\n');
 
   await pluginHost.disable('skill-conv');
   await regenerateAllProjectConventions();
@@ -258,4 +267,74 @@ test('cleanup: remove() deletes a session\'s skill dir and the boot sweep reclai
   await sweepConventionSkillDirs([live.id]);
   assert.equal(existsSync(dead), false, 'the leftover is reclaimed');
   assert.ok(existsSync(conventionSkillsDir(live.id)), 'a live session\'s dir is kept');
+});
+
+// A session cwd with no CONVENTIONS.md has no inline convention text in force,
+// so it gets no convention skill either — even with a workspace skill on.
+test('a worker whose cwd has no CONVENTIONS.md gets no convention skills', async () => {
+  await addSkill(conventionsRoot, 'workspace', 'git-hygiene.md', WS_SKILL);
+  const dir = path.join(ctx.projectsRoot, 'bare');
+  await fs.mkdir(dir, { recursive: true });
+  await registerLocalProject('bare', dir);
+  assert.equal(existsSync(path.join(dir, 'CONVENTIONS.md')), false, 'fixture check: no CONVENTIONS.md');
+  const inst = await spawnIn('bare');
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT]);
+  assert.deepEqual(conventionSkills(await initSkills(inst)), []);
+  assert.equal(existsSync(conventionSkillsDir(inst.id)), false, 'no skill dir written');
+});
+
+test('teardown: removeAllForProject() and shutdown() delete each session\'s skill dir', async () => {
+  await addSkill(conventionsRoot, 'workspace', 'git-hygiene.md', WS_SKILL);
+  await createProject('p');
+  await createProject('q');
+  const [p1, p2, q1] = [await spawnIn('p'), await spawnIn('p'), await spawnIn('q')];
+  for (const inst of [p1, p2, q1]) assert.ok(existsSync(conventionSkillsDir(inst.id)), 'fixture check: written');
+
+  await instances.removeAllForProject('p');
+  assert.equal(existsSync(conventionSkillsDir(p1.id)), false, 'removeAllForProject reclaimed p1');
+  assert.equal(existsSync(conventionSkillsDir(p2.id)), false, 'and p2');
+  assert.ok(existsSync(conventionSkillsDir(q1.id)), 'another project\'s session keeps its dir');
+
+  await instances.shutdown();
+  assert.equal(existsSync(conventionSkillsDir(q1.id)), false, 'shutdown reclaimed q1');
+});
+
+async function captureWarnings(fn) {
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => { warnings.push(a.join(' ')); };
+  try { return { result: await fn(), warnings }; }
+  finally { console.warn = origWarn; }
+}
+
+// Computing a worker's convention skills can fail; that costs the worker its
+// convention skills, loudly, and never its launch. A conductor's skills come
+// out of its role-doc compose, which fails its launch loudly as it always has.
+test('a worker whose CONVENTIONS.md cannot be read launches without convention skills, warned', async () => {
+  await addSkill(conventionsRoot, 'workspace', 'git-hygiene.md', WS_SKILL);
+  await createProject('p');
+  const target = path.join(ctx.projectsRoot, 'p', 'CONVENTIONS.md');
+  await fs.rm(target);
+  await fs.mkdir(target); // a read now fails EISDIR — not ENOENT
+  const { result: inst, warnings } = await captureWarnings(() => spawnIn('p'));
+  assert.equal(inst.status, 'idle', 'the launch went through');
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT]);
+  assert.ok(warnings.some(w => w.includes('convention skills') && w.includes(inst.id) && /EISDIR/.test(w)), JSON.stringify(warnings));
+});
+
+test('a workspace compose failure costs a worker its convention skills, not its launch; a conductor still fails loudly', async () => {
+  await addSkill(conventionsRoot, 'workspace', 'git-hygiene.md', WS_SKILL);
+  await createProject('p');
+  // Broken after the project's CONVENTIONS.md was written: every later
+  // workspace compose throws.
+  await fs.appendFile(path.join(conventionsRoot, 'workspace', 'opening-urls.md'), '\n<!-- cc:skill -->\nbody\n');
+  const { result: inst, warnings } = await captureWarnings(() => spawnIn('p'));
+  assert.equal(inst.status, 'idle', 'the worker launched');
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT]);
+  assert.ok(warnings.some(w => w.includes('convention skills') && /empty description/.test(w)), JSON.stringify(warnings));
+
+  await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
+  assert.ok(r.status >= 400, `the conductor launch is refused: ${r.status} ${JSON.stringify(r.body)}`);
+  assert.match(JSON.stringify(r.body), /empty description/);
 });
