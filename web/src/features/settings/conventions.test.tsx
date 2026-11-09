@@ -297,6 +297,106 @@ describe('Conventions → blocks', () => {
   });
 });
 
+describe('Conventions → skill part and scaffold', () => {
+  const SRC = '## Rule\nInline.\n<!-- cc:skill Use when X. -->\nSKILL-STEPS';
+  const payload = (extra: object): ConventionsPayload => ({ ...PJ, conventions: [...(PJ.conventions ?? []).filter((c) => c.slug !== 'pmine'), { slug: 'pmine', name: 'P mine', description: 'p', body: '## Rule\nInline.', source: SRC, ...extra } as never] });
+  const addForm = async (title: Title) => {
+    await expand(title);
+    const b = block(title);
+    fireEvent.click(within(b).getByRole('button', { name: 'Add custom convention' }));
+    return b;
+  };
+
+  it('the scaffold field exists in the project form only, and is sent only from there', async () => {
+    serve({ 'POST /api/settings/conventions/project': () => ({}), 'POST /api/settings/conventions/workspace': () => ({}) });
+    renderSection();
+    await screen.findByTestId('conventions-workspace');
+    const wsB = await addForm('Workspace conventions');
+    expect(within(wsB).queryByLabelText(/^Scaffold/)).toBeNull();
+    type(wsB, 'Slug', 'w'); type(wsB, 'Name', 'W'); type(wsB, 'Description', 'd'); type(wsB, 'Body (Markdown)', 'b');
+    fireEvent.click(within(wsB).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(Object.keys(writes()[0].body)).not.toContain('scaffold');
+
+    const pjB = await addForm('Project conventions');
+    type(pjB, 'Slug', 'p'); type(pjB, 'Name', 'P'); type(pjB, 'Description', 'd'); type(pjB, 'Body (Markdown)', 'b');
+    type(pjB, 'Scaffold (one-time setup directive)', ' Set it up ');
+    fireEvent.click(within(pjB).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(writes()).toHaveLength(2));
+    expect(writes()[1]).toEqual({ method: 'POST', url: '/api/settings/conventions/project', body: { slug: 'p', name: 'P', description: 'd', body: 'b', scaffold: 'Set it up' } });
+  });
+
+  it('Edit loads the stored source (not the inline part) and saving unchanged sends the raw body and scaffold back', async () => {
+    pj = payload({ scaffold: 'Do setup' });
+    serve({ 'PUT /api/settings/conventions/project/pmine': () => ({}) });
+    renderSection();
+    await expand('Project conventions');
+    const b = block('Project conventions');
+    fireEvent.click(within(b).getByRole('button', { name: 'Edit P mine' }));
+    expect(field(b, 'Body (Markdown)').value).toBe(SRC);
+    expect(field(b, 'Scaffold (one-time setup directive)').value).toBe('Do setup');
+    fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0].body).toEqual({ name: 'P mine', description: 'p', body: SRC, scaffold: 'Do setup' });
+  });
+
+  it('clearing the scaffold on Edit sends an empty string so the server removes it', async () => {
+    pj = payload({ scaffold: 'Do setup' });
+    serve({ 'PUT /api/settings/conventions/project/pmine': () => ({}) });
+    renderSection();
+    await expand('Project conventions');
+    const b = block('Project conventions');
+    fireEvent.click(within(b).getByRole('button', { name: 'Edit P mine' }));
+    type(b, 'Scaffold (one-time setup directive)', '');
+    fireEvent.click(within(b).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0].body.scaffold).toBe('');
+  });
+
+  it('a body with a marker previews the inline part and the on-demand skill under its invocation name', async () => {
+    renderSection();
+    const b = await addForm('Conductor conventions');
+    expect(within(b).queryByText(/Stays in the system prompt/)).toBeNull();
+    type(b, 'Slug', 'my-rule');
+    type(b, 'Body (Markdown)', SRC);
+    const inline = within(b).getByRole('region', { name: 'Stays in the system prompt' });
+    expect(inline.textContent).toContain('Inline.');
+    expect(inline.textContent).not.toContain('SKILL-STEPS');
+    const skill = within(b).getByRole('region', { name: 'Skill cc-custom-conductor:my-rule — loads on demand' });
+    expect(skill.textContent).toContain('Use when X.');
+    expect(skill.textContent).toContain('SKILL-STEPS');
+  });
+
+  it('a marker the server would refuse shows the parser error in an error status', async () => {
+    renderSection();
+    const b = await addForm('Workspace conventions');
+    type(b, 'Body (Markdown)', '## A\n<!-- cc:skill -->\nx');
+    const status = within(b).getAllByRole('status').find((s) => s.textContent?.includes('empty description')) as HTMLElement;
+    expect(toneOf(status)).toBe('error');
+    expect(within(b).queryByRole('region')).toBeNull();
+  });
+
+  it('rows badge a skill part, a scaffold and a skill error from the payload flags', async () => {
+    pj = {
+      ...PJ,
+      conventions: [
+        { slug: 'both', name: 'Both', description: 'x', body: 'i', skill: { description: 'd', body: 'b' }, scaffold: 's' },
+        { slug: 'bad', name: 'Bad', description: 'x', body: 'i', skillError: 'empty description' },
+        { slug: 'none', name: 'None', description: 'x', body: 'i' },
+      ] as never,
+    };
+    renderSection();
+    const list = await expand('Project conventions');
+    const row = (slug: string) => list.querySelector(`[data-slug="${slug}"]`) as HTMLElement;
+    expect(row('both').textContent).toContain('skill');
+    expect(row('both').textContent).toContain('scaffold');
+    expect(row('none').textContent).not.toMatch(/skill|scaffold/);
+    const err = within(row('bad')).getByRole('status');
+    expect(toneOf(err)).toBe('error');
+    expect(err.textContent).toContain('empty description');
+  });
+});
+
 describe('Conventions → conductor pickers', () => {
   // The enforcement options are the payload's modes in payload order, labelled from ENFORCEMENT_LABELS where known and by bare id otherwise, with the stored mode selected.
   it("the enforcement picker lists the payload's levels in order, labelling the known ones and naming the rest by id, with the stored level selected", async () => {
