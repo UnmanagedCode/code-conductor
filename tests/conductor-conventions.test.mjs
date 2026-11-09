@@ -11,8 +11,9 @@ import { bootServer, api, freshProjectsRoot, rmrf, registerLocalProject} from '.
 import {
   SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
   addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,
-  setPluginConductorConventionsProvider,
+  setPluginConductorConventionsProvider, composeConductParts,
 } from '../src/conductorConventions.ts';
+import { splitSkillPart } from '../src/skillPart.ts';
 import { loadPlaybooks, SEED_PLAYBOOK_IDS } from '../src/playbooks.ts';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -359,4 +360,50 @@ test('a plugin conductor convention composes into the conductor role prompt', as
   assert.ok(enabled.includes('my-plugin/extra-rule'));
   const doc = await composeConduct(enabled);
   assert.match(doc, /## Extra rule/);
+});
+
+// ── Shipped skill parts ──────────────────────────────────────────────────────
+
+const SHIPPED_CONDUCTOR = path.join(__dirname, '..', 'conventions', 'conductor');
+const ALL_SEEDS = SEED_CONVENTIONS.map(s => s.slug);
+const pointers = (text) => new Set([...text.matchAll(/`cc-conductor:([a-z0-9-]+)`/g)].map(m => m[1]));
+
+test('Shipped skill parts: core delivers plan-mode as a skill; the inline section keeps the argue/code-mode rules and the pointer', async () => {
+  const raw = await fs.readFile(path.join(SHIPPED_CONDUCTOR, 'core.md'), 'utf8');
+  const { inline, skill } = splitSkillPart(raw, { explicitName: 'required' });
+  assert.equal(skill?.name, 'plan-mode');
+  assert.match(skill.description, /^Use when /);
+  const section = inline.slice(inline.indexOf('## Your own plan mode'), inline.indexOf('## MCP toolbelt'));
+  assert.ok(section.length > 0 && inline.indexOf('## Core rule') < inline.indexOf('## Your own plan mode'));
+  for (const kept of ['`cc-conductor:plan-mode`', 'Plan mode is where you argue', 'In code mode']) {
+    assert.ok(section.includes(kept), `inline section keeps ${kept}`);
+  }
+  for (const moved of ['functional spec', 'orchestration plan', 'durable file']) {
+    assert.ok(skill.body.includes(moved), `skill body has ${moved}`);
+    assert.ok(!inline.includes(moved), `inline part no longer has ${moved}`);
+  }
+  assert.ok((await composeConduct([])).includes('`cc-conductor:plan-mode`'), 'core is always on');
+});
+
+test('Shipped skill parts: capturing-learnings keeps the trigger, pointer and sign-off rule inline and the procedure in the skill', async () => {
+  const raw = await fs.readFile(path.join(SHIPPED_CONDUCTOR, 'capturing-learnings.md'), 'utf8');
+  const { inline, skill } = splitSkillPart(raw);
+  assert.match(skill?.description ?? '', /^Use when /);
+  assert.ok(inline.startsWith('## Capturing learnings'));
+  for (const kept of ['`cc-conductor:capturing-learnings`', "without the user's sign-off"]) {
+    assert.ok(inline.includes(kept), `inline part keeps ${kept}`);
+  }
+  for (const moved of ['Worth keeping', 'relay', 'persist']) {
+    assert.ok(skill.body.includes(moved), `skill body has ${moved}`);
+    assert.ok(!inline.includes(moved), `inline part no longer has ${moved}`);
+  }
+});
+
+test('Shipped skill parts: every pointer in the doc resolves to a delivered skill and every skill is pointed at', async () => {
+  const all = await composeConductParts(ALL_SEEDS);
+  assert.deepEqual([...pointers(all.text)].sort(), all.skills.map(s => s.name).sort());
+  const off = await composeConductParts(ALL_SEEDS.filter(s => s !== 'capturing-learnings'));
+  assert.ok(!pointers(off.text).has('capturing-learnings'));
+  assert.ok(!off.skills.some(s => s.name === 'capturing-learnings'));
+  assert.deepEqual([...pointers(off.text)].sort(), off.skills.map(s => s.name).sort());
 });
