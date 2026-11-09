@@ -4856,6 +4856,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     let preFile: string | null = null;
     let preBytes: Buffer | null = null;
     let preTouched = false;
+    let relaunchStarted = false;
     try {
       const place = this.transcriptPlace;
       const b = renewalBoundaryAt(await chainFor(publicId), label);
@@ -4905,6 +4906,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         }
       }
       if (truncated) await reanchorModelSwitches(publicId, pre, truncated.survivingUuids, truncated.lastSurvivingUuid);
+      relaunchStarted = true;
       await this._relaunchSegment(pre, resumable, 'rewind');
       await this._awaitRelaunchConfirmed();
       return { droppedText: null };
@@ -4930,7 +4932,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       const refusal = typeof err?.statusCode === 'number';
       throw httpError(
         refusal ? err.statusCode as number : 500,
-        `the renewal was undone, but the session failed to relaunch: ${typeof err?.message === 'string' ? err.message : String(e)}`,
+        `the renewal was undone, but ${relaunchStarted ? 'the session failed to relaunch' : 'finishing it failed'}: `
+          + (typeof err?.message === 'string' ? err.message : String(e)),
         refusal && typeof err.code === 'string' ? { code: err.code } : {},
       );
     } finally {

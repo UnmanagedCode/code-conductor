@@ -18,7 +18,7 @@ import {
   preRenewalRecords, postRenewalRecords, postTypedClearRecords, declinedRequest,
 } from './renewalFixtures.mjs';
 import { localPlace, sessionFilePath, subAgentDirPath, orchStoreRoot } from '../src/projects.ts';
-import { settleSessionWrites } from '../src/sessionStore.ts';
+import { settleSessionWrites, appendModelSwitch } from '../src/sessionStore.ts';
 import { chainFor, resolveBacking } from '../src/sessionLineage.ts';
 import { isPureUserPromptLine } from '../src/transcript.ts';
 import { RELAUNCH_FAILED, RENEWAL_NOT_LATEST, PRE_RENEWAL_GONE } from '../src/instances.ts';
@@ -57,6 +57,11 @@ const storeChain = async (pub) => {
   return { current, segments };
 };
 const fileBytes = (id) => fs.readFile(sessionFilePath(place(), id), 'utf8');
+const ledger = async (pub) => JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'sessions.json'), 'utf8')).sessions[pub].modelSwitches ?? [];
+// A model switch recorded in P after `afterUuid` (a line the cut drops).
+const switchIn = (segment, afterUuid) => ({
+  id: `sw-${segment.slice(0, 8)}`, at: '2026-10-03T00:00:01.000Z', segment, afterUuid, from: 'model-a', to: 'model-b', ok: true,
+});
 const undo = (inst, body) => api(baseUrl, 'POST', `/api/instances/${inst.id}/rewind`, body);
 
 // Seed `segments` (segmentChain shape: {id, reason, records, archived?, temp?})
@@ -109,6 +114,7 @@ async function lifecycleOf(inst, fn) {
 test('undoing the latest managed renewal relaunches the pre-renewal segment cut before the request', async () => {
   const { P, N, segments } = managedChain('m', { temp: true });
   const { inst, publicId } = await resumeChain(segments, { temp: true });
+  await appendModelSwitch(publicId, switchIn(P, 'm-close'));
   const agents = subAgentDirPath(place(), N);
   await fs.mkdir(agents, { recursive: true });
   await fs.writeFile(path.join(agents, 'agent-x.jsonl'), '{}\n');
@@ -124,6 +130,8 @@ test('undoing the latest managed renewal relaunches the pre-renewal segment cut 
   assert.deepEqual(await promptsOf(P), ['m brief', declinedRequest('m')], 'P keeps only the prompts before the request');
   assert.equal(existsSync(sessionFilePath(place(), N)), false, 'N\'s jsonl is deleted');
   assert.equal(existsSync(agents), false, 'N\'s sub-agent dir is deleted');
+  assert.deepEqual((await ledger(publicId)).map(e => [e.segment, e.afterUuid]), [[P, 'm-a1']],
+    'a model switch inside the cut moves to the last surviving line');
 
   await waitFor(() => inst.status === 'idle' && inst.proc);
   assert.equal(inst.backingSessionId, P);
@@ -281,6 +289,9 @@ test('a refused undo changes nothing: a running turn is refused 409', async () =
 test('a failure before the record write leaves P byte-identical and relaunches the untouched post segment', async () => {
   const { P, N, segments } = managedChain('x');
   const { inst, publicId } = await resumeChain(segments);
+  await appendModelSwitch(publicId, switchIn(P, 'x-close'));
+  const ledgerBefore = await ledger(publicId);
+  assert.equal(ledgerBefore.length, 1, 'precondition: one switch recorded inside the cut');
   const pBefore = await fileBytes(P);
   const nBefore = await fileBytes(N);
   // Once the process is down — after every refusal, before the truncate — the
@@ -299,6 +310,7 @@ test('a failure before the record write leaves P byte-identical and relaunches t
   assert.equal(await fileBytes(P), pBefore, 'P is byte-identical');
   assert.equal(await fileBytes(N), nBefore, 'N is untouched');
   assert.deepEqual(await storeChain(publicId), chainBefore, 'the undo wrote nothing to the record');
+  assert.deepEqual(await ledger(publicId), ledgerBefore, 'the model-switch ledger is untouched');
   await waitFor(() => inst.status === 'idle' && inst.proc);
   assert.equal(inst.backingSessionId, N, 'the post segment runs again');
   assert.equal(inst._mutating, null);
