@@ -73,6 +73,18 @@ describe('complexity measures', () => {
   });
 });
 
+describe('size', () => {
+  // Pins: size counts the document's characters, line endings and a BOM included.
+  it.each([
+    { text: '', value: 0 },
+    { text: 'abc', value: 3 },
+    { text: 'a\r\nb', value: 4 },
+    { text: '\uFEFFx', value: 2 },
+  ])('a text of $value characters measures $value', ({ text, value }) => {
+    expect(measureComplexity(text).size).toBe(value);
+  });
+});
+
 describe('restarts bound what micromark parses', () => {
   // Pins: restarts is never below the lists, quotes and setext headings the render holds (each closes in micromark's event list).
   it.each([
@@ -111,6 +123,7 @@ describe('the complexity budget', () => {
     { measure: 'definitions', build: definitions, limit: L.definitions },
     { measure: 'restarts (quotes)', build: (k: number) => '> a\n\n'.repeat(k), limit: L.restarts },
     { measure: 'restarts (setext)', build: (k: number) => 'a\n---\n'.repeat(k), limit: L.restarts },
+    { measure: 'size', build: (k: number) => 'x'.repeat(k), limit: L.size },
   ] as const;
 
   // Pins: each case's builder sits exactly at its measure's limit, so the pins below are one past and at it.
