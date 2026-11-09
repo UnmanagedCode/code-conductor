@@ -103,14 +103,14 @@ function commandForm(text: string): string | null {
 
 // The comparison form of a bubble's text: CRLF → LF, trimmed, a command
 // wrapper in its command form.
-function normalizePromptText(text: string): string {
+export function normalizePromptText(text: string): string {
   const t = text.replace(/\r\n/g, '\n').trim();
   return commandForm(t) ?? t;
 }
 
 // The text the target line's bubble shows: its replayed outer echo — the same
 // function every replayed or archived bubble came from.
-function replayedPromptText(obj: PersistedLine): string {
+export function replayedPromptText(obj: PersistedLine): string {
   const echo = replayPersistedLine(obj).find(isOuterUserEcho);
   return typeof echo?.text === 'string' ? echo.text : '';
 }

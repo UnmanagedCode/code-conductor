@@ -65,7 +65,7 @@ A human steer mid-turn starts no turn and writes nothing. A UI interrupt writes 
 ## Semantics for a timeline reader
 
 - **Playbook state** folds from `call` rows (`bind` replaces, `move` advances and merges `provenance`) and `config` rows (`to`). `stageHistory` is the sequence of stage **changes**: it never repeats a stage twice in a row, however many rounds a worker spent in it.
-- **Lifecycle.** A rotation that kills and relaunches the process (prune, rewind, model switch) is an `exit` then a `resume` with that cause; an in-place rotation (renew, typed `/clear`) writes neither.
+- **Lifecycle.** A rotation that kills and relaunches the process (prune, rewind, model switch) is an `exit` then a `resume` with that cause; an in-place rotation (renew, typed `/clear`) writes neither. Undoing a renewal at its divider is a rewind: `exit`, then `resume` with cause `rewind`.
 - **Ordering.**
   - A `kill_instance` `call` follows the `exit` its kill produced.
   - A `call` row written at commit (`ok`, or `failed` after the handler ran) follows every row the handler caused: the `session` `resume` for a `spawn_instance({resume})`, a fresh spawn's `session` `start`.

@@ -158,8 +158,41 @@ export async function forkWholeSession(instanceId: string) {
   await postFork(instanceId, {});
 }
 
+/** Undo the renewal at a "Context renewed" divider: the session goes back to the conversation before its request. */
+export async function rewindRenewal(segmentId: string) {
+  const id = activeId();
+  if (!id) return;
+  const ok = await confirmDialog({
+    title: 'Undo this renewal?',
+    description: 'The session goes back to the conversation from before the renewal request. Everything after the renewal is discarded — fork from the divider instead to keep it.',
+    confirmLabel: 'Undo renewal',
+    destructive: true,
+  });
+  if (!ok) return;
+  try {
+    await apiFetch(`/api/instances/${encodeURIComponent(id)}/rewind`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ boundary: segmentId }),
+    });
+  } catch (e: any) {
+    toast.error('Undo renewal failed', e.message);
+  }
+}
+
+/** Fork a new session from the conversation before the renewal at a "Context renewed" divider. */
+export async function forkRenewal(segmentId: string) {
+  const id = activeId();
+  if (!id) return;
+  const ok = await confirmDialog({
+    title: 'Fork from before this renewal?',
+    description: 'A new session starts from the conversation before this renewal request. The original is left intact.',
+    confirmLabel: 'Fork',
+  });
+  if (!ok) return;
+  await postFork(id, { boundary: segmentId });
+}
+
 /** POST a fork, then select the new session unless a later gesture took over; a refusal toasts. */
-async function postFork(instanceId: string, body: { userMessageIndex: number; text: string } | Record<string, never>) {
+async function postFork(instanceId: string, body: { userMessageIndex: number; text: string } | { boundary: string } | Record<string, never>) {
   const gesture = beginGesture();
   try {
     const { instance } = await apiFetch<{ instance: Instance }>(`/api/instances/${encodeURIComponent(instanceId)}/fork`, {

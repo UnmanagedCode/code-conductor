@@ -29,6 +29,9 @@ export type BubbleActions = {
   canFork: boolean;
   onRewind: (userIndex: number, text: string) => void;
   onFork: (userIndex: number, text: string) => void;
+  /** A "Context renewed" divider's controls, keyed by the divider's segmentId. */
+  onRewindRenewal: (segmentId: string) => void;
+  onForkRenewal: (segmentId: string) => void;
   resolveAttachmentUrl: (filename: string) => string | null;
 };
 
@@ -81,7 +84,7 @@ const RootItemView = React.memo(function RootItemView({ node, ctx, actions, curr
     case 'task_completion': return <TaskCompletionView node={node} />;
     case 'queued': return <QueuedView node={node} />;
     case 'compaction': return <CompactionView node={node} model={ctx.model} />;
-    case 'divider': return <DividerView node={node} />;
+    case 'divider': return <DividerView node={node} actions={ctx.model.isSub ? null : actions} currentSegment={currentSegment} />;
   }
 }, (a, b) => a.node === b.node && a.rev === b.rev && a.actions === b.actions && a.currentSegment === b.currentSegment && a.ctx === b.ctx
   && a.controlsBelow === b.controlsBelow && a.carries === b.carries && a.carriesRev === b.carriesRev && a.afterAssistant === b.afterAssistant);
@@ -565,15 +568,44 @@ function CompactionView({ node, model }: { node: CompactionNode; model: Conversa
   );
 }
 
-function DividerView({ node }: { node: DividerNode }) {
+/**
+ * Every seam divider is a renewal boundary (a prune draws none), labelled with the segment below it. Undo is offered
+ * only on the one directly above the current segment; fork on every one.
+ */
+function DividerView({ node, actions, currentSegment }: { node: DividerNode; actions: BubbleActions | null; currentSegment: string | null }) {
   const label = node.kind === 'gap' ? 'Earlier messages unavailable'
     : node.kind === 'seam' ? 'Context renewed'
     : `${node.count ?? 0} prior message${node.count === 1 ? '' : 's'} replayed · new turn below`;
+  const segmentId = node.kind === 'seam' ? node.segmentId ?? null : null;
   return (
     <div className="flex items-center gap-3 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase" data-divider={node.kind}>
       <div className="h-px flex-1 bg-border" />
       {node.kind === 'seam' ? <RecycleIcon className="size-3" /> : <FileTextIcon className="size-3" />}
       {label}
+      {segmentId && actions && (
+        <span className="flex items-center normal-case" data-divider-actions>
+          {segmentId === currentSegment && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" disabled={!actions.canRewind} aria-label="Undo this renewal"
+                  onClick={() => actions.onRewindRenewal(segmentId)}>
+                  <RotateCcwIcon className="size-3" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Undo this renewal</TooltipContent>
+            </Tooltip>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-sm" className="size-6 text-muted-foreground" disabled={!actions.canFork} aria-label="Fork from before this renewal"
+                onClick={() => actions.onForkRenewal(segmentId)}>
+                <GitForkIcon className="size-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Fork from before this renewal</TooltipContent>
+          </Tooltip>
+        </span>
+      )}
       <div className="h-px flex-1 bg-border" />
     </div>
   );

@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: () => {} }));
+vi.mock('@/app/sessionActions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/app/sessionActions')>()),
+  rewindRenewal: vi.fn(async () => {}),
+  forkRenewal: vi.fn(async () => {}),
+}));
 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { bus } from '@shared/ws';
@@ -15,6 +20,7 @@ import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
 import { ConversationView } from './ConversationView';
 import { userActionsForStatus } from './model';
+import { forkRenewal, rewindRenewal } from '@/app/sessionActions';
 import { flush } from './renderModel';
 
 /** [Rewind disabled, Fork disabled] of one bubble; null where the button is absent. */
@@ -181,5 +187,23 @@ describe('bubble actions follow the active instance', () => {
     const idle = await splice('idle');
     expect(paths, 'fixture check: the bubble came on a lineage page').toContain('/api/instances/i1/lineage-events');
     expect(splits(idle.container)).toEqual([SPLIT.idle]);
+  });
+});
+
+describe('renewal divider actions', () => {
+  it("the divider's undo and fork call the actions with the seam's segmentId", async () => {
+    vi.mocked(rewindRenewal).mockClear();
+    vi.mocked(forkRenewal).mockClear();
+    setActive('idle');
+    const { container } = mount();
+    act(() => { conversation.segmentId = 'seg-a'; conversation.setCurrentSegment('seg-b'); });
+    await apply(echo('before', 0));
+    await apply({ kind: 'segment_seam', segmentId: 'seg-b' });
+    await apply(echo('after', 1));
+    const divider = container.querySelector('[data-divider="seam"]') as HTMLElement;
+    act(() => { (divider.querySelector('button[aria-label="Undo this renewal"]') as HTMLButtonElement).click(); });
+    act(() => { (divider.querySelector('button[aria-label="Fork from before this renewal"]') as HTMLButtonElement).click(); });
+    expect(vi.mocked(rewindRenewal).mock.calls).toEqual([['seg-b']]);
+    expect(vi.mocked(forkRenewal).mock.calls).toEqual([['seg-b']]);
   });
 });

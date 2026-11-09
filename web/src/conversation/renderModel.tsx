@@ -23,7 +23,8 @@ function SubView({ sub, ctx }: { sub: ConversationModel; ctx: RenderCtx }) {
 }
 
 export const noActions: BubbleActions = {
-  canRewind: true, canFork: true, onRewind: () => {}, onFork: () => {}, resolveAttachmentUrl: () => null,
+  canRewind: true, canFork: true, onRewind: () => {}, onFork: () => {}, onRewindRenewal: () => {}, onForkRenewal: () => {},
+  resolveAttachmentUrl: () => null,
 };
 
 export function renderModel(model: ConversationModel, actions: BubbleActions | null = noActions) {

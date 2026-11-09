@@ -154,7 +154,8 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor
 // step. The server name must stay `code-conductor` — tool names are
 // prefixed `mcp__code-conductor__*`, and changing the name would break any
 // in-flight transcripts and tool-allowlist patterns.
-export function buildMcpConfigJSON({ url, name = 'code-conductor' }: { url?: string; name?: string } = {}): string {
+export const CC_MCP_SERVER_NAME = 'code-conductor';
+export function buildMcpConfigJSON({ url, name = CC_MCP_SERVER_NAME }: { url?: string; name?: string } = {}): string {
   return JSON.stringify({
     mcpServers: { [name]: { type: 'http', url, timeout: CC_MCP_SERVER_TIMEOUT_MS } },
   });

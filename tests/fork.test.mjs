@@ -12,7 +12,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, settledSessionBackend } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace, sessionFilePath, orchStoreRoot } from '../src/projects.ts';
+import { isPureUserPromptLine } from '../src/transcript.ts';
+import { PRE_RENEWAL_GONE } from '../src/instances.ts';
+import { seedSegmentChain, segmentTurns } from './segmentChain.mjs';
+import { preRenewalRecords, postRenewalRecords, postTypedClearRecords, declinedRequest } from './renewalFixtures.mjs';
 import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.ts';
 import { isTemp, isArchived, setSegmentTemp, getSessionMode, setTitle, getTitle } from '../src/sessionStore.ts';
 import { MAX_TITLE_LEN, FORK_TITLE_PREFIX } from '../src/sessionTitles.ts';
@@ -830,5 +834,179 @@ test('an anchorless fork before the first turn is refused 400', async () => {
     assert.equal(fk.status, 400);
     assert.match(fk.body.error, /has not yet received a turn/);
     assert.equal(ctx.instances.get(id)._mutating, null, 'a refusal before the claim holds no flag');
+  } finally { await ctx.close(); }
+});
+
+// ── fork at a renewal boundary ───────────────────────────────────────────
+// A body `{ boundary }` (a "Context renewed" divider's segmentId) forks the
+// conversation from before that renewal (Instance.forkAtRenewal): the
+// pre-renewal segment cut before the turn that requested it (whole for a typed
+// `/clear`), into a new one-segment session. The source is untouched.
+
+// Seed a chain (segmentChain shape) under `project` and resume it by public id.
+async function resumeChainIn(ctx, project, segments, spawn = {}) {
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: project });
+  const place = localPlace(path.join(ctx.projectsRoot, project));
+  const publicId = segments[0].id.slice(0, 8);
+  await seedSegmentChain({ place, publicId, segments });
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', resume: publicId, ...spawn });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const inst = ctx.instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.backingSessionId);
+  const file = (id) => sessionFilePath(place, id);
+  const chain = async () => {
+    const { current, segments: segs } = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'sessions.json'), 'utf8')).sessions[publicId];
+    return { current, segments: segs };
+  };
+  return { inst, publicId, place, file, chain };
+}
+
+const pureTexts = (text) => text.split('\n').filter(Boolean).map(l => JSON.parse(l))
+  .filter(isPureUserPromptLine).map(o => o.message.content);
+const forkBoundary = (ctx, inst, boundary) => api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, { boundary });
+
+test('a boundary fork copies the pre-renewal segment cut before the request and leaves the source untouched', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const P = 'b0000001-2222-4333-8444-555555555555', N = 'b0000002-2222-4333-8444-555555555555';
+    const { inst, file, chain } = await resumeChainIn(ctx, 'forkbound', [
+      { id: P, reason: 'initial', archived: true, records: preRenewalRecords('m') },
+      { id: N, reason: 'renew', records: postRenewalRecords('m') },
+    ]);
+    const before = { p: await fs.readFile(file(P), 'utf8'), n: await fs.readFile(file(N), 'utf8'), chain: await chain() };
+
+    const fk = await forkBoundary(ctx, inst, N);
+    assert.equal(fk.status, 201, JSON.stringify(fk.body));
+    assert.equal(fk.body.droppedText, null);
+    assert.equal(await fs.readFile(file(P), 'utf8'), before.p, 'P is byte-identical');
+    assert.equal(await fs.readFile(file(N), 'utf8'), before.n, 'N is byte-identical');
+    assert.deepEqual(await chain(), before.chain, 'the source\'s chain is unchanged');
+    assert.equal(inst.backingSessionId, N, 'the source still runs N');
+
+    assert.deepEqual(pureTexts(await fs.readFile(file(fk.body.newSessionId), 'utf8')), ['m brief', declinedRequest('m')],
+      'the fork holds the prompts before the request');
+    const child = ctx.instances.get(fk.body.instance.id);
+    assert.equal(child.pendingPrefill, null, 'no prefill');
+    await waitFor(() => child.status === 'idle');
+    assert.deepEqual(child.ringSnapshot().filter(e => e.kind === 'user_echo').map(e => e.text), ['m brief', declinedRequest('m')]);
+    assert.equal(child.summary().segmentCount, 1, 'the fork is one segment');
+  } finally { await ctx.close(); }
+});
+
+test('an older boundary forks from that boundary\'s pre segment', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const A = 'b0000011-2222-4333-8444-555555555555', B = 'b0000012-2222-4333-8444-555555555555', C = 'b0000013-2222-4333-8444-555555555555';
+    const { inst, file } = await resumeChainIn(ctx, 'forkolder', [
+      { id: A, reason: 'initial', archived: true, records: preRenewalRecords('a') },
+      { id: B, reason: 'renew', archived: true, records: [...postRenewalRecords('a'), ...preRenewalRecords('b')] },
+      { id: C, reason: 'renew', records: postRenewalRecords('b') },
+    ]);
+    const older = await forkBoundary(ctx, inst, B);
+    assert.equal(older.status, 201, JSON.stringify(older.body));
+    assert.deepEqual(pureTexts(await fs.readFile(file(older.body.newSessionId), 'utf8')), ['a brief', declinedRequest('a')]);
+    const latest = await forkBoundary(ctx, inst, C);
+    assert.equal(latest.status, 201, JSON.stringify(latest.body));
+    assert.deepEqual(pureTexts(await fs.readFile(file(latest.body.newSessionId), 'utf8')).slice(-2), ['b brief', declinedRequest('b')],
+      'the latest boundary forks from B, cut before B\'s request');
+  } finally { await ctx.close(); }
+});
+
+test('a typed /clear boundary forks the whole pre segment', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const P = 'b0000021-2222-4333-8444-555555555555', N = 'b0000022-2222-4333-8444-555555555555';
+    const records = segmentTurns('t', 2);
+    const { inst, file } = await resumeChainIn(ctx, 'forktyped', [
+      { id: P, reason: 'initial', archived: true, records },
+      { id: N, reason: 'renew', records: postTypedClearRecords('t') },
+    ]);
+    const fk = await forkBoundary(ctx, inst, N);
+    assert.equal(fk.status, 201, JSON.stringify(fk.body));
+    const copied = (await fs.readFile(file(fk.body.newSessionId), 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l))
+      .filter(o => !SESSION_METADATA_TYPES.has(o.type));
+    assert.deepEqual(copied, records, 'every line of P, nothing cut');
+  } finally { await ctx.close(); }
+});
+
+test('a boundary fork inherits temp, title and backend', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await addBackend({ id: 'codexb', label: 'Codex B', template: 'codexctl run claude --model {model} --', env: [] });
+    await addCustomModel({ label: 'SolB', model: 'gpt-5.6-sol[1m]', backend: 'codexb', contextWindow: 1_000_000 });
+    const P = 'b0000031-2222-4333-8444-555555555555', N = 'b0000032-2222-4333-8444-555555555555';
+    const { inst, publicId } = await resumeChainIn(ctx, 'forkboundinherit', [
+      { id: P, reason: 'initial', archived: true, records: preRenewalRecords('i') },
+      { id: N, reason: 'renew', temp: true, records: postRenewalRecords('i') },
+    ], { temp: true, backend: 'codexb', model: 'gpt-5.6-sol[1m]' });
+    await setTitle(publicId, 'Renewed work');
+    const fk = await forkBoundary(ctx, inst, N);
+    assert.equal(fk.status, 201, JSON.stringify(fk.body));
+    const forked = fk.body.instance;
+    assert.equal(forked.temp, true);
+    await waitFor(() => isTemp(fk.body.newSessionId));
+    assert.equal(await getTitle(fk.body.newSessionId), FORK_TITLE_PREFIX + 'Renewed work');
+    assert.equal(forked.backend, 'codexb');
+    assert.equal(forked.model, 'gpt-5.6-sol[1m]');
+    assert.equal(forked.contextWindowTokens, 1_000_000);
+  } finally { await ctx.close(); }
+});
+
+test('a request that was the segment\'s first prompt refuses 400 nothing to fork', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const P = 'b0000041-2222-4333-8444-555555555555', N = 'b0000042-2222-4333-8444-555555555555';
+    const { inst, place } = await resumeChainIn(ctx, 'forkfirst', [
+      { id: P, reason: 'initial', archived: true, records: preRenewalRecords('f').slice(4) },
+      { id: N, reason: 'renew', records: postRenewalRecords('f') },
+    ]);
+    const dir = path.dirname(sessionFilePath(place, P));
+    const files = (await fs.readdir(dir)).sort();
+    const fk = await forkBoundary(ctx, inst, N);
+    assert.equal(fk.status, 400, JSON.stringify(fk.body));
+    assert.match(fk.body.error, /nothing before this prompt to fork from/);
+    assert.deepEqual((await fs.readdir(dir)).sort(), files, 'nothing was written');
+    assert.equal(inst._mutating, null, 'the claim is released');
+  } finally { await ctx.close(); }
+});
+
+test('a boundary fork whose pre segment is gone refuses 409 PRE_RENEWAL_GONE', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const P = 'b0000051-2222-4333-8444-555555555555', N = 'b0000052-2222-4333-8444-555555555555';
+    const { inst, file } = await resumeChainIn(ctx, 'forkgone', [
+      { id: P, reason: 'initial', archived: true, records: preRenewalRecords('g') },
+      { id: N, reason: 'renew', records: postRenewalRecords('g') },
+    ]);
+    await fs.rm(file(P));
+    const fk = await forkBoundary(ctx, inst, N);
+    assert.equal(fk.status, 409, JSON.stringify(fk.body));
+    assert.equal(fk.body.code, PRE_RENEWAL_GONE);
+    assert.equal(inst._mutating, null);
+  } finally { await ctx.close(); }
+});
+
+test('`{boundary}` never routes to the tip fork', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const P = 'b0000061-2222-4333-8444-555555555555', N = 'b0000062-2222-4333-8444-555555555555';
+    const { inst, place } = await resumeChainIn(ctx, 'forkroute', [
+      { id: P, reason: 'initial', archived: true, records: preRenewalRecords('r') },
+      { id: N, reason: 'renew', records: postRenewalRecords('r') },
+    ]);
+    let tipCalls = 0;
+    inst.forkAtTip = async () => { tipCalls += 1; throw new Error('the tip fork must not run'); };
+    const fk = await forkBoundary(ctx, inst, N);
+    assert.equal(fk.status, 201, JSON.stringify(fk.body));
+    assert.equal(tipCalls, 0);
+
+    const dir = path.dirname(sessionFilePath(place, P));
+    const files = (await fs.readdir(dir)).sort();
+    for (const body of [{ boundary: N, text: 'x' }, { boundary: N, userMessageIndex: 0 }, { boundary: '../x' }]) {
+      const r = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+    }
+    assert.equal(tipCalls, 0);
+    assert.deepEqual((await fs.readdir(dir)).sort(), files, 'no refusal wrote a fork');
   } finally { await ctx.close(); }
 });

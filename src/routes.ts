@@ -1588,6 +1588,18 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       } catch (e) { next(e); }
     });
 
+    // A renewal divider's `boundary` (its segment_seam segmentId) — the body
+    // form of /rewind and /fork taken at a "Context renewed" divider — or null
+    // when the body has none. Exclusive with the bubble form's fields.
+    const boundaryOf = (body: Record<string, unknown>): string | null => {
+      if (body.boundary === undefined) return null;
+      if (body.userMessageIndex !== undefined || body.text !== undefined) {
+        throw httpError(400, 'boundary cannot be combined with userMessageIndex/text');
+      }
+      if (!isSessionId(body.boundary)) throw httpError(400, 'boundary must be a segment id');
+      return body.boundary;
+    };
+
     // Rewind the active session to before the Nth user prompt (0-indexed
     // among emitted user_echo events — the bubble's `userIndex`; `text` is the
     // bubble's text, and a prompt that doesn't match it is refused before
@@ -1596,11 +1608,19 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // their conversation, then respawns with --resume so the surviving
     // prefix is replayed. Returns { ok:true, droppedText } so the
     // frontend can prefill the composer with the removed prompt.
+    // `{ boundary }` instead undoes the latest renewal at that divider
+    // (Instance.rewindAcrossRenewal): `droppedText` is null.
     r.post('/instances/:id/rewind', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
         const body = jsonBody(req);
+        const boundary = boundaryOf(body);
+        if (boundary !== null) {
+          const { droppedText } = await inst.rewindAcrossRenewal(boundary);
+          res.json({ ok: true, droppedText });
+          return;
+        }
         const idx = Number(body.userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
           throw httpError(400, 'userMessageIndex must be a non-negative integer');
@@ -1623,6 +1643,9 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // A body with NEITHER field forks the whole transcript instead (between
     // turns only): nothing is dropped, so `droppedText` is null and no prefill
     // is stored. One field without the other is the bubble form, refused 400.
+    // `{ boundary }` forks from before the renewal at that divider
+    // (Instance.forkAtRenewal), mid-turn too; `droppedText` is null. Checked
+    // first, or that body would read as the anchorless whole-session fork.
     r.post('/instances/:id/fork', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
@@ -1632,7 +1655,10 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         // derivation of the respawn arguments live on the instance alongside its
         // rewind/prune siblings; the route only spawns what it hands back.
         let forked: { newSessionId: string; droppedText: string | null; createArgs: CreateInstanceInput };
-        if (body.userMessageIndex === undefined && body.text === undefined) {
+        const boundary = boundaryOf(body);
+        if (boundary !== null) {
+          forked = { ...await inst.forkAtRenewal(boundary), droppedText: null };
+        } else if (body.userMessageIndex === undefined && body.text === undefined) {
           forked = { ...await inst.forkAtTip(), droppedText: null };
         } else {
           const idx = Number(body.userMessageIndex);

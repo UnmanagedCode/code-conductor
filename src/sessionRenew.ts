@@ -35,6 +35,9 @@ import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../shared/renewSeed.ts';
 import { RENEW_REQUEST_LEAD } from '../shared/injectedTurns.ts';
 
+// The tool's MCP name (src/mcp/tools.ts registers it under this).
+export const RENEW_SESSION_TOOL = 'renew_session';
+
 // Defensive ceiling: if `/clear` never rotates the session (the real CLI always
 // does — this only guards a wedged/hung subprocess), abandon the pending
 // renewal rather than leaving the instance stuck in `clearing` forever.
