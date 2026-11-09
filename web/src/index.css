@@ -101,6 +101,7 @@
   .md li > p { @apply my-1; }
   .md li > :is(ul, ol) { @apply my-1; }
   .md :is(li, blockquote) > .md-code-wrap { @apply my-2; }
+  .md blockquote .md-code-wrap { @apply not-italic; }
   .md :is(li, blockquote) > :first-child { margin-top: 0; }
   .md :is(li, blockquote) > :last-child { margin-bottom: 0; }
   .md .task-list-item { @apply list-none; }
