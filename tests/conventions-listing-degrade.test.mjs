@@ -9,8 +9,8 @@
 // unreachable plugin's conventions exactly as it reads a complete one.
 //
 // The project scope is the worse half, because its consequence is COMMITTED:
-// `conventions/conductor/core.md` tells a conductor to feed the listing into
-// `create_project`, and the project it creates carries a line-1
+// `create_project`'s description tells a conductor to feed the listing into
+// it, and the project it creates carries a line-1
 // `<!-- cc:conventions … -->` marker that never named the unreachable plugin's
 // slug. No later regeneration adds it back, and the `projectClaudeMd` freeze
 // can never protect that project — the freeze is keyed on unresolvable slugs IN

@@ -1,15 +1,9 @@
 // The text-format tools/list is the agent-facing catalog: every description is
-// system-prompt text a session pays for, so the application-first /mcp must
-// leave it byte-identical. The fixture was captured from main's tools/list on a
-// bare router with every capability on, with ONE edit — the set_idle_timeout
-// sentence naming caller identity now names the `/mcp/<sessionId>` path
-// instead of the `?caller=` query parameter — and the event log's two
-// description edits: send_prompt's `stage` no longer says a declared self-loop
-// is recorded, and playbook_state describes `history` as event-log rows and
-// `stageHistory` as stage changes (docs/event-log.md) — and the one added entry,
-// `run_code` (docs/code-mode.md), last in the registry — and project_bash's
-// `outputMayBeIncomplete?` metadata key and its sentence — and `run_code`'s
-// optional `description`.
+// system-prompt text a session pays for, so no change may alter it by accident.
+// The fixture is the current catalog as served by a bare router with every
+// capability on; a deliberate description edit regenerates it through this same
+// request, and the regeneration diff names exactly the strings that edit meant
+// to change.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

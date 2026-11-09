@@ -2353,7 +2353,7 @@ export async function createProject({ name, conventions, noProjectConventions, s
     console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker, and no later regeneration adds them back; a one-time scaffold directive may not have been emitted at all, and nothing reissues one`);
   }
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
-  // send_prompt to the project's first worker (see conventions/conductor/core.md).
+  // send_prompt to the project's first worker (see create_project's description).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
 }
 
