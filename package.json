@@ -30,6 +30,7 @@
     "clsx": "^2.1.1",
     "express": "^4.22.2",
     "lucide-react": "^1.53.0",
+    "mdast-util-to-hast": "^13.2.1",
     "radix-ui": "^1.7.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
