@@ -9,6 +9,7 @@ import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { CORE_CLAUDE_PLUGIN_ROOT } from '../src/coreClaudePlugin.ts';
 import { adoptProject, selfProjectDir } from '../src/projects.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { copyConventions, useConventionsDir } from './conventionsTree.mjs';
 
 // End-to-end wire: every session's claude argv carries cc's built-in Claude
 // Code plugin root as the first `--plugin-dir`, and an enabled cc plugin
@@ -20,7 +21,7 @@ import { disposeSystemHandles } from '../src/systems/registry.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plugin-skills.json');
 
-let ctx, baseUrl, instances, pluginHost, home;
+let ctx, baseUrl, instances, pluginHost, home, restoreConventions;
 
 before(async () => {
   ctx = await bootServer({ scenarioPath: SCENARIO });
@@ -32,8 +33,13 @@ beforeEach(async () => {
   home = r.home;
   ctx.projectsRoot = r.projectsRoot;
   ctx.claudeProjectsRoot = r.claudeProjectsRoot;
+  // These rows pin the PLUGIN roots exactly, so they run over a conventions
+  // tree with every skill part stripped: a shipped convention skill adds its
+  // own generated root (tests/convention-skills-launch.test.mjs owns those).
+  restoreConventions = useConventionsDir(await copyConventions({ stripSkills: true }));
 });
 afterEach(async () => {
+  restoreConventions();
   instances._coreClaudePluginRoot = CORE_CLAUDE_PLUGIN_ROOT;
   instances.setClaudePluginDirsResolver(() => pluginHost.claudePluginDirs());
   await instances.shutdown();

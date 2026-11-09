@@ -63,7 +63,9 @@ import {
 } from './sessionLineage.ts';
 import { renewalBoundaryAt, renewalCut } from './renewalBoundary.ts';
 import { createWorktree, requireWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, assertRemoteLive, resolveSystem } from './systems/registry.ts';
+import { conventionSkillsDir, writeConventionSkills, removeConventionSkills } from './conventionSkills.ts';
+import { projectSessionConventionSkills } from './projectClaudeMd.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
 import { EVENT_LOG_NAME, buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
@@ -241,6 +243,7 @@ interface InstanceConstructorInput {
   rootOwnerSessionId?: string | null;
   debug?: boolean;
   claudePluginDirs?: string[];
+  conventionSkillsDir?: string | null;
   launcher?: LauncherLike;
   platform?: Platform;
 }
@@ -724,6 +727,12 @@ export class Instance extends EventEmitter implements InstanceLike {
   hookCallbackUrl: string | null;
   mcpServerUrl: string | null;
   claudePluginDirs: string[];
+  // Where this session's convention skill roots are generated
+  // (src/conventionSkills.ts), fixed at create; null writes none.
+  // `_conventionPluginDirs` is what the last launch() wrote there — the
+  // `--plugin-dir` roots spawn() appends after `claudePluginDirs`.
+  readonly _conventionSkillsDir: string | null;
+  _conventionPluginDirs: string[];
   // THE REDIRECTION, or null for a project on cc's own machine.
   //
   // A worker on a remote system runs the CLI locally but INSIDE A CHROOT onto
@@ -975,7 +984,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], conventionSkillsDir = null, launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
     super();
     this.id = id;
     this._platform = platform;
@@ -1024,6 +1033,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // respawn/rewind (a plugin enabled mid-session is picked up on the next
     // create, not a bare respawn).
     this.claudePluginDirs = Array.isArray(claudePluginDirs) ? claudePluginDirs : [];
+    this._conventionSkillsDir = conventionSkillsDir;
+    this._conventionPluginDirs = [];
     // null for a normal instance; otherwise the worktree metadata object
     // (parentProject, worktreeName, worktreePath, branch, baseBranch,
     // baseSha) so the UI can show a chip and the rebase/ff buttons.
@@ -2296,7 +2307,28 @@ export class Instance extends EventEmitter implements InstanceLike {
     // also the sole caller of the synchronous spawn(). A compose/write failure
     // propagates deliberately: a role-less conductor is worse than a surfaced
     // error, and every caller is async and returns errors to REST/MCP.
-    if (isConductorInstance(this)) await materializeCurrentConduct();
+    //
+    // The convention SKILL roots are regenerated here too, off the same
+    // selection reads as the inline text (src/conventionSkills.ts): the doc is
+    // rewritten at every launch — resume, respawn and rewind included — so
+    // skills frozen at create would outlive a convention switched off since. A
+    // renewal is an in-process `/clear`, not a launch, so it refreshes neither.
+    // A conductor's come out of the same materialize call as its role doc (and
+    // fail its launch with it); any other session's follow its own
+    // CONVENTIONS.md, read through its project's System — and a failure there
+    // costs that session its convention skills, never its launch: a worker
+    // could start before this feature existed, and must still.
+    if (isConductorInstance(this)) {
+      this._conventionPluginDirs = await materializeCurrentConduct(this._conventionSkillsDir);
+    } else if (this._conventionSkillsDir !== null) {
+      try {
+        const groups = await projectSessionConventionSkills(await resolveSystem(this.project), this.cwd);
+        this._conventionPluginDirs = await writeConventionSkills(this._conventionSkillsDir, groups);
+      } catch (e) {
+        this._conventionPluginDirs = [];
+        console.warn(`instances: convention skills for session ${this.id} (${this.cwd}) unavailable — launching without them: ${(e as Error).message}`);
+      }
+    }
     // BUILD OR REFRESH THIS REMOTE'S CLI CONFIG DIRECTORY before the process
     // starts. Here rather than in spawn() for the same reason as the line
     // above: it is I/O, spawn() is synchronous, and every relaunch entry point
@@ -2721,6 +2753,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // separator (same args array as every other claude flag), so it's correct
     // for every backend. Empty only on a broken install (no built-in root).
     for (const dir of this.claudePluginDirs) args.push('--plugin-dir', dir);
+    // Then the convention skill roots the last launch() generated — none when no
+    // skill part is in force, leaving argv as it is without them.
+    for (const dir of this._conventionPluginDirs) args.push('--plugin-dir', dir);
     // Each family runs at one fixed context window, pinned via the model id
     // itself (Sonnet carries the CLI-native `[1m]` suffix; Opus/Haiku are
     // bare — see canonicalizeModel in modelVersions.ts). Strip any ambient
@@ -6637,6 +6672,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // default) — there is no way to spell "off" other than `debug: false`.
       debug: !!(debug ?? getDebugByDefault()),
       claudePluginDirs,
+      conventionSkillsDir: conventionSkillsDir(id),
       launcher: this._claudeLauncher,
       platform: this._platform,
     });
@@ -7620,6 +7656,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (inst._redirect) {
       rmSync(sessionTmpDir(inst.id), { recursive: true, force: true });
     }
+    // Every session's convention skill dir, redirected or not.
+    if (inst._conventionSkillsDir) removeConventionSkills(inst._conventionSkillsDir);
     this.retired.capture(inst);
     this.byId.delete(id);
     this._cancelAutoResume(id);
@@ -7649,6 +7687,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // Same reason as remove(): the directory holds this session's command
       // output and nothing else will reap it.
       if (i._redirect) rmSync(sessionTmpDir(i.id), { recursive: true, force: true });
+      if (i._conventionSkillsDir) removeConventionSkills(i._conventionSkillsDir);
       this.byId.delete(i.id);
       this._cancelAutoResume(i.id);
       this._purgeIdleFor(i.id, { removing });
@@ -7680,6 +7719,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // orchestrator skips this entirely, which is what the boot sweep covers.
     for (const i of all) {
       if (i._redirect) rmSync(sessionTmpDir(i.id), { recursive: true, force: true });
+      if (i._conventionSkillsDir) removeConventionSkills(i._conventionSkillsDir);
     }
   }
 

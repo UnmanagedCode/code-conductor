@@ -36,12 +36,13 @@
 import path from 'node:path';
 import { listProjects, resolveProjectDir } from './projects.ts';
 import { composeProjectConventionsBlockWithMeta, getCatalog } from './projectConventions.ts';
-import { composeCurrentWorkspace } from './workspaceConventions.ts';
+import { composeCurrentWorkspace, composeCurrentWorkspaceParts } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
 import { eolOf, firstLine, withEol } from './lineEndings.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import type { System } from './systems/system.ts';
-import type { CatalogList } from './fragmentCatalog.ts';
+import { skillsOf, type CatalogList } from './fragmentCatalog.ts';
+import type { ScopeSkills } from './conventionSkills.ts';
 import { httpError } from './httpError.ts';
 import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
 import { createKeyedQueue } from './keyedQueue.ts';
@@ -277,6 +278,25 @@ export async function readProjectSelection(system: System, projPath: string): Pr
 async function readExisting(system: System, target: string): Promise<string | null> {
   try { return await system.readFile(target); }
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; return null; }
+}
+
+// The skill parts a NON-conductor session launched at `cwd` is owed: those of
+// the conventions whose inline parts its `CONVENTIONS.md` carries. Read through
+// the session's System, so a remote project's file is the one consulted.
+//   - no CONVENTIONS.md → no skills (no inline part is in force either);
+//   - otherwise the live workspace selection's skills, plus the project skills
+//     of the file's line-1 marker slugs, resolved off ONE catalog read. A slug
+//     the catalog lacks is skipped, as the document's `missing` set is.
+// Read failures other than ENOENT propagate.
+export async function projectSessionConventionSkills(system: System, cwd: string): Promise<ScopeSkills[]> {
+  const existing = await readExisting(system, conventionsTargetPath(cwd));
+  if (existing === null) return [];
+  const workspace = await composeCurrentWorkspaceParts();
+  const catalog = await getCatalog();
+  return [
+    { scope: 'workspace', skills: workspace.skills },
+    { scope: 'project', skills: skillsOf(catalog, slugsOf(selectionOf(existing))) },
+  ];
 }
 
 type WriteResult =

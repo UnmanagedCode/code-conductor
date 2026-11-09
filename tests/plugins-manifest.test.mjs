@@ -178,6 +178,69 @@ test('readManifest: missing convention fragment / scaffold file → invalid', as
   }
 });
 
+test('readManifest: a convention fragment with a malformed skill marker → invalid; a well-formed one loads', async () => {
+  const dir = await mkdtemp('manif-skill-');
+  try {
+    const manifest = base({
+      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project', scaffold: { file: 'scaffold/g.md' } }],
+    });
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
+    await fs.mkdir(path.join(dir, 'conventions'), { recursive: true });
+    await fs.mkdir(path.join(dir, 'scaffold'), { recursive: true });
+    // A scaffold file is never split, so a marker-shaped line there is inert.
+    await fs.writeFile(path.join(dir, 'scaffold', 'g.md'), '<!-- cc:skill -->\n');
+    for (const [bad, re] of [
+      ['## G\n<!-- cc:skill -->\nbody\n', /empty description/],
+      ['## G\n<!-- cc:skill:named d -->\nbody\n', /only a core may/],
+      ['## G\n<!-- cc:skill d -->\n', /empty skill body/],
+    ]) {
+      await fs.writeFile(path.join(dir, 'conventions', 'g.md'), bad);
+      const r = await readManifest(sys(), dir);
+      assert.ok(r.errors?.some(e => e.includes("conventions 'g' file 'conventions/g.md'") && re.test(e)), JSON.stringify(r.errors));
+    }
+    await fs.writeFile(path.join(dir, 'conventions', 'g.md'), '## G\n<!-- cc:skill d -->\nbody\n');
+    const r = await readManifest(sys(), dir);
+    assert.equal(r.errors, undefined, JSON.stringify(r.errors));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Only a marker PARSE error invalidates a plugin. A fragment that exists but
+// cannot be read at load (EACCES, a transient System error) keeps the plugin
+// loadable, as before skill parts: its body is skipped at compose time.
+test('readManifest: an existing but unreadable convention fragment does not invalidate the plugin', async () => {
+  const dir = await mkdtemp('manif-skill-eacces-');
+  try {
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(base({
+      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project' }],
+    })));
+    await fs.mkdir(path.join(dir, 'conventions'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'conventions', 'g.md'), '## G\n<!-- cc:skill -->\nbody\n');
+    const fragment = path.join(dir, 'conventions', 'g.md');
+    const real = sys();
+    let refused = 0;
+    const unreadable = new Proxy(real, {
+      get(t, k) {
+        if (k === 'readFile') {
+          return async (p, ...rest) => {
+            if (p === fragment) { refused++; throw Object.assign(new Error(`EACCES: permission denied, open '${p}'`), { code: 'EACCES' }); }
+            return t.readFile(p, ...rest);
+          };
+        }
+        const v = t[k];
+        return typeof v === 'function' ? v.bind(t) : v;
+      },
+    });
+    const r = await readManifest(unreadable, dir);
+    assert.ok(refused > 0, 'fixture check: the fragment read was attempted and refused');
+    assert.equal(r.errors, undefined, JSON.stringify(r.errors));
+    assert.equal(r.manifest.conventions[0].slug, 'g');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('frontend and mcp require backend', () => {
   const noBackend = base({ frontend: { path: '/' } });
   assert.ok(validateManifest(noBackend).errors.some(e => e.includes("'frontend' requires 'backend'")));

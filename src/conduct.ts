@@ -7,8 +7,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, writeFileAtomic, readProjectRecord, registerProject } from './projects.ts';
-import { composeCurrentConduct } from './conductorConventions.ts';
-import { composeCurrentWorkspace } from './workspaceConventions.ts';
+import { composeCurrentConductParts } from './conductorConventions.ts';
+import { composeCurrentWorkspaceParts } from './workspaceConventions.ts';
+import { writeConventionSkills } from './conventionSkills.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
 // The name is homed in the systems registry, which pins this project to the
 // local system and must not import this module to do it (see the constant's
@@ -121,13 +122,22 @@ export function conductConventionsPath(): string {
 // CLAUDE.md imports it from. Self-sufficient: it ensures the dir and the import
 // line first, so no spawn depends on someone having tapped Conduct earlier.
 // Called from Instance.launch() for conductor instances only.
-export async function materializeCurrentConduct(): Promise<void> {
+//
+// With a `skillsDir`, the skill parts of the SAME two selection reads are
+// written there too (src/conventionSkills.ts) and their plugin roots returned,
+// so the doc and the skills a conductor launches with can never disagree.
+export async function materializeCurrentConduct(skillsDir: string | null = null): Promise<string[]> {
   await ensureConductProject();
-  // Workspace conventions first, role doc second: composeCurrentWorkspace()
-  // ends with a newline, so `\n${role}` leaves exactly one blank line before
+  // Workspace conventions first, role doc second: the workspace text ends with
+  // a newline, so `\n${role}` leaves exactly one blank line before
   // `# Conductor role` and the role doc's generated footer stays last.
-  const [workspace, role] = await Promise.all([composeCurrentWorkspace(), composeCurrentConduct()]);
-  await writeFileAtomic(conductConventionsPath(), `${workspace}\n${role}`);
+  const [workspace, role] = await Promise.all([composeCurrentWorkspaceParts(), composeCurrentConductParts()]);
+  await writeFileAtomic(conductConventionsPath(), `${workspace.text}\n${role.text}`);
+  if (skillsDir === null) return [];
+  return writeConventionSkills(skillsDir, [
+    { scope: 'workspace', skills: workspace.skills },
+    { scope: 'conductor', skills: role.skills },
+  ]);
 }
 
 // The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the

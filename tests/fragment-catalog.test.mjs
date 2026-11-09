@@ -219,7 +219,7 @@ test('composeWithMeta returns compose()\'s exact text plus the catalog\'s degrad
       // Both early returns carry the shape AND the flag, and the 400 still
       // fires from here.
       assert.deepEqual(await catalog.composeWithMeta([]),
-        { text: '', degraded: (await catalog.getCatalog()).degraded },
+        { text: '', degraded: (await catalog.getCatalog()).degraded, skills: [] },
         `${label}: an empty slug list reports the catalog's own flag, not a hardcoded false`);
       await expectStatus(() => catalog.composeWithMeta(['nope']), 400);
     }

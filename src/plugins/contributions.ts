@@ -5,6 +5,7 @@ import type { BackendBinding, TierBinding } from '../modelVersions.ts';
 import { LOCAL_SYSTEM_ID, projectPlacement, systemHandleGeneration } from '../systems/registry.ts';
 import { placementToken } from '../projects.ts';
 import type { System } from '../systems/system.ts';
+import { splitSkillPart, type SkillPart } from '../skillPart.ts';
 
 // What enabled plugins contribute to the conductor beyond an HTTP backend:
 // convention fragments, role bindings, playbook graphs and Claude Code plugin
@@ -20,7 +21,8 @@ import type { System } from '../systems/system.ts';
 
 // The shape `conventions()` returns: one array per SUPPORTED_CONVENTION_SCOPES
 // key, each optionally flagged `degraded` (see fragmentCatalog.ts's CatalogList).
-export type ConventionGroups = Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }> & { degraded?: boolean }>;
+export type ConventionGroups = Record<string, Array<ConventionContribution> & { degraded?: boolean }>;
+type ConventionContribution = { slug: string; name: string; description: string; body: string; scaffold?: string; skill?: SkillPart; plugin: string };
 
 // The registry's PluginEntry, narrowed to what contributions actually reads —
 // declared locally so neither module has to import the other's types.
@@ -366,7 +368,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     for (const [k, v] of fragmentBodyCache) {
       if (v.label !== label) fragmentBodyCache.delete(k);
     }
-    const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>
+    const byScope: Record<string, ConventionContribution[]>
       = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
     // Every checkout dir this scan read, for the liveness re-check above. Both
     // the resolved project dir AND the active version's cwd: for a
@@ -387,9 +389,15 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
       dirs.add(place.cwd);
       for (const g of list) {
         let body = '';
+        let skill: SkillPart | undefined;
         if (g.file) {
-          try { body = await readFragment(place.system, path.join(place.cwd, g.file), label); }
+          let raw: string;
+          try { raw = await readFragment(place.system, path.join(place.cwd, g.file), label); }
           catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${errMsg(e)}`); continue; }
+          // Load already refused a malformed marker (checkFragmentFiles); one
+          // edited in since drops the entry WHOLE, so neither part ships.
+          try { ({ inline: body, skill } = splitSkillPart(raw)); }
+          catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' file '${g.file}': ${errMsg(e)}; dropped`); continue; }
         }
         let scaffold: string | undefined;
         if (g.scaffold) {
@@ -399,7 +407,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
             catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${errMsg(e)}`); continue; }
           }
         }
-        byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, ...(scaffold !== undefined ? { scaffold } : {}), plugin: entry.id });
+        byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, ...(scaffold !== undefined ? { scaffold } : {}), ...(skill ? { skill } : {}), plugin: entry.id });
       }
     }
     if (degraded) {

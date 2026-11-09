@@ -18,9 +18,9 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
-import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
+import { createFragmentCatalog, readCoreFragment, type ConventionSkill, type ExtraEntry } from './fragmentCatalog.ts';
+import { conventionsDir } from './conventionsDir.ts';
 import { createSelectionStore, disabledOf } from './conventionSelection.ts';
 // Static import is safe: playbooks.ts reaches the tool registry through a lazy
 // dynamic import precisely so the handlers→conductorConventions edge cannot close
@@ -32,10 +32,6 @@ import {
 } from './playbooks.ts';
 import { renderPlaybookConvention } from './playbookConvention.ts';
 import { httpError } from './httpError.ts';
-
-const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
-const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
-const FOOTER_FILE = path.join(CONVENTIONS_DIR, 'footer.md');
 
 // Always-on core (conventions/conductor/core.md) — surfaced to the settings UI
 // as a non-toggleable row so users see what can't be turned off.
@@ -81,7 +77,8 @@ export function setPluginConductorConventionsProvider(fn: (() => Promise<ExtraEn
 
 const catalog = createFragmentCatalog({
   seeds: SEED_CONVENTIONS,
-  seedDir: CONVENTIONS_DIR,
+  seedDir: () => conventionsDir('conductor'),
+  skillParts: true,
   storeFile: () => path.join(orchStoreRoot(), 'conventions', 'conductor.json'),
   noun: 'convention',
   extraProvider: () => pluginConductorConventionsProvider(),
@@ -89,15 +86,16 @@ const catalog = createFragmentCatalog({
 
 // ── Fragment reads (core + footer are always-on, read per call) ─────────────
 //
-// Not memoised, for the reason seedBody isn't (src/fragmentCatalog.ts):
+// Not memoised, for the reason seedEntry isn't (src/fragmentCatalog.ts):
 // `.conduct/CONVENTIONS.md` is rewritten from this text before every conductor
 // spawn, so a body frozen at first read reverts an edit instead of merely aging.
+// The footer is never split: it is generated-file boilerplate, not a convention.
 
-async function getCore(): Promise<string> {
-  return (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
+function getCore(): Promise<{ inline: string; skill?: ConventionSkill }> {
+  return readCoreFragment(path.join(conventionsDir('conductor'), 'core.md'), SEED_CONVENTIONS.map(s => s.slug));
 }
 async function getFooter(): Promise<string> {
-  return (await fs.readFile(FOOTER_FILE, 'utf8')).replace(/\s+$/, '');
+  return (await fs.readFile(path.join(conventionsDir('conductor'), 'footer.md'), 'utf8')).replace(/\s+$/, '');
 }
 
 // ── Catalog + CRUD (delegated to the shared helper) ──────────────────────────
@@ -340,12 +338,15 @@ export async function defaultPlaybookConvention(): Promise<string> {
 // and carries no remedy because the two degrade sources clear differently (a
 // compose-sourced one clears itself; a scan-sourced one needs Rescan or
 // disabling the plugin — docs/plugins.md), and the flag carries no cause.
-export async function composeConduct(enabledSlugs: string[]): Promise<string> {
+//
+// The skills come off the same compose as the text (the core's first), so the
+// role doc and the skills can never come from two different selections.
+export async function composeConductParts(enabledSlugs: string[]): Promise<{ text: string; skills: ConventionSkill[] }> {
   const core = await getCore();
   const footer = await getFooter();
   // Above the generated-sections branch on purpose: inside it, the signal would
   // vanish for every selection with the playbooks convention off.
-  const { text, degraded } = await catalog.composeWithMeta(enabledSlugs);
+  const { text, degraded, skills } = await catalog.composeWithMeta(enabledSlugs);
   if (degraded) {
     console.warn("conductorConventions: role doc composed over a DEGRADED convention catalog — a plugin's conductor conventions may be missing from this document");
   }
@@ -362,10 +363,21 @@ export async function composeConduct(enabledSlugs: string[]): Promise<string> {
       if (section) mods = `${mods}\n\n${section}`;
     }
   }
-  return [core, ...(mods ? [mods] : []), footer].join('\n\n') + '\n';
+  return {
+    text: [core.inline, ...(mods ? [mods] : []), footer].join('\n\n') + '\n',
+    skills: [...(core.skill ? [core.skill] : []), ...skills],
+  };
+}
+
+export async function composeCurrentConductParts(): Promise<{ text: string; skills: ConventionSkill[] }> {
+  return composeConductParts(await getSelection());
+}
+
+export async function composeConduct(enabledSlugs: string[]): Promise<string> {
+  return (await composeConductParts(enabledSlugs)).text;
 }
 
 export async function composeCurrentConduct(): Promise<string> {
-  return composeConduct(await getSelection());
+  return (await composeCurrentConductParts()).text;
 }
 
