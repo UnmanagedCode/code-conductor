@@ -4,7 +4,7 @@
 import type { Element, ElementContent, Root, RootContent } from 'hast';
 
 /** Elements that lay out as blocks inside a list item. */
-export const BLOCK_TAGS = new Set(['p', 'ul', 'ol', 'pre', 'blockquote', 'table', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const BLOCK_TAGS = new Set(['p', 'ul', 'ol', 'pre', 'blockquote', 'table', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 /** Containers whose whitespace-only text is never content. */
 const CONTAINERS = new Set(['blockquote', 'ul', 'ol', 'table', 'thead', 'tbody', 'tr']);
 

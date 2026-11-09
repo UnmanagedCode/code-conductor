@@ -9,7 +9,7 @@ const lastContent = (n: Root | Element): RootContent | ElementContent | undefine
   n.children.findLast((c) => !isWhitespace(c));
 
 /** The element whose inline content ends `root`'s last block; null when it has none. Iterative. */
-export function inlineEndHost(root: Root): Element | null {
+function inlineEndHost(root: Root): Element | null {
   let cur = lastContent(root);
   for (;;) {
     if (cur?.type !== 'element') return null;
