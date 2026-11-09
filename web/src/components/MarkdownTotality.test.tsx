@@ -55,8 +55,8 @@ describe('a markdown pipeline that throws', () => {
 });
 
 describe('deeply nested input through the real pipeline', () => {
-  // A quote or an emphasis run this deep overflows the stack of the unified/hast pipeline; the list and emphasis sizes
-  // keep micromark's quadratic nesting cost around a second. A line of only `*` would be a rule, hence the `x`.
+  // Past the nesting cap (MarkdownDepth.test.tsx) the quote and list never reach the parser; an emphasis run this deep
+  // overflows the stack of the unified/hast pipeline in about a second. A line of only `*` would be a rule, hence the `x`.
   const CASES = [
     { kind: 'blockquote', text: `${'>'.repeat(10_000)} x` },
     { kind: 'list', text: Array.from({ length: 200 }, (_, i) => `${'  '.repeat(i)}- x`).join('\n') },
@@ -71,6 +71,7 @@ describe('deeply nested input through the real pipeline', () => {
     expect(host, 'the markdown host is still mounted').toBeTruthy();
     expect(host.textContent!.trim().length, 'the host is not blank').toBeGreaterThan(0);
     const fellBack = host.children.length === 1 && host.firstElementChild!.tagName === 'PRE' && host.textContent === text;
-    expect(error.mock.calls.length > 0, 'an error is reported exactly when the host fell back to the raw source').toBe(fellBack);
+    // A fallback comes from the boundary (an error reported) or from the nesting cap (nothing parsed, nothing reported).
+    if (error.mock.calls.length > 0) expect(fellBack, 'a reported error leaves the raw-source fallback').toBe(true);
   });
 });
