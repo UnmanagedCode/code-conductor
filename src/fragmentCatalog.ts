@@ -17,7 +17,7 @@ import path from 'node:path';
 import { writeFileAtomic } from './projects.ts';
 import { httpError } from './httpError.ts';
 import { isSlug, SLUG_RE, SLUG_MAX } from './identifiers.ts';
-import { splitSkillPart, type SkillPart, type SplitFragment } from './skillPart.ts';
+import { splitSkillPart, type SkillPart, type SplitFragment } from '../shared/skillPart.ts';
 
 export function validateSlug(slug: string): string {
   if (!isSlug(slug)) {
@@ -27,10 +27,13 @@ export function validateSlug(slug: string): string {
 }
 
 // One skill a composed selection delivers: `name` is the seed slug, the
-// plugin-local slug (the part after `<plugin>/`), or a core's explicit name.
+// custom slug, the plugin-local slug (the part after `<plugin>/`), or a core's
+// explicit name. `custom` marks a Settings-authored convention's skill, which
+// is delivered under its own namespace (src/conventionSkills.ts).
 export interface ConventionSkill {
   name: string;
   plugin?: string;
+  custom?: true;
   description: string;
   body: string;
 }
@@ -48,7 +51,8 @@ export function skillsOf(catalog: CatalogEntry[], slugs: string[]): ConventionSk
     const entry = catalog.find(r => r.slug === slug);
     if (!entry?.skill) continue;
     const name = entry.plugin ? slug.slice(entry.plugin.length + 1) : slug;
-    out.push({ name, ...(entry.plugin ? { plugin: entry.plugin } : {}), description: entry.skill.description, body: entry.skill.body });
+    const custom = !entry.builtin && !entry.plugin;
+    out.push({ name, ...(entry.plugin ? { plugin: entry.plugin } : {}), ...(custom ? { custom: true as const } : {}), description: entry.skill.description, body: entry.skill.body });
   }
   return out;
 }
@@ -70,12 +74,15 @@ export async function readCoreFragment(file: string, seedSlugs: string[]): Promi
   return { inline: split.inline, skill: { name, description: split.skill.description, body: split.skill.body } };
 }
 
-function validateFields({ name, description, body }: { name: unknown; description: unknown; body?: unknown }, noun: string): void {
-  for (const [field, val] of [['name', name], ['description', description], ['body', body]] as const) {
-    if (typeof val !== 'string' || !val.trim()) {
-      throw httpError(400, `${noun} ${field} is required`);
-    }
+const isFilled = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+
+// name and description are always required; the body is required unless a
+// non-empty scaffold stands in for it (a scaffold-only convention).
+function validateFields({ name, description, body, scaffold }: { name: unknown; description: unknown; body?: unknown; scaffold?: unknown }, noun: string): void {
+  for (const [field, val] of [['name', name], ['description', description]] as const) {
+    if (!isFilled(val)) throw httpError(400, `${noun} ${field} is required`);
   }
+  if (!isFilled(body) && !isFilled(scaffold)) throw httpError(400, `${noun} body is required`);
 }
 
 // Normalises a store's `rules` array to the CustomRule shape: slug is
@@ -100,6 +107,7 @@ function normalizeRules(store: Record<string, unknown>): CustomRule[] {
       name: typeof rec.name === 'string' ? rec.name : '',
       description: typeof rec.description === 'string' ? rec.description : '',
       body: typeof rec.body === 'string' ? rec.body : undefined,
+      ...(isFilled(rec.scaffold) ? { scaffold: rec.scaffold } : {}),
     });
   }
   return out;
@@ -111,13 +119,16 @@ interface FragmentSeed {
   description: string;
 }
 
-// A custom-rule record stored in the JSON store. `body` is optional because a
-// rule may be written with only a scaffold facet and no markdown body.
+// A custom-rule record stored in the JSON store. `body` is the text as authored
+// (a `skillParts` catalog splits it at the skill marker on read) and is optional
+// because a rule may be written with only a scaffold facet and no markdown body.
+// `scaffold` is stored by a `scaffolds` catalog only.
 interface CustomRule {
   slug: string;
   name: string;
   description: string;
   body?: string;
+  scaffold?: string;
 }
 
 // An entry a third source (extraProvider, e.g. an enabled plugin's convention
@@ -140,15 +151,21 @@ export interface CatalogEntry {
   description: string;
   body?: string;
   builtin: boolean;
-  // Plugin-contributed entries carry these (see conductorConventions's
-  // getSelection / projectConventions's composeProjectScaffold): a namespaced
-  // `plugin` id and an optional one-time scaffold directive with no body.
+  // `plugin` is a plugin-contributed entry's namespaced id. `scaffold` is an
+  // optional one-time scaffold directive (a plugin's, or a custom project
+  // convention's); see projectConventions's composeProjectScaffold.
   plugin?: string;
   scaffold?: string;
-  // The fragment file's skill part (splitSkillPart), when it has one. Seeds of
-  // a `skillParts` catalog and plugin fragment files only — a custom body is
-  // never split.
+  // The skill part (splitSkillPart), when there is one: a seed of a
+  // `skillParts` catalog, a plugin fragment file, or a custom body of a
+  // `skillParts` catalog. `body` is then the inline part.
   skill?: SkillPart;
+  // Custom entries of a `skillParts` catalog only: `source` is the text as
+  // stored — what the Settings editor edits, since `body` is only the inline
+  // part. `skillError` is set when the stored text has a marker that does not
+  // parse; `body` is then the whole stored text, unsplit.
+  source?: string;
+  skillError?: string;
 }
 
 // `degraded: true` means a plugin-contributed slug may be MISSING from this
@@ -186,6 +203,9 @@ interface FragmentCatalogConfig {
   seedDir: string | (() => string);
   seedExt?: string;
   skillParts?: boolean;
+  // scaffolds: custom entries may carry a one-time `scaffold` directive (the
+  //           project scope only); any other catalog refuses one with 400
+  scaffolds?: boolean;
   storeFile: () => string;
   noun?: string;
   extraProvider?: (() => Promise<ExtraEntry[]>) | null;
@@ -195,8 +215,8 @@ interface FragmentCatalogConfig {
 // the catalog it is built on.
 export interface FragmentCatalog {
   getCatalog(): Promise<CatalogList>;
-  addCustom(input: { slug: string; name: string; description: string; body: string }): Promise<CatalogEntry>;
-  updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown }): Promise<CatalogEntry>;
+  addCustom(input: { slug: string; name: string; description: string; body?: unknown; scaffold?: unknown }): Promise<CatalogEntry>;
+  updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown; scaffold?: unknown }): Promise<CatalogEntry>;
   deleteCustom(slug: string): Promise<{ slug: string }>;
   compose(slugs: string[]): Promise<string>;
   composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean; skills: ConventionSkill[] }>;
@@ -210,7 +230,7 @@ export interface FragmentCatalog {
   validateSlug(slug: string): string;
 }
 
-export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillParts = false, storeFile, noun = 'entry', extraProvider = null }: FragmentCatalogConfig): FragmentCatalog {
+export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillParts = false, scaffolds = false, storeFile, noun = 'entry', extraProvider = null }: FragmentCatalogConfig): FragmentCatalog {
   const seedDirNow = (): string => typeof seedDir === 'function' ? seedDir() : seedDir;
   // Read per call, never memoised: an edit to a committed fragment must reach
   // the next composition without an orchestrator restart. A memo here does not
@@ -228,6 +248,46 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
     try { split = splitSkillPart(raw); }
     catch (e) { throw new Error(`${file}: ${errMsg(e)}`); }
     return { body: split.inline, ...(split.skill ? { skill: split.skill } : {}) };
+  }
+
+  // A custom body's split. Writes validate, so a marker that does not parse
+  // came from before the feature or a hand edit; it stays whole and inline with
+  // the reason in `skillError` rather than dropping the entry (a custom slug
+  // enters the selections from the store, so a missing entry would make every
+  // compose 400).
+  function customEntry(r: CustomRule): CatalogEntry {
+    const base = { slug: r.slug, name: r.name, description: r.description, builtin: false, ...(r.scaffold ? { scaffold: r.scaffold } : {}) };
+    if (!skillParts || r.body === undefined) return { ...base, body: r.body };
+    try {
+      const split = splitSkillPart(r.body);
+      return { ...base, source: r.body, body: split.skill ? split.inline : r.body, ...(split.skill ? { skill: split.skill } : {}) };
+    } catch (e) {
+      console.warn(`fragmentCatalog: ${storeFile()}: custom ${noun} '${r.slug}': ${errMsg(e)}`);
+      return { ...base, source: r.body, body: r.body, skillError: errMsg(e) };
+    }
+  }
+
+  // The write-side twin of customEntry's read: a marker that does not parse is
+  // refused, as manifest load refuses a plugin's.
+  function checkBody(body: unknown): void {
+    if (!skillParts || typeof body !== 'string') return;
+    try { splitSkillPart(body); }
+    catch (e) { throw httpError(400, `${noun} body: ${errMsg(e)}`); }
+  }
+
+  // A body, when given, is a string: never coerced into one.
+  function requireStringBody(v: unknown): void {
+    if (v !== undefined && typeof v !== 'string') throw httpError(400, `${noun} body must be a string`);
+  }
+
+  // The stored scaffold of a write: '' or undefined removes it, a string is
+  // trimmed, anything else is refused. A catalog without `scaffolds` refuses a
+  // non-empty one.
+  function scaffoldValue(v: unknown): string {
+    if (v !== undefined && typeof v !== 'string') throw httpError(400, `${noun} scaffold must be a string`);
+    const t = v === undefined ? '' : v.trim();
+    if (t && !scaffolds) throw httpError(400, 'scaffolds are project-scope only');
+    return t;
   }
 
   async function loadStore(): Promise<Record<string, unknown>> {
@@ -273,7 +333,7 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
     const seedEntries = await Promise.all(
       seeds.map(async s => ({ ...s, ...await seedEntry(s.slug), builtin: true })),
     );
-    const custom = (await loadCustom()).map(r => ({ ...r, builtin: false }));
+    const custom = (await loadCustom()).map(customEntry);
     let extra: CatalogEntry[] = [];
     let degraded = false;
     if (extraProvider) {
@@ -289,22 +349,25 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
 
   const isSeed = (slug: string): boolean => seeds.some(s => s.slug === slug);
 
-  async function addCustom(input: { slug: string; name: string; description: string; body: string }): Promise<CatalogEntry> {
+  async function addCustom(input: { slug: string; name: string; description: string; body?: unknown; scaffold?: unknown }): Promise<CatalogEntry> {
     const { slug, name, description, body } = input;
     validateSlug(slug);
-    validateFields({ name, description, body }, noun);
+    const scaffold = scaffoldValue(input.scaffold);
+    requireStringBody(body);
+    validateFields({ name, description, body, scaffold }, noun);
+    checkBody(body);
     const catalog = await getCatalog();
     if (catalog.some(r => r.slug === slug)) {
       throw httpError(409, `${noun} slug '${slug}' already exists`);
     }
     const custom = await loadCustom();
-    const entry: CustomRule = { slug, name: name.trim(), description: description.trim(), body };
+    const entry: CustomRule = { slug, name: name.trim(), description: description.trim(), body: (body as string | undefined) ?? '', ...(scaffold ? { scaffold } : {}) };
     custom.push(entry);
     await saveCustom(custom);
-    return { ...entry, builtin: false };
+    return customEntry(entry);
   }
 
-  async function updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown }): Promise<CatalogEntry> {
+  async function updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown; scaffold?: unknown }): Promise<CatalogEntry> {
     validateSlug(slug);
     if (isSeed(slug)) {
       throw httpError(400, `cannot update built-in ${noun} '${slug}'`);
@@ -314,16 +377,21 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
     if (idx === -1) {
       throw httpError(404, `${noun} '${slug}' not found`);
     }
+    requireStringBody(patch.body);
+    const { scaffold: kept, ...rest } = custom[idx];
+    const scaffold = patch.scaffold !== undefined ? scaffoldValue(patch.scaffold) : kept ?? '';
     const updated: CustomRule = {
-      ...custom[idx],
+      ...rest,
       ...(patch.name !== undefined ? { name: String(patch.name).trim() } : {}),
       ...(patch.description !== undefined ? { description: String(patch.description).trim() } : {}),
-      ...(patch.body !== undefined ? { body: String(patch.body) } : {}),
+      ...(patch.body !== undefined ? { body: patch.body as string } : {}),
+      ...(scaffold ? { scaffold } : {}),
     };
     validateFields(updated, noun);
+    if (patch.body !== undefined) checkBody(updated.body);
     custom[idx] = updated;
     await saveCustom(custom);
-    return { ...updated, builtin: false };
+    return customEntry(updated);
   }
 
   async function deleteCustom(slug: string): Promise<{ slug: string }> {

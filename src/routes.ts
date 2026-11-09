@@ -2360,9 +2360,9 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.post('/settings/conventions/workspace', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { slug, name, description, body: text } = body;
+      const { slug, name, description, body: text, scaffold } = body;
       const convention = await addWorkspaceConvention({
-        slug: slug as string, name: name as string, description: description as string, body: text as string,
+        slug: slug as string, name: name as string, description: description as string, body: text, scaffold,
       });
       await regenerateAllProjectConventions({ log: console });
       res.status(201).json({ convention });
@@ -2373,8 +2373,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const { slug } = req.params;
       const body = jsonBody(req);
-      const { name, description, body: text } = body;
-      const convention = await updateWorkspaceConvention(slug, { name, description, body: text });
+      const { name, description, body: text, scaffold } = body;
+      const convention = await updateWorkspaceConvention(slug, { name, description, body: text, scaffold });
       await regenerateAllProjectConventions({ log: console });
       res.json({ convention });
     } catch (e) { next(e); }
@@ -2414,9 +2414,9 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.post('/settings/conventions/project', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { slug, name, description, body: text } = body;
+      const { slug, name, description, body: text, scaffold } = body;
       const convention = await addProjectConvention({
-        slug: slug as string, name: name as string, description: description as string, body: text as string,
+        slug: slug as string, name: name as string, description: description as string, body: text, scaffold,
       });
       await regenerateAllProjectConventions({ log: console });
       res.status(201).json({ convention });
@@ -2427,8 +2427,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const { slug } = req.params;
       const body = jsonBody(req);
-      const { name, description, body: text } = body;
-      const convention = await updateProjectConvention(slug, { name, description, body: text });
+      const { name, description, body: text, scaffold } = body;
+      const convention = await updateProjectConvention(slug, { name, description, body: text, scaffold });
       await regenerateAllProjectConventions({ log: console });
       res.json({ convention });
     } catch (e) { next(e); }
@@ -2528,9 +2528,9 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   r.post('/settings/conventions/conductor', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { slug, name, description, body: text } = body;
+      const { slug, name, description, body: text, scaffold } = body;
       const convention = await addConductorConvention({
-        slug: slug as string, name: name as string, description: description as string, body: text as string,
+        slug: slug as string, name: name as string, description: description as string, body: text, scaffold,
       });
       res.status(201).json({ convention });
     } catch (e) { next(e); }
@@ -2540,8 +2540,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const { slug } = req.params;
       const body = jsonBody(req);
-      const { name, description, body: text } = body;
-      const convention = await updateConductorConvention(slug, { name, description, body: text });
+      const { name, description, body: text, scaffold } = body;
+      const convention = await updateConductorConvention(slug, { name, description, body: text, scaffold });
       res.json({ convention });
     } catch (e) { next(e); }
   });

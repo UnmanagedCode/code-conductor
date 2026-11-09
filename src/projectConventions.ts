@@ -3,7 +3,9 @@
 //
 // Seeds are read-only (builtin: true); their bodies live in committed `.md`
 // fragments under conventions/project/<slug>.md. Custom conventions
-// (builtin: false) are persisted at <orchStoreRoot>/conventions/project.json.
+// (builtin: false) are persisted at <orchStoreRoot>/conventions/project.json
+// and, in this scope only, may carry a one-time scaffold directive beside (or
+// instead of) their body, as a plugin's convention may.
 // Both the catalog and the compose/CRUD logic are provided by the shared
 // fragment-catalog helper, which is also used by the conductor conventions
 // (src/conductorConventions.ts) and the workspace conventions
@@ -38,6 +40,7 @@ const catalog = createFragmentCatalog({
   seeds: SEED_PROJECT_CONVENTIONS,
   seedDir: () => conventionsDir('project'),
   skillParts: true,
+  scaffolds: true,
   storeFile: () => path.join(orchStoreRoot(), 'conventions', 'project.json'),
   noun: 'convention',
   extraProvider: () => pluginConventionsProvider(),

@@ -12,8 +12,13 @@ import { confirmDialog } from '@/ui/feedback';
 import { SectionIntro, Status, Field } from './ui';
 import { json, post, put, del, errText } from './api';
 import { pluginsChangedSignal } from './pluginsSignal';
+import { previewSkillPart } from './skillPreview';
 
-export type Convention = { slug: string; name: string; description: string; body?: string; builtin?: boolean; plugin?: string };
+export type Convention = {
+  slug: string; name: string; description: string; body?: string; builtin?: boolean; plugin?: string;
+  // A custom convention's stored text (what the editor edits; `body` is only its inline part), its one-time scaffold, the skill part split off its body, and why a stored marker did not parse.
+  source?: string; scaffold?: string; skill?: { description: string; body: string }; skillError?: string;
+};
 export type ConventionsPayload = {
   core?: { name: string; description: string };
   conventions?: Convention[];
@@ -114,8 +119,8 @@ function ConductorPlaybookPrefs({ data }: { data: ConventionsPayload }) {
 
 // ── One scope's list ─────────────────────────────────────────────────────
 
-type Form = { slug: string; name: string; description: string; body: string };
-const EMPTY: Form = { slug: '', name: '', description: '', body: '' };
+type Form = { slug: string; name: string; description: string; body: string; scaffold: string };
+const EMPTY: Form = { slug: '', name: '', description: '', body: '', scaffold: '' };
 
 export type ConventionScope = 'workspace' | 'conductor' | 'project';
 type Draft = { form: Form | null; editingSlug: string | null; formError: string | null; listError: string | null };
@@ -182,8 +187,10 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
     if (!form) return;
     patchDraft(scope, { formError: null });
     try {
-      if (editingSlug) await put(`${base}/${encodeURIComponent(editingSlug)}`, { name: form.name.trim(), description: form.description.trim(), body: form.body });
-      else await post(base, { slug: form.slug.trim(), name: form.name.trim(), description: form.description.trim(), body: form.body });
+      // The scaffold is a project-scope field; an empty one on Edit clears the stored one.
+      const scaffold = scope === 'project' ? { scaffold: form.scaffold.trim() } : {};
+      if (editingSlug) await put(`${base}/${encodeURIComponent(editingSlug)}`, { name: form.name.trim(), description: form.description.trim(), body: form.body, ...scaffold });
+      else await post(base, { slug: form.slug.trim(), name: form.name.trim(), description: form.description.trim(), body: form.body, ...scaffold });
       patchDraft(scope, NO_FORM);
       void load(true);
     } catch (e) {
@@ -227,12 +234,15 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
                   <span className="min-w-0 text-sm font-medium break-words">{c.name}</span>
                   <span className="min-w-0 font-mono text-[11px] break-all text-muted-foreground">{c.slug}</span>
                   {c.plugin ? <Badge variant="plan"><PlugIcon />plugin: {c.plugin}</Badge> : c.builtin ? <Badge variant="outline">built-in</Badge> : null}
+                  {c.skill && <Badge variant="secondary">skill</Badge>}
+                  {c.scaffold && <Badge variant="secondary">scaffolds</Badge>}
                 </div>
                 <div className="text-xs break-words text-muted-foreground">{c.description}</div>
+                <Status text={c.skillError} tone="error" />
               </div>
               {!c.plugin && !c.builtin && (
                 <div className="flex shrink-0 gap-0.5">
-                  <Button variant="ghost" size="icon-sm" aria-label={`Edit ${c.name}`} onClick={() => patchDraft(scope, { editingSlug: c.slug, form: { slug: c.slug, name: c.name, description: c.description, body: c.body || '' }, formError: null })}>
+                  <Button variant="ghost" size="icon-sm" aria-label={`Edit ${c.name}`} onClick={() => patchDraft(scope, { editingSlug: c.slug, form: { slug: c.slug, name: c.name, description: c.description, body: c.source ?? c.body ?? '', scaffold: c.scaffold ?? '' }, formError: null })}>
                     <PencilIcon className="size-3.5" />
                   </Button>
                   <Button variant="ghost" size="icon-sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${c.name}`} onClick={() => void remove(c.slug)}>
@@ -249,9 +259,15 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
           <Field label="Slug" htmlFor={`${base}-slug`}><Input id={`${base}-slug`} value={form.slug} disabled={!!editingSlug} placeholder="e.g. my-convention" onChange={(e) => setField({ slug: e.target.value })} autoFocus={!editingSlug} /></Field>
           <Field label="Name" htmlFor={`${base}-name`}><Input id={`${base}-name`} value={form.name} placeholder="Short name" onChange={(e) => setField({ name: e.target.value })} autoFocus={!!editingSlug} /></Field>
           <Field label="Description" htmlFor={`${base}-desc`} className="@xl:col-span-2"><Input id={`${base}-desc`} value={form.description} placeholder="One-line description" onChange={(e) => setField({ description: e.target.value })} /></Field>
-          <Field label="Body (Markdown)" htmlFor={`${base}-body`} className="@xl:col-span-2">
+          <Field label="Body (Markdown)" htmlFor={`${base}-body`} className="@xl:col-span-2" hint={<>A line <code>{'<!-- cc:skill <description> -->'}</code> hands everything below it to an on-demand skill; the text above stays in the system prompt.</>}>
             <Textarea id={`${base}-body`} className="min-h-32 font-mono text-[13px]" value={form.body} placeholder={bodyPlaceholder} onChange={(e) => setField({ body: e.target.value })} />
           </Field>
+          <SkillPreview body={form.body} scope={scope} slug={form.slug.trim() || '<slug>'} />
+          {scope === 'project' && (
+            <Field label="Scaffold (one-time setup directive)" htmlFor={`${base}-scaffold`} className="@xl:col-span-2" hint="Returned by create_project when this convention is picked, for the conductor to fold into the project's first worker brief. Never written to the project; leave empty for none.">
+              <Textarea id={`${base}-scaffold`} className="min-h-20 text-[13px]" value={form.scaffold} onChange={(e) => setField({ scaffold: e.target.value })} />
+            </Field>
+          )}
           <Status text={formError} tone="error" className="@xl:col-span-2" />
           <div className="flex flex-wrap justify-end gap-2 @xl:col-span-2">
             <Button type="button" variant="ghost" onClick={() => patchDraft(scope, NO_FORM)}>Cancel</Button>
@@ -261,6 +277,27 @@ export function ConventionsPanel({ scope, hasToggle, hasCoreRow, noun, bodyPlace
       ) : (
         <Button variant="outline" size="sm" onClick={() => patchDraft(scope, { editingSlug: null, form: EMPTY, formError: null })}><PlusIcon /> Add custom convention</Button>
       )}
+    </div>
+  );
+}
+
+/** What a body's skill marker does, as the server would split it; nothing for a body without one. */
+function SkillPreview({ body, scope, slug }: { body: string; scope: ConventionScope; slug: string }) {
+  const p = previewSkillPart(body, scope, slug);
+  if ('error' in p) return <Status text={p.error} tone="error" className="@xl:col-span-2" />;
+  if (!p.skill) return null;
+  const pre = 'max-h-40 overflow-auto rounded bg-muted/40 p-2 font-mono text-xs whitespace-pre-wrap break-words';
+  return (
+    <div className="grid gap-3 @xl:col-span-2 @xl:grid-cols-2">
+      <section aria-label="Stays in the system prompt" className="min-w-0 space-y-1">
+        <div className="text-xs font-medium">Stays in the system prompt</div>
+        <pre className={pre}>{p.inline || '(nothing)'}</pre>
+      </section>
+      <section aria-label={`Skill ${p.skill.invocation} — loads on demand`} className="min-w-0 space-y-1">
+        <div className="text-xs font-medium">Skill <code className="font-mono">{p.skill.invocation}</code> — loads on demand</div>
+        <div className="text-xs break-words text-muted-foreground">{p.skill.description}</div>
+        <pre className={pre}>{p.skill.body}</pre>
+      </section>
     </div>
   );
 }

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
-import { splitSkillPart } from '../src/skillPart.ts';
+import { splitSkillPart } from '../shared/skillPart.ts';
 import { composeConductParts, SEED_CONVENTIONS as CONDUCTOR_SEEDS } from '../src/conductorConventions.ts';
 import { composeWorkspaceParts, SEED_CONVENTIONS as WORKSPACE_SEEDS } from '../src/workspaceConventions.ts';
 import { SEED_PROJECT_CONVENTIONS } from '../src/projectConventions.ts';

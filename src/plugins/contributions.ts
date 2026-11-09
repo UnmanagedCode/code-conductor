@@ -5,7 +5,7 @@ import type { BackendBinding, TierBinding } from '../modelVersions.ts';
 import { LOCAL_SYSTEM_ID, projectPlacement, systemHandleGeneration } from '../systems/registry.ts';
 import { placementToken } from '../projects.ts';
 import type { System } from '../systems/system.ts';
-import { splitSkillPart, type SkillPart } from '../skillPart.ts';
+import { splitSkillPart, type SkillPart } from '../../shared/skillPart.ts';
 
 // What enabled plugins contribute to the conductor beyond an HTTP backend:
 // convention fragments, role bindings, playbook graphs and Claude Code plugin

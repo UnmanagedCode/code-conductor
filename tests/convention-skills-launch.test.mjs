@@ -338,3 +338,98 @@ test('a workspace compose failure costs a worker its convention skills, not its 
   assert.ok(r.status >= 400, `the conductor launch is refused: ${r.status} ${JSON.stringify(r.body)}`);
   assert.match(JSON.stringify(r.body), /empty description/);
 });
+
+// ── Custom conventions (Settings-authored) ──────────────────────────────────
+
+const customBody = (heading, skill, desc = 'Custom skill.') => `${heading}\nInline text.\n\n<!-- cc:skill ${desc} -->\n\n${skill}\n`;
+
+async function addCustom(scope, slug, body) {
+  const r = await api(baseUrl, 'POST', `/api/settings/conventions/${scope}`, { slug, name: slug, description: 'd', body });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+}
+
+test('custom conductor convention: its skill ships under cc-custom-conductor and the role doc keeps the inline part', async () => {
+  await addCustom('conductor', 'my-rule', customBody('## My conductor rule', 'MY-COND-SKILL'));
+  const inst = await spawnConductor();
+  const dir = conventionSkillsDir(inst.id);
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT, path.join(dir, 'cc-custom-conductor')]);
+  assert.deepEqual(conventionSkills(await initSkills(inst)), ['cc-custom-conductor:my-rule']);
+  assert.equal(await fs.readFile(path.join(dir, 'cc-custom-conductor', 'skills', 'my-rule', 'SKILL.md'), 'utf8'),
+    '---\nname: my-rule\ndescription: "Custom skill."\n---\n\nMY-COND-SKILL\n');
+  const doc = await fs.readFile(conductConventionsPath(), 'utf8');
+  assert.ok(doc.includes('## My conductor rule') && !doc.includes('MY-COND-SKILL') && !doc.includes('cc:skill'));
+});
+
+test('custom workspace convention: the root reaches a worker and the conductor', async () => {
+  await addCustom('workspace', 'ws-rule', customBody('## My workspace rule', 'MY-WS-SKILL'));
+  await createProject('p');
+  const worker = await spawnIn('p');
+  assert.deepEqual(conventionSkills(await initSkills(worker)), ['cc-custom-workspace:ws-rule']);
+  const md = await fs.readFile(path.join(ctx.projectsRoot, 'p', 'CONVENTIONS.md'), 'utf8');
+  assert.ok(md.includes('## My workspace rule') && !md.includes('MY-WS-SKILL'));
+  const conductor = await spawnConductor();
+  assert.deepEqual(conventionSkills(await initSkills(conductor)), ['cc-custom-workspace:ws-rule']);
+});
+
+test('custom project convention: a project that picked it gets cc-custom-project, one that did not gets nothing', async () => {
+  await addCustom('project', 'pj-rule', customBody('## My project rule', 'MY-PJ-SKILL'));
+  await createProject('picked', ['pj-rule']);
+  await createProject('plain', ['testing-guidelines']);
+  assert.deepEqual(conventionSkills(await initSkills(await spawnIn('picked'))), ['cc-custom-project:pj-rule']);
+  assert.deepEqual(conventionSkills(await initSkills(await spawnIn('plain'))), []);
+});
+
+test('a disabled or deleted custom convention loses its root on the next launch; an edited one gets the new SKILL.md', async () => {
+  await addCustom('conductor', 'my-rule', customBody('## Rule', 'FIRST-BODY'));
+  const inst = await spawnConductor();
+  const skillMd = () => path.join(conventionSkillsDir(inst.id), 'cc-custom-conductor', 'skills', 'my-rule', 'SKILL.md');
+  assert.match(await fs.readFile(skillMd(), 'utf8'), /FIRST-BODY/);
+
+  const put = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/my-rule', { body: customBody('## Rule', 'SECOND-BODY', 'New desc.') });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.match(await fs.readFile(skillMd(), 'utf8'), /FIRST-BODY/, 'a running session keeps its launch-time copy');
+  await inst.kill();
+  await instances.respawn(inst.id);
+  await waitFor(() => inst.status === 'idle');
+  const md = await fs.readFile(skillMd(), 'utf8');
+  assert.match(md, /SECOND-BODY/);
+  assert.match(md, /description: "New desc\."/);
+
+  const { body } = await api(baseUrl, 'GET', '/api/settings/conventions/conductor');
+  await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/selection', { enabled: body.enabled.filter(s => s !== 'my-rule') });
+  await inst.kill();
+  await instances.respawn(inst.id);
+  await waitFor(() => inst.status === 'idle');
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT], 'disabled → root gone');
+  assert.equal(existsSync(path.join(conventionSkillsDir(inst.id), 'cc-custom-conductor')), false);
+
+  await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/selection', { enabled: [...body.enabled] });
+  await inst.kill();
+  await instances.respawn(inst.id);
+  await waitFor(() => inst.status === 'idle');
+  assert.ok(existsSync(skillMd()), 'fixture check: back on');
+  assert.equal((await api(baseUrl, 'DELETE', '/api/settings/conventions/conductor/my-rule')).status, 200);
+  await inst.kill();
+  await instances.respawn(inst.id);
+  await waitFor(() => inst.status === 'idle');
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [CORE_CLAUDE_PLUGIN_ROOT], 'deleted → root gone');
+});
+
+test('root order is built-ins, then customs, then plugins', async () => {
+  await addConventionPlugin();
+  await pluginHost.enable('skill-conv');
+  await addSkill(conventionsRoot, 'conductor', 'worker-prompts.md', COND_SKILL);
+  await addCustom('conductor', 'my-rule', customBody('## Rule', 'MY-BODY'));
+  const inst = await spawnConductor();
+  const dir = conventionSkillsDir(inst.id);
+  assert.deepEqual(pluginDirArgs(inst._spawnArgv), [
+    CORE_CLAUDE_PLUGIN_ROOT, path.join(dir, 'cc-conductor'), path.join(dir, 'cc-custom-conductor'), path.join(dir, 'cc-conductor-skill-conv'),
+  ]);
+});
+
+test('built-in and custom skills of one scope load side by side under their own namespaces', async () => {
+  await addSkill(conventionsRoot, 'conductor', 'worker-prompts.md', COND_SKILL);
+  await addCustom('conductor', 'my-rule', customBody('## Rule', 'MINE'));
+  const inst = await spawnConductor();
+  assert.deepEqual(conventionSkills(await initSkills(inst)), ['cc-conductor:worker-prompts', 'cc-custom-conductor:my-rule']);
+});

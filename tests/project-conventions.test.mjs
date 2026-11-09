@@ -535,3 +535,84 @@ test('create_project with no scaffold-bearing conventions omits the scaffold fie
   const result = await tool.handler({ name: 'sc-none', conventions: ['playwright-harness/plain'] }, { instances });
   assert.equal(result.scaffold, undefined);
 });
+
+// ── Custom scaffolds ────────────────────────────────────────────────────────
+
+test('composeProjectScaffold numbers a custom scaffold in selection order beside a plugin one', async () => {
+  setPluginConventionsProvider(async () => FAKE_CONVENTIONS);
+  await addCustomConvention({ slug: 'my-setup', name: 'My setup', description: 'd', body: '## Mine', scaffold: 'Run my custom setup' });
+  const block = await composeProjectScaffold('demo', ['playwright-harness/seed-config', 'my-setup', 'playwright-harness/harness-wrapper']);
+  assert.match(block, /1\) Write a default config/);
+  assert.match(block, /2\) Run my custom setup/);
+  assert.match(block, /3\) Build a project-local harness wrapper/);
+});
+
+test('list_project_conventions gives a custom scaffold hasScaffold:true without leaking its text', async () => {
+  await addCustomConvention({ slug: 'my-setup', name: 'My setup', description: 'd', body: '## Mine', scaffold: 'Run my custom setup' });
+  await addCustomConvention({ slug: 'no-setup', name: 'No setup', description: 'd', body: '## Plain' });
+  const { buildTools } = await import('../src/mcp/tools.ts');
+  const tool = buildTools().find(t => t.name === 'list_project_conventions');
+  const list = await tool.handler({}, { instances });
+  const bySlug = Object.fromEntries(list.conventions.map(e => [e.slug, e]));
+  assert.equal(bySlug['my-setup'].hasScaffold, true);
+  assert.equal(bySlug['no-setup'].hasScaffold, false);
+  assert.equal(bySlug['my-setup'].scaffold, undefined);
+});
+
+test('create_project RETURNS a custom convention\'s scaffold; a scaffold-only custom adds nothing to CONVENTIONS.md', async () => {
+  await addCustomConvention({ slug: 'only-setup', name: 'Only', description: 'd', body: '', scaffold: 'Initialise the thing' });
+  const { buildTools } = await import('../src/mcp/tools.ts');
+  const tool = buildTools().find(t => t.name === 'create_project');
+  const result = await tool.handler({ name: 'cs-proj', conventions: ['only-setup'] }, { instances });
+  assert.match(result.scaffold, /1\) Initialise the thing/);
+  const content = await fs.readFile(path.join(projectsRoot, 'cs-proj', 'CONVENTIONS.md'), 'utf8');
+  assert.doesNotMatch(content, /Initialise the thing/);
+  assert.equal(await composeProjectConventionsBlock(['only-setup']), '');
+});
+
+test('REST project convention scaffold: POST and PUT round-trip it, \'\' clears it, GET carries it and source', async () => {
+  const body = '## S\n<!-- cc:skill Use it. -->\nSKILL';
+  const post = await api(baseUrl, 'POST', '/api/settings/conventions/project',
+    { slug: 'rest-sc', name: 'R', description: 'd', body, scaffold: 'Do it' });
+  assert.equal(post.status, 201, JSON.stringify(post.body));
+  assert.equal(post.body.convention.scaffold, 'Do it');
+  let got = (await api(baseUrl, 'GET', '/api/settings/conventions/project')).body.conventions.find(c => c.slug === 'rest-sc');
+  assert.equal(got.scaffold, 'Do it');
+  assert.equal(got.source, body);
+  assert.equal(got.body, '## S');
+  assert.deepEqual(got.skill, { description: 'Use it.', body: 'SKILL' });
+
+  const put = await api(baseUrl, 'PUT', '/api/settings/conventions/project/rest-sc', { scaffold: 'Changed' });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.equal(put.body.convention.scaffold, 'Changed');
+  const clear = await api(baseUrl, 'PUT', '/api/settings/conventions/project/rest-sc', { scaffold: '' });
+  assert.equal(clear.status, 200);
+  got = (await api(baseUrl, 'GET', '/api/settings/conventions/project')).body.conventions.find(c => c.slug === 'rest-sc');
+  assert.equal(got.scaffold, undefined);
+
+  const bad = await api(baseUrl, 'POST', '/api/settings/conventions/project',
+    { slug: 'rest-bad', name: 'R', description: 'd', body: '<!-- cc:skill -->\nx' });
+  assert.equal(bad.status, 400);
+});
+
+test('REST: workspace and conductor refuse a scaffold with 400 and store nothing', async () => {
+  for (const scope of ['workspace', 'conductor']) {
+    const post = await api(baseUrl, 'POST', `/api/settings/conventions/${scope}`,
+      { slug: `sc-${scope}`, name: 'R', description: 'd', body: '## S', scaffold: 'nope' });
+    assert.equal(post.status, 400, scope);
+    assert.match(post.body.error ?? JSON.stringify(post.body), /scaffolds are project-scope only/);
+    const list = (await api(baseUrl, 'GET', `/api/settings/conventions/${scope}`)).body.conventions;
+    assert.ok(!list.some(c => c.slug === `sc-${scope}`), `${scope}: nothing stored`);
+    await api(baseUrl, 'POST', `/api/settings/conventions/${scope}`, { slug: `ok-${scope}`, name: 'R', description: 'd', body: '## S' });
+    const put = await api(baseUrl, 'PUT', `/api/settings/conventions/${scope}/ok-${scope}`, { scaffold: 'nope' });
+    assert.equal(put.status, 400, `${scope} PUT`);
+  }
+});
+
+test('REST: a non-string scaffold is refused with 400 in every scope', async () => {
+  for (const scope of ['workspace', 'conductor', 'project']) {
+    const r = await api(baseUrl, 'POST', `/api/settings/conventions/${scope}`,
+      { slug: `ns-${scope}`, name: 'R', description: 'd', body: '## S', scaffold: 123 });
+    assert.equal(r.status, 400, scope);
+  }
+});

@@ -1,6 +1,7 @@
 // The skill-part grammar of a convention fragment file — pure and import-free,
-// so both the fragment catalog (src/fragmentCatalog.ts) and plugin manifest
-// validation (src/plugins/manifest.ts) parse with the one definition.
+// so the fragment catalog (src/fragmentCatalog.ts), plugin manifest validation
+// (src/plugins/manifest.ts) and the Settings editor's preview
+// (web/src/features/settings/skillPreview.ts) parse with the one definition.
 //
 // A fragment FILE may hand part of its text to a Claude Code skill: one marker
 // line splits it into an inline part (above, composed into the system-prompt
