@@ -329,8 +329,8 @@ function validateFragmentPath(value: unknown, label: string, errors: string[], e
 // convention entries contributed to a Conventions catalog (namespaced
 // <plugin-id>/<slug> there). `scope` is required and routes the entry to its
 // catalog (see SUPPORTED_CONVENTION_SCOPES). An entry may carry a fragment
-// (`file`) and/or a one-time setup directive (`scaffold`, plugin-only, project-
-// scope only in practice — no catalog outside project creation consumes it),
+// (`file`) and/or a one-time setup directive (`scaffold`, project scope only — no catalog
+// outside project creation consumes it),
 // but MUST carry at least one of the two. No backend required. Returns a
 // normalized array or null.
 function validateConventions(g: unknown, errors: string[]): ConventionEntry[] | null {

@@ -215,7 +215,7 @@ interface FragmentCatalogConfig {
 // the catalog it is built on.
 export interface FragmentCatalog {
   getCatalog(): Promise<CatalogList>;
-  addCustom(input: { slug: string; name: string; description: string; body: string; scaffold?: string }): Promise<CatalogEntry>;
+  addCustom(input: { slug: string; name: string; description: string; body?: unknown; scaffold?: unknown }): Promise<CatalogEntry>;
   updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown; scaffold?: unknown }): Promise<CatalogEntry>;
   deleteCustom(slug: string): Promise<{ slug: string }>;
   compose(slugs: string[]): Promise<string>;
@@ -275,10 +275,12 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
     catch (e) { throw httpError(400, `${noun} body: ${errMsg(e)}`); }
   }
 
-  // The stored scaffold of a write: '' removes it, anything else is trimmed. A
-  // catalog without `scaffolds` refuses a non-empty one.
+  // The stored scaffold of a write: '' or undefined removes it, a string is
+  // trimmed, anything else is refused. A catalog without `scaffolds` refuses a
+  // non-empty one.
   function scaffoldValue(v: unknown): string {
-    const t = typeof v === 'string' ? v.trim() : '';
+    if (v !== undefined && typeof v !== 'string') throw httpError(400, `${noun} scaffold must be a string`);
+    const t = v === undefined ? '' : v.trim();
     if (t && !scaffolds) throw httpError(400, 'scaffolds are project-scope only');
     return t;
   }
@@ -342,10 +344,11 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
 
   const isSeed = (slug: string): boolean => seeds.some(s => s.slug === slug);
 
-  async function addCustom(input: { slug: string; name: string; description: string; body: string; scaffold?: string }): Promise<CatalogEntry> {
+  async function addCustom(input: { slug: string; name: string; description: string; body?: unknown; scaffold?: unknown }): Promise<CatalogEntry> {
     const { slug, name, description, body } = input;
     validateSlug(slug);
     const scaffold = scaffoldValue(input.scaffold);
+    if (body !== undefined && typeof body !== 'string') throw httpError(400, `${noun} body must be a string`);
     validateFields({ name, description, body, scaffold }, noun);
     checkBody(body);
     const catalog = await getCatalog();
@@ -353,7 +356,7 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
       throw httpError(409, `${noun} slug '${slug}' already exists`);
     }
     const custom = await loadCustom();
-    const entry: CustomRule = { slug, name: name.trim(), description: description.trim(), body, ...(scaffold ? { scaffold } : {}) };
+    const entry: CustomRule = { slug, name: name.trim(), description: description.trim(), body: (body as string | undefined) ?? '', ...(scaffold ? { scaffold } : {}) };
     custom.push(entry);
     await saveCustom(custom);
     return customEntry(entry);

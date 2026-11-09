@@ -608,3 +608,11 @@ test('REST: workspace and conductor refuse a scaffold with 400 and store nothing
     assert.equal(put.status, 400, `${scope} PUT`);
   }
 });
+
+test('REST: a non-string scaffold is refused with 400 in every scope', async () => {
+  for (const scope of ['workspace', 'conductor', 'project']) {
+    const r = await api(baseUrl, 'POST', `/api/settings/conventions/${scope}`,
+      { slug: `ns-${scope}`, name: 'R', description: 'd', body: '## S', scaffold: 123 });
+    assert.equal(r.status, 400, scope);
+  }
+});

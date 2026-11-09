@@ -343,3 +343,29 @@ test('a stored scaffold survives the store round-trip through normalizeRules (ru
     assert.equal((await catalog.getCatalog()).find(e => e.slug === 'bad').scaffold, undefined);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+test('a scaffold that is not a string is refused with 400 at every scope, on add and on update, and stores nothing', async () => {
+  for (const scaffolds of [true, false]) {
+    const { dir, catalog } = await mkScaffoldFixture({ scaffolds });
+    try {
+      await catalog.addCustom({ slug: 'ok', name: 'S', description: 'd', body: '## S' });
+      for (const bad of [123, {}, ['x'], true, null]) {
+        await expectStatus(() => catalog.addCustom({ slug: 'bad', name: 'S', description: 'd', body: '## S', scaffold: bad }), 400);
+        await expectStatus(() => catalog.updateCustom('ok', { scaffold: bad }), 400);
+      }
+      const all = await catalog.getCatalog();
+      assert.ok(!all.some(e => e.slug === 'bad'), `scaffolds:${scaffolds}: nothing added`);
+      assert.equal(all.find(e => e.slug === 'ok').scaffold, undefined);
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('addCustom with no body at all is valid only beside a scaffold', async () => {
+  const { dir, catalog } = await mkScaffoldFixture();
+  try {
+    const only = await catalog.addCustom({ slug: 'only', name: 'O', description: 'd', scaffold: 'Set up' });
+    assert.equal(only.scaffold, 'Set up');
+    assert.equal(await catalog.compose(['only']), '');
+    await expectStatus(() => catalog.addCustom({ slug: 'nobody', name: 'O', description: 'd' }), 400);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
