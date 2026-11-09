@@ -6,8 +6,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renewalBoundaryAt, renewalCut, NOT_A_RENEWAL_BOUNDARY } from '../src/renewalBoundary.ts';
 import { RENEW_HEAD } from './segmentChain.mjs';
+import { RENEW_TOOL_WIRE_NAME } from '../src/renewalBoundary.ts';
 import {
-  preRenewalRecords, postRenewalRecords, postTypedClearRecords, renewRequest, prompt, reply, text, steer, queuePair, jsonl,
+  preRenewalRecords, postRenewalRecords, postTypedClearRecords, renewRequest, reseedText, prompt, reply, text, steer, queuePair,
+  targetedRenewCall, jsonl, RENEW_TOOL,
 } from './renewalFixtures.mjs';
 
 const seg = (id, reason, extra = {}) => ({ id, reason, at: '2026-09-01T00:00:00Z', ...extra });
@@ -96,4 +98,43 @@ test('a managed renewal with no turn opener before the call is refused 409', () 
     assert.match(e.message, /cannot locate the renewal request/);
     return true;
   });
+});
+
+test('the anchor name is the wire name the CLI records', () => {
+  assert.equal(RENEW_TOOL_WIRE_NAME, RENEW_TOOL);
+});
+
+test('a targeted renew_session call in a later deferred turn does not move the cut', () => {
+  const pre = preRenewalRecords('a');
+  const clearAt = pre.length - queuePair().length;
+  pre.splice(clearAt, 0, prompt('a-late', 'renew the worker too'), ...targetedRenewCall('a'), reply('a-late-a', [text('asked it')]));
+  assert.deepEqual(renewalCut(jsonl(pre), managedPost('a')), { userMessageIndex: 2, text: renewRequest('a') });
+});
+
+test('an earlier targeted renew_session call is no anchor: a run_code renewal still cuts before the last opener', () => {
+  const pre = [
+    prompt('b-u0', 'b brief'),
+    ...targetedRenewCall('b'),
+    reply('b-a0', [text('asked the worker to renew')]),
+    prompt('b-u1', renewRequest('b')),
+    reply('b-a1', [text('renewing from run_code')]),
+    ...queuePair(),
+  ];
+  assert.deepEqual(renewalCut(jsonl(pre), managedPost('b')), { userMessageIndex: 1, text: renewRequest('b') });
+});
+
+test('a prompt that lands in the new segment before the reseed still marks the renewal managed', () => {
+  const post = jsonl([
+    ...RENEW_HEAD,
+    prompt('c-early', 'a prompt sent between the clear and the reseed'),
+    reply('c-early-a', [text('ok')]),
+    prompt('c-seed', reseedText('c')),
+    reply('c-seed-a', [text('resumed')]),
+  ]);
+  assert.deepEqual(renewalCut(jsonl(preRenewalRecords('c')), post), { userMessageIndex: 2, text: renewRequest('c') });
+});
+
+test('a steer in an earlier turn counts in the cut\'s ordinal space', () => {
+  const pre = preRenewalRecords('d', { afterDeclined: [steer('d-steer', 'a steer while the declined request ran')] });
+  assert.deepEqual(renewalCut(jsonl(pre), managedPost('d')), { userMessageIndex: 3, text: renewRequest('d') });
 });

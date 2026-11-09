@@ -7,7 +7,7 @@ import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
 import { RetiredPagers } from './retiredPagers.ts';
 import type { LineageSource } from './lineagePager.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, writeFileAtomic, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import { CORE_CLAUDE_PLUGIN_ROOT, withCoreClaudePlugin } from './coreClaudePlugin.ts';
 
@@ -676,9 +676,9 @@ function preRenewalGone(): Error {
   return httpError(409, 'the transcript from before this renewal is no longer on disk', { code: PRE_RENEWAL_GONE });
 }
 
-// A transcript's text, or null when the file is gone.
-async function readTranscriptOrNull(file: string): Promise<string | null> {
-  try { return await fsp.readFile(file, 'utf8'); }
+// A transcript's bytes, or null when the file is gone.
+async function readTranscriptOrNull(file: string): Promise<Buffer | null> {
+  try { return await fsp.readFile(file); }
   catch (e) {
     if (errCode(e) === 'ENOENT') return null;
     throw e;
@@ -4832,9 +4832,11 @@ export class Instance extends EventEmitter implements InstanceLike {
   // renewal request and resending it would ask for a renewal again.
   //
   // Every refusal comes before the kill. A failure before the record is
-  // rewritten relaunches the untouched post-renewal segment (the pre segment
-  // may by then be truncated while it stays archived); a relaunch failure after
-  // it gets no fail-safe, as with rewind.
+  // rewritten puts the pre segment's file back to its exact pre-undo bytes and
+  // relaunches the untouched post-renewal segment — so a retry cuts at the same
+  // place. Only the truncate and the record write sit in that window; the
+  // model-switch re-anchor runs after the commit, so nothing else needs undoing.
+  // A failure after the commit gets no fail-safe, as with rewind.
   async rewindAcrossRenewal(label: string): Promise<{ droppedText: null }> {
     this._assertNoRotationInFlight();
     if (this._mutating) {
@@ -4851,6 +4853,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._mutating = 'rewind';
     let windowOpen = false;
     let committed = false;
+    let preFile: string | null = null;
+    let preBytes: Buffer | null = null;
+    let preTouched = false;
     try {
       const place = this.transcriptPlace;
       const b = renewalBoundaryAt(await chainFor(publicId), label);
@@ -4861,28 +4866,36 @@ export class Instance extends EventEmitter implements InstanceLike {
           { code: RENEWAL_NOT_LATEST });
       }
       const pre = b.pre.id;
-      const preText = b.pre.dropped ? null : await readTranscriptOrNull(sessionFilePath(place, pre));
-      if (preText === null) throw preRenewalGone();
-      const postText = await readTranscriptOrNull(sessionFilePath(place, b.post[0].id)) ?? '';
-      const cut = renewalCut(preText, postText);
+      preFile = sessionFilePath(place, pre);
+      preBytes = b.pre.dropped ? null : await readTranscriptOrNull(preFile);
+      if (preBytes === null) throw preRenewalGone();
+      const postText = (await readTranscriptOrNull(sessionFilePath(place, b.post[0].id)))?.toString('utf8') ?? '';
+      const cut = renewalCut(preBytes.toString('utf8'), postText);
 
       this._beginRelaunch();
       windowOpen = true;
       if (this.proc) await this.kill({ graceMs: 300 });
 
       let resumable: boolean;
+      let truncated: Awaited<ReturnType<typeof truncateSessionAtUserMessage>> | null = null;
       if (cut) {
-        const result = await truncateSessionAtUserMessage({
+        preTouched = true;
+        truncated = await truncateSessionAtUserMessage({
           place, sessionId: pre, userMessageIndex: cut.userMessageIndex, expectedText: cut.text, mode: this.mode,
         });
-        await reanchorModelSwitches(publicId, pre, result.survivingUuids, result.lastSurvivingUuid);
-        resumable = result.resumable;
+        resumable = truncated.resumable;
       } else {
         resumable = await hasResumableConversation({ place, sessionId: pre });
       }
       await undoRenewal(publicId, { pre, post: b.post.map(s => s.id), temp: this.temp });
       committed = true;
 
+      // In memory first, so no reader sees the deleted post segment as live.
+      // Set explicitly: a non-resumable relaunch starts `--session-id` from it.
+      this.backingSessionId = pre;
+      this._segments = (await segmentsFor(publicId)).map(s => s.id);
+      this.lastRotatedAt = null;
+      this.rotationReason = null;
       // The post run is discarded with its files. A failed removal leaves an
       // orphan file no record names: warned, not fatal — the undo has landed.
       for (const s of b.post) {
@@ -4891,11 +4904,7 @@ export class Instance extends EventEmitter implements InstanceLike {
             .catch((e: unknown) => console.warn(`instances: could not remove ${target}: ${(e as Error).message}`));
         }
       }
-      this._segments = (await segmentsFor(publicId)).map(s => s.id);
-      // Set explicitly: a non-resumable relaunch starts `--session-id` from it.
-      this.backingSessionId = pre;
-      this.lastRotatedAt = null;
-      this.rotationReason = null;
+      if (truncated) await reanchorModelSwitches(publicId, pre, truncated.survivingUuids, truncated.lastSurvivingUuid);
       await this._relaunchSegment(pre, resumable, 'rewind');
       await this._awaitRelaunchConfirmed();
       return { droppedText: null };
@@ -4903,6 +4912,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (!windowOpen) throw e;
       await this.kill({ graceMs: 300 }).catch(() => {});
       if (!committed) {
+        if (preTouched && preFile && preBytes) {
+          await writeFileAtomic(preFile, preBytes)
+            .catch((re: unknown) => console.warn(`instances: could not restore ${preFile}: ${(re as Error).message}`));
+        }
         // The record still names the post-renewal segment, untouched: run it again.
         this._wipeForResume();
         try {
@@ -4946,8 +4959,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       pre = b.pre.id;
       const raw = b.pre.dropped ? null : await readTranscriptOrNull(sessionFilePath(place, pre));
       if (raw === null) throw preRenewalGone();
-      const preText = completeLinesOf(raw);
-      const postText = await readTranscriptOrNull(sessionFilePath(place, b.post[0].id)) ?? '';
+      const preText = completeLinesOf(raw.toString('utf8'));
+      const postText = (await readTranscriptOrNull(sessionFilePath(place, b.post[0].id)))?.toString('utf8') ?? '';
       const cut = renewalCut(preText, postText);
       ({ newSessionId } = cut
         ? await forkSessionAtUserMessage({

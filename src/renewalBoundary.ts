@@ -4,7 +4,7 @@
 // Pure: no fs, no store — callers hand in the chain and the file texts.
 
 import { isPureUserPromptLine, type PersistedLine } from './transcript.ts';
-import { normalizePromptText, replayedPromptText } from './sessionEdit.ts';
+import { replayedPromptText } from './sessionEdit.ts';
 import { parseRenewSeed } from '../shared/renewSeed.ts';
 import { CC_MCP_SERVER_NAME } from './settings.ts';
 import { RENEW_SESSION_TOOL } from './sessionRenew.ts';
@@ -47,32 +47,33 @@ function parsedLines(text: string): Array<PersistedLine | null> {
   });
 }
 
-// A cc-managed renewal's post-renewal transcript opens — after the `/clear`
-// command line — with the reseed. A typed `/clear` has none, and neither has a
-// managed renewal whose reseed never landed.
+// A cc-managed renewal's post-renewal transcript holds the reseed among its
+// prompts — not necessarily first: prompt() is open between the `/clear`
+// rotation and the deferred reseed, so a prompt can land ahead of it. Read off
+// the post file rather than off a `renew_session` call in the pre file, which
+// a renewal issued from `run_code` never records. A typed `/clear` has no
+// reseed, and neither has a managed renewal whose reseed never landed.
 function isManagedRenewal(postText: string): boolean {
-  for (const obj of parsedLines(postText)) {
-    if (!obj || !isPureUserPromptLine(obj)) continue;
-    const text = replayedPromptText(obj);
-    if (normalizePromptText(text) === '/clear') continue;
-    return parseRenewSeed(text) !== null;
-  }
-  return false;
+  return parsedLines(postText).some(obj =>
+    obj !== null && isPureUserPromptLine(obj) && parseRenewSeed(replayedPromptText(obj)) !== null);
 }
 
+// A SELF-form `renew_session` call: the targeted form names another worker in
+// `sessionId` and renews nothing here.
 function callsRenewSession(obj: PersistedLine | null): boolean {
   if (obj?.type !== 'assistant' || obj.isSidechain) return false;
   const content: unknown = obj.message?.content;
-  return Array.isArray(content)
-    && content.some(b => b?.type === 'tool_use' && b.name === RENEW_TOOL_WIRE_NAME);
+  return Array.isArray(content) && content.some(b => b?.type === 'tool_use' && b.name === RENEW_TOOL_WIRE_NAME
+    && typeof (b.input as { sessionId?: unknown } | undefined)?.sessionId !== 'string');
 }
 
 // Where the pre-renewal transcript is cut: the pure user prompt that OPENED the
-// turn in which `renew_session` was called — as the file prompt ordinal and the
+// turn in which the session's own `renew_session` was called — as the file prompt ordinal and the
 // replayed text splitAtUserMessage re-verifies. Anchored on the tool call, not
 // on the file's last prompt: a steer inside the arming turn (a `queued_command`
 // attachment) and a prompt sent while the renewal was armed but deferred both
-// come later. A managed renewal with no such call (issued from `run_code`) cuts
+// come later, and a targeted call (another worker's renewal) is no anchor.
+// A managed renewal with no such call (issued from `run_code`) cuts
 // before the file's last turn opener. Null when the renewal is not managed:
 // the pre segment is then restored whole.
 export function renewalCut(preText: string, postText: string): { userMessageIndex: number; text: string } | null {

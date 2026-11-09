@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { SwitchLauncher } from './switchLauncher.mjs';
-import { seedSegmentChain, segmentTurns, stubbedCopy } from './segmentChain.mjs';
+import { seedSegmentChain, segmentTurns, stubbedCopy, writeLineageRow } from './segmentChain.mjs';
 import {
   preRenewalRecords, postRenewalRecords, postTypedClearRecords, declinedRequest,
 } from './renewalFixtures.mjs';
@@ -253,6 +253,33 @@ test('a refused undo changes nothing: a running turn is refused 409', async () =
     await waitFor(() => inst.status === 'turn');
     await assertRefusalChangesNothing({ inst, publicId, ids: [P, N] }, { boundary: N },
       { status: 409, error: /cannot rewind during a running turn/ });
+});
+
+test('a failure before the record write leaves P byte-identical and relaunches the untouched post segment', async () => {
+  const { P, N, segments } = managedChain('x');
+  const { inst, publicId } = await resumeChain(segments);
+  const pBefore = await fileBytes(P);
+  const nBefore = await fileBytes(N);
+  // Once the process is down — after every refusal, before the truncate — the
+  // chain moves on (another renewal lands), so undoRenewal refuses RENEWAL_MOVED.
+  const moved = [...segments, { id: sid(), reason: 'renew' }];
+  const kill = inst.kill.bind(inst);
+  let chainBefore = null;
+  inst.kill = async (...args) => {
+    await kill(...args);
+    if (chainBefore === null) { await writeLineageRow(publicId, moved); chainBefore = await storeChain(publicId); }
+  };
+
+  const r = await undo(inst, { boundary: N });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'RENEWAL_MOVED');
+  assert.equal(await fileBytes(P), pBefore, 'P is byte-identical');
+  assert.equal(await fileBytes(N), nBefore, 'N is untouched');
+  assert.deepEqual(await storeChain(publicId), chainBefore, 'the undo wrote nothing to the record');
+  await waitFor(() => inst.status === 'idle' && inst.proc);
+  assert.equal(inst.backingSessionId, N, 'the post segment runs again');
+  assert.equal(inst._mutating, null);
+  assert.equal(inst.relaunching, false);
 });
 
 test('a relaunch failure after the undo reports 500 with the undone state kept', async () => {

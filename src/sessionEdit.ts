@@ -103,7 +103,7 @@ function commandForm(text: string): string | null {
 
 // The comparison form of a bubble's text: CRLF → LF, trimmed, a command
 // wrapper in its command form.
-export function normalizePromptText(text: string): string {
+function normalizePromptText(text: string): string {
   const t = text.replace(/\r\n/g, '\n').trim();
   return commandForm(t) ?? t;
 }
