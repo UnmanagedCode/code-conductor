@@ -61,18 +61,19 @@ describe('nesting depth measure', () => {
   });
 
   const deep = sameLine(40);
-  // Pins: fenced code content is not nesting: a backtick or tilde fence, closed or running to the end, hides its lines.
+  // Pins: fenced code content is not nesting: a backtick or tilde fence, closed or running to the end, hides its lines;
+  // a fence in a list item or quote measures only that container's own level.
   it.each([
     { kind: 'backtick fence', text: `\`\`\`\n${deep}\n\`\`\`` },
     { kind: 'tilde fence with info', text: `~~~yaml\n${deep}\n~~~` },
     { kind: 'unclosed fence', text: `intro\n\n\`\`\`\n${deep}` },
     { kind: 'shorter run does not close', text: `\`\`\`\`\n\`\`\`\n${deep}\n\`\`\`\`` },
     { kind: 'other character does not close', text: `\`\`\`\n~~~\n${deep}` },
-    { kind: 'fence in a list item', text: `- step\n  \`\`\`\n  ${deep}\n  \`\`\`` },
-    { kind: 'fence in a quote', text: `> \`\`\`\n> ${deep}\n> \`\`\`` },
+    { kind: 'fence in a list item', text: `- step\n  \`\`\`\n  ${deep}\n  \`\`\``, depth: 1 },
+    { kind: 'fence in a quote', text: `> \`\`\`\n> ${deep}\n> \`\`\``, depth: 1 },
     { kind: 'YAML list 17 levels deep', text: `\`\`\`yaml\n${Array.from({ length: 17 }, (_, i) => `${'    '.repeat(i)}- k${i}:`).join('\n')}\n\`\`\`` },
-  ])('$kind measures 0', ({ text }) => {
-    expect(nestingDepth(text)).toBe(0);
+  ])('$kind measures only its container', ({ text, depth = 0 }) => {
+    expect(nestingDepth(text)).toBe(depth);
   });
 
   // Pins: a line micromark does not read as a fence, or a fence micromark has already ended, hides nothing.
