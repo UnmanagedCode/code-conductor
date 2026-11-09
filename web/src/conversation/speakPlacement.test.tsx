@@ -216,7 +216,7 @@ describe('read-aloud placement', () => {
     }
   });
 
-  // Pins: the portalled control still reads its own block and follows playback state.
+  // Pins: the inline control, which the markdown's slot renders from MarkdownInlineEnd, still reads its own block and follows playback state.
   it('the inline control reads its block and follows playback', async () => {
     const { m, root } = await show(text('m1', 0, 'Read **this** line.'));
     const [block] = blocks(root);

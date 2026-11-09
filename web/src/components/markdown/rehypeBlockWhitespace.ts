@@ -1,6 +1,6 @@
-// Every `Markdown` caller sets `whitespace-pre-wrap` so a single newline a person typed stays a line break, and under
-// it the "\n" text nodes mdast-util-to-hast puts between blocks would show as blank lines. This plugin removes them;
-// a newline inside a paragraph is untouched.
+// The transcript's text and the plan card render `Markdown` under `whitespace-pre-wrap`, so a single newline a person
+// typed stays a line break; under it the "\n" text nodes mdast-util-to-hast puts between blocks would show as blank
+// lines. This plugin removes them for every caller; a newline inside a paragraph is untouched.
 import type { Element, ElementContent, Root, RootContent } from 'hast';
 
 /** Elements that lay out as blocks inside a list item. */
