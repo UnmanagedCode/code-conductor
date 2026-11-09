@@ -9,7 +9,7 @@ import { rehypeBlockWhitespace } from './markdown/rehypeBlockWhitespace';
 import { rehypeInlineEnd } from './markdown/inlineEnd';
 import { CodeBlock } from './markdown/CodeBlock';
 import { listItem } from './markdown/listItem';
-import { overBudget } from './markdown/complexity';
+import { parseable } from './markdown/guard';
 
 /** What a `<Markdown inlineEnd>` renders in the slot at the inline end of its last line of prose. */
 export const MarkdownInlineEnd = React.createContext<React.ReactNode>(null);
@@ -78,7 +78,7 @@ export const Markdown = React.memo(function Markdown({
   text, className, inlineEnd = false,
 }: { text: string; className?: string; inlineEnd?: boolean }) {
   const overrides = React.useMemo(() => components(text), [text]);
-  const tooComplex = React.useMemo(() => overBudget(text), [text]);
+  const tooComplex = React.useMemo(() => !parseable(text), [text]);
   return (
     <div className={cn('md', className)} onClick={followViewLink}>
       {tooComplex ? <RawSource text={text} /> : (
