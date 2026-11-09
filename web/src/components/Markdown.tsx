@@ -8,6 +8,7 @@ import { safeUrl } from './markdown/safeUrl';
 import { rehypeBlockWhitespace } from './markdown/rehypeBlockWhitespace';
 import { rehypeInlineEnd } from './markdown/inlineEnd';
 import { CodeBlock } from './markdown/CodeBlock';
+import { listItem } from './markdown/listItem';
 import { MAX_NESTING, nestingDepth } from './markdown/complexity';
 
 /** What a `<Markdown inlineEnd>` renders in the slot at the inline end of its last line of prose. */
@@ -15,6 +16,8 @@ export const MarkdownInlineEnd = React.createContext<React.ReactNode>(null);
 
 // A single `~` stays literal: agents write it for "about".
 const REMARK: Options['remarkPlugins'] = [[remarkGfm, { singleTilde: false }]];
+// Converts list items in linear time (markdown/listItem.ts).
+const REMARK_REHYPE: Options['remarkRehypeOptions'] = { handlers: { listItem } };
 const REHYPE: Options['rehypePlugins'] = [rehypeBlockWhitespace];
 const REHYPE_INLINE_END: Options['rehypePlugins'] = [rehypeBlockWhitespace, rehypeInlineEnd];
 
@@ -80,7 +83,7 @@ export const Markdown = React.memo(function Markdown({
     <div className={cn('md', className)} onClick={followViewLink}>
       {tooDeep ? <RawSource text={text} /> : (
         <MarkdownBoundary text={text}>
-          <ReactMarkdown remarkPlugins={REMARK} rehypePlugins={inlineEnd ? REHYPE_INLINE_END : REHYPE} urlTransform={safeUrl} components={overrides}>
+          <ReactMarkdown remarkPlugins={REMARK} remarkRehypeOptions={REMARK_REHYPE} rehypePlugins={inlineEnd ? REHYPE_INLINE_END : REHYPE} urlTransform={safeUrl} components={overrides}>
             {text}
           </ReactMarkdown>
         </MarkdownBoundary>
