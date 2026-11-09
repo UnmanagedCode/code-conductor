@@ -13,15 +13,11 @@
 // and src/conduct.ts prepends it to the conductor role doc it materializes into
 // `.conduct/CONVENTIONS.md` before every conductor spawn.
 
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
-import { createFragmentCatalog } from './fragmentCatalog.ts';
+import { createFragmentCatalog, readCoreFragment, type ConventionSkill } from './fragmentCatalog.ts';
 import { createSelectionStore } from './conventionSelection.ts';
-
-const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'workspace');
-const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
+import { conventionsDir } from './conventionsDir.ts';
 
 // Always-on core (conventions/workspace/core.md) — surfaced to the settings UI
 // as a non-toggleable row so users see what can't be turned off.
@@ -49,19 +45,20 @@ export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: 
 
 const catalog = createFragmentCatalog({
   seeds: SEED_CONVENTIONS,
-  seedDir: CONVENTIONS_DIR,
+  seedDir: () => conventionsDir('workspace'),
+  skillParts: true,
   storeFile: () => path.join(orchStoreRoot(), 'conventions', 'workspace.json'),
   noun: 'convention',
 });
 
 // ── Fragment read (core is always-on, read per call) ─────────────────────────
 //
-// Not memoised, for the reason seedBody isn't (src/fragmentCatalog.ts): every
+// Not memoised, for the reason seedEntry isn't (src/fragmentCatalog.ts): every
 // destination this text reaches is overwritten from it, so a body frozen at
 // first read reverts an edit instead of merely aging.
 
-async function getCore(): Promise<string> {
-  return (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
+function getCore(): Promise<{ inline: string; skill?: ConventionSkill }> {
+  return readCoreFragment(path.join(conventionsDir('workspace'), 'core.md'), SEED_CONVENTIONS.map(s => s.slug));
 }
 
 // ── Catalog + CRUD (delegated to the shared helper) ──────────────────────────
@@ -87,14 +84,28 @@ export const deleteCustomConvention = selection.deleteCustom;
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 
-// core + enabled convention bodies (catalog order).
-export async function composeWorkspace(enabledSlugs: string[]): Promise<string> {
+// core + enabled convention bodies (catalog order), with the skills the same
+// selection delivers (the core's first) — both off one compose, so the text and
+// the skills can never come from two different selections.
+export async function composeWorkspaceParts(enabledSlugs: string[]): Promise<{ text: string; skills: ConventionSkill[] }> {
   const core = await getCore();
-  const mods = (await catalog.compose(enabledSlugs)).trim();
-  return [core, ...(mods ? [mods] : [])].join('\n\n') + '\n';
+  const { text, skills } = await catalog.composeWithMeta(enabledSlugs);
+  const mods = text.trim();
+  return {
+    text: [core.inline, ...(mods ? [mods] : [])].join('\n\n') + '\n',
+    skills: [...(core.skill ? [core.skill] : []), ...skills],
+  };
+}
+
+export async function composeCurrentWorkspaceParts(): Promise<{ text: string; skills: ConventionSkill[] }> {
+  return composeWorkspaceParts(await getSelection());
+}
+
+export async function composeWorkspace(enabledSlugs: string[]): Promise<string> {
+  return (await composeWorkspaceParts(enabledSlugs)).text;
 }
 
 export async function composeCurrentWorkspace(): Promise<string> {
-  return composeWorkspace(await getSelection());
+  return (await composeCurrentWorkspaceParts()).text;
 }
 

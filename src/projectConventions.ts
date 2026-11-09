@@ -10,12 +10,10 @@
 // (src/workspaceConventions.ts).
 
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
+import { conventionsDir } from './conventionsDir.ts';
 import { httpError } from './httpError.ts';
-
-const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'project');
 
 // Seed metadata (bodies in conventions/project/<slug>.md).
 export const SEED_PROJECT_CONVENTIONS: Array<{ slug: string; name: string; description: string }> = [
@@ -38,7 +36,8 @@ export function setPluginConventionsProvider(fn: (() => Promise<ExtraEntry[]>) |
 
 const catalog = createFragmentCatalog({
   seeds: SEED_PROJECT_CONVENTIONS,
-  seedDir: CONVENTIONS_DIR,
+  seedDir: () => conventionsDir('project'),
+  skillParts: true,
   storeFile: () => path.join(orchStoreRoot(), 'conventions', 'project.json'),
   noun: 'convention',
   extraProvider: () => pluginConventionsProvider(),

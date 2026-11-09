@@ -4,6 +4,7 @@ import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
 import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
 import { checkSchema } from '../mcp/jsonSchemaSubset.ts';
 import type { System } from '../systems/system.ts';
+import { splitSkillPart } from '../skillPart.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
@@ -188,16 +189,22 @@ async function readPlaybookBodies(
 }
 
 // Verify every convention fragment / scaffold-facet `file` ref resolves to a
-// readable file under `dir`. Returns a (possibly empty) list of errors.
+// readable file under `dir`, and that every fragment `file`'s skill marker (if
+// any) parses — a malformed one makes the plugin `invalid` at load rather than
+// shipping half a convention. Returns a (possibly empty) list of errors.
 async function checkFragmentFiles(system: System, dir: string, manifest: PluginManifest): Promise<string[]> {
-  const refs: Array<[string, string]> = [];
+  const refs: Array<[string, string, boolean]> = [];
   for (const g of manifest.conventions ?? []) {
-    if (g.file) refs.push([`conventions '${g.slug}' file`, g.file]);
-    if (g.scaffold && 'file' in g.scaffold) refs.push([`conventions '${g.slug}' scaffold file`, g.scaffold.file]);
+    if (g.file) refs.push([`conventions '${g.slug}' file`, g.file, true]);
+    if (g.scaffold && 'file' in g.scaffold) refs.push([`conventions '${g.slug}' scaffold file`, g.scaffold.file, false]);
   }
   const errors: string[] = [];
-  for (const [label, rel] of refs) {
-    if (!(await system.stat(path.join(dir, rel)))) errors.push(`${label} '${rel}' not found`);
+  for (const [label, rel, fragment] of refs) {
+    const abs = path.join(dir, rel);
+    if (!(await system.stat(abs))) { errors.push(`${label} '${rel}' not found`); continue; }
+    if (!fragment) continue;
+    try { splitSkillPart(await system.readFile(abs)); }
+    catch (e) { errors.push(`${label} '${rel}': ${(e as Error).message}`); }
   }
   return errors;
 }

@@ -178,6 +178,34 @@ test('readManifest: missing convention fragment / scaffold file → invalid', as
   }
 });
 
+test('readManifest: a convention fragment with a malformed skill marker → invalid; a well-formed one loads', async () => {
+  const dir = await mkdtemp('manif-skill-');
+  try {
+    const manifest = base({
+      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project', scaffold: { file: 'scaffold/g.md' } }],
+    });
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
+    await fs.mkdir(path.join(dir, 'conventions'), { recursive: true });
+    await fs.mkdir(path.join(dir, 'scaffold'), { recursive: true });
+    // A scaffold file is never split, so a marker-shaped line there is inert.
+    await fs.writeFile(path.join(dir, 'scaffold', 'g.md'), '<!-- cc:skill -->\n');
+    for (const [bad, re] of [
+      ['## G\n<!-- cc:skill -->\nbody\n', /empty description/],
+      ['## G\n<!-- cc:skill:named d -->\nbody\n', /only a core may/],
+      ['## G\n<!-- cc:skill d -->\n', /empty skill body/],
+    ]) {
+      await fs.writeFile(path.join(dir, 'conventions', 'g.md'), bad);
+      const r = await readManifest(sys(), dir);
+      assert.ok(r.errors?.some(e => e.includes("conventions 'g' file 'conventions/g.md'") && re.test(e)), JSON.stringify(r.errors));
+    }
+    await fs.writeFile(path.join(dir, 'conventions', 'g.md'), '## G\n<!-- cc:skill d -->\nbody\n');
+    const r = await readManifest(sys(), dir);
+    assert.equal(r.errors, undefined, JSON.stringify(r.errors));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('frontend and mcp require backend', () => {
   const noBackend = base({ frontend: { path: '/' } });
   assert.ok(validateManifest(noBackend).errors.some(e => e.includes("'frontend' requires 'backend'")));

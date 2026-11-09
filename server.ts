@@ -12,6 +12,7 @@ import { createPlaybookGate } from './src/mcp/playbookGate.ts';
 import type { WriteLease } from './src/eventLog.ts';
 
 import { InstanceManager, sweepSessionTmpDirs } from './src/instances.ts';
+import { sweepConventionSkillDirs } from './src/conventionSkills.ts';
 import { sweepFuseSessions } from './src/systems/fuse/sweep.ts';
 import { attachWsHub } from './src/wsHub.ts';
 import { initCostTracking } from './src/costTracking.ts';
@@ -309,6 +310,9 @@ async function startHolding(rootLock: RootLock, {
   // yet, so every entry is dead by construction.
   try { await sweepSessionTmpDirs([]); }
   catch (e) { console.warn('session-tmp sweep failed:', e); }
+  // Convention skill dirs (src/conventionSkills.ts), by the same argument.
+  try { await sweepConventionSkillDirs([]); }
+  catch (e) { console.warn('convention-skills sweep failed:', e); }
   // And every FUSE-union mount a previous process left behind, for the same
   // reason and by the same argument: an instance id is a fresh uuid per
   // process, so every record under systems/fuse/run/ is dead by construction.

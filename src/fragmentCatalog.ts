@@ -17,12 +17,57 @@ import path from 'node:path';
 import { writeFileAtomic } from './projects.ts';
 import { httpError } from './httpError.ts';
 import { isSlug, SLUG_RE, SLUG_MAX } from './identifiers.ts';
+import { splitSkillPart, type SkillPart, type SplitFragment } from './skillPart.ts';
 
 export function validateSlug(slug: string): string {
   if (!isSlug(slug)) {
     throw httpError(400, `invalid slug (must match ${SLUG_RE.source}, max ${SLUG_MAX} chars)`);
   }
   return slug;
+}
+
+// One skill a composed selection delivers: `name` is the seed slug, the
+// plugin-local slug (the part after `<plugin>/`), or a core's explicit name.
+export interface ConventionSkill {
+  name: string;
+  plugin?: string;
+  description: string;
+  body: string;
+}
+
+// The skills of `slugs` (in order, each once) over an ALREADY-READ catalog —
+// pure, so a caller holding a catalog derives them off the read its text came
+// from. A slug the catalog lacks contributes nothing here; composeWithMeta's
+// unknown-slug 400 is the caller's to raise.
+export function skillsOf(catalog: CatalogEntry[], slugs: string[]): ConventionSkill[] {
+  const out: ConventionSkill[] = [];
+  const seen = new Set<string>();
+  for (const slug of slugs) {
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    const entry = catalog.find(r => r.slug === slug);
+    if (!entry?.skill) continue;
+    const name = entry.plugin ? slug.slice(entry.plugin.length + 1) : slug;
+    out.push({ name, ...(entry.plugin ? { plugin: entry.plugin } : {}), description: entry.skill.description, body: entry.skill.body });
+  }
+  return out;
+}
+
+// A scope's always-on core file, split. Its skill (if any) names itself — a
+// core has no slug — and that name may not equal a seed slug of the same scope,
+// which would put two skills of one name in the scope's namespace. Throws,
+// naming the file, on either a malformed marker or a clash.
+export async function readCoreFragment(file: string, seedSlugs: string[]): Promise<{ inline: string; skill?: ConventionSkill }> {
+  const raw = await fs.readFile(file, 'utf8');
+  let split: SplitFragment;
+  try { split = splitSkillPart(raw, { explicitName: 'required' }); }
+  catch (e) { throw new Error(`${file}: ${errMsg(e)}`); }
+  if (!split.skill) return { inline: split.inline };
+  const name = split.skill.name as string;
+  if (seedSlugs.includes(name)) {
+    throw new Error(`${file}: core skill name '${name}' is also a seed slug of this scope — the two skills would share one name`);
+  }
+  return { inline: split.inline, skill: { name, description: split.skill.description, body: split.skill.body } };
 }
 
 function validateFields({ name, description, body }: { name: unknown; description: unknown; body?: unknown }, noun: string): void {
@@ -85,6 +130,7 @@ export interface ExtraEntry {
   body?: string;
   scaffold?: string;
   plugin?: string;
+  skill?: SkillPart;
   [key: string]: unknown;
 }
 
@@ -99,6 +145,10 @@ export interface CatalogEntry {
   // `plugin` id and an optional one-time scaffold directive with no body.
   plugin?: string;
   scaffold?: string;
+  // The fragment file's skill part (splitSkillPart), when it has one. Seeds of
+  // a `skillParts` catalog and plugin fragment files only — a custom body is
+  // never split.
+  skill?: SkillPart;
 }
 
 // `degraded: true` means a plugin-contributed slug may be MISSING from this
@@ -118,7 +168,10 @@ export type CatalogList = CatalogEntry[] & { degraded?: boolean };
 
 interface FragmentCatalogConfig {
   // seeds:    [{ slug, name, description }] — built-in metadata; body from <seedDir>/<slug><seedExt>
-  // seedDir:  absolute dir holding the built-in fragment files
+  // seedDir:  absolute dir holding the built-in fragment files, or a function
+  //           returning it (read per call, like storeFile)
+  // skillParts: split each seed body with splitSkillPart (the convention
+  //           scopes); off for a catalog whose seeds are not markdown fragments
   // seedExt:  seed filename extension, default '.md' (the playbook catalog passes
   //           '.json' — its bodies are JSON definitions the caller parses itself)
   // storeFile: () => absolute path of the custom/state JSON (lazy so PROJECTS_ROOT
@@ -130,8 +183,9 @@ interface FragmentCatalogConfig {
   //            and bypass the custom-store CRUD; their slugs are namespaced by the
   //            provider so they never collide with seed/custom slugs.
   seeds: FragmentSeed[];
-  seedDir: string;
+  seedDir: string | (() => string);
   seedExt?: string;
+  skillParts?: boolean;
   storeFile: () => string;
   noun?: string;
   extraProvider?: (() => Promise<ExtraEntry[]>) | null;
@@ -145,7 +199,7 @@ export interface FragmentCatalog {
   updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown }): Promise<CatalogEntry>;
   deleteCustom(slug: string): Promise<{ slug: string }>;
   compose(slugs: string[]): Promise<string>;
-  composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean }>;
+  composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean; skills: ConventionSkill[] }>;
   readState(): Promise<Record<string, unknown>>;
   patchState(patch: Record<string, unknown>): Promise<void>;
   // The custom-entry slugs of an ALREADY-READ state — pure, no I/O. The
@@ -156,16 +210,24 @@ export interface FragmentCatalog {
   validateSlug(slug: string): string;
 }
 
-export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFile, noun = 'entry', extraProvider = null }: FragmentCatalogConfig): FragmentCatalog {
+export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillParts = false, storeFile, noun = 'entry', extraProvider = null }: FragmentCatalogConfig): FragmentCatalog {
+  const seedDirNow = (): string => typeof seedDir === 'function' ? seedDir() : seedDir;
   // Read per call, never memoised: an edit to a committed fragment must reach
   // the next composition without an orchestrator restart. A memo here does not
   // merely go stale — every document these bodies feed is REGENERATED OVER a
   // committed file, so the pre-edit text gets written back and the edit
   // silently reverts. Cost is measured and stated in docs/architecture.md →
   // src/fragmentCatalog.ts.
-  async function seedBody(slug: string): Promise<string> {
-    const body = await fs.readFile(path.join(seedDir, `${slug}${seedExt}`), 'utf8');
-    return body.replace(/\s+$/, '');
+  // A seed whose file carries a malformed skill marker throws, naming the file:
+  // a shipped fragment is never composed half-parsed.
+  async function seedEntry(slug: string): Promise<{ body: string; skill?: SkillPart }> {
+    const file = path.join(seedDirNow(), `${slug}${seedExt}`);
+    const raw = await fs.readFile(file, 'utf8');
+    if (!skillParts) return { body: raw.replace(/\s+$/, '') };
+    let split: SplitFragment;
+    try { split = splitSkillPart(raw); }
+    catch (e) { throw new Error(`${file}: ${errMsg(e)}`); }
+    return { body: split.inline, ...(split.skill ? { skill: split.skill } : {}) };
   }
 
   async function loadStore(): Promise<Record<string, unknown>> {
@@ -209,7 +271,7 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
   // flagged the list it DID return as incomplete (see registry.ts's `conventions()`).
   async function getCatalog(): Promise<CatalogList> {
     const seedEntries = await Promise.all(
-      seeds.map(async s => ({ ...s, body: await seedBody(s.slug), builtin: true })),
+      seeds.map(async s => ({ ...s, ...await seedEntry(s.slug), builtin: true })),
     );
     const custom = (await loadCustom()).map(r => ({ ...r, builtin: false }));
     let extra: CatalogEntry[] = [];
@@ -300,10 +362,13 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
   // the enabled bodies, and so the last one that can afford to be blind. Cost,
   // counted: every non-empty call (which is every conductor launch) still makes
   // exactly one getCatalog(); only the empty-list path gains one.
-  async function composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean }> {
+  //
+  // `skills` (skillsOf) comes off the SAME catalog read and the same slugs as
+  // `text`, so a selection can never deliver one part without the other.
+  async function composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean; skills: ConventionSkill[] }> {
     const catalog = await getCatalog();
     const degraded = catalog.degraded === true;
-    if (!Array.isArray(slugs) || slugs.length === 0) return { text: '', degraded };
+    if (!Array.isArray(slugs) || slugs.length === 0) return { text: '', degraded, skills: [] };
     const bodies: string[] = [];
     for (const slug of slugs) {
       const entry = catalog.find(r => r.slug === slug);
@@ -312,8 +377,9 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
       }
       if (entry.body) bodies.push(entry.body);
     }
-    if (bodies.length === 0) return { text: '', degraded };
-    return { text: '\n' + bodies.join('\n\n') + '\n', degraded };
+    const skills = skillsOf(catalog, slugs);
+    if (bodies.length === 0) return { text: '', degraded, skills };
+    return { text: '\n' + bodies.join('\n\n') + '\n', degraded, skills };
   }
 
   const compose = async (slugs: string[]): Promise<string> => (await composeWithMeta(slugs)).text;
