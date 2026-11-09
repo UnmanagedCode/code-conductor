@@ -2147,7 +2147,7 @@ export async function createWorktree(
 // landing renewal trigger, stated in full because renew_session's schema may
 // not be loaded when this arrives; the context-renewal convention carries none.
 export const LANDING_RENEW_NUDGE =
-  "This worktree's work has landed: send your landing report, then call `renew_session` as this turn's last call. Skip the renewal only if little of your history concerns now-landed work.";
+  "This worktree's work has landed. If more work follows in this session — workers still in flight, queued cards, further steps of your plan — send your landing report, then call `renew_session` as this turn's last call. Don't renew if this landing ends the work or little of your history concerns now-landed work.";
 
 // The nudge text for a delete, or null. Never throws: the check must not be
 // able to change the delete's outcome, and an unreadable check is no nudge.
