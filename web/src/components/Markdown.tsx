@@ -8,7 +8,7 @@ import { safeUrl } from './markdown/safeUrl';
 import { rehypeBlockWhitespace } from './markdown/rehypeBlockWhitespace';
 import { rehypeInlineEnd } from './markdown/inlineEnd';
 import { CodeBlock } from './markdown/CodeBlock';
-import { MAX_NESTING, nestingDepth } from './markdown/nestingDepth';
+import { MAX_NESTING, nestingDepth } from './markdown/complexity';
 
 /** What a `<Markdown inlineEnd>` renders in the slot at the inline end of its last line of prose. */
 export const MarkdownInlineEnd = React.createContext<React.ReactNode>(null);
@@ -69,7 +69,7 @@ class MarkdownBoundary extends React.Component<{ text: string; children: React.R
  * rules in index.css. Links to cc (`http://cc.internal/#…`, cc's own page) follow the app's policy (viewLinks.ts): a cc
  * view opens in the same tab, any other renders as literal text. `inlineEnd` adds a slot at the inline end of the last
  * line of prose holding the nearest MarkdownInlineEnd value. Never throws: a failed render shows the raw source, as does
- * a document nested past MAX_NESTING, which is never parsed (markdown/nestingDepth.ts).
+ * a document nested past MAX_NESTING, which is never parsed (markdown/complexity.ts).
  */
 export const Markdown = React.memo(function Markdown({
   text, className, inlineEnd = false,

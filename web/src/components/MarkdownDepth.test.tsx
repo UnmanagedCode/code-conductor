@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import { Markdown } from './Markdown';
-import { MAX_NESTING, nestingDepth } from './markdown/nestingDepth';
+import { MAX_NESTING, nestingDepth } from './markdown/complexity';
 
 // Counts the renders that reach the markdown pipeline; otherwise the real module.
 const parses = vi.hoisted(() => ({ count: 0 }));
