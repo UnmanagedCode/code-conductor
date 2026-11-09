@@ -1,7 +1,7 @@
 // Where a finished text block's read-aloud sits: inside the block's last line of prose
-// (a slot at the inline end of its last paragraph, list item or quote) or on a row of its
-// own when the block ends in a heading, code block, table or rule; the same for every
-// block of a bubble, first or later. The geometry itself is checked in the browser
+// (a slot at the inline end of its last paragraph or list item, nested lists and quotes
+// included) or on a row of its own when the block ends in a heading, code block, table,
+// rule or raw HTML; the same for every block of a bubble, first or later. The geometry itself is checked in the browser
 // (web/e2e/speaker-last-line.shared.ts).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent } from '@testing-library/react';
@@ -68,7 +68,9 @@ describe('read-aloud placement', () => {
   it.each([
     { kind: 'paragraph', src: 'First para.\n\nSecond **para** end.', host: ':scope > p:last-child', own: 'Second para end.' },
     { kind: 'list', src: 'Intro:\n\n- one\n- two **end**', host: ':scope > ul:last-child > li:last-child', own: 'two end' },
-    { kind: 'quote', src: 'Body.\n\n> quoted end', host: ':scope > blockquote:last-child', own: 'quoted end' },
+    { kind: 'quote', src: 'Body.\n\n> quoted end', host: ':scope > blockquote:last-child > p:last-child', own: 'quoted end' },
+    { kind: 'nested list', src: 'Intro:\n\n- one\n  - inner **end**', host: ':scope > ul:last-child > li:last-child > ul > li:last-child', own: 'inner end' },
+    { kind: 'loose list', src: '- one\n\n- two **end**', host: ':scope > ul:last-child > li:last-child > p:last-child', own: 'two end' },
   ])('a block ending in a $kind holds its control after the last word', async ({ src, host, own }) => {
     const { root } = await show(text('m1', 0, src));
     const [block] = blocks(root);
@@ -80,12 +82,14 @@ describe('read-aloud placement', () => {
     expect(block.getAttribute('data-speak-end')).toBe('inline');
   });
 
-  // Pins: a block ending in a heading, code block, table or rule keeps the control on a row of its own after the prose, with no slot in the markdown; a heading's name never takes in the control.
+  // Pins: a block ending in a heading, code block (at any depth), table or rule keeps the control on a row of its own after the prose, with no slot in the markdown; a heading's name never takes in the control.
   it.each([
     { kind: 'heading', src: 'Body.\n\n## Closing words', last: 'h2' },
     { kind: 'code block', src: 'Run:\n\n```\nnpm test\n```', last: '.md-code-wrap' },
     { kind: 'table', src: 'Intro:\n\n| a | b |\n|---|---|\n| 1 | 2 |', last: 'table' },
     { kind: 'rule', src: 'text\n\n---', last: 'hr' },
+    { kind: 'list item ending in a code block', src: 'Steps:\n\n- run\n\n  ```\n  npm test\n  ```', last: 'ul' },
+    { kind: 'quote ending in a code block', src: '> Run:\n>\n> ```\n> npm test\n> ```', last: 'blockquote' },
   ])('a block ending in a $kind keeps its control on a row of its own', async ({ src, last }) => {
     const { root } = await show(text('m1', 0, src));
     const [block] = blocks(root);
@@ -98,6 +102,18 @@ describe('read-aloud placement', () => {
     expect(row.matches('div[data-speak-slot]'), `the control's parent is the row, not ${describeEl(row)}`).toBe(true);
     expect(row.parentElement === block, 'the row is the block\'s own child').toBe(true);
     expect(!!row.previousElementSibling?.contains(md(block)), 'the row follows the prose').toBe(true);
+    expect(block.getAttribute('data-speak-end')).toBe('row');
+  });
+
+  // Pins: a block ending in raw HTML (shown as its literal source, outside any paragraph) keeps its control on a row of its own.
+  it('a block ending in an HTML block keeps its control on a row of its own', async () => {
+    const { root } = await show(text('m1', 0, 'Body.\n\n<details>\nmore *x*\n</details>'));
+    const [block] = blocks(root);
+    const button = speaker(block);
+    const last = md(block).lastChild!;
+    expect(last.nodeType === Node.TEXT_NODE && last.textContent!.startsWith('<details>'), `fixture check: the markdown ends in the HTML block's literal text, not ${describeEl(last as Element)}`).toBe(true);
+    expect(md(block).querySelector('[data-speak-slot]'), 'the markdown holds no slot').toBeNull();
+    expect(button.parentElement!.matches('div[data-speak-slot]'), 'the control sits on the row').toBe(true);
     expect(block.getAttribute('data-speak-end')).toBe('row');
   });
 
