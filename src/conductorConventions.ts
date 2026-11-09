@@ -41,7 +41,7 @@ const FOOTER_FILE = path.join(CONVENTIONS_DIR, 'footer.md');
 // as a non-toggleable row so users see what can't be turned off.
 export const CORE_META = {
   name: 'Core (always on)',
-  description: 'Role, hard boundary, dispatch-and-wake, your own plan mode, MCP toolbelt, project-conventions on creation, safety, talking to the user',
+  description: 'Role, hard boundary, dispatch-and-wake, your own plan mode, MCP toolbelt, safety, talking to the user',
 };
 
 // Built-in convention metadata (order = order they appear in the composed doc).

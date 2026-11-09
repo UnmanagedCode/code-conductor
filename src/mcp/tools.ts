@@ -313,11 +313,12 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'incrementally by passing the returned `nextFrom` back as the next fromSeq (forward paging, ' +
         'oldest-first). Returns {status, sessionId, source, events, lastSeq, trimmedBefore, hasMore, ' +
         'nextFrom}. Event kinds: text_delta, tool_use, ' +
-        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. A conducted worker\'s `user_echo` ' +
+        'tool_result (may carry is_error:true), plan_request, user_question, turn_end, etc. — same shape as the WebSocket snapshot. A conducted worker\'s `user_echo` ' +
         'carries `author: "human"|"conductor"`; absent = unknown (an unmarked line, a server- or ' +
         'CLI-injected turn, or not a conducted worker) — never inferred. (Caveat: an in-flight block is ' +
         'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
-        'mid-turn use get_recent_messages.)' +
+        'mid-turn use get_recent_messages.) For most decisions get_recent_messages is enough; a drain is paid for ' +
+        'on every later turn.' +
         fmt(' A page stops short of `limit` when the next event would push the ' +
           'result past the MCP result budget — hasMore/nextFrom continue from there; an event too large for any ' +
           'page arrives as {_seq, kind, omitted:true, chars} (read its prose via get_recent_messages).', ''),
@@ -364,7 +365,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
               `(set per row in Settings → Models; '${DEFAULT_EFFORT}' when that row has none, and for a resume, ` +
               'which has no tier/role). An explicit value here always wins. Spawn-time only.',
           },
-          thinking: { type: 'string', enum: VALID_THINKING },
+          thinking: { type: 'string', enum: VALID_THINKING, description: 'Spawn-time only.' },
           model: {
             type: 'string',
             description:
@@ -393,7 +394,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           },
           createWorktree: {
             type: 'boolean',
-            description: 'If true, create a fresh worktree off the project\'s HEAD and spawn into it. Takes precedence over worktree.',
+            description: 'If true, create a fresh worktree off the project\'s HEAD and spawn into it. Takes precedence over worktree. Prefer it for any worker that will modify code.',
           },
           baseWorktree: {
             type: 'string', minLength: 1,
@@ -427,6 +428,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       description:
         'Send a user turn to a running instance. ' +
         'A mid-turn send_prompt steers a worker in flight rather than waiting out its turn. ' +
+        'A send you cannot yet see in the worker\'s transcript has not failed — never re-send. ' +
         'The result carries `humanPrompts` (oldest first, ' + fmt('quoted and truncated', 'each whole') + ') only when the human has prompted ' +
         'this worker directly since its last wake to you — your send joined or followed a turn they started; ' +
         'check it does not contradict them. ' +
@@ -447,7 +449,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           },
           forward: {
             type: 'object',
-            description: '{sessionId:"<worker sessionId>"} — inject that worker\'s recent output into this prompt verbatim, server-side: it reaches the worker unedited and never enters your context. The payload is a whole default get_recent_messages selection, framed as context-only — you cannot trim or reorder it. Your `text` is placed LAST, after the forwarded block, as the instruction. The source need not still be live; sessionId prefixes are accepted for a live source only.',
+            description: '{sessionId:"<worker sessionId>"} — inject that worker\'s recent output into this prompt verbatim, server-side: it reaches the worker unedited and never enters your context. The payload is a whole default get_recent_messages selection, framed as context-only — you cannot trim or reorder it. Your `text` is placed LAST, after the forwarded block, as the instruction. The source need not still be live; sessionId prefixes are accepted for a live source only. Use it for output you pass on intact (a research dump, findings); a judged subset stays your own text.',
           },
         },
         required: ['sessionId', 'text'],
@@ -475,7 +477,8 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'Approve a worker\'s plan: flips the instance to bypassPermissions and sends the canonical approval ' +
         'prompt as a normal user turn. Mirrors the UI\'s Approve & Implement button — use this rather than ' +
         'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message. ' +
-        'May carry `humanPrompts` (see send_prompt).',
+        'May carry `humanPrompts` (see send_prompt). The worker stays in bypassPermissions afterwards: before a ' +
+        'substantial follow-up you want to review, set_mode it back to plan; let a small one code.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -514,6 +517,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'aligned by index to those SAME server-side pending questions — 0-based, so body question N is answers[N-1] ' +
         '— each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
         '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options. ' +
+        'A pending question does not mean the worker is idle. ' +
         'May carry `humanPrompts` (see send_prompt).',
       inputSchema: {
         type: 'object',
@@ -590,9 +594,13 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'clears your accumulated context in place — SAME session process, fresh conversation (a managed ' +
         '/clear, not a restart) — and seeds the cleared session with your summary (plus a server-generated ' +
         'block of live instance/subscription state) as its first turn. ' +
-        'With `sessionId`: ask THAT worker to renew itself the same way — it writes its own summary. ' +
+        'With `sessionId`: ask THAT worker to renew itself the same way — it writes its own summary; for a ' +
+        'worker you keep reassigning, ask at the seam between two of its jobs. ' +
         'When to use: after landing and cleaning up a job, when history about finished work is dead weight ' +
         'taxing every future turn — renew at lifecycle seams, not because context is "full". ' +
+        'Before renewing yourself: flush durable lessons to wherever you keep them (the summary carries ' +
+        'operational state, not knowledge), name your plan file\'s path in the summary if you keep one, and ' +
+        'tell the user (e.g. "renewing; workers X, Y still live"). ' +
         'The clear happens when your CURRENT turn ends: after calling this on yourself, end your turn WITHOUT ' +
         'starting new work — anything you do after this call is discarded by the clear. Your summary (plus the ' +
         'appended mechanical state block) is the ONLY thing carried across, so write everything the fresh ' +
@@ -620,7 +628,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           },
           followUp: {
             type: 'string',
-            description: 'With `sessionId`: its next job, fenced into its reseed.',
+            description: 'With `sessionId`: its next job, fenced into its reseed — one call instead of a renewal request plus a separate send_prompt.',
           },
         },
       },
@@ -666,7 +674,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
     },
     {
       name: 'interrupt_turn',
-      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped, and the boundary wait is UNBOUNDED — a long-running tool call defers it indefinitely, which is why the soft tier leaves your wake armed and the heartbeat keeps pinging until the turn really ends. Pass force:true to abort immediately, discarding in-progress work: that also CLEARS your pending wake on the target and delivers none, since the turn_end it produces is one you caused rather than the worker finishing. Only YOURS: a worker can have several owners, and any other conductor waiting on it is woken at that turn_end and told the turn was INTERRUPTED with partial output.',
+      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped, and the boundary wait is UNBOUNDED — a long-running tool call defers it indefinitely, which is why the soft tier leaves your wake armed and the heartbeat keeps pinging until the turn really ends. Pass force:true to abort immediately, discarding in-progress work: that also CLEARS your pending wake on the target and delivers none, since the turn_end it produces is one you caused rather than the worker finishing. A second heartbeat after a soft interrupt is your signal to escalate to force:true. Only YOURS: a worker can have several owners, and any other conductor waiting on it is woken at that turn_end and told the turn was INTERRUPTED with partial output.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -692,7 +700,8 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'create_worktree',
       description:
-        'Create a fresh git worktree off the project\'s current HEAD without spawning an instance. ' +
+        'Create a fresh git worktree off the project\'s current HEAD without spawning an instance — rarely ' +
+        'needed: usually you want spawn_instance({createWorktree:true}). ' +
         'Use spawn_instance({worktree:<name>}) afterwards to attach an agent to it.',
       inputSchema: {
         type: 'object',
@@ -952,11 +961,14 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'Create a new empty project under ~/project/<name>, or at `systemPath` on a registered `system`. '
         + 'Seeds CLAUDE.md with @CONVENTIONS.md and ' +
         'writes that CONVENTIONS.md, carrying the workspace-wide conventions. ' +
-        'Project conventions can be attached by passing their slugs — call list_project_conventions to ' +
-        'discover available slugs. Each carries a fragment (composed into CONVENTIONS.md) and/or a one-time ' +
-        'scaffold directive: a picked convention flagged hasScaffold:true composes a setup directive that is ' +
-        'RETURNED as this tool\'s `scaffold` field (empty when none), which YOU fold into your FIRST send_prompt ' +
-        'to the project\'s first worker (it is never auto-sent).',
+        'First call list_project_conventions, choose the subset that fits the project (e.g. skip ' +
+        'Testing for docs-only, Design for non-code), confirm the picks with the user via a multi-select ' +
+        'AskUserQuestion — naming any hasScaffold:true pick\'s one-time setup ("this one also sets up X — ' +
+        'include it?") — and pass the chosen slugs as `conventions`. Each carries a fragment (composed into ' +
+        'CONVENTIONS.md) and/or a one-time scaffold directive: a picked convention flagged hasScaffold:true ' +
+        'composes a setup directive that is RETURNED as this tool\'s `scaffold` field (empty when none), which ' +
+        'YOU fold into your FIRST send_prompt to the project\'s first worker, combined with your own scoping ' +
+        '(it is never auto-sent).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -968,7 +980,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           },
           noProjectConventions: {
             type: 'boolean',
-            description: 'true records that this project deliberately uses no project conventions (refused together with a non-empty `conventions`). Omitting both leaves the choice unrecorded.',
+            description: 'true records that this project deliberately uses no project conventions (refused together with a non-empty `conventions`) — pass it when none fits or the user declines them all. Omitting both leaves the choice unrecorded.',
           },
           system: { type: 'string', description: 'Create the project on this registered system instead of under the projects root. Requires systemPath.' },
           remoteId: { type: 'string', description: 'Which TARGET of `system` to place it on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`. Refused SYSTEM_NO_REMOTES if the provider does not serve named targets, REMOTE_NOT_FOUND if it does not serve this one.' },
@@ -1163,7 +1175,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---")', '') +
         '. `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
-        'messages[] is empty); `hint` explains a short/empty result. ' +
+        'messages[] is empty; on a RETIRED session neither it nor `hint` means activity); `hint` explains a short/empty result. ' +
         fmt('Large message text is capped (textTruncated), and so is the whole ' +
           'result: over one MCP result\'s budget, text, narration (narrationTruncated), plan (planTruncated), questions (questionsTruncated) and block ' +
           'inputs are cut shorter, then the ' +
@@ -1221,7 +1233,9 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'project_diff',
       description:
-        'Return the unified diff of <baseRef>...HEAD in a worktree, PLUS the working tree\'s uncommitted state. ' +
+        'Return the unified diff of <baseRef>...HEAD in a worktree, PLUS the working tree\'s uncommitted state — ' +
+        'judge a worker\'s output on that full result, not just its committed hunks. Start with summary:true: a ' +
+        'full diff pulled into context is paid for on every later turn. ' +
         'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
         '(per the contextLines schema range/default) sets hunk context. The supported modes keep this usable at any size: (1) summary:true returns a ' +
         'structured per-file stat {totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a ' +

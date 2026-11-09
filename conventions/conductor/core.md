@@ -56,52 +56,15 @@ In code mode the human has already decided the task gets done: raise a genuine b
 
 ## MCP toolbelt
 
-Call every `mcp__code-conductor__*` tool this document names as `mcp__code-conductor__<name>`. Schemas are deferred — load them via `ToolSearch` before first use. Before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:mcp__code-conductor__list_projects,mcp__code-conductor__spawn_instance,mcp__code-conductor__send_prompt,…"})`; a wake-up stub's suggested call needs its schema loaded first, too. This is the inventory plus only what the schemas won't foreground: footguns, defaults, and result semantics.
+Call every `mcp__code-conductor__*` tool this document names as `mcp__code-conductor__<name>`. Schemas are deferred — before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:mcp__code-conductor__list_projects,mcp__code-conductor__spawn_instance,mcp__code-conductor__send_prompt,…"})`; a wake-up stub's suggested call needs its schema loaded first, too.
 
-**Discover**
-- `list_projects` — every project, with git status, worktrees, and a live-worker count. Every path it lists is absolute — use those instead of guessing.
-- `list_sessions` — live workers and the stopped sessions you could resume, grouped by checkout (a project's `project` argument covers its worktrees too) · `list_worktrees` (orchestrator-owned worktrees) · `describe_session` (one session's row, live or retired, plus which project/worktree owns it).
-- `project_status` — branch, HEAD, dirty lines, recent commits; diff-stat vs base for worktrees.
-- `project_read` · `project_bash` — inspect a project/worktree tree.
-- `project_diff` — unified diff of `<base>...HEAD` **plus** the working tree's uncommitted changes and untracked files, always — judge a worker's output on the full result, not just committed hunks. `summary:true` for a cheap per-file stat; large diffs paginate via `nextOffset`.
-- `list_playbooks` · `describe_playbook` · `playbook_state` — the enforced stage graphs a worker can be bound to, and where a run currently sits.
-
-**Spawn workers**
-- `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Workers spawn **temp**: archived on exit — dropped from the default `list_sessions` view, transcript retained and still resumable. Mode defaults to `plan`. `effort` and `thinking` are spawn-time only. `resume` inherits the session's recorded mode, or `bypassPermissions` when it has none — `list_sessions`' `resumes-hot` flag marks which; pass `mode` to override.
-- `create_project` — greenfield work.
-- `create_worktree` — worktree without a spawn (rare; usually you want `spawn_instance({createWorktree:true})`).
-
-**Organise the sidebar** — when spawning several related workers, group them in a workspace so the human can collapse the chunk when done: `list_workspaces` · `create_workspace` · `delete_workspace` (clears members' `workspace` field; projects untouched) · `rename_workspace` · `set_project_workspace` (assign or clear; refuses `.conduct`).
-- `set_session_title({title})` — once the task is clear, name yourself with it.
-
-**Drive workers** — always dispatch-and-wake (see Core rule).
-- `send_prompt` — send a turn. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. A send you can't yet see in the worker's transcript has not failed — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
-- `set_idle_timeout({sessionId, timeoutSeconds})` — shorten the heartbeat window on one worker; it re-arms a running heartbeat, so a worker mid-turn or holding your wake is its use case.
-- `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
-- `interrupt_turn` — a second heartbeat after a soft interrupt is your signal to escalate to `force:true`. · `kill_instance`.
-
-**`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning, **except the calls that only READ a session** (`get_recent_messages`, `get_transcript`, `describe_session`, `send_prompt`'s `forward` source), which serve a retired worker if you name it by its **exact** sessionId rather than a prefix. Otherwise: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
-
-**Plan handling**
-- `approve_plan({sessionId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.
-- `reject_plan({sessionId, feedback})` — keeps the worker in `plan` mode, asks it to revise.
-
-**Question handling** — a worker's `AskUserQuestion` is denied at the tool layer and yields for your answer (same yield-and-wake shape as a plan) — but seeing a pending question does **not** mean that worker is idle. Answer it via `answer_question` (see its schema for the answer shape), not a free-text `send_prompt`.
-
-**Inspect work**
-- `get_recent_messages({sessionId, count?})` — last N assistant messages; cheap, use for "what did the worker just say?". Disk-backed: a busy worker mid-long-turn never returns a false-empty; `omittedToolOnly`/`hint` distinguish "active but tool-only" from idle — on a RETIRED session neither means activity.
-- `get_transcript({sessionId, fromSeq?, limit?})` — full UI event stream. Poll incrementally: pass the returned `nextFrom` as the next `fromSeq`; `hasMore` flags more to drain; evicted ranges are served from the on-disk transcript, so no history is lost. Never poll a RETIRED session waiting for a `turn_end`. Meaningful kinds: prose deltas, `tool_use`/`tool_result` (may carry `is_error:true`), `plan_request`, `user_question`, `turn_end` — see the transcript event stream for the full set. For most decisions `get_recent_messages` is enough.
-
-**Land work**
-- `sync_worktree({project, worktree})` — fast-forwards or auto-rebases the worktree server-side; it prompts nobody. `commit-required` and `rebase-conflict` are `ok:true` measurements, not failures — the worktree is untouched, and the result carries a ready-to-send `rebasePrompt`. Expected refusals come back as `{ok:false, reason, code}`, never thrown.
-- `merge_worktree({project, worktree})` — the landing step. Success is `{ok:true, newSha}`; `WORKTREE_BEHIND` ⇒ `sync_worktree` first.
-- `delete_worktree({project, worktree, force?})` — soft-refuses with a `code` naming the blocker (e.g. attached instance, dirty tree) unless `force:true`; see the schema for the full set.
-
-## Project conventions on project creation
-
-Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. If nothing fits or the user declines them all, pass `noProjectConventions: true` instead. (Enabled plugins may contribute conventions too — they appear in the same list with `<plugin-id>/<slug>` slugs.)
-
-Some conventions are flagged **`hasScaffold: true`** — picking one also triggers a **one-time setup directive** for the project's first worker (e.g. scaffold a test harness) in addition to (or instead of) its CLAUDE.md fragment. Surface that when confirming ("this one also sets up X in the project — include it?"). When any picked convention carries a scaffold, `create_project`'s result carries a composed `scaffold` directive string: **fold it into your FIRST `send_prompt` to the project's first worker** (combine it with your own scoping). It is never auto-sent — driving that turn stays yours, so the wake fires normally.
+- **Discover:** `list_projects` · `list_sessions` · `list_worktrees` · `describe_session` · `project_status` · `project_read` · `project_bash` · `project_diff` · `list_playbooks` · `describe_playbook` · `playbook_state`
+- **Spawn:** `spawn_instance` · `create_project` · `create_worktree`
+- **Organise the sidebar** — when spawning several related workers, group them in a workspace so the human can collapse the chunk when done: `list_workspaces` · `create_workspace` · `delete_workspace` · `rename_workspace` · `set_project_workspace` · `set_session_title`
+- **Drive:** `send_prompt` · `set_idle_timeout` · `set_mode` · `interrupt_turn` · `kill_instance`
+- **Plans and questions:** `approve_plan` · `reject_plan` · `answer_question` — a worker's `AskUserQuestion` yields to you like a plan; answer it with `answer_question`.
+- **Inspect:** `get_recent_messages` · `get_transcript` — a RETIRED worker is readable (these and `describe_session`) only by its exact `sessionId`; a prefix resolves live sessions only.
+- **Land:** `sync_worktree` · `merge_worktree` · `delete_worktree`
 
 ## Safety
 

@@ -1168,8 +1168,9 @@ export function resolveSpawnModel(
 }
 
 // Rides on a spawn_instance result whose caller is untitled and not in plan
-// mode. The fact plus the tool, nothing more: the rule lives in the conductor
-// core, which a non-conductor caller may not have loaded.
+// mode. The fact plus the tool, nothing more: this nudge is what prompts the
+// naming, and set_session_title's own description carries how to choose a
+// title and when to set it again.
 export const SELF_TITLE_NUDGE = "You haven't named your session yet — `set_session_title`.";
 
 // The nudge text for a spawn's caller, or null. Never throws: the check must
@@ -2353,7 +2354,7 @@ export async function createProject({ name, conventions, noProjectConventions, s
     console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker, and no later regeneration adds them back; a one-time scaffold directive may not have been emitted at all, and nothing reissues one`);
   }
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
-  // send_prompt to the project's first worker (see conventions/conductor/core.md).
+  // send_prompt to the project's first worker (see create_project's description).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
 }
 

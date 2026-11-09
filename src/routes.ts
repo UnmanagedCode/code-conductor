@@ -693,7 +693,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       // handler's return verbatim, as it was before the delegation.
       //
       // Scaffold directive is returned (not persisted) — the caller folds it
-      // into the first worker brief. See conventions/conductor/core.md.
+      // into the first worker brief. See create_project's description.
       const created = await createProject({
         name: validName, conventions, noProjectConventions, system, remoteId, systemPath,
       }, { capabilities });

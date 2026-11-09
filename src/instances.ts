@@ -4540,7 +4540,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // until the answering turn, so a caller has nothing to branch on, and reporting it
   // would leak the delivery mechanism into the contract. The routes ARE
   // transcript-distinguishable — prompt() emits `user_echo` synchronously, a parked
-  // steer only at the block edge — which is why conventions/conductor/core.md tells
+  // steer only at the block edge — which is why send_prompt's description tells
   // a conductor that a send it cannot yet see has not failed. Never waits
   // for a block edge: a parked steer resolves as soon as it is queued, because the
   // stop is unbounded and every caller here is answering a request that must return
