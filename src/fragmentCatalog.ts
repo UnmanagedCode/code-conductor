@@ -275,6 +275,11 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
     catch (e) { throw httpError(400, `${noun} body: ${errMsg(e)}`); }
   }
 
+  // A body, when given, is a string: never coerced into one.
+  function requireStringBody(v: unknown): void {
+    if (v !== undefined && typeof v !== 'string') throw httpError(400, `${noun} body must be a string`);
+  }
+
   // The stored scaffold of a write: '' or undefined removes it, a string is
   // trimmed, anything else is refused. A catalog without `scaffolds` refuses a
   // non-empty one.
@@ -348,7 +353,7 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
     const { slug, name, description, body } = input;
     validateSlug(slug);
     const scaffold = scaffoldValue(input.scaffold);
-    if (body !== undefined && typeof body !== 'string') throw httpError(400, `${noun} body must be a string`);
+    requireStringBody(body);
     validateFields({ name, description, body, scaffold }, noun);
     checkBody(body);
     const catalog = await getCatalog();
@@ -372,13 +377,14 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
     if (idx === -1) {
       throw httpError(404, `${noun} '${slug}' not found`);
     }
+    requireStringBody(patch.body);
     const { scaffold: kept, ...rest } = custom[idx];
     const scaffold = patch.scaffold !== undefined ? scaffoldValue(patch.scaffold) : kept ?? '';
     const updated: CustomRule = {
       ...rest,
       ...(patch.name !== undefined ? { name: String(patch.name).trim() } : {}),
       ...(patch.description !== undefined ? { description: String(patch.description).trim() } : {}),
-      ...(patch.body !== undefined ? { body: String(patch.body) } : {}),
+      ...(patch.body !== undefined ? { body: patch.body as string } : {}),
       ...(scaffold ? { scaffold } : {}),
     };
     validateFields(updated, noun);

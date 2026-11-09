@@ -369,3 +369,29 @@ test('addCustom with no body at all is valid only beside a scaffold', async () =
     await expectStatus(() => catalog.addCustom({ slug: 'nobody', name: 'O', description: 'd' }), 400);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+test('addCustom refuses a non-string body even beside a valid scaffold, and stores nothing', async () => {
+  const { dir, catalog } = await mkScaffoldFixture();
+  try {
+    for (const bad of [123, null, {}, ['x'], true]) {
+      await expectStatus(() => catalog.addCustom({ slug: 'smuggled', name: 'S', description: 'd', body: bad, scaffold: 'x' }), 400);
+    }
+    assert.ok(!(await catalog.getCatalog()).some(e => e.slug === 'smuggled'));
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('updateCustom refuses a defined non-string body with 400 and leaves the stored body untouched', async () => {
+  for (const scaffolds of [true, false]) {
+    const { dir, catalog, storeFile } = await mkScaffoldFixture({ scaffolds });
+    try {
+      await catalog.addCustom({ slug: 'ok', name: 'S', description: 'd', body: '## Keep' });
+      for (const bad of [null, 123, {}, ['x'], true]) {
+        await expectStatus(() => catalog.updateCustom('ok', { body: bad }), 400);
+      }
+      assert.equal(JSON.parse(await fs.readFile(storeFile, 'utf8')).rules[0].body, '## Keep', `scaffolds:${scaffolds}`);
+      // A string body, and an absent one, still update.
+      assert.equal((await catalog.updateCustom('ok', { body: '## New' })).body, '## New');
+      assert.equal((await catalog.updateCustom('ok', { name: 'Renamed' })).body, '## New');
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  }
+});
