@@ -44,6 +44,50 @@ describe('nesting depth measure', () => {
     expect(nestingDepth(text)).toBe(depth);
   });
 
+  // Pins: a run of one marker character with no break after it is not a container: a 40-`*` or 40-`-` line is a rule,
+  // `**bold**` is emphasis, `1.x` / `1)x` are text.
+  it.each(['*'.repeat(40), '-'.repeat(40), '**bold**', '*x*', '1.x', '1)x', '12.x and more'])('%s measures 0', (text) => {
+    expect(nestingDepth(text)).toBe(0);
+  });
+
+  // Pins: micromark's line endings (\n, \r\n and a lone \r) all end a line, and a leading BOM is not content.
+  it.each([
+    { kind: 'lone CR', text: `x\r${sameLine(5)}` },
+    { kind: 'CRLF', text: `x\r\n${sameLine(5)}` },
+    { kind: 'BOM', text: `\uFEFF${sameLine(5)}` },
+    { kind: 'CR between nested lines', text: list(5).replaceAll('\n', '\r') },
+  ])('a line after a $kind is measured', ({ text }) => {
+    expect(nestingDepth(text)).toBe(5);
+  });
+
+  const deep = sameLine(40);
+  // Pins: fenced code content is not nesting: a backtick or tilde fence, closed or running to the end, hides its lines.
+  it.each([
+    { kind: 'backtick fence', text: `\`\`\`\n${deep}\n\`\`\`` },
+    { kind: 'tilde fence with info', text: `~~~yaml\n${deep}\n~~~` },
+    { kind: 'unclosed fence', text: `intro\n\n\`\`\`\n${deep}` },
+    { kind: 'shorter run does not close', text: `\`\`\`\`\n\`\`\`\n${deep}\n\`\`\`\`` },
+    { kind: 'other character does not close', text: `\`\`\`\n~~~\n${deep}` },
+    { kind: 'fence in a list item', text: `- step\n  \`\`\`\n  ${deep}\n  \`\`\`` },
+    { kind: 'fence in a quote', text: `> \`\`\`\n> ${deep}\n> \`\`\`` },
+    { kind: 'YAML list 17 levels deep', text: `\`\`\`yaml\n${Array.from({ length: 17 }, (_, i) => `${'    '.repeat(i)}- k${i}:`).join('\n')}\n\`\`\`` },
+  ])('$kind measures 0', ({ text }) => {
+    expect(nestingDepth(text)).toBe(0);
+  });
+
+  // Pins: a line micromark does not read as a fence, or a fence micromark has already ended, hides nothing.
+  it.each([
+    { kind: 'after a closed fence', text: `\`\`\`\nx\n\`\`\`\n${deep}` },
+    { kind: 'backtick info string holding a backtick', text: `\`\`\` a\`b\n${deep}` },
+    { kind: 'fence indented 4 spaces (indented code)', text: `    \`\`\`\n${deep}` },
+    { kind: 'fence in a quote the next line leaves', text: `> \`\`\`\n${deep}` },
+    { kind: 'fence in a list item the next line leaves', text: `- \`\`\`\n${deep}` },
+    { kind: 'fence line inside an HTML block', text: `<div>\n\`\`\`\n\n${deep}` },
+    { kind: 'fence line inside an HTML comment', text: `<!--\n\n\`\`\`\n-->\n${deep}` },
+  ])('$kind: the content is measured', ({ text }) => {
+    expect(nestingDepth(text)).toBe(40);
+  });
+
   // Pins: indentation on a line that opens no container (code, prose) is not nesting.
   it('deep indentation without a marker measures 0', () => {
     expect(nestingDepth(`\`\`\`\n${' '.repeat(8 * MAX_NESTING)}deep();\n\`\`\``)).toBe(0);
@@ -81,9 +125,71 @@ describe('the nesting cap', () => {
     expect(host.querySelectorAll('blockquote')).toHaveLength(MAX_NESTING);
   });
 
+  // Pins: a line ending or BOM micromark honours cannot hide nesting from the cap: one past it still falls back unparsed.
+  it.each([
+    { kind: 'lone CR', text: `x\r${sameLine(MAX_NESTING + 1)}` },
+    { kind: 'CRLF', text: `x\r\n${sameLine(MAX_NESTING + 1)}` },
+    { kind: 'BOM', text: `\uFEFF${sameLine(MAX_NESTING + 1)}` },
+  ])('after a $kind, one past the cap falls back without parsing', ({ text }) => {
+    const { host } = mount(text);
+    expect([...host.children].map((c) => c.tagName)).toEqual(['PRE']);
+    expect(host.textContent).toBe(text);
+    expect(parses.count, 'the markdown pipeline never ran').toBe(0);
+  });
+
+  // Pins: list markers inside fenced code never trip the cap: the fence renders as a code block holding its exact text.
+  it.each([
+    { kind: 'a YAML list 17 levels deep (4-space indents)', code: Array.from({ length: 17 }, (_, i) => `${'    '.repeat(i)}- k${i}:`).join('\n') },
+    { kind: '40 same-line list markers', code: sameLine(40) },
+  ])('a fence holding $kind renders as code', ({ code }) => {
+    const { host } = mount(`Config:\n\n\`\`\`yaml\n${code}\n\`\`\``);
+    expect(host.querySelector(':scope > pre'), 'no fallback').toBeNull();
+    expect(host.querySelector('.md-code-wrap > pre > code')!.textContent).toBe(code);
+  });
+
+  // Pins: a line of 40 `*` is a thematic break, rendered as <hr>, not a fallback.
+  it('a 40-`*` line renders a rule', () => {
+    const { host } = mount(`above\n\n${'*'.repeat(40)}\n\nbelow`);
+    expect(host.querySelector(':scope > pre'), 'no fallback').toBeNull();
+    expect(host.querySelectorAll(':scope > hr')).toHaveLength(1);
+  });
+
   // Pins: deeply indented code is not nesting: it renders as a code block.
   it('a code block indented far past the cap renders normally', () => {
     const { host } = mount(`\`\`\`\n${' '.repeat(8 * MAX_NESTING)}deep();\n\`\`\``);
     expect(host.querySelector('.md-code-wrap pre code')!.textContent).toBe(`${' '.repeat(8 * MAX_NESTING)}deep();`);
+  });
+});
+
+describe('the measure bounds the parsed nesting', () => {
+  /** The deepest chain of nested lists and quotes the render holds. */
+  const parsedDepth = (host: Element) => Math.max(0, ...[...host.querySelectorAll('li, blockquote')].map((el) => {
+    let d = 0;
+    for (let e: Element | null = el; e && e !== host; e = e.parentElement) if (e.matches('ul, ol, blockquote')) d++;
+    return d;
+  }));
+  const nested = '- a\n  - b\n    - c';
+  // Pins: for tabs, every line ending, a BOM, and every way a fence-looking line is not (or no longer) a fence, the measure is never below the depth micromark parses.
+  it.each([
+    ' \t- a\n\t\t- b\n\t\t\t- c',
+    '-\t- a\n \t  - b',
+    '>\t> a\n>\t>\t- b',
+    nested.replaceAll('\n', '\r'),
+    nested.replaceAll('\n', '\r\n'),
+    `\uFEFF${nested}`,
+    `\`\`\`\nx\n\`\`\`\n${nested}`,
+    `> \`\`\`\n${nested}`,
+    `- \`\`\`\n${nested}`,
+    `1. \`\`\`\n  ${nested}`,
+    `<div>\n\`\`\`\n\n${nested}`,
+    `<!--\n\n\`\`\`\n-->\n${nested}`,
+    `<script>\n\n\`\`\`\n</script>\n${nested}`,
+    `[a]: /u "\n\`\`\`\n"\n${nested}`,
+    `\`\`\`\` x\n\`\`\`\n\`\`\`\`\n${nested}`,
+    `\`\`\` a\`b\n${nested}`,
+  ])('%j', (text) => {
+    const { host } = mount(text);
+    expect(host.querySelector(':scope > pre'), 'fixture check: the text renders').toBeNull();
+    expect(nestingDepth(text)).toBeGreaterThanOrEqual(parsedDepth(host));
   });
 });
