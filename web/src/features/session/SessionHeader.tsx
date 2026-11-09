@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   BarChart3Icon, BellIcon, BellOffIcon, BrainIcon, BugIcon, CheckIcon, ClockIcon, FileTextIcon,
-  GaugeIcon, GitBranchIcon, GitPullRequestArrowIcon, LockIcon, MenuIcon, MoreVerticalIcon, PencilIcon, PlayIcon,
+  GaugeIcon, GitBranchIcon, GitForkIcon, GitPullRequestArrowIcon, LockIcon, MenuIcon, MoreVerticalIcon, PencilIcon, PlayIcon,
   PowerIcon, CornerUpLeftIcon, RefreshCwIcon, ScissorsIcon, ShieldAlertIcon, CpuIcon, TriangleAlertIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -24,7 +24,7 @@ import { send, stickyPrompt } from '@/app/controller';
 import { trackSwipes } from '@/conversation/stickyPrompt';
 import { modelsSignal } from '@/app/models';
 import { uiStore, isCallUsageShown, setCallUsageShown } from '@/app/ui';
-import { respawnActive, syncWorktree } from '@/app/sessionActions';
+import { forkWholeSession, respawnActive, syncWorktree } from '@/app/sessionActions';
 import { isSessionMuted, muteSession, mutesSignal } from '@/features/notifications/mutes';
 import { openPruneDialog, openRenameDialog, openStatsDialog, openSummaryDialog } from '@/features/dialogs/api';
 import { confirmDialog, toast } from '@/ui/feedback';
@@ -370,11 +370,17 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                     ))}
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem
                   disabled={!between || !inst.sessionId}
                   title={between ? "Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost" : 'Prune is only available between turns'}
                   onSelect={() => openPruneDialog(inst.id)}
                 ><ScissorsIcon /> Prune context…</DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={!between || !inst.sessionId}
+                  title={between ? 'Start a new session from the whole conversation so far — the original is left intact' : 'Forking the whole session is only available between turns — mid-turn, fork from a message'}
+                  onSelect={() => void forkWholeSession(inst.id)}
+                ><GitForkIcon /> Fork session…</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem disabled={!inst.sessionId} onSelect={() => muteSession(inst.sessionId, !muted)}>
                   {muted ? <><BellIcon /> Unmute notifications</> : <><BellOffIcon /> Mute notifications</>}

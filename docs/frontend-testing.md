@@ -31,7 +31,7 @@ How the web UI (`web/`) is tested: its Vitest and Playwright suites ([Suites](#s
 | Surface | Why unreachable |
 |---|---|
 | Session-summary dialog (markdown body, cost row, and the **Ask about this session** section) | generation and every ask fail `session not found`: no jsonl |
-| Rewind / fork happy path | refused `… (session has 0 user prompts)` (`src/sessionEdit.ts`). The affordances, confirm strings and failure alert *are* reachable |
+| Rewind / fork happy path | refused `… (session has 0 user prompts)` (`src/sessionEdit.ts`); `⋮` **Fork session…** is refused `nothing to fork yet — the session has no conversation` once a turn has run (the file holds only cc's own metadata), `session … not found` before any. The affordances, confirm strings and failure alert *are* reachable |
 | Prune apply | the analysis finds ~0 prunable tokens, so the apply button never enables |
 | Lazy history "load earlier" | the transcript never grows past the snapshot tail |
 | OS notification body | headless Chromium refuses `ServiceWorkerRegistration.showNotification` without a grantable permission |

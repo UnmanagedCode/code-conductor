@@ -144,10 +144,26 @@ export async function forkActiveSession(userMessageIndex: number, text: string) 
     confirmLabel: 'Fork',
   });
   if (!ok) return;
+  await postFork(id, { userMessageIndex, text });
+}
+
+/** Fork the whole conversation so far into a new session (the ⋮ menu's Fork session…). */
+export async function forkWholeSession(instanceId: string) {
+  const ok = await confirmDialog({
+    title: 'Fork this session?',
+    description: 'A new session starts from the whole conversation so far. The original is left intact.',
+    confirmLabel: 'Fork',
+  });
+  if (!ok) return;
+  await postFork(instanceId, {});
+}
+
+/** POST a fork, then select the new session unless a later gesture took over; a refusal toasts. */
+async function postFork(instanceId: string, body: { userMessageIndex: number; text: string } | Record<string, never>) {
   const gesture = beginGesture();
   try {
-    const { instance } = await apiFetch<{ instance: Instance }>(`/api/instances/${encodeURIComponent(id)}/fork`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userMessageIndex, text }),
+    const { instance } = await apiFetch<{ instance: Instance }>(`/api/instances/${encodeURIComponent(instanceId)}/fork`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     });
     await refreshProjects();
     await refreshInstances();

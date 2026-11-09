@@ -9,7 +9,7 @@ import path from 'node:path';
 import { encodeCwd, localPlace, sessionFilePath } from '../src/projects.ts';
 import { isPureUserPromptLine } from '../src/transcript.ts';
 import {
-  truncateSessionAtUserMessage, forkSessionAtUserMessage as forkFromSnapshot,
+  truncateSessionAtUserMessage, forkSessionAtUserMessage as forkFromSnapshot, forkSessionWhole,
 } from '../src/sessionEdit.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 
@@ -192,6 +192,56 @@ test('fork copies the prefix to a new sessionId and leaves the original intact',
   const lastPrompt = after.find(l => l.type === 'last-prompt');
   assert.ok(lastPrompt && lastPrompt.leafUuid === 'a1', 'fork picker metadata anchors at a1');
   assert.equal(lastPrompt.sessionId, result.newSessionId);
+});
+
+test('forkSessionWhole copies every complete line with sessionId rewritten and anchors metadata at the last uuid', async () => {
+  const lines = [
+    { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-10-03T00:00:00.000Z', content: 'first' },
+    { type: 'user', uuid: 'u1', sessionId: 'orig-sid', message: { role: 'user', content: 'first' } },
+    { type: 'assistant', uuid: 'a1', sessionId: 'orig-sid', message: { id: 'm1', role: 'assistant', content: [
+      { type: 'text', text: 'first reply' },
+    ] } },
+    { type: 'user', uuid: 'u2', sessionId: 'orig-sid', message: { role: 'user', content: 'second' } },
+    { type: 'assistant', uuid: 'a2', sessionId: 'orig-sid', message: { id: 'm2', role: 'assistant', content: [
+      { type: 'text', text: 'second reply' },
+    ] } },
+    // A trailing record with no uuid: the anchor is the last line that carries one.
+    { type: 'ai-title', aiTitle: 'A title', sessionId: 'orig-sid' },
+  ];
+  const { cwd, sid, file, dir } = await makeFixture(lines);
+  const originalBytes = await fs.readFile(file);
+  const snapshot = originalBytes.toString('utf8') + 'not json\n';
+
+  const result = await forkSessionWhole({ place: localPlace(cwd), sessionId: sid, snapshot, mode: 'bypassPermissions' });
+  assert.ok(result.newSessionId && result.newSessionId !== sid, 'fresh sessionId');
+  assert.equal(result.lastSurvivingUuid, 'a2');
+  assert.equal((await fs.readFile(file)).toString(), originalBytes.toString(), 'the source is byte-identical');
+
+  const copied = (await fs.readFile(path.join(dir, `${result.newSessionId}.jsonl`), 'utf8'))
+    .split('\n').filter(l => l.length);
+  const meta = copied.filter(l => /"type":"(last-prompt|permission-mode)"/.test(l)).map(l => JSON.parse(l));
+  const body = copied.filter(l => !/"type":"(last-prompt|permission-mode)"/.test(l));
+  assert.deepEqual(body, [
+    ...lines.map(l => JSON.stringify(typeof l.sessionId === 'string' ? { ...l, sessionId: result.newSessionId } : l)),
+    'not json',
+  ], 'every line copied in order, sessionId rewritten, an unparseable line verbatim');
+  const lastPrompt = meta.find(l => l.type === 'last-prompt');
+  assert.equal(lastPrompt?.leafUuid, 'a2', 'the picker metadata anchors at the last uuid');
+  assert.equal(lastPrompt.sessionId, result.newSessionId);
+});
+
+test('forkSessionWhole refuses 400 when the snapshot holds no conversation, writing nothing', async () => {
+  const lines = [
+    { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-10-03T00:00:00.000Z', content: 'first' },
+    { type: 'queue-operation', operation: 'dequeue', timestamp: '2026-10-03T00:00:00.010Z' },
+  ];
+  const { cwd, sid, file, dir } = await makeFixture(lines);
+  const snapshot = await fs.readFile(file, 'utf8');
+  await assert.rejects(
+    forkSessionWhole({ place: localPlace(cwd), sessionId: sid, snapshot, mode: 'bypassPermissions' }),
+    (e) => e.statusCode === 400 && /nothing to fork yet/.test(e.message),
+  );
+  assert.deepEqual(await fs.readdir(dir), [`${sid}.jsonl`], 'no new jsonl was written');
 });
 
 test('predicate: tool_result-only user lines do NOT increment the user-message counter', async () => {

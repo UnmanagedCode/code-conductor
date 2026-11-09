@@ -412,3 +412,26 @@ test('an ordinal equal to the echo count is not owed: an immediate 400, no wait'
     assert.ok(took < FORK_PERSIST_WAIT_MS / 2, `no wait: took ${took} ms`);
   } finally { await ctx.close(); }
 });
+
+// ── whole-session fork (no anchor) ───────────────────────────────────────
+// Mid-turn the tip is a half-written turn, so an anchorless fork is idle-only
+// (Instance.forkAtTip): it refuses before reading anything.
+test('an anchorless fork mid-turn is refused 409 between-turns and writes nothing', async () => {
+  const { ctx, inst, sessionFiles, append } = await bootMidTurn();
+  try {
+    await append([...QUEUE, THIRD, ...OPEN_TURN]);
+    const snaps = traceReads(inst);
+    const before = await sessionFiles();
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, {});
+    assert.equal(fk.status, 409, JSON.stringify(fk.body));
+    assert.match(fk.body.error, /between turns/);
+    assert.equal(snaps.length, 0, 'refused before any read of the transcript');
+    assert.deepEqual(await sessionFiles(), before, 'no fork file was written');
+    assert.equal(inst._mutating, null, 'no flag is left held');
+
+    // The same source, once its turn ends, forks whole.
+    endTurn(inst);
+    const ok = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, {});
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  } finally { await ctx.close(); }
+});
