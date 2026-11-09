@@ -1,5 +1,6 @@
-// Destructive edits on a persisted session jsonl: truncate the tail
-// before a chosen user message, or fork the prefix into a new session.
+// Edits on a persisted session jsonl: truncate the tail before a chosen
+// user message, fork the prefix into a new session, or fork the whole
+// transcript into a new session.
 //
 // The `userMessageIndex` is the 0-based position among "pure user prompt"
 // lines — the same lines that emit a `user_echo` UI event when replayed.
@@ -13,7 +14,8 @@
 // Fork never reads the file itself: its caller hands it one complete-line
 // snapshot (`completeLinesOf` over a single read), and the anchor, the text
 // check and the copy all come from that snapshot — so lines the CLI appends
-// after the read can never reach the copy (Instance.forkAtUserMessage).
+// after the read can never reach the copy (Instance.forkAtUserMessage,
+// Instance.forkAtTip).
 //
 // File rewrites are atomic: write a sibling tmp file, rename over
 // the target. The companion sub-agent directory (sibling to the jsonl,
@@ -275,10 +277,8 @@ export async function truncateSessionAtUserMessage({ place, sessionId, userMessa
 // new file <cwd>/<newSessionId>.jsonl. A prefix with no
 // conversation record would be a session `--resume` cannot open, so that fork
 // is refused (400) before anything is written. The original
-// session jsonl is untouched. Rewrites the `sessionId` field inside each
-// copied line to the new id — purely cosmetic (the filename is what
-// `--resume` reads) but keeps the file self-consistent for any downstream
-// tooling. Returns { newSessionId, droppedText, lastSurvivingUuid }.
+// session jsonl is untouched; the copy is written by writeForkCopy.
+// Returns { newSessionId, droppedText, lastSurvivingUuid }.
 export async function forkSessionAtUserMessage({ place, sessionId, snapshot, userMessageIndex, expectedText, mode, newSessionId }: {
   place: TranscriptPlacement; sessionId: string; snapshot: string; userMessageIndex: number; expectedText: string; mode: string; newSessionId?: string;
 }): Promise<{ newSessionId: string; droppedText: string; lastSurvivingUuid: string | null }> {
@@ -292,35 +292,57 @@ export async function forkSessionAtUserMessage({ place, sessionId, snapshot, use
     throw httpError(400, 'nothing before this prompt to fork from — rewind to it instead');
   }
 
-  const newSid = newSessionId ?? randomUUID();
-  const newFile = sessionFilePath(place, newSid);
+  const newSid = await writeForkCopy({ place, entries: prefix, lastSurvivingUuid, mode, newSessionId });
+  return { newSessionId: newSid, droppedText, lastSurvivingUuid };
+}
 
-  // Rewrite each line's `sessionId` field (when present) to the new id.
-  // Lines we couldn't parse are passed through verbatim.
-  const rewritten = prefix.map(({ raw, obj }): { raw: string } => {
-    if (!obj) return { raw };
-    if (typeof obj.sessionId !== 'string') return { raw };
-    const copy = { ...obj, sessionId: newSid };
-    return { raw: JSON.stringify(copy) };
-  });
-
-  await writeFileAtomic(newFile, joinLines(rewritten));
-
-  // Anchor the new session in the resume picker. Skipped when no prefix line
-  // carries a uuid — there is no leaf to anchor it on.
-  if (lastSurvivingUuid) {
-    await writeSessionMetadata({
-      place, sessionId: newSid,
-      leafUuid: lastSurvivingUuid,
-      mode,
-    });
+// Copy every complete line of `snapshot` — <cwd>/<sessionId>.jsonl, read once
+// by the caller — into a new file <cwd>/<newSessionId>.jsonl: the fork of the
+// conversation as it stands. Refuses 400, writing nothing, when the snapshot
+// holds no conversation record (a session `--resume` cannot open). The source
+// is untouched. Returns { newSessionId, lastSurvivingUuid } — the last line
+// carrying a uuid anchors the new session's resume-picker metadata.
+export async function forkSessionWhole({ place, sessionId, snapshot, mode, newSessionId }: {
+  place: TranscriptPlacement; sessionId: string; snapshot: string; mode: string; newSessionId?: string;
+}): Promise<{ newSessionId: string; lastSurvivingUuid: string | null }> {
+  if (!place?.cwd || !sessionId) throw new Error('place + sessionId required');
+  const entries: Array<{ raw: string; obj: PersistedLine | null }> = [];
+  let lastSurvivingUuid: string | null = null;
+  for (const raw of snapshot.split('\n')) {
+    if (!raw.length) continue;
+    const parsed = tryParse(raw);
+    const obj: PersistedLine | null = parsed && typeof parsed === 'object' ? parsed as PersistedLine : null;
+    entries.push({ raw, obj });
+    if (typeof obj?.uuid === 'string') lastSurvivingUuid = obj.uuid;
   }
+  if (!entries.some(e => isResumableLine(e.obj))) {
+    throw httpError(400, 'nothing to fork yet — the session has no conversation');
+  }
+  const newSid = await writeForkCopy({ place, entries, lastSurvivingUuid, mode, newSessionId });
+  return { newSessionId: newSid, lastSurvivingUuid };
+}
 
-  return {
-    newSessionId: newSid,
-    droppedText,
-    lastSurvivingUuid,
-  };
+// The write shared by both forks: `entries` into a fresh <cwd>/<newSid>.jsonl,
+// then resume-picker metadata anchored at `lastSurvivingUuid`. Rewrites each
+// line's `sessionId` field to the new id — purely cosmetic (the filename is
+// what `--resume` reads) but keeps the file self-consistent for downstream
+// tooling. Lines that didn't parse pass through verbatim. Returns the new id.
+async function writeForkCopy({ place, entries, lastSurvivingUuid, mode, newSessionId }: {
+  place: TranscriptPlacement; entries: Array<{ raw: string; obj: PersistedLine | null }>;
+  lastSurvivingUuid: string | null; mode: string; newSessionId?: string;
+}): Promise<string> {
+  const newSid = newSessionId ?? randomUUID();
+  const rewritten = entries.map(({ raw, obj }): { raw: string } => {
+    if (!obj || typeof obj.sessionId !== 'string') return { raw };
+    return { raw: JSON.stringify({ ...obj, sessionId: newSid }) };
+  });
+  await writeFileAtomic(sessionFilePath(place, newSid), joinLines(rewritten));
+  // Skipped when no copied line carries a uuid — there is no leaf to anchor
+  // the picker on.
+  if (lastSurvivingUuid) {
+    await writeSessionMetadata({ place, sessionId: newSid, leafUuid: lastSurvivingUuid, mode });
+  }
+  return newSid;
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

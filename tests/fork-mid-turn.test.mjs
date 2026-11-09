@@ -412,3 +412,125 @@ test('an ordinal equal to the echo count is not owed: an immediate 400, no wait'
     assert.ok(took < FORK_PERSIST_WAIT_MS / 2, `no wait: took ${took} ms`);
   } finally { await ctx.close(); }
 });
+
+// ── whole-session fork (no anchor) ───────────────────────────────────────
+// Mid-turn the tip is a half-written turn, so an anchorless fork is idle-only
+// (Instance.forkAtTip): it refuses before reading anything.
+test('an anchorless fork mid-turn is refused 409 between-turns and writes nothing', async () => {
+  const { ctx, inst, sessionFiles, append } = await bootMidTurn();
+  try {
+    await append([...QUEUE, THIRD, ...OPEN_TURN]);
+    const snaps = traceReads(inst);
+    const before = await sessionFiles();
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, {});
+    assert.equal(fk.status, 409, JSON.stringify(fk.body));
+    assert.match(fk.body.error, /between turns/);
+    assert.equal(snaps.length, 0, 'refused before any read of the transcript');
+    assert.deepEqual(await sessionFiles(), before, 'no fork file was written');
+    assert.equal(inst._mutating, null, 'no flag is left held');
+
+    // The same source, once its turn ends, forks whole.
+    endTurn(inst);
+    const ok = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, {});
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  } finally { await ctx.close(); }
+});
+
+// A fork blocks no prompt, so a turn can start between forkAtTip's claim and
+// the end of its one read; the copy would then hold that turn's half-written
+// lines. Both shapes — a turn still running when the read returns, and one
+// that started AND ended during it — must refuse, writing nothing.
+async function forkWholeRacingATurn(raceDuringRead) {
+  const { ctx, inst, sessionFiles, append } = await bootMidTurn();
+  try {
+    await append([...QUEUE, THIRD, ...OPEN_TURN]);
+    endTurn(inst);
+    const snaps = traceReads(inst, async () => { await raceDuringRead(inst); });
+    const before = await sessionFiles();
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, {});
+    assert.equal(snaps.length, 1, 'precondition: the race ran inside the fork\'s read');
+    assert.equal(fk.status, 409, JSON.stringify(fk.body));
+    assert.match(fk.body.error, /between turns/);
+    assert.deepEqual(await sessionFiles(), before, 'no fork file was written');
+    assert.equal(inst._mutating, null, 'the flag is released');
+  } finally { await ctx.close(); }
+}
+
+test('an anchorless fork whose read races a turn that starts and keeps running refuses 409 between-turns, writing nothing', async () => {
+  await forkWholeRacingATurn(async (inst) => {
+    await inst.prompt('fourth');
+    assert.equal(inst.status, 'turn', 'precondition: a turn is running when the read returns');
+  });
+});
+
+test('an anchorless fork whose read races a turn that starts and ends refuses 409 between-turns, writing nothing', async () => {
+  await forkWholeRacingATurn(async (inst) => {
+    await inst.prompt('fourth');
+    endTurn(inst);
+    assert.equal(inst.status, 'idle', 'precondition: the source is idle again when the read returns');
+  });
+});
+
+// A turn the CLI opens on its own (a ScheduleWakeup fire, a task-notification
+// re-invocation) never goes through prompt(): its first sign is a
+// `message_start` on stdout, which flips idle → turn. Fed through the same
+// stdout path the CLI's lines take; it carries `usage` because the parser
+// drops a message_start without one.
+const UNPROMPTED_MESSAGE_START = JSON.stringify({
+  type: 'stream_event',
+  event: { type: 'message_start', message: { id: 'msg_unprompted', role: 'assistant', usage: { input_tokens: 1, output_tokens: 0 } } },
+});
+
+test('an anchorless fork whose read races a turn the CLI starts unprompted refuses 409 between-turns, writing nothing', async () => {
+  await forkWholeRacingATurn(async (inst) => {
+    const echoes = inst._userEchoCount;
+    inst._handleStdoutLine(UNPROMPTED_MESSAGE_START);
+    assert.equal(inst.status, 'turn', 'precondition: the unprompted message_start opened a turn');
+    assert.equal(inst._userEchoCount, echoes, 'precondition: no prompt was sent');
+  });
+});
+
+test('status changes during an anchorless fork\'s read that start no turn do not refuse it', async () => {
+  const { ctx, inst, sessionDir, sessionFiles, append } = await bootMidTurn();
+  try {
+    await append([...QUEUE, THIRD, ...OPEN_TURN]);
+    endTurn(inst);
+    const snaps = traceReads(inst, async () => {
+      // A same-status call (no transition), then a real transition out of and
+      // back into idle that never passes through `turn`.
+      inst._setStatus('idle');
+      inst._setStatus('spawning');
+      assert.equal(inst.status, 'spawning', 'precondition: a real transition out of idle');
+      inst._setStatus('idle');
+    });
+    const before = await sessionFiles();
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, {});
+    assert.equal(snaps.length, 1, 'precondition: the status changes ran inside the fork\'s read');
+    assert.equal(fk.status, 201, JSON.stringify(fk.body));
+    assert.deepEqual(await sessionFiles(), [...before, `${fk.body.newSessionId}.jsonl`].sort(), 'the copy was written');
+    const copy = copied(await fs.readFile(path.join(sessionDir, `${fk.body.newSessionId}.jsonl`), 'utf8'));
+    assert.deepEqual(copy.map(r => r.uuid ?? r.type), ['u1', 'a1', 'u2', 'a2', 'queue-operation', 'queue-operation', 'u3', 'a3', 'r3'],
+      'the whole transcript was copied');
+    assert.equal(inst._mutating, null, 'the flag is released');
+  } finally { await ctx.close(); }
+});
+
+test('Instance.forkAtTip reads _turnStarts with no await after the claim', async () => {
+  // The post-read turn check compares against a count taken at the claim. An
+  // await between the claim and that read would let a turn start unseen, and
+  // the check would compare against a count that already includes it. No HTTP
+  // race can open a microtask-scale window like that, so the shape is pinned
+  // (the house pattern: prune-flow's "claims _mutating with no await after the
+  // check").
+  const src = await fs.readFile(new URL('../src/instances.ts', import.meta.url), 'utf8');
+  const start = src.indexOf('  async forkAtTip(');
+  assert.ok(start > 0, 'Instance.forkAtTip must exist');
+  const method = src.slice(start, src.indexOf('\n  }\n', start));
+  const claim = method.indexOf('this._claimForkSource(');
+  const capture = method.indexOf('this._turnStarts');
+  assert.ok(claim > 0 && capture > claim, 'forkAtTip must read _turnStarts after claiming');
+  assert.doesNotMatch(method.slice(claim, capture), /\bawait\b/,
+    'no await may sit between the claim and the _turnStarts read — see this test\'s comment');
+  // The claim itself must be synchronous, or the call above would hide an await.
+  assert.match(src, /\n  _claimForkSource\(/, '_claimForkSource must be a plain (non-async) method');
+});

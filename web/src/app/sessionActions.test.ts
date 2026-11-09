@@ -27,7 +27,7 @@ import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';
 import {
-  archiveSession, closeSession, forkActiveSession, performProjectDelete, promoteSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
+  archiveSession, closeSession, forkActiveSession, forkWholeSession, performProjectDelete, promoteSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
 } from './sessionActions';
 
 type Call = { url: string; method: string; body: any };
@@ -324,6 +324,39 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(calls.map((c) => [c.method, c.url])).toEqual([['POST', '/api/instances/A/fork'], ['POST', '/api/instances/A/fork']]);
     expect(toasts).toEqual([['error', 'Fork failed', notPersisted], ['error', 'Fork failed', sourceChanged]]);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.selectInstance).not.toHaveBeenCalled();
+  });
+
+  it('forkWholeSession confirms, POSTs {} to the instance\'s fork route, refreshes and selects the new instance with a gesture', async () => {
+    stubFetch(() => ({ body: { instance: { id: 'forked' } } }));
+    appStore.set({ activeId: 'A' });
+    await forkWholeSession('X');
+    expect(confirms.map((c) => c.title)).toEqual(['Fork this session?']);
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([['POST', '/api/instances/X/fork', {}]]);
+    expect(controller.refreshProjects).toHaveBeenCalledTimes(1);
+    expect(controller.refreshInstances).toHaveBeenCalledTimes(1);
+    expect(controller.selectInstance).toHaveBeenCalledExactlyOnceWith('forked', { userGesture: true, gesture: expect.any(Number) });
+    expect(toasts).toEqual([]);
+  });
+
+  it('a refused whole-session fork toasts the server\'s message and refreshes and selects nothing', async () => {
+    const error = 'the whole session can only be forked between turns — wait for the running turn to end, or fork from a message';
+    stubFetch(() => ({ status: 409, body: { error } }));
+    await forkWholeSession('X');
+    expect(calls.map((c) => [c.method, c.url])).toEqual([['POST', '/api/instances/X/fork']]);
+    expect(toasts).toEqual([['error', 'Fork failed', error]]);
+    expect(controller.refreshProjects).not.toHaveBeenCalled();
+    expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.selectInstance).not.toHaveBeenCalled();
+  });
+
+  it('declining the whole-session fork sends nothing', async () => {
+    stubFetch(() => ({ body: { instance: { id: 'forked' } } }));
+    confirmAnswer.value = false;
+    await forkWholeSession('X');
+    expect(confirms.map((c) => c.title)).toEqual(['Fork this session?']);
+    expect(calls).toEqual([]);
     expect(controller.refreshInstances).not.toHaveBeenCalled();
     expect(controller.selectInstance).not.toHaveBeenCalled();
   });

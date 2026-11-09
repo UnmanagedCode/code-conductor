@@ -678,3 +678,157 @@ test('a fork prefers the live registry window over the carried one when they dis
     assert.notEqual(fk.body.instance.contextWindowTokens, 999_999);
   } finally { await ctx.close(); }
 });
+
+// ── whole-session fork (no anchor) ───────────────────────────────────────
+// A fork body with neither `userMessageIndex` nor `text` copies the whole
+// transcript (Instance.forkAtTip): nothing dropped, nothing prefilled, between
+// turns only. It shares forkAtUserMessage's guards and its create() argument
+// derivation (_claimForkSource / _finishFork).
+
+// Seeds `lines` under `projectName`, resumes it (extra create()
+// fields in `spawn`) and waits for idle. Returns the instance id and the file.
+async function resumeSeeded(ctx, projectName, sid, lines, spawn = {}) {
+  const seeded = await seedSession({ ctx, projectName, sid, lines });
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    project: projectName, mode: 'bypassPermissions', resume: sid, ...spawn,
+  });
+  assert.equal(r.status, 201);
+  const id = r.body.id;
+  await waitFor(() => ctx.instances.get(id).status === 'idle' && ctx.instances.get(id).backingSessionId);
+  return { id, ...seeded };
+}
+
+test('an anchorless fork copies the whole transcript, leaves the source intact, and prefills nothing', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffffb-2222-3333-4444-555555555555';
+    const { id, file, sessionDir } = await resumeSeeded(ctx, 'forkwhole', sid, TEMP_SEED_LINES);
+    const originalBytes = await fs.readFile(file);
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, {});
+    assert.equal(fk.status, 201);
+    assert.equal(fk.body.droppedText, null, 'nothing was dropped');
+    assert.ok(fk.body.newSessionId && fk.body.newSessionId !== sid);
+    assert.equal((await fs.readFile(file)).toString(), originalBytes.toString(), 'the source jsonl is byte-identical');
+
+    const copied = (await fs.readFile(path.join(sessionDir, `${fk.body.newSessionId}.jsonl`), 'utf8'))
+      .split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+    assert.deepEqual(
+      copied.filter(o => o.type === 'user' && typeof o.message?.content === 'string').map(o => o.uuid),
+      ['u1', 'u2'], 'every prompt survives, the last one included');
+    assert.deepEqual(copied.filter(o => !SESSION_METADATA_TYPES.has(o.type)).map(o => o.uuid), ['u1', 'a1', 'u2', 'a2'],
+      'the last answer survives too');
+
+    const newId = fk.body.instance.id;
+    const child = ctx.instances.get(newId);
+    assert.equal(child.pendingPrefill, null, 'no prefill is stored on the fork');
+    await waitFor(() => child.status === 'idle');
+    assert.deepEqual(child.ringSnapshot().filter(ev => ev.kind === 'user_echo').map(ev => ev.text), ['first', 'second']);
+
+    const c = await wsClient(ctx.wsUrl);
+    c.send({ t: 'subscribe', id: newId });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === newId);
+    assert.equal('droppedText' in snap, false, 'the first snapshot carries no composer prefill');
+    await c.close();
+
+    assert.deepEqual(ctx.instances.get(id).ringSnapshot().filter(ev => ev.kind === 'user_echo').map(ev => ev.text),
+      ['first', 'second'], 'the source ring is untouched');
+  } finally { await ctx.close(); }
+});
+
+test('an anchorless fork inherits temp, title and backend like a message fork', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await addBackend({ id: 'codexw', label: 'Codex W', template: 'codexctl run claude --model {model} --', env: [] });
+    await addCustomModel({ label: 'SolW', model: 'gpt-5.6-sol[1m]', backend: 'codexw', contextWindow: 1_000_000 });
+    const sid = 'fffffffc-2222-3333-4444-555555555555';
+    await setTitle(sid, 'Auth refactor');
+    const { id } = await resumeSeeded(ctx, 'forkwholeinherit', sid, TEMP_SEED_LINES,
+      { temp: true, backend: 'codexw', model: 'gpt-5.6-sol[1m]' });
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, {});
+    assert.equal(fk.status, 201);
+    const forked = fk.body.instance;
+    assert.equal(forked.temp, true, 'the fork of a temp session is temp');
+    await waitFor(() => isTemp(fk.body.newSessionId));
+    assert.equal(await getTitle(fk.body.newSessionId), FORK_TITLE_PREFIX + 'Auth refactor');
+    assert.equal(forked.backend, 'codexw');
+    assert.equal(forked.model, 'gpt-5.6-sol[1m]');
+    assert.equal(forked.contextWindowTokens, 1_000_000);
+    assert.equal(await getTitle(sid), 'Auth refactor', 'the source keeps its title');
+  } finally { await ctx.close(); }
+});
+
+test('an anchorless fork of a session awaiting a plan succeeds and the fork carries the same ask', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffffd-2222-3333-4444-555555555555';
+    const { id } = await resumeSeeded(ctx, 'forkwholeplan', sid, [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'plan it' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tp', name: 'ExitPlanMode', input: { plan: 'p' } },
+      ], stop_reason: 'tool_use' } },
+    ]);
+    const source = ctx.instances.get(id);
+    await waitFor(() => source.summary().awaitingUser === 'plan');
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, {});
+    assert.equal(fk.status, 201);
+    const child = ctx.instances.get(fk.body.instance.id);
+    await waitFor(() => child.status === 'idle');
+    await waitFor(() => child.summary().awaitingUser === source.summary().awaitingUser);
+    assert.equal(child.summary().awaitingUserSource, source.summary().awaitingUserSource);
+  } finally { await ctx.close(); }
+});
+
+test('a half-anchored fork body is refused 400', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffffe-2222-3333-4444-555555555555';
+    const { id, sessionDir } = await resumeSeeded(ctx, 'forkhalf', sid, TEMP_SEED_LINES);
+    const textOnly = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { text: 'x' });
+    assert.equal(textOnly.status, 400);
+    assert.match(textOnly.body.error, /userMessageIndex/);
+    const indexOnly = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0 });
+    assert.equal(indexOnly.status, 400);
+    assert.match(indexOnly.body.error, /text must be a string/);
+    assert.deepEqual(await fs.readdir(sessionDir), [`${sid}.jsonl`], 'neither refusal wrote a fork');
+  } finally { await ctx.close(); }
+});
+
+test('an anchorless fork refuses 409 while another rewrite holds _mutating, and a successful one releases it', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'ffffff10-2222-3333-4444-555555555555';
+    const { id } = await resumeSeeded(ctx, 'forkwholebusy', sid, TEMP_SEED_LINES);
+    const inst = ctx.instances.get(id);
+
+    inst._mutating = 'rewind';
+    const busy = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, {});
+    assert.equal(busy.status, 409);
+    assert.match(busy.body.error, /another rewind\/fork\/prune is in progress/);
+    assert.equal(inst._mutating, 'rewind', 'a refusal leaves the other rewrite\'s claim alone');
+    inst._mutating = null;
+
+    const ok = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, {});
+    assert.equal(ok.status, 201);
+    assert.equal(inst._mutating, null, 'the finally released the flag');
+    const again = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, {});
+    assert.equal(again.status, 201, 'the release is real: a second fork succeeds');
+  } finally { await ctx.close(); }
+});
+
+test('an anchorless fork before the first turn is refused 400', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'forkwholevirgin' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'forkwholevirgin', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    ctx.instances.get(id).backingSessionId = null;
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, {});
+    assert.equal(fk.status, 400);
+    assert.match(fk.body.error, /has not yet received a turn/);
+    assert.equal(ctx.instances.get(id)._mutating, null, 'a refusal before the claim holds no flag');
+  } finally { await ctx.close(); }
+});

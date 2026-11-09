@@ -136,7 +136,7 @@ import {
   updateCustomConvention as updateWorkspaceConvention,
   deleteCustomConvention as deleteWorkspaceConvention,
 } from './workspaceConventions.ts';
-import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
+import type { CreateInstanceInput, InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import { httpError, errMessage } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
 import type { PlaybookGate } from './mcp/playbookGate.ts';
@@ -1620,20 +1620,29 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // create({prefill}); consumed once in wsHub) — the inline analogue of
     // rewind's `reset_snapshot`. Returns the new instance summary plus
     // { newSessionId, droppedText } (informational; symmetric with /rewind).
+    // A body with NEITHER field forks the whole transcript instead (between
+    // turns only): nothing is dropped, so `droppedText` is null and no prefill
+    // is stored. One field without the other is the bubble form, refused 400.
     r.post('/instances/:id/fork', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
         const body = jsonBody(req);
-        const idx = Number(body.userMessageIndex);
-        if (!Number.isInteger(idx) || idx < 0) {
-          throw httpError(400, 'userMessageIndex must be a non-negative integer');
-        }
-        if (typeof body.text !== 'string') throw httpError(400, 'text must be a string');
         // Every guard, the rewrite-interlock flag's claim/release and the
         // derivation of the respawn arguments live on the instance alongside its
         // rewind/prune siblings; the route only spawns what it hands back.
-        const { newSessionId, droppedText, createArgs } = await inst.forkAtUserMessage(idx, body.text);
+        let forked: { newSessionId: string; droppedText: string | null; createArgs: CreateInstanceInput };
+        if (body.userMessageIndex === undefined && body.text === undefined) {
+          forked = { ...await inst.forkAtTip(), droppedText: null };
+        } else {
+          const idx = Number(body.userMessageIndex);
+          if (!Number.isInteger(idx) || idx < 0) {
+            throw httpError(400, 'userMessageIndex must be a non-negative integer');
+          }
+          if (typeof body.text !== 'string') throw httpError(400, 'text must be a string');
+          forked = await inst.forkAtUserMessage(idx, body.text);
+        }
+        const { newSessionId, droppedText, createArgs } = forked;
         const newInst = await instances.create({ ...createArgs, actor: { type: 'human' }, launchCause: 'fork' });
         res.status(201).json({
           ok: true,

@@ -676,6 +676,78 @@ describe('session menu', () => {
     } finally { act(() => muteSession('sess-1', false)); }
   });
 
+  it('⋮ offers Fork session directly after Prune context…, the two grouped between separators', async () => {
+    for (const status of ['idle', 'turn', 'spawning'] as const) {
+      const r = wrap(<SessionHeader inst={base({ status, displayStatus: status })} onMenu={() => {}} />);
+      const menu = await openMenu();
+      const names = within(menu).getAllByRole('menuitem').map((el) => el.textContent!.trim());
+      const prune = names.findIndex((n) => /^Prune context…$/.test(n));
+      expect(prune, status).toBeGreaterThanOrEqual(0);
+      expect(names[prune + 1], status).toMatch(/^Fork session…$/);
+      // DOM order over the menu's direct children: a separator on each side of the pair.
+      const kids = [...menu.querySelectorAll(':scope [role="menuitem"], :scope [role="menuitemcheckbox"], :scope [role="separator"]')];
+      const at = kids.indexOf(menuItem(menu, /^Prune context/));
+      expect(kids[at - 1]?.getAttribute('role'), `${status}: before Prune`).toBe('separator');
+      expect(kids[at + 1], status).toBe(menuItem(menu, /^Fork session/));
+      expect(kids[at + 2]?.getAttribute('role'), `${status}: after Fork`).toBe('separator');
+      const roles = kids.map((el) => el.getAttribute('role'));
+      expect(roles[0], `${status}: leading`).not.toBe('separator');
+      expect(roles.at(-1), `${status}: trailing`).not.toBe('separator');
+      expect(roles.some((role, i) => role === 'separator' && roles[i + 1] === 'separator'), `${status}: adjacent`).toBe(false);
+      r.unmount();
+    }
+  });
+
+  it('while ⋮ stays open Fork session follows the session: disabled with the between-turns title in a turn or with no session id, enabled idle and while a plan awaits', async () => {
+    const h = mountHeader(base());
+    const menu = await openMenu();
+    const fork = () => menuItem(menu, /Fork session/);
+    expect(isDisabled(fork())).toBe(false);
+    expect(fork().title).toBeTruthy();
+    expect(fork().title).not.toMatch(/between turns/i);
+    h.update(base({ status: 'turn', displayStatus: 'turn' }));
+    expect(menu.isConnected).toBe(true);
+    expect(isDisabled(fork())).toBe(true);
+    expect(fork().title).toMatch(/between turns/i);
+    h.update(base({ awaitingUser: 'plan', awaitingUserSource: 'tool' }));
+    expect(isDisabled(fork())).toBe(false);
+    h.update(base({ sessionId: null }));
+    expect(isDisabled(fork())).toBe(true);
+    h.update(base());
+    expect(isDisabled(fork())).toBe(false);
+  });
+
+  it('Fork session confirms, then POSTs an anchorless fork for this instance; declining sends nothing', async () => {
+    const forks: [string, string | undefined, unknown][] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/fork')) {
+        forks.push([url, init?.method, init?.body ? JSON.parse(String(init.body)) : undefined]);
+        return new Response(JSON.stringify({ ok: true, instance: { id: 'forked' } }), { status: 201 });
+      }
+      return new Response('[]');
+    }));
+    const err = vi.spyOn(toast, 'error').mockImplementation(() => '' as any);
+    try {
+      wrap(<><SessionHeader inst={base()} onMenu={() => {}} /><ConfirmHost /></>);
+      const pick = async () => {
+        await act(async () => { fireEvent.click(menuItem(await openMenu(), /Fork session/)); });
+        return screen.getByRole('dialog', { name: 'Fork this session?' });
+      };
+      let dialog = await pick();
+      await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); });
+      expect(forks).toEqual([]);
+      dialog = await pick();
+      expect(forks).toEqual([]);
+      await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Fork' })); });
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(forks).toEqual([['/api/instances/inst-1/fork', 'POST', {}]]);
+      expect(err).not.toHaveBeenCalled();
+    } finally {
+      err.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('playbook enforcement follows the conductor\'s level while the header stays mounted', async () => {
     const conductor = (playbookEnforcement: string) => base({ project: '.conduct', playbookEnforcement });
     const h = mountHeader(conductor('enforce'));

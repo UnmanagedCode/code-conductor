@@ -107,7 +107,7 @@ import { PlanFileTracker } from './planFile.ts';
 import { cliEnvBase } from './cliEnv.ts';
 import { ensureRemoteConfigDir } from './claudeConfigFarm.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
-import { completeLinesOf, forkSessionAtUserMessage, truncateSessionAtUserMessage, verifyUserPrompt, PROMPT_OUT_OF_RANGE } from './sessionEdit.ts';
+import { completeLinesOf, forkSessionAtUserMessage, forkSessionWhole, truncateSessionAtUserMessage, verifyUserPrompt, PROMPT_OUT_OF_RANGE } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES, contextReading } from './sessionPrune.ts';
 import { CallUsageTracker } from './callUsage.ts';
 import { CacheEstimator } from './cacheEstimate.ts';
@@ -648,13 +648,20 @@ export class EventLog {
 // cannot be placed in the rotated backing file (Instance._fileOrdinalFor).
 export const PROMPT_UNRESOLVED = 'prompt position unresolved';
 
-// What Instance.forkAtUserMessage copies from, pinned before its first read.
+// What a fork (Instance._claimForkSource) copies from, pinned before its first read.
 interface ForkPin {
   id: string;
   place: TranscriptPlacement;
   file: string;
   startSeq: number;
   proc: LaunchedProc | null;
+}
+
+// The 409 a whole-session fork (Instance.forkAtTip) refuses with when the
+// source is not, or stopped being, between turns.
+function forkNotBetweenTurns(): Error {
+  return httpError(409, 'the whole session can only be forked between turns — '
+    + 'wait for the running turn to end, or fork from a message');
 }
 
 function promptUnresolved(): never {
@@ -850,6 +857,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   parser: Parser;
   ring: EventLog;
   _userEchoCount: number;
+  _turnStarts: number;
   _questionAnswers: QuestionAnswerCorrelator;
   _liveThinkingTokens: number | null;
   _lastContextUsage: unknown;
@@ -1073,6 +1081,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // into the new file (_fileOrdinalFor). Reset alongside the ring in
     // _wipeForResume (replay recounts from 0).
     this._userEchoCount = 0;
+    // Transitions INTO 'turn' (_setStatus), prompted or not; never reset. Lets
+    // the whole-session fork tell whether any turn started during its read
+    // (Instance.forkAtTip) — a status re-check misses one that also ended.
+    this._turnStarts = 0;
     // Pairs an answering outer user_echo with its user_question (see _emitUi).
     // Reset alongside the count in _wipeForResume.
     this._questionAnswers = new QuestionAnswerCorrelator();
@@ -1822,7 +1834,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the re-invocation payload) is being delivered right now. Mid-turn
     // message_starts never reach here (status is already 'turn'), so agent-loop
     // steps inside a turn can't falsely clear it.
-    if (next === 'turn') { this._taskNotificationPending = false; this._queuedPromptPending = false; }
+    if (next === 'turn') { this._taskNotificationPending = false; this._queuedPromptPending = false; this._turnStarts += 1; }
     if (next === 'turn') this._liveAsk.onTurnStart();
     // A new turn starts: clear the per-turn cache-miss capture so the next
     // message_start is treated as this turn's first request (see the
@@ -4798,43 +4810,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   async forkAtUserMessage(userMessageIndex: number, expectedText: string): Promise<{
     newSessionId: string; droppedText: string; createArgs: CreateInstanceInput;
   }> {
-    // A rewind/prune on the SAME instance rewrites (or truncates) the very
-    // jsonl this fork is about to read, and a second fork would race this one's
-    // wait. Refuse — the mirror of the `_mutating` check those two already do.
-    //
-    // Claim the flag SYNCHRONOUSLY with the check: no await may sit between
-    // them, or two concurrent forks both pass the check, both set the flag,
-    // and the first one's `finally` clears it while the second is still
-    // reading — letting a rewind rewrite the file under that read. A rotation
-    // in flight refuses via the SHARED method, not a local re-check of the same
-    // two flags: that method exists so these guards cannot drift, and a third
-    // condition added to it must reach fork too. Synchronous, and ahead of the
-    // claim below.
-    this._assertNoRotationInFlight();
-    if (this._mutating) {
-      throw httpError(409, 'another rewind/fork/prune is in progress');
-    }
-    const backingId = this.backingSessionId;
-    if (!backingId) {
-      throw httpError(400, 'no sessionId — instance has not yet received a turn');
-    }
-    // What this fork copies from, pinned before its first read — and built
-    // BEFORE the claim, since sessionFilePath can throw and a throw between the
-    // claim and the `try` would leave the flag held for good. While the flag is
-    // held the pinned file only ever GROWS: its writers append (the CLI,
-    // writeSessionMetadata), its only in-place rewriters (rewind, prune) refuse,
-    // and a rotation moves the CLI onto a new file and leaves this one intact.
-    // So any single read of it is a byte-prefix of its eventual contents.
-    const pin: ForkPin = {
-      id: backingId,
-      place: this.transcriptPlace,
-      file: sessionFilePath(this.transcriptPlace, backingId),
-      startSeq: currentSegmentScope(this).startSeq,
-      proc: this.proc,
-    };
+    const pin = this._claimForkSource({ requireIdle: false });
     const deadline = Date.now() + this._forkPersistWaitMs;
     let forked: { newSessionId: string; droppedText: string } | null = null;
-    this._mutating = 'fork';
     try {
       while (!forked) {
         // Synchronously, before the read: the source must still be the pinned
@@ -4885,48 +4863,122 @@ export class Instance extends EventEmitter implements InstanceLike {
     } finally {
       this._endMutation();
     }
-    // The fork starts titled after its source (forkTitle). Written before the
-    // caller's create() so spawn's _hydrateTitle finds it on the new record.
-    const title = forkTitle(await getSessionTitle(backingId));
-    if (title) await applySessionTitle(null, forked.newSessionId, title);
     return {
       newSessionId: forked.newSessionId,
       droppedText: forked.droppedText,
-      // `backend` is REQUIRED here, not optional: forkSessionAtUserMessage
-      // copies the jsonl but records no backend for the new sessionId, so
-      // create()'s session-store recovery finds nothing. Omitting it silently
-      // falls back to the identity `claude` backend while this.model keeps the
-      // substitution backend's foreign model id — and because that model is
-      // non-null, the BACKEND_MODEL_MISSING guard never fires, so the fork
-      // launches a real `claude --model <foreign-id>` against the Anthropic
-      // account. contextWindowTokens rides along as the last-known fallback.
-      createArgs: {
-        project: this.project,
-        resume: forked.newSessionId,
-        mode: this.mode,
-        effort: this.effort,
-        thinking: this.thinking,
-        backend: this.backend,
-        model: this.model,
-        contextWindowTokens: this.contextWindowTokens,
-        worktree: this.worktree?.worktreeName ?? null,
-        // EXPLICIT, not inferable: forkSessionAtUserMessage writes no temp
-        // flag for the new id, and create()'s store recovery only ORs temp
-        // in when the flag is already falsy AND the resumed id is marked — so
-        // without this the fork of a temp session comes out silently
-        // persistent. Set, spawn() marks the new backing id and the child runs
-        // the whole temp lifecycle, archiving on its own exit.
-        // Fork deliberately takes no `_suppressTempDelete` the way rewind and
-        // prune do: those kill their source and respawn it, so the archive
-        // would fire on a session about to come back. Fork never kills
-        // anything, so a source exiting mid-fork is a REAL exit and must
-        // archive — and that archive's writes (sub-agent dir + the SOURCE
-        // transcript's segment flags) are disjoint
-        // from this fork's (source jsonl read-only, new id's jsonl + metadata
-        // written).
-        temp: this.temp,
-        prefill: forked.droppedText,
-      },
+      createArgs: await this._finishFork(pin.id, forked.newSessionId, forked.droppedText),
+    };
+  }
+
+  // Fork the whole transcript as it stands into a fresh sessionId, leaving THIS
+  // session untouched — the fork with nothing dropped and nothing prefilled.
+  // Between turns only: mid-turn the tip is a half-written turn, and a fork
+  // from a prompt (forkAtUserMessage) covers that case. An idle source owes no
+  // line, so one read is the copy — no wait loop. A fork blocks no prompt
+  // (rewriteBlocksPrompts), so a turn may start between the claim and the
+  // read's end and append to the file mid-read: any turn start since the
+  // claim refuses with the same between-turns 409 before anything is written.
+  async forkAtTip(): Promise<{ newSessionId: string; createArgs: CreateInstanceInput }> {
+    const pin = this._claimForkSource({ requireIdle: true });
+    const turnStarts = this._turnStarts;
+    let newSessionId: string;
+    try {
+      const snap = await this._readForkSnapshot(pin.file, pin.id);
+      if (this._turnStarts !== turnStarts) throw forkNotBetweenTurns();
+      ({ newSessionId } = await forkSessionWhole({
+        place: pin.place, sessionId: pin.id, snapshot: snap.text, mode: this.mode,
+      }));
+    } finally {
+      this._endMutation();
+    }
+    return { newSessionId, createArgs: await this._finishFork(pin.id, newSessionId, undefined) };
+  }
+
+  // Both forks' guards, their source pin and their `_mutating` claim. A
+  // rewind/prune on the SAME instance rewrites (or truncates) the very jsonl a
+  // fork is about to read, and a second fork would race this one's wait.
+  // Refuse — the mirror of the `_mutating` check those two already do.
+  // `requireIdle` (the whole-session fork) refuses unless between turns.
+  //
+  // Claim the flag SYNCHRONOUSLY with the check: no await may sit between
+  // them, or two concurrent forks both pass the check, both set the flag,
+  // and the first one's `finally` clears it while the second is still
+  // reading — letting a rewind rewrite the file under that read. A rotation
+  // in flight refuses via the SHARED method, not a local re-check of the same
+  // two flags: that method exists so these guards cannot drift, and a third
+  // condition added to it must reach fork too. Synchronous, and ahead of the
+  // claim below. The caller must release the claim (`_endMutation`) in a
+  // `finally` entered with no await after this returns.
+  _claimForkSource({ requireIdle }: { requireIdle: boolean }): ForkPin {
+    this._assertNoRotationInFlight();
+    if (this._mutating) {
+      throw httpError(409, 'another rewind/fork/prune is in progress');
+    }
+    if (requireIdle && this.status !== 'idle') throw forkNotBetweenTurns();
+    const backingId = this.backingSessionId;
+    if (!backingId) {
+      throw httpError(400, 'no sessionId — instance has not yet received a turn');
+    }
+    // What this fork copies from, pinned before its first read — and built
+    // BEFORE the claim, since sessionFilePath can throw and a throw between the
+    // claim and the `try` would leave the flag held for good. While the flag is
+    // held the pinned file only ever GROWS: its writers append (the CLI,
+    // writeSessionMetadata), its only in-place rewriters (rewind, prune) refuse,
+    // and a rotation moves the CLI onto a new file and leaves this one intact.
+    // So any single read of it is a byte-prefix of its eventual contents.
+    const pin: ForkPin = {
+      id: backingId,
+      place: this.transcriptPlace,
+      file: sessionFilePath(this.transcriptPlace, backingId),
+      startSeq: currentSegmentScope(this).startSeq,
+      proc: this.proc,
+    };
+    this._mutating = 'fork';
+    return pin;
+  }
+
+  // Both forks' tail, once the copy is written and the claim released: title
+  // the fork after its source and derive the create() arguments it must be
+  // spawned with. `prefill` rides along only when defined.
+  async _finishFork(backingId: string, newSessionId: string, prefill: string | undefined): Promise<CreateInstanceInput> {
+    // The fork starts titled after its source (forkTitle). Written before the
+    // caller's create() so spawn's _hydrateTitle finds it on the new record.
+    const title = forkTitle(await getSessionTitle(backingId));
+    if (title) await applySessionTitle(null, newSessionId, title);
+    // `backend` is REQUIRED here, not optional: the fork copies the jsonl
+    // but records no backend for the new sessionId, so
+    // create()'s session-store recovery finds nothing. Omitting it silently
+    // falls back to the identity `claude` backend while this.model keeps the
+    // substitution backend's foreign model id — and because that model is
+    // non-null, the BACKEND_MODEL_MISSING guard never fires, so the fork
+    // launches a real `claude --model <foreign-id>` against the Anthropic
+    // account. contextWindowTokens rides along as the last-known fallback.
+    return {
+      project: this.project,
+      resume: newSessionId,
+      mode: this.mode,
+      effort: this.effort,
+      thinking: this.thinking,
+      backend: this.backend,
+      model: this.model,
+      contextWindowTokens: this.contextWindowTokens,
+      worktree: this.worktree?.worktreeName ?? null,
+      // EXPLICIT, not inferable: the fork writes no temp
+      // flag for the new id, and create()'s store recovery only ORs temp
+      // in when the flag is already falsy AND the resumed id is marked — so
+      // without this the fork of a temp session comes out silently
+      // persistent. Set, spawn() marks the new backing id and the child runs
+      // the whole temp lifecycle, archiving on its own exit.
+      // Fork deliberately takes no `_suppressTempDelete` the way rewind and
+      // prune do: those kill their source and respawn it, so the archive
+      // would fire on a session about to come back. Fork never kills
+      // anything, so a source exiting mid-fork is a REAL exit and must
+      // archive — and that archive's writes (sub-agent dir + the SOURCE
+      // transcript's segment flags) are disjoint
+      // from this fork's (source jsonl read-only, new id's jsonl + metadata
+      // written).
+      temp: this.temp,
+      ...(prefill !== undefined ? { prefill } : {}),
     };
   }
 
