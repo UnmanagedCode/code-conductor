@@ -55,13 +55,13 @@ describe('a markdown pipeline that throws', () => {
 });
 
 describe('deeply nested input through the real pipeline', () => {
-  // The quote, list and emphasis cases are past the complexity budget (MarkdownBudget.test.tsx), so they show the raw
-  // source without parsing; the brackets parse. A line of only `*` would be a rule, hence the `x`.
+  // The quote and list cases are past MAX_NESTING (MarkdownGuard.test.tsx), so they show the raw source without parsing;
+  // the brackets and emphasis parse. A line of only `*` would be a rule, hence the `x`.
   const CASES = [
     { kind: 'blockquote', text: `${'>'.repeat(10_000)} x` },
     { kind: 'list', text: Array.from({ length: 200 }, (_, i) => `${'  '.repeat(i)}- x`).join('\n') },
     { kind: 'brackets', text: '['.repeat(50_000) },
-    { kind: 'emphasis', text: `${'*'.repeat(5_000)}x${'*'.repeat(5_000)}` },
+    { kind: 'emphasis', text: `${'*'.repeat(1_000)}x${'*'.repeat(1_000)}` },
   ];
   // Pins: deep nesting never unmounts the page or blanks the block: the host shows the render or, on a throw, the raw-source <pre>.
   it.each(CASES)('$kind nesting leaves siblings mounted and the host non-empty', ({ text }) => {

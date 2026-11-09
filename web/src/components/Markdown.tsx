@@ -72,16 +72,16 @@ class MarkdownBoundary extends React.Component<{ text: string; children: React.R
  * rules in index.css. Links to cc (`http://cc.internal/#…`, cc's own page) follow the app's policy (viewLinks.ts): a cc
  * view opens in the same tab, any other renders as literal text. `inlineEnd` adds a slot at the inline end of the last
  * line of prose holding the nearest MarkdownInlineEnd value. Never throws: a failed render shows the raw source, as does
- * a document past the complexity budget (COMPLEXITY_LIMITS in markdown/complexity.ts), which is never parsed.
+ * a document past MAX_SIZE or MAX_NESTING (markdown/guard.ts), which is never parsed.
  */
 export const Markdown = React.memo(function Markdown({
   text, className, inlineEnd = false,
 }: { text: string; className?: string; inlineEnd?: boolean }) {
   const overrides = React.useMemo(() => components(text), [text]);
-  const tooComplex = React.useMemo(() => !parseable(text), [text]);
+  const refused = React.useMemo(() => !parseable(text), [text]);
   return (
     <div className={cn('md', className)} onClick={followViewLink}>
-      {tooComplex ? <RawSource text={text} /> : (
+      {refused ? <RawSource text={text} /> : (
         <MarkdownBoundary text={text}>
           <ReactMarkdown remarkPlugins={REMARK} remarkRehypeOptions={REMARK_REHYPE} rehypePlugins={inlineEnd ? REHYPE_INLINE_END : REHYPE} urlTransform={safeUrl} components={overrides}>
             {text}
