@@ -435,3 +435,38 @@ test('an anchorless fork mid-turn is refused 409 between-turns and writes nothin
     assert.equal(ok.status, 201, JSON.stringify(ok.body));
   } finally { await ctx.close(); }
 });
+
+// A fork blocks no prompt, so a turn can start between forkAtTip's claim and
+// the end of its one read; the copy would then hold that turn's half-written
+// lines. Both shapes — a turn still running when the read returns, and one
+// that started AND ended during it — must refuse, writing nothing.
+async function forkWholeRacingATurn(raceDuringRead) {
+  const { ctx, inst, sessionFiles, append } = await bootMidTurn();
+  try {
+    await append([...QUEUE, THIRD, ...OPEN_TURN]);
+    endTurn(inst);
+    const snaps = traceReads(inst, async () => { await raceDuringRead(inst); });
+    const before = await sessionFiles();
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, {});
+    assert.equal(snaps.length, 1, 'precondition: the race ran inside the fork\'s read');
+    assert.equal(fk.status, 409, JSON.stringify(fk.body));
+    assert.match(fk.body.error, /between turns/);
+    assert.deepEqual(await sessionFiles(), before, 'no fork file was written');
+    assert.equal(inst._mutating, null, 'the flag is released');
+  } finally { await ctx.close(); }
+}
+
+test('an anchorless fork whose read races a turn that starts and keeps running refuses 409 between-turns, writing nothing', async () => {
+  await forkWholeRacingATurn(async (inst) => {
+    await inst.prompt('fourth');
+    assert.equal(inst.status, 'turn', 'precondition: a turn is running when the read returns');
+  });
+});
+
+test('an anchorless fork whose read races a turn that starts and ends refuses 409 between-turns, writing nothing', async () => {
+  await forkWholeRacingATurn(async (inst) => {
+    await inst.prompt('fourth');
+    endTurn(inst);
+    assert.equal(inst.status, 'idle', 'precondition: the source is idle again when the read returns');
+  });
+});

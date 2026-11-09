@@ -657,6 +657,13 @@ interface ForkPin {
   proc: LaunchedProc | null;
 }
 
+// The 409 a whole-session fork (Instance.forkAtTip) refuses with when the
+// source is not, or stopped being, between turns.
+function forkNotBetweenTurns(): Error {
+  return httpError(409, 'the whole session can only be forked between turns — '
+    + 'wait for the running turn to end, or fork from a message');
+}
+
 function promptUnresolved(): never {
   throw httpError(409, `${PROMPT_UNRESOLVED}: can't place this prompt in the current transcript yet — retry once the turn has finished`);
 }
@@ -850,6 +857,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   parser: Parser;
   ring: EventLog;
   _userEchoCount: number;
+  _turnStarts: number;
   _questionAnswers: QuestionAnswerCorrelator;
   _liveThinkingTokens: number | null;
   _lastContextUsage: unknown;
@@ -1073,6 +1081,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // into the new file (_fileOrdinalFor). Reset alongside the ring in
     // _wipeForResume (replay recounts from 0).
     this._userEchoCount = 0;
+    // Transitions INTO 'turn' (_setStatus), prompted or not; never reset. Lets
+    // the whole-session fork tell whether any turn started during its read
+    // (Instance.forkAtTip) — a status re-check misses one that also ended.
+    this._turnStarts = 0;
     // Pairs an answering outer user_echo with its user_question (see _emitUi).
     // Reset alongside the count in _wipeForResume.
     this._questionAnswers = new QuestionAnswerCorrelator();
@@ -1822,7 +1834,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the re-invocation payload) is being delivered right now. Mid-turn
     // message_starts never reach here (status is already 'turn'), so agent-loop
     // steps inside a turn can't falsely clear it.
-    if (next === 'turn') { this._taskNotificationPending = false; this._queuedPromptPending = false; }
+    if (next === 'turn') { this._taskNotificationPending = false; this._queuedPromptPending = false; this._turnStarts += 1; }
     if (next === 'turn') this._liveAsk.onTurnStart();
     // A new turn starts: clear the per-turn cache-miss capture so the next
     // message_start is treated as this turn's first request (see the
@@ -4862,12 +4874,17 @@ export class Instance extends EventEmitter implements InstanceLike {
   // session untouched — the fork with nothing dropped and nothing prefilled.
   // Between turns only: mid-turn the tip is a half-written turn, and a fork
   // from a prompt (forkAtUserMessage) covers that case. An idle source owes no
-  // line, so one read is the copy — no wait loop.
+  // line, so one read is the copy — no wait loop. A fork blocks no prompt
+  // (rewriteBlocksPrompts), so a turn may start between the claim and the
+  // read's end and append to the file mid-read: any turn start since the
+  // claim refuses with the same between-turns 409 before anything is written.
   async forkAtTip(): Promise<{ newSessionId: string; createArgs: CreateInstanceInput }> {
     const pin = this._claimForkSource({ requireIdle: true });
+    const turnStarts = this._turnStarts;
     let newSessionId: string;
     try {
       const snap = await this._readForkSnapshot(pin.file, pin.id);
+      if (this._turnStarts !== turnStarts) throw forkNotBetweenTurns();
       ({ newSessionId } = await forkSessionWhole({
         place: pin.place, sessionId: pin.id, snapshot: snap.text, mode: this.mode,
       }));
@@ -4897,10 +4914,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this._mutating) {
       throw httpError(409, 'another rewind/fork/prune is in progress');
     }
-    if (requireIdle && this.status !== 'idle') {
-      throw httpError(409, 'the whole session can only be forked between turns — '
-        + 'wait for the running turn to end, or fork from a message');
-    }
+    if (requireIdle && this.status !== 'idle') throw forkNotBetweenTurns();
     const backingId = this.backingSessionId;
     if (!backingId) {
       throw httpError(400, 'no sessionId — instance has not yet received a turn');
