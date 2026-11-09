@@ -59,10 +59,12 @@ async function composeAll() {
 
 test('appending a skill part to every fragment and core leaves every composed doc byte-identical', async () => {
   const shipped = await composeAll();
-  // The shipped tree's own skill bodies (if any) are absent from its docs.
+  // Never both: no non-blank line of a shipped skill body appears in any composed doc.
   for (const s of [...shipped.conduct.skills, ...shipped.workspace.skills]) {
     for (const doc of [shipped.conduct.text, shipped.workspace.text, shipped.project]) {
-      assert.ok(!doc.includes(s.body), `skill '${s.name}' body leaked into a composed doc`);
+      for (const line of s.body.split('\n').filter(l => l.trim())) {
+        assert.ok(!doc.includes(line), `skill '${s.name}' line leaked into a composed doc: ${line}`);
+      }
     }
   }
   for (const doc of [shipped.conduct.text, shipped.workspace.text, shipped.project]) {
