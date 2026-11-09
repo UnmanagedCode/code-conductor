@@ -78,8 +78,9 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = [
   {
     family: 'fable',
     label: 'Fable',
-    default: 'claude-fable-5-1',
+    default: 'claude-fable-5-2',
     versions: [
+      { id: 'claude-fable-5-2', label: 'Fable 5.2', contextWindow: 1_000_000 },
       { id: 'claude-fable-5-1', label: 'Fable 5.1', contextWindow: 1_000_000 },
       { id: 'claude-fable-5', label: 'Fable 5', contextWindow: 1_000_000 },
     ],

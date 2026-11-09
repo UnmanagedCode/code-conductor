@@ -39,7 +39,7 @@ export type ModelsCatalog = {
 // Pre-fetch fallback version ids (one per family) — only used to seed the
 // default tier bindings before the boot fetch resolves.
 const DEFAULT_VERSIONS = {
-  fable: 'claude-fable-5-1',
+  fable: 'claude-fable-5-2',
   sonnet: 'claude-sonnet-5-5',
   opus: 'claude-opus-5-5',
   haiku: 'claude-haiku-5-5',
@@ -48,7 +48,7 @@ const DEFAULT_VERSIONS = {
 // Friendly names for the pre-fetch fallback ids above — overwritten by the
 // shipped catalog's per-version `label` field once loadModelVersions() resolves.
 const DEFAULT_VERSION_LABELS: Record<string, string> = {
-  'claude-fable-5-1': 'Fable 5.1',
+  'claude-fable-5-2': 'Fable 5.2',
   'claude-sonnet-5-5': 'Sonnet 5.5',
   'claude-opus-5-5': 'Opus 5.5',
   'claude-haiku-5-5': 'Haiku 5.5',
