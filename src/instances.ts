@@ -7,7 +7,7 @@ import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
 import { RetiredPagers } from './retiredPagers.ts';
 import type { LineageSource } from './lineagePager.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, writeFileAtomic, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import { CORE_CLAUDE_PLUGIN_ROOT, withCoreClaudePlugin } from './coreClaudePlugin.ts';
 
@@ -59,8 +59,9 @@ export async function sweepSessionTmpDirs(liveIds: Iterable<string>): Promise<vo
 }
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
-  retireSegment, retireSegments, trackLineageWrite, loadLineage, type Lineage,
+  retireSegment, retireSegments, trackLineageWrite, loadLineage, chainFor, undoRenewal, type Lineage, type LineageSegment,
 } from './sessionLineage.ts';
+import { renewalBoundaryAt, renewalCut } from './renewalBoundary.ts';
 import { createWorktree, requireWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
@@ -662,6 +663,26 @@ interface ForkPin {
 function forkNotBetweenTurns(): Error {
   return httpError(409, 'the whole session can only be forked between turns — '
     + 'wait for the running turn to end, or fork from a message');
+}
+
+// `code` on the 409 a renewal undo refuses with when the divider is not the one
+// directly above the current segment.
+export const RENEWAL_NOT_LATEST = 'RENEWAL_NOT_LATEST';
+// `code` on the 409 a rewind/fork at a renewal divider refuses with when the
+// pre-renewal segment's transcript is gone.
+export const PRE_RENEWAL_GONE = 'PRE_RENEWAL_GONE';
+
+function preRenewalGone(): Error {
+  return httpError(409, 'the transcript from before this renewal is no longer on disk', { code: PRE_RENEWAL_GONE });
+}
+
+// A transcript's bytes, or null when the file is gone.
+async function readTranscriptOrNull(file: string): Promise<Buffer | null> {
+  try { return await fsp.readFile(file); }
+  catch (e) {
+    if (errCode(e) === 'ENOENT') return null;
+    throw e;
+  }
 }
 
 function promptUnresolved(): never {
@@ -4798,6 +4819,162 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._endMutation();
       if (windowOpen) this._endRelaunch();
     }
+  }
+
+  // Undo the renewal at the divider labelled `label` (a `segment_seam`'s
+  // segmentId), as if it had failed: the pre-renewal segment, cut before the
+  // turn that requested the renewal (renewalCut; a typed `/clear` is restored
+  // whole), becomes the live backing segment again — un-archived, `temp`
+  // restored — and the post-renewal run leaves the chain with its files. Only
+  // the divider directly above the current segment can be undone. The same
+  // kill → rewrite → wipe → relaunch sequence as rewindToUserMessage, logged
+  // with cause `rewind`; nothing is prefilled, since the dropped prompt is the
+  // renewal request and resending it would ask for a renewal again.
+  //
+  // Every refusal comes before the kill. A failure before the record is
+  // rewritten puts the pre segment's file back to its exact pre-undo bytes and
+  // relaunches the untouched post-renewal segment — so a retry cuts at the same
+  // place. Only the truncate and the record write sit in that window; the
+  // model-switch re-anchor runs after the commit, so nothing else needs undoing.
+  // A failure after the commit gets no fail-safe, as with rewind.
+  async rewindAcrossRenewal(label: string): Promise<{ droppedText: null }> {
+    this._assertNoRotationInFlight();
+    if (this._mutating) {
+      throw httpError(409, 'another rewind/fork/prune is in progress');
+    }
+    const liveId = this.backingSessionId;
+    const publicId = this.sessionId;
+    if (!liveId || !publicId) {
+      throw httpError(400, 'no sessionId — instance has not yet received a turn');
+    }
+    if (this.status === 'turn') {
+      throw httpError(409, 'cannot rewind during a running turn — interrupt first');
+    }
+    this._mutating = 'rewind';
+    let windowOpen = false;
+    let committed = false;
+    let preFile: string | null = null;
+    let preBytes: Buffer | null = null;
+    let preTouched = false;
+    let relaunchStarted = false;
+    try {
+      const place = this.transcriptPlace;
+      const b = renewalBoundaryAt(await chainFor(publicId), label);
+      // The post run always reaches the chain's end, so an older divider's run
+      // holds a later renewal; the latest one's holds only its prune copies.
+      if (b.post.slice(1).some(s => s.reason === 'renew') || (b.post.at(-1) as LineageSegment).id !== liveId) {
+        throw httpError(409, 'only the most recent renewal can be undone — fork from this divider instead',
+          { code: RENEWAL_NOT_LATEST });
+      }
+      const pre = b.pre.id;
+      preFile = sessionFilePath(place, pre);
+      preBytes = b.pre.dropped ? null : await readTranscriptOrNull(preFile);
+      if (preBytes === null) throw preRenewalGone();
+      const postText = (await readTranscriptOrNull(sessionFilePath(place, b.post[0].id)))?.toString('utf8') ?? '';
+      const cut = renewalCut(preBytes.toString('utf8'), postText);
+
+      this._beginRelaunch();
+      windowOpen = true;
+      if (this.proc) await this.kill({ graceMs: 300 });
+
+      let resumable: boolean;
+      let truncated: Awaited<ReturnType<typeof truncateSessionAtUserMessage>> | null = null;
+      if (cut) {
+        preTouched = true;
+        truncated = await truncateSessionAtUserMessage({
+          place, sessionId: pre, userMessageIndex: cut.userMessageIndex, expectedText: cut.text, mode: this.mode,
+        });
+        resumable = truncated.resumable;
+      } else {
+        resumable = await hasResumableConversation({ place, sessionId: pre });
+      }
+      await undoRenewal(publicId, { pre, post: b.post.map(s => s.id), temp: this.temp });
+      committed = true;
+
+      // In memory first, so no reader sees the deleted post segment as live.
+      // Set explicitly: a non-resumable relaunch starts `--session-id` from it.
+      this.backingSessionId = pre;
+      this._segments = (await segmentsFor(publicId)).map(s => s.id);
+      this.lastRotatedAt = null;
+      this.rotationReason = null;
+      // The post run is discarded with its files. A failed removal leaves an
+      // orphan file no record names: warned, not fatal — the undo has landed.
+      for (const s of b.post) {
+        for (const target of [sessionFilePath(place, s.id), subAgentDirPath(place, s.id)]) {
+          await fsp.rm(target, { recursive: true, force: true })
+            .catch((e: unknown) => console.warn(`instances: could not remove ${target}: ${(e as Error).message}`));
+        }
+      }
+      if (truncated) await reanchorModelSwitches(publicId, pre, truncated.survivingUuids, truncated.lastSurvivingUuid);
+      relaunchStarted = true;
+      await this._relaunchSegment(pre, resumable, 'rewind');
+      await this._awaitRelaunchConfirmed();
+      return { droppedText: null };
+    } catch (e) {
+      if (!windowOpen) throw e;
+      await this.kill({ graceMs: 300 }).catch(() => {});
+      if (!committed) {
+        if (preTouched && preFile && preBytes) {
+          await writeFileAtomic(preFile, preBytes)
+            .catch((re: unknown) => console.warn(`instances: could not restore ${preFile}: ${(re as Error).message}`));
+        }
+        // The record still names the post-renewal segment, untouched: run it again.
+        this._wipeForResume();
+        try {
+          await this.launch({ resume: liveId, cause: 'rewind' });
+          await this._awaitRelaunchConfirmed();
+        } catch {
+          await this.kill({ graceMs: 300 }).catch(() => {});
+        }
+        throw e;
+      }
+      const err = e as { statusCode?: unknown; code?: unknown; message?: unknown };
+      const refusal = typeof err?.statusCode === 'number';
+      throw httpError(
+        refusal ? err.statusCode as number : 500,
+        `the renewal was undone, but ${relaunchStarted ? 'the session failed to relaunch' : 'finishing it failed'}: `
+          + (typeof err?.message === 'string' ? err.message : String(e)),
+        refusal && typeof err.code === 'string' ? { code: err.code } : {},
+      );
+    } finally {
+      this._endMutation();
+      if (windowOpen) this._endRelaunch();
+    }
+  }
+
+  // Fork from before the renewal at the divider labelled `label`: a new session
+  // holding the pre-renewal segment cut as rewindAcrossRenewal cuts it (whole
+  // for a typed `/clear`), leaving THIS session untouched. Any divider, not just
+  // the latest. The fork is one segment: its scroll-back stops at the pre
+  // segment.
+  async forkAtRenewal(label: string): Promise<{ newSessionId: string; createArgs: CreateInstanceInput }> {
+    // Allowed mid-turn, like a fork from a message, and with no post-read
+    // turn-start re-check (forkAtTip's): that guards a snapshot of the LIVE file,
+    // while this reads a retired segment no turn writes. Its only writer,
+    // rewindAcrossRenewal, is excluded by this `_mutating` claim. The pin is
+    // unused for the same reason.
+    this._claimForkSource({ requireIdle: false });
+    let pre: string;
+    let newSessionId: string;
+    try {
+      const place = this.transcriptPlace;
+      const b = renewalBoundaryAt(await chainFor(this.sessionId ?? ''), label);
+      pre = b.pre.id;
+      const raw = b.pre.dropped ? null : await readTranscriptOrNull(sessionFilePath(place, pre));
+      if (raw === null) throw preRenewalGone();
+      const preText = completeLinesOf(raw.toString('utf8'));
+      const postText = (await readTranscriptOrNull(sessionFilePath(place, b.post[0].id)))?.toString('utf8') ?? '';
+      const cut = renewalCut(preText, postText);
+      ({ newSessionId } = cut
+        ? await forkSessionAtUserMessage({
+          place, sessionId: pre, snapshot: preText,
+          userMessageIndex: cut.userMessageIndex, expectedText: cut.text, mode: this.mode,
+        })
+        : await forkSessionWhole({ place, sessionId: pre, snapshot: preText, mode: this.mode }));
+    } finally {
+      this._endMutation();
+    }
+    return { newSessionId, createArgs: await this._finishFork(pre, newSessionId, undefined) };
   }
 
   // Fork this session at the Nth user prompt (0-indexed): copy the prefix into a

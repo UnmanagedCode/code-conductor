@@ -27,7 +27,8 @@ import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';
 import {
-  archiveSession, closeSession, forkActiveSession, forkWholeSession, performProjectDelete, promoteSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
+  archiveSession, closeSession, forkActiveSession, forkRenewal, forkWholeSession, performProjectDelete, promoteSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
+  rewindRenewal,
 } from './sessionActions';
 
 type Call = { url: string; method: string; body: any };
@@ -348,6 +349,46 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(toasts).toEqual([['error', 'Fork failed', error]]);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
     expect(controller.refreshInstances).not.toHaveBeenCalled();
+    expect(controller.selectInstance).not.toHaveBeenCalled();
+  });
+
+  it('rewindRenewal confirms destructively and POSTs {boundary} to /rewind', async () => {
+    stubFetch(() => ({ body: { ok: true, droppedText: null } }));
+    appStore.set({ activeId: 'A' });
+    await rewindRenewal('seg-1');
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0].destructive).toBe(true);
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([['POST', '/api/instances/A/rewind', { boundary: 'seg-1' }]]);
+    expect(toasts).toEqual([]);
+  });
+
+  it('a refused undo toasts the server message', async () => {
+    const error = 'only the most recent renewal can be undone — fork from this divider instead';
+    stubFetch(() => ({ status: 409, body: { error, code: 'RENEWAL_NOT_LATEST' } }));
+    appStore.set({ activeId: 'A' });
+    await rewindRenewal('seg-1');
+    expect(toasts).toEqual([['error', 'Undo renewal failed', error]]);
+  });
+
+  it('forkRenewal POSTs {boundary} to /fork, refreshes and selects with a gesture', async () => {
+    stubFetch(() => ({ body: { instance: { id: 'forked' } } }));
+    appStore.set({ activeId: 'A' });
+    await forkRenewal('seg-2');
+    expect(confirms).toHaveLength(1);
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([['POST', '/api/instances/A/fork', { boundary: 'seg-2' }]]);
+    expect(controller.refreshProjects).toHaveBeenCalledOnce();
+    expect(controller.refreshInstances).toHaveBeenCalledOnce();
+    expect(controller.selectInstance).toHaveBeenCalledExactlyOnceWith('forked', { userGesture: true, gesture: expect.any(Number) });
+  });
+
+  it('declining either renewal action sends nothing', async () => {
+    stubFetch(() => ({ body: { instance: { id: 'forked' } } }));
+    appStore.set({ activeId: 'A' });
+    confirmAnswer.value = false;
+    await rewindRenewal('seg-1');
+    await forkRenewal('seg-1');
+    expect(confirms).toHaveLength(2);
+    expect(calls).toEqual([]);
     expect(controller.selectInstance).not.toHaveBeenCalled();
   });
 

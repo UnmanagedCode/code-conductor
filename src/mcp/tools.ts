@@ -18,7 +18,7 @@ import { MODES as VALID_MODES } from '../sessionModes.ts';
 import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // The summary structure has ONE home (src/sessionRenew.ts) — the request prompt a
 // conductor-triggered renewal sends carries the same text.
-import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
+import { RENEW_SUMMARY_TEMPLATE, RENEW_SESSION_TOOL } from '../sessionRenew.ts';
 import { TITLE_SCHEMA } from '../sessionTitles.ts';
 import { limitsFor, type FormatLimits, type McpFormat } from './limits.ts';
 import { OUTPUT_SCHEMAS } from './outputSchemas.ts';
@@ -584,7 +584,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       annotations: { idempotentHint: true },
     },
     {
-      name: 'renew_session',
+      name: RENEW_SESSION_TOOL,
       description:
         'Without `sessionId`: renew your OWN session. Hand off a self-authored summary; code-conductor then ' +
         'clears your accumulated context in place — SAME session process, fresh conversation (a managed ' +

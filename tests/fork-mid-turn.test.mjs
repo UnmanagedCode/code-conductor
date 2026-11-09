@@ -12,10 +12,12 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.ts';
+import { encodeCwd, localPlace, sessionFilePath } from '../src/projects.ts';
+import { isPureUserPromptLine } from '../src/transcript.ts';
 import { PROMPT_NOT_PERSISTED, FORK_SOURCE_CHANGED, FORK_PERSIST_WAIT_MS, FORK_PERSIST_POLL_MS } from '../src/instances.ts';
 import { PROMPT_OUT_OF_RANGE, PROMPT_MISMATCH } from '../src/sessionEdit.ts';
-import { rotate } from './segmentChain.mjs';
+import { rotate, seedSegmentChain } from './segmentChain.mjs';
+import { preRenewalRecords, postRenewalRecords, declinedRequest } from './renewalFixtures.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-open-turn.json');
@@ -533,4 +535,36 @@ test('Instance.forkAtTip reads _turnStarts with no await after the claim', async
     'no await may sit between the claim and the _turnStarts read — see this test\'s comment');
   // The claim itself must be synchronous, or the call above would hide an await.
   assert.match(src, /\n  _claimForkSource\(/, '_claimForkSource must be a plain (non-async) method');
+});
+
+// A fork at a renewal divider (Instance.forkAtRenewal) reads the RETIRED
+// pre-renewal segment, which no turn writes, so it is allowed while the source
+// runs a turn — and it reads the chain, not the live file.
+test('a boundary fork mid-turn succeeds', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const project = 'forkmidboundary';
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: project });
+    const place = localPlace(path.join(ctx.projectsRoot, project));
+    const P = 'c0000001-aaaa-4bbb-8ccc-dddddddddddd', N = 'c0000002-aaaa-4bbb-8ccc-dddddddddddd';
+    await seedSegmentChain({ place, publicId: P.slice(0, 8), segments: [
+      { id: P, reason: 'initial', archived: true, records: preRenewalRecords('mid') },
+      { id: N, reason: 'renew', records: postRenewalRecords('mid') },
+    ] });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', resume: P.slice(0, 8) });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = ctx.instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.backingSessionId === N);
+    await inst.prompt('a turn that stays open');
+    await waitFor(() => inst.status === 'turn');
+    const proc = inst.proc;
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, { boundary: N });
+    assert.equal(fk.status, 201, JSON.stringify(fk.body));
+    const forked = await fs.readFile(sessionFilePath(place, fk.body.newSessionId), 'utf8');
+    assert.deepEqual(copied(forked).filter(isPureUserPromptLine).map(o => o.message.content), ['mid brief', declinedRequest('mid')]);
+    assert.equal(inst.status, 'turn', 'the source keeps running');
+    assert.ok(inst.proc === proc, 'the source process was not replaced');
+    assert.equal(inst._mutating, null);
+  } finally { await ctx.close(); }
 });

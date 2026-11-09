@@ -16,7 +16,8 @@
 // session that has never rotated and was never minted needs nothing recorded.
 //
 // `reason` is load-bearing, not polish. Every segment's file survives on disk in
-// both mechanisms, so segments are uniform for IDENTITY — but not for CONTENT: a
+// both mechanisms — except an undone renewal's post run, which undoRenewal
+// splices out and its caller removes with its files — so segments are uniform for IDENTITY — but not for CONTENT: a
 // `renew` segment is DISJOINT from its predecessor (full history is their
 // concatenation), while a `prune` segment is a filtered COPY that OVERLAPS it
 // (src/sessionPrune.ts writes a new file and leaves the original untouched) and
@@ -26,7 +27,9 @@
 // ROTATION, one path for all three mechanisms: recordRotation appends the new
 // segment — which inherits its predecessor's `temp` in the same write — and
 // retireSegment then archives the old segment (temp off, archived on). Session
-// facts are keyed by the public id, so a rotation never touches them.
+// facts are keyed by the public id, so a rotation never touches them. Two
+// writers take segments back off the end: revertRotation (a prune's rollback)
+// and undoRenewal (a rewind across the latest renewal).
 //
 // TOMBSTONES. A segment whose transcript is gone for good is not removed but
 // marked `dropped: true` in place (dropSegment), so the one reader that walks the
@@ -42,6 +45,7 @@ import {
   mutateSessions, loadSessions, liveSegments, ensureSegment, trackLineageWrite, VALID_REASONS,
   type RotationReason, type Segment, type SessionRecord, type SessionIndex, type SessionsDoc,
 } from './sessionStore.ts';
+import { httpError } from './httpError.ts';
 
 export { trackLineageWrite };
 export type { RotationReason };
@@ -190,6 +194,43 @@ export function revertRotation(publicId: string, backingId: string): Promise<voi
     else rec.current = last.id;
     return wrote;
   });
+}
+
+// `code` on the 409 undoRenewal refuses with when the chain no longer ends in
+// the renewal's post run.
+export const RENEWAL_MOVED = 'RENEWAL_MOVED';
+
+// Undo a renewal: SPLICE the post run (`post`, the chain entries after `pre`,
+// tombstones included) out of the record — not tombstoned, since a tombstone
+// would make the lineage walk draw a seam and a gap for a segment that is no
+// longer in this lineage — un-archive `pre`, give it `temp` back when `temp`,
+// and point `current` at it. Refuses RENEWAL_MOVED (409) unless the chain ends
+// exactly in `pre` (live) followed by `post`, with `current` the post run's last
+// entry and the newest live segment. A no-op once applied: `current` is `pre`
+// and no `post` id is present.
+//
+// Only caller: Instance.rewindAcrossRenewal, which deletes the post run's files.
+export function undoRenewal(publicId: string, { pre, post, temp }: { pre: string; post: string[]; temp: boolean }): Promise<void> {
+  const applied = (rec: SessionRecord | undefined): boolean =>
+    rec?.current === pre && !rec.segments.some(s => post.includes(s.id));
+  return mutateSessions('undoRenewal', pre, (doc) => {
+    const rec = doc.get(publicId);
+    if (applied(rec)) return unchanged;
+    const at = rec ? rec.segments.findIndex(s => s.id === pre) : -1;
+    const tail = rec && at !== -1 ? rec.segments.slice(at + 1).map(s => s.id) : [];
+    const ok = rec !== undefined && at !== -1 && !rec.segments[at].dropped && post.length > 0
+      && rec.current === post.at(-1) && liveSegments(rec).at(-1)?.id === rec.current
+      && tail.length === post.length && tail.every((id, k) => id === post[k]);
+    if (!ok) {
+      throw httpError(409, 'the session\'s segments changed while the renewal was being undone', { code: RENEWAL_MOVED });
+    }
+    const preSeg = rec.segments[at];
+    rec.segments = rec.segments.slice(0, at + 1);
+    delete preSeg.archived;
+    if (temp) preSeg.temp = true; else delete preSeg.temp;
+    rec.current = pre;
+    return wrote;
+  }, (doc) => (applied(doc.get(publicId)) ? { value: undefined } : null));
 }
 
 // public id → its CURRENT backing id; a known segment → ITSELF; anything unknown

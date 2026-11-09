@@ -110,7 +110,7 @@ function normalizePromptText(text: string): string {
 
 // The text the target line's bubble shows: its replayed outer echo — the same
 // function every replayed or archived bubble came from.
-function replayedPromptText(obj: PersistedLine): string {
+export function replayedPromptText(obj: PersistedLine): string {
   const echo = replayPersistedLine(obj).find(isOuterUserEcho);
   return typeof echo?.text === 'string' ? echo.text : '';
 }

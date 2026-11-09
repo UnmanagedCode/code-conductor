@@ -6,7 +6,7 @@ import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { conversation, lazyHistory, stickyPrompt } from '@/app/controller';
 import { pinStore, trackSwipes } from './stickyPrompt';
-import { forkActiveSession, rewindActiveSession } from '@/app/sessionActions';
+import { forkActiveSession, forkRenewal, rewindActiveSession, rewindRenewal } from '@/app/sessionActions';
 import { peekTaskTracker } from '@/app/trackers';
 import { uiStore } from '@/app/ui';
 import { useSessionColumn } from '@/app/sessionWidth';
@@ -76,6 +76,8 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
     canFork: fork,
     onRewind: (i, t) => void rewindActiveSession(i, t),
     onFork: (i, t) => void forkActiveSession(i, t),
+    onRewindRenewal: (s) => void rewindRenewal(s),
+    onForkRenewal: (s) => void forkRenewal(s),
     resolveAttachmentUrl: (filename) =>
       attachmentBase && filename ? attachmentBase + encodeURIComponent(filename) : null,
   }), [rewind, fork, attachmentBase]);

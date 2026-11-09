@@ -313,6 +313,10 @@ export interface InstanceLike {
   }>;
   // Fork the whole transcript (between turns only), leaving THIS session intact.
   forkAtTip(): Promise<{ newSessionId: string; createArgs: CreateInstanceInput }>;
+  // `label` is a renewal divider's segmentId (src/renewalBoundary.ts). Undo the
+  // latest renewal (idle only), or fork from before any renewal (mid-turn too).
+  rewindAcrossRenewal(label: string): Promise<{ droppedText: null }>;
+  forkAtRenewal(label: string): Promise<{ newSessionId: string; createArgs: CreateInstanceInput }>;
   pruneSession(input?: { cutTurnIndex?: unknown; keepLatestTurns?: unknown; pruneThinking?: unknown; inputMode?: unknown }): Promise<Record<string, unknown>>;
   enableDebug(): { ok: boolean; alreadyOn?: boolean; debugDir?: string | null; reason?: string };
   handleHookCallback(envelope: unknown, res: Response): void;

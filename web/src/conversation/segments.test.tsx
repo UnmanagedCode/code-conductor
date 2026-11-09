@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { within } from '@testing-library/react';
+import { act, within } from '@testing-library/react';
 import { ConversationModel, userActionsForStatus, type AssistantNode, type ToolNode, type UserNode } from './model';
 import { createLazyHistory } from './lazyHistory';
 import { flush, noActions, renderModel } from './renderModel';
@@ -261,6 +261,72 @@ describe('rewind / fork provenance', () => {
     const sub = outer.toolBlocks.get('A')!.sub!;
     expect(sub.items[0].type).toBe('user');
     expect(await actionable(sub)).toEqual({ 'child prompt': false });
+  });
+});
+
+describe('renewal divider controls', () => {
+  /** Each seam divider's controls by segmentId: [undo, fork], each 'on' | 'off' (disabled) | null (absent). */
+  const dividerControls = (root: HTMLElement) => Object.fromEntries([...root.querySelectorAll<HTMLElement>('[data-divider="seam"]')].map((d, i) => {
+    const state = (name: RegExp) => {
+      const b = within(d).queryByRole('button', { name }) as HTMLButtonElement | null;
+      return b ? (b.disabled ? 'off' : 'on') : null;
+    };
+    return [d.textContent + i, [state(/Undo this renewal/), state(/Fork from before this renewal/)]];
+  }));
+  /** A live view on segment A that crossed renewals into B, then C (current). */
+  function crossed() {
+    const m = new ConversationModel();
+    m.setCurrentSegment('C');
+    m.segmentId = 'A';
+    for (const ev of [echo('a'), seam('B'), echo('b'), seam('C'), echo('c')]) m.apply(ev);
+    return m;
+  }
+
+  it("a renewal divider offers undo only on the current segment's seam and fork on every seam", async () => {
+    const r = renderModel(crossed());
+    await flush();
+    expect(Object.values(dividerControls(r.root))).toEqual([[null, 'on'], ['on', 'on']]);
+    r.unmount();
+  });
+
+  it('a segment frame that moves current strips undo from the old seam', async () => {
+    const m = crossed();
+    const r = renderModel(m);
+    await flush();
+    act(() => { m.segmentId = 'D'; m.setCurrentSegment('D'); });
+    await flush();
+    expect(Object.values(dividerControls(r.root))).toEqual([[null, 'on'], [null, 'on']]);
+    act(() => { m.apply(seam('D')); });
+    await flush();
+    expect(Object.values(dividerControls(r.root))).toEqual([[null, 'on'], [null, 'on'], ['on', 'on']]);
+    r.unmount();
+  });
+
+  it('idle enables both; turn disables undo only; spawning/exited offer neither; a sub-conversation and a seam with no segmentId offer none', async () => {
+    const expected: Record<string, [string, string]> = { idle: ['on', 'on'], turn: ['off', 'on'], spawning: ['off', 'off'], exited: ['off', 'off'] };
+    for (const [status, want] of Object.entries(expected)) {
+      const { rewind, fork } = userActionsForStatus(status);
+      const r = renderModel(crossed(), { ...noActions, canRewind: rewind, canFork: fork });
+      await flush();
+      expect(Object.values(dividerControls(r.root)).at(-1), status).toEqual(want);
+      r.unmount();
+    }
+
+    const bare = new ConversationModel();
+    bare.setCurrentSegment('B');
+    bare.apply({ kind: 'segment_seam' } as UiEventOf<'segment_seam'>);
+    const r = renderModel(bare);
+    await flush();
+    expect(r.root.querySelectorAll('[data-divider="seam"]')).toHaveLength(1);
+    expect(Object.values(dividerControls(r.root))).toEqual([[null, null]]);
+    r.unmount();
+
+    const sub = new ConversationModel({ isSub: true, currentSegmentGetter: () => 'B' });
+    sub.apply(seam('B'));
+    const rs = renderModel(sub, noActions);
+    await flush();
+    expect(Object.values(dividerControls(rs.root))).toEqual([[null, null]]);
+    rs.unmount();
   });
 });
 
