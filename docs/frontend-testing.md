@@ -49,7 +49,7 @@ How the web UI (`web/`) is tested: its Vitest and Playwright suites ([Suites](#s
   - Tool ask (`ExitPlanMode` / `AskUserQuestion`): a seeded jsonl plus kill + resume. That resume also stands in for a server restart (`resumeWithAsk` in `web/e2e/sidebar-strip.shared.ts`).
 
 **Reachable directly:**
-- plan-approval card markdown and the conversation transcript, both through `renderMarkdownInto`, which also covers the summary body;
+- plan-approval card markdown and the conversation transcript, both through the `Markdown` component (`web/src/components/Markdown.tsx`), which also covers the summary body. Its contract is pinned in Vitest: `web/src/components/Markdown.test.tsx` (structure, nesting, safety, Copy, whitespace), `MarkdownTotality.test.tsx` (error-boundary raw-source fallback), `MarkdownGuard.test.tsx` (the parse guard: size limit and blind nesting count), `MarkdownListItem.test.tsx` and `markdown/listItem.test.ts` (linear list-item conversion and its wiring), `viewLinks.test.tsx` (links to cc), and `web/src/conversation/speakPlacement.test.tsx` (read-aloud slot);
 - sidebar project / session / worktree subnodes;
 - the header chip and usage popover, with an `/api/usage` fixture injected at the network boundary;
 - the costs dashboard;

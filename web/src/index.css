@@ -83,7 +83,7 @@
   }
 }
 
-/* Rendered markdown (components/Markdown.tsx → shared/markdown.ts). */
+/* Rendered markdown (components/Markdown.tsx: react-markdown + remark-gfm, blocks nest inside list items and quotes). */
 @layer components {
   .md {
     @apply text-[15px] leading-relaxed break-words;
@@ -98,6 +98,15 @@
   .md ol { @apply my-2 list-decimal pl-5; }
   .md li { @apply my-1; }
   .md li::marker { @apply text-muted-foreground; }
+  .md li > p { @apply my-1; }
+  .md li > :is(ul, ol) { @apply my-1; }
+  .md :is(li, blockquote) > .md-code-wrap { @apply my-2; }
+  .md blockquote .md-code-wrap { @apply not-italic; }
+  .md :is(li, blockquote) > :first-child { margin-top: 0; }
+  .md :is(li, blockquote) > :last-child { margin-bottom: 0; }
+  .md .task-list-item { @apply list-none; }
+  .md .task-list-item input { @apply mr-1.5 -ml-5 align-middle; }
+  .md del { @apply text-muted-foreground; }
   .md a { @apply text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary; }
   .md blockquote { @apply my-3 border-l-2 border-primary/40 pl-3 text-muted-foreground italic; }
   .md hr { @apply my-4 border-border; }

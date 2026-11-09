@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { createPortal } from 'react-dom';
 import {
   AlarmClockIcon, ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
   CodeXmlIcon, FileTextIcon, GitForkIcon, ImageOffIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
@@ -9,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { CopyButton } from '@/components/CopyButton';
-import { Markdown } from '@/components/Markdown';
+import { Markdown, MarkdownInlineEnd } from '@/components/Markdown';
 import { SpeakButton } from '@/features/voice/SpeakButton';
 import { voiceStore } from '@/features/voice/store';
 import { useStore } from '@/state/createStore';
@@ -22,7 +21,7 @@ import { fieldText, PlanCard, QuestionCard } from './cards';
 import { BubbleBody } from './BubbleBody';
 import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { ImageZoom } from './ImageZoom';
-import { renderWithSpeakSlot, SPEAK_INLINE, SPEAK_REVEAL } from './speakSlot';
+import { SPEAK_INLINE, SPEAK_REVEAL } from './speakSlot';
 
 export type BubbleActions = {
   canRewind: boolean;
@@ -356,26 +355,30 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
 
 /**
  * One text block of an assistant bubble. A finished block's read-aloud sits after its last word, in a slot the
- * markdown render appends to its last paragraph, list item or quote, or on a row of its own when the block
- * ends in anything else.
+ * markdown render appends to its last line of prose (a paragraph or list item, inside quotes and nested lists too),
+ * or on a row of its own when the block ends in anything else.
  */
 function TextBlock({ node, view, isSub }: { node: TextNode; view: TextView; isSub: boolean }) {
   const ttsAvailable = useStore(voiceStore, (s) => s.ttsAvailable);
   const speaks = node.finalized && !isSub && ttsAvailable;
   // A streaming block shows its raw deltas; it renders markdown once finalized.
   const rendered = node.finalized && view !== 'raw';
-  // The current render's slot: undefined until the markdown has rendered, null when its last block has no inline end.
-  const [slot, setSlot] = React.useState<HTMLElement | null | undefined>(undefined);
-  const renderInto = React.useCallback((el: HTMLElement, text: string) => setSlot(renderWithSpeakSlot(el, text)), []);
-  // Forget the slot while the markdown is gone or rendered without one: otherwise the render that brings the rendered view
-  // or the voice back would mount the control for one commit into that old, detached slot, before Markdown hands over a fresh one.
-  React.useLayoutEffect(() => { if (!speaks || !rendered) setSlot(undefined); }, [speaks, rendered]);
+  const ref = React.useRef<HTMLDivElement>(null);
+  // Whether the current render has an inline slot: undefined until the markdown has rendered with one asked for.
+  const [placed, setPlaced] = React.useState<boolean | undefined>(undefined);
+  React.useLayoutEffect(() => {
+    setPlaced(speaks && rendered ? !!ref.current?.querySelector('.md span[data-speak-slot]') : undefined);
+  }, [node.buffer, speaks, rendered]);
   const button = <SpeakButton text={node.buffer} nodeId={node.id} className={cn(SPEAK_INLINE, SPEAK_REVEAL)} />;
-  const end = !speaks ? undefined : !rendered ? 'inline' : slot === undefined ? undefined : slot ? 'inline' : 'row';
+  const end = !speaks ? undefined : !rendered ? 'inline' : placed === undefined ? undefined : placed ? 'inline' : 'row';
   return (
-    <div data-text-block data-speak-end={end} className={cn(TEXT_INSET_X, speaks && 'group/speak')}>
+    <div ref={ref} data-text-block data-speak-end={end} className={cn(TEXT_INSET_X, speaks && 'group/speak')}>
       {rendered
-        ? <Markdown text={node.buffer} className={MD_TEXT} renderInto={speaks ? renderInto : undefined} />
+        ? (
+          <MarkdownInlineEnd.Provider value={button}>
+            <Markdown text={node.buffer} className={MD_TEXT} inlineEnd={speaks} />
+          </MarkdownInlineEnd.Provider>
+        )
         : (
           <div className="text-[15px] leading-relaxed whitespace-pre-wrap">
             {node.buffer}
@@ -383,7 +386,6 @@ function TextBlock({ node, view, isSub }: { node: TextNode; view: TextView; isSu
             {speaks && <span data-speak-slot>{button}</span>}
           </div>
         )}
-      {rendered && end === 'inline' && slot && createPortal(button, slot)}
       {rendered && end === 'row' && <div data-speak-slot className="flex">{button}</div>}
     </div>
   );
