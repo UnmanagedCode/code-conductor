@@ -284,7 +284,7 @@ test('undoRenewal refuses RENEWAL_MOVED when the chain moved', async () => {
   const later = backing('ad3ad3ad', '3333');
   await recordRotation(t.pub, later, 'renew');
   await refused(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], temp: false }, 'a rotation landed after the post run');
-  await refused(t.pub, { pre: t.renewed, post: [t.pruned], temp: false }, 'current is not the post run\'s end');
+  await refused(t.pub, { pre: t.renewed, post: [t.pruned], temp: false }, 'the post run is not the whole tail after pre');
   await refused(t.pub, { pre: t.pre, post: [t.renewed, t.pruned, later, backing('ad3ad3ad', '4444')], temp: false },
     'the post run names a segment the chain lacks');
   await refused('nosuchrecord', { pre: t.pre, post: [t.renewed], temp: false }, 'no record');
@@ -292,6 +292,13 @@ test('undoRenewal refuses RENEWAL_MOVED when the chain moved', async () => {
   const d = await renewedThenPruned({ head: 'ad4ad4ad', temp: false });
   await dropSegment(d.pre);
   await refused(d.pub, { pre: d.pre, post: [d.renewed, d.pruned], temp: false }, 'pre is a tombstone');
+
+  // The tail is exactly the post run and current is the newest live segment,
+  // but the run ends in a tombstone, so current is not its last entry.
+  const c = await renewedThenPruned({ head: 'ad5ad5ad', temp: false });
+  await dropSegment(c.pruned);
+  assert.equal(await resolveBacking(c.pub), c.renewed, 'precondition: current fell back to the renew segment');
+  await refused(c.pub, { pre: c.pre, post: [c.renewed, c.pruned], temp: false }, 'current is not the post run\'s last entry');
 });
 
 test('dropSegment: on current, mid-chain, and last-remaining', async () => {

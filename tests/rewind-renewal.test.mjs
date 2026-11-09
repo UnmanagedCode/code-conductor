@@ -136,6 +136,29 @@ test('undoing the latest managed renewal relaunches the pre-renewal segment cut 
   await waitFor(() => echoes(inst).includes('carry on') && inst.status === 'idle');
 });
 
+// The flag a launch was started with, and its value.
+const launchedWith = (inst, flag, id) => {
+  const argv = inst._spawnArgv ?? [];
+  const at = argv.indexOf(flag);
+  return at !== -1 && argv[at + 1] === id;
+};
+
+test('undoing a renewal requested by the pre segment\'s first prompt relaunches fresh under the pre segment id', async () => {
+  const P = sid(), N = sid();
+  const { inst, publicId } = await resumeChain([
+    { id: P, reason: 'initial', archived: true, records: preRenewalRecords('z').slice(4) },
+    { id: N, reason: 'renew', records: postRenewalRecords('z') },
+  ]);
+  const r = await undo(inst, { boundary: N });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  await waitFor(() => inst.status === 'idle' && inst.proc);
+  assert.equal(inst.backingSessionId, P);
+  assert.ok(launchedWith(inst, '--session-id', P), `relaunched fresh as --session-id ${P}: ${JSON.stringify(inst._spawnArgv)}`);
+  assert.equal(launchedWith(inst, '--session-id', N) || launchedWith(inst, '--resume', N), false, 'not on the discarded post segment');
+  assert.deepEqual((await chainFor(publicId)).map(s => s.id), [P]);
+  assert.deepEqual(echoes(inst), [], 'nothing survives the cut');
+});
+
 test('undoing a typed /clear restores the pre-clear segment whole', async () => {
   const P = sid(), N = sid();
   const { inst, publicId } = await resumeChain([
