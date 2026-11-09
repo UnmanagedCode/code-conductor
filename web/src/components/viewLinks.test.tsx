@@ -5,6 +5,7 @@ import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { Markdown } from './Markdown';
+import { classifyLink } from './viewLinks';
 import { routeStore, syncRoute } from '@/state/route';
 import { clickLink } from '@/test/linkClick';
 
@@ -101,7 +102,7 @@ describe('view links in markdown', () => {
 
   const LITERAL = [
     '#foo', '#', '#session=abc', '#review', '#commits', '#plugin/', '#plugin//x', '#plugin/%E0/',
-    '#plugin/code-review/../../api/projects', '#plugin/code-review/%2e%2e/%2e%2e/api', '#plugin/code-review/..\\..\\api',
+    '#plugin/code-review/../../api/projects', '#plugin/code-review/%2e%2e/%2e%2e/api',
     '#plugin/..%2F..%2Fapi/', '#plugin/a%3Fb/', '#pluginx',
   ];
   for (const href of LITERAL) {
@@ -112,6 +113,29 @@ describe('view links in markdown', () => {
       expect(para(container).textContent).toBe(`[x](${href})`);
     });
   }
+
+  // Pins: the policy refuses a backslash traversal out of the plugin's frame path. Markdown cannot deliver a raw
+  // backslash (CommonMark escapes `\.` and percent-encodes the rest), so this is asserted on the policy itself.
+  it('a raw backslash traversal is literal under the link policy', () => {
+    expect(classifyLink('#plugin/code-review/..\\..\\api')).toEqual({ kind: 'literal' });
+  });
+
+  // Pins: what markdown delivers for a backslash path (`\.` unescaped to `.`, `\` encoded as %5C) is a view link whose
+  // plugin frame URL stays under that plugin's mount.
+  it('a markdown backslash path becomes a view link contained in the plugin mount', () => {
+    const { container } = render(<Markdown text={'[x](#plugin/code-review/..\\..\\api)'} />);
+    const a = container.querySelector('a')!;
+    expect(a.getAttribute('href')).toBe('#plugin/code-review/....%5Capi');
+    expect(a.hasAttribute('target')).toBe(false);
+    expect(clickLink(a), 'the click is handled in-app').toBe(true);
+    const { pluginId, pluginPath } = view();
+    expect(pluginId).toBe('code-review');
+    // Built as the plugin frames build their src.
+    const frame = new URL(`/plugins/${pluginId}/${pluginPath}`, location.origin);
+    expect(frame.origin).toBe(location.origin);
+    expect(frame.pathname.startsWith('/plugins/code-review/'), frame.pathname).toBe(true);
+    expect(frame.pathname).toBe('/plugins/code-review/....%5Capi');
+  });
 
   const CC_LITERAL = [
     'http://cc.internal/', 'http://cc.internal/#foo', 'http://cc.internal/#session=s', 'http://cc.internal/#review',

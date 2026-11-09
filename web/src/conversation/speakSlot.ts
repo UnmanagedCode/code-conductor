@@ -1,28 +1,5 @@
-// Where a text block's read-aloud control goes: a slot at the inline end of the
-// rendered markdown's last block, or nowhere when that block has no inline end
-// (a code block, table, rule or the renderer's error fallback) or is a heading,
-// whose accessible name the control would join.
-import { renderMarkdownInto } from '@shared/markdown';
-
-/** The element whose inline content ends `root`'s last block; null when that block has none or is a heading. Lists don't nest in the renderer. */
-export function inlineEndHost(root: HTMLElement): HTMLElement | null {
-  const last = root.lastElementChild as HTMLElement | null;
-  if (!last) return null;
-  if (last.matches('p, blockquote')) return last;
-  if (last.matches('ul, ol')) return last.lastElementChild as HTMLElement | null;
-  return null;
-}
-
-/** Renders `text` into `root` and appends an empty slot to its last block's inline end; null when it has none. */
-export function renderWithSpeakSlot(root: HTMLElement, text: string): HTMLSpanElement | null {
-  renderMarkdownInto(root, text);
-  const host = inlineEndHost(root);
-  if (!host) return null;
-  const slot = document.createElement('span');
-  slot.setAttribute('data-speak-slot', '');
-  host.appendChild(slot);
-  return slot;
-}
+// The read-aloud control's styling where it sits at the inline end of a text block's last line of prose. Where that
+// slot goes is Markdown's `inlineEnd` (components/markdown/inlineEnd.ts).
 
 /** Inline after the last word: the 28px button's 20px margin box fits the 15px relaxed line, so the line keeps its height; the hit area stays 28×28. */
 export const SPEAK_INLINE = '-my-1 align-middle';

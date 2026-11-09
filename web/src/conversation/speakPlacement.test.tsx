@@ -111,7 +111,7 @@ describe('read-aloud placement', () => {
     const [block] = blocks(root);
     const button = speaker(block);
     const last = md(block).lastChild!;
-    expect(last.nodeType === Node.TEXT_NODE && last.textContent!.startsWith('<details>'), `fixture check: the markdown ends in the HTML block's literal text, not ${describeEl(last as Element)}`).toBe(true);
+    expect(last.nodeType === Node.TEXT_NODE && last.textContent!.startsWith('<details>'), `fixture check: the markdown ends in the HTML block's literal text, not ${last.nodeType === Node.TEXT_NODE ? JSON.stringify(last.textContent) : describeEl(last as Element)}`).toBe(true);
     expect(md(block).querySelector('[data-speak-slot]'), 'the markdown holds no slot').toBeNull();
     expect(button.parentElement!.matches('div[data-speak-slot]'), 'the control sits on the row').toBe(true);
     expect(block.getAttribute('data-speak-end')).toBe('row');
@@ -153,7 +153,7 @@ describe('read-aloud placement', () => {
     expect(block.querySelectorAll('[data-speak-slot]').length, 'exactly one slot').toBe(1);
   });
 
-  // Pins: a finished block that grows re-renders into a fresh slot in its latest last block; the old slot is detached and emptied, never duplicated.
+  // Pins: a finished block that grows re-renders into a fresh slot in its latest last block; the old slot is detached, and the document holds exactly one control.
   it('a finished block that keeps growing holds one control, always in its latest last block', async () => {
     const { m, root } = await show([{ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'Hello ' }]);
     await live(m, [{ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'there.' }]);
@@ -175,8 +175,8 @@ describe('read-aloud placement', () => {
       expect([node.finalized, node.buffer], 'fixture check: the finished block grew in place').toEqual([true, g.buffer]);
       slot = expectInlineIn(speaker(block), md(block).querySelector(g.host), `after growing by ${JSON.stringify(g.delta)}`);
       expect(previous.isConnected, 'the previous slot is gone from the document').toBe(false);
-      expect(previous.childNodes.length, 'the previous slot was emptied').toBe(0);
       expect(block.querySelectorAll('[data-speak-slot]').length, 'exactly one slot in the block').toBe(1);
+      expect(speakers(document.body).length, 'exactly one read-aloud control in the document').toBe(1);
     }
   });
 
@@ -269,29 +269,31 @@ describe('read-aloud placement', () => {
     const [block] = blocks(root);
     const oldSlot = expectInlineIn(speaker(block), md(block).querySelector(':scope > p:last-child'), 'positive control: the observed slot is the one holding the control');
     await leave(b);
-    expect(oldSlot.isConnected, 'fixture check: the old slot is detached').toBe(false);
-    expect(oldSlot.childNodes.length, 'fixture check: the old slot was emptied').toBe(0);
+    expect(oldSlot.isConnected, 'the old slot is detached').toBe(false);
 
-    /** Read-aloud buttons added under `node`, with the element each was added to. */
-    const watch = (node: Node, subtree: boolean) => {
+    /** Every node added under `node` (its subtree included) while watched. */
+    const watch = (node: Node) => {
       const seen: MutationRecord[] = [];
       const obs = new MutationObserver((rs) => { seen.push(...rs); });
-      obs.observe(node, { childList: true, subtree });
+      obs.observe(node, { childList: true, subtree: true });
       return () => {
         seen.push(...obs.takeRecords());
         obs.disconnect();
-        return seen.flatMap((r) => [...r.addedNodes]
-          .filter((n): n is HTMLElement => n instanceof HTMLElement && /^(Read aloud|Stop reading)$/.test(n.getAttribute('aria-label') ?? ''))
-          .map((n) => ({ button: n, into: r.target })));
+        return seen.flatMap((r) => [...r.addedNodes]);
       };
     };
-    const intoOld = watch(oldSlot, false);
-    const intoBlock = watch(block, true);
+    /** The read-aloud controls an added node is or contains. */
+    const controlsIn = (n: Node) => (n instanceof HTMLElement ? [n, ...n.querySelectorAll('button')] : [])
+      .filter((x) => /^(Read aloud|Stop reading)$/.test(x.getAttribute('aria-label') ?? ''));
+    const intoOld = watch(oldSlot);
+    const intoBlock = watch(block);
     await back(b);
 
     const fresh = expectInlineIn(speaker(block), md(block).querySelector(':scope > p:last-child'), 'once it returns');
-    expect(fresh !== oldSlot, 'fixture check: the control sits in a fresh slot').toBe(true);
-    expect(intoBlock().some((m) => m.into === fresh), 'positive control: the observers record the control mounting in the fresh slot').toBe(true);
-    expect(intoOld().length, 'nothing was ever mounted in the old slot').toBe(0);
+    expect(fresh !== oldSlot, 'the control sits in a fresh slot').toBe(true);
+    expect(speakers(document.body).length, 'exactly one read-aloud control in the document').toBe(1);
+    const added = intoBlock().flatMap(controlsIn);
+    expect(added.some((c) => c === speaker(block) && c.parentElement === fresh), 'positive control: the observer finds the control, in the fresh slot, inside an added subtree').toBe(true);
+    expect(intoOld(), 'nothing was ever added to the old slot').toEqual([]);
   });
 });
