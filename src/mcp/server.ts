@@ -107,7 +107,7 @@ interface McpPluginHostLike {
   }>;
   // Where a plugin's run_code module is (docs/code-mode.md → Plugin modules).
   // Read only when a program calls `cc.import`, so a host without it stays valid.
-  runCodeModule?(id: string): Promise<
+  runCodeModule?(id: string, name?: string): Promise<
     { kind: 'ok'; path: string; hasBackend: boolean } | { kind: 'unknown' } | { kind: 'unavailable'; reason: string }
   >;
 }
@@ -1040,10 +1040,11 @@ export function buildMcpRouter(
   // The run_code child's lookup of a plugin's module (`cc.import`): where the
   // file is and the context its factory gets. Token-gated like /run-result.
   async function runModule(req: express.Request, res: express.Response, sid: string, id: string) {
+    const name = typeof req.query.name === 'string' ? req.query.name : undefined;
     const pre = restPreamble(req, res, sid);
     if (!pre) return;
     if (pre.token === null) { restFault(res, 403, 'RUN_TOKEN_INVALID', `a module lookup needs the ${RUN_TOKEN_HEADER} header`); return; }
-    const found = pluginHost?.runCodeModule ? await pluginHost.runCodeModule(id) : { kind: 'unknown' as const };
+    const found = pluginHost?.runCodeModule ? await pluginHost.runCodeModule(id, name) : { kind: 'unknown' as const };
     if (found.kind === 'unknown') { restFault(res, 404, 'MODULE_UNKNOWN', `no enabled plugin '${id}' declares a runCodeModule`); return; }
     if (found.kind === 'unavailable') { restFault(res, 409, 'MODULE_UNAVAILABLE', found.reason); return; }
     const project = pre.callerId ? instances?.liveForSession(pre.callerId)?.project ?? null : null;

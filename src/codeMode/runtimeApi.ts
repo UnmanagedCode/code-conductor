@@ -75,8 +75,8 @@ export function createCc(opts: CcOptions): unknown {
   // id for the run (a failed load stays failed). The factory gets the plugin's
   // context and this same `cc`. docs/code-mode.md → Plugin modules.
   const modules = new Map<string, Promise<unknown>>();
-  const loadModule = async (id: string): Promise<unknown> => {
-    const info = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}`, {
+  const loadModule = async (id: string, name?: string): Promise<unknown> => {
+    const info = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}${name === undefined ? '' : `?name=${encodeURIComponent(name)}`}`, {
       headers: { [RUN_TOKEN_HEADER]: opts.token },
     }));
     if (!isRecord(info) || typeof info.path !== 'string') {
@@ -95,10 +95,13 @@ export function createCc(opts: CcOptions): unknown {
       throw err;
     }
   };
-  const importModule = (rawId: string): Promise<unknown> => {
+  // Memoized per (plugin id, module name); `name` is unused until a plugin can
+  // declare several modules.
+  const importModule = (rawId: string, name?: string): Promise<unknown> => {
     const id = String(rawId);
-    let p = modules.get(id);
-    if (!p) { p = loadModule(id); modules.set(id, p); }
+    const key = `${id}\0${name ?? ''}`;
+    let p = modules.get(key);
+    if (!p) { p = loadModule(id, name); modules.set(key, p); }
     return p;
   };
 
