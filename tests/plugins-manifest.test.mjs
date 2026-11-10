@@ -368,6 +368,32 @@ test('outputSchema: optional; carried onto the tool when valid, no key when unde
   assert.equal('outputSchema' in untyped.manifest.mcp.tools[0], false);
 });
 
+test('audience: omitted normalizes to all; each declared value is kept', () => {
+  assert.equal(validateManifest(withTool({})).manifest.mcp.tools[0].audience, 'all');
+  for (const audience of ['all', 'conductor', 'worker']) {
+    const r = validateManifest(withTool({ audience }));
+    assert.equal(r.errors, undefined);
+    assert.equal(r.manifest.mcp.tools[0].audience, audience);
+  }
+});
+
+test('audience: a value outside TOOL_AUDIENCES refuses the plugin', async t => {
+  for (const bad of ['admin', 'Conductor', '', 7, null, ['conductor']]) {
+    await t.test(JSON.stringify(bad), () => {
+      const r = validateManifest(withTool({ audience: bad }));
+      assert.deepEqual(r.errors, ["'mcp.tools[0].audience' must be one of: all, conductor, worker"]);
+    });
+  }
+});
+
+test('mcp.tools[]: an unknown key is rejected; every accepted key together validates clean', () => {
+  const typo = validateManifest(withTool({ audiance: 'conductor' }));
+  assert.deepEqual(typo.errors, ["unknown key 'mcp.tools[0].audiance'"]);
+  const schema = { type: 'object', properties: {}, additionalProperties: false };
+  const full = validateManifest(withTool({ outputSchema: schema, audience: 'worker' }));
+  assert.equal(full.errors, undefined);
+});
+
 test('outputSchema: anyOf and nested properties accepted (wider than inputSchema)', () => {
   const schema = {
     type: 'object', additionalProperties: false,

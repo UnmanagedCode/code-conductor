@@ -382,7 +382,7 @@ async function withPluginRouter(extra, fn) {
   const router = buildMcpRouter({
     instances: null,
     pluginHost: { init: async () => {}, toolsFor: () => [{
-      name: 'plug__echo', description: 'echo', inputSchema: { type: 'object' }, ...extra,
+      name: 'plug__echo', description: 'echo', inputSchema: { type: 'object' }, audience: 'all', ...extra,
       handler: async (_args, ctx) => { calls.push(ctx.format); return { hello: 'world' }; },
     }] },
     playbookGate: { check: async ({ args }) => ({ args }) },

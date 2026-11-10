@@ -30,6 +30,8 @@ import { RUN_RESULT_BODY_LIMIT_BYTES } from '../codeMode/limits.ts';
 import { describeToolsTool } from '../codeMode/describeTools.ts';
 import type { CodeModeCtx, ProgressTiming } from '../codeMode/ctx.ts';
 import { toolUseIdOf } from '../toolResultNudges.ts';
+import { isConductorInstance } from '../conduct.ts';
+import { audienceAdmits, type CallerKind, type ToolAudience } from '../plugins/toolAudience.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -57,6 +59,11 @@ interface McpCtx extends CodeModeCtx {
   // tool with no outputSchema, in json) — named so a call to one is refused
   // TOOL_UNAVAILABLE_IN_FORMAT rather than TOOL_UNKNOWN.
   textOnlyTools: ReadonlyMap<string, McpTool>;
+  // Plugin tools left out of `tools` because this caller is outside their
+  // audience — named so a call to one is refused TOOL_UNAVAILABLE_TO_CALLER
+  // rather than TOOL_UNKNOWN.
+  barredTools: ReadonlyMap<string, ToolAudience>;
+  callerKind: CallerKind;
   callerId: string | null;
   playbookGate: PlaybookGate;
   capabilities: PlatformCapabilities;
@@ -95,7 +102,8 @@ interface McpPluginHostLike {
     description: string;
     inputSchema: unknown;
     outputSchema?: unknown;
-    handler: (args: unknown, ctx: { callerId: string | null; format: McpFormat }) => Promise<unknown>;
+    audience: ToolAudience;
+    handler: (args: unknown, ctx: { callerId: string | null; format: McpFormat; callerKind: CallerKind }) => Promise<unknown>;
   }>;
 }
 
@@ -320,7 +328,7 @@ interface ToolCall {
 //   - internal: a step BEFORE the handler threw (session-ref resolution, the
 //              playbook gate) — a cc fault, not the tool's answer.
 type Outcome =
-  | { kind: 'fault'; code: 'TOOL_UNKNOWN' | 'TOOL_UNAVAILABLE_IN_FORMAT' | 'ARGS_INVALID'; reason: string; tool: McpTool | null }
+  | { kind: 'fault'; code: 'TOOL_UNKNOWN' | 'TOOL_UNAVAILABLE_IN_FORMAT' | 'TOOL_UNAVAILABLE_TO_CALLER' | 'ARGS_INVALID'; reason: string; tool: McpTool | null }
   | { kind: 'refused'; body: Record<string, unknown>; tool: McpTool }
   | { kind: 'result'; value: unknown; tool: McpTool }
   | { kind: 'error'; error: unknown; tool: McpTool }
@@ -346,6 +354,11 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
   let args: unknown = rawArgs ?? {};
   const tool = ctx.tools.find(t => t.name === name);
   if (!tool) {
+    const audience = typeof name === 'string' ? ctx.barredTools.get(name) : undefined;
+    if (audience) {
+      return { kind: 'fault', code: 'TOOL_UNAVAILABLE_TO_CALLER', tool: null,
+        reason: `'${name}' is a ${audience}-only plugin tool, and this session is a ${ctx.callerKind} — it is not offered to ${ctx.callerKind} sessions` };
+    }
     if (typeof name === 'string' && ctx.textOnlyTools.has(name)) {
       return { kind: 'fault', code: 'TOOL_UNAVAILABLE_IN_FORMAT', tool: null,
         reason: `'${name}' is a plugin tool with no outputSchema, so it is served in text format only — call it over JSON-RPC at /mcp?format=text` };
@@ -713,6 +726,14 @@ function resolveCaller(instances: InstanceManagerLike | null | undefined, sid: s
     reason: `no live session '${capEcho(sid, URL_ECHO_CAP)}' — the /mcp/<sessionId> path takes the exact public sessionId of a running session` };
 }
 
+// The caller's kind for plugin-tool audience. Binary over sessions: a .conduct
+// session (top-level conductor or section lead — isConductorInstance) is a
+// conductor; every other live session is a worker. No session → anonymous.
+function callerKindOf(instances: InstanceManagerLike | null | undefined, callerId: string | null): CallerKind {
+  if (callerId === null) return 'anonymous';
+  return isConductorInstance(instances?.liveForSession(callerId)) ? 'conductor' : 'worker';
+}
+
 // A URL-level fault's REST status: an unknown caller names a resource that is
 // not there; a bad query is a bad request.
 function urlFaultStatus(fault: UrlFault): number {
@@ -809,26 +830,32 @@ export function buildMcpRouter(
     json: registry('json'),
   };
 
-  // Per-request tool composition: core tools + the plugin tools visible to
-  // this caller that the format serves — in json, only plugin tools with an
-  // outputSchema; the others are named in `textOnly`. init() is memoized —
-  // after the first request it's a resolved promise. A plugin-subsystem
-  // failure must never take the core tools down with it.
+  // Per-request tool composition: core tools + the plugin tools this caller's
+  // audience admits (the rest are named in `barred`) that the format serves —
+  // in json, only plugin tools with an outputSchema; the others are named in
+  // `textOnly`. Audience is applied first, so `textOnly` never holds a barred
+  // tool. init() is memoized — after the first request it's a resolved
+  // promise. A plugin-subsystem failure must never take the core tools down
+  // with it.
   const NONE: ReadonlyMap<string, McpTool> = new Map();
-  async function composeTools(format: McpFormat): Promise<{ tools: McpTool[]; textOnly: ReadonlyMap<string, McpTool> }> {
+  const NO_BARRED: ReadonlyMap<string, ToolAudience> = new Map();
+  async function composeTools(format: McpFormat, callerKind: CallerKind): Promise<{ tools: McpTool[]; textOnly: ReadonlyMap<string, McpTool>; barred: ReadonlyMap<string, ToolAudience> }> {
     const core = registries[format].tools;
-    if (!pluginHost) return { tools: core, textOnly: NONE };
+    if (!pluginHost) return { tools: core, textOnly: NONE, barred: NO_BARRED };
     try {
       await pluginHost.init();
-      const plugin = pluginHost.toolsFor();
-      if (format === 'text') return { tools: [...core, ...plugin], textOnly: NONE };
+      const all = pluginHost.toolsFor();
+      const barred = new Map(all.filter(t => !audienceAdmits(t.audience, callerKind)).map(t => [t.name, t.audience] as const));
+      const plugin = all.filter(t => !barred.has(t.name));
+      if (format === 'text') return { tools: [...core, ...plugin], textOnly: NONE, barred };
       return {
         tools: [...core, ...plugin.filter(t => t.outputSchema)],
         textOnly: new Map(plugin.filter(t => !t.outputSchema).map(t => [t.name, t])),
+        barred,
       };
     } catch (e) {
       console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
-      return { tools: core, textOnly: NONE };
+      return { tools: core, textOnly: NONE, barred: NO_BARRED };
     }
   }
 
@@ -840,9 +867,10 @@ export function buildMcpRouter(
     if (isUrlFault(format)) { res.json(urlFaultReply(req.body, format)); return; }
     const callerId = resolveCaller(instances, sid);
     if (isUrlFault(callerId)) { res.json(urlFaultReply(req.body, callerId)); return; }
-    const { tools, textOnly } = await composeTools(format);
+    const callerKind = callerKindOf(instances, callerId);
+    const { tools, textOnly, barred } = await composeTools(format, callerKind);
     const ctx: McpCtx = {
-      instances, tools, coreTools: registries[format].set, textOnlyTools: textOnly, callerId, playbookGate, capabilities,
+      instances, tools, coreTools: registries[format].set, textOnlyTools: textOnly, barredTools: barred, callerKind, callerId, playbookGate, capabilities,
       format, limits: limitsFor(format), runs, selfUrl: selfUrlOf(req), codeModeTiming,
       cancel: callerId ? (requestId) => { inflight.get(inflightKey(callerId, requestId))?.abort(); } : undefined,
     };
@@ -900,7 +928,7 @@ export function buildMcpRouter(
   // The alias preamble: format (absent or json only), then the caller.
   // `run` is set when the request carries a valid run token (a run_code child);
   // a token that is unknown, spent, or another caller's is refused.
-  function restPreamble(req: express.Request, res: express.Response, sid: string | undefined): { callerId: string | null; token: string | null } | null {
+  function restPreamble(req: express.Request, res: express.Response, sid: string | undefined): { callerId: string | null; callerKind: CallerKind; token: string | null } | null {
     const format = resolveFormat(req.query as Record<string, unknown>);
     if (isUrlFault(format)) { restFault(res, urlFaultStatus(format), format.code, format.reason); return null; }
     if (format !== 'json') {
@@ -914,7 +942,7 @@ export function buildMcpRouter(
       restFault(res, 403, 'RUN_TOKEN_INVALID', 'the run token is unknown, spent, or belongs to another session');
       return null;
     }
-    return { callerId, token };
+    return { callerId, callerKind: callerKindOf(instances, callerId), token };
   }
 
   async function restCall(req: express.Request, res: express.Response, sid: string | undefined, name: string | undefined) {
@@ -929,7 +957,7 @@ export function buildMcpRouter(
     if (!name) { restFault(res, 404, 'TOOL_UNKNOWN', 'no tool named — POST /mcp/tools/<name>'); return; }
     const args: unknown = req.body;
     if (!isJsonRecord(args)) { restFault(res, 400, 'ARGS_INVALID', 'the request body must be a JSON object of the tool\'s arguments'); return; }
-    const composed = await composeTools('json');
+    const composed = await composeTools('json', pre.callerKind);
     const { textOnly } = composed;
     // describe_tools is run-scoped: composed in only for a call carrying a run
     // token, so it is in neither tools/list nor the listing.
@@ -937,7 +965,7 @@ export function buildMcpRouter(
     const ac = new AbortController();
     res.on('close', () => { if (!res.writableFinished) ac.abort(); });
     const ctx: McpCtx = {
-      instances, tools, coreTools: registries.json.set, textOnlyTools: textOnly, callerId: pre.callerId, playbookGate, capabilities,
+      instances, tools, coreTools: registries.json.set, textOnlyTools: textOnly, barredTools: composed.barred, callerKind: pre.callerKind, callerId: pre.callerId, playbookGate, capabilities,
       format: 'json', limits: JSON_LIMITS, runs, selfUrl: selfUrlOf(req), codeModeTiming, signal: ac.signal,
       run: pre.token === null ? null : { callerId: pre.callerId as string },
       // The alias reads no `_meta`, so its calls queue no tool-result nudge.
@@ -946,8 +974,10 @@ export function buildMcpRouter(
     const outcome = await runTool(name, args, ctx);
     if (outcome.kind === 'fault') {
       // A text-only plugin tool is absent from this alias's own listing: a
-      // 404 like an unknown tool, told apart by its code.
-      restFault(res, outcome.code === 'ARGS_INVALID' ? 400 : 404, outcome.code, outcome.reason);
+      // 404 like an unknown tool, told apart by its code. A tool outside the
+      // caller's audience exists, and the caller is the reason: 403.
+      const status = outcome.code === 'ARGS_INVALID' ? 400 : outcome.code === 'TOOL_UNAVAILABLE_TO_CALLER' ? 403 : 404;
+      restFault(res, status, outcome.code, outcome.reason);
       return;
     }
     if (outcome.kind === 'internal') {
@@ -962,8 +992,9 @@ export function buildMcpRouter(
   // GET /mcp[/<sid>]/tools: the JSON registry plus the typed plugin tools this
   // caller sees — every listed tool has an outputSchema.
   async function restListing(req: express.Request, res: express.Response, sid: string | undefined) {
-    if (!restPreamble(req, res, sid)) return;
-    const { tools } = await composeTools('json');
+    const pre = restPreamble(req, res, sid);
+    if (!pre) return;
+    const { tools } = await composeTools('json', pre.callerKind);
     res.json(tools.map(t => ({
       name: t.name,
       description: t.description,

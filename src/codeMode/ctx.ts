@@ -2,6 +2,7 @@
 // fills it (src/mcp/server.ts); `McpCtx` and the registry's `ToolCtx` extend it.
 
 import type { RunRegistry } from './runs.ts';
+import type { CallerKind } from '../plugins/toolAudience.ts';
 
 // The part of a registered tool code mode lists and signs.
 export interface ToolView {
@@ -33,4 +34,8 @@ export interface CodeModeCtx {
   // cannot serve.
   tools?: readonly ToolView[];
   textOnlyTools?: ReadonlyMap<string, ToolView>;
+  // Plugin tools left out because the caller is outside their audience (only
+  // the keys are read), and the caller's kind.
+  barredTools?: ReadonlyMap<string, unknown>;
+  callerKind?: CallerKind;
 }

@@ -18,7 +18,7 @@ const calls = [];
 before(async () => {
   cwd = await mkdtemp('cc-rc-ns-');
   const plug = (name, description, extra = {}) => ({
-    name, description, inputSchema: { type: 'object' },
+    name, description, inputSchema: { type: 'object' }, audience: 'all',
     handler: async (args) => { calls.push([name, args]); return { cards: ['a'] }; },
     ...extra,
   });
@@ -145,7 +145,7 @@ test('describe_tools lists neither itself nor run_code', async () => {
 test('describe_tools reads the live registry: a tool added between two calls appears in the second', async () => {
   const before = await describe({ namespace: 'late', detail: 'names' });
   assert.deepEqual(before, []);
-  pluginTools.push({ name: 'late__added', description: 'Added later.', inputSchema: { type: 'object' }, outputSchema: CARDS_OUT, handler: async () => ({ cards: [] }) });
+  pluginTools.push({ name: 'late__added', description: 'Added later.', inputSchema: { type: 'object' }, outputSchema: CARDS_OUT, audience: 'all', handler: async () => ({ cards: [] }) });
   try {
     assert.deepEqual((await describe({ namespace: 'late', detail: 'names' })).map(e => e.method), ['cc.late.added']);
     const body = await run('return await cc.late.added({})');

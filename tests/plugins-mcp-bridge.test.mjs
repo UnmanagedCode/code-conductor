@@ -49,7 +49,7 @@ async function withChild(body, fn, { tool = {} } = {}) {
         mcp: {
           endpoint: '/api/mcp',
           timeoutMs: 5000,
-          tools: [{ name: 'run', description: 'test tool', inputSchema: { type: 'object' }, ...tool }],
+          tools: [{ name: 'run', description: 'test tool', inputSchema: { type: 'object' }, audience: 'all', ...tool }],
         },
       },
     }],
@@ -61,7 +61,7 @@ async function withChild(body, fn, { tool = {} } = {}) {
   const tools = bridge.toolsFor();
   assert.equal(tools.length, 1);
   assert.equal(tools[0].name, TOOL);
-  const call = (args = {}, { format = 'text' } = {}) => tools[0].handler(args, { callerId: null, format });
+  const call = (args = {}, { format = 'text', callerKind = 'anonymous' } = {}) => tools[0].handler(args, { callerId: null, format, callerKind });
 
   const router = buildMcpRouter({
     instances: null,
@@ -311,6 +311,18 @@ test('race guard: a json call on a tool whose manifest declares no outputSchema 
     assert.equal(e.code, 'TOOL_UNAVAILABLE_IN_FORMAT');
     assert.equal(seen.length, 0, 'the child was never contacted');
   });
+});
+
+test('race guard: a call by a caller outside the active manifest\'s audience rejects at the bridge', async () => {
+  await withChild({ result: { x: 1 } }, async ({ call, seen }) => {
+    const e = await call({}, { callerKind: 'worker' }).then(() => null, err => err);
+    assert.ok(e instanceof Error, 'rejects');
+    assert.equal(e.code, 'TOOL_UNAVAILABLE_TO_CALLER');
+    assert.equal(seen.length, 0, 'the child was never contacted');
+    await call({}, { callerKind: 'conductor' });
+    await call({}, { callerKind: 'anonymous' });
+    assert.equal(seen.length, 2, 'a conductor and an anonymous caller both reach the child');
+  }, { tool: { audience: 'conductor' } });
 });
 
 test('a typed tool in json: {structured} becomes structuredContent; REST answers the object; listings carry the schema', async () => {
