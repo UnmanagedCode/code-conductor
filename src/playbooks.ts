@@ -778,8 +778,9 @@ export type WorkerToolResolution = { decision: 'allow'; key: string | null } | {
 export function resolveWorkerTool(stage: Stage, toolName: string): WorkerToolResolution {
   if (WORKER_TOOLS_EXEMPT.includes(toolName)) return { decision: 'allow', key: null };
   const map = stage.workerTools;
-  const exact = map[toolName];
-  if (exact !== undefined && !toolName.includes(WILDCARD)) return { decision: exact, key: toolName };
+  // Own keys only: `map[toolName]` would answer `constructor` with an inherited
+  // function.
+  if (Object.hasOwn(map, toolName) && !toolName.includes(WILDCARD)) return { decision: map[toolName], key: toolName };
   let best: WorkerToolResolution & { key: string } | null = null;
   for (const [key, decision] of Object.entries(map)) {
     if (key === WILDCARD || !key.includes(WILDCARD)) continue;
@@ -791,8 +792,7 @@ export function resolveWorkerTool(stage: Stage, toolName: string): WorkerToolRes
     }
   }
   if (best) return best;
-  const fallback = map[WILDCARD];
-  if (fallback !== undefined) return { decision: fallback, key: WILDCARD };
+  if (Object.hasOwn(map, WILDCARD)) return { decision: map[WILDCARD], key: WILDCARD };
   return { decision: 'allow', key: null };
 }
 

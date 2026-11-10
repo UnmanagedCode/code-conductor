@@ -13,7 +13,8 @@ import { promises as fs } from 'node:fs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, instForSession } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
 import { WORKER_TOOLS_MATCHER, WORKER_TOOLS_POLICY } from '../src/settings.ts';
-import { workerToolDeniedReason } from '../src/playbooks.ts';
+import { workerToolDeniedReason, WORKER_TOOL_DENIED_IN_STAGE } from '../src/playbooks.ts';
+import { getDefaultPlaybookEnforcement, setDefaultPlaybookEnforcement } from '../src/conductorConventions.ts';
 import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { READ_NUDGE_MATCHER, readNudgeText } from '../src/conductorReadNudge.ts';
 import { TOOL_RESULT_NUDGE_MATCHER } from '../src/toolResultNudges.ts';
@@ -319,24 +320,33 @@ test('worker-tools for an unknown instance id replies 200 + deny', async () => {
 });
 
 // A server of its own: the bind row must be written, which needs an open
-// event-log lease.
-test('worker-tools denies a bound worker\'s call its stage denies, with the reason; the plain URL still allows', async () => {
-  const WTROUTE = {
-    id: 'wtroute', name: 'Wtroute', description: 'Test-only: a stage denying its worker Edit.',
-    entryStages: ['review'],
-    stages: { review: { description: 'Read only.', tools: { spawn_instance: 'allow' }, workerTools: { Edit: 'deny' } } },
-    transitions: [],
-  };
+// event-log lease. Boots it, pins the persisted default level to `enforce`,
+// spawns a conductor at `enforcement` and, through its `/mcp` path, a worker
+// bound to a stage that denies its worker `Edit`. `post(tool, query?)` hits
+// the worker's hook-callback URL.
+const WTROUTE = {
+  id: 'wtroute', name: 'Wtroute', description: 'Test-only: a stage denying its worker Edit.',
+  entryStages: ['review'],
+  stages: { review: { description: 'Read only.', tools: { spawn_instance: 'allow' }, workerTools: { Edit: 'deny' } } },
+  transitions: [],
+};
+const EDIT_DENIED = workerToolDeniedReason({ playbook: 'wtroute', stage: 'review', toolName: 'Edit', key: 'Edit' });
+
+async function withBoundWorker(enforcement, fn) {
   const own = await bootServer({ scenarioPath: SCENARIO, eventLogLease: OPEN_LEASE });
   try {
     const pbDir = path.join(orchStoreRoot(), 'playbooks');
     await fs.mkdir(pbDir, { recursive: true });
     await fs.writeFile(path.join(pbDir, 'wtroute.json'), JSON.stringify(WTROUTE));
+    await setDefaultPlaybookEnforcement('enforce');
+    assert.equal(await getDefaultPlaybookEnforcement(), 'enforce', 'premise: the persisted default is enforce');
     await api(own.baseUrl, 'POST', '/api/projects', { name: 'h' });
     await api(own.baseUrl, 'POST', '/api/projects/.conduct/ensure');
-    const c = await api(own.baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions', playbookEnforcement: 'enforce' });
+    const c = await api(own.baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions', playbookEnforcement: enforcement });
     assert.equal(c.status, 201);
-    await waitFor(() => own.instances.get(c.body.id)?.status === 'idle');
+    const conductor = own.instances.get(c.body.id);
+    await waitFor(() => conductor?.status === 'idle');
+    assert.equal(conductor.playbookEnforcement, enforcement, 'premise: the owner runs at the level under test');
     const res = await fetch(`${own.baseUrl}/mcp/${encodeURIComponent(c.body.sessionId)}?format=json`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
@@ -345,17 +355,38 @@ test('worker-tools denies a bound worker\'s call its stage denies, with the reas
     const spawned = (await res.json()).result.structuredContent;
     assert.equal(typeof spawned?.sessionId, 'string', `spawned: ${JSON.stringify(spawned)}`);
     const worker = await waitFor(() => instForSession(own.instances, spawned.sessionId));
+    assert.equal(worker.parentSessionId, c.body.sessionId, 'premise: the worker\'s owner is the conductor');
     const post = (toolName, query = `?policy=${WORKER_TOOLS_POLICY}`) => api(own.baseUrl, 'POST',
       `/api/instances/${worker.id}/hook-callback${query}`, buildHookEnvelope({ toolName, toolInput: {} }));
+    await fn({ conductor, worker, post });
+  } finally { await own.close(); }
+}
 
+const warnBubbles = (inst) => inst.ring.toArray().filter(ev => ev.kind === 'system' && ev.subtype === 'playbook_warn');
+
+test('worker-tools denies a bound worker\'s call its stage denies, with the reason; the plain URL still allows', async () => {
+  await withBoundWorker('enforce', async ({ post }) => {
     const denied = await post('Edit');
     assert.equal(denied.status, 200);
     assert.deepEqual(denied.body, { hookSpecificOutput: {
-      hookEventName: 'PreToolUse', permissionDecision: 'deny',
-      permissionDecisionReason: workerToolDeniedReason({ playbook: 'wtroute', stage: 'review', toolName: 'Edit', key: 'Edit' }),
+      hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: EDIT_DENIED,
     } });
     assert.deepEqual((await post('Read')).body, {}, 'a tool the stage does not deny: no decision');
     assert.equal((await post('Edit', '')).body.hookSpecificOutput.permissionDecision, 'allow',
       'the plain URL\'s answer is unchanged');
-  } finally { await own.close(); }
+  });
+});
+
+// PINS: the route hands the gate the worker's OWNER (`parentSessionId`), so the
+// level is the owning conductor's — here `warn`, against a persisted default of
+// `enforce` that any other owner resolution would fall back to and deny with.
+test('worker-tools takes the level from the worker\'s owning conductor: a warn owner passes the call and gets one bubble', async () => {
+  await withBoundWorker('warn', async ({ conductor, worker, post }) => {
+    const res = await post('Edit');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, {}, 'warn: no decision, not the default level\'s deny');
+    assert.deepEqual(warnBubbles(conductor).map(ev => ev.data), [{
+      tool: 'Edit', code: WORKER_TOOL_DENIED_IN_STAGE, reason: EDIT_DENIED, sessionId: worker.sessionId,
+    }], 'one playbook_warn bubble on the owner');
+  });
 });

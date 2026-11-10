@@ -770,7 +770,7 @@ A stage's `workerTools` governs the **bound session's own tool calls** — the w
 
 `resolveWorkerTool` returns the deciding key, which the denial names (it may be `'*'`). `"allow"` means only that this policy has no objection: the hook answers `{}`, never an explicit allow.
 
-Allow-list example — a read-only reviewer: `{"*": "deny", "Read": "allow", "Grep": "allow", "Glob": "allow"}` (`Edit` → denied by `'*'`; `Read` → allowed by `'Read'`). Specificity example: `{"mcp__code-kanban__*": "allow", "mcp__code-kanban__move*": "deny"}` denies `mcp__code-kanban__move_card` and allows `mcp__code-kanban__read_card`.
+Allow-list example — a read-only reviewer: `{"*": "deny", "Read": "allow", "Grep": "allow", "Glob": "allow"}` (`Edit` → denied by `'*'`; `Read` → allowed by `'Read'`). Specificity example: `{"mcp__code-conductor__code-kanban__*": "allow", "mcp__code-conductor__code-kanban__move*": "deny"}` denies `mcp__code-conductor__code-kanban__move_card` and allows `mcp__code-conductor__code-kanban__read_card`.
 
 **Per call** (`checkWorkerTool({sessionId, ownerSessionId, toolName})`; the route passes the URL's instance's `sessionId` and its `parentSessionId` — the conductor that spawned or resumed it):
 
@@ -863,13 +863,14 @@ Plugin ids are never in `takenIds`: they contain `/`, which an overlay id cannot
   "entryStages": ["plan"],
   "stages": { "plan": { "needs": [{ "stage": "research", "position": ["research"], "liveness": "live" }],
                         "workers": "one", "tools": { "spawn_instance": { "pin": { "model": "acme/captain" } } },
+                        "workerTools": { "*": "deny", "Read": "allow" },
                         "spawnable": true, "description": "…" } },
   "transitions": [{ "from": "plan", "to": "ship", "via": "send_prompt", "description": "…" }],
   "liveWorkers": 0
 }
 ```
 
-- The graph is **post-validation** (`playbookDetail`, the payload `describe_playbook` renders): defaults applied (`needs[].position` → `[stage]`, `liveness` → `"live"`, `workers` → `"one"`); `tools` holds only the declared entries.
+- The graph is **post-validation** (`playbookDetail`, the payload `describe_playbook` renders): defaults applied (`needs[].position` → `[stage]`, `liveness` → `"live"`, `workers` → `"one"`, `workerTools` → `{}`); `tools` and `workerTools` hold only the declared entries ([Worker tools](#worker-tools-workertools)).
 - `via` = the declared `on`, else `"send_prompt"`. Lossless: the validator refuses `on: "send_prompt"`, so `via: "send_prompt"` always means no `on`.
 - `spawnable` = `isSpawnable(stage)`.
 - `liveWorkers` = the length of the gate's `readLiveWorkers(id)` — workers bound to this id in its projection for which `isLive` holds — for warning about [definition drift](#playbooks) before an edit. `null` = unknown: no gate wired, or the projection read failed (logged with `console.warn`, still 200 — the same degrade as `GET /api/instances`' bindings).

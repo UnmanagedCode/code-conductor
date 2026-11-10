@@ -204,6 +204,19 @@ test('drift: a binding whose stage or playbook is no longer loaded passes, warni
   assert.deepEqual(await stageRig.rows(), []);
 });
 
+// PINS: a recorded stage is looked up among the definition's OWN stages, so a
+// stage named like an Object.prototype member that the definition no longer
+// has is drift (one warning), not an inherited function.
+test('drift: a recorded stage named like an Object.prototype member is drift, warned once', async () => {
+  const r = await rig([bindRow('w-proto-stage', 'wtlab', 'toString')], { [OWNER]: 'enforce' });
+  const seen = await warnings(async () => {
+    assert.deepEqual(await r.ask('w-proto-stage', 'Edit'), { deny: null });
+    assert.deepEqual(await r.ask('w-proto-stage', 'Edit'), { deny: null });
+  });
+  assert.deepEqual(seen.length, 1, `exactly one warning: ${JSON.stringify(seen)}`);
+  assert.match(seen[0], /stage 'toString' of playbook 'wtlab' is not loaded/);
+});
+
 test('a log that cannot be loaded fails open, with a warning', async () => {
   const dir = await mkdtemp('cc-pbworkertools-dir-');
   const gate = createPlaybookGate({ instances: stubManager({ [OWNER]: 'enforce' }), lease: OPEN_LEASE, file: () => dir });

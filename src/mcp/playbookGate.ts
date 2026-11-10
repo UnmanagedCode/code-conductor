@@ -293,7 +293,9 @@ export function createPlaybookGate(
       const bound = proj.bySession.get(sessionId);
       if (!bound) return pass;
       const playbooks = await definitions();
-      const stage = playbooks.get(bound.playbook)?.stages[bound.stage];
+      const stages = playbooks.get(bound.playbook)?.stages;
+      // Own stages only: an inherited member named like the recorded stage is drift.
+      const stage = stages && Object.hasOwn(stages, bound.stage) ? stages[bound.stage] : undefined;
       if (!stage) {
         const key = `${sessionId}\0${bound.playbook}\0${bound.stage}`;
         if (!driftWarned.has(key)) {

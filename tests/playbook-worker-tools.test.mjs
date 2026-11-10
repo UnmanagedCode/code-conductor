@@ -70,6 +70,17 @@ test('matching is case-sensitive and applies no MCP-prefix normalisation', () =>
   assert.equal(decide({ send_prompt: 'deny' }, 'mcp__code-conductor__send_prompt').decision, 'allow');
 });
 
+// PINS: only the map's OWN keys decide — a tool named like an Object.prototype
+// member is not matched by the inherited member.
+test('a tool named like an Object.prototype member is decided by own keys only', () => {
+  for (const tool of ['constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+    assert.deepEqual(decide({}, tool), { decision: 'allow', key: null }, `${tool} with an empty map`);
+    assert.deepEqual(decide({ '*': 'deny' }, tool), { decision: 'deny', key: '*' }, `${tool} falls to "*"`);
+  }
+  assert.deepEqual(decide({ constructor: 'deny' }, 'constructor'), { decision: 'deny', key: 'constructor' },
+    'an own key of that name still decides');
+});
+
 test('the exempt tools pass whatever the map says', () => {
   assert.deepEqual([...WORKER_TOOLS_EXEMPT].sort(), ['AskUserQuestion', 'ExitPlanMode']);
   for (const tool of WORKER_TOOLS_EXEMPT) {
