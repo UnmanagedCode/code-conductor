@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { READ_NUDGE_MATCHER, readNudgeText } from '../src/conductorReadNudge.ts';
+import { TOOL_RESULT_NUDGE_MATCHER } from '../src/toolResultNudges.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -146,9 +147,28 @@ test('conductor spawn argv carries the nudge hook; a worker\'s does not', async 
   const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'bypassPermissions' });
   const worker = instances.get(r.body.id);
   await waitFor(() => worker.status === 'idle');
+  const hook = `[{"type":"http","url":${JSON.stringify(worker.hookCallbackUrl)},"timeout":660}]`;
   assert.equal(settingsArg(worker),
-    `{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":${JSON.stringify(worker.hookCallbackUrl)},"timeout":660}]}]}}`,
-    'a worker\'s settings are byte-identical to what they were');
+    `{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":${hook}}],`
+    + `"PostToolUse":[{"matcher":${JSON.stringify(TOOL_RESULT_NUDGE_MATCHER)},"hooks":${hook}}]}}`,
+    'a worker\'s settings: the base PreToolUse entry plus the tool-result nudge PostToolUse entry');
+});
+
+// INVARIANT: every session's spawn argv registers the tool-result nudge
+// PostToolUse entry on its own hook URL — a conductor's as well as a worker's —
+// and a PostToolUse on a nudge tool with nothing pending is answered 200 {}.
+test('every session registers the tool-result nudge hook; nothing pending answers {}', async () => {
+  const cond = await spawnConductor();
+  const s = JSON.parse(settingsArg(cond));
+  assert.deepEqual(s.hooks.PostToolUse, [{
+    matcher: TOOL_RESULT_NUDGE_MATCHER, hooks: [{ type: 'http', url: cond.hookCallbackUrl, timeout: 660 }],
+  }]);
+  const r = await api(baseUrl, 'POST', `/api/instances/${cond.id}/hook-callback`, {
+    ...buildHookEnvelope({ toolUseId: 'tu_post_none', toolName: 'mcp__code-conductor__spawn_instance', toolInput: {} }),
+    hook_event_name: 'PostToolUse', tool_response: [],
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, {});
 });
 
 test('conductor: pass path has no permission decision; 8th and 16th calls nudge', async () => {

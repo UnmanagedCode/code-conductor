@@ -1,5 +1,6 @@
 // Builds the inline `--settings` JSON the orchestrator passes to every
-// claude subprocess. PreToolUse hooks are registered (when `hookCallbackUrl` is provided):
+// claude subprocess. Hooks are registered only when `hookCallbackUrl` is
+// provided. PreToolUse:
 //
 //   - An `http` hook on the mutating tools that POSTs back to the
 //     orchestrator's hook-callback endpoint. The endpoint's HookBroker allows
@@ -8,6 +9,14 @@
 //   - On a CONDUCTOR only, a second `http` entry on the read-nudge tools
 //     (READ_NUDGE_MATCHER, src/conductorReadNudge.ts), answered with no
 //     permission decision — at most an `additionalContext` reminder.
+//
+// PostToolUse:
+//
+//   - On EVERY session, an `http` entry on the tool-result nudge tools
+//     (TOOL_RESULT_NUDGE_MATCHER, src/toolResultNudges.ts): any live session
+//     can call them, and the broker answers with the nudge queued for that call.
+//   - On a redirected session, a second entry on the mutating tools
+//     (REDIRECT_POST_TOOL_MATCHER below).
 //
 // The interactive tools (AskUserQuestion / ExitPlanMode / EnterPlanMode)
 // are NO LONGER gated by a static PreToolUse deny hook. Under CLI 2.1.x
@@ -22,6 +31,7 @@
 // All inputs are pure JS values — no Instance state involved.
 
 import { READ_NUDGE_MATCHER } from './conductorReadNudge.ts';
+import { TOOL_RESULT_NUDGE_MATCHER } from './toolResultNudges.ts';
 import { CC_MCP_SERVER_TIMEOUT_MS } from './codeMode/limits.ts';
 
 // Message returned to the model when the orchestrator denies an interactive
@@ -104,9 +114,9 @@ export const HOOK_HTTP_TIMEOUT_S = 660;
 
 // `redirect` marks a worker session whose project lives on another system
 // (src/systems/toolRedirect.ts). It widens the hook surface rather than
-// replacing it, so a local session's settings are byte-identical to what they
-// were. `conductor` appends the read-nudge entry AFTER the base one, for the
-// same reason: a worker's settings do not change.
+// replacing it: its entries follow the ones every session has, which are
+// unchanged by it. `conductor` appends the read-nudge entry AFTER the base one,
+// for the same reason: a worker's settings do not depend on it.
 export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor = false }: { hookCallbackUrl?: string; redirect?: boolean; conductor?: boolean } = {}): string {
   const httpHook = (url: string) => [{ type: 'http', url, timeout: HOOK_HTTP_TIMEOUT_S }];
   const preToolUse: unknown[] = [];
@@ -117,11 +127,9 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor
       hooks: httpHook(hookCallbackUrl),
     });
     if (conductor) preToolUse.push({ matcher: READ_NUDGE_MATCHER, hooks: httpHook(hookCallbackUrl) });
-    if (redirect) {
-      (out.hooks as Record<string, unknown>).PostToolUse = [
-        { matcher: REDIRECT_POST_TOOL_MATCHER, hooks: httpHook(hookCallbackUrl) },
-      ];
-    }
+    const postToolUse: unknown[] = [{ matcher: TOOL_RESULT_NUDGE_MATCHER, hooks: httpHook(hookCallbackUrl) }];
+    if (redirect) postToolUse.push({ matcher: REDIRECT_POST_TOOL_MATCHER, hooks: httpHook(hookCallbackUrl) });
+    (out.hooks as Record<string, unknown>).PostToolUse = postToolUse;
   }
   // Not `--disallowedTools`: that flag is variadic and swallows the following
   // prompt argument.

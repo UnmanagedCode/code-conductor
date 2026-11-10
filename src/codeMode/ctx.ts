@@ -16,6 +16,10 @@ export interface ProgressTiming { heartbeatMs: number; minIntervalMs: number }
 export interface CodeModeCtx {
   // Set when the call arrived from a run_code child (a valid run token).
   run?: { callerId: string } | null;
+  // The CLI's id for this call (`params._meta["claudecode/toolUseId"]` on a
+  // JSON-RPC tools/call; src/toolResultNudges.ts), or null when the call
+  // carried none — every REST-alias call included.
+  toolUseId?: string | null;
   runs?: RunRegistry;
   // Writes a progress notification to the call's stream, opening it on first
   // use. A no-op when the client did not ask for a stream.

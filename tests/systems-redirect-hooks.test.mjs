@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HookBroker } from '../src/hookBroker.ts';
 import { buildSettingsJSON } from '../src/settings.ts';
+import { TOOL_RESULT_NUDGE_MATCHER } from '../src/toolResultNudges.ts';
 import { FILE_TOOLS, SessionRedirect } from '../src/systems/toolRedirect.ts';
 import { InstanceManager } from '../src/instances.ts';
 import { redirectTierOptions, redirectOutputOptions } from './tierFixture.mjs';
@@ -37,14 +38,15 @@ const envelope = (over = {}) => ({
   tool_input: { command: 'npm test' }, ...over,
 });
 
-// PINS: without redirection the injected settings are what they were — no
-// PostToolUse hook, no permissions block, Read unhooked. Every local project in
+// PINS: without redirection the injected settings carry no redirect surface —
+// no PostToolUse entry beyond the tool-result nudge one every session has
+// (src/toolResultNudges.ts), no permissions block, Read unhooked. Every local project in
 // the install runs through this function, so a change here that leaked to them
 // would start prompting on reads.
 test('a non-redirected session gets the settings it always got', () => {
   const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h' }));
   assert.equal(s.hooks.PreToolUse[0].matcher, 'Edit|Write|NotebookEdit|Bash');
-  assert.equal(s.hooks.PostToolUse, undefined);
+  assert.deepEqual(s.hooks.PostToolUse.map(e => e.matcher), [TOOL_RESULT_NUDGE_MATCHER]);
   assert.equal(s.permissions, undefined);
 });
 
@@ -67,7 +69,9 @@ test('a redirected session hooks every file tool, keeps PostToolUse, and removes
     assert.match(s.hooks.PreToolUse[0].matcher, new RegExp(`\\b${tool}\\b`), `${tool} is not hooked`);
   }
   assert.match(s.hooks.PreToolUse[0].matcher, /\bBash\b/);
-  assert.equal(s.hooks.PostToolUse[0].hooks[0].url, 'http://h');
+  assert.deepEqual(s.hooks.PostToolUse.map(e => e.matcher), [TOOL_RESULT_NUDGE_MATCHER, 'Edit|Write|NotebookEdit|Bash'],
+    'the redirect\'s own PostToolUse entry follows the tool-result nudge entry');
+  assert.equal(s.hooks.PostToolUse[1].hooks[0].url, 'http://h');
   assert.deepEqual(s.permissions.deny, ['Glob', 'Grep']);
   // And hooked as well as denied — two independent guards, because the CLI's
   // headless tool profile is undocumented surface the denial alone rests on.

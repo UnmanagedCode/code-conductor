@@ -102,6 +102,8 @@ import { httpError } from '../httpError.ts';
 interface McpCtx {
   instances?: InstanceManagerLike | null;
   callerId?: string | null;
+  // The CLI's id for this call; a tool-result nudge is queued under it.
+  toolUseId?: string | null;
   playbookGate?: PlaybookGate;
   capabilities?: PlatformCapabilities;
   limits?: FormatLimits;
@@ -1167,11 +1169,27 @@ export function resolveSpawnModel(
   return { model, backend, ...(tier ? { tier } : {}), ...(role ? { role } : {}) };
 }
 
-// Rides on a spawn_instance result whose caller is untitled and not in plan
-// mode. The fact plus the tool, nothing more: this nudge is what prompts the
-// naming, and set_session_title's own description carries how to choose a
-// title and when to set it again.
-export const SELF_TITLE_NUDGE = "You haven't named your session yet — `set_session_title`.";
+// Queued for the PostToolUse hook of a spawn_instance call whose caller is
+// untitled and not in plan mode (src/toolResultNudges.ts). The fact plus the
+// tool, nothing more, with the CALLER as the explicit subject — it arrives
+// right after the worker's view: this nudge is what prompts the naming, and
+// set_session_title's own description carries how to choose a title and when
+// to set it again.
+export const SELF_TITLE_NUDGE =
+  'Your own session — the one that just called spawn_instance, not the worker it started — has no title yet. '
+  + 'Name it with `set_session_title`, which always titles the calling session.';
+
+// Queues `text` on the calling session for this call's PostToolUse hook. A
+// no-op without text, a live caller or the call's toolUseId. Never throws: a
+// nudge must not be able to change the call's outcome.
+function queueCallerNudge({ instances, callerId, toolUseId }: McpCtx, text: string | null): void {
+  if (!text || !toolUseId || !instances || !callerId) return;
+  try {
+    instances.liveForSession(callerId)?.queueToolNudge(toolUseId, text);
+  } catch (err) {
+    console.warn(`[mcp] could not queue a tool-result nudge for caller '${callerId}':`, err);
+  }
+}
 
 // The nudge text for a spawn's caller, or null. Never throws: the check must
 // not be able to change the spawn's outcome.
@@ -1297,9 +1315,8 @@ export async function spawnInstance(args: SpawnArgs, ctx: McpCtx) {
       console.error(`spawn_instance: could not title session ${inst.sessionId}:`, e);
     }
   }
-  const view = toConductorView(inst.summary());
-  const titleNudge = await selfTitleNudge(ctx);
-  return titleNudge ? { ...view, titleNudge } : view;
+  queueCallerNudge(ctx, await selfTitleNudge(ctx));
+  return toConductorView(inst.summary());
 }
 
 // Record the caller's OWNERSHIP of the target before every turn-starting call,
@@ -2144,7 +2161,8 @@ export async function createWorktree(
   return toMcpWorktree(await fsCreateWorktree(project, { baseWorktree, name, lock }));
 }
 
-// Rides on a delete_worktree result (setting on by default). The conductor's
+// Queued for the PostToolUse hook of a successful delete_worktree call (setting
+// on by default; src/toolResultNudges.ts). The conductor's
 // landing renewal trigger, stated in full because renew_session's schema may
 // not be loaded when this arrives; the context-renewal convention carries none.
 export const LANDING_RENEW_NUDGE =
@@ -2230,9 +2248,12 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
   if (force && running.length > 0) {
     await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
   }
+  // Checked BEFORE the removal (it reads the branch), queued only once the
+  // removal succeeded.
   const renewNudge = await landingRenewNudge(project, wt, ctx);
   await removeWorktree(project, wtName, { force });
-  return renewNudge ? { project, worktree: wtName, renewNudge } : { project, worktree: wtName };
+  queueCallerNudge(ctx, renewNudge);
+  return { project, worktree: wtName };
 }
 
 export async function syncWorktree({ project, worktree }: { project: string; worktree: string }) {

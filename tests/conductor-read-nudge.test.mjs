@@ -25,8 +25,10 @@ const SEND = 'mcp__code-conductor__send_prompt';
 
 // Captured from unchanged `main` before src/settings.ts was edited: a worker's
 // settings must stay byte-identical.
-const GOLDEN_WORKER = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}]}}';
-const GOLDEN_REDIRECT = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash|Glob|Grep|Read","hooks":[{"type":"http","url":"http://h","timeout":660}]}],"PostToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}]},"permissions":{"deny":["Glob","Grep"]},"includeGitInstructions":false}';
+// The tool-result nudge PostToolUse entry every session with a hook URL carries
+// (src/toolResultNudges.ts); a redirected session's own PostToolUse entry follows it.
+const GOLDEN_WORKER = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]}]}}';
+const GOLDEN_REDIRECT = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash|Glob|Grep|Read","hooks":[{"type":"http","url":"http://h","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}]},"permissions":{"deny":["Glob","Grep"]},"includeGitInstructions":false}';
 
 function observeMany(nudge, tool, n) {
   const out = [];
@@ -207,7 +209,7 @@ test('settings: conductor entry', () => {
     matcher: READ_NUDGE_MATCHER,
     hooks: [{ type: 'http', url: 'http://h', timeout: HOOK_HTTP_TIMEOUT_S }],
   });
-  assert.equal(s.hooks.PostToolUse, undefined);
+  assert.deepEqual(s.hooks.PostToolUse, worker.hooks.PostToolUse, 'the same tool-result nudge entry as a worker');
   assert.equal(s.permissions, undefined);
   assert.deepEqual(JSON.parse(buildSettingsJSON({ conductor: true })), { hooks: { PreToolUse: [] } },
     'no URL, no hooks at all');

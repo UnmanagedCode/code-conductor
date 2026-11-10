@@ -167,18 +167,22 @@ export function runClaudeEnv(cwd, settings, prompt, env) {
 // headless tool profile depends on them — that flag is what un-strips the
 // interactive tools — so a probe run without them is measuring a different
 // session than the one cc ships.
-export function claudeArgs(settings, prompt, format) {
+//
+// `extra` goes BEFORE `--settings`: a variadic flag such as `--mcp-config`
+// swallows every following argument up to the next flag, the prompt included.
+export function claudeArgs(settings, prompt, format, extra = []) {
   return [
     '-p', '--model', MODEL, ...format,
     '--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions',
     '--permission-prompt-tool', 'stdio',
+    ...extra,
     '--settings', settings, prompt,
   ];
 }
 
-export function runClaude(cwd, settings, prompt) {
+export function runClaude(cwd, settings, prompt, extra = []) {
   return new Promise((resolve, reject) => {
-    execFile('claude', claudeArgs(settings, prompt, ['--output-format', 'json']),
+    execFile('claude', claudeArgs(settings, prompt, ['--output-format', 'json'], extra),
       { cwd, env: cliEnv(), timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
         if (err && !stdout) { reject(err); return; }
         let frame;
