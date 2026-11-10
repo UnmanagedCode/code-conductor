@@ -83,7 +83,7 @@ export function createCc(opts: CcOptions): unknown {
       throw new ConductorError('MODULE_LOAD_FAILED', `${id}: the server's module lookup answered an unexpected body`, 500);
     }
     try {
-      const mod = await import(pathToFileURL(info.path).href) as { default?: unknown };
+      const mod = await import(pathToFileURL(info.path).href) as { default?: unknown }; // server-imports: external
       if (typeof mod.default !== 'function') throw new TypeError("the module's default export is not a function");
       return await mod.default({ pluginId: id, baseUrl: info.baseUrl ?? null, caller: info.caller, cc });
     } catch (e) {

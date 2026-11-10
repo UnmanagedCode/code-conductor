@@ -9,7 +9,8 @@
 // name or a `node:` builtin is no edge. Anything else — a non-literal
 // `import(`, a `require(`, the `@shared/` alias, an absolute path, a URL, a `#`
 // subpath import, a specifier naming no file — makes the whole walk unknown,
-// which the caller reads as "may load anything".
+// which the caller reads as "may load anything". A dynamic import marked
+// `// server-imports: external` loads a file outside the tree and is exempt.
 
 import path from 'node:path';
 import { runGit } from './worktrees.ts';
@@ -22,6 +23,9 @@ export type ServerImports = { chains: Map<string, string[]> } | { unknown: strin
 const CODE_EXTS = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs'];
 // A dynamic import whose argument is not one plain string literal.
 const OPAQUE_IMPORT = /\bimport\s*\((?!\s*(['"])[^'"\n]*\1\s*\))/;
+// A line carrying this marker loads a file from outside the tree (a plugin's
+// module), so it is no edge and no unknown.
+const EXTERNAL_IMPORT = /\/\/ server-imports: external\b/;
 const REQUIRE = /\brequire\s*\(/;
 const SPECIFIER = /\b(?:from|import)\s*(?:\(\s*)?(['"])([^'"\n]*)\1/g;
 // A specifier Node reads as a URL, `node:` included.
@@ -48,7 +52,7 @@ export function walkServerImports(files: ReadonlySet<string>, text: ReadonlyMap<
       // These reasons are code lines this walk scans in its own source: neither
       // may contain what OPAQUE_IMPORT or REQUIRE match, or cc's own walk goes
       // unknown. Only server-imports' real-tree tests would notice.
-      if (OPAQUE_IMPORT.test(line)) return unknown('a dynamic import of no plain string literal');
+      if (OPAQUE_IMPORT.test(line) && !EXTERNAL_IMPORT.test(line)) return unknown('a dynamic import of no plain string literal');
       if (REQUIRE.test(line)) return unknown('a CommonJS require call');
       for (const [, , spec] of line.matchAll(SPECIFIER)) {
         if (spec.startsWith('node:')) continue;
