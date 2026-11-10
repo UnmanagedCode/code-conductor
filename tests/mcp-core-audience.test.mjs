@@ -244,17 +244,29 @@ test('with a plugin host, healthy or failing, a worker is still refused every co
   }
 });
 
-// Pins: ctx.coreTools is the caller kind's OWN registry set — a worker's core-tool call still gets the
-// core-tool project-ref guard (which keys on that set's tool identity), on every host shape.
-test('a worker\'s own core tool call still gets the project-ref guard, on every host shape', async t => {
+// Pins: ctx.coreTools is the caller kind's OWN registry set on BOTH request sites (the REST alias and the
+// JSON-RPC route build their ctx separately) — a worker's core-tool call still gets the project-ref guard,
+// which keys on that set's tool identity, on every host shape.
+test('a worker\'s own core tool call still gets the project-ref guard on REST and JSON-RPC, on every host shape', async t => {
+  const rpcCall = (post, format, project) => post('', `?format=${format}`, {
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_sessions', arguments: { project } },
+  });
   for (const [label, host] of [['no plugin host', null], ...Object.entries(HOSTS)]) {
     await t.test(label, async () => {
       await withRouter(host, async ({ post }) => {
         const ok = await post('/tools/list_sessions', '', { project: 'demo' });
         assert.notEqual(ok.body.code, 'BAD_REQUEST', 'control: a plain project name passes the guard');
         const bad = await post('/tools/list_sessions', '', { project: '../escape' });
-        assert.equal(bad.body.code, 'BAD_REQUEST', JSON.stringify(bad.body));
+        assert.equal(bad.body.code, 'BAD_REQUEST', `REST: ${JSON.stringify(bad.body)}`);
         assert.match(bad.body.reason, /invalid project name/);
+        for (const format of ['json', 'text']) {
+          const okRpc = JSON.stringify((await rpcCall(post, format, 'demo')).body);
+          assert.doesNotMatch(okRpc, /invalid project name/, `control (${format})`);
+          const badRpc = JSON.stringify((await rpcCall(post, format, '../escape')).body);
+          assert.match(badRpc, /BAD_REQUEST/, `JSON-RPC ${format}: ${badRpc}`);
+          assert.match(badRpc, /invalid project name/, `JSON-RPC ${format}: ${badRpc}`);
+          assert.doesNotMatch(badRpc, /PROJECT_UNKNOWN/, `JSON-RPC ${format}: the handler was reached`);
+        }
       });
     });
   }
