@@ -86,12 +86,22 @@ export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: n
       "run_code runs on cc's own machine, and this session's project lives on another system — call the tools directly instead");
   }
   const names = new Set([...(ctx.tools ?? []).map(t => t.name), ...(ctx.textOnlyTools?.keys() ?? [])]);
-  const unknown = checkPaths(literalPaths(code), names);
-  if (unknown.length > 0) {
+  const paths = literalPaths(code);
+  const unknown = checkPaths(paths, names);
+  // Paths that are tools, just not this caller's: known once barred names count.
+  const stillUnknown = new Set(checkPaths(paths, new Set([...names, ...(ctx.barredTools?.keys() ?? [])])).map(u => u.path));
+  const notTools = unknown.filter(u => stillUnknown.has(u.path));
+  if (notTools.length > 0) {
     return refusal('TOOL_UNKNOWN',
-      `the program calls ${unknown.map(u => u.path).join(', ')}, which ${unknown.length === 1 ? 'is not a tool' : 'are not tools'} — nothing ran. ` +
+      `the program calls ${notTools.map(u => u.path).join(', ')}, which ${notTools.length === 1 ? 'is not a tool' : 'are not tools'} — nothing ran. ` +
       'Look names up with `return await cc.describe_tools({query})`.',
-      { unknown });
+      { unknown: notTools });
+  }
+  const barred = unknown.filter(u => !stillUnknown.has(u.path));
+  if (barred.length > 0) {
+    return refusal('TOOL_UNAVAILABLE_TO_CALLER',
+      `the program calls ${barred.map(u => u.path).join(', ')}, which ${barred.length === 1 ? 'is a plugin tool' : 'are plugin tools'} not offered to ${ctx.callerKind ?? 'this'} sessions — nothing ran.`,
+      { unavailable: barred.map(u => u.path) });
   }
   if (!ctx.runs || !ctx.selfUrl) throw new Error('run_code: the MCP router did not provide the run channel');
   const runs = ctx.runs;

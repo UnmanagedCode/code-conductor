@@ -3,6 +3,7 @@ import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding
 import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
 import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
 import { checkSchema } from '../mcp/jsonSchemaSubset.ts';
+import { TOOL_AUDIENCES, type ToolAudience } from './toolAudience.ts';
 import type { System } from '../systems/system.ts';
 import { splitSkillPart } from '../../shared/skillPart.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
@@ -92,6 +93,8 @@ export interface PluginMcpTool {
   // Present only when declared: the tool is then served in json format too
   // (src/plugins/mcpBridge.ts); without it the tool is text-only.
   outputSchema?: Record<string, unknown>;
+  // Who is offered the tool (src/plugins/toolAudience.ts); `all` when omitted.
+  audience: ToolAudience;
 }
 
 export interface PluginMcp {
@@ -689,8 +692,8 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
   // `mcp.scope` is TOLERATED AND DROPPED. It stays in the accepted-key list
   // above for one concrete reason: code-hub's conductor.plugin.json ships
   // `"scope": "project"`, and rejecting the key would stop that plugin loading.
-  // Its VALUE is read nowhere — plugin MCP tools are visible to every caller
-  // (see mcpBridge.ts) — so it is not normalized onto PluginMcp and not
+  // Its VALUE is read nowhere — per-tool visibility is `audience`
+  // (src/plugins/toolAudience.ts) — so it is not normalized onto PluginMcp and not
   // enum-checked either: telling an author `"porject"` is invalid would imply
   // the value means something.
   let timeoutMs = MCP_TIMEOUT_DEFAULT;
@@ -709,6 +712,9 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
     rec.tools.forEach((t, i) => {
       if (typeof t !== 'object' || t === null) { errors.push(`'mcp.tools[${i}]' must be an object`); return; }
       const tool = t as Record<string, unknown>;
+      for (const k of Object.keys(tool)) {
+        if (!['name', 'description', 'inputSchema', 'outputSchema', 'audience'].includes(k)) errors.push(`unknown key 'mcp.tools[${i}].${k}'`);
+      }
       if (typeof tool.name !== 'string' || !TOOL_NAME_RE.test(tool.name)) {
         errors.push(`'mcp.tools[${i}].name' is required and must match ^[a-zA-Z0-9_-]+$`);
       } else if (seen.has(tool.name)) {
@@ -721,11 +727,19 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
       }
       checkSchemaSubset(tool.inputSchema, `mcp.tools[${i}].inputSchema`, errors);
       const outputSchema = checkOutputSchema(tool.outputSchema, `mcp.tools[${i}].outputSchema`, errors);
+      // An invalid audience refuses the plugin: falling back to `all` would
+      // widen a tool its author meant to restrict.
+      let audience: ToolAudience = 'all';
+      if (tool.audience !== undefined) {
+        if (TOOL_AUDIENCES.includes(tool.audience as ToolAudience)) audience = tool.audience as ToolAudience;
+        else errors.push(`'mcp.tools[${i}].audience' must be one of: ${TOOL_AUDIENCES.join(', ')}`);
+      }
       tools.push({
         name: typeof tool.name === 'string' ? tool.name : '',
         description: typeof tool.description === 'string' ? tool.description : '',
         inputSchema: tool.inputSchema,
         ...(outputSchema ? { outputSchema } : {}),
+        audience,
       });
     });
   }

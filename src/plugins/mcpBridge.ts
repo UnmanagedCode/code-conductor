@@ -2,9 +2,11 @@
 // into entries shaped exactly like the core tools in src/mcp/tools.ts
 // (`{name, description, inputSchema, outputSchema?, handler}`), namespaced
 // `<plugin-id>__<tool>`. The MCP server composes them per request via
-// pluginHost.toolsFor(); tools of every enabled plugin are visible to every
-// caller — hence no caller argument (disabled plugins' tools are simply
-// absent, so tools/call refuses them as unknown with zero extra code). A tool
+// pluginHost.toolsFor(), which returns every enabled plugin's tools each with
+// its `audience` (disabled plugins' tools are simply absent, so tools/call
+// refuses them as unknown with zero extra code). The server filters per caller
+// with `audienceAdmits` (src/plugins/toolAudience.ts); the handler re-checks
+// the active manifest. A tool
 // without an `outputSchema` is text-only: the server leaves it out of json
 // format (src/mcp/server.ts composeTools).
 //
@@ -31,6 +33,7 @@ import { validate } from '../mcp/jsonSchemaSubset.ts';
 import type { McpFormat } from '../mcp/limits.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { PluginMcp } from './manifest.ts';
+import { audienceAdmits, type CallerKind, type ToolAudience } from './toolAudience.ts';
 
 // A plugin's own error code: an upper-snake identifier, cc's codes included.
 export const PLUGIN_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -38,7 +41,7 @@ export const PLUGIN_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]*$/;
 // How many validate() errors a schema-mismatch reason quotes.
 const QUOTED_SCHEMA_ERRORS = 3;
 
-type HandlerCtx = { callerId: string | null; format: McpFormat };
+type HandlerCtx = { callerId: string | null; format: McpFormat; callerKind: CallerKind };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -71,13 +74,10 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
     return instances?.anyForSession?.(callerId)?.project;
   }
 
-  // Every enabled plugin's tools are visible to EVERY caller — the
-  // conductor/UI and workers in any project. (v1 shipped per-project
-  // scoping; live validation showed plugin tools are wanted everywhere, so
-  // the manifest `mcp.scope` field is tolerated and dropped — see manifest.ts.)
-  // Hence no caller parameter: there is nothing to scope by.
+  // Every enabled plugin's tools, each with its `audience`; narrowing to one
+  // caller is the server's job (composeTools in src/mcp/server.ts).
   function toolsFor() {
-    const out: Array<{ name: string; description: string; inputSchema: unknown; outputSchema?: unknown; handler: (args: unknown, ctx: HandlerCtx) => Promise<unknown> }> = [];
+    const out: Array<{ name: string; description: string; inputSchema: unknown; outputSchema?: unknown; audience: ToolAudience; handler: (args: unknown, ctx: HandlerCtx) => Promise<unknown> }> = [];
     for (const entry of listMcpPlugins()) {
       const mcp = entry.manifest.mcp;
       if (!mcp) continue;
@@ -87,6 +87,7 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
           description: t.description,
           inputSchema: t.inputSchema,
           ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+          audience: t.audience,
           handler: makeHandler(entry.id, t.name),
         });
       }
@@ -102,9 +103,14 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
       const entry = listMcpPlugins().find(e => e.id === pluginId);
       const mcp = entry?.manifest.mcp;
       if (!mcp) throw httpError(500, `plugin '${pluginId}' no longer declares mcp`);
-      // The schema of the ACTIVE checkout: one that dropped it since the
-      // server composed its tool list is text-only from now on.
-      const outputSchema = mcp.tools.find(t => t.name === toolName)?.outputSchema;
+      // The ACTIVE checkout's declaration of this tool: one that narrowed its
+      // audience since the server composed the list refuses the caller, and one
+      // that dropped its outputSchema is text-only from now on.
+      const active = mcp.tools.find(t => t.name === toolName);
+      if (active && !audienceAdmits(active.audience, ctx.callerKind)) {
+        throw Object.assign(new Error(`${where} is ${active.audience}-only, and this session is a ${ctx.callerKind}`), { code: 'TOOL_UNAVAILABLE_TO_CALLER' });
+      }
+      const outputSchema = active?.outputSchema;
       if (ctx.format === 'json' && !outputSchema) {
         throw Object.assign(new Error(`${where} no longer declares an outputSchema, so it is served in text format only — call it over JSON-RPC at /mcp?format=text`), { code: 'TOOL_UNAVAILABLE_IN_FORMAT' });
       }

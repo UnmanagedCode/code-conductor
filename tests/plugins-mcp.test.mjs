@@ -70,7 +70,7 @@ test('visibility: every enabled plugin\'s tools are global — conductor, any-pr
     await addPlugin(boot, 'globalplug', { id: 'globalplug', name: 'Global', mcp: { scope: 'global' } });
     await registerLocalProject('other', path.join(boot.projectsRoot, 'other'));
 
-    // Conductor / UI (no caller): everything.
+    // Anonymous (no caller): everything — audience never restricts it.
     const all = await listToolNames(boot.baseUrl);
     assert.ok(all.includes('fake-plugin__echo'));
     assert.ok(all.includes('fake-plugin__sleep'));
