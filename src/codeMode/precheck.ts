@@ -5,7 +5,7 @@
 // anything the scanner cannot read with certainty (computed names, bracket
 // form, template substitutions) falls through to the runtime's TOOL_UNKNOWN.
 
-import { RESERVED_METHODS } from './runtimeApi.ts';
+import { RESERVED_METHODS, NAMESPACE_IMPORT } from './runtimeApi.ts';
 
 export interface LiteralPath { path: string; segments: string[] }
 
@@ -203,6 +203,8 @@ export function checkPaths(paths: LiteralPath[], names: ReadonlySet<string>): Un
   for (const { path, segments } of paths) {
     const [a, b] = segments;
     if (RESERVED.has(a) || coreSet.has(a)) continue;
+    // Every plugin namespace has `import`, a plugin without tools included.
+    if (b === NAMESPACE_IMPORT) continue;
     if (b === undefined) {
       unknown.push({ path, suggestions: closeMatches(a, core).map(n => `cc.${n}`) });
       continue;

@@ -733,3 +733,14 @@ test('runCodeModule: a manifest whose module file is missing is invalid at readM
   assert.equal(r.errors, undefined);
   assert.equal(r.manifest.runCodeModule, 'run-code/index.mjs');
 });
+
+test('mcp.tools: a tool named `import` is refused with the specific error (reserved for cc.<ns>.import()); other names still pass', () => {
+  const mcp = (name) => ({
+    backend: { start: 'node server.mjs' },
+    mcp: { endpoint: '/mcp', tools: [{ name, description: 'd', inputSchema: { type: 'object' } }] },
+  });
+  const bad = validateManifest(base(mcp('import')));
+  assert.ok(bad.errors?.some(e => e.includes("'mcp.tools[0].name' cannot be 'import'") && e.includes('run_code module')), JSON.stringify(bad));
+  assert.equal(validateManifest(base(mcp('import_data'))).errors, undefined);
+  assert.equal(validateManifest(base(mcp('imports'))).errors, undefined);
+});

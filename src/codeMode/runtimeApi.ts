@@ -13,7 +13,11 @@ export const RUN_TOKEN_ENV = 'CC_RUN_TOKEN';
 
 // Names on `cc` that are not tools: a plugin namespace spelled one of these is
 // reached with `cc.call('<id>__<tool>', args)`.
-export const RESERVED_METHODS: readonly string[] = ['call', 'describe_tools', 'import', 'then'];
+export const RESERVED_METHODS: readonly string[] = ['call', 'describe_tools', 'then'];
+
+// The member reserved in every plugin namespace: `cc.<ns>.import(name?)` loads
+// the plugin's run_code module. A plugin tool may not be named this.
+export const NAMESPACE_IMPORT = 'import';
 
 // A call a tool refused or that failed. `status` 200 is a soft refusal (the
 // tool answered `{ok:false, code, …}`); 400 and above is a fault (unknown
@@ -47,7 +51,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 // `cc.<tool>(args)`, `cc.<plugin_ns>.<tool>(args)`, `cc.call(name, args)`,
-// `cc.describe_tools(args)` and `cc.import(pluginId)`. Dispatch needs no listing: the server's live
+// `cc.describe_tools(args)` and `cc.<plugin_ns>.import(name?)`. Dispatch needs no listing: the server's live
 // registry resolves every name.
 export function createCc(opts: CcOptions): unknown {
   const doFetch = opts.fetch ?? fetch;
@@ -71,34 +75,51 @@ export function createCc(opts: CcOptions): unknown {
   }));
   const describe = async (args: unknown = {}) => (await call('describe_tools', args) as { tools: unknown }).tools;
 
-  // `cc.import(id)`: the plugin's module, loaded on first use and memoized per
-  // id for the run (a failed load stays failed). The factory gets the plugin's
-  // context and this same `cc`. docs/code-mode.md → Plugin modules.
-  const modules = new Map<string, Promise<unknown>>();
-  const loadModule = async (id: string, name?: string): Promise<unknown> => {
-    const info = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}${name === undefined ? '' : `?name=${encodeURIComponent(name)}`}`, {
+  // `cc.<ns>.import(name?)`: a plugin's module. Node evaluates the entry file
+  // once per plugin (`entries`; a failed evaluation stays failed for every
+  // name), and the factory runs once per (plugin, name) (`modules`, which
+  // memoizes a failure only for its own name). docs/code-mode.md → Plugin modules.
+  const entries = new Map<string, Promise<unknown>>();
+  const loadModule = async (id: string, name: string | undefined): Promise<unknown> => {
+    const info = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}`, {
       headers: { [RUN_TOKEN_HEADER]: opts.token },
     }));
     if (!isRecord(info) || typeof info.path !== 'string') {
       throw new ConductorError('MODULE_LOAD_FAILED', `${id}: the server's module lookup answered an unexpected body`, 500);
     }
-    try {
-      const mod = await import(pathToFileURL(info.path).href) as { default?: unknown }; // server-imports: external
-      if (typeof mod.default !== 'function') throw new TypeError("the module's default export is not a function");
-      return await mod.default({ pluginId: id, baseUrl: info.baseUrl ?? null, caller: info.caller, cc });
-    } catch (e) {
+    const loadFailed = (e: unknown) => {
       const rec = isRecord(e) ? e : {};
-      const name = typeof rec.name === 'string' ? rec.name : 'Error';
+      const label = typeof rec.name === 'string' ? rec.name : 'Error';
       const message = typeof rec.message === 'string' ? rec.message : String(e);
-      const err = new ConductorError('MODULE_LOAD_FAILED', cutChars(`${id}: ${name}: ${message}`, RUN_ERROR_MESSAGE_CAP), 500);
+      const err = new ConductorError('MODULE_LOAD_FAILED', cutChars(`${id}: ${label}: ${message}`, RUN_ERROR_MESSAGE_CAP), 500);
       err.cause = e;
-      throw err;
+      return err;
+    };
+    let factory: unknown;
+    try {
+      let entry = entries.get(id);
+      if (!entry) { entry = import(pathToFileURL(info.path).href); entries.set(id, entry); } // server-imports: external
+      const mod = await entry as { default?: unknown };
+      if (typeof mod.default !== 'function') throw new TypeError("the module's default export is not a function");
+      factory = mod.default;
+    } catch (e) { throw loadFailed(e); }
+    try {
+      return await (factory as (ctx: unknown) => unknown)({ pluginId: id, baseUrl: info.baseUrl ?? null, caller: info.caller, cc, module: name ?? null });
+    } catch (e) {
+      // The plugin's own routing refused the name: the program sees it as such.
+      if (isRecord(e) && e.code === 'MODULE_UNKNOWN') {
+        const err = new ConductorError('MODULE_UNKNOWN', String(e.message ?? ''), 404);
+        err.cause = e;
+        throw err;
+      }
+      throw loadFailed(e);
     }
   };
-  // Memoized per (plugin id, module name); `name` is unused until a plugin can
-  // declare several modules.
-  const importModule = (rawId: string, name?: string): Promise<unknown> => {
-    const id = String(rawId);
+  const modules = new Map<string, Promise<unknown>>();
+  const importModule = async (id: string, name?: unknown): Promise<unknown> => {
+    if (name !== undefined && (typeof name !== 'string' || name === '')) {
+      throw new ConductorError('ARGS_INVALID', `import(name?): name must be a non-empty string when given, got ${typeof name === 'string' ? "''" : typeof name}`, 400);
+    }
     const key = `${id}\0${name ?? ''}`;
     let p = modules.get(key);
     if (!p) { p = loadModule(id, name); modules.set(key, p); }
@@ -108,6 +129,7 @@ export function createCc(opts: CcOptions): unknown {
   const member = (x: string) => new Proxy((args?: unknown) => call(x, args), {
     get(_t, y) {
       if (typeof y !== 'string' || y === 'then') return undefined;
+      if (y === NAMESPACE_IMPORT) return (name?: unknown) => importModule(x.replaceAll('_', '-'), name);
       return (args?: unknown) => call(`${x.replaceAll('_', '-')}__${y}`, args);
     },
   });
@@ -116,7 +138,6 @@ export function createCc(opts: CcOptions): unknown {
       if (typeof x !== 'string' || x === 'then') return undefined;
       if (x === 'call') return call;
       if (x === 'describe_tools') return describe;
-      if (x === 'import') return importModule;
       return member(x);
     },
   });

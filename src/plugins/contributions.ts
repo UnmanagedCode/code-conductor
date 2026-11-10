@@ -539,7 +539,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // ACTIVE checkout, or why there is none. Local-only like claudePluginDirs (the
   // module runs in a child on cc's own machine), and read live per call. The
   // backend's runtime state deliberately does not gate this.
-  async function runCodeModule(id: string, name?: string): Promise<RunCodeModuleResult> {
+  async function runCodeModule(id: string): Promise<RunCodeModuleResult> {
     await ensureInit();
     const found = lookupEntry(id);
     if (!found) return { kind: 'unknown' };
@@ -547,7 +547,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
       return { kind: 'unavailable', reason: `plugin '${id}' is ${found.state}: ${found.errors.join('; ')}` };
     }
     const { entry, enabled } = found;
-    const rel = moduleFile(entry.manifest, name);
+    const rel = entry.manifest.runCodeModule;
     if (!rel) return { kind: 'unknown' };
     if (!enabled) return { kind: 'unavailable', reason: `plugin '${id}' is disabled` };
     let place: PluginPlacement;
@@ -564,12 +564,6 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   }
 
   return { conventions, roles, playbooks, claudePluginDirs, runCodeModule, invalidate, noteRegistryChange };
-}
-
-// The manifest's file for module `name`. Today a plugin declares one module and
-// `name` is not consulted; a named-module map would change only this function.
-function moduleFile(manifest: PluginManifest, _name?: string): string | undefined {
-  return manifest.runCodeModule;
 }
 
 function errMsg(e: unknown): string {

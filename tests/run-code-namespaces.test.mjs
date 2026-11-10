@@ -30,7 +30,6 @@ before(async () => {
     plug('code-kanban__board_text', 'The board rendered as text.'),
     plug('code-arc__list_games', 'List the games.', { outputSchema: CARDS_OUT }),
     plug('call__ping', 'A plugin whose id is a reserved method name.', { outputSchema: CARDS_OUT }),
-    plug('import__ping', 'A plugin whose id is the import method name.', { outputSchema: CARDS_OUT }),
   ];
   const sessions = {
     local1: { mode: 'bypassPermissions', cwd, transcriptPlace: { system: 'local' } },
@@ -80,13 +79,6 @@ test('a plugin whose id is a reserved method name is reached through cc.call', a
   const entries = await describe({ namespace: 'call' });
   assert.equal(entries.length, 1);
   assert.equal(entries[0].method, "cc.call('call__ping', args)");
-});
-
-test('a plugin whose id is `import` is reached through cc.call, and describe_tools renders it so', async () => {
-  const body = await run("return await cc.call('import__ping', {})");
-  assert.deepEqual(JSON.parse(body.result), { cards: ['a'] });
-  const entries = await describe({ namespace: 'import' });
-  assert.equal(entries[0].method, "cc.call('import__ping', args)");
 });
 
 test('a text-only plugin tool is listed but throws TOOL_UNAVAILABLE_IN_FORMAT (404) when called', async () => {

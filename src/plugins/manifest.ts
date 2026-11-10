@@ -7,6 +7,7 @@ import { TOOL_AUDIENCES, type ToolAudience } from '../mcp/toolAudience.ts';
 import type { System } from '../systems/system.ts';
 import { splitSkillPart } from '../../shared/skillPart.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
+import { NAMESPACE_IMPORT } from '../codeMode/runtimeApi.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(system, dir) reads + validates; validateManifest(json) normalizes a
@@ -35,7 +36,7 @@ const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 // scaffold facet), `roles` and `playbooks` are active pluginApi:1 capabilities
 // that require no backend, so a contributions-only plugin is valid. `menuItems`
 // needs a frontend: its buttons open that frontend. `claudePlugin` and
-// `runCodeModule` (a module a run_code program loads with `cc.import`) are
+// `runCodeModule` (a module a run_code program loads with `cc.<ns>.import()`) are
 // likewise backend-free.
 const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin', 'runCodeModule', 'menuItems']);
 
@@ -315,7 +316,7 @@ function validateRelativePath(key: string, value: unknown, errors: string[]): st
 }
 
 // runCodeModule: OPTIONAL string — the one ES module a run_code program loads
-// with `cc.import('<plugin id>')`, as a relative path (the claudePlugin rules)
+// with `cc.<ns>.import(name?)`, as a relative path (the claudePlugin rules)
 // ending in `.mjs` or `.js`. Existence is checked at load (checkFragmentFiles).
 // docs/code-mode.md → Plugin modules is the contract.
 function validateRunCodeModule(value: unknown, errors: string[]): string | undefined {
@@ -743,6 +744,8 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
       }
       if (typeof tool.name !== 'string' || !TOOL_NAME_RE.test(tool.name)) {
         errors.push(`'mcp.tools[${i}].name' is required and must match ^[a-zA-Z0-9_-]+$`);
+      } else if (tool.name === NAMESPACE_IMPORT) {
+        errors.push(`'mcp.tools[${i}].name' cannot be '${NAMESPACE_IMPORT}': it is reserved for cc.<ns>.${NAMESPACE_IMPORT}(), which loads the plugin's run_code module`);
       } else if (seen.has(tool.name)) {
         errors.push(`duplicate tool name '${tool.name}'`);
       } else {

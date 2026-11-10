@@ -474,7 +474,7 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.deepEqual(dirs, [], 'no --plugin-dir root points at another machine');
   });
 
-  // PINS: a run_code module on a remote project is not served (`cc.import`
+  // PINS: a run_code module on a remote project is not served (`cc.<ns>.import()`
   // runs on cc's own machine, and a path on another machine is not a file
   // here), and the Settings row says so.
   test('a runCodeModule on a remote project is unavailable and the row carries RUN_CODE_MODULE_LOCAL_ONLY', async () => {
