@@ -118,7 +118,7 @@ export function createCc(opts: CcOptions): unknown {
   const modules = new Map<string, Promise<unknown>>();
   const importModule = async (id: string, name?: unknown): Promise<unknown> => {
     if (name !== undefined && (typeof name !== 'string' || name === '')) {
-      throw new ConductorError('ARGS_INVALID', `import(name?): name must be a non-empty string when given, got ${typeof name === 'string' ? "''" : typeof name}`, 400);
+      throw new ConductorError('ARGS_INVALID', `the module name passed to import must be a non-empty string when given, got ${typeof name === 'string' ? "''" : typeof name}`, 400);
     }
     const key = `${id}\0${name ?? ''}`;
     let p = modules.get(key);
