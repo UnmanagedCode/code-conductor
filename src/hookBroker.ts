@@ -65,6 +65,14 @@ function respondDeny(res: Response, reason: string): void {
   res.status(200).json(hookResponseBody('deny', reason));
 }
 
+// The worker-tools entry's answer (`?policy=worker-tools`, src/settings.ts):
+// a deny carrying `reason`, or `{}` for no decision. NEVER `allow`: an explicit
+// allow skips the CLI's own permission flow, plan mode included, and this entry
+// sits beside the others on every call.
+export function workerToolsHookBody(reason: string | null): { hookSpecificOutput: PreToolUseOutput } | Record<string, never> {
+  return reason ? hookResponseBody('deny', reason) : {};
+}
+
 export interface HookEnvelope {
   hook_event_name?: unknown;
   tool_use_id?: unknown;

@@ -200,6 +200,7 @@ const PLAYBOOK_DETAIL = obj({
     needs: arr(obj({ stage: str, position: strArr, liveness: oneOf('live', 'retired', 'any') })),
     workers: oneOf('one', 'many'),
     tools: mapOf(TOOL_POLICY),
+    workerTools: mapOf(oneOf('allow', 'deny')),
     spawnable: bool,
     description: str,
   }, { optional: ['description'] })),

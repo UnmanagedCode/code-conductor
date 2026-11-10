@@ -18,55 +18,15 @@
 
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeCwd } from '../src/projects.ts';
 import { buildMcpConfigJSON, buildSettingsJSON } from '../src/settings.ts';
 import { toolUseIdOf } from '../src/toolResultNudges.ts';
-import { fixture, hookServer, runClaude, t } from './cliContractCase.mjs';
+import { fixture, hookServer, runClaude, stubMcp, t } from './cliContractCase.mjs';
 
 const TOOL = 'mcp__code-conductor__spawn_instance';
 const CODEWORD = 'cc tool-result nudge codeword WOMBAT-4417.';
-
-// A minimal streamable-HTTP MCP server exposing one `spawn_instance` tool. It
-// records every tools/call's params.
-async function stubMcp() {
-  const calls = [];
-  const server = http.createServer((req, res) => {
-    if (req.method !== 'POST') { res.writeHead(405).end(); return; }
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      let msg = {};
-      try { msg = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* answered below */ }
-      const reply = (result) => {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
-      };
-      if (msg.id === undefined || msg.id === null) { res.writeHead(202).end(); return; }
-      if (msg.method === 'initialize') {
-        reply({ protocolVersion: msg.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'stub', version: '0' } });
-      } else if (msg.method === 'tools/list') {
-        reply({ tools: [{
-          name: 'spawn_instance', description: 'Starts a worker session. Takes no arguments.',
-          inputSchema: { type: 'object', properties: {} },
-        }] });
-      } else if (msg.method === 'tools/call') {
-        calls.push(msg.params);
-        reply({ content: [{ type: 'text', text: '{"sessionId":"worker-1"}' }] });
-      } else {
-        reply({});
-      }
-    });
-  });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  return {
-    calls,
-    url: `http://127.0.0.1:${server.address().port}/mcp`,
-    close: () => { server.closeAllConnections(); return new Promise((r) => server.close(r)); },
-  };
-}
 
 // The session's jsonl lines, from wherever this host's CLI keeps its projects.
 async function transcriptLines(cwd, sessionId) {
@@ -89,7 +49,7 @@ const PROMPT = `Call the ${TOOL} tool exactly once, with no arguments (load it w
 // transcript's PostToolUse hook_additional_context attachments.
 async function runOnce(answer) {
   const { dir, clean } = await fixture();
-  const mcp = await stubMcp();
+  const mcp = await stubMcp([{ name: 'spawn_instance', description: 'Starts a worker session. Takes no arguments.' }]);
   const hooks = await hookServer((e) => (e.hook_event_name === 'PostToolUse' && e.tool_name === TOOL ? answer : {}));
   try {
     const frame = await runClaude(dir, buildSettingsJSON({ hookCallbackUrl: hooks.url }), PROMPT,

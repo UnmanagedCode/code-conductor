@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import {
-  validatePlaybook, loadPlaybooks, loadToolIndex, governableToolNames,
+  validatePlaybook, loadPlaybooks, loadToolIndex, governableToolNames, locateValidationError,
   SEED_PLAYBOOK_IDS, PIN_FORBIDDEN_KEYS, PLAYBOOKS_DIR,
 } from '../src/playbooks.ts';
 import { buildTools } from '../src/mcp/tools.ts';
@@ -685,4 +685,67 @@ test('defaults are applied for omitted tools/workers/needs/position/liveness', (
   assert.equal(pb.stages.b.workers, 'one', 'workers defaults to "one"');
   assert.deepEqual(pb.stages.b.tools, {}, 'tools defaults to {}');
   assert.deepEqual(pb.stages.a.needs, [], 'needs defaults to []');
+});
+
+// ── workerTools (the bound worker's OWN calls) ──────────────────────────────
+//
+// PINS: `workerTools` is a map of tool-name pattern -> "allow" | "deny"; a
+// malformed one rejects the whole definition — it never loads as a weaker map
+// than its author wrote — and each rejection is scoped to its stage, so the
+// editor's locator lands on it.
+
+const withWorkerTools = (workerTools) => base({
+  stages: { a: { tools: { spawn_instance: 'allow' }, workerTools } },
+});
+
+test('workerTools defaults to an empty map when absent', () => {
+  const pb = expectOk(base());
+  assert.deepEqual(pb.stages.a.workerTools, {});
+});
+
+test('workerTools accepts exact names, MCP names, wildcard patterns and the "*" fallback', () => {
+  const map = { '*': 'deny', Read: 'allow', 'mcp__code-conductor__code-kanban__*': 'deny', Edit: 'allow' };
+  assert.deepEqual(expectOk(withWorkerTools(map)).stages.a.workerTools, map);
+  assert.deepEqual(expectOk(withWorkerTools({})).stages.a.workerTools, {});
+});
+
+// One case per rule. Deliberately NOT one combined assert: a single expectErr
+// would pass while the other rules were missing.
+test('workerTools rejects a non-object, a bad key, and a value other than allow/deny', () => {
+  for (const bad of [null, 'Edit', ['Edit'], 42]) {
+    expectErr(withWorkerTools(bad), /^stage 'a': workerTools must be an object mapping tool-name pattern -> "allow" \| "deny"/);
+  }
+  for (const bad of ['', 'Edit(*.md)', 'Bash git', 'mcp__x__.*', 'Edit|Write']) {
+    expectErr(withWorkerTools({ [bad]: 'deny' }), /^stage 'a': workerTools key .* is not a tool-name pattern/);
+  }
+  for (const bad of ['block', 42, null, true, ['deny']]) {
+    expectErr(withWorkerTools({ Edit: bad }), /^stage 'a': workerTools\.Edit must be "allow" or "deny"/);
+  }
+});
+
+test('workerTools rejects `pin` and any object value, saying it takes allow/deny only', () => {
+  for (const bad of [{ pin: { file_path: 'x' } }, {}, { deny: true }]) {
+    expectErr(withWorkerTools({ Edit: bad }), /^stage 'a': workerTools\.Edit must be "allow" or "deny" — workerTools takes allow\/deny only, no pin/);
+  }
+});
+
+test('an explicit deny of an exempt tool is rejected at load; a covering wildcard is not', () => {
+  expectErr(withWorkerTools({ AskUserQuestion: 'deny' }), /^stage 'a': workerTools cannot deny 'AskUserQuestion'/);
+  expectErr(withWorkerTools({ ExitPlanMode: 'deny' }), /^stage 'a': workerTools cannot deny 'ExitPlanMode'/);
+  expectOk(withWorkerTools({ AskUserQuestion: 'allow' }));
+  expectOk(withWorkerTools({ '*': 'deny', 'Ask*': 'deny' }));
+});
+
+test('the pattern rejection names the grammar: `*` the only wildcard, no regex', () => {
+  const [msg] = expectErr(withWorkerTools({ 'Edit|Write': 'deny' }), /workerTools key/)
+    .filter(e => /workerTools key/.test(e));
+  assert.match(msg, /'\*' is the only wildcard/);
+  assert.match(msg, /no regex/);
+});
+
+test('a workerTools rejection is located to its stage', () => {
+  const draft = withWorkerTools({ Edit: 'block' });
+  const [msg] = validatePlaybook(draft, 'fixture', index).errors;
+  assert.match(msg, /workerTools\.Edit must be/, 'the error under test is the workerTools one');
+  assert.deepEqual(locateValidationError(msg, draft), { stage: 'a', transition: null });
 });

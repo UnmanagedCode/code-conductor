@@ -154,6 +154,8 @@ export interface InstanceLike {
   readonly backend: string;
   readonly effort: string | null;
   readonly callerInstanceId: string | null;
+  // The public sessionId of the conductor that spawned or resumed this session.
+  readonly parentSessionId: string | null;
   readonly cwd: string;
   // WHERE THIS SESSION'S TRANSCRIPT LIVES — the cwd plus the machine coordinate
   // that tells two remotes at one absolute path apart. Frozen at create; every
