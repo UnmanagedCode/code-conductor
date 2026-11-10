@@ -1,6 +1,6 @@
 // The half of code mode the child process loads: the `cc` object a run_code
-// program sees, and the serialization of its outcome. Imports only limits.ts —
-// the child must not pull the server in.
+// program sees, and the serialization of its outcome. The child must pull in no
+// server module: only limits.ts and Node built-ins.
 
 import { pathToFileURL } from 'node:url';
 import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutChars, cutResult } from './limits.ts';
@@ -76,10 +76,9 @@ export function createCc(opts: CcOptions): unknown {
   const describe = async (args: unknown = {}) => (await call('describe_tools', args) as { tools: unknown }).tools;
 
   // `cc.<ns>.import(name?)`: a plugin's module. Node evaluates the entry file
-  // once per plugin (`entries`; a failed evaluation stays failed for every
-  // name), and the factory runs once per (plugin, name) (`modules`, which
+  // once per plugin (Node caches the evaluation by URL, a failed one included, so
+  // a failure there stays failed for every name), and the factory runs once per (plugin, name) (`modules`, which
   // memoizes a failure only for its own name). docs/code-mode.md → Plugin modules.
-  const entries = new Map<string, Promise<unknown>>();
   const loadModule = async (id: string, name: string | undefined): Promise<unknown> => {
     const info = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}`, {
       headers: { [RUN_TOKEN_HEADER]: opts.token },
@@ -97,9 +96,7 @@ export function createCc(opts: CcOptions): unknown {
     };
     let factory: unknown;
     try {
-      let entry = entries.get(id);
-      if (!entry) { entry = import(pathToFileURL(info.path).href); entries.set(id, entry); } // server-imports: external
-      const mod = await entry as { default?: unknown };
+      const mod = await import(pathToFileURL(info.path).href) as { default?: unknown }; // server-imports: external
       if (typeof mod.default !== 'function') throw new TypeError("the module's default export is not a function");
       factory = mod.default;
     } catch (e) { throw loadFailed(e); }

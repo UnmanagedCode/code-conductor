@@ -23,8 +23,10 @@ export type ServerImports = { chains: Map<string, string[]> } | { unknown: strin
 const CODE_EXTS = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs'];
 // A dynamic import whose argument is not one plain string literal.
 const OPAQUE_IMPORT = /\bimport\s*\((?!\s*(['"])[^'"\n]*\1\s*\))/;
-// A line carrying this marker loads a file from outside the tree (a plugin's
-// module), so it is no edge and no unknown.
+const OPAQUE_IMPORTS = new RegExp(OPAQUE_IMPORT.source, 'g');
+// A line carrying this marker has exactly one dynamic import that loads a file
+// from outside the tree (a plugin's module): no edge, no unknown. A second
+// opaque import on the same line is still unknown.
 const EXTERNAL_IMPORT = /\/\/ server-imports: external\b/;
 const REQUIRE = /\brequire\s*\(/;
 const SPECIFIER = /\b(?:from|import)\s*(?:\(\s*)?(['"])([^'"\n]*)\1/g;
@@ -52,7 +54,8 @@ export function walkServerImports(files: ReadonlySet<string>, text: ReadonlyMap<
       // These reasons are code lines this walk scans in its own source: neither
       // may contain what OPAQUE_IMPORT or REQUIRE match, or cc's own walk goes
       // unknown. Only server-imports' real-tree tests would notice.
-      if (OPAQUE_IMPORT.test(line) && !EXTERNAL_IMPORT.test(line)) return unknown('a dynamic import of no plain string literal');
+      const opaque = line.match(OPAQUE_IMPORTS)?.length ?? 0;
+      if (opaque > (EXTERNAL_IMPORT.test(line) ? 1 : 0)) return unknown('a dynamic import of no plain string literal');
       if (REQUIRE.test(line)) return unknown('a CommonJS require call');
       for (const [, , spec] of line.matchAll(SPECIFIER)) {
         if (spec.startsWith('node:')) continue;
