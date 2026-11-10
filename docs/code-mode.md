@@ -49,7 +49,7 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 
 ## `describe_tools`
 
-An in-script tool only: it is composed into a request that carries a run token (`describeToolsTool`), so it is in neither `tools/list` nor `GET /mcp/<sid>/tools`, and a call without a token is `TOOL_UNKNOWN`. Its source is the request's own live composition (`ctx.tools` plus `ctx.textOnlyTools`), so a plugin tool that appears between two calls is in the second, and one outside the session's audience is absent; it hides itself and `run_code`.
+An in-script tool only: it is composed into a request that carries a run token (`describeToolsTool`), so it is in neither `tools/list` nor `GET /mcp/<sid>/tools`, and a call without a token is `TOOL_UNKNOWN`. Its source is the request's own live composition (`ctx.tools` plus `ctx.textOnlyTools`), so a plugin tool that appears between two calls is in the second, and a tool outside the session's audience is absent; it hides itself and `run_code`.
 
 | Input | Meaning |
 |---|---|
@@ -92,7 +92,7 @@ Output `{tools: Entry[]}` in registry order (the script's `cc.describe_tools()` 
 
 Before anything spawns, `literalPaths` scans the program (comments, strings and template literals blanked) for literal `cc.<tool>(` and `cc.<ns>.<tool>(` call sites and `checkPaths` looks each up in the live registry, text-only plugin tools included. One unknown path refuses the **whole** program, so a typo cannot stop it half-way through side effects.
 
-- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, anything inside a `${…}` substitution and regular-expression literals (where a `/` could be a regex or a division it is read as a regex, and when that reading finds no closing `/` before a quote or the end of the line the rest of the line is not checked) are not checked and are left to the runtime: an unknown name gets `TOOL_UNKNOWN`, and an out-of-audience plugin tool gets the audience refusal described below. A program that binds its own `cc` (a declaration, parameter, destructuring or assignment) is not pre-checked at all.
+- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, anything inside a `${…}` substitution and regular-expression literals (where a `/` could be a regex or a division it is read as a regex, and when that reading finds no closing `/` before a quote or the end of the line the rest of the line is not checked) are not checked and are left to the runtime: an unknown name gets `TOOL_UNKNOWN`, and an out-of-audience tool gets the audience refusal described below. A program that binds its own `cc` (a declaration, parameter, destructuring or assignment) is not pre-checked at all.
 - A literal path naming a tool outside the session's audience refuses the whole program `TOOL_UNAVAILABLE_TO_CALLER`; a computed call gets it at runtime as a `403` `ConductorError`.
 - A core path is known when a core tool of that name (or a reserved method) exists. For `cc.a.b(`: skipped when `a` is a core tool or reserved, else `<a with _→->__<b>` must be a registered plugin tool.
 - `unknown[].suggestions` holds up to three nearest names (edit distance or substring), as method paths.

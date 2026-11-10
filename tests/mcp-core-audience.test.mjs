@@ -24,6 +24,7 @@ const CONDUCTOR_ONLY = [
 
 let server, base;
 const gateSaw = [];
+let gateRefuse = false;
 
 before(async () => {
   const cwd = await mkdtemp('cc-core-aud-');
@@ -41,7 +42,10 @@ before(async () => {
       anyForSession: id => sessions[id],
     },
     pluginHost: null,
-    playbookGate: { check: async ({ toolName, args }) => { gateSaw.push(toolName); return { args }; } },
+    playbookGate: { check: async ({ toolName, args }) => {
+      gateSaw.push(toolName);
+      return gateRefuse ? { refusal: { ok: false, code: 'STUB_GATE_REFUSAL' } } : { args };
+    } },
     capabilities: hostPlatform.capabilities,
   });
   const app = express();
@@ -163,19 +167,95 @@ test('run_code as a worker: nothing barred is described, literal call refuses, c
   });
 });
 
-// Pins: conductors (top-level and section leads) and anonymous callers keep the full set, offered and callable.
-test('conductors and anonymous callers are offered every tool and are never refused for audience', async t => {
+// Pins: conductors (top-level and section leads) and anonymous callers keep the full set, offered, and a
+// conductor-only call from each reaches the playbook gate (the stub refuses there, so no handler runs).
+test('conductors and anonymous callers are offered every tool, and a conductor-only call reaches the gate', async t => {
   const everything = (await listed(undefined, 'text')).slice().sort();
   assert.deepEqual(everything, served('text').map(x => x.name).sort());
   for (const sid of ['cond1', 'lead1', undefined]) {
     await t.test(sid ?? 'anonymous', async () => {
       for (const format of ['text', 'json']) assert.deepEqual((await listed(sid, format)).slice().sort(), served(format).map(x => x.name).sort());
       assert.deepEqual((await restListed(sid)).slice().sort(), served('json').map(x => x.name).sort());
-      for (const name of conductorOnly('json')) {
-        const r = await rest(sid, name);
-        assert.notEqual(r.status, 403, `${name} refused for ${sid ?? 'anonymous'}`);
-        assert.notEqual(r.body.code, 'TOOL_UNAVAILABLE_TO_CALLER', name);
-      }
+      const before = gateSaw.length;
+      gateRefuse = true;
+      try {
+        const r = await rest(sid, 'create_workspace', { name: 'w' });
+        assert.notEqual(r.status, 403, `refused for audience: ${JSON.stringify(r.body)}`);
+        assert.notEqual(r.body.code, 'TOOL_UNAVAILABLE_TO_CALLER');
+      } finally { gateRefuse = false; }
+      assert.deepEqual(gateSaw.slice(before), ['create_workspace'], 'the call reached the gate');
+    });
+  }
+});
+
+// ---- the same refusals with a plugin host, healthy and failing ----
+
+const PLUGIN_TOOL = {
+  name: 'plug__ping', description: 'a plugin tool', inputSchema: { type: 'object' },
+  outputSchema: { type: 'object' }, audience: 'all', handler: async () => ({ structured: {} }),
+};
+const HOSTS = {
+  'a plugin host serving a plugin tool': { init: async () => {}, toolsFor: () => [PLUGIN_TOOL] },
+  'a plugin host whose init() throws': { init: async () => { throw new Error('init boom'); }, toolsFor: () => [PLUGIN_TOOL] },
+  'a plugin host whose toolsFor() throws': { init: async () => {}, toolsFor: () => { throw new Error('toolsFor boom'); } },
+};
+
+async function withRouter(pluginHost, fn) {
+  const sessions = {
+    work1: { project: 'proj', conducted: true, mode: 'bypassPermissions', cwd: await mkdtemp('cc-core-aud2-'), transcriptPlace: { system: 'local' } },
+  };
+  const router = buildMcpRouter({
+    instances: {
+      liveCallerForPublicId: id => (id in sessions ? id : null),
+      liveForSession: id => sessions[id] ?? null,
+      anyForSession: id => sessions[id],
+    },
+    pluginHost,
+    playbookGate: { check: async ({ args }) => ({ args }) },
+    capabilities: hostPlatform.capabilities,
+  });
+  const app = express();
+  app.use('/mcp', router);
+  const srv = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+  const url = `http://127.0.0.1:${srv.address().port}/mcp/work1`;
+  const post = async (path, query, body) => {
+    const res = await fetch(`${url}${path}${query}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json() };
+  };
+  try { return await fn({ post }); } finally { await new Promise(resolve => srv.close(resolve)); }
+}
+
+// Pins: with a plugin host (healthy or failing), a worker's call to a conductor-only core tool is refused
+// TOOL_UNAVAILABLE_TO_CALLER, not TOOL_UNKNOWN — the core barred entries survive the merge with the plugin
+// barred map, and the failure fallbacks keep them.
+test('with a plugin host, healthy or failing, a worker is still refused every conductor-only core tool', async t => {
+  for (const [label, host] of Object.entries(HOSTS)) {
+    await t.test(label, async () => {
+      await withRouter(host, async ({ post }) => {
+        for (const name of ['spawn_instance', 'kill_instance', 'merge_worktree']) {
+          const j = await post('', '?format=json', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: {} } });
+          assert.equal(j.body.error?.data?.code, 'TOOL_UNAVAILABLE_TO_CALLER', `${label}: ${name} json-rpc`);
+          const r = await post(`/tools/${name}`, '', {});
+          assert.equal(r.status, 403, `${label}: ${name} REST`);
+          assert.equal(r.body.code, 'TOOL_UNAVAILABLE_TO_CALLER', `${label}: ${name} REST`);
+        }
+      });
+    });
+  }
+});
+
+// Pins: ctx.coreTools is the caller kind's OWN registry set — a worker's core-tool call still gets the
+// core-tool project-ref guard (which keys on that set's tool identity), on every host shape.
+test('a worker\'s own core tool call still gets the project-ref guard, on every host shape', async t => {
+  for (const [label, host] of [['no plugin host', null], ...Object.entries(HOSTS)]) {
+    await t.test(label, async () => {
+      await withRouter(host, async ({ post }) => {
+        const ok = await post('/tools/list_sessions', '', { project: 'demo' });
+        assert.notEqual(ok.body.code, 'BAD_REQUEST', 'control: a plain project name passes the guard');
+        const bad = await post('/tools/list_sessions', '', { project: '../escape' });
+        assert.equal(bad.body.code, 'BAD_REQUEST', JSON.stringify(bad.body));
+        assert.match(bad.body.reason, /invalid project name/);
+      });
     });
   }
 });

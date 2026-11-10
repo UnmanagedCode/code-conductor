@@ -34,7 +34,7 @@ export interface CodeModeCtx {
   // cannot serve.
   tools?: readonly ToolView[];
   textOnlyTools?: ReadonlyMap<string, ToolView>;
-  // Plugin tools left out because the caller is outside their audience (only
+  // Tools (core or plugin) left out because the caller is outside their audience (only
   // the keys are read), and the caller's kind.
   barredTools?: ReadonlyMap<string, unknown>;
   callerKind?: CallerKind;
