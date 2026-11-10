@@ -29,6 +29,7 @@ const PUBLIC_MEMBERS = [
   'rescan',
   'restart',
   'roles',
+  'runCodeModule',
   'runtimeInfo',
   'setActiveVersion',
   'setAutoStart',

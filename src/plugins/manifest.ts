@@ -7,6 +7,7 @@ import { TOOL_AUDIENCES, type ToolAudience } from '../mcp/toolAudience.ts';
 import type { System } from '../systems/system.ts';
 import { splitSkillPart } from '../../shared/skillPart.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
+import { NAMESPACE_IMPORT } from '../codeMode/runtimeApi.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(system, dir) reads + validates; validateManifest(json) normalizes a
@@ -34,8 +35,10 @@ const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 // `conventions` (project-convention fragments, optionally carrying a one-time
 // scaffold facet), `roles` and `playbooks` are active pluginApi:1 capabilities
 // that require no backend, so a contributions-only plugin is valid. `menuItems`
-// needs a frontend: its buttons open that frontend.
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin', 'menuItems']);
+// needs a frontend: its buttons open that frontend. `claudePlugin` and
+// `runCodeModule` (a module a run_code program loads with `cc.<ns>.import()`) are
+// likewise backend-free.
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin', 'runCodeModule', 'menuItems']);
 
 export const MENU_ITEMS_MAX = 8;
 export const MENU_LABEL_MAX = 40;
@@ -121,6 +124,7 @@ export interface PluginManifest {
   roles?: PluginRole[];
   playbooks?: PluginPlaybook[];
   claudePlugin?: string;
+  runCodeModule?: string;
   menuItems?: PluginMenuItem[];
 }
 
@@ -204,6 +208,7 @@ async function checkFragmentFiles(system: System, dir: string, manifest: PluginM
     if (g.file) refs.push([`conventions '${g.slug}' file`, g.file, true]);
     if (g.scaffold && 'file' in g.scaffold) refs.push([`conventions '${g.slug}' scaffold file`, g.scaffold.file, false]);
   }
+  if (manifest.runCodeModule) refs.push(['runCodeModule', manifest.runCodeModule, false]);
   const errors: string[] = [];
   for (const [label, rel, fragment] of refs) {
     const abs = path.join(dir, rel);
@@ -256,6 +261,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
   const roles = validateRoles(raw.roles, errors);
   const playbooks = validatePlaybooks(raw.playbooks, errors);
   const claudePlugin = validateClaudePlugin(raw.claudePlugin, errors);
+  const runCodeModule = validateRunCodeModule(raw.runCodeModule, errors);
   const menuItems = validateMenuItems(raw.menuItems, frontend, errors);
 
   if (errors.length > 0) return { errors, id: displayId(raw) };
@@ -272,6 +278,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
       ...(roles ? { roles } : {}),
       ...(playbooks ? { playbooks } : {}),
       ...(claudePlugin !== undefined ? { claudePlugin } : {}),
+      ...(runCodeModule !== undefined ? { runCodeModule } : {}),
       ...(menuItems ? { menuItems } : {}),
     },
   };
@@ -287,19 +294,39 @@ export function validateManifest(json: unknown): ReadManifestResult {
 // undefined. Kept a string for now — `claudePluginPaths()` is the single accessor,
 // so widening to `string | string[]` later is non-breaking.
 function validateClaudePlugin(value: unknown, errors: string[]): string | undefined {
+  return validateRelativePath('claudePlugin', value, errors);
+}
+
+// The shared shape check for a manifest key naming a path inside the plugin
+// checkout: a non-empty string, trimmed, relative, with no `..` segment.
+function validateRelativePath(key: string, value: unknown, errors: string[]): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || value.trim() === '') {
-    errors.push("'claudePlugin' must be a non-empty relative path");
+    errors.push(`'${key}' must be a non-empty relative path`);
     return undefined;
   }
   const trimmed = value.trim();
   // Segment-level `..` check so a legitimate component like `data..v2` is fine —
   // only a real `..` path segment is a traversal.
   if (trimmed.startsWith('/') || path.isAbsolute(trimmed) || trimmed.split(/[\\/]/).includes('..')) {
-    errors.push("'claudePlugin' must be a relative path with no '..' segment");
+    errors.push(`'${key}' must be a relative path with no '..' segment`);
     return undefined;
   }
   return trimmed;
+}
+
+// runCodeModule: OPTIONAL string — the one ES module a run_code program loads
+// with `cc.<ns>.import(name?)`, as a relative path (the claudePlugin rules)
+// ending in `.mjs` or `.js`. Existence is checked at load (checkFragmentFiles).
+// docs/code-mode.md → Plugin modules is the contract.
+function validateRunCodeModule(value: unknown, errors: string[]): string | undefined {
+  const rel = validateRelativePath('runCodeModule', value, errors);
+  if (rel === undefined) return undefined;
+  if (!/\.(mjs|js)$/.test(rel)) {
+    errors.push("'runCodeModule' must end with '.mjs' or '.js'");
+    return undefined;
+  }
+  return rel;
 }
 
 // The one accessor consumers use to read a manifest's Claude Code plugin roots.
@@ -717,6 +744,8 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
       }
       if (typeof tool.name !== 'string' || !TOOL_NAME_RE.test(tool.name)) {
         errors.push(`'mcp.tools[${i}].name' is required and must match ^[a-zA-Z0-9_-]+$`);
+      } else if (tool.name === NAMESPACE_IMPORT) {
+        errors.push(`'mcp.tools[${i}].name' cannot be '${NAMESPACE_IMPORT}': it is reserved for cc.<ns>.${NAMESPACE_IMPORT}(), which loads the plugin's run_code module`);
       } else if (seen.has(tool.name)) {
         errors.push(`duplicate tool name '${tool.name}'`);
       } else {

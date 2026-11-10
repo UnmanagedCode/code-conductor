@@ -700,3 +700,47 @@ test('menuItems: one bad entry invalidates the whole manifest', () => {
   const r = withItems([item(), item({ label: 'B', path: '/b' }), item({ path: '/../x' })]);
   assertRefused(r, /menuItems\[2\]\.path/);
 });
+
+test('runCodeModule: accepted forms are preserved, trimmed, and need no backend', () => {
+  for (const v of ['run-code/index.mjs', 'mod.js', 'data..v2/x.mjs']) {
+    const r = validateManifest(base({ runCodeModule: v }));
+    assert.equal(r.errors, undefined, `runCodeModule=${v} should be accepted`);
+    assert.equal(r.manifest.runCodeModule, v);
+  }
+  assert.equal(validateManifest(base({ runCodeModule: '  a/b.mjs  ' })).manifest.runCodeModule, 'a/b.mjs');
+});
+
+test('runCodeModule: absent → key omitted; the rest of the manifest is unchanged', () => {
+  const r = validateManifest(base());
+  assert.ok(!('runCodeModule' in r.manifest));
+});
+
+test('runCodeModule: bad shapes are rejected with the specific error', () => {
+  const errs = (v) => validateManifest(base({ runCodeModule: v })).errors ?? [];
+  for (const v of ['', '   ', 42, null, {}]) assert.ok(errs(v).includes("'runCodeModule' must be a non-empty relative path"), JSON.stringify(v));
+  for (const v of ['/abs/x.mjs', '../x.mjs', 'a/../x.mjs']) assert.ok(errs(v).includes("'runCodeModule' must be a relative path with no '..' segment"), v);
+  for (const v of ['x.ts', 'x', 'x.mjs.txt', 'dir/']) assert.ok(errs(v).includes("'runCodeModule' must end with '.mjs' or '.js'"), v);
+});
+
+test('runCodeModule: a manifest whose module file is missing is invalid at readManifest; present loads', async () => {
+  const dir = await mkdtemp('cc-rcm-');
+  await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(base({ runCodeModule: 'run-code/index.mjs' })));
+  let r = await readManifest(sys(), dir);
+  assert.deepEqual(r.errors, ["runCodeModule 'run-code/index.mjs' not found"]);
+  await fs.mkdir(path.join(dir, 'run-code'));
+  await fs.writeFile(path.join(dir, 'run-code', 'index.mjs'), 'export default () => 1;');
+  r = await readManifest(sys(), dir);
+  assert.equal(r.errors, undefined);
+  assert.equal(r.manifest.runCodeModule, 'run-code/index.mjs');
+});
+
+test('mcp.tools: a tool named `import` is refused with the specific error (reserved for cc.<ns>.import()); other names still pass', () => {
+  const mcp = (name) => ({
+    backend: { start: 'node server.mjs' },
+    mcp: { endpoint: '/mcp', tools: [{ name, description: 'd', inputSchema: { type: 'object' } }] },
+  });
+  const bad = validateManifest(base(mcp('import')));
+  assert.ok(bad.errors?.some(e => e.includes("'mcp.tools[0].name' cannot be 'import'") && e.includes('run_code module')), JSON.stringify(bad));
+  assert.equal(validateManifest(base(mcp('import_data'))).errors, undefined);
+  assert.equal(validateManifest(base(mcp('imports'))).errors, undefined);
+});

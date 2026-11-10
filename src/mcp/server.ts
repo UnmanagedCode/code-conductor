@@ -105,6 +105,11 @@ interface McpPluginHostLike {
     audience: ToolAudience;
     handler: (args: unknown, ctx: { callerId: string | null; format: McpFormat; callerKind: CallerKind }) => Promise<unknown>;
   }>;
+  // Where a plugin's run_code module is (docs/code-mode.md → Plugin modules).
+  // Read only when a program calls `cc.<ns>.import()`, so a host without it stays valid.
+  runCodeModule?(id: string): Promise<
+    { kind: 'ok'; path: string; hasBackend: boolean } | { kind: 'unknown' } | { kind: 'unavailable'; reason: string }
+  >;
 }
 
 function rpcResult(id: unknown, result: unknown): JsonRpcResponse {
@@ -774,9 +779,14 @@ function inflightKey(callerId: string, requestId: unknown): string {
 // `<origin>/mcp` on the interface the request arrived on — where a run_code
 // child reaches this server, whatever address the server listens on.
 function selfUrlOf(req: express.Request): string {
+  return `${selfOriginOf(req)}${req.baseUrl}`;
+}
+
+// The origin alone: where plugin backends are proxied under `/plugins/<id>`.
+function selfOriginOf(req: express.Request): string {
   const addr = req.socket.localAddress ?? '127.0.0.1';
   const host = addr.includes(':') ? `[${addr}]` : addr;
-  return `http://${host}:${req.socket.localPort}${req.baseUrl}`;
+  return `http://${host}:${req.socket.localPort}`;
 }
 
 function progressTokenOf(msg: Record<string, unknown>): string | number | undefined {
@@ -1027,6 +1037,24 @@ export function buildMcpRouter(
     res.status(204).end();
   }
 
+  // The run_code child's lookup of a plugin's module (`cc.<ns>.import()`): where the
+  // file is and the context its factory gets. Token-gated like /run-result.
+  async function runModule(req: express.Request, res: express.Response, sid: string, id: string) {
+    const pre = restPreamble(req, res, sid);
+    if (!pre) return;
+    if (pre.token === null) { restFault(res, 403, 'RUN_TOKEN_INVALID', `a module lookup needs the ${RUN_TOKEN_HEADER} header`); return; }
+    const found = pluginHost?.runCodeModule ? await pluginHost.runCodeModule(id) : { kind: 'unknown' as const };
+    if (found.kind === 'unknown') { restFault(res, 404, 'MODULE_UNKNOWN', `no enabled plugin '${id}' declares a runCodeModule`); return; }
+    if (found.kind === 'unavailable') { restFault(res, 409, 'MODULE_UNAVAILABLE', found.reason); return; }
+    const project = pre.callerId ? instances?.liveForSession(pre.callerId)?.project ?? null : null;
+    res.status(200).json({
+      id,
+      path: found.path,
+      baseUrl: found.hasBackend ? `${selfOriginOf(req)}/plugins/${encodeURIComponent(id)}` : null,
+      caller: { sessionId: pre.callerId, project },
+    });
+  }
+
   // GET would be the SSE long-poll channel for server→client notifications.
   // Server messages ride only on a POSTed tools/call's own SSE response, so
   // reject explicitly rather than hanging the client.
@@ -1053,6 +1081,7 @@ export function buildMcpRouter(
   r.post('/:sid/tools', safe((req, res) => restCall(req, res, req.params.sid, undefined)));
   r.post('/:sid/tools/:name', safe((req, res) => restCall(req, res, req.params.sid, req.params.name)));
   r.post('/:sid/run-result', safe((req, res) => runResult(req, res, req.params.sid)));
+  r.get('/:sid/run-modules/:id', safe((req, res) => runModule(req, res, req.params.sid, req.params.id)));
 
   // Nothing under /mcp falls through to the web UI's HTML.
   r.all('*', (req, res) => {
@@ -1065,7 +1094,7 @@ export function buildMcpRouter(
   // never Express's HTML page.
   r.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) { next(err); return; }
-    const rest = /^\/(?:[^/]+\/)?tools(?:\/|$)/.test(req.path) || /^\/[^/]+\/run-result$/.test(req.path);
+    const rest = /^\/(?:[^/]+\/)?tools(?:\/|$)/.test(req.path) || /^\/[^/]+\/run-result$/.test(req.path) || /^\/[^/]+\/run-modules\/[^/]+$/.test(req.path);
     const fault = bodyParserFault(err);
     if (fault) {
       if (rest) { restFault(res, fault.status, fault.code, fault.reason); return; }

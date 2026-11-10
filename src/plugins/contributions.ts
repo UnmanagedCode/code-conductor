@@ -47,6 +47,19 @@ export type PluginPlacement =
   | { kind: 'ok'; system: System; dir: string; cwd: string }
   | { kind: 'unregistered' };
 
+// What `lookupEntry` answers for a plugin id: the `ok` entry (with whether the
+// store has it enabled), or a discovered-but-unusable row's state and errors.
+export type LookedUpEntry =
+  | { kind: 'ok'; entry: ContributingEntry & { backend: boolean }; enabled: boolean }
+  | { kind: 'broken'; state: string; errors: string[] };
+
+// `runCodeModule`'s answer. `unavailable.reason` is what the program's
+// MODULE_UNAVAILABLE refusal carries.
+export type RunCodeModuleResult =
+  | { kind: 'ok'; path: string; hasBackend: boolean }
+  | { kind: 'unknown' }
+  | { kind: 'unavailable'; reason: string };
+
 export interface ContributionsDeps {
   ensureInit: () => Promise<void>;
   // Enabled + `ok` plugins only: a crashed/disabled/invalid plugin never
@@ -58,9 +71,11 @@ export interface ContributionsDeps {
   // discoveryDegraded (src/plugins/registry.ts) for what that read narrows on
   // and what it deliberately cannot.
   discoveryDegraded: () => boolean;
+  // A plugin by id, whatever its state; null when no discovered plugin has it.
+  lookupEntry: (id: string) => LookedUpEntry | null;
 }
 
-export function createContributions({ ensureInit, contributingEntries, resolvePlacement, discoveryDegraded }: ContributionsDeps) {
+export function createContributions({ ensureInit, contributingEntries, resolvePlacement, discoveryDegraded, lookupEntry }: ContributionsDeps) {
   // Bumped by every state change that could alter what conventions() computes;
   // see the cache below for what reads it.
   let registryGeneration = 0;
@@ -520,7 +535,35 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     return out;
   }
 
-  return { conventions, roles, playbooks, claudePluginDirs, invalidate, noteRegistryChange };
+  // Where the run_code module of plugin `id` is: the absolute path in its
+  // ACTIVE checkout, or why there is none. Local-only like claudePluginDirs (the
+  // module runs in a child on cc's own machine), and read live per call. The
+  // backend's runtime state deliberately does not gate this.
+  async function runCodeModule(id: string): Promise<RunCodeModuleResult> {
+    await ensureInit();
+    const found = lookupEntry(id);
+    if (!found) return { kind: 'unknown' };
+    if (found.kind === 'broken') {
+      return { kind: 'unavailable', reason: `plugin '${id}' is ${found.state}: ${found.errors.join('; ')}` };
+    }
+    const { entry, enabled } = found;
+    const rel = entry.manifest.runCodeModule;
+    if (!rel) return { kind: 'unknown' };
+    if (!enabled) return { kind: 'unavailable', reason: `plugin '${id}' is disabled` };
+    let place: PluginPlacement;
+    try {
+      if ((await projectPlacement(entry.project))?.system !== LOCAL_SYSTEM_ID) {
+        return { kind: 'unavailable', reason: `plugin '${id}' lives on another system; its run_code module is local-only` };
+      }
+      place = await resolvePlacement(entry);
+    } catch (e) {
+      return { kind: 'unavailable', reason: `plugin '${id}' checkout cannot be located: ${errMsg(e)}` };
+    }
+    if (place.kind !== 'ok') return { kind: 'unavailable', reason: `plugin '${id}' checkout cannot be located: its project is not registered` };
+    return { kind: 'ok', path: path.join(place.cwd, rel), hasBackend: entry.backend };
+  }
+
+  return { conventions, roles, playbooks, claudePluginDirs, runCodeModule, invalidate, noteRegistryChange };
 }
 
 function errMsg(e: unknown): string {

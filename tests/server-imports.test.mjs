@@ -103,6 +103,15 @@ test('walk: a site it cannot resolve makes the walk unknown, naming the file', a
   }
 });
 
+test('walk: a dynamic import marked `// server-imports: external` is no edge and does not make the walk unknown; unmarked still does', () => {
+  const marked = walk({ 'src/a.ts': 'const m = await import(pathToFileURL(p).href); // server-imports: external\n' });
+  assert.ok('chains' in marked, JSON.stringify(marked));
+  const two = walk({ 'src/a.ts': 'const m = await import(pathToFileURL(p).href), n = await import(other); // server-imports: external\n' });
+  assert.ok('unknown' in two, 'the marker covers exactly one opaque import on its line');
+  const bare = walk({ 'src/a.ts': 'const m = await import(pathToFileURL(p).href);\n' });
+  assert.ok('unknown' in bare);
+});
+
 test('walk: bare package names and node: builtins are not edges and do not make the walk unknown', () => {
   const c = chainsOf(walk({
     'src/a.ts': "import fs from 'node:fs';\nimport express from 'express';\nimport { z } from '@scope/pkg/sub';\n",

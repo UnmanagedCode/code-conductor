@@ -44,6 +44,12 @@ test('checkPaths: a known core tool, a reserved method and a known plugin tool p
   assert.deepEqual(checkPaths(literalPaths('cc.list_projects(); cc.call("x"); cc.describe_tools(); cc.code_kanban.list_cards()'), names), []);
 });
 
+test('checkPaths: cc.<ns>.import(...) passes for any plugin namespace, tool-less ones included; top-level cc.import is an unknown core tool', () => {
+  const names = new Set(['list_projects', 'code-browser__browser_info']);
+  assert.deepEqual(checkPaths(literalPaths("await cc.code_browser.import(); await cc.code_browser.import('shot'); await cc.toolless.import()"), names), []);
+  assert.deepEqual(checkPaths(literalPaths("await cc.import('code-browser')"), names).map(u => u.path), ['cc.import']);
+});
+
 test('checkPaths: an unknown core tool is reported with the nearest names', () => {
   const names = new Set(['list_projects', 'list_workspaces', 'spawn_instance']);
   const [u] = checkPaths(literalPaths('cc.list_projcts()'), names);
