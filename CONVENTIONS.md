@@ -95,10 +95,11 @@ This overrides the workspace README-maintenance update rule here: README changes
 
 # Project wiki
 
-This project keeps a `.wiki/` of durable codebase knowledge: gotchas, non-obvious decisions, glossary, architecture shape.
+This project keeps a `.wiki/` of durable codebase knowledge a reader can't quickly re-derive from the code or docs: gotchas, non-obvious decisions, glossary.
 
-- Before planning: read `.wiki/index.md`, then the 1–3 pages it points to that are relevant to your task.
-- When you learn something durable (a gotcha, a non-obvious decision or distinction, a subsystem's shape), add or update the relevant page and refresh `index.md` in the same reviewed diff — not a separate commit.
-- One topic per page. Cite `path:line` instead of pasting code.
-- If a page is marked `reviewed: true`, don't overwrite it — merge your update into it.
-- Weight content toward gotchas, decisions, and glossary (things a reader can't quickly re-derive from the code), not architecture prose.
+- **Before planning:** read `.wiki/index.md`, then the category index it routes you to, if any, then the 1–3 pages relevant to your task.
+- **When you learn something durable, record it.** Where depends on what `.wiki` is in your checkout:
+  - **A symlink** — the main checkout's live copy, shared by every worktree: your edits land immediately and never appear in your diff, so list the pages you changed in your hand-off.
+  - **A real directory** (not a symlink) — edit the pages in the same diff as the change that taught you, not a separate commit. If `git check-ignore -q .wiki` succeeds (an out-of-tree main checkout), leave them uncommitted.
+  - **Missing** — don't create it unless your brief is setting the wiki up; list what you would have recorded in your hand-off.
+- **Before writing a page, invoke the `cc-project-code-wiki:project-wiki` skill.**
