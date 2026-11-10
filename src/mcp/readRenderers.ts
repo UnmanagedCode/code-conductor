@@ -573,6 +573,7 @@ function stageBlock(name: string, stage: Row): string[] {
   const needs = asRows(stage.needs).map(needCell);
   // Definition order, never sorted — the author's reading order IS the graph's.
   const tools = Object.entries(asRow(stage.tools));
+  const workerTools = Object.entries(asRow(stage.workerTools));
   return [
     `▸ ${name}   workers ${dash(stage.workers)}   spawnable ${yesNo(stage.spawnable)}`,
     ...indent([`needs ${needs.length ? needs.join(', ') : DASH}`], 4),
@@ -580,6 +581,9 @@ function stageBlock(name: string, stage: Row): string[] {
     // values, and the "*" fallback has to be readable as an entry of its own.
     ...indent([heading('tools', tools.length)], 4),
     ...indent(tools.map(([tool, policy]) => `${tool} ${toolPolicy(policy)}`), 6),
+    // The worker's own calls, listed the same way.
+    ...indent([heading('workerTools', workerTools.length)], 4),
+    ...indent(workerTools.map(([pattern, policy]) => `${pattern} ${dash(policy)}`), 6),
     ...describedBlock('description', stage.description, 4),
   ];
 }

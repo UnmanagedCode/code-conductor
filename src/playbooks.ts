@@ -3,8 +3,16 @@
 //
 // A playbook is a JSON graph of STAGES. Workers are bound to a stage; the
 // conductor states its intent on the calls that create or move workers; this
-// module verifies the move against the graph. Playbooks govern only the
-// CONDUCTOR's tool calls — a worker is not offered the tools policy governs (core tool audience).
+// module verifies the move against the graph. Playbooks govern two scopes of
+// tool call, one key each on a stage:
+//   • `tools`       — the CONDUCTOR's calls that address a worker in the stage
+//                     (decide(), enforced at the MCP boundary by
+//                     src/mcp/playbookGate.ts → check). A worker is not offered
+//                     the tools this governs (core tool audience).
+//   • `workerTools` — the bound worker's OWN calls, any tool name (built-in or
+//                     MCP, a subagent's included), checked live per call by the
+//                     PreToolUse hook (resolveWorkerTool below, enforced by
+//                     playbookGate.ts → checkWorkerTool).
 //
 // The two entry conditions a stage can declare:
 //   • `needs` — WORKER PROVENANCE: which other worker must exist, in which
@@ -153,6 +161,7 @@ export function governableToolCatalog(index: ToolIndex): Array<{ name: string; p
 
 export type PinLiteral = string | number | boolean | null;
 export type ToolPolicy = 'allow' | 'deny' | { pin: Record<string, PinLiteral> };
+export type WorkerToolPolicy = 'allow' | 'deny';
 
 export interface NeedsEntry {
   // ANCHOR. Two jobs, deliberately one field: the stage the named worker must
@@ -176,6 +185,9 @@ export interface Stage {
   needs: NeedsEntry[];
   workers: 'one' | 'many';
   tools: Record<string, ToolPolicy>;
+  // The bound worker's own calls: tool-name pattern -> allow | deny, resolved by
+  // resolveWorkerTool. Absent in the authored JSON ⇒ `{}` (everything allowed).
+  workerTools: Record<string, WorkerToolPolicy>;
   // The conductor's MOVE at this stage — what it does and what it expects back.
   // Never a restatement of `tools`/`needs`/the graph: those are enforced here and
   // reported by describe_playbook, so a paraphrase is duplication that can drift.
@@ -249,6 +261,7 @@ export function playbookDetail(pb: Playbook) {
       needs: stage.needs,
       workers: stage.workers,
       tools: stage.tools,
+      workerTools: stage.workerTools,
       spawnable: isSpawnable(stage),
       // The conductor's move at this stage, when the definition authors one.
       // Left undefined when unauthored, which the rendering shows by emitting no
@@ -270,13 +283,17 @@ export function playbookDetail(pb: Playbook) {
 // re-privatise them: tests/mcp-text-render.test.mjs reads them to assert that
 // describe_playbook's rendering carries every field the schema admits, so a
 // field added here fails loudly instead of vanishing from that tool's output.
-export const STAGE_KEYS = new Set(['needs', 'workers', 'tools', 'description']);
+export const STAGE_KEYS = new Set(['needs', 'workers', 'tools', 'workerTools', 'description']);
 export const PLAYBOOK_KEYS = new Set(['id', 'name', 'description', 'entryStages', 'stages', 'transitions']);
 export const TRANSITION_KEYS = new Set(['from', 'to', 'on', 'description']);
 // Exported for the same reason, and it matters more here: `needs` is rendered as
 // a composed cell rather than field-by-field, so a new axis silently dropping
 // out of describe_playbook's text is exactly the failure that binding catches.
 export const NEEDS_KEYS = new Set(['stage', 'position', 'liveness']);
+// A `workerTools` key: tool-name characters plus `*`, the only wildcard.
+// `|`, `(`, `.` and spaces are refused so a regex or a permission-rule spelling
+// (`Bash(git:*)`) fails at load instead of silently matching nothing.
+export const WORKER_TOOL_PATTERN_RE = /^[A-Za-z0-9_*-]+$/;
 const WORKERS_VALUES = new Set(['one', 'many']);
 const LIVENESS_VALUES = new Set(['live', 'retired', 'any']);
 
@@ -396,9 +413,14 @@ export function validatePlaybook(
       }
     }
 
+    const workerTools = validateWorkerTools({ stage: name, raw: rawStage.workerTools, err });
+
     const description = readDescription(rawStage.description, `stage '${name}'`, err);
 
-    stages[name] = { needs, workers, tools, ...(description !== undefined && { description }) };
+    stages[name] = {
+      needs, workers, tools, workerTools: workerTools ?? {},
+      ...(description !== undefined && { description }),
+    };
   }
 
   // ── spawnability rules ──
@@ -605,6 +627,44 @@ function validatePosition(
   return out;
 }
 
+// `workerTools` — `{"<pattern>": "allow" | "deny"}`, absent ⇒ `{}`. No check
+// that a pattern names a real tool: the universe (plugin MCP tools, the CLI's
+// built-ins per version) is not knowable at load. An explicit `deny` on an
+// exempt tool's exact name is refused, because resolveWorkerTool would ignore
+// it; a wildcard covering one is fine.
+//
+// Returns null (after recording an error) rather than a partial map, like
+// validatePosition: a malformed map never loads weaker than its author wrote.
+function validateWorkerTools(
+  { stage, raw, err }: { stage: string; raw: unknown; err: (m: string) => void },
+): Record<string, WorkerToolPolicy> | null {
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) {
+    err(`stage '${stage}': workerTools must be an object mapping tool-name pattern -> "allow" | "deny" (got ${JSON.stringify(raw)})`);
+    return null;
+  }
+  const out: Record<string, WorkerToolPolicy> = {};
+  for (const [key, policy] of Object.entries(raw)) {
+    if (!WORKER_TOOL_PATTERN_RE.test(key)) {
+      err(`stage '${stage}': workerTools key ${JSON.stringify(key)} is not a tool-name pattern — use letters, ` +
+          `digits, '_', '-' and '*'; '*' is the only wildcard and there is no regex`);
+      return null;
+    }
+    if (policy !== 'allow' && policy !== 'deny') {
+      err(`stage '${stage}': workerTools.${key} must be "allow" or "deny" — workerTools takes allow/deny only, ` +
+          `no pin (got ${JSON.stringify(policy)})`);
+      return null;
+    }
+    if (policy === 'deny' && WORKER_TOOLS_EXEMPT.includes(key)) {
+      err(`stage '${stage}': workerTools cannot deny '${key}' — ${WORKER_TOOLS_EXEMPT.join(' and ')} are always ` +
+          'allowed, so the worker can present a plan and ask a question in any stage');
+      return null;
+    }
+    out[key] = policy;
+  }
+  return out;
+}
+
 function validateToolPolicy(
   { stage, toolName, policy, index, err }:
   { stage: string; toolName: string; policy: unknown; index: ToolIndex; err: (m: string) => void },
@@ -692,6 +752,58 @@ export function resolvePolicy(stage: Stage, toolName: string): ToolPolicy {
   const wild = stage.tools[WILDCARD];
   if (wild !== undefined) return wild;
   return toolName === 'spawn_instance' ? 'deny' : 'allow';
+}
+
+// ── worker tools (the bound worker's own calls) ─────────────────────────────
+
+// The refusal code on the event-log row of a worker call a stage denies.
+export const WORKER_TOOL_DENIED_IN_STAGE = 'WORKER_TOOL_DENIED_IN_STAGE';
+
+// Tools `workerTools` can never deny: without them a stage with `"*": "deny"`
+// leaves a plan-mode worker unable to present its plan or escalate.
+export const WORKER_TOOLS_EXEMPT: readonly string[] = ['AskUserQuestion', 'ExitPlanMode'];
+
+// A stage's answer for one of its worker's own calls, and the `workerTools`
+// key that decided it (null when no entry did). `toolName` is the RAW name the
+// CLI reports (`Edit`, `mcp__code-conductor__code-kanban__move_card`), never run
+// through normalizeToolName; matching is anchored and case-sensitive, `*`
+// matching any run of characters. Order:
+//   1. an exempt tool → allow;
+//   2. an exact key (no `*`) equal to the name;
+//   3. the LONGEST matching pattern other than the bare `*`; equal-length
+//      matches that disagree → deny;
+//   4. the `"*"` entry;
+//   5. allow.
+export type WorkerToolResolution = { decision: 'allow'; key: string | null } | { decision: 'deny'; key: string };
+export function resolveWorkerTool(stage: Stage, toolName: string): WorkerToolResolution {
+  if (WORKER_TOOLS_EXEMPT.includes(toolName)) return { decision: 'allow', key: null };
+  const map = stage.workerTools;
+  // Own keys only: `map[toolName]` would answer `constructor` with an inherited
+  // function.
+  if (Object.hasOwn(map, toolName) && !toolName.includes(WILDCARD)) return { decision: map[toolName], key: toolName };
+  let best: WorkerToolResolution & { key: string } | null = null;
+  for (const [key, decision] of Object.entries(map)) {
+    if (key === WILDCARD || !key.includes(WILDCARD)) continue;
+    // WORKER_TOOL_PATTERN_RE admits no regex metacharacter but `*`, so the rest
+    // of a key is literal as written.
+    if (!new RegExp(`^${key.split(WILDCARD).join('.*')}$`).test(toolName)) continue;
+    if (!best || key.length > best.key.length || (key.length === best.key.length && decision === 'deny')) {
+      best = { decision, key };
+    }
+  }
+  if (best) return best;
+  if (Object.hasOwn(map, WILDCARD)) return { decision: map[WILDCARD], key: WILDCARD };
+  return { decision: 'allow', key: null };
+}
+
+// What the worker reads as the hook's denial reason, and the row's
+// `refusal.reason`. `key` is the deciding `workerTools` entry.
+export function workerToolDeniedReason(
+  { playbook, stage, toolName, key }: { playbook: string; stage: string; toolName: string; key: string },
+): string {
+  return `cc playbook policy: stage '${stage}' of playbook '${playbook}' does not let its worker call ${toolName} ` +
+    `(denied by workerTools entry '${key}'). Retrying is refused the same way. Do this step with a tool the stage ` +
+    `allows, or report that it needs ${toolName} and stop.`;
 }
 
 // ── catalog ─────────────────────────────────────────────────────────────────

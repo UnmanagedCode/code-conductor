@@ -1121,11 +1121,13 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         fmt('each rendered `<stage>@<liveness> in <stages>`: ', 'each {stage, liveness, position}: ') +
         'the stage that worker must have PASSED THROUGH (and the key you ' +
         'pass its sessionId under), whether it must still be running (live / retired / any), and which ' +
-        'stages it may be in NOW. `tools` maps a tool to allow / ' +
+        'stages it may be in NOW. `tools` governs YOUR calls that address a worker in that stage: it maps a tool to allow / ' +
         'deny / ' + fmt('pin {json}', '{pin: {…}}') + ' of enforced argument values — a `*` entry is the fallback for every ' +
         'tool the stage does not name, and with no `*` an unnamed tool is allowed — except ' +
         'spawn_instance, which fails closed: a stage must name it to be spawnable, and a `*` does not ' +
-        'confer that. `workers` is the ' +
+        'confer that. `workerTools` does the same for the worker\'s OWN calls (subagents included, checked live): ' +
+        'tool-name patterns (`*` the only wildcard) to allow / deny, the most specific match winning, with the same `*` ' +
+        'fallback and default allow; AskUserQuestion and ExitPlanMode are never denied. `workers` is the ' +
         'stage\'s capacity for live workers of one run: `one` refuses a second, `many` permits ' +
         'several live at once. Each stage also reports `spawnable`, the per-stage form of ' +
         'list_playbooks\' `spawnableStages`. On an edge, `via` is the tool that drives it and the ' +

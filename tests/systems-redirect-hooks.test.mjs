@@ -178,8 +178,9 @@ test('with no server port, the hook URL and the forwarder URL degrade together',
   assert.notEqual(on.hook, null);
   assert.notEqual(on.fwd, null);
   const sOn = JSON.parse(buildSettingsJSON({ hookCallbackUrl: on.hook ?? undefined, redirect: true }));
-  assert.equal(sOn.hooks.PreToolUse.length, 1, 'the port is set and still no hook is registered');
+  assert.equal(sOn.hooks.PreToolUse.length, 2, 'the port is set and still no hook is registered');
   assert.match(sOn.hooks.PreToolUse[0].hooks[0].url, /hook-callback$/);
+  assert.match(sOn.hooks.PreToolUse[1].hooks[0].url, /hook-callback\?policy=worker-tools$/, 'the worker-tools entry, last');
 });
 
 // PINS: the rewrite reaches the CLI. Without `updatedInput` on the response the

@@ -38,6 +38,7 @@ const MINE = {
     },
     implement: {
       needs: [{ stage: 'plan' }], workers: 'many', tools: { spawn_instance: 'allow' }, description: 'Build it.',
+      workerTools: { '*': 'deny', Read: 'allow' },
     },
     review: { tools: { '*': 'allow' } },
   },
@@ -256,6 +257,14 @@ test('detail: every schema field reaches the JSON on a fully-populated stage and
   assert.deepEqual(Object.keys(body.stages.implement.needs[0]).sort(), [...NEEDS_KEYS].sort());
   const edgeKeys = Object.keys(body.transitions[0]);
   for (const k of [...TRANSITION_KEYS].filter(k => k !== 'on').concat('via')) assert.ok(edgeKeys.includes(k), `transition key '${k}'`);
+});
+
+// PINS: the REST detail carries a stage's workerTools map as authored, and the
+// empty map on a stage that authored none.
+test('detail: a stage\'s workerTools map reaches the JSON verbatim, {} when unauthored', async () => {
+  const { body } = await api.get('/mine');
+  assert.deepEqual(body.stages.implement.workerTools, { '*': 'deny', Read: 'allow' });
+  assert.deepEqual(body.stages.review.workerTools, {});
 });
 
 test('detail: a plugin id resolves raw and URL-encoded', async () => {

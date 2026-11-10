@@ -9,6 +9,13 @@
 //   - On a CONDUCTOR only, a second `http` entry on the read-nudge tools
 //     (READ_NUDGE_MATCHER, src/conductorReadNudge.ts), answered with no
 //     permission decision — at most an `additionalContext` reminder.
+//   - On EVERY session, LAST, the worker-tools entry: matcher `*` (every tool,
+//     built-in and MCP, a subagent's included), the same URL plus
+//     `?policy=worker-tools`. The route answers it from the playbook gate
+//     (`checkWorkerTool`, src/mcp/playbookGate.ts) with `deny` or `{}`, never
+//     `allow`. It goes on every session because launch cannot know whether, or
+//     to which stage, the session will be bound, and the stage's list is read
+//     live per call.
 //
 // PostToolUse:
 //
@@ -106,6 +113,11 @@ const REDIRECT_POST_TOOL_MATCHER = MUTATING_TOOL_MATCHER;
 // makes the whole feature safe rather than merely convenient.
 const REDIRECT_DENIED_TOOLS = ['Glob', 'Grep'];
 
+// The worker-tools entry: every tool, and the query value the hook-callback
+// route branches on.
+export const WORKER_TOOLS_MATCHER = '*';
+export const WORKER_TOOLS_POLICY = 'worker-tools';
+
 // Per-hook timeout (seconds) for the http hooks. Generous because the redirect
 // path needs the headroom: `SessionRedirect.postToolUse` awaits the daemon
 // settle, and a CLI-side hook timeout is a non-blocking error — the CLI runs
@@ -116,7 +128,8 @@ export const HOOK_HTTP_TIMEOUT_S = 660;
 // (src/systems/toolRedirect.ts). It widens the hook surface rather than
 // replacing it: its entries follow the ones every session has, which are
 // unchanged by it. `conductor` appends the read-nudge entry AFTER the base one,
-// for the same reason: a worker's settings do not depend on it.
+// for the same reason: a worker's settings do not depend on it. The worker-tools
+// entry is appended after all of them, so every other entry keeps its index.
 export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor = false }: { hookCallbackUrl?: string; redirect?: boolean; conductor?: boolean } = {}): string {
   const httpHook = (url: string) => [{ type: 'http', url, timeout: HOOK_HTTP_TIMEOUT_S }];
   const preToolUse: unknown[] = [];
@@ -127,6 +140,9 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor
       hooks: httpHook(hookCallbackUrl),
     });
     if (conductor) preToolUse.push({ matcher: READ_NUDGE_MATCHER, hooks: httpHook(hookCallbackUrl) });
+    const workerToolsUrl = new URL(hookCallbackUrl);
+    workerToolsUrl.searchParams.set('policy', WORKER_TOOLS_POLICY);
+    preToolUse.push({ matcher: WORKER_TOOLS_MATCHER, hooks: httpHook(workerToolsUrl.toString()) });
     const postToolUse: unknown[] = [{ matcher: TOOL_RESULT_NUDGE_MATCHER, hooks: httpHook(hookCallbackUrl) }];
     if (redirect) postToolUse.push({ matcher: REDIRECT_POST_TOOL_MATCHER, hooks: httpHook(hookCallbackUrl) });
     (out.hooks as Record<string, unknown>).PostToolUse = postToolUse;

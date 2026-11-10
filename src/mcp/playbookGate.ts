@@ -37,10 +37,22 @@
 // playbook is fully governable the moment enforcement is flipped on. An illegal
 // one is not: under `warn` it proceeds with only the refusal recorded and no
 // binding, leaving that worker untracked.
+//
+// THE SECOND SCOPE: a bound worker's OWN calls (`checkWorkerTool`). The
+// PreToolUse hook's worker-tools entry (src/settings.ts) asks it on every tool
+// call of every session; the binding and the stage's `workerTools` are read
+// per call, so a move or a definition edit governs the next call. Answers
+// `{deny: reason}` or `{deny: null}`; a match writes one `refused` row by the
+// worker at either level. Level = the owner conductor's (live, else folded,
+// else the Settings default). It FAILS OPEN — passes and warns — when the
+// binding's playbook or stage is no longer loaded or the log cannot be loaded:
+// failing closed would deny every tool on every session until restart, since
+// the memoised load stays rejected.
 
 import {
   decide, loadToolIndex, loadInteractionTools, loadPlaybooks, normalizeToolName,
-  type Move, type Playbook, type RefusalCode, type LegalMoves,
+  resolveWorkerTool, workerToolDeniedReason, WORKER_TOOL_DENIED_IN_STAGE, normalizePlaybookEnforcement,
+  type Move, type Playbook, type PlaybookEnforcement, type RefusalCode, type LegalMoves,
 } from '../playbooks.ts';
 import {
   createEventLog, eventLogFile, readEventLog,
@@ -51,6 +63,7 @@ import {
 } from '../playbookState.ts';
 import { attachSessionRecorder } from './sessionRecorder.ts';
 import { isConductorInstance } from '../conduct.ts';
+import { getDefaultPlaybookEnforcement } from '../conductorConventions.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 // The soft-refusal body, serialized exactly like the transport's own
@@ -77,6 +90,10 @@ export interface PlaybookGate {
   // the projection is keyed by public id while create() must keep the segment
   // the caller named — see InstanceManager.resolveResumeRef.
   check(input: { toolName: unknown; args: unknown; callerId: string | null; resumeHandle?: string }): Promise<GateOutcome>;
+  // A worker's OWN tool call against its stage's `workerTools` (header →
+  // THE SECOND SCOPE). `ownerSessionId` is the conductor that spawned or
+  // resumed it, the source of the level. Never throws.
+  checkWorkerTool(input: { sessionId: string | null; ownerSessionId: string | null; toolName: string }): Promise<{ deny: string | null }>;
   // READ SURFACE for the introspection tools (src/mcp/handlers.ts). Named methods
   // rather than handing out the log, so there is exactly one projection in the
   // process — a second one folded independently would drift from the one that
@@ -109,6 +126,10 @@ export interface PlaybookGate {
 // error's message, never from tool arguments — so no prompt text reaches the
 // file through it beyond this many characters.
 export const FAILURE_REASON_MAX = 200;
+
+// Bindings already warned about as drifted, so a worker whose stage vanished
+// warns once rather than on every tool call.
+const driftWarned = new Set<string>();
 
 export function createPlaybookGate(
   { instances, lease, file }:
@@ -262,6 +283,56 @@ export function createPlaybookGate(
     };
   }
 
+  async function checkWorkerTool(
+    { sessionId, ownerSessionId, toolName }: { sessionId: string | null; ownerSessionId: string | null; toolName: string },
+  ): Promise<{ deny: string | null }> {
+    const pass = { deny: null };
+    if (!sessionId) return pass;
+    try {
+      await ensureLoaded();
+      const bound = proj.bySession.get(sessionId);
+      if (!bound) return pass;
+      const playbooks = await definitions();
+      const stages = playbooks.get(bound.playbook)?.stages;
+      // Own stages only: an inherited member named like the recorded stage is drift.
+      const stage = stages && Object.hasOwn(stages, bound.stage) ? stages[bound.stage] : undefined;
+      if (!stage) {
+        const key = `${sessionId}\0${bound.playbook}\0${bound.stage}`;
+        if (!driftWarned.has(key)) {
+          driftWarned.add(key);
+          console.warn(`playbooks: worker-tools check skipped for ${sessionId} — stage '${bound.stage}' of playbook ` +
+            `'${bound.playbook}' is not loaded; its calls pass unchecked`);
+        }
+        return pass;
+      }
+      const resolved = resolveWorkerTool(stage, toolName);
+      if (resolved.decision === 'allow') return pass;
+      const { key } = resolved;
+      const owner = ownerSessionId ? instances?.liveForSession(ownerSessionId) ?? null : null;
+      const liveOwner = owner && isConductorInstance(owner) ? owner : null;
+      const mode: PlaybookEnforcement = liveOwner?.playbookEnforcement
+        ?? (ownerSessionId && proj.enforcement.has(ownerSessionId)
+          ? normalizePlaybookEnforcement(proj.enforcement.get(ownerSessionId))
+          : await getDefaultPlaybookEnforcement());
+      const reason = workerToolDeniedReason({ playbook: bound.playbook, stage: bound.stage, toolName, key });
+      await append({
+        kind: 'call', actor: { type: 'worker', sessionId }, subject: sessionId, tool: toolName,
+        outcome: 'refused', refusal: { code: WORKER_TOOL_DENIED_IN_STAGE, reason },
+      });
+      if (mode === 'warn') {
+        liveOwner?._emitUi({
+          kind: 'system', subtype: 'playbook_warn',
+          data: { tool: toolName, code: WORKER_TOOL_DENIED_IN_STAGE, reason, sessionId },
+        });
+        return pass;
+      }
+      return { deny: reason };
+    } catch (e) {
+      console.warn(`playbooks: worker-tools check skipped for ${sessionId} (${toolName}) — ${e instanceof Error ? e.message : String(e)}`);
+      return pass;
+    }
+  }
+
   async function commitCall(
     { base, move, args, result }:
     { base: CallBase; move: Move; args: Record<string, unknown>; result: unknown },
@@ -341,7 +412,7 @@ export function createPlaybookGate(
     return readEventLog(logFile());
   }
 
-  return { check, readProjection, readHistory, readBindings, readLiveWorkers, isLive, eventLog: () => eventLog };
+  return { check, checkWorkerTool, readProjection, readHistory, readBindings, readLiveWorkers, isLive, eventLog: () => eventLog };
 }
 
 // The fields every `call` row of one governed call shares.

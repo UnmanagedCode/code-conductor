@@ -35,6 +35,8 @@ export type Actor =
   // `sessionId` is the acting session's public id; absent only on migrated
   // rows and on a turn opened by parked steers from several conductors.
   | { type: 'conductor'; sessionId?: string }
+  // A bound worker's own tool call, refused by its stage's `workerTools`.
+  | { type: 'worker'; sessionId: string }
   | { type: 'human' }
   | { type: 'system' };
 

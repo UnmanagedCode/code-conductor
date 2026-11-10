@@ -24,12 +24,13 @@ const SPAWN = 'mcp__code-conductor__spawn_instance';
 const SEND = 'mcp__code-conductor__send_prompt';
 
 // What a session's settings carry, byte for byte. A worker: the base PreToolUse
-// entry plus the tool-result nudge PostToolUse entry (src/toolResultNudges.ts).
-// A conductor adds the read-nudge PreToolUse entry (asserted against
-// GOLDEN_WORKER below). A redirected session widens the PreToolUse matcher and
-// adds its own PostToolUse entry after the nudge entry.
-const GOLDEN_WORKER = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]}]}}';
-const GOLDEN_REDIRECT = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash|Glob|Grep|Read","hooks":[{"type":"http","url":"http://h","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}]},"permissions":{"deny":["Glob","Grep"]},"includeGitInstructions":false}';
+// entry, the worker-tools PreToolUse entry LAST (src/settings.ts), and the
+// tool-result nudge PostToolUse entry (src/toolResultNudges.ts). A conductor
+// adds the read-nudge PreToolUse entry between the two (asserted against
+// GOLDEN_WORKER below). A redirected session widens the base PreToolUse matcher
+// and adds its own PostToolUse entry after the nudge entry.
+const GOLDEN_WORKER = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"*","hooks":[{"type":"http","url":"http://h/?policy=worker-tools","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]}]}}';
+const GOLDEN_REDIRECT = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash|Glob|Grep|Read","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"*","hooks":[{"type":"http","url":"http://h/?policy=worker-tools","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}]},"permissions":{"deny":["Glob","Grep"]},"includeGitInstructions":false}';
 
 function observeMany(nudge, tool, n) {
   const out = [];
@@ -201,15 +202,29 @@ test('settings: a worker\'s settings do not depend on the conductor flag', () =>
   assert.equal(buildSettingsJSON({ hookCallbackUrl: 'http://h', redirect: true, conductor: false }), GOLDEN_REDIRECT);
 });
 
+// PINS (Q4 of the worker-tools design): the worker-tools entry is APPENDED —
+// last on every variant — so every other entry keeps its index and value, and
+// it is the one entry whose URL carries `?policy=worker-tools`.
+test('settings: the worker-tools entry is last on every variant, and the only one carrying the policy query', () => {
+  for (const opts of [{}, { redirect: true }, { conductor: true }, { redirect: true, conductor: true }]) {
+    const pre = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h', ...opts })).hooks.PreToolUse;
+    assert.deepEqual(pre.at(-1), {
+      matcher: '*', hooks: [{ type: 'http', url: 'http://h/?policy=worker-tools', timeout: HOOK_HTTP_TIMEOUT_S }],
+    }, JSON.stringify(opts));
+    for (const e of pre.slice(0, -1)) assert.equal(e.hooks[0].url, 'http://h', `${JSON.stringify(opts)}: ${e.matcher}`);
+  }
+});
+
 test('settings: conductor entry', () => {
   const worker = JSON.parse(GOLDEN_WORKER);
   const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h', conductor: true }));
-  assert.equal(s.hooks.PreToolUse.length, 2);
+  assert.equal(s.hooks.PreToolUse.length, 3);
   assert.deepEqual(s.hooks.PreToolUse[0], worker.hooks.PreToolUse[0], 'the base entry is unchanged');
   assert.deepEqual(s.hooks.PreToolUse[1], {
     matcher: READ_NUDGE_MATCHER,
     hooks: [{ type: 'http', url: 'http://h', timeout: HOOK_HTTP_TIMEOUT_S }],
   });
+  assert.deepEqual(s.hooks.PreToolUse[2], worker.hooks.PreToolUse.at(-1), 'the worker-tools entry, last, as on a worker');
   assert.deepEqual(s.hooks.PostToolUse, worker.hooks.PostToolUse, 'the same tool-result nudge entry as a worker');
   assert.equal(s.permissions, undefined);
   assert.deepEqual(JSON.parse(buildSettingsJSON({ conductor: true })), { hooks: { PreToolUse: [] } },

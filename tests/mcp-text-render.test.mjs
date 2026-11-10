@@ -1039,6 +1039,8 @@ const GRAPH = {
         spawn_instance: { pin: { mode: 'plan', createWorktree: true, label: null } },
         set_mode: 'allow',
       },
+      // Definition order, a "*" entry beside named ones — as `tools` above.
+      workerTools: { '*': 'deny', Read: 'allow', 'mcp__code-conductor__code-kanban__*': 'deny' },
       spawnable: true,
       description: STAGE_PROSE,
     },
@@ -1049,6 +1051,7 @@ const GRAPH = {
       ],
       workers: 'many',
       tools: {},
+      workerTools: {},
       spawnable: false,
     },
     sink: {
@@ -1056,6 +1059,7 @@ const GRAPH = {
       needs: [{ stage: 'fan', position: ['fan', 'sink'], liveness: 'retired' }],
       workers: 'one',
       tools: { '*': 'allow' },
+      workerTools: { Bash: 'deny' },
       spawnable: false,
     },
   },
@@ -1089,6 +1093,10 @@ describe('renderPlaybook', () => {
       '      * deny',
       '      spawn_instance pin {"mode":"plan","createWorktree":true,"label":null}',
       '      set_mode allow',
+      '    workerTools (3)',
+      '      * deny',
+      '      Read allow',
+      '      mcp__code-conductor__code-kanban__* deny',
       '    description',
       '      Brief the worker, then wait for its sentinel before you treat the work as reviewable.',
       '',
@@ -1096,10 +1104,13 @@ describe('renderPlaybook', () => {
       '▸ fan   workers many   spawnable no',
       '    needs triage@live in triage, triage@any in *',
       '    tools (none)',
+      '    workerTools (none)',
       '▸ sink   workers one   spawnable no',
       '    needs fan@retired in fan|sink',
       '    tools (1)',
       '      * allow',
+      '    workerTools (1)',
+      '      Bash deny',
       '',
       'TRANSITIONS (3)',
       '  triage → fan  via approve_plan',
@@ -1160,6 +1171,16 @@ describe('renderPlaybook', () => {
     assert.match(out, /^ {4}needs —$/m);
   });
 
+  test('every workerTools entry reaches the text in definition order, "*" included; an empty map is (none)', () => {
+    // The worker's own allow/deny map: an entry dropped, reordered or rewritten
+    // here would misreport what the hook refuses.
+    const out = renderPlaybook(GRAPH);
+    const triage = out.slice(out.indexOf('▸ triage'), out.indexOf('▸ fan'));
+    assert.match(triage, /^ {4}workerTools \(3\)\n {6}\* deny\n {6}Read allow\n {6}mcp__code-conductor__code-kanban__\* deny$/m);
+    assert.match(out, /^ {4}workerTools \(none\)$/m);
+    assert.match(out, /^ {4}workerTools \(1\)\n {6}Bash deny$/m);
+  });
+
   test('an unauthored description emits no line at all', () => {
     // The absence semantics the JSON shape used to carry as key-absence: no
     // label, no —, and no "undefined"/"null" leaking into the prose slot.
@@ -1217,11 +1238,12 @@ describe('renderPlaybook', () => {
     };
     // Containers and renamed/derived fields, each covered by a named test above:
     // entryStages/stages/transitions by the full-graph string, needs by the
-    // needs/— test, tools by the tools-map test, and `on` by the via test (the
+    // needs/— test, tools by the tools-map test, workerTools by the worker-tools
+    // test, and `on` by the via test (the
     // payload carries it as the derived `via`, never under its schema name).
     const BY_DEDICATED_ASSERTION = {
       playbook: ['entryStages', 'stages', 'transitions'],
-      stage: ['needs', 'tools'],
+      stage: ['needs', 'tools', 'workerTools'],
       transition: ['on'],
     };
     const SETS = { playbook: PLAYBOOK_KEYS, stage: STAGE_KEYS, transition: TRANSITION_KEYS };

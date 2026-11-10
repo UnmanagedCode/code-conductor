@@ -1,14 +1,21 @@
 // Integration tests for the PreToolUse http hook callback — the
 // orchestrator-side REST endpoint that the Claude Code CLI POSTs to
 // before running a mutating tool. For a local session the endpoint allows
-// every call; an unknown instance gets a deny.
+// every call; an unknown instance gets a deny. The `?policy=worker-tools` entry
+// on the same URL answers from the playbook gate: `deny` or `{}`, never `allow`.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { promises as fs } from 'node:fs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, instForSession } from './helpers.mjs';
+import { orchStoreRoot } from '../src/projects.ts';
+import { WORKER_TOOLS_MATCHER, WORKER_TOOLS_POLICY } from '../src/settings.ts';
+import { workerToolDeniedReason, WORKER_TOOL_DENIED_IN_STAGE } from '../src/playbooks.ts';
+import { getDefaultPlaybookEnforcement, setDefaultPlaybookEnforcement } from '../src/conductorConventions.ts';
+import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { READ_NUDGE_MATCHER, readNudgeText } from '../src/conductorReadNudge.ts';
 import { TOOL_RESULT_NUDGE_MATCHER } from '../src/toolResultNudges.ts';
 
@@ -134,12 +141,17 @@ async function hook(id, toolName, toolUseId, extra = {}) {
 }
 
 const settingsArg = (inst) => inst._spawnArgv[inst._spawnArgv.indexOf('--settings') + 1];
+const workerToolsUrl = (inst) => {
+  const u = new URL(inst.hookCallbackUrl);
+  u.searchParams.set('policy', WORKER_TOOLS_POLICY);
+  return u.toString();
+};
 const ringNudges = (inst) => inst.ring.toArray().filter(ev => ev.kind === 'system' && ev.subtype === 'read_nudge');
 
 test('conductor spawn argv carries the nudge hook; a worker\'s does not', async () => {
   const cond = await spawnConductor();
   const s = JSON.parse(settingsArg(cond));
-  assert.equal(s.hooks.PreToolUse.length, 2);
+  assert.equal(s.hooks.PreToolUse.length, 3);
   assert.equal(s.hooks.PreToolUse[1].matcher, READ_NUDGE_MATCHER);
   assert.equal(s.hooks.PreToolUse[1].hooks[0].url, cond.hookCallbackUrl);
 
@@ -149,9 +161,10 @@ test('conductor spawn argv carries the nudge hook; a worker\'s does not', async 
   await waitFor(() => worker.status === 'idle');
   const hook = `[{"type":"http","url":${JSON.stringify(worker.hookCallbackUrl)},"timeout":660}]`;
   assert.equal(settingsArg(worker),
-    `{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":${hook}}],`
+    `{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":${hook}},`
+    + `{"matcher":"*","hooks":${hook.replace(JSON.stringify(worker.hookCallbackUrl), JSON.stringify(workerToolsUrl(worker)))}}],`
     + `"PostToolUse":[{"matcher":${JSON.stringify(TOOL_RESULT_NUDGE_MATCHER)},"hooks":${hook}}]}}`,
-    'a worker\'s settings: the base PreToolUse entry plus the tool-result nudge PostToolUse entry');
+    'a worker\'s settings: the base PreToolUse entry, the worker-tools entry, and the tool-result nudge PostToolUse entry');
 });
 
 // INVARIANT: every session's spawn argv registers the tool-result nudge
@@ -261,4 +274,119 @@ test('worker hook behaviour unchanged', async () => {
     }, `worker call ${n} gets today's explicit allow`);
   }
   assert.equal(ringNudges(instances.get(r.body.id)).length, 0);
+});
+
+// ── Worker tools (`?policy=worker-tools`) ─────────────────────────────────────
+// PINS: every session's LAST PreToolUse entry is `{matcher:'*'}` on its own hook
+// URL plus `?policy=worker-tools`; the route answers that entry from the gate
+// with `deny` or `{}` — never `allow` — attributed by the URL's instance id, and
+// the plain URL's answers are unchanged.
+
+const workerToolsEntry = (inst) => ({ matcher: WORKER_TOOLS_MATCHER, hooks: [{ type: 'http', url: workerToolsUrl(inst), timeout: 660 }] });
+const lastPre = (inst) => JSON.parse(settingsArg(inst)).hooks.PreToolUse.at(-1);
+
+test('the worker-tools entry is the last PreToolUse entry on a worker and on a conductor', async () => {
+  const cond = await spawnConductor();
+  assert.deepEqual(lastPre(cond), workerToolsEntry(cond));
+  await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'bypassPermissions' });
+  const worker = instances.get(r.body.id);
+  await waitFor(() => worker.status === 'idle');
+  assert.deepEqual(lastPre(worker), workerToolsEntry(worker));
+  assert.equal(new URL(workerToolsUrl(worker)).pathname, `/api/instances/${worker.id}/hook-callback`,
+    'attributed by the instance id in the path');
+});
+
+test('worker-tools for an unbound session answers 200 {} — no permission decision — for any tool', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'bypassPermissions' });
+  await waitFor(() => instances.get(r.body.id).status === 'idle');
+  for (const toolName of ['Edit', 'Read', 'mcp__code-conductor__project_read']) {
+    const res = await api(baseUrl, 'POST', `/api/instances/${r.body.id}/hook-callback?policy=${WORKER_TOOLS_POLICY}`,
+      buildHookEnvelope({ toolUseId: `tu_wt_${toolName}`, toolName, toolInput: {} }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, {}, `${toolName}: no permissionDecision`);
+  }
+  // The plain URL is unchanged by the new entry.
+  const plain = await api(baseUrl, 'POST', `/api/instances/${r.body.id}/hook-callback`, buildHookEnvelope({ toolName: 'Edit' }));
+  assert.equal(plain.body.hookSpecificOutput.permissionDecision, 'allow');
+});
+
+test('worker-tools for an unknown instance id replies 200 + deny', async () => {
+  const r = await api(baseUrl, 'POST', `/api/instances/missing-instance-id/hook-callback?policy=${WORKER_TOOLS_POLICY}`,
+    buildHookEnvelope({ toolName: 'Read' }));
+  assert.equal(r.status, 200);
+  assert.equal(r.body.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+// A server of its own: the bind row must be written, which needs an open
+// event-log lease. Boots it, pins the persisted default level to `enforce`,
+// spawns a conductor at `enforcement` and, through its `/mcp` path, a worker
+// bound to a stage that denies its worker `Edit`. `post(tool, query?)` hits
+// the worker's hook-callback URL.
+const WTROUTE = {
+  id: 'wtroute', name: 'Wtroute', description: 'Test-only: a stage denying its worker Edit.',
+  entryStages: ['review'],
+  stages: { review: { description: 'Read only.', tools: { spawn_instance: 'allow' }, workerTools: { Edit: 'deny' } } },
+  transitions: [],
+};
+const EDIT_DENIED = workerToolDeniedReason({ playbook: 'wtroute', stage: 'review', toolName: 'Edit', key: 'Edit' });
+
+async function withBoundWorker(enforcement, fn) {
+  const own = await bootServer({ scenarioPath: SCENARIO, eventLogLease: OPEN_LEASE });
+  try {
+    const pbDir = path.join(orchStoreRoot(), 'playbooks');
+    await fs.mkdir(pbDir, { recursive: true });
+    await fs.writeFile(path.join(pbDir, 'wtroute.json'), JSON.stringify(WTROUTE));
+    await setDefaultPlaybookEnforcement('enforce');
+    assert.equal(await getDefaultPlaybookEnforcement(), 'enforce', 'premise: the persisted default is enforce');
+    await api(own.baseUrl, 'POST', '/api/projects', { name: 'h' });
+    await api(own.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const c = await api(own.baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions', playbookEnforcement: enforcement });
+    assert.equal(c.status, 201);
+    const conductor = own.instances.get(c.body.id);
+    await waitFor(() => conductor?.status === 'idle');
+    assert.equal(conductor.playbookEnforcement, enforcement, 'premise: the owner runs at the level under test');
+    const res = await fetch(`${own.baseUrl}/mcp/${encodeURIComponent(c.body.sessionId)}?format=json`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'spawn_instance', arguments: { project: 'h', playbook: 'wtroute', stage: 'review' } } }),
+    });
+    const spawned = (await res.json()).result.structuredContent;
+    assert.equal(typeof spawned?.sessionId, 'string', `spawned: ${JSON.stringify(spawned)}`);
+    const worker = await waitFor(() => instForSession(own.instances, spawned.sessionId));
+    assert.equal(worker.parentSessionId, c.body.sessionId, 'premise: the worker\'s owner is the conductor');
+    const post = (toolName, query = `?policy=${WORKER_TOOLS_POLICY}`) => api(own.baseUrl, 'POST',
+      `/api/instances/${worker.id}/hook-callback${query}`, buildHookEnvelope({ toolName, toolInput: {} }));
+    await fn({ conductor, worker, post });
+  } finally { await own.close(); }
+}
+
+const warnBubbles = (inst) => inst.ring.toArray().filter(ev => ev.kind === 'system' && ev.subtype === 'playbook_warn');
+
+test('worker-tools denies a bound worker\'s call its stage denies, with the reason; the plain URL still allows', async () => {
+  await withBoundWorker('enforce', async ({ post }) => {
+    const denied = await post('Edit');
+    assert.equal(denied.status, 200);
+    assert.deepEqual(denied.body, { hookSpecificOutput: {
+      hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: EDIT_DENIED,
+    } });
+    assert.deepEqual((await post('Read')).body, {}, 'a tool the stage does not deny: no decision');
+    assert.equal((await post('Edit', '')).body.hookSpecificOutput.permissionDecision, 'allow',
+      'the plain URL\'s answer is unchanged');
+  });
+});
+
+// PINS: the route hands the gate the worker's OWNER (`parentSessionId`), so the
+// level is the owning conductor's — here `warn`, against a persisted default of
+// `enforce` that any other owner resolution would fall back to and deny with.
+test('worker-tools takes the level from the worker\'s owning conductor: a warn owner passes the call and gets one bubble', async () => {
+  await withBoundWorker('warn', async ({ conductor, worker, post }) => {
+    const res = await post('Edit');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, {}, 'warn: no decision, not the default level\'s deny');
+    assert.deepEqual(warnBubbles(conductor).map(ev => ev.data), [{
+      tool: 'Edit', code: WORKER_TOOL_DENIED_IN_STAGE, reason: EDIT_DENIED, sessionId: worker.sessionId,
+    }], 'one playbook_warn bubble on the owner');
+  });
 });

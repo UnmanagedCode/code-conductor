@@ -40,7 +40,9 @@ const MODEL = 'claude-haiku-4-5';
 const RUN_TIMEOUT_MS = 180_000;
 
 // A hook endpoint shaped exactly like cc's: one URL, both events, discriminated
-// by `hook_event_name`. `reply(envelope)` returns the response body.
+// by `hook_event_name`. `reply(envelope, requestUrl)` returns the response body;
+// the request URL (path + query) tells apart entries that share the endpoint
+// and differ only by query, as cc's worker-tools entry does.
 export async function hookServer(reply) {
   const seen = [];
   const server = http.createServer((req, res) => {
@@ -50,7 +52,7 @@ export async function hookServer(reply) {
       let envelope = {};
       try { envelope = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* record it anyway */ }
       seen.push(envelope);
-      const body = (await reply(envelope)) ?? {};
+      const body = (await reply(envelope, req.url)) ?? {};
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(body));
     });
@@ -229,6 +231,43 @@ export function run(argv, cwd) {
 export async function fixture() {
   const dir = await fs.realpath(await mkdtemp('cc-cli-contract-'));
   return { dir, clean: () => rmrf(dir) };
+}
+
+// A minimal streamable-HTTP MCP server exposing `tools` — each `{name,
+// description}`, taking no arguments. Every tools/call's params are recorded in
+// `calls`, and answered with `result` (a text block).
+export async function stubMcp(tools, result = '{"sessionId":"worker-1"}') {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST') { res.writeHead(405).end(); return; }
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      let msg = {};
+      try { msg = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* answered below */ }
+      const reply = (r) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: r }));
+      };
+      if (msg.id === undefined || msg.id === null) { res.writeHead(202).end(); return; }
+      if (msg.method === 'initialize') {
+        reply({ protocolVersion: msg.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'stub', version: '0' } });
+      } else if (msg.method === 'tools/list') {
+        reply({ tools: tools.map(({ name, description }) => ({ name, description, inputSchema: { type: 'object', properties: {} } })) });
+      } else if (msg.method === 'tools/call') {
+        calls.push(msg.params);
+        reply({ content: [{ type: 'text', text: result }] });
+      } else {
+        reply({});
+      }
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    calls,
+    url: `http://127.0.0.1:${server.address().port}/mcp`,
+    close: () => { server.closeAllConnections(); return new Promise((r) => server.close(r)); },
+  };
 }
 
 export const allow = (updatedInput) => ({

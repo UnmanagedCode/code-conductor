@@ -140,6 +140,8 @@ import type { CreateInstanceInput, InstanceLike, InstanceManagerLike } from './i
 import { httpError, errMessage } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
 import type { PlaybookGate } from './mcp/playbookGate.ts';
+import { WORKER_TOOLS_POLICY } from './settings.ts';
+import { workerToolsHookBody } from './hookBroker.ts';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -1836,9 +1838,23 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     });
 
     // Tool-hook http callback: delegates to the instance's HookBroker; an
-    // unknown instance gets 200 + deny.
+    // unknown instance gets 200 + deny. The `?policy=worker-tools` entry
+    // (src/settings.ts) is answered here instead, from the playbook gate's
+    // worker-tools check — `deny` or `{}`, never `allow` — and never reaches the
+    // broker, so no existing handler runs twice.
     r.post('/instances/:id/hook-callback', (req, res) => {
       const inst = instances.get(req.params.id);
+      if (inst && req.query.policy === WORKER_TOOLS_POLICY) {
+        const body = (req.body ?? {}) as { hook_event_name?: unknown; tool_name?: unknown };
+        if (!playbookGate || body.hook_event_name !== 'PreToolUse' || typeof body.tool_name !== 'string') {
+          res.status(200).json(workerToolsHookBody(null));
+          return;
+        }
+        void playbookGate.checkWorkerTool({
+          sessionId: inst.sessionId, ownerSessionId: inst.parentSessionId, toolName: body.tool_name,
+        }).then(({ deny }) => { res.status(200).json(workerToolsHookBody(deny)); });
+        return;
+      }
       if (!inst) {
         // The CLI is the instance's own subprocess so this branch is
         // theoretical, but reply deterministically: 200 + deny body so
