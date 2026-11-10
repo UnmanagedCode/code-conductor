@@ -218,15 +218,6 @@ test('on, landed then a new commit: no nudge', async () => {
   await assertDel(wt, caller, null);
 });
 
-// INVARIANT: only conductor callers are nudged.
-test('on, non-conductor caller: no nudge', async () => {
-  await setNudge(true);
-  await api(baseUrl, 'POST', '/api/projects', { name: 'other' });
-  const caller = await spawnIdle('other');
-  const { wt } = await fixture({ merge: true });
-  await assertDel(wt, caller, null);
-});
-
 // INVARIANT: a call with no live calling session queues nothing on any session.
 test('on, anonymous (no caller path): no nudge', async () => {
   await setNudge(true);

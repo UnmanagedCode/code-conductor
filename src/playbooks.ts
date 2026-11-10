@@ -4,7 +4,7 @@
 // A playbook is a JSON graph of STAGES. Workers are bound to a stage; the
 // conductor states its intent on the calls that create or move workers; this
 // module verifies the move against the graph. Playbooks govern only the
-// CONDUCTOR's tool calls — worker-side calls keep their existing recursion rules.
+// CONDUCTOR's tool calls — a worker is not offered the tools policy governs (core tool audience).
 //
 // The two entry conditions a stage can declare:
 //   • `needs` — WORKER PROVENANCE: which other worker must exist, in which

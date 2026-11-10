@@ -29,7 +29,7 @@ void home;
 // C conducts W; both idle. W's stdin is recorded.
 async function conducted() {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const wFile = stdinFile();
   const w = await spawnWorker('p', c, wFile);
   return { c, w, wFile };
@@ -112,7 +112,7 @@ test('one session, both authors: get_transcript returns each echo with its own a
 
 test('a hand-spawned session gets no marker and no author from either surface', async () => {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const hFile = stdinFile();
   const h = await spawnHand('p', hFile);
   await turn(h, () => wsPrompt(h, 'human into hand-spawned'));
@@ -152,7 +152,7 @@ test('a retired worker\'s transcript still names each prompt\'s author', async (
 
 test('the rebase-prompt route into a conducted worker is written human', async () => {
   await createProject('p'); // a git repo with an initial commit
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const wFile = stdinFile();
   const w = await spawnWorker('p', c, wFile, { createWorktree: true });
   const wInst = instForSession(instances, w);

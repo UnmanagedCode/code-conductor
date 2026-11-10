@@ -121,6 +121,14 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLog } = {}) {
     },
     call: (name, args) => callAs(conductorSid, name, args),
     callAs,
+    // The raw tools/call result, as `callerSid`, for asserting an isError refusal.
+    async callAsRaw(callerSid, name, args) {
+      const res = await fetch(ctx.baseUrl + '/mcp/' + encodeURIComponent(callerSid) + '?format=text', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      return (await res.json()).result;
+    },
     // Spawn a worker and wait until its session is up, so its sessionId is a
     // valid handle for the next call.
     async spawnWorker(args) {
@@ -1080,18 +1088,18 @@ test('enforce: a refusal pushes no playbook_warn — the caller already got it',
   } finally { if (c) await c.close(); await t.close(); }
 });
 
-test('policy applies only to the conductor: the same calls from a worker or no caller are ungoverned', async () => {
+test('policy applies only to the conductor: a worker is refused by audience before the gate, and no caller is ungoverned', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     // Under the conductor, a bare spawn is refused for naming no playbook.
     refused(await t.call('spawn_instance', { project: 'demo', mode: 'plan' }), 'PLAYBOOK_UNKNOWN');
 
-    // A NON-conductor caller (an ordinary worker driving the MCP itself) is not
-    // governed — worker-side calls keep their existing recursion rules.
+    // A NON-conductor caller (an ordinary worker) is never offered spawn_instance:
+    // refused by audience before the gate runs, so no enforcement is read.
     const worker = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
-    const workerHandle = worker.sessionId;
-    const asWorker = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
-    assert.ok(asWorker.sessionId, 'a worker\'s own spawn is ungoverned');
+    const barred = await t.callAsRaw(worker.sessionId, 'spawn_instance', { project: 'demo', mode: 'plan' });
+    assert.equal(barred.isError, true);
+    assert.match(barred.content[0].text, /conductor-only/);
 
     // The case where being a conductor is the OPERATIVE term rather than
     // incidental: a NON-.conduct instance that is itself carrying
@@ -1105,8 +1113,9 @@ test('policy applies only to the conductor: the same calls from a worker or no c
     await waitFor(() => t.instances.get(rogue.body.id)?.status === 'idle');
     assert.equal(t.instances.get(rogue.body.id).playbookEnforcement, 'enforce',
       'the enforcing-but-not-a-conductor precondition actually holds');
-    const asRogue = await t.callAs(rogue.body.sessionId, 'spawn_instance', { project: 'demo', mode: 'plan' });
-    assert.ok(asRogue.sessionId, 'only the conductor is governed, whatever a worker\'s own setting says');
+    const asRogue = await t.callAsRaw(rogue.body.sessionId, 'spawn_instance', { project: 'demo', mode: 'plan' });
+    assert.equal(asRogue.isError, true, 'a non-conductor is refused, whatever its own enforcement setting says');
+    assert.match(asRogue.content[0].text, /conductor-only/);
 
     // The rogue must also be invisible to the AUDIT trail, which is a separate
     // guard from the one above: the birth path lives on the session stream,
@@ -1972,8 +1981,9 @@ test('a NON-ROOT conductor\'s send is attributed to itself, not to the root cond
   const t = await setup({ enforcement: 'warn' });
   try {
     const conductorSid = t.instances.get(t.conductorId).sessionId;
-    const lead = await t.spawnWorker({ project: 'demo', mode: 'bypassPermissions' });
-    const w = await t.callAs(lead.sessionId, 'spawn_instance', { project: 'demo', mode: 'bypassPermissions' });
+    // The section lead is a real `.conduct` session the root conductor spawned.
+    const lead = await t.spawnWorker({ project: '.conduct', playbook: 'section-lead', stage: 'section-lead' });
+    const w = await t.callAs(lead.sessionId, 'spawn_instance', { project: 'demo', mode: 'bypassPermissions', playbook: 'freeform', stage: 'freeform' });
     assert.ok(w.sessionId, JSON.stringify(w));
     const wInst = await waitFor(() => instForSession(t.instances, w.sessionId));
     await waitFor(() => wInst.status === 'idle');

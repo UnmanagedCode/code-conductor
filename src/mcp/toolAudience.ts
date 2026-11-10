@@ -1,5 +1,6 @@
-// Which sessions are offered a plugin MCP tool. A leaf module (no imports) so
-// the manifest validator and the MCP bridge can share it.
+// Which sessions are offered an MCP tool, core or plugin. A leaf module (no
+// imports) so the core registry, the manifest validator and the MCP bridge can
+// share it.
 
 export const TOOL_AUDIENCES = ['all', 'conductor', 'worker'] as const;
 export type ToolAudience = (typeof TOOL_AUDIENCES)[number];

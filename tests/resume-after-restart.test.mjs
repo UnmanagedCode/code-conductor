@@ -512,6 +512,21 @@ test('buildWorkersResumeText names each row\'s spawner, and a row without one is
   assert.ok(txt.includes('project `p3`, sessionId `ccc`, (no worktree), spawned by you'));
 });
 
+// Invariant: a row spawned by a listed `.conduct` row (a section lead) names it as
+// the spawner, and the notice tells the conductor to pass it its rows; a row
+// spawned by a listed non-`.conduct` row reads as the conductor's own to resume.
+test('buildWorkersResumeText: a section lead is named as spawner; a non-.conduct spawner is a worker to resume yourself', () => {
+  const txt = buildWorkersResumeText('root', [
+    { project: '.conduct', sessionId: 'lead', worktreeName: null, parentSessionId: 'root' },
+    { project: 'p1', sessionId: 'w1', worktreeName: null, parentSessionId: 'lead' },
+    { project: 'p2', sessionId: 'w2', worktreeName: null, parentSessionId: 'root' },
+    { project: 'p3', sessionId: 'w3', worktreeName: null, parentSessionId: 'w2' },
+  ]);
+  assert.ok(txt.includes('project `p1`, sessionId `w1`, (no worktree), spawned by `lead`\n'), txt);
+  assert.ok(txt.includes('project `p3`, sessionId `w3`, (no worktree), spawned by `w2` (a worker — resume it yourself)'), txt);
+  assert.ok(txt.includes('tell each section lead'), txt);
+});
+
 // --- 7. drain: mid-turn instance wound down to idle, written to manifest ----
 
 test('drainToManifest winds a mid-turn instance down to idle and writes it to the manifest', async () => {
@@ -580,19 +595,21 @@ test('drainToManifest sets wasBusy:true for mid-turn and wasBusy:false for idle'
   }
 });
 
-// Invariant: a top-level session that is not a conductor carries its spawn
-// subtree into the manifest; a worker entry carries none.
+// Invariant: a top-level conductor carries its spawn subtree into the manifest
+// (a section lead spawned under it included); a worker entry carries none.
 // Invariant (same drain): once the drain begins no wake reaches any session — a
 // worker the drain winds down does not wake its idle owner, whose own owner's
 // wake is held on it.
-test('drainToManifest carries a plain session\'s subtree and delivers no wake while draining', async () => {
+test('drainToManifest carries a conductor\'s subtree and delivers no wake while draining', async () => {
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'treeproj' });
-    const P = await instances.create({ project: 'treeproj' });
+    await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const P = await instances.create({ project: '.conduct' });
     await waitFor(() => P.sessionId);
-    const C = await instances.create({ project: 'treeproj', callerInstanceId: P.id, conducted: true });
+    // C is a section lead: a conducted `.conduct` session.
+    const C = await instances.create({ project: '.conduct', callerInstanceId: P.id, conducted: true });
     await waitFor(() => C.sessionId);
     const G = await instances.create({ project: 'treeproj', callerInstanceId: C.id, conducted: true });
     await waitFor(() => [P, C, G].every(i => i.status === 'idle' && i.sessionId));
@@ -625,10 +642,34 @@ test('drainToManifest carries a plain session\'s subtree and delivers no wake wh
     assert.deepEqual([P, C].map(echoesBefore), before, 'no prompt reached P or C');
 
     const bySid = Object.fromEntries(entries.map(e => [e.sessionId, e]));
-    assert.equal(bySid[P.sessionId].group, 'other', 'premise: P is not a conductor');
+    assert.equal(bySid[P.sessionId].group, 'conductor', 'premise: P is a conductor');
     assert.deepEqual(bySid[P.sessionId].workers.map(w => [w.sessionId, w.parentSessionId]).sort(),
       [[C.sessionId, P.sessionId], [G.sessionId, C.sessionId]].sort());
     assert.equal(bySid[C.sessionId].workers, undefined, 'a worker entry lists nothing');
+    clearResumeManifest();
+  } finally {
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
+// Invariant: a hand-spawned top-level session (group `other`) carries no subtree
+// into the manifest, so its restart notice is the plain resume note; the workers
+// it spawned are not listed.
+test('drainToManifest lists no workers for a hand-spawned top-level session', async () => {
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'handproj' });
+    const H = await instances.create({ project: 'handproj' });
+    await waitFor(() => H.sessionId);
+    const W = await instances.create({ project: 'handproj', callerInstanceId: H.id, conducted: true });
+    await waitFor(() => [H, W].every(i => i.status === 'idle' && i.sessionId));
+
+    const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    const bySid = Object.fromEntries(entries.map(e => [e.sessionId, e]));
+    assert.equal(bySid[H.sessionId].group, 'other', 'premise: H is not a conductor');
+    assert.equal(bySid[H.sessionId].workers, undefined, 'a hand-spawned session lists no workers');
     clearResumeManifest();
   } finally {
     if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
@@ -1250,7 +1291,8 @@ test('drainToManifest: a root holding its own background job and a worker holdin
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'ownbg' });
-    const R = await createWithScenario(BG_JOB, { project: 'ownbg' });
+    await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const R = await createWithScenario(BG_JOB, { project: '.conduct' });
     const W = await createWithScenario(BG_JOB, { project: 'ownbg', callerInstanceId: R.id, conducted: true });
     // W's turn ends with a job and wakes R; R's wake turn starts R's own job.
     await startBackgroundJob(W);

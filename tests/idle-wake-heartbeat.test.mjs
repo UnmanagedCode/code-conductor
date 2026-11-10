@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { api, waitFor, instForSession, driveTurn, settle } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import {
-  setupIdleWake, callTool, spawnReady, spawnReadyWithScenario,
+  setupIdleWake, callTool, spawnReady, spawnDriver, spawnReadyWithScenario,
   countUserEchoes, findStubFor, findCompletionStubFor,
   findTimeoutStubFor, restWorker, SCENARIO_LONG, SCENARIO_OPEN,
 } from './idleWakeCase.mjs';
@@ -31,7 +31,7 @@ test('the heartbeat repeats without consuming, and the real turn_end wake still 
   // wake it was reporting about still arrives when the turn finally ends — then
   // the interval stops.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   // ~4s of mid-turn span at the 1s window (the MCP minimum). The two beats this
   // needs must both land BEFORE the turn ends, so the span is the real budget —
   // 1s × 2 inside ~4s tolerates a stall of nearly 1s per beat. On the old ~1s
@@ -72,7 +72,7 @@ test('the heartbeat repeats without consuming, and the real turn_end wake still 
 
 test('turn_end before the first heartbeat wins: exactly one stub, and it is the completion', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   // A window nothing can beat, so the completion is guaranteed to be first.
@@ -109,7 +109,7 @@ test('a heartbeat on a target that is GONE FOR GOOD retires itself after one pin
   // retirement the owner of a crashed worker is told "did NOT finish" every window
   // for the life of the daemon.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const worker = await restWorker('p', SCENARIO_OPEN);
   const caller = instForSession(instances, callerId);
   const beats = () => countUserEchoes(caller,

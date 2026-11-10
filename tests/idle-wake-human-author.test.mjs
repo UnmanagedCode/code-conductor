@@ -24,7 +24,7 @@ const stdinFile = () => path.join(process.env.PROJECTS_ROOT, '..', `stdin-${++se
 
 async function conducted() {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const w = await spawnWorker('p', c, stdinFile());
   return { c, w, cInst: instForSession(instances, c), wInst: instForSession(instances, w) };
 }
@@ -137,7 +137,7 @@ test('a human turn whose CLI exits on its own: the EXITED stub carries the notic
 
 test('a hand-spawned session the conductor dispatched to gets no notice for a human prompt', async () => {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const h = await spawnHand('p', stdinFile());
   await driveTurn(instances, h, () => callTool('send_prompt', { sessionId: h, text: 'dispatch to hand' }, { caller: c }));
   await nthCompletion(c, h, 0);

@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, waitFor, instForSession, driveTurn, settle } from './helpers.mjs';
 import {
-  setupIdleWake, callTool, spawnReady, spawnReadyWithScenario,
+  setupIdleWake, callTool, spawnReady, spawnDriver, spawnReadyWithScenario,
   countUserEchoes, findStubFor, findCompletionStubFor,
   findTimeoutStubFor, SCENARIO_PACED, SCENARIO_OPEN,
 } from './idleWakeCase.mjs';
@@ -24,7 +24,7 @@ setupIdleWake(c => { ({ baseUrl, instances } = c); });
 
 test('idempotency: a dispatch plus a mid-turn steer produce exactly ONE wake', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -57,7 +57,7 @@ test('idempotency is ONE INTERVAL, not one map entry: no beat survives the turn_
   // pinging forever. It is only observable on a SHORT window — on the 30-minute
   // default the leak outlives any test — which is why the window is set here.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -114,7 +114,7 @@ test('a turn_end DELIVERY clears the interval — no spurious heartbeat follows'
   // .unref()'d, and Node v24's process._getActiveHandles() does not report timers
   // at all). Do not "restore" that coupling.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   const caller = instForSession(instances, callerId);
@@ -140,7 +140,7 @@ test('control — an armed heartbeat DOES fire inside the same window', async ()
   // the only difference is that the turn never ends, so nothing clears anything.
   // If this ever fails, the negative above has become vacuous.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);

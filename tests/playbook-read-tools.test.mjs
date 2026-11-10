@@ -656,9 +656,8 @@ test('list_sessions carries playbook/stage for a tracked worker and null for an 
   const t = await setup({ enforcement: 'enforce' });
   try {
     const tracked = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
-    // Spawned by a NON-conductor caller, so the gate never tracks it.
-    const workerHandle = tracked.sessionId;
-    const untracked = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
+    // Spawned with no caller, so the gate never tracks it.
+    const untracked = await t.callAs(null, 'spawn_instance', { project: 'demo', mode: 'plan' });
     await waitFor(() => instForSession(t.instances, untracked.sessionId)?.sessionId);
 
     // list_sessions renders plain text, so read the playbook line off each

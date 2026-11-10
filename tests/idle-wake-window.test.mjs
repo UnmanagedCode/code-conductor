@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { api, waitFor, instForSession } from './helpers.mjs';
 import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../src/idleSubscriptions.ts';
 import {
-  setupIdleWake, rpc, callTool, unwrap, spawnReady,
+  setupIdleWake, rpc, callTool, unwrap, spawnReady, spawnDriver,
   spawnReadyWithScenario, findTimeoutStubFor, SCENARIO_OPEN,
 } from './idleWakeCase.mjs';
 
@@ -23,7 +23,7 @@ setupIdleWake(c => { ({ baseUrl, instances } = c); });
 
 test('a self-directed set_idle_timeout is rejected with a clear error', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const aId = await spawnReady('p');
+  const aId = await spawnDriver();
 
   const result = await callTool('set_idle_timeout',
     { sessionId: aId, timeoutSeconds: 1 }, { caller: aId });
@@ -47,7 +47,7 @@ test('a dispatch with no idleTimeoutSeconds preserves an earlier set_idle_timeou
   // the owner's stored window intact rather than silently resetting it to the
   // default. Without the intervening dispatch the fallback is never exercised.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -70,7 +70,7 @@ test('set_idle_timeout re-arms a RUNNING heartbeat', async () => {
   // re-arm missing, the 30s window below never elapses inside the test and the
   // waitFor times out.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -91,7 +91,7 @@ test('set_idle_timeout re-arms a RUNNING heartbeat', async () => {
 
 test('set_idle_timeout on an idle target records the preference and reports armed:false', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   const res = unwrap(await callTool('set_idle_timeout',
@@ -110,7 +110,7 @@ test('set_idle_timeout on an idle target records the preference and reports arme
 
 test('the heartbeat window is clamped: above the default is refused, zero is refused', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
   const over = DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS + 1;
 

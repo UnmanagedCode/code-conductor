@@ -10,10 +10,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
+
+// The spawning caller is a `.conduct` conductor — the only kind of session offered
+// spawn_instance. `warn` keeps its ungoverned spawn proceeding (default `enforce`).
+async function spawnConductor(baseUrl, instances) {
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: CONDUCT_PROJECT_NAME, role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  return { sessionId: inst.sessionId };
+}
 
 let nextRpcId = 1;
 // The caller is the public sessionId in the MCP URL path.
@@ -49,12 +62,9 @@ test('spawn_instance as /mcp/<sessionId> sets callerInstanceId (instanceId) on t
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
-    // Spawn the "conductor" instance first via MCP (no caller).
-    const conductor = unwrap(await callTool(baseUrl, 'spawn_instance', {
-      project: 'p', mode: 'bypassPermissions',
-    }));
+    // Spawn the `.conduct` conductor first.
+    const conductor = await spawnConductor(baseUrl, instances);
     assert.ok(conductor.sessionId, 'conductor has a sessionId');
-    assert.equal(conductor.id, undefined, 'conductor view does not leak instanceId');
     const conductorInst = instForSession(instances, conductor.sessionId);
     assert.equal(conductorInst.callerInstanceId, null, 'conductor has no callerInstanceId');
 
@@ -62,6 +72,7 @@ test('spawn_instance as /mcp/<sessionId> sets callerInstanceId (instanceId) on t
     const worker = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
     }, { caller: conductor.sessionId }));
+    assert.equal(worker.id, undefined, 'the spawn view does not leak instanceId');
 
     assert.ok(worker.sessionId, 'worker has a sessionId');
     const workerInst = instForSession(instances, worker.sessionId);
@@ -76,9 +87,7 @@ test('Instance.summary() includes callerInstanceId (resolved to instanceId)', as
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
     // Spawn a conductor, then a worker that names it via /mcp/<sessionId>.
-    const conductor = unwrap(await callTool(baseUrl, 'spawn_instance', {
-      project: 'p', mode: 'bypassPermissions',
-    }));
+    const conductor = await spawnConductor(baseUrl, instances);
     const conductorInst = instForSession(instances, conductor.sessionId);
     const worker = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
@@ -98,9 +107,7 @@ test('GET /api/instances includes callerInstanceId for spawned worker', async ()
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
     // Spawn a conductor.
-    const conductor = unwrap(await callTool(baseUrl, 'spawn_instance', {
-      project: 'p', mode: 'bypassPermissions',
-    }));
+    const conductor = await spawnConductor(baseUrl, instances);
     const conductorInst = instForSession(instances, conductor.sessionId);
 
     // Spawn a worker with the conductor as caller (by sessionId).

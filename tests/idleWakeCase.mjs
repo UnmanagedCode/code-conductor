@@ -50,6 +50,7 @@ import { before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -164,6 +165,25 @@ export async function spawnReady(project) {
     instForSession(ctx.instances, spawn.sessionId)?.status === 'idle',
   );
   return spawn.sessionId;
+}
+
+// A driver: a `.conduct` conductor session — the only kind of session offered the
+// spawn/drive tools. `warn` keeps ungoverned calls proceeding (the default is
+// `enforce`). Optionally runs under `scenarioPath`.
+export async function spawnDriver(scenarioPath) {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  if (scenarioPath) process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
+  try {
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: CONDUCT_PROJECT_NAME, role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+    });
+    assert.equal(r.status, 201, `driver spawn: ${JSON.stringify(r.body)}`);
+    const inst = ctx.instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    return inst.sessionId;
+  } finally {
+    if (scenarioPath) process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
 }
 
 // Arm a wake without running a turn: `noteDispatch` records the ownership edge

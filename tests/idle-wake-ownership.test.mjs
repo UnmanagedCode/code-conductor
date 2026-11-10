@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { api, waitFor, instForSession, driveTurn } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import {
-  setupIdleWake, callTool, unwrap, spawnReady, armWake,
+  setupIdleWake, callTool, unwrap, spawnReady, spawnDriver, armWake,
   spawnReadyWithScenario, countUserEchoes, findStubFor,
   findCompletionStubFor, SCENARIO_QUESTION, SCENARIO_SLOW,
   SCENARIO_PACED, SCENARIO_LONG, SCENARIO_UNPROMPTED,
@@ -33,7 +33,7 @@ setupIdleWake(c => { ({ baseUrl, instances } = c); });
 
 test('happy path: caller receives a stub user_echo when target hits turn_end', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   // One call, no registration: the send records ownership and the turn it starts
@@ -59,7 +59,7 @@ test('happy path: caller receives a stub user_echo when target hits turn_end', a
 
 test('fold: real turn_end to an idle caller folds the recent-messages payload into the stub', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   // Drive the target through turn 1 of scenario-ws (emits the prose "First ").
@@ -89,7 +89,7 @@ test('steering: caller mid-turn at delivery gets the plain stub delivered LIVE',
   // Caller runs a slow turn so it is still `status:'turn'` when the target
   // finishes — the wake is delivered LIVE into the running turn (steering) and
   // must NOT fold.
-  const callerId = await spawnReadyWithScenario('p', SCENARIO_SLOW);
+  const callerId = await spawnDriver(SCENARIO_SLOW);
   const targetId = await spawnReady('p');
 
   // Kick the caller into its slow turn. No caller path on THIS send, so nothing
@@ -142,7 +142,7 @@ test('steering: caller mid-turn at delivery gets the plain stub delivered LIVE',
 // 'turn_start' wiring) makes the count stay at 1 and fails here.
 test('ownership is durable: a second target turn wakes the owner again', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   // Turn 1: the send records ownership and its turn arms the first wake.
@@ -167,7 +167,7 @@ test('ownership is durable: a second target turn wakes the owner again', async (
 
 test('caller removed before target turn_end: the wake is purged, no crash', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   armWake(callerId, targetId, 600_000);
@@ -190,7 +190,7 @@ test('caller removed before target turn_end: the wake is purged, no crash', asyn
 
 test('target removed before turn_end: the wake is purged', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReady('p');
 
   armWake(callerId, targetId, 600_000);
@@ -213,7 +213,7 @@ test('spawn-only ownership: the SPAWNER is woken even with no dispatch of its ow
   // right. The turn below is driven anonymously, so no dispatch edge exists
   // and only the spawn edge can produce this wake.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const conductorId = await spawnReady('p');
+  const conductorId = await spawnDriver();
   const spawned = unwrap(await callTool('spawn_instance',
     { project: 'p', mode: 'bypassPermissions' }, { caller: conductorId }));
   const workerId = spawned.sessionId;
@@ -233,7 +233,7 @@ test('a first-time dispatch to a MID-TURN target arms for the turn it just steer
   // gets no report on the very turn it steered. Turn 1 is opened with NO caller path
   // so no ownership edge exists when the turn starts.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -256,7 +256,7 @@ test('an UNPROMPTED turn re-arms: the auto-approved-plan gap', async () => {
   // both turns pass through, so both wake the owner. An arm keyed on the MCP call
   // instead would deliver only the first.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_UNPROMPTED);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -273,7 +273,7 @@ test('an UNPROMPTED turn re-arms: the auto-approved-plan gap', async () => {
 
 test('awaitingWake tracks the TURN, not a registration', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReadyWithScenario('p', SCENARIO_TURN_ENDS);
+  const callerId = await spawnDriver(SCENARIO_TURN_ENDS);
   // The LONG fixture, not the paced one: this test must observe a heartbeat while
   // the turn is still running, and the 1s window (the MCP minimum) does not fit
   // inside the paced turn's ~1.2s span with room to read the flag afterwards.
@@ -328,7 +328,7 @@ test('approve_plan / reject_plan / answer_question each wake their caller', asyn
     (sid) => ['approve_plan', { sessionId: sid }],
     (sid) => ['reject_plan', { sessionId: sid, feedback: 'simpler please' }],
   ]) {
-    const callerId = await spawnReady('p');
+    const callerId = await spawnDriver();
     const targetId = await spawnReady('p');
     const [tool, args] = build(targetId);
     const res = unwrap(await callTool(tool, args, { caller: callerId }));
@@ -338,7 +338,7 @@ test('approve_plan / reject_plan / answer_question each wake their caller', asyn
   }
 
   // answer_question needs a pending AskUserQuestion to answer.
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_QUESTION);
   await driveTurn(instances, targetId,
     () => callTool('send_prompt', { sessionId: targetId, text: 'go' }));

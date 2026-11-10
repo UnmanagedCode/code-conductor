@@ -28,6 +28,7 @@ const SETTLE_MS = 400;
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { fileURLToPath } from 'node:url';
 
 const { InstanceManager, Instance } = await import('../src/instances.ts');
@@ -613,6 +614,17 @@ async function callTool(name, args, opts) {
   assert.ok(body?.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
   return JSON.parse(body.result.content[0].text);
 }
+// A `.conduct` conductor — the only kind of session offered the drive tools.
+async function spawnDriver() {
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: CONDUCT_PROJECT_NAME, role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const inst = srvInstances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  return inst.sessionId;
+}
+
 async function spawnReadyWithScenario(project, scenarioPath) {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   if (scenarioPath) process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
@@ -630,7 +642,7 @@ const wakeStubs = (inst, targetId) => inst.ringSnapshot().filter(ev =>
 
 test('e2e orphan: bg task drains at idle with no re-invocation → settle wakes the caller', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReadyWithScenario('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_IDLE_DRAIN);
 
   // Drive the target's single turn: the send records ownership and the turn start
@@ -658,7 +670,7 @@ test('e2e orphan: bg task drains at idle with no re-invocation → settle wakes 
 
 test('e2e trap: idle completion WITH a re-invocation turn → no early wake, single wake at its turn_end', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReadyWithScenario('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_IDLE_REINVOKE);
 
   await driveTurn(srvInstances, targetId,

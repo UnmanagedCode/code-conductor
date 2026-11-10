@@ -22,7 +22,7 @@ const stdinFile = () => path.join(process.env.PROJECTS_ROOT, '..', `stdin-${++se
 
 async function conducted() {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const w = await spawnWorker('p', c, stdinFile());
   return { c, w, cInst: instForSession(instances, c), wInst: instForSession(instances, w) };
 }
@@ -109,7 +109,7 @@ async function holdWakesFor(cInst) {
 
 test('a wake held for ANOTHER conductor is not reported to the sender', async () => {
   const { c, w, cInst, wInst } = await conducted();
-  const c2 = await spawnConductor('p');
+  const c2 = await spawnConductor();
   const c2Inst = instForSession(instances, c2);
   // C2 dispatches to W, so W's turns owe a wake to both conductors.
   await driveTurn(instances, w, () => callTool('send_prompt', { sessionId: w, text: 'brief from C2' }, { caller: c2 }));

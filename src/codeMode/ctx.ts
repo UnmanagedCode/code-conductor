@@ -2,7 +2,7 @@
 // fills it (src/mcp/server.ts); `McpCtx` and the registry's `ToolCtx` extend it.
 
 import type { RunRegistry } from './runs.ts';
-import type { CallerKind } from '../plugins/toolAudience.ts';
+import type { CallerKind } from '../mcp/toolAudience.ts';
 
 // The part of a registered tool code mode lists and signs.
 export interface ToolView {

@@ -26,7 +26,7 @@ const promptedBy = async (sid) => unwrap(await callTool('get_recent_messages', {
 // W through a conductor turn, a human turn and a conductor turn.
 async function threeTurns() {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const wFile = stdinFile();
   const w = await spawnWorker('p', c, wFile);
   await driveTurn(instances, w, () => callTool('send_prompt', { sessionId: w, text: 'brief one' }, { caller: c }));
@@ -61,7 +61,7 @@ test('retired, from disk: only the human turn\'s message is promptedBy human', a
 
 test('a CLI-injected echo between the human prompt and the reply does not reset promptedBy', async () => {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const w = await spawnWorker('p', c, stdinFile());
   await driveTurn(instances, w, () => wsPrompt(w, 'the human asks'));
   const inst = instForSession(instances, w);

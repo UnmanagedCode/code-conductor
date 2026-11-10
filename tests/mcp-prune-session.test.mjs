@@ -213,7 +213,13 @@ test('prune_session refuses softly, with a code, in every guarded state', async 
 
     // Self-target: pruning yourself would kill your own process mid-call, so it
     // routes to renew_session rather than falling through to a "busy" report.
-    const self = await callTool(ctx.baseUrl, 'prune_session', { sessionId: sid }, { caller: sid });
+    // The caller is a `.conduct` conductor (a worker is not offered prune_session).
+    const cr = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: '.conduct', role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+    });
+    await waitFor(() => ctx.instances.get(cr.body.id).sessionId);
+    const csid = ctx.instances.get(cr.body.id).sessionId;
+    const self = await callTool(ctx.baseUrl, 'prune_session', { sessionId: csid }, { caller: csid });
     assert.equal(self.ok, false, JSON.stringify(self));
     assert.equal(self.code, 'INVALID_PRUNE_TARGET');
     assert.match(self.reason, /renew_session/);

@@ -11,6 +11,7 @@ import * as h from './handlers.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { PlatformCapabilities } from '../platform/platform.ts';
+import { audienceAdmits, type CallerKind, type ToolAudience } from './toolAudience.ts';
 
 import { MODES as VALID_MODES } from '../sessionModes.ts';
 // The heartbeat window's single source: its default IS the schema ceiling, so
@@ -114,6 +115,10 @@ interface Tool {
   // (src/mcp/outputSchemas.ts). Listed in JSON format only.
   outputSchema: Record<string, unknown>;
   handler(args: unknown, ctx: ToolCtx): Promise<unknown>;
+  // Which sessions are offered the tool (./toolAudience.ts). Required, so a new
+  // core tool cannot compile without a decision. `conductor` iff the tool spawns,
+  // drives, lands or retires a session, or mutates the project/workspace registry.
+  audience: ToolAudience;
   annotations?: ToolAnnotations;
   // Omitted from the tool list when the host platform lacks this capability.
   requires?: keyof PlatformCapabilities;
@@ -132,14 +137,14 @@ export function buildTools(format: McpFormat = 'text'): Tool[] {
   });
 }
 
-// The registry one host serves: buildTools minus the tools whose platform
-// capability is off. The /mcp router reads it, so every
-// surface agrees on the tool set.
+// The registry one host serves one kind of caller: buildTools minus the tools
+// whose platform capability is off or whose audience excludes `callerKind`. The
+// /mcp router reads it, so every surface agrees on the tool set.
 //
-// run_code's description ends with the core methods this host serves, generated
-// here so the list cannot drift from the registry.
-export function capableTools(format: McpFormat, capabilities: PlatformCapabilities): Tool[] {
-  const tools = buildTools(format).filter(t => !t.requires || capabilities[t.requires]);
+// run_code's description ends with the core methods this caller is offered,
+// generated here so the list cannot drift from the registry.
+export function capableTools(format: McpFormat, capabilities: PlatformCapabilities, callerKind: CallerKind): Tool[] {
+  const tools = buildTools(format).filter(t => (!t.requires || capabilities[t.requires]) && audienceAdmits(t.audience, callerKind));
   const methods = tools.map(t => t.name).filter(n => n !== 'run_code');
   return tools.map(t => t.name === 'run_code'
     ? { ...t, description: `${t.description} Core methods (cc.<name>): ${methods.join(', ')}.` }
@@ -171,6 +176,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'The NAME is the `project` argument every other tool takes; the path is informational. ' +
         'list_sessions names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
+      audience: 'all',
       handler: h.listProjects,
       annotations: { readOnlyHint: true },
     },
@@ -252,6 +258,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: [],
       },
+      audience: 'all',
       handler: h.listSessions,
       annotations: { readOnlyHint: true },
     },
@@ -279,6 +286,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId'],
       },
+      audience: 'all',
       handler: h.describeSession,
       annotations: { readOnlyHint: true },
     },
@@ -298,6 +306,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         properties: { project: { type: 'string' } },
         required: ['project'],
       },
+      audience: 'all',
       handler: h.listWorktrees,
       annotations: { readOnlyHint: true },
     },
@@ -331,6 +340,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId'],
       },
+      audience: 'all',
       handler: h.getTranscript,
       annotations: { readOnlyHint: true },
     },
@@ -345,8 +355,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'default list_sessions view); mode still defaults to plan (NOT bypassPermissions) so workers plan before acting. ' +
         'spawn_instance({resume:sessionId}) alone re-attaches a session at its recorded project + worktree, ' +
         'with its prior history — see `project` for when that holds. ' +
-        'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
-        'further instances — guard against runaway recursion by keeping child agents in plan mode. ' +
+        'A `.conduct` instance you spawn (a section lead) can in turn spawn — keep child agents in plan mode. ' +
         'PLAYBOOKS: playbook / stage / provenance declare which workflow graph this worker joins and where. ' +
         'A spawn with no `provenance` starts a new run and requires playbook + stage; a refusal lists every ' +
         'playbook with its entry stages and the legal moves from there. Resuming a playbook-tracked session is ' +
@@ -421,6 +430,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: [],
       },
+      audience: 'conductor',
       handler: h.spawnInstance,
     },
     {
@@ -454,6 +464,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId', 'text'],
       },
+      audience: 'conductor',
       handler: h.sendPrompt,
     },
     {
@@ -468,6 +479,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId', 'mode'],
       },
+      audience: 'conductor',
       handler: h.setMode,
       annotations: { idempotentHint: true },
     },
@@ -488,6 +500,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId'],
       },
+      audience: 'conductor',
       handler: h.approvePlan,
     },
     {
@@ -505,6 +518,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId'],
       },
+      audience: 'conductor',
       handler: h.rejectPlan,
     },
     {
@@ -541,6 +555,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId', 'answers'],
       },
+      audience: 'conductor',
       handler: h.answerQuestion,
     },
     {
@@ -567,6 +582,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId', 'timeoutSeconds'],
       },
+      audience: 'conductor',
       handler: h.setIdleTimeout,
       annotations: { idempotentHint: true },
     },
@@ -584,6 +600,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['title'],
       },
+      audience: 'all',
       handler: h.setSessionTitle,
       annotations: { idempotentHint: true },
     },
@@ -632,6 +649,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           },
         },
       },
+      audience: 'all',
       handler: h.renewSession,
     },
     {
@@ -669,6 +687,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId'],
       },
+      audience: 'conductor',
       handler: h.pruneSession,
       annotations: { destructiveHint: true },
     },
@@ -683,6 +702,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId'],
       },
+      audience: 'conductor',
       handler: h.interruptTurn,
     },
     {
@@ -694,6 +714,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         properties: { sessionId: { type: 'string', description: 'Worker sessionId.' } },
         required: ['sessionId'],
       },
+      audience: 'conductor',
       handler: h.killInstance,
       annotations: { destructiveHint: true, idempotentHint: true },
     },
@@ -732,6 +753,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project'],
       },
+      audience: 'conductor',
       handler: h.createWorktree,
     },
     {
@@ -751,6 +773,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project', 'worktree'],
       },
+      audience: 'conductor',
       handler: h.deleteWorktree,
       annotations: { destructiveHint: true },
     },
@@ -776,6 +799,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project', 'worktree'],
       },
+      audience: 'conductor',
       handler: h.syncWorktree,
     },
     {
@@ -803,6 +827,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project', 'worktree'],
       },
+      audience: 'conductor',
       handler: h.mergeWorktree,
       annotations: { destructiveHint: true },
     },
@@ -813,6 +838,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'and derived (referenced by any project\'s `workspace` field). ' +
         fmt('Returns [{name, projectCount}] sorted alphabetically.', 'Sorted alphabetically.') + ' Empty workspaces appear with projectCount 0.',
       inputSchema: { type: 'object', properties: {}, required: [] },
+      audience: 'all',
       handler: h.listWorkspaces,
       annotations: { readOnlyHint: true },
     },
@@ -838,6 +864,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: [],
       },
+      audience: 'all',
       handler: h.enumerateRemotes,
       annotations: { readOnlyHint: true },
     },
@@ -868,6 +895,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['name'],
       },
+      audience: 'conductor',
       handler: h.createWorkspace,
       annotations: { idempotentHint: true },
     },
@@ -882,6 +910,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         properties: { name: { type: 'string' } },
         required: ['name'],
       },
+      audience: 'conductor',
       handler: h.deleteWorkspace,
       annotations: { idempotentHint: true },
     },
@@ -899,6 +928,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['oldName', 'newName'],
       },
+      audience: 'conductor',
       handler: h.renameWorkspace,
       annotations: { idempotentHint: true },
     },
@@ -919,6 +949,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project'],
       },
+      audience: 'conductor',
       handler: h.setProjectWorkspace,
       annotations: { idempotentHint: true },
     },
@@ -952,6 +983,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         // accident. An explicit null (or "") still clears.
         required: ['project', 'remoteId'],
       },
+      audience: 'conductor',
       handler: h.setProjectRemote,
       annotations: { idempotentHint: true },
     },
@@ -988,6 +1020,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['name'],
       },
+      audience: 'conductor',
       handler: h.createProject,
     },
     {
@@ -1036,6 +1069,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['name', 'path'],
       },
+      audience: 'conductor',
       handler: h.adoptProject,
     },
     {
@@ -1047,6 +1081,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'enabled-plugin conventions have namespaced <plugin-id>/<slug> slugs. hasScaffold:true means picking it ' +
         'also triggers a one-time setup directive returned as create_project\'s `scaffold` field.',
       inputSchema: { type: 'object', properties: {}, required: [] },
+      audience: 'all',
       handler: h.listProjectConventions,
       annotations: { readOnlyHint: true },
     },
@@ -1058,6 +1093,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'enabled selection are managed via the Settings → Conductor conventions panel. The always-on core ' +
         'is not listed here.',
       inputSchema: { type: 'object', properties: {}, required: [] },
+      audience: 'all',
       handler: h.listConductorConventions,
       annotations: { readOnlyHint: true },
     },
@@ -1073,6 +1109,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         '<projectsRoot>/.code-conductor/playbooks/; enabled plugins contribute more, ids ' +
         '`<plugin-id>/<slug>`, with `plugin` naming the owner. Call describe_playbook for a graph.',
       inputSchema: { type: 'object', properties: {}, required: [] },
+      audience: 'all',
       handler: h.listPlaybooks,
       annotations: { readOnlyHint: true },
     },
@@ -1098,6 +1135,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         properties: { id: { type: 'string', description: 'Playbook id, as listed by list_playbooks.' } },
         required: ['id'],
       },
+      audience: 'all',
       handler: h.describePlaybook,
       annotations: { readOnlyHint: true },
     },
@@ -1131,6 +1169,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: [],
       },
+      audience: 'all',
       handler: h.playbookState,
       annotations: { readOnlyHint: true },
     },
@@ -1202,6 +1241,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['sessionId'],
       },
+      audience: 'all',
       handler: h.getRecentMessages,
       annotations: { readOnlyHint: true },
     },
@@ -1227,6 +1267,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project'],
       },
+      audience: 'all',
       handler: h.projectStatus,
       annotations: { readOnlyHint: true },
     },
@@ -1278,6 +1319,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project', 'worktree'],
       },
+      audience: 'all',
       handler: h.projectDiff,
       annotations: { readOnlyHint: true },
     },
@@ -1306,6 +1348,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project', 'command'],
       },
+      audience: 'all',
       handler: h.bashProject,
       // No readOnlyHint: doctrine-only — arbitrary bash isn't sandboxed, so a client shouldn't auto-approve it.
     },
@@ -1336,6 +1379,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['system', 'command'],
       },
+      audience: 'all',
       handler: h.bashSystem,
       // No readOnlyHint, for project_bash's reason: doctrine-only — arbitrary
       // bash isn't sandboxed, so a client shouldn't auto-approve it.
@@ -1369,6 +1413,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['from', 'to'],
       },
+      audience: 'all',
       handler: h.systemTransfer,
       annotations: { destructiveHint: true },
     },
@@ -1403,6 +1448,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['project', 'relativePath'],
       },
+      audience: 'all',
       handler: h.projectRead,
       annotations: { readOnlyHint: true },
     },
@@ -1440,6 +1486,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         },
         required: ['code'],
       },
+      audience: 'all',
       handler: runCode,
       // No readOnlyHint: a program may call any tool, mutating ones included.
     },

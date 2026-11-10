@@ -53,7 +53,7 @@ test('the largest run_code result, in text format, fits the MCP result budget', 
 
 test('the run_code description states the real limits and fits 4096 chars in both formats', () => {
   for (const format of ['text', 'json']) {
-    const tool = capableTools(format, hostPlatform.capabilities).find(t => t.name === 'run_code');
+    const tool = capableTools(format, hostPlatform.capabilities, 'anonymous').find(t => t.name === 'run_code');
     assert.ok(tool.description.length <= 4096, `${format}: ${tool.description.length}`);
     assert.ok(tool.description.includes(String(RUN_RESULT_CAP)), 'the result cap');
     assert.ok(tool.description.includes(`defaults to ${describeDuration(RUN_CODE_DEFAULT_TIMEOUT_MS)}`), 'the default timeout');
@@ -64,7 +64,7 @@ test('the run_code description states the real limits and fits 4096 chars in bot
 });
 
 test('the run_code description lists every core tool the host serves, except itself', () => {
-  const tools = capableTools('text', hostPlatform.capabilities);
+  const tools = capableTools('text', hostPlatform.capabilities, 'anonymous');
   const description = tools.find(t => t.name === 'run_code').description;
   const listed = description.slice(description.indexOf('Core methods (cc.<name>): ') + 'Core methods (cc.<name>): '.length).replace(/\.$/, '').split(', ');
   assert.deepEqual(listed, tools.map(t => t.name).filter(n => n !== 'run_code'));

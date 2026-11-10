@@ -25,7 +25,7 @@ const stdinFile = () => path.join(process.env.PROJECTS_ROOT, '..', `stdin-${++se
 
 async function conducted() {
   await createProject('p');
-  const c = await spawnConductor('p');
+  const c = await spawnConductor();
   const wFile = stdinFile();
   const w = await spawnWorker('p', c, wFile);
   return { c, w, wFile, wInst: instForSession(instances, w) };
