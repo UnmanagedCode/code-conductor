@@ -1,6 +1,6 @@
 # `/mcp` for applications
 
-cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does and gets **structured JSON** back. The tool catalog is in [features.md → MCP interface](features.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol).
+cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does (those its audience admits) and gets **structured JSON** back. The tool catalog is in [features.md → MCP interface](features.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol).
 
 Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts`.
 
@@ -15,7 +15,7 @@ Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts
 
 - `<sessionId>` must be the **exact public sessionId of a live session** (`InstanceManager.liveCallerForPublicId`). The public id is pinned for a session's life, so it keeps resolving across a `/clear`, a `renew_session`, a `prune_session` and a cc restart that resumes the session.
 - Anything else is refused `CALLER_UNKNOWN` **before dispatch** and never served anonymously. That includes an unknown id, a prefix, a backing/segment id (a rotated-away CLI session id), an instanceId, and a killed or retired session.
-- Being the caller matters to the caller-dependent tools (`set_session_title`, `set_idle_timeout`, `renew_session`), to ownership (a `spawn_instance` or a dispatch from `/mcp/<sid>` makes `<sid>` the owner and wakes it), to playbook policy (a conductor caller is governed), and to plugin tools (the caller is forwarded, and a tool's `audience` decides whether a session sees it; an anonymous caller sees every tool).
+- Being the caller matters to the caller-dependent tools (`set_session_title`, `set_idle_timeout`, `renew_session`), to ownership (a `spawn_instance` or a dispatch from `/mcp/<sid>` makes `<sid>` the owner and wakes it), to playbook policy (a conductor caller is governed), and to which tools it is offered (a core or plugin tool's `audience` decides whether a session sees it; an anonymous caller sees every tool; plugin tools also get the caller forwarded).
 - The only query parameter is `format`:
 
 | `?format=` | Result |
@@ -75,7 +75,7 @@ How JSON format differs from text:
 | `TOOL_ERROR` | thrown with neither a code nor a status (e.g. `describe_session` with an empty `sessionId`) | `result`, `isError:true` | `200` |
 | `TOOL_UNKNOWN` | no such tool, including one the host platform's capabilities omit | error `-32602` | `404` |
 | `TOOL_UNAVAILABLE_IN_FORMAT` | a plugin tool with no `outputSchema`, called in JSON format; the child is not contacted | error `-32602` | `404` |
-| `TOOL_UNAVAILABLE_TO_CALLER` | a plugin tool whose `audience` excludes the calling session; the child is not contacted | error `-32602` | `403` |
+| `TOOL_UNAVAILABLE_TO_CALLER` | a core or plugin tool whose `audience` excludes the calling session; the child is not contacted | error `-32602` | `403` |
 | `TOOL_UNAVAILABLE_TO_CALLER` | the bridge's race guard: the active manifest narrows the tool's `audience` between composition and the forward; the tool is never forwarded | `result`, `isError:true` | `200` |
 | `TOOL_UNAVAILABLE_IN_FORMAT` | the bridge's race guard: the active manifest stops declaring its `outputSchema` between the tool set's composition and the forward; the tool is never forwarded | `result`, `isError:true` | `200` |
 | `ARGS_INVALID` | `validateArgs` refused the arguments; on the alias also a body that is not a JSON object | error `-32602` | `400` |
@@ -115,7 +115,7 @@ How JSON format differs from text:
 - **Content type:** `content-type: application/json` is required, empty body included, and is checked before anything else.
 - **No Origin or Host check.** `/mcp` has none either. The only cross-site barrier is that a browser's "simple" POST cannot send `application/json`, and the alias refuses anything else with `415` rather than ignoring the body.
 
-**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`capableTools('json', capabilities)` in `src/mcp/tools.ts`); the caller's typed plugin tools follow with their own `outputSchema` (only those whose `audience` admits the caller). Every listed tool has one; an untyped plugin tool is not listed.
+**Listing:** `[{name, description, inputSchema, outputSchema}]`. The core tools come from the JSON registry (`capableTools('json', capabilities, callerKind)` in `src/mcp/tools.ts`); the caller's typed plugin tools follow with their own `outputSchema` (only those whose `audience` admits the caller). Every listed tool has one; an untyped plugin tool is not listed.
 
 ## Chaining calls
 
@@ -155,7 +155,7 @@ Unchanged in both formats:
 ## Limitations
 
 - **Untyped plugin tools are text-only.** A plugin tool without a manifest `outputSchema` is absent from JSON format and the REST alias.
-- **No auth.** Any local process can call as any live session. A plugin tool's `audience` is not auth either ([docs/plugins.md](plugins.md#tool-audience)).
+- **No auth.** Any local process can call as any live session. A tool's `audience` is not auth either ([docs/plugins.md](plugins.md#tool-audience)).
 - **No streaming, except progress.** Every result is buffered whole and a JSON result can reach the ceilings above; the one exception is a single `tools/call` whose client accepts `text/event-stream`, which may stream progress notifications before its response ([code-mode.md → Progress and cancellation](code-mode.md#progress-and-cancellation)).
 
 ## Samples

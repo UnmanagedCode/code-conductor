@@ -31,9 +31,9 @@ async function post(url, payload) {
 }
 const call = (name, args) => ({ jsonrpc: '2.0', id: nextId++, method: 'tools/call', params: { name, arguments: args } });
 
-async function spawnIdle(srv, project) {
+async function spawnIdle(srv, project, extra = {}) {
   await api(srv.baseUrl, 'POST', '/api/projects', { name: project });
-  const r = await api(srv.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+  const r = await api(srv.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', ...extra });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   await waitFor(() => instForSession(srv.instances, r.body.sessionId)?.status === 'idle');
   return instForSession(srv.instances, r.body.sessionId);
@@ -58,7 +58,10 @@ test('anonymous POST /mcp: a caller-dependent tool refuses with the missing-call
 test('/mcp/<sessionId> attributes the call: titles the caller, owns what it spawns', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO_RENEW });
   try {
-    const caller = await spawnIdle(srv, 'uc-attr');
+    // The caller is a `.conduct` conductor: only it is offered spawn_instance. `warn`
+    // keeps its ungoverned spawn proceeding.
+    await spawnIdle(srv, 'uc-attr');
+    const caller = await spawnIdle(srv, '.conduct', { role: 'conductor', playbookEnforcement: 'warn' });
     const sid = caller.sessionId;
     const { body } = await post(mcpUrl(srv.baseUrl, { caller: sid, format: 'text' }), call('set_session_title', { title: 'Named by path' }));
     assert.deepEqual(JSON.parse(body.result.content[0].text), { sessionId: sid, title: 'Named by path' });

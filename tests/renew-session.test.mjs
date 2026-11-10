@@ -662,7 +662,7 @@ test('renew_session: the mechanical state block lists live spawned workers and i
     // `conductor` spawns `worker` via spawn_instance as /mcp/<conductor>, so
     // Instance.callerInstanceId links them — the ownership tracking liveOwnedBy()
     // relies on.
-    const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: '.conduct', role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions' });
     const conductorSid = conductorSpawn.body.sessionId;
     await waitFor(() => instForSession(srv.instances, conductorSid)?.status === 'idle');
 
@@ -698,7 +698,7 @@ test('renew_session: the state block is composed at reseed time, not arm time', 
   const srv = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: '.conduct', role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions' });
     const conductorSid = conductorSpawn.body.sessionId;
     await waitFor(() => instForSession(srv.instances, conductorSid)?.status === 'idle');
 
@@ -1292,10 +1292,11 @@ test("a rotation no init reports a mode for keeps the worker's recorded mode", a
 // lands INSIDE the turn the request opened, as it does in production.
 // ---------------------------------------------------------------------------
 
-// Spawn `conductor` + `worker` (both idle) in project p.
+// Spawn a `.conduct` conductor (the only kind offered the drive tools) + a `worker`
+// (both idle); the worker is in project p.
 async function pair(srv) {
   await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const conductor = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+  const conductor = await api(srv.baseUrl, 'POST', '/api/instances', { project: '.conduct', role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions' });
   const worker = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
   const condSid = conductor.body.sessionId;
   const wSid = worker.body.sessionId;

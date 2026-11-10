@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { api, waitFor, instForSession, settle } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import {
-  setupIdleWake, callTool, unwrap, spawnReady, spawnReadyWithScenario,
+  setupIdleWake, callTool, unwrap, spawnReady, spawnDriver, spawnReadyWithScenario,
   countUserEchoes, findStubFor, SCENARIO_BG_HANG, SCENARIO_BG_COMPLETE,
   SCENARIO_BG_MIDTURN, SCENARIO_BG_CONSUMED,
 } from './idleWakeCase.mjs';
@@ -34,7 +34,7 @@ setupIdleWake(c => { ({ baseUrl, instances } = c); });
 test('a renewal defers the wake to the reseed turn — exactly one, naming the pinned id', async () => {
   const RENEW = path.join(__dirname, 'fixtures', 'scenario-renew.json');
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', RENEW);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -87,7 +87,7 @@ test('a REQUESTED renewal wakes the conductor: one wake, after the reseed', asyn
   // across arm → /clear → reseed.
   const REQUEST = path.join(__dirname, 'fixtures', 'scenario-renew-request.json');
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', REQUEST);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -139,7 +139,7 @@ test('the wake DEFERS while the target has a live background Agent task', async 
   // never completes it), then confirms the caller is NOT woken — the idle
   // callback is deferred, keeping the subscription armed.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_BG_HANG);
 
   await callTool('send_prompt',
@@ -169,7 +169,7 @@ test('the wake delivers exactly once after the subagent completes and a follow-u
   // completed) and then emits a follow-up turn_end at activeAgentTasks===0 —
   // the deferred wake fires then, exactly once, with a folded stub.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_BG_COMPLETE);
 
   await callTool('send_prompt',
@@ -206,7 +206,7 @@ test('the wake defers a MID-TURN subagent completion until the re-invocation tur
   // post-fix it defers on taskNotificationPending and the wake lands only at
   // the re-invocation turn's turn_end, exactly once.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_BG_MIDTURN);
 
   // Turn 1: spawns the agent and its task_notification fires MID-TURN, so
@@ -254,7 +254,7 @@ test('the wake fires at turn_end when a MID-TURN completion was consumed in-turn
   // very turn_end. Pre-fix the flag stayed set (only a turn START cleared it),
   // deferring forever — the conductor hung until the 30-min watchdog.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_BG_CONSUMED);
 
   // One turn: agent launched (async ack) → task_notification MID-TURN → a

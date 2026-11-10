@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, waitFor, instForSession } from './helpers.mjs';
 import {
-  setupIdleWake, callTool, spawnReady, countUserEchoes, findStubFor,
+  setupIdleWake, callTool, spawnReady, spawnDriver, countUserEchoes, findStubFor,
   restWorker, SCENARIO_OPEN,
 } from './idleWakeCase.mjs';
 
@@ -29,7 +29,7 @@ test('a heartbeat inside a rotation gap does NOT retire — the wake is still ow
   // finish" as its last word and no heartbeat until some later turn start. This
   // stages that gap with the same contract calls pruneSession makes.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const worker = await restWorker('p', SCENARIO_OPEN);
   const caller = instForSession(instances, callerId);
   const beats = () => countUserEchoes(caller,
@@ -70,7 +70,7 @@ for (const gap of [
 ]) {
   test(`a heartbeat inside the ${gap.name} gap does NOT retire`, async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const callerId = await spawnReady('p');
+    const callerId = await spawnDriver();
     const worker = await restWorker('p', SCENARIO_OPEN);
     const caller = instForSession(instances, callerId);
     const beats = () => countUserEchoes(caller,

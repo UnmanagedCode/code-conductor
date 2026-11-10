@@ -41,7 +41,7 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 
 - **Reserved names** (`RESERVED_METHODS`, `src/codeMode/runtimeApi.ts`): `call`, `describe_tools`, `then`. `then` and symbol keys read as `undefined`, so `await cc.x` is never a thenable.
 - Every call is `POST <run url>/tools/<name>` on the REST alias, as the session. It returns the tool's JSON result.
-- **`ConductorError`** (`name`, `message` = `<code>: <reason>`, `code`, `reason`, `status`, `details?`) is thrown when the HTTP status is ≥ 400 or the body is `{ok:false}`. `status` 200 is the **tool's own refusal** (`PLAYBOOK_UNKNOWN`, `TOOL_DENIED_IN_STAGE`, `SESSION_UNKNOWN`, a plugin's code, …); 400 and up is a fault in the call (`TOOL_UNKNOWN` 404, `TOOL_UNAVAILABLE_IN_FORMAT` 404 for an untyped plugin tool, `TOOL_UNAVAILABLE_TO_CALLER` 403 for a plugin tool outside the session's audience, `ARGS_INVALID` 400). Answers that read like failures but are results are returned: a non-zero `exitCode`, `sync_worktree`'s `action`.
+- **`ConductorError`** (`name`, `message` = `<code>: <reason>`, `code`, `reason`, `status`, `details?`) is thrown when the HTTP status is ≥ 400 or the body is `{ok:false}`. `status` 200 is the **tool's own refusal** (`PLAYBOOK_UNKNOWN`, `TOOL_DENIED_IN_STAGE`, `SESSION_UNKNOWN`, a plugin's code, …); 400 and up is a fault in the call (`TOOL_UNKNOWN` 404, `TOOL_UNAVAILABLE_IN_FORMAT` 404 for an untyped plugin tool, `TOOL_UNAVAILABLE_TO_CALLER` 403 for a tool outside the session's audience, `ARGS_INVALID` 400). Answers that read like failures but are results are returned: a non-zero `exitCode`, `sync_worktree`'s `action`.
 - Node built-ins load by dynamic import of a `node:` specifier. The working directory is the session's own checkout.
 - `run_code` called from inside a program is refused [`SCRIPT_NESTED`](#refusals).
 - A program's calls get no tool-result nudge (`SELF_TITLE_NUDGE`, `LANDING_RENEW_NUDGE`): those ride the calling tool's PostToolUse hook, keyed by the CLI's toolUseId, which a REST-alias call does not carry ([protocol.md](protocol.md) → Tool-result nudges).
@@ -49,7 +49,7 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 
 ## `describe_tools`
 
-An in-script tool only: it is composed into a request that carries a run token (`describeToolsTool`), so it is in neither `tools/list` nor `GET /mcp/<sid>/tools`, and a call without a token is `TOOL_UNKNOWN`. Its source is the request's own live composition (`ctx.tools` plus `ctx.textOnlyTools`), so a plugin tool that appears between two calls is in the second, and one outside the session's audience is absent; it hides itself and `run_code`.
+An in-script tool only: it is composed into a request that carries a run token (`describeToolsTool`), so it is in neither `tools/list` nor `GET /mcp/<sid>/tools`, and a call without a token is `TOOL_UNKNOWN`. Its source is the request's own live composition (`ctx.tools` plus `ctx.textOnlyTools`), so a plugin tool that appears between two calls is in the second, and a tool outside the session's audience is absent; it hides itself and `run_code`.
 
 | Input | Meaning |
 |---|---|
@@ -92,8 +92,8 @@ Output `{tools: Entry[]}` in registry order (the script's `cc.describe_tools()` 
 
 Before anything spawns, `literalPaths` scans the program (comments, strings and template literals blanked) for literal `cc.<tool>(` and `cc.<ns>.<tool>(` call sites and `checkPaths` looks each up in the live registry, text-only plugin tools included. One unknown path refuses the **whole** program, so a typo cannot stop it half-way through side effects.
 
-- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, anything inside a `${…}` substitution and regular-expression literals (where a `/` could be a regex or a division it is read as a regex, and when that reading finds no closing `/` before a quote or the end of the line the rest of the line is not checked) are not checked and are left to the runtime: an unknown name gets `TOOL_UNKNOWN`, and an out-of-audience plugin tool gets the audience refusal described below. A program that binds its own `cc` (a declaration, parameter, destructuring or assignment) is not pre-checked at all.
-- A literal path naming a plugin tool outside the session's audience refuses the whole program `TOOL_UNAVAILABLE_TO_CALLER`; a computed call gets it at runtime as a `403` `ConductorError`.
+- It errs only toward not refusing: the bracket form, computed names, a call chained deeper than `cc.a.b(`, anything inside a `${…}` substitution and regular-expression literals (where a `/` could be a regex or a division it is read as a regex, and when that reading finds no closing `/` before a quote or the end of the line the rest of the line is not checked) are not checked and are left to the runtime: an unknown name gets `TOOL_UNKNOWN`, and an out-of-audience tool gets the audience refusal described below. A program that binds its own `cc` (a declaration, parameter, destructuring or assignment) is not pre-checked at all.
+- A literal path naming a tool outside the session's audience refuses the whole program `TOOL_UNAVAILABLE_TO_CALLER`; a computed call gets it at runtime as a `403` `ConductorError`.
 - A core path is known when a core tool of that name (or a reserved method) exists. For `cc.a.b(`: skipped when `a` is a core tool or reserved, else `<a with _→->__<b>` must be a registered plugin tool.
 - `unknown[].suggestions` holds up to three nearest names (edit distance or substring), as method paths.
 
@@ -104,7 +104,7 @@ Soft refusals (`{ok:false, code, reason}`; in JSON format `isError`, over REST H
 | Code | When |
 |---|---|
 | `TOOL_UNKNOWN` | the pre-check failed; `unknown: [{path, suggestions}]` names each; nothing ran |
-| `TOOL_UNAVAILABLE_TO_CALLER` | the pre-check found a call to a plugin tool not offered to this session; `unavailable: [path]` names each; nothing ran |
+| `TOOL_UNAVAILABLE_TO_CALLER` | the pre-check found a call to a tool not offered to this session; `unavailable: [path]` names each; nothing ran |
 | `SCRIPT_NESTED` | `run_code` was called from a run (a call carrying a run token). It guards accidental recursion, not a trust boundary: a hand-rolled request without the header is not detected |
 | `SCRIPT_UNAVAILABLE_REMOTE` | the session's project lives on another System; the child runs on cc's own machine |
 
@@ -177,10 +177,10 @@ Looking tools up by name:
 
 <!-- doc-sample: describe-names -->
 ```js
-return (await cc.describe_tools({ names: ['list_workspaces', 'create_workspace'], detail: 'names' })).map(t => t.method);
+return (await cc.describe_tools({ names: ['list_projects', 'list_workspaces'], detail: 'names' })).map(t => t.method);
 ```
 
 <!-- doc-sample: describe-names-result -->
 ```json
-["cc.list_workspaces","cc.create_workspace"]
+["cc.list_projects","cc.list_workspaces"]
 ```

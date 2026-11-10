@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, waitFor, instForSession, driveTurn, settle } from './helpers.mjs';
 import {
-  setupIdleWake, callTool, spawnReady, spawnReadyWithScenario,
+  setupIdleWake, callTool, spawnReady, spawnDriver, spawnReadyWithScenario,
   countUserEchoes, findStubFor, SCENARIO_PACED, SCENARIO_NO_ACK,
   SCENARIO_ABORT_DEFER, SCENARIO_ABORT_DEFER_THEN_PROMPT,
 } from './idleWakeCase.mjs';
@@ -56,7 +56,7 @@ for (const mode of [
 ]) {
   test(mode.name, async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const callerId = await spawnReady('p');
+    const callerId = await spawnDriver();
     const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
     const target = instForSession(instances, targetId);
     const caller = instForSession(instances, callerId);
@@ -91,7 +91,7 @@ test('a REAL unanswered interrupt times out and still leaves the qualifier set',
   // and so pins the whole chain: timer fires → marker set → rollback declines.
   // It costs one real 5s wait, which is why it is the only test that pays it.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_NO_ACK);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -117,7 +117,7 @@ test('the abort qualifier survives an UNPROMPTED re-invocation turn that resolve
   // finished. The paired test below is what makes this one meaningful: alone it
   // cannot distinguish "correctly preserved" from "never cleared at all".
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_ABORT_DEFER);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -157,7 +157,7 @@ test('an unprompted turn after a DISARMED abort is reported on its own terms', a
   // a disarm is by design). Without the survived-a-wake check that turn's wake
   // said "was INTERRUPTED … do not treat this as a result" about a completed turn.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_ABORT_DEFER);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -189,7 +189,7 @@ test('a NEW prompt clears the abort qualifier even while the aborted wake is sti
   // own re-drive would come back reported as the previous abort. A new instruction
   // is what makes that abort irrelevant.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_ABORT_DEFER_THEN_PROMPT);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);

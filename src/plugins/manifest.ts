@@ -3,7 +3,7 @@ import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding
 import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
 import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
 import { checkSchema } from '../mcp/jsonSchemaSubset.ts';
-import { TOOL_AUDIENCES, type ToolAudience } from './toolAudience.ts';
+import { TOOL_AUDIENCES, type ToolAudience } from '../mcp/toolAudience.ts';
 import type { System } from '../systems/system.ts';
 import { splitSkillPart } from '../../shared/skillPart.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
@@ -93,7 +93,7 @@ export interface PluginMcpTool {
   // Present only when declared: the tool is then served in json format too
   // (src/plugins/mcpBridge.ts); without it the tool is text-only.
   outputSchema?: Record<string, unknown>;
-  // Who is offered the tool (src/plugins/toolAudience.ts); `all` when omitted.
+  // Who is offered the tool (src/mcp/toolAudience.ts); `all` when omitted.
   audience: ToolAudience;
 }
 
@@ -693,7 +693,7 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
   // above for one concrete reason: code-hub's conductor.plugin.json ships
   // `"scope": "project"`, and rejecting the key would stop that plugin loading.
   // Its VALUE is read nowhere — per-tool visibility is `audience`
-  // (src/plugins/toolAudience.ts) — so it is not normalized onto PluginMcp and not
+  // (src/mcp/toolAudience.ts) — so it is not normalized onto PluginMcp and not
   // enum-checked either: telling an author `"porject"` is invalid would imply
   // the value means something.
   let timeoutMs = MCP_TIMEOUT_DEFAULT;

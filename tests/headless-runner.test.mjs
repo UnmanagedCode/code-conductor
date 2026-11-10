@@ -83,13 +83,13 @@ async function start({ scenario, mode = 'code', prompt = 'do the thing', signals
   return { run, root, rootLog, created, signals, handle, settled: () => settled };
 }
 
-async function spawnWorker(root, scenario, log, { project = 'demo' } = {}) {
-  await api(server.baseUrl, 'POST', '/api/projects', { name: project });
+async function spawnWorker(root, scenario, log, { project = 'demo', playbook = 'freeform', stage = 'freeform' } = {}) {
+  if (project !== CONDUCT_PROJECT_NAME) await api(server.baseUrl, 'POST', '/api/projects', { name: project });
   return withLaunchEnv(scenario, log, async () => {
     const res = await fetch(`${server.baseUrl}/mcp/${encodeURIComponent(root.sessionId)}?format=text`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project, mode: 'bypassPermissions', playbook: 'freeform', stage: 'freeform' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project, mode: 'bypassPermissions', playbook, stage } } }),
     });
     const body = await res.json();
     assert.ok(body.result && !body.result.isError, JSON.stringify(body));
@@ -163,7 +163,8 @@ test('a worker spawn is not completion: the run resolves only after the worker\'
 test('a grandchild whose section lead was removed still holds the run until it is idle', async () => {
   const r = await start({ scenario: ROOT_GATED });
   await waitFor(() => r.root.status === 'turn');
-  const lead = await spawnWorker(r.root, WORKER_GATED, path.join(home, 'lead-stdin.jsonl'));
+  // A section lead: a `.conduct` session — the only kind of spawned session offered spawn_instance.
+  const lead = await spawnWorker(r.root, WORKER_GATED, path.join(home, 'lead-stdin.jsonl'), { project: CONDUCT_PROJECT_NAME, playbook: 'section-lead', stage: 'section-lead' });
   const grandchild = await spawnWorker(lead, WORKER_GATED, path.join(home, 'grandchild-stdin.jsonl'), { project: 'demo2' });
   assert.equal(grandchild.rootOwnerSessionId, r.root.sessionId, 'fixture check: durable root attribution at depth 2');
   await grandchild.promptOrQueueSteer('work');

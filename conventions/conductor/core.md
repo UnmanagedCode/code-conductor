@@ -61,15 +61,13 @@ Call every `mcp__code-conductor__*` tool this document names as `mcp__code-condu
 
 ## Safety
 
-**No recursion.** The MCP tools are auto-registered into every spawned subprocess — *workers can also call `spawn_instance`*. Don't let that runaway:
+**No recursion.** Only `.conduct` sessions are offered the spawn, drive and land tools:
 
 - **Never** `spawn_instance({project: '.conduct'})`. There is exactly one conductor — you.
 - **Never root project work in `.conduct`.** It is the orchestrator, not a project: no new projects or scaffolding there; all actual work belongs in a project, never here. Your own operational data (`.conduct/CLAUDE.md`, plugin stores) is not project work.
 - **Never** call `approve_plan` / `reject_plan` / `set_mode` on your *own* sessionId. If `list_sessions` shows you among the results, yours is the one whose `cwd` ends in `.conduct` — leave it alone.
 - Default workers to `mode: 'plan'`, and read each wake before letting a worker proceed (see Core rule).
 - **Only drive workers you spawned.** Never address an instance this conductor session didn't create (owned by another conductor, launched by the human, or left over from a previous run) — act only on sessionIds from your own `spawn_instance`.
-
-If `list_sessions` ever shows you running *inside* a worker session (your `cwd` isn't `.conduct`), stop immediately and report it to the user — the safety contract has been violated.
 
 ## Talking to the user
 

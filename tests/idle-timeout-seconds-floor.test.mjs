@@ -30,6 +30,7 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { fileURLToPath } from 'node:url';
 
 // The constant is computed at module load from the env var, so this must be set
@@ -77,6 +78,17 @@ async function callTool(name, args, opts) {
 const unwrap = (r) => JSON.parse(r.content[0].text);
 const errText = (r) => r.content.map(c => c.text).join('\n');
 
+// A `.conduct` conductor — the only kind of session offered the drive tools.
+async function spawnDriver() {
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: CONDUCT_PROJECT_NAME, role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  return inst.sessionId;
+}
+
 async function spawnReady(scenarioPath) {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   if (scenarioPath) process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
@@ -107,7 +119,7 @@ test('the advertised ceiling is the FLOORED second count, not the rounded one', 
 
 test('the first second ABOVE the floored ceiling is refused, with the floored number in the message', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady();
+  const callerId = await spawnDriver();
   const targetId = await spawnReady();
 
   // 1800 is exactly what round/ceil would have let through. The expected refusal
@@ -138,7 +150,7 @@ test('the LARGEST accepted window arms a heartbeat no longer than the ms ceiling
     .find(t => t.name === 'send_prompt').inputSchema.properties.idleTimeoutSeconds.maximum;
 
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady();
+  const callerId = await spawnDriver();
   const targetId = await spawnReady(SCENARIO_OPEN); // stays mid-turn, so the arm is observable
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);

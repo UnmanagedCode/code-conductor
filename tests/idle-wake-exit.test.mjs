@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, waitFor, instForSession, settle } from './helpers.mjs';
 import {
-  setupIdleWake, callTool, spawnReady, spawnReadyWithScenario, restWorker,
+  setupIdleWake, callTool, spawnReady, spawnDriver, spawnReadyWithScenario, restWorker,
   SCENARIO_OPEN,
 } from './idleWakeCase.mjs';
 import { parseWakeCallback } from '../shared/wakeCallback.ts';
@@ -40,7 +40,7 @@ async function armedMidTurn(callerId, worker) {
 
 test('a TEMP worker that crashes mid-turn wakes its owner once with EXITED, and its armed entry is gone', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const workerSid = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const caller = instForSession(instances, callerId);
   const worker = instForSession(instances, workerSid);
@@ -60,7 +60,7 @@ test('a TEMP worker that crashes mid-turn wakes its owner once with EXITED, and 
 
 test('a NON-temp worker that crashes mid-turn wakes its owner with EXITED at once, not a later heartbeat', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const worker = await restWorker('p', SCENARIO_OPEN);
   const caller = instForSession(instances, callerId);
   await armedMidTurn(callerId, worker);
@@ -121,7 +121,7 @@ test('an EXITED wake held for a mid-turn recipient still names the sessionId aft
 // turn_end is coming, so the owner is still owed a wake.
 test('an uncommanded CLEAN exit mid-turn still wakes the owner of a temp worker with EXITED', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const workerSid = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const caller = instForSession(instances, callerId);
   const worker = instForSession(instances, workerSid);
@@ -140,8 +140,8 @@ test('an uncommanded CLEAN exit mid-turn still wakes the owner of a temp worker 
 
 test('every armed owner of a worker that exits on its own gets exactly one EXITED stub', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const aId = await spawnReady('p');
-  const bId = await spawnReady('p');
+  const aId = await spawnDriver();
+  const bId = await spawnDriver();
   const workerSid = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const a = instForSession(instances, aId);
   const b = instForSession(instances, bId);

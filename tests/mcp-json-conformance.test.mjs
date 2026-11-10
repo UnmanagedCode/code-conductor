@@ -149,8 +149,10 @@ before(async () => {
     remote = await bindRemoteSystem();
     remoteTree = await seedRepo(path.join(remote.root, 'app'));
   }
-  callerSid = await spawnRest('demo');
   await api(srv.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  // The driving caller is a `.conduct` conductor: the spawn/drive tools are
+  // offered to no other session. `warn` keeps its ungoverned calls proceeding.
+  callerSid = await spawnRest('.conduct', { temp: true, playbookEnforcement: 'warn' });
   conductorSid = await spawnRest('.conduct', { temp: true, playbookEnforcement: 'enforce' });
 });
 after(async () => {
@@ -243,7 +245,7 @@ test('systems', { skip: !REMOTE && 'no remoteSystems capability on this host' },
 });
 
 let worker;
-test('a worker: spawn, list, describe, drive, read', async () => {
+test('a conductor: spawn, list, describe, drive, read', async () => {
   const view = await ok('spawn_instance', { project: 'demo', mode: 'bypassPermissions' }, { caller: callerSid });
   assert.equal(Object.hasOwn(view, 'titleNudge'), false, 'the nudge rides the PostToolUse hook, not the result');
   worker = view.sessionId;

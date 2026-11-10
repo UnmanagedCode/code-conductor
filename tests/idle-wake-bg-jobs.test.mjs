@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { api, waitFor, instForSession, settle } from './helpers.mjs';
 import { WAKE_BODY_SEP, parseWakeCallback } from '../shared/wakeCallback.ts';
 import {
-  setupIdleWake, callTool, spawnReady, spawnReadyWithScenario, restWorker,
+  setupIdleWake, callTool, spawnReady, spawnDriver, spawnReadyWithScenario, restWorker,
   findCompletionStubFor,
 } from './idleWakeCase.mjs';
 import { InstanceManager } from '../src/instances.ts';
@@ -211,7 +211,7 @@ async function startJob(callerId, workerSid) {
 
 test('e2e: the stub lists the job, both rows wait on it, and its exit re-invokes the worker and wakes the owner again', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const workerSid = await spawnReadyWithScenario('p', SCENARIO_BG_BASH_JOB);
   const caller = instForSession(instances, callerId);
   const worker = await startJob(callerId, workerSid);
@@ -239,7 +239,7 @@ test('e2e: the stub lists the job, both rows wait on it, and its exit re-invokes
 
 test('e2e kill: kill_instance on the worker clears its owner\'s waitingOnJob', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const workerSid = await spawnReadyWithScenario('p', SCENARIO_BG_BASH_JOB);
   const caller = instForSession(instances, callerId);
   await startJob(callerId, workerSid);
@@ -252,7 +252,7 @@ test('e2e kill: kill_instance on the worker clears its owner\'s waitingOnJob', a
 
 test('e2e crash: a worker killed outright with a job tracked leaves no row waiting', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const worker = await restWorker('p', SCENARIO_BG_BASH_JOB);
   const caller = instForSession(instances, callerId);
   await startJob(callerId, worker.sessionId);

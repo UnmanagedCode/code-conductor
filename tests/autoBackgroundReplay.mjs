@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ReplayLauncher } from './replayLauncher.mjs';
@@ -59,7 +60,12 @@ export async function replayCell(cell, script) {
         return r.sessionId;
       } finally { if (prev === undefined) delete process.env.CC_TEST_REPLAY_CAPTURE; else process.env.CC_TEST_REPLAY_CAPTURE = prev; }
     };
-    const ownerSid = await spawn(null);
+    // The owner is a `.conduct` conductor: only it is offered send_prompt.
+    const ownerRes = await api(baseUrl, 'POST', '/api/instances', {
+      project: CONDUCT_PROJECT_NAME, role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+    });
+    assert.equal(ownerRes.status, 201, JSON.stringify(ownerRes.body));
+    const ownerSid = await waitFor(() => instances.get(ownerRes.body.id).sessionId);
     const workerSid = await spawn(fixture(cell));
     const owner = instForSession(instances, ownerSid);
     const worker = instForSession(instances, workerSid);

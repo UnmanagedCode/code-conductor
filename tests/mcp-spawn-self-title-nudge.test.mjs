@@ -16,6 +16,7 @@ import {
 import * as handlers from '../src/mcp/handlers.ts';
 import { getTitle } from '../src/sessionStore.ts';
 import { localPlace } from '../src/projects.ts';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -74,15 +75,16 @@ async function postHook(instanceId, toolUseId, toolName = SPAWN_TOOL, extra = {}
 }
 const NUDGE_ANSWER = () => ({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: handlers.SELF_TITLE_NUDGE } });
 
-async function spawnIdle(project, mode = 'bypassPermissions') {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, temp: true, mode });
+async function spawnIdle(project, mode = 'bypassPermissions', extra = {}) {
+  const r = await api(baseUrl, 'POST', '/api/instances', { project, temp: true, mode, ...extra });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
   return inst.sessionId;
 }
-// Any identified session may be the caller; a plain project session avoids the conductor playbook gate.
-const callerSession = (mode) => spawnIdle('demo', mode);
+// The caller is a `.conduct` conductor — the only kind of session offered spawn_instance.
+// `warn` keeps its ungoverned spawns proceeding (the default is `enforce`).
+const callerSession = (mode) => spawnIdle(CONDUCT_PROJECT_NAME, mode, { role: 'conductor', playbookEnforcement: 'warn' });
 const callerInstId = (caller) => instForSession(instances, caller).id;
 const spawnWith = (caller, toolUseId, args = {}) =>
   callTool('spawn_instance', { project: 'demo', mode: 'bypassPermissions', ...args }, { caller, toolUseId });

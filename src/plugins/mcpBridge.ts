@@ -5,7 +5,7 @@
 // pluginHost.toolsFor(), which returns every enabled plugin's tools each with
 // its `audience` (disabled plugins' tools are simply absent, so tools/call
 // refuses them as unknown with zero extra code). The server filters per caller
-// with `audienceAdmits` (src/plugins/toolAudience.ts); the handler re-checks
+// with `audienceAdmits` (src/mcp/toolAudience.ts); the handler re-checks
 // the active manifest. A tool
 // without an `outputSchema` is text-only: the server leaves it out of json
 // format (src/mcp/server.ts composeTools).
@@ -33,7 +33,7 @@ import { validate } from '../mcp/jsonSchemaSubset.ts';
 import type { McpFormat } from '../mcp/limits.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { PluginMcp } from './manifest.ts';
-import { audienceAdmits, type CallerKind, type ToolAudience } from './toolAudience.ts';
+import { audienceAdmits, type CallerKind, type ToolAudience } from '../mcp/toolAudience.ts';
 
 // A plugin's own error code: an upper-snake identifier, cc's codes included.
 export const PLUGIN_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]*$/;

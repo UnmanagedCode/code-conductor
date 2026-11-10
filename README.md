@@ -219,7 +219,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
 - **The projects-root lock covers one kernel only** — it does not stop two servers on a projects root shared across machines (NFS), or shared between a macOS host process and a Docker Desktop container. Keeping those apart is the caller's job.
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
 - **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
-- **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — you are woken when the worker's turn ends.
+- **Claude-spawning-Claude recursion** — workers are not offered `spawn_instance`; a `.conduct` session (section leads included) can spawn with no depth guard, and an anonymous `/mcp` caller is unrestricted. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — you are woken when the worker's turn ends.
 - **Notifications need permission** — desktop browsers need API grant; mobile Chrome needs the Service Worker; iOS Safari needs PWA install.
 
 ## Documentation

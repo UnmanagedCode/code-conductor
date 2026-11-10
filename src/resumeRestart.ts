@@ -12,7 +12,7 @@
 //   Phase 3 (restoreFromResumeManifest) — run in the NEW process on boot:
 //   re-spawn (`--resume`) the carried-over sessions, staggered, splitting them
 //   into conductors / conducted workers / others, and notify each so work
-//   resumes. Conducted workers are NOT resumed here — the top-level session they
+//   resumes. Conducted workers are NOT resumed here — the conductor they
 //   were spawned under is told about its whole subtree and re-spawns them (their
 //   jsonl was preserved for exactly that).
 
@@ -65,14 +65,19 @@ interface WorkerRow {
   parentSessionId?: string | null;
 }
 
-// The restart notice for a top-level session that had spawned workers: every
-// session in its spawn subtree, each naming the session that spawned it. The
-// root re-spawns its own direct workers and passes each one the rows it spawned.
+// The restart notice for a conductor that had spawned workers: every session in
+// its spawn subtree, each naming the session that spawned it. The conductor
+// resumes the rows spawned by it and tells each section lead (a listed row in the
+// conduct project) which rows that lead spawned. A row spawned by a listed
+// non-conduct session is the conductor's to resume: a worker cannot spawn.
 export function buildWorkersResumeText(rootSessionId: string, workers: WorkerRow[]): string {
+  const projectOf = new Map(workers.map((w) => [w.sessionId, w.project] as const));
   const lines = workers.map((w) => {
     const wt = w.worktreeName ? `worktree \`${w.worktreeName}\`` : '(no worktree)';
-    const parent = !w.parentSessionId || w.parentSessionId === rootSessionId
-      ? 'you' : `\`${w.parentSessionId}\``;
+    const p = w.parentSessionId;
+    const parent = !p || p === rootSessionId ? 'you'
+      : projectOf.get(p) === CONDUCT_PROJECT_NAME ? `\`${p}\``
+        : `\`${p}\` (a worker — resume it yourself)`;
     return `- project \`${w.project}\`, sessionId \`${w.sessionId}\`, ${wt}, spawned by ${parent}`;
   });
   return (
@@ -81,8 +86,8 @@ export function buildWorkersResumeText(rootSessionId: string, workers: WorkerRow
     'Every session spawned under you before the restart is listed below. Each has ' +
     'been preserved but is NOT running. Resume the ones spawned by you with ' +
     '`mcp__code-conductor__spawn_instance` using the matching `resume` sessionId, ' +
-    'then tell each of them which of the listed sessions it spawned, so it resumes ' +
-    'those the same way:\n' +
+    'then tell each section lead (a listed session in project `' + CONDUCT_PROJECT_NAME + '`) which of ' +
+    'the listed sessions it spawned, so it resumes those the same way:\n' +
     lines.join('\n')
   );
 }
@@ -164,11 +169,12 @@ export async function drainToIdle({ instances, log = console, graceMs = RESUME_D
 }): Promise<DrainState> {
   const live = [...instances.byId.values()].filter((i) => i.proc);
 
-  // (1) Snapshot each top-level session's spawn subtree BEFORE draining —
-  // instance ids become meaningless across the restart, so capture it now.
+  // (1) Snapshot each top-level conductor's spawn subtree BEFORE draining —
+  // instance ids become meaningless across the restart, so capture it now. A
+  // hand-spawned session gets no subtree (it cannot spawn), so it gets RESUME_TEXT.
   const subtreeOf = new Map<string, SubtreeRow[]>();
   for (const inst of live) {
-    if (groupOf(inst) !== 'worker') subtreeOf.set(inst.id, instances.conductedSubtreeOf(inst.id));
+    if (groupOf(inst) === 'conductor') subtreeOf.set(inst.id, instances.conductedSubtreeOf(inst.id));
   }
 
   // Snapshot which instances had resumable work BEFORE the stop so the manifest
@@ -403,8 +409,8 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
   let restored = 0;
   let first = true;
   for (const e of entries) {
-    // Group 2 — conducted workers: left untouched; the top-level session they
-    // were spawned under re-spawns them (jsonl preserved). Skip in the boot loop.
+    // Group 2 — conducted workers: left untouched; the conductor they
+    // were spawned under re-spawns them (jsonl preserved); workers of a hand-spawned session stay stopped, resumable from the UI. Skip in the boot loop.
     if (e.group === 'worker') continue;
     if (!first) await sleep(staggerMs);
     first = false;

@@ -18,6 +18,7 @@ import {
   bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader,
   seedSessionJsonl, driveTurn,
 } from './helpers.mjs';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { localPlace } from '../src/projects.ts';
 import { parseForwardFrame, splitForwardedMessages } from '../shared/forwardFrame.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -76,6 +77,17 @@ async function spawnReady(project) {
   const spawn = unwrap(await callTool('spawn_instance', { project, mode: 'bypassPermissions' }));
   await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
   return spawn.sessionId;
+}
+
+// A `.conduct` conductor — the only kind of session offered the drive tools.
+async function spawnDriver() {
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: CONDUCT_PROJECT_NAME, role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  return inst.sessionId;
 }
 
 async function spawnReadyWithScenario(project, scenarioPath, extraArgs) {
@@ -278,7 +290,7 @@ test('forward: a questions section survives intact', async () => {
 
 test('forward: an empty source soft-refuses NOTHING_TO_FORWARD before any prompt is sent', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const sourceSid = await spawnReady('p'); // fresh — no output at all
   const targetSid = await spawnReady('p');
   const targetInst = instForSession(instances, targetSid);
@@ -492,7 +504,7 @@ test('forward: mid-turn is delivered live (steering), not queued', async () => {
 
 test('forward: a successful forward still arms the caller\'s wake', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const sourceSid = await spawnReady('p');
   const targetSid = await spawnReady('p');
   instForSession(instances, sourceSid)._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'payload' });

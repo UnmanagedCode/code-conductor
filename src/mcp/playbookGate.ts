@@ -25,7 +25,7 @@
 // throw). A governed read-only call that is not refused writes nothing.
 //
 // SCOPE. Policy applies only when the caller is the conductor
-// (isConductorInstance) — worker-side calls keep their existing recursion rules
+// (isConductorInstance) — a worker is not offered the tools policy governs (core tool audience)
 // — and only to tools in the derived governable set. Everything else passes
 // through untouched.
 //

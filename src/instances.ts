@@ -2744,7 +2744,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       args.push('--permission-prompt-tool', 'stdio');
     }
     // Auto-register the orchestrator's own MCP server so any spawned
-    // session can drive `mcp__code-conductor__*` tools without a prior
+    // session reaches the `mcp__code-conductor__*` tools its audience admits without a prior
     // `claude mcp add` step. Disabled when ORCH_DISABLE_MCP_AUTOREGISTER=1
     // is set on the orchestrator (the URL comes through as null).
     if (this.mcpServerUrl) {

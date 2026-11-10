@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { api, waitFor, instForSession, settle } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import {
-  setupIdleWake, callTool, unwrap, spawnReady, waitParkedMidBlock,
+  setupIdleWake, callTool, unwrap, spawnReady, spawnDriver, waitParkedMidBlock,
   spawnReadyWithScenario, countUserEchoes, findStubFor, watchBeats,
   findInterruptedStubFor, SCENARIO_OPEN,
 } from './idleWakeCase.mjs';
@@ -30,7 +30,7 @@ test('interrupt_turn force:true wakes the INTERRUPTER not at all', async () => {
   // itself — and the fixture's interrupt turn emits exactly that result, so this
   // is the real wire shape, not a synthetic event.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -61,8 +61,8 @@ test('a forced interrupt silences ONLY the interrupter; every other owner is wok
   // could address a target could silence its watchers. Multi-owner is
   // first-class: the edge is spawn OR dispatch.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const aId = await spawnReady('p');
-  const bId = await spawnReady('p');
+  const aId = await spawnDriver();
+  const bId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const a = instForSession(instances, aId);
@@ -101,7 +101,7 @@ test('the UI stop button (no interrupter) tells EVERY owner the turn was interru
   // exact misreport the MCP force path was built to prevent. Driving
   // Instance.interrupt directly is that door's own shape.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -127,7 +127,7 @@ test('a SOFT interrupt leaves the wake armed, and the heartbeat keeps firing', a
   // so no boundary ever arrives — which is exactly why the heartbeat must keep
   // pinging: it is the conductor's signal to escalate to force:true.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
@@ -163,7 +163,7 @@ test('a soft interrupt by an IDENTIFIED caller disarms nothing — the heartbeat
   // role doc actually promises — YOUR soft interrupt leaves YOUR wake armed, and
   // the continuing heartbeat is what tells you to escalate — asserted by nobody.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
+  const callerId = await spawnDriver();
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);

@@ -31,7 +31,7 @@ import { describeToolsTool } from '../codeMode/describeTools.ts';
 import type { CodeModeCtx, ProgressTiming } from '../codeMode/ctx.ts';
 import { toolUseIdOf } from '../toolResultNudges.ts';
 import { isConductorInstance } from '../conduct.ts';
-import { audienceAdmits, type CallerKind, type ToolAudience } from '../plugins/toolAudience.ts';
+import { audienceAdmits, type CallerKind, type ToolAudience } from './toolAudience.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -59,7 +59,7 @@ interface McpCtx extends CodeModeCtx {
   // tool with no outputSchema, in json) — named so a call to one is refused
   // TOOL_UNAVAILABLE_IN_FORMAT rather than TOOL_UNKNOWN.
   textOnlyTools: ReadonlyMap<string, McpTool>;
-  // Plugin tools left out of `tools` because this caller is outside their
+  // Tools (core or plugin) left out of `tools` because this caller is outside their
   // audience — named so a call to one is refused TOOL_UNAVAILABLE_TO_CALLER
   // rather than TOOL_UNKNOWN.
   barredTools: ReadonlyMap<string, ToolAudience>;
@@ -357,7 +357,7 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
     const audience = typeof name === 'string' ? ctx.barredTools.get(name) : undefined;
     if (audience) {
       return { kind: 'fault', code: 'TOOL_UNAVAILABLE_TO_CALLER', tool: null,
-        reason: `'${name}' is a ${audience}-only plugin tool, and this session is a ${ctx.callerKind} — it is not offered to ${ctx.callerKind} sessions` };
+        reason: `'${name}' is a ${audience}-only tool, and this session is a ${ctx.callerKind} — it is not offered to ${ctx.callerKind} sessions` };
     }
     if (typeof name === 'string' && ctx.textOnlyTools.has(name)) {
       return { kind: 'fault', code: 'TOOL_UNAVAILABLE_IN_FORMAT', tool: null,
@@ -818,17 +818,23 @@ export function buildMcpRouter(
   const runs = createRunRegistry();
   const inflight = new Map<string, AbortController>();
 
-  // One core registry per format: they differ in the limits baked into an
-  // input schema (project_read's maxBytes) and in each description's result
-  // clause, and tools/list shows the outputSchema in JSON only.
-  const registry = (format: McpFormat) => {
-    const tools: McpTool[] = capableTools(format, capabilities);
-    return { tools, set: new Set<McpTool>(tools) as ReadonlySet<McpTool> };
+  // One core registry per format and caller kind: formats differ in the limits
+  // baked into an input schema (project_read's maxBytes) and in each description's
+  // result clause (tools/list shows the outputSchema in JSON only); kinds differ in
+  // the tools their audience admits. `set` is per entry because run_code's object
+  // differs per kind and `ctx.coreTools.has(tool)` relies on identity. `barred`
+  // names the capable core tools this kind is not offered.
+  const CALLER_KINDS: readonly CallerKind[] = ['conductor', 'worker', 'anonymous'];
+  type CoreRegistry = { tools: McpTool[]; set: ReadonlySet<McpTool>; barred: ReadonlyMap<string, ToolAudience> };
+  const registry = (format: McpFormat, kind: CallerKind): CoreRegistry => {
+    const tools: McpTool[] = capableTools(format, capabilities, kind);
+    const offered = new Set(tools.map(t => t.name));
+    const barred = new Map(capableTools(format, capabilities, 'anonymous')
+      .filter(t => !offered.has(t.name)).map(t => [t.name, t.audience] as const));
+    return { tools, set: new Set<McpTool>(tools), barred };
   };
-  const registries: Record<McpFormat, { tools: McpTool[]; set: ReadonlySet<McpTool> }> = {
-    text: registry('text'),
-    json: registry('json'),
-  };
+  const byKind = (format: McpFormat) => Object.fromEntries(CALLER_KINDS.map(k => [k, registry(format, k)])) as Record<CallerKind, CoreRegistry>;
+  const registries: Record<McpFormat, Record<CallerKind, CoreRegistry>> = { text: byKind('text'), json: byKind('json') };
 
   // Per-request tool composition: core tools + the plugin tools this caller's
   // audience admits (the rest are named in `barred`) that the format serves —
@@ -838,15 +844,15 @@ export function buildMcpRouter(
   // promise. A plugin-subsystem failure must never take the core tools down
   // with it.
   const NONE: ReadonlyMap<string, McpTool> = new Map();
-  const NO_BARRED: ReadonlyMap<string, ToolAudience> = new Map();
   async function composeTools(format: McpFormat, callerKind: CallerKind): Promise<{ tools: McpTool[]; textOnly: ReadonlyMap<string, McpTool>; barred: ReadonlyMap<string, ToolAudience> }> {
-    const core = registries[format].tools;
-    if (!pluginHost) return { tools: core, textOnly: NONE, barred: NO_BARRED };
+    const { tools: core, barred: coreBarred } = registries[format][callerKind];
+    if (!pluginHost) return { tools: core, textOnly: NONE, barred: coreBarred };
     try {
       await pluginHost.init();
       const all = pluginHost.toolsFor();
-      const barred = new Map(all.filter(t => !audienceAdmits(t.audience, callerKind)).map(t => [t.name, t.audience] as const));
-      const plugin = all.filter(t => !barred.has(t.name));
+      // Plugin names carry `__`, core names never do, so the maps cannot collide.
+      const barred = new Map([...coreBarred, ...all.filter(t => !audienceAdmits(t.audience, callerKind)).map(t => [t.name, t.audience] as const)]);
+      const plugin = all.filter(t => audienceAdmits(t.audience, callerKind));
       if (format === 'text') return { tools: [...core, ...plugin], textOnly: NONE, barred };
       return {
         tools: [...core, ...plugin.filter(t => t.outputSchema)],
@@ -855,7 +861,7 @@ export function buildMcpRouter(
       };
     } catch (e) {
       console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
-      return { tools: core, textOnly: NONE, barred: NO_BARRED };
+      return { tools: core, textOnly: NONE, barred: coreBarred };
     }
   }
 
@@ -870,7 +876,7 @@ export function buildMcpRouter(
     const callerKind = callerKindOf(instances, callerId);
     const { tools, textOnly, barred } = await composeTools(format, callerKind);
     const ctx: McpCtx = {
-      instances, tools, coreTools: registries[format].set, textOnlyTools: textOnly, barredTools: barred, callerKind, callerId, playbookGate, capabilities,
+      instances, tools, coreTools: registries[format][callerKind].set, textOnlyTools: textOnly, barredTools: barred, callerKind, callerId, playbookGate, capabilities,
       format, limits: limitsFor(format), runs, selfUrl: selfUrlOf(req), codeModeTiming,
       cancel: callerId ? (requestId) => { inflight.get(inflightKey(callerId, requestId))?.abort(); } : undefined,
     };
@@ -965,7 +971,7 @@ export function buildMcpRouter(
     const ac = new AbortController();
     res.on('close', () => { if (!res.writableFinished) ac.abort(); });
     const ctx: McpCtx = {
-      instances, tools, coreTools: registries.json.set, textOnlyTools: textOnly, barredTools: composed.barred, callerKind: pre.callerKind, callerId: pre.callerId, playbookGate, capabilities,
+      instances, tools, coreTools: registries.json[pre.callerKind].set, textOnlyTools: textOnly, barredTools: composed.barred, callerKind: pre.callerKind, callerId: pre.callerId, playbookGate, capabilities,
       format: 'json', limits: JSON_LIMITS, runs, selfUrl: selfUrlOf(req), codeModeTiming, signal: ac.signal,
       run: pre.token === null ? null : { callerId: pre.callerId as string },
       // The alias reads no `_meta`, so its calls queue no tool-result nudge.

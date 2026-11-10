@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { api, waitFor, instForSession, userStdinLines } from './helpers.mjs';
 import { ctx, callTool, unwrap } from './idleWakeCase.mjs';
 
@@ -56,12 +57,18 @@ export async function createProject(name) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name });
 }
 
-// The conductor: MCP-spawned with no caller, its own stdin unrecorded.
-export async function spawnConductor(project) {
+// The conductor: a `.conduct` conductor session (the only kind offered the spawn
+// and drive tools), its own stdin unrecorded. `warn` keeps ungoverned calls
+// proceeding (the default is `enforce`). The workers live in their own projects.
+export async function spawnConductor() {
   return withEnv({ FAKE_CLAUDE_SCENARIO: SCENARIO_CONDUCTOR, FAKE_CLAUDE_TRANSCRIPT: null }, async () => {
-    const { sessionId } = unwrap(await callTool('spawn_instance', { project, mode: 'bypassPermissions' }));
-    await waitFor(() => instForSession(ctx.instances, sessionId)?.status === 'idle');
-    return sessionId;
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: CONDUCT_PROJECT_NAME, role: 'conductor', playbookEnforcement: 'warn', mode: 'bypassPermissions',
+    });
+    assert.equal(r.status, 201, `conductor spawn: ${JSON.stringify(r.body)}`);
+    const inst = ctx.instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    return inst.sessionId;
   });
 }
 

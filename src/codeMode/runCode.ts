@@ -100,7 +100,7 @@ export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: n
   const barred = unknown.filter(u => !stillUnknown.has(u.path));
   if (barred.length > 0) {
     return refusal('TOOL_UNAVAILABLE_TO_CALLER',
-      `the program calls ${barred.map(u => u.path).join(', ')}, which ${barred.length === 1 ? 'is a plugin tool' : 'are plugin tools'} not offered to ${ctx.callerKind ?? 'this'} sessions — nothing ran.`,
+      `the program calls ${barred.map(u => u.path).join(', ')}, which ${barred.length === 1 ? 'is a tool' : 'are tools'} not offered to ${ctx.callerKind ?? 'this'} sessions — nothing ran.`,
       { unavailable: barred.map(u => u.path) });
   }
   if (!ctx.runs || !ctx.selfUrl) throw new Error('run_code: the MCP router did not provide the run channel');
