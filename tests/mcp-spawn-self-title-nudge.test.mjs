@@ -230,3 +230,38 @@ test('an untaken nudge is cleared when the caller\'s turn ends', async () => {
   await waitFor(() => inst.status === 'idle');
   assert.deepEqual(await postHook(inst.id, id), {});
 });
+
+// A tools/call in JSON format, returning its structuredContent.
+async function callToolJson(name, args, { caller, toolUseId }) {
+  const res = await fetch(`${baseUrl}/mcp/${encodeURIComponent(caller)}?format=json`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call',
+      params: { name, arguments: args, _meta: { 'claudecode/toolUseId': toolUseId } },
+    }),
+  });
+  const body = await res.json();
+  assert.ok(body?.result?.structuredContent, `tools/call ${name} returned no structuredContent; body=${JSON.stringify(body)}`);
+  return body.result.structuredContent;
+}
+
+// INVARIANT: a spawn made inside run_code queues no nudge — not under the outer
+// run_code call's toolUseId, nor anywhere else on the caller — even though the
+// same untitled, non-plan caller IS nudged for a direct spawn (control, first).
+test('a spawn inside run_code queues no nudge; a direct spawn by the same caller does', async () => {
+  const caller = await callerSession();
+  const instId = callerInstId(caller);
+  assert.deepEqual((await spawnAndHook(caller)).answer, NUDGE_ANSWER(), 'control: the caller qualifies');
+
+  const r = await callToolJson('run_code', {
+    code: "return (await cc.spawn_instance({ project: 'demo', mode: 'bypassPermissions' })).sessionId",
+  }, { caller, toolUseId: 'toolu_run_code_R' });
+  assert.equal(r.exitCode, 0, JSON.stringify(r));
+  assert.equal(r.error, undefined, JSON.stringify(r));
+  const workerSid = JSON.parse(r.result);
+  assert.ok(instForSession(instances, workerSid), 'the in-script spawn really started a worker');
+
+  assert.deepEqual(await postHook(instId, 'toolu_run_code_R', 'mcp__code-conductor__run_code'), {});
+  assert.equal(instForSession(instances, caller)._toolNudges._pending.size, 0, 'nothing pending on the caller');
+});

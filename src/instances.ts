@@ -2722,7 +2722,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       // Hooks (src/settings.ts). When a hookCallbackUrl is supplied, an
       // `http` PreToolUse hook is registered for the mutating tools; the
       // HookBroker allows local calls and applies the redirect policy to
-      // redirected ones. A conductor also gets the read-nudge entry.
+      // redirected ones. A conductor also gets the read-nudge entry, and every
+      // session also gets the PostToolUse tool-result-nudge entry
+      // (src/toolResultNudges.ts). The full layout: buildSettingsJSON.
       '--settings', buildSettingsJSON({
         hookCallbackUrl: this.hookCallbackUrl ?? undefined,
         redirect: this._redirect !== null,

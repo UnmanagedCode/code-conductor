@@ -2250,9 +2250,9 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
   }
   // Checked BEFORE the removal (it reads the branch), queued only once the
   // removal succeeded.
-  const renewNudge = await landingRenewNudge(project, wt, ctx);
+  const landingNudge = await landingRenewNudge(project, wt, ctx);
   await removeWorktree(project, wtName, { force });
-  queueCallerNudge(ctx, renewNudge);
+  queueCallerNudge(ctx, landingNudge);
   return { project, worktree: wtName };
 }
 
