@@ -1,6 +1,7 @@
 // The landing renewal nudge: a conductor's MCP delete_worktree of a worktree
-// whose work landed carries `renewNudge` on its result when the setting is on
-// (the default). "Landed" = the in-memory landing record (set by a successful
+// whose work landed queues LANDING_RENEW_NUDGE under the call's toolUseId when
+// the setting is on (the default); the caller's PostToolUse hook for that id
+// takes it as additionalContext. The result is always exactly {project, worktree}. "Landed" = the in-memory landing record (set by a successful
 // merge) AND no commits left ahead of the base, measured before removal.
 //
 // One top-level test per row: the root afterEach shuts instances down around
@@ -12,7 +13,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  api, bootServer, freshProjectsRoot, rmrf, registerLocalProject, waitFor,
+  api, bootServer, freshProjectsRoot, rmrf, registerLocalProject, waitFor, instForSession,
 } from './helpers.mjs';
 import { createWorktree, getWorktree, worktreeWorkLanded } from '../src/worktrees.ts';
 import {
@@ -64,12 +65,13 @@ async function commitFile(cwd, filename, content, message) {
 }
 
 let nextRpcId = 1;
-async function callTool(name, args, { caller } = {}) {
+async function callTool(name, args, { caller, toolUseId } = {}) {
   const url = baseUrl + '/mcp' + (caller ? `/${encodeURIComponent(caller)}` : '') + '?format=text';
+  const params = { name, arguments: args, ...(toolUseId ? { _meta: { 'claudecode/toolUseId': toolUseId } } : {}) };
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params }),
   });
   const body = await res.json();
   assert.ok(body?.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
@@ -105,8 +107,41 @@ async function fixture({ commits = 1, merge = false } = {}) {
   }
   return { repoPath, wt };
 }
-const del = (wt, caller) => callTool('delete_worktree', { project: 'demo', worktree: wt.worktreeName }, { caller });
 const expected = (wt) => ({ project: 'demo', worktree: wt.worktreeName });
+
+let nextToolUseId = 1;
+// The PostToolUse hook answer the CLI would get for `toolUseId` on `caller`'s
+// instance, reduced to its additionalContext (null for `{}`). Any other answer
+// shape fails here.
+async function hookNudge(caller, toolUseId) {
+  const r = await api(baseUrl, 'POST', `/api/instances/${instForSession(instances, caller).id}/hook-callback`, {
+    session_id: 'sess-test', hook_event_name: 'PostToolUse', tool_name: 'mcp__code-conductor__delete_worktree',
+    tool_input: {}, tool_response: [], tool_use_id: toolUseId,
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  if (Object.keys(r.body).length === 0) return null;
+  assert.deepEqual(Object.keys(r.body), ['hookSpecificOutput']);
+  assert.deepEqual(Object.keys(r.body.hookSpecificOutput).sort(), ['additionalContext', 'hookEventName']);
+  assert.equal(r.body.hookSpecificOutput.hookEventName, 'PostToolUse');
+  return r.body.hookSpecificOutput.additionalContext;
+}
+// Deletes `wt` as `caller` under a fresh toolUseId. Returns the result and the
+// nudge the caller's hook takes for that call (null when there is no live
+// caller to ask).
+async function delHook(wt, caller) {
+  const id = `toolu_del_${nextToolUseId++}`;
+  const result = await callTool('delete_worktree', { project: 'demo', worktree: wt.worktreeName }, { caller, toolUseId: id });
+  const nudge = caller && instForSession(instances, caller) ? await hookNudge(caller, id) : null;
+  return { result, nudge };
+}
+// A successful delete: the result is exactly {project, worktree}, and the
+// caller's hook takes `nudge` (LANDING_RENEW_NUDGE or null).
+async function assertDel(wt, caller, nudge) {
+  const r = await delHook(wt, caller);
+  assert.deepEqual(r.result, expected(wt));
+  assert.equal(r.nudge, nudge);
+}
+const del = (wt, caller) => delHook(wt, caller).then(r => r.result);
 
 // INVARIANT: a successful merge records the landing in the in-memory set.
 test('a successful merge records the landing', async () => {
@@ -134,81 +169,97 @@ test('a refused merge on a dirty parent records no landing', async () => {
   assert.equal(await recorded(wt.worktreeName), false);
 });
 
-// INVARIANT: setting on + conductor caller + landed worktree → renewNudge carries the constant.
-test('on, conductor caller, landed: the delete result carries renewNudge', async () => {
+// INVARIANT: setting on + conductor caller + landed worktree → the caller's hook
+// takes LANDING_RENEW_NUDGE for that call; the result is exactly {project, worktree}.
+test('on, conductor caller, landed: the hook takes the renewal nudge', async () => {
   await setNudge(true);
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
-  assert.deepEqual(await del(wt, caller), { ...expected(wt), renewNudge: LANDING_RENEW_NUDGE });
+  await assertDel(wt, caller, LANDING_RENEW_NUDGE);
 });
 
-// INVARIANT: absent means on: with nothing saved, a landed conductor delete carries renewNudge.
-test('default (nothing saved), conductor caller, landed: the delete result carries renewNudge', async () => {
+// INVARIANT: absent means on: with nothing saved, a landed conductor delete is nudged.
+test('default (nothing saved), conductor caller, landed: the hook takes the renewal nudge', async () => {
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
-  assert.deepEqual(await del(wt, caller), { ...expected(wt), renewNudge: LANDING_RENEW_NUDGE });
+  await assertDel(wt, caller, LANDING_RENEW_NUDGE);
 });
 
-// INVARIANT: with the setting off the delete result is byte-identical to today's.
-test('off, same fixture: the delete result is exactly {project, worktree}', async () => {
+// INVARIANT: with the setting off nothing is queued and the result is exactly {project, worktree}.
+test('off, same fixture: no nudge, the result is exactly {project, worktree}', async () => {
   await setNudge(false);
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
-  assert.deepEqual(await del(wt, caller), expected(wt));
+  await assertDel(wt, caller, null);
 });
 
 // INVARIANT: a worktree that never merged is not nudged.
-test('on, never merged: no renewNudge', async () => {
+test('on, never merged: no nudge', async () => {
   await setNudge(true);
   const caller = await conductor();
   const { wt } = await fixture();
-  assert.deepEqual(await del(wt, caller), expected(wt));
+  await assertDel(wt, caller, null);
 });
 
 // INVARIANT: a zero-commit worktree is not nudged.
-test('on, zero commits: no renewNudge', async () => {
+test('on, zero commits: no nudge', async () => {
   await setNudge(true);
   const caller = await conductor();
   const { wt } = await fixture({ commits: 0 });
-  assert.deepEqual(await del(wt, caller), expected(wt));
+  await assertDel(wt, caller, null);
 });
 
 // INVARIANT: work committed after the landing (ahead > 0) is not nudged.
-test('on, landed then a new commit: no renewNudge', async () => {
+test('on, landed then a new commit: no nudge', async () => {
   await setNudge(true);
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
   await commitFile(wt.worktreePath, 'later.txt', 'later\n', 'after landing');
-  assert.deepEqual(await del(wt, caller), expected(wt));
+  await assertDel(wt, caller, null);
 });
 
 // INVARIANT: only conductor callers are nudged.
-test('on, non-conductor caller: no renewNudge', async () => {
+test('on, non-conductor caller: no nudge', async () => {
   await setNudge(true);
   await api(baseUrl, 'POST', '/api/projects', { name: 'other' });
   const caller = await spawnIdle('other');
   const { wt } = await fixture({ merge: true });
-  assert.deepEqual(await del(wt, caller), expected(wt));
+  await assertDel(wt, caller, null);
 });
 
-// INVARIANT: a call with no live calling session is not nudged.
-test('on, anonymous (no caller path): no renewNudge', async () => {
+// INVARIANT: a call with no live calling session queues nothing on any session.
+test('on, anonymous (no caller path): no nudge', async () => {
   await setNudge(true);
+  const bystander = await conductor();
   const { wt } = await fixture({ merge: true });
-  assert.deepEqual(await del(wt, undefined), expected(wt));
+  const id = 'toolu_del_anon';
+  assert.deepEqual(await callTool('delete_worktree', { project: 'demo', worktree: wt.worktreeName }, { toolUseId: id }), expected(wt));
+  assert.equal(await hookNudge(bystander, id), null);
 });
 
 // INVARIANT: an unreadable landing check fails closed and never changes the delete's outcome.
-test('on, base branch renamed after the merge (ahead unknown): delete succeeds, no renewNudge', async () => {
+test('on, base branch renamed after the merge (ahead unknown): delete succeeds, no nudge', async () => {
   await setNudge(true);
   const caller = await conductor();
   const { repoPath, wt } = await fixture({ merge: true });
   await git(repoPath, 'branch', '-m', 'main', 'trunk');
-  assert.deepEqual(await del(wt, caller), expected(wt));
+  await assertDel(wt, caller, null);
+});
+
+// INVARIANT: a refused delete (WORKTREE_DIRTY) queues nothing, even for a landed
+// conductor delete that would otherwise be nudged.
+test('on, landed but dirty: the refusal queues no nudge', async () => {
+  await setNudge(true);
+  const caller = await conductor();
+  const { wt } = await fixture({ merge: true });
+  await fs.writeFile(path.join(wt.worktreePath, 'scratch.txt'), 'uncommitted\n');
+  const r = await delHook(wt, caller);
+  assert.equal(r.result.code, 'WORKTREE_DIRTY', JSON.stringify(r.result));
+  assert.equal(r.nudge, null);
 });
 
 // INVARIANT: the web UI's REST delete never carries a nudge.
-test('on, REST DELETE of a landed worktree: response has no renewNudge', async () => {
+test('on, REST DELETE of a landed worktree: response has no nudge field', async () => {
   await setNudge(true);
   const { wt } = await fixture({ merge: true });
   const r = await api(baseUrl, 'DELETE', `/api/projects/demo/worktrees/${encodeURIComponent(wt.worktreeName)}`);
@@ -223,11 +274,11 @@ test('a delete clears the landing: a re-created same-name worktree is not nudged
   const caller = await conductor();
   const { wt } = await fixture({ merge: true });
   assert.equal(await recorded(wt.worktreeName), true, 'precondition');
-  assert.equal((await del(wt, caller)).renewNudge, LANDING_RENEW_NUDGE);
+  assert.equal((await delHook(wt, caller)).nudge, LANDING_RENEW_NUDGE);
   assert.equal(worktreeLandingRecorded('demo', wt.worktreeName, wt.createdAt), false, 'the delete cleared the entry');
   const again = await createWorktree('demo', { name: 'job' });
   await commitFile(again.worktreePath, 'next.txt', 'next\n', 'new work');
-  assert.deepEqual(await del(again, caller), expected(again));
+  await assertDel(again, caller, null);
 });
 
 // Runs fn with a `git` shim first on PATH that logs each invocation's argv, and

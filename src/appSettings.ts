@@ -1474,8 +1474,8 @@ export async function setConductorIdleNudge(input: { enabled: unknown; value: un
 }
 
 // Models group: the landing renewal nudge — when on, an MCP delete_worktree
-// by a conductor of a worktree whose work landed carries a renewNudge field
-// (src/mcp/handlers.ts). On unless saved off. Read at each delete, so no sync
+// by a conductor of a worktree whose work landed queues LANDING_RENEW_NUDGE
+// for that call's PostToolUse hook (src/mcp/handlers.ts). On unless saved off. Read at each delete, so no sync
 // hook is needed.
 export function getLandingRenewNudge(): boolean {
   const stored = loadSync().models?.landingRenewNudgeEnabled;

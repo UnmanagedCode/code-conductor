@@ -500,7 +500,7 @@ function LandingRenewNudgeCard({ data }: { data: ModelsPayload }) {
   return (
     <SettingsCard
       title="Landing renewal nudge"
-      description="When a conductor deletes a worktree whose work has landed, the delete_worktree result tells it to send its landing report and, if more work follows in the session, renew its context. Workers, unlanded worktrees and deletes from this UI never nudge. On by default."
+      description="When a conductor deletes a worktree whose work has landed, a reminder alongside the delete_worktree result tells it to send its landing report and, if more work follows in the session, renew its context. Workers, unlanded worktrees and deletes from this UI never nudge. On by default."
       action={<Switch checked={data.landingRenewNudge} aria-label="Landing renewal nudge" onCheckedChange={(on) => void savePrefs({ landingRenewNudge: on }, 'Update', false)} />}
     />
   );

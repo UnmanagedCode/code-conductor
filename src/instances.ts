@@ -100,6 +100,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getConductorIdleNudge, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getTaskToolsEnabled, getAutoBackground, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { ConductorReadNudge, readNudgeEvent } from './conductorReadNudge.ts';
+import { PendingToolNudges } from './toolResultNudges.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
@@ -896,6 +897,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _pending: Map<string, PendingRequest>;
   _hooks: HookBroker;
   _readNudge: ConductorReadNudge | null;
+  _toolNudges: PendingToolNudges;
   _stderr: string;
   lastExit: ExitCause | null;
   _lastLeafUuid: string | null;
@@ -1156,15 +1158,21 @@ export class Instance extends EventEmitter implements InstanceLike {
     // memory only: a resume-after-restart or a fork builds a new Instance and
     // starts the run at 0. Reset by _setStatus on every exit from `turn`.
     this._readNudge = isConductorInstance(this) ? new ConductorReadNudge() : null;
+    // Tool-result nudges this session's MCP calls queued, by toolUseId, until
+    // the call's PostToolUse hook takes them (src/toolResultNudges.ts). Cleared
+    // by _setStatus on every exit from `turn`.
+    this._toolNudges = new PendingToolNudges();
     // Per-instance PreToolUse/PostToolUse hook callback answerer: allows
-    // local calls, applies the SessionRedirect policy to redirected ones, and
-    // answers a conductor's read-nudge tools. See src/hookBroker.ts.
+    // local calls, applies the SessionRedirect policy to redirected ones,
+    // answers a conductor's read-nudge tools and every session's tool-result
+    // nudges. See src/hookBroker.ts.
     this._hooks = new HookBroker({
       // A GETTER, not the value: the redirect is attached after construction
       // (it needs this instance's emit) and dropped when the session ends.
       getRedirect: () => this._redirect,
       readNudge: this._readNudge,
       onReadNudge: (n) => this._emitUi(readNudgeEvent(n)),
+      toolNudges: this._toolNudges,
     });
     this._stderr = '';
     // Set by _handleExit when the CLI exits on its own; reset per launch.
@@ -1839,6 +1847,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       // (status stays `turn`), so it does not reset the run — the conductor
       // still has not delegated.
       this._readNudge?.reset();
+      // A turn cannot end before its tool results (and their PostToolUse
+      // hooks) are through, so anything still pending was never taken.
+      this._toolNudges.clear();
     }
     // _turnForceAborted is deliberately NOT cleared here. A turn START looked like
     // the safe point, but it is not: _onTurnEnd defers an abort's wake while a
@@ -2711,7 +2722,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       // Hooks (src/settings.ts). When a hookCallbackUrl is supplied, an
       // `http` PreToolUse hook is registered for the mutating tools; the
       // HookBroker allows local calls and applies the redirect policy to
-      // redirected ones. A conductor also gets the read-nudge entry.
+      // redirected ones. A conductor also gets the read-nudge entry, and every
+      // session also gets the PostToolUse tool-result-nudge entry
+      // (src/toolResultNudges.ts). The full layout: buildSettingsJSON.
       '--settings', buildSettingsJSON({
         hookCallbackUrl: this.hookCallbackUrl ?? undefined,
         redirect: this._redirect !== null,
@@ -4375,6 +4388,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Thin delegate so the caller (routes.ts) keeps talking to
   // the Instance — the broker holds the actual state.
   handleHookCallback(envelope: unknown, res: Response): void { this._hooks.handle(envelope as HookEnvelope | null | undefined, res); }
+  queueToolNudge(toolUseId: string, text: string): void { this._toolNudges.queue(toolUseId, text); }
 
   // Two-tier interrupt, both tiers a real `control_request subtype:interrupt` —
   // they differ only in WHEN it fires. FORCED (`force:true`) fires now, severing

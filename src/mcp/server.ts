@@ -29,6 +29,7 @@ import { RUN_TOKEN_HEADER } from '../codeMode/runtimeApi.ts';
 import { RUN_RESULT_BODY_LIMIT_BYTES } from '../codeMode/limits.ts';
 import { describeToolsTool } from '../codeMode/describeTools.ts';
 import type { CodeModeCtx, ProgressTiming } from '../codeMode/ctx.ts';
+import { toolUseIdOf } from '../toolResultNudges.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -657,7 +658,7 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
     }
     if (method === 'tools/call') {
       const p = asRecord(params);
-      const outcome = await runTool(p.name, p.arguments, ctx);
+      const outcome = await runTool(p.name, p.arguments, { ...ctx, toolUseId: toolUseIdOf(p) });
       if (outcome.kind === 'internal') return isNotification ? null : internalReply(id, errMessage(outcome.error) ?? 'internal error', ctx);
       return json ? serializeJson(id, outcome, ctx) : rpcResult(id, serializeText(outcome, ctx));
     }
@@ -939,6 +940,8 @@ export function buildMcpRouter(
       instances, tools, coreTools: registries.json.set, textOnlyTools: textOnly, callerId: pre.callerId, playbookGate, capabilities,
       format: 'json', limits: JSON_LIMITS, runs, selfUrl: selfUrlOf(req), codeModeTiming, signal: ac.signal,
       run: pre.token === null ? null : { callerId: pre.callerId as string },
+      // The alias reads no `_meta`, so its calls queue no tool-result nudge.
+      toolUseId: null,
     };
     const outcome = await runTool(name, args, ctx);
     if (outcome.kind === 'fault') {

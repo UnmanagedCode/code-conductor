@@ -1,17 +1,24 @@
 // Per-instance answerer for the tool-hook http callbacks, plus the JSON
 // response helpers, so none of that needs to clutter the Instance class. The
 // broker only reaches back into the Instance via the getRedirect() and
-// onReadNudge() callbacks it's constructed with, keeping the dependency arrow
-// one-way.
+// onReadNudge() callbacks and the pending tool-result nudges it's constructed
+// with, keeping the dependency arrow one-way.
 //
 // It answers two hook events. `PreToolUse`: a local session's calls are all
 // allowed; a redirected session's calls follow the SessionRedirect policy —
 // allow (optionally with a rewritten input), or deny — and a redirector that
-// throws is answered with a deny. `PostToolUse` is registered only for a
-// session redirected to another system and has no consumer today: the union
-// writes through, so there is nothing to report back. It stays wired because
-// the daemon's lazy per-open mirror pushes at `release`, which can fail AFTER
-// the tool has already returned success, and `additionalContext` is the only
+// throws is answered with a deny.
+//
+// `PostToolUse` on the tool-result nudge tools (src/toolResultNudges.ts),
+// registered for every session: answered with whatever is pending under the
+// envelope's `tool_use_id` as `additionalContext`, or `{}`. Those tools never
+// reach the redirect.
+//
+// `PostToolUse` on the mutating tools is registered only for a session
+// redirected to another system and has no consumer today: the union writes
+// through, so there is nothing to report back. It stays wired because the
+// daemon's lazy per-open mirror pushes at `release`, which can fail AFTER the
+// tool has already returned success, and `additionalContext` is the only
 // channel that can put that in front of the worker in band — a tool result can
 // be annotated but never replaced.
 //
@@ -23,6 +30,7 @@
 import type { Response } from 'express';
 import type { RedirectDecision } from './systems/toolRedirect.ts';
 import type { ConductorReadNudge, ReadNudge } from './conductorReadNudge.ts';
+import { isToolResultNudgeTool, type PendingToolNudges } from './toolResultNudges.ts';
 
 interface PreToolUseOutput {
   hookEventName: 'PreToolUse';
@@ -85,18 +93,22 @@ export interface HookBrokerOptions {
   readNudge?: ConductorReadNudge | null;
   // Called AFTER the hook is answered, so a throw here cannot turn into a deny.
   onReadNudge?: (n: ReadNudge) => void;
+  // The session's queued tool-result nudges, taken by toolUseId.
+  toolNudges?: PendingToolNudges | null;
 }
 
 export class HookBroker {
   private readonly _getRedirect: () => HookRedirector | null;
   private readonly _readNudge: ConductorReadNudge | null;
   private readonly _onReadNudge: ((n: ReadNudge) => void) | null;
+  private readonly _toolNudges: PendingToolNudges | null;
 
-  constructor({ getRedirect, readNudge = null, onReadNudge }: HookBrokerOptions) {
+  constructor({ getRedirect, readNudge = null, onReadNudge, toolNudges = null }: HookBrokerOptions) {
     if (typeof getRedirect !== 'function') throw new Error('HookBroker requires getRedirect()');
     this._getRedirect = getRedirect;
     this._readNudge = readNudge;
     this._onReadNudge = onReadNudge ?? null;
+    this._toolNudges = toolNudges;
   }
 
   // Called by the REST hook-callback handler, for BOTH hook events — the CLI
@@ -122,6 +134,14 @@ export class HookBroker {
     if (envelope?.hook_event_name === 'PostToolUse') {
       // No permission decision exists for a completed tool: the only thing this
       // event can carry back is a note.
+      if (this._toolNudges && isToolResultNudgeTool(toolName)) {
+        const toolUseId = typeof envelope.tool_use_id === 'string' ? envelope.tool_use_id : '';
+        const nudge = toolUseId ? this._toolNudges.take(toolUseId) : null;
+        if (!res.headersSent) {
+          res.status(200).json(nudge ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: nudge } } : {});
+        }
+        return;
+      }
       const note = redirect ? await redirect.postToolUse(toolName, toolInput, envelope.tool_response) : null;
       if (!res.headersSent) {
         res.status(200).json(note ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } } : {});

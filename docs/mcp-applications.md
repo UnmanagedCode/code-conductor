@@ -105,6 +105,7 @@ How JSON format differs from text:
 | `GET /mcp/tools`, `GET /mcp/<sessionId>/tools` | the listing |
 
 - Same core as `tools/call` (`runTool`): one argument validation, one playbook gate, one handler. The alias body for a call is byte-for-byte the `structuredContent` of the same `tools/call`, with the same caller attribution.
+- **No tool-result nudges.** An application caller — the REST alias, or a `tools/call` without the CLI's `params._meta["claudecode/toolUseId"]` — never gets one; they ride a Claude CLI session's PostToolUse hook ([protocol.md](protocol.md) → Tool-result nudges).
 - **Success:** `200` + the `structuredContent` object itself, with no envelope.
 - **Refusal or thrown error:** `200` + the refusal object.
 - **Faults:** the statuses in the table above.

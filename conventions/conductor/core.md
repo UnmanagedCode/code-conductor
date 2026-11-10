@@ -53,7 +53,7 @@ Call every `mcp__code-conductor__*` tool this document names as `mcp__code-condu
 
 - **Discover:** `list_projects` · `list_sessions` · `list_worktrees` · `describe_session` · `project_status` · `project_read` · `project_bash` · `project_diff` · `list_playbooks` · `describe_playbook` · `playbook_state`
 - **Spawn:** `spawn_instance` · `create_project` · `create_worktree`
-- **Organise the sidebar** — when spawning several related workers, group them in a workspace so the human can collapse the chunk when done: `list_workspaces` · `create_workspace` · `delete_workspace` · `rename_workspace` · `set_project_workspace` · `set_session_title`
+- **Organise the sidebar** — when spawning several related workers, group them in a workspace so the human can collapse the chunk when done: `list_workspaces` · `create_workspace` · `delete_workspace` · `rename_workspace` · `set_project_workspace` · `set_session_title`. Name your own session with `set_session_title` once your task is clear.
 - **Drive:** `send_prompt` · `set_idle_timeout` · `set_mode` · `interrupt_turn` · `kill_instance`
 - **Plans and questions:** `approve_plan` · `reject_plan` · `answer_question` — a worker's `AskUserQuestion` yields to you like a plan; answer it with `answer_question`.
 - **Inspect:** `get_recent_messages` · `get_transcript` — a RETIRED worker is readable (these and `describe_session`) only by its exact `sessionId`; a prefix resolves live sessions only.

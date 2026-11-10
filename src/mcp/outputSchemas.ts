@@ -269,7 +269,7 @@ export const OUTPUT_SCHEMAS: Record<string, Schema> = {
     events: arr(open('a transcript event (the UI event union, shared/uiEvent.ts), passed through')),
     lastSeq: int, trimmedBefore: int, hasMore: bool, nextFrom: int,
   }),
-  spawn_instance: extend(CONDUCTOR_VIEW, { titleNudge: str }, { optional: ['titleNudge'] }),
+  spawn_instance: CONDUCTOR_VIEW,
   send_prompt: obj({ sessionId: nullable(str), status: str, forwarded: int, humanPrompts: HUMAN_PROMPTS }, { optional: ['forwarded', 'humanPrompts'] }),
   set_mode: obj({ sessionId: nullable(str), mode: str }),
   approve_plan: SENT,
@@ -293,7 +293,7 @@ export const OUTPUT_SCHEMAS: Record<string, Schema> = {
   interrupt_turn: obj({ sessionId: nullable(str), status: str, interrupting: bool }),
   kill_instance: obj({ sessionId: str }),
   create_worktree: obj({ ...WORKTREE_PROPS, postWorktreeCreate: HOOK_RESULT }, { optional: WORKTREE_OPTIONAL }),
-  delete_worktree: obj({ project: str, worktree: str, renewNudge: str }, { optional: ['renewNudge'] }),
+  delete_worktree: obj({ project: str, worktree: str }),
   sync_worktree: variants(
     obj({ ...SYNC_BASE, action: lit('already-in-sync') }),
     obj({ ...SYNC_BASE, action: lit('fast-forwarded'), newSha: str }),

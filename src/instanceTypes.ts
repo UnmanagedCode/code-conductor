@@ -291,6 +291,9 @@ export interface InstanceLike {
   // Merge stored turn marks (src/sessionViewed.ts after POST .../viewed);
   // emits `turn_marks`, never `status`.
   setTurnMarks(m: TurnMarks): void;
+  // MCP handler surface: queues a tool-result nudge for this session's call
+  // `toolUseId`, taken by that call's PostToolUse hook (src/toolResultNudges.ts).
+  queueToolNudge(toolUseId: string, text: string): void;
   // Route surface (src/routes.ts): the three destructive session rewrites,
   // debug mutation and the hook-callback envelope. `_mutating` names the rewrite
   // fork/rewind/prune claim synchronously (any holder excludes the other two and

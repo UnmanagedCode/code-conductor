@@ -19,7 +19,7 @@ const COUNTED_TOOLS = ['project_read', 'project_bash'].map(t => TOOL_NAME_PREFIX
 // Each starts a new run.
 const DELEGATION_TOOLS = ['spawn_instance', 'send_prompt'].map(t => TOOL_NAME_PREFIX + t);
 
-const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ANCHORED: the CLI tests a matcher outside `^[a-zA-Z0-9_|]+$` as
 // `new RegExp(m).test(toolName)`, so an unanchored alternation would also
