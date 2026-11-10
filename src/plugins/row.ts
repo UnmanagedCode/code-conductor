@@ -102,6 +102,7 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
   if (entry.system !== 'local') {
     if (hasBackend) localOnly.push('PLUGIN_BACKEND_LOCAL_ONLY');
     if (claudePluginPaths(entry.manifest ?? undefined).length > 0) localOnly.push('PLUGIN_DIR_LOCAL_ONLY');
+    if (entry.manifest?.runCodeModule) localOnly.push('RUN_CODE_MODULE_LOCAL_ONLY');
   }
   return {
     id,

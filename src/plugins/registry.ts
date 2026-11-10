@@ -13,7 +13,7 @@ import { httpError } from '../httpError.ts';
 import { hostPlatform, type Platform } from '../platform/index.ts';
 import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
-import { createContributions, type PluginPlacement } from './contributions.ts';
+import { createContributions, type LookedUpEntry, type PluginPlacement } from './contributions.ts';
 import { createPluginStore, pluginDataDir, type PersistedPluginRecord } from './store.ts';
 import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
@@ -149,7 +149,7 @@ export function createPluginHost(opts: {
   // and keeps no cache of its own. Declared before its first use — the injected
   // accessors are hoisted `function` declarations, and nothing runs during
   // construction.
-  const contributions = createContributions({ ensureInit, contributingEntries, resolvePlacement, discoveryDegraded });
+  const contributions = createContributions({ ensureInit, contributingEntries, resolvePlacement, discoveryDegraded, lookupEntry });
   // Persisted state, loaded by init(). Every registry.json write signals the
   // contributions cache from the store's single save path.
   const store = createPluginStore({ onRegistryChange: () => contributions.noteRegistryChange() });
@@ -864,6 +864,18 @@ export function createPluginHost(opts: {
       e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && store.isEnabled(e.id));
   }
 
+  // A plugin by id for the run_code module lookup. `byId` holds only `ok`
+  // entries, so a duplicate-id loser is never returned; a broken row is found
+  // by scanning `entries`. Enabled is store.isEnabled, never a row's field.
+  function lookupEntry(id: string): LookedUpEntry | null {
+    const ok = byId.get(id);
+    if (ok && ok.manifest) {
+      return { kind: 'ok', entry: { id, project: ok.project, manifest: ok.manifest, backend: !!ok.manifest.backend }, enabled: store.isEnabled(id) };
+    }
+    const bad = entries.find(e => e.id === id && e.discoveryState !== 'ok' && e.discoveryState !== 'conflict');
+    return bad ? { kind: 'broken', state: bad.discoveryState, errors: bad.errors } : null;
+  }
+
   // The registry's other half of that collaborator: did the LAST COMPLETED
   // scan fail to reach a project an ENABLED plugin lives in? A skipped project
   // contributes nothing for the whole life of that catalog, so a catalog built
@@ -925,6 +937,7 @@ export function createPluginHost(opts: {
     roles: contributions.roles,
     playbooks: contributions.playbooks,
     claudePluginDirs: contributions.claudePluginDirs,
+    runCodeModule: contributions.runCodeModule,
     reportUpstreamFailure, setServerPort, stopAll,
     notices: store.notices,
   };

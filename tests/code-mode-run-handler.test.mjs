@@ -43,3 +43,13 @@ test('a failure after the pump started stops it: no further progress emits', asy
   await new Promise(r => setTimeout(r, 120));
   assert.equal(emits.length, 1, 'a live heartbeat would have emitted by now');
 });
+
+test('childArgv: a plan-mode child gets --allow-net exactly when this Node knows the flag; other modes get no flags', async () => {
+  const { childArgv } = await import('../src/codeMode/runCode.ts');
+  assert.ok(childArgv(true, true).includes('--allow-net'));
+  assert.ok(!childArgv(true, false).includes('--allow-net'));
+  for (const known of [true, false]) {
+    for (const flag of ['--permission', '--allow-fs-read=*', '--allow-net']) assert.ok(!childArgv(false, known).includes(flag), `${flag} known=${known}`);
+  }
+  assert.ok(childArgv(true, false).includes('--permission'), 'plan mode is permission-gated either way');
+});

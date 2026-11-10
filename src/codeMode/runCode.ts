@@ -25,9 +25,9 @@ const RUNTIME_PATH = fileURLToPath(new URL('./runtime.ts', import.meta.url));
 // child's calls back into cc are network, which a Node that gates it needs
 // `--allow-net` for (a flag an older Node rejects at startup, so it is added
 // only when this Node knows it).
-export function childArgv(planMode: boolean): string[] {
+export function childArgv(planMode: boolean, knowsAllowNet = process.allowedNodeEnvironmentFlags.has('--allow-net')): string[] {
   const flags = planMode
-    ? ['--permission', '--allow-fs-read=*', ...(process.allowedNodeEnvironmentFlags.has('--allow-net') ? ['--allow-net'] : [])]
+    ? ['--permission', '--allow-fs-read=*', ...(knowsAllowNet ? ['--allow-net'] : [])]
     : [];
   return [process.execPath, ...flags, RUNTIME_PATH];
 }

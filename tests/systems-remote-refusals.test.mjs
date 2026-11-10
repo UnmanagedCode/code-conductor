@@ -474,6 +474,30 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.deepEqual(dirs, [], 'no --plugin-dir root points at another machine');
   });
 
+  // PINS: a run_code module on a remote project is not served (`cc.import`
+  // runs on cc's own machine, and a path on another machine is not a file
+  // here), and the Settings row says so.
+  test('a runCodeModule on a remote project is unavailable and the row carries RUN_CODE_MODULE_LOCAL_ONLY', async () => {
+    const tree = await adoptRemote('modproj');
+    await fs.mkdir(path.join(tree, 'run-code'), { recursive: true });
+    await fs.writeFile(path.join(tree, 'run-code', 'index.mjs'), 'export default () => ({});');
+    await fs.writeFile(path.join(tree, 'conductor.plugin.json'), JSON.stringify({
+      id: 'remotemod', name: 'Remote Mod', version: '1.0.0', pluginApi: 1,
+      runCodeModule: 'run-code/index.mjs',
+    }));
+    await api(baseUrl, 'POST', '/api/plugins/rescan');
+    await api(baseUrl, 'POST', '/api/plugins/remotemod/enable');
+
+    const listed = await api(baseUrl, 'GET', '/api/plugins');
+    const row = listed.body.rows.find(p => p.id === 'remotemod');
+    assert.ok(row);
+    assert.deepEqual(row.localOnly, ['RUN_CODE_MODULE_LOCAL_ONLY']);
+
+    const r = await ctx.pluginHost.runCodeModule('remotemod');
+    assert.equal(r.kind, 'unavailable');
+    assert.match(r.reason, /another system/);
+  });
+
   // ── A system addressed DIRECTLY: system_bash, no project in play ─────
   //
   // Everything above reaches a system THROUGH a project placed on it. These

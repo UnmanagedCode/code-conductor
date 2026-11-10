@@ -2,6 +2,7 @@
 // program sees, and the serialization of its outcome. Imports only limits.ts —
 // the child must not pull the server in.
 
+import { pathToFileURL } from 'node:url';
 import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutChars, cutResult } from './limits.ts';
 
 // The run's token travels in this header on every call and on the result
@@ -12,7 +13,7 @@ export const RUN_TOKEN_ENV = 'CC_RUN_TOKEN';
 
 // Names on `cc` that are not tools: a plugin namespace spelled one of these is
 // reached with `cc.call('<id>__<tool>', args)`.
-export const RESERVED_METHODS: readonly string[] = ['call', 'describe_tools', 'then'];
+export const RESERVED_METHODS: readonly string[] = ['call', 'describe_tools', 'import', 'then'];
 
 // A call a tool refused or that failed. `status` 200 is a soft refusal (the
 // tool answered `{ok:false, code, …}`); 400 and above is a fault (unknown
@@ -45,17 +46,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
-// `cc.<tool>(args)`, `cc.<plugin_ns>.<tool>(args)`, `cc.call(name, args)` and
-// `cc.describe_tools(args)`. Dispatch needs no listing: the server's live
+// `cc.<tool>(args)`, `cc.<plugin_ns>.<tool>(args)`, `cc.call(name, args)`,
+// `cc.describe_tools(args)` and `cc.import(pluginId)`. Dispatch needs no listing: the server's live
 // registry resolves every name.
 export function createCc(opts: CcOptions): unknown {
   const doFetch = opts.fetch ?? fetch;
-  const call: CallFn = async (name, args = {}) => {
-    const res = await doFetch(`${opts.url}/tools/${encodeURIComponent(name)}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', [RUN_TOKEN_HEADER]: opts.token },
-      body: JSON.stringify(args ?? {}),
-    });
+  // The server's answer, or the ConductorError a refusal or fault maps to.
+  const settle = async (res: Response): Promise<unknown> => {
     const text = await res.text();
     let body: unknown = null;
     try { body = JSON.parse(text); } catch { /* reported below */ }
@@ -67,7 +64,43 @@ export function createCc(opts: CcOptions): unknown {
     }
     return body;
   };
+  const call: CallFn = async (name, args = {}) => settle(await doFetch(`${opts.url}/tools/${encodeURIComponent(name)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [RUN_TOKEN_HEADER]: opts.token },
+    body: JSON.stringify(args ?? {}),
+  }));
   const describe = async (args: unknown = {}) => (await call('describe_tools', args) as { tools: unknown }).tools;
+
+  // `cc.import(id)`: the plugin's module, loaded on first use and memoized per
+  // id for the run (a failed load stays failed). The factory gets the plugin's
+  // context and this same `cc`. docs/code-mode.md → Plugin modules.
+  const modules = new Map<string, Promise<unknown>>();
+  const loadModule = async (id: string): Promise<unknown> => {
+    const info = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}`, {
+      headers: { [RUN_TOKEN_HEADER]: opts.token },
+    }));
+    if (!isRecord(info) || typeof info.path !== 'string') {
+      throw new ConductorError('MODULE_LOAD_FAILED', `${id}: the server's module lookup answered an unexpected body`, 500);
+    }
+    try {
+      const mod = await import(pathToFileURL(info.path).href) as { default?: unknown };
+      if (typeof mod.default !== 'function') throw new TypeError("the module's default export is not a function");
+      return await mod.default({ pluginId: id, baseUrl: info.baseUrl ?? null, caller: info.caller, cc });
+    } catch (e) {
+      const rec = isRecord(e) ? e : {};
+      const name = typeof rec.name === 'string' ? rec.name : 'Error';
+      const message = typeof rec.message === 'string' ? rec.message : String(e);
+      const err = new ConductorError('MODULE_LOAD_FAILED', cutChars(`${id}: ${name}: ${message}`, RUN_ERROR_MESSAGE_CAP), 500);
+      err.cause = e;
+      throw err;
+    }
+  };
+  const importModule = (rawId: string): Promise<unknown> => {
+    const id = String(rawId);
+    let p = modules.get(id);
+    if (!p) { p = loadModule(id); modules.set(id, p); }
+    return p;
+  };
 
   const member = (x: string) => new Proxy((args?: unknown) => call(x, args), {
     get(_t, y) {
@@ -75,14 +108,16 @@ export function createCc(opts: CcOptions): unknown {
       return (args?: unknown) => call(`${x.replaceAll('_', '-')}__${y}`, args);
     },
   });
-  return new Proxy(function cc() {}, {
+  const cc: unknown = new Proxy(function cc() {}, {
     get(_t, x) {
       if (typeof x !== 'string' || x === 'then') return undefined;
       if (x === 'call') return call;
       if (x === 'describe_tools') return describe;
+      if (x === 'import') return importModule;
       return member(x);
     },
   });
+  return cc;
 }
 
 export interface SerializedOutcome {
