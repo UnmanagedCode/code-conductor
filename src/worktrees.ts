@@ -530,10 +530,12 @@ export async function runWorktreeHook(
 
   if (r.spawnError) {
     // REPORTS ONLY — deliberately does not classify, and must stay that way.
-    // `ran: true` is load-bearing: spawnDialog gates the hook result's
-    // visibility on it, so collapsing this into "did not run" would delete a
-    // user-visible fallback rather than fix anything. It invents no fact about
-    // the tree either; the message is quoted, not interpreted.
+    // `ran: true` is load-bearing: hookResultLabel reads it as "failed to
+    // start (<duration>)" rather than a bare "failed", and the merge success
+    // toast names a post-merge hook only when `ran || skipped`, so collapsing
+    // this into "did not run" would drop that line rather than fix anything.
+    // It invents no fact about the tree either; the message is quoted, not
+    // interpreted, and the spawn dialog shows it expanded as a warning.
     return { ran: true, source, exitCode: null, durationMs: r.durationMs, output: r.spawnError, error: true };
   }
 
