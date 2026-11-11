@@ -199,14 +199,15 @@ test('TOOL_UNKNOWN (404) and TOOL_UNAVAILABLE (409) carry the host reasons', asy
 });
 
 // PINS: PLUGIN_LOAD_FAILED (500) for each load failure shape, reason `<id>: <name>: <message>`, cause set.
-test('PLUGIN_LOAD_FAILED (500) for a syntax error, top-level throw, non-function default, rejecting factory, non-object result and a missing member function', async () => {
+test('PLUGIN_LOAD_FAILED (500) for a syntax error, top-level throw, non-function default, rejecting factory, non-object result (a function included) and a missing member function', async () => {
   await serve('syn', 'export default (( ;');
   await serve('top', "throw new RangeError('boom at top');");
   await serve('nofn', 'export default 42;');
   await serve('rej', "export default async () => { throw new TypeError('factory said no'); };");
   await serve('nul', 'export default () => null;');
   await serve('nomember', 'export default () => ({ other: () => 1 });');
-  const ids = ['syn', 'top', 'nofn', 'rej', 'nul', 'nomember'];
+  await serve('fnres', 'export default () => { const f = () => 1; f.m = async () => 1; return f; };');
+  const ids = ['syn', 'top', 'nofn', 'rej', 'nul', 'nomember', 'fnres'];
   const v = value(await run(`
     const out = {};
     for (const id of ${JSON.stringify(ids)}) {
@@ -398,4 +399,49 @@ test('guard: no agent-visible output or refusal reason mentions the mechanism by
   for (const r of refusals) assert.doesNotMatch(r, word, r);
   const pre = await run('return await cc.ctxplug.import({})');
   assert.doesNotMatch(JSON.stringify(pre), word);
+});
+
+// PINS: only an OWN function of the factory's object is a member — a declared name the object merely inherits
+// (Object.prototype's toString/constructor/valueOf/hasOwnProperty) is PLUGIN_LOAD_FAILED, never the inherited function.
+test('an inherited function never answers a declared member', async () => {
+  await serve('inherit', 'export default () => ({ own: async () => 1 });', { members: ['own', 'toString', 'constructor', 'valueOf', 'hasOwnProperty'] });
+  const v = value(await run(`
+    const out = {};
+    for (const m of ['toString', 'constructor', 'valueOf', 'hasOwnProperty', 'own']) {
+      try { out[m] = ['resolved', await cc.inherit[m]({})]; } catch (e) { out[m] = [e.code, e.reason]; }
+    }
+    return out;`));
+  for (const m of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+    assert.equal(v[m][0], 'PLUGIN_LOAD_FAILED', m);
+    assert.match(v[m][1], new RegExp(`^inherit: TypeError: .*'${m}'`), m);
+  }
+  assert.deepEqual(v.own, ['resolved', 1]);
+});
+
+// PINS: a memoized lookup failure is rebuilt per call — each member's refusal names its own wire name.
+test('a memoized lookup failure names the member being called, not the first one', async () => {
+  catalog.set('ghost2', [memberDecl('a'), memberDecl('b')]);
+  modules.set('ghost2', { kind: 'unknown', reason: "plugin 'ghost2' is disabled" });
+  const v = value(await run(`
+    const out = [];
+    for (const f of [() => cc.ghost2.a({}), () => cc.ghost2.b({}), () => cc.call('ghost2__b', {})]) { try { await f(); } catch (e) { out.push(e.reason); } }
+    return out;`));
+  assert.deepEqual(v, [
+    "unknown tool: ghost2__a — plugin 'ghost2' is disabled",
+    "unknown tool: ghost2__b — plugin 'ghost2' is disabled",
+    "unknown tool: ghost2__b — plugin 'ghost2' is disabled",
+  ]);
+});
+
+// PINS: the run_code-only refusal spells the call as describe_tools does — a reserved plugin id (`call`) is reached through cc.call.
+test('the run_code-only refusal uses the describe_tools spelling for a reserved plugin id', async () => {
+  catalog.set('call', [memberDecl('m')]);
+  try {
+    const res = await fetch(`${base}/mcp/local1/tools/call__m`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const body = await res.json();
+    assert.equal(body.code, 'TOOL_UNKNOWN');
+    assert.equal(body.reason, "'call__m' is callable only from inside a run_code program, as cc.call('call__m', args)");
+    const entry = (await describe({ names: ['call__m'] }))[0];
+    assert.equal(entry.method, "cc.call('call__m', args)");
+  } finally { catalog.delete('call'); }
 });

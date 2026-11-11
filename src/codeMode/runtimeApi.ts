@@ -90,18 +90,12 @@ export function createCc(opts: CcOptions): unknown {
   interface Info { path: string; baseUrl: unknown; caller: unknown; members: Array<{ name: string; inputSchema: unknown }> }
   const lookups = new Map<string, Promise<Info>>();
   const loads = new Map<string, Promise<Record<string, unknown>>>();
-  const lookup = (id: string, wire: string): Promise<Info> => {
+  // Memoizes the raw outcome; callMember words a TOOL_UNKNOWN per call.
+  const lookup = (id: string): Promise<Info> => {
     let p = lookups.get(id);
     if (!p) {
       p = (async () => {
-        let body: unknown;
-        try {
-          body = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}`, { headers: { [RUN_TOKEN_HEADER]: opts.token } }));
-        } catch (e) {
-          // The plugin no longer provides the member: refused as an unknown tool is.
-          if (e instanceof ConductorError && e.code === 'TOOL_UNKNOWN') throw new ConductorError('TOOL_UNKNOWN', `unknown tool: ${wire} — ${e.reason}`, e.status);
-          throw e;
-        }
+        const body = await settle(await doFetch(`${opts.url}/run-modules/${encodeURIComponent(id)}`, { headers: { [RUN_TOKEN_HEADER]: opts.token } }));
         if (!isRecord(body) || typeof body.path !== 'string' || !Array.isArray(body.members)) {
           throw new ConductorError('PLUGIN_LOAD_FAILED', `${id}: the server's member lookup answered an unexpected body`, 500);
         }
@@ -127,7 +121,7 @@ export function createCc(opts: CcOptions): unknown {
           const mod = await import(pathToFileURL(info.path).href) as { default?: unknown }; // server-imports: external
           if (typeof mod.default !== 'function') throw new TypeError("the module's default export is not a function");
           const obj = await (mod.default as (ctx: unknown) => unknown)({ pluginId: id, baseUrl: info.baseUrl ?? null, caller: info.caller, cc });
-          if (!isRecord(obj) && typeof obj !== 'function') throw new TypeError('the factory did not return an object');
+          if (!isRecord(obj)) throw new TypeError('the factory did not return an object');
           return obj as Record<string, unknown>;
         } catch (e) { throw loadFailed(id, e); }
       })();
@@ -137,15 +131,21 @@ export function createCc(opts: CcOptions): unknown {
   };
   const callMember = async (id: string, m: string, args: unknown): Promise<unknown> => {
     const wire = `${id}${PLUGIN_SEP}${m}`;
-    const info = await lookup(id, wire);
+    let info: Info;
+    try { info = await lookup(id); } catch (e) {
+      // The plugin no longer provides the member: refused as an unknown tool is.
+      if (e instanceof ConductorError && e.code === 'TOOL_UNKNOWN') throw new ConductorError('TOOL_UNKNOWN', `unknown tool: ${wire} — ${e.reason}`, e.status);
+      throw e;
+    }
     const decl = info.members.find(x => x.name === m);
     if (!decl) throw new ConductorError('TOOL_UNKNOWN', `unknown tool: ${wire} — plugin '${id}' no longer provides '${m}'`, 404);
     const bad = validateArgs(decl.inputSchema, args, wire);
     if (bad) throw new ConductorError('ARGS_INVALID', bad, 400);
     const obj = await load(id, info);
-    const fn = obj[m];
-    if (typeof fn !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no function '${m}'`));
-    return Reflect.apply(fn, obj, [args ?? {}]);
+    // An own property only: a name the object merely inherits (`toString`,
+    // `constructor`, …) is not an implementation.
+    if (!Object.hasOwn(obj, m) || typeof obj[m] !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no own function '${m}'`));
+    return Reflect.apply(obj[m] as (...a: unknown[]) => unknown, obj, [args ?? {}]);
   };
 
   const call: CallFn = async (name, args = {}) => {

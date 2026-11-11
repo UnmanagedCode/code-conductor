@@ -42,6 +42,15 @@ function methodOf(wire: string, ns: string | null, tool: string): string {
   return `cc['${wire.slice(0, wire.indexOf(PLUGIN_SEP))}']['${tool}']`;
 }
 
+// How a program spells the call, `(args)` included: what the run_code-only
+// refusal tells a caller who used the wire name outside a program.
+export function callSpellingOf(wire: string): string {
+  const sep = wire.indexOf(PLUGIN_SEP);
+  const ns = wire.slice(0, sep).replaceAll('-', '_');
+  const m = methodOf(wire, ns, wire.slice(sep + PLUGIN_SEP.length));
+  return RESERVED_METHODS.includes(ns) ? m : `${m}(args)`;
+}
+
 function signatureOf(t: ToolView, ns: string | null, tool: string): string {
   const fnName = tool.replace(/[^A-Za-z0-9_$]/g, '_').replace(/^(\d)/, '_$1');
   try {

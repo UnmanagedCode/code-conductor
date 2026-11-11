@@ -357,8 +357,8 @@ function validateRunCode(value: unknown, mcp: PluginMcp | null, errors: string[]
       for (const k of Object.keys(member)) {
         if (!['name', 'description', 'inputSchema', 'outputSchema'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
       }
-      if (typeof member.name !== 'string' || !RUN_CODE_MEMBER_NAME_RE.test(member.name) || member.name === 'then') {
-        errors.push(`'${label}.name' is required and must match ${RUN_CODE_MEMBER_NAME_RE.source} (not 'then')`);
+      if (typeof member.name !== 'string' || !RUN_CODE_MEMBER_NAME_RE.test(member.name) || member.name === 'then' || Object.hasOwn(Object.prototype, member.name)) {
+        errors.push(`'${label}.name' is required and must match ${RUN_CODE_MEMBER_NAME_RE.source} (not 'then' or an Object.prototype property name)`);
       } else if (seen.has(member.name)) {
         errors.push(`duplicate runCode member '${member.name}'`);
       } else {
@@ -894,6 +894,10 @@ function checkSchemaSubset(schema: unknown, label: string, errors: string[]): vo
       if (FORBIDDEN_SCHEMA_KEYS.includes(k)) errors.push(`'${pl}' uses unsupported '${k}'`);
       else if (k === 'properties') errors.push(`'${pl}' uses nested 'properties' (nested object validation is unsupported)`);
       else if (!ALLOWED_PROP_KEYS.has(k)) errors.push(`'${pl}' has unsupported key '${k}'`);
+    }
+    if (typeof specRec.pattern === 'string') {
+      try { new RegExp(specRec.pattern); }
+      catch (e) { errors.push(`'${pl}.pattern' is not a valid regular expression: ${(e as Error).message}`); }
     }
     if (specRec.items !== undefined) {
       if (typeof specRec.items !== 'object' || specRec.items === null || Array.isArray(specRec.items)) {

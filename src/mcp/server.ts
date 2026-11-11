@@ -27,7 +27,7 @@ import { createCallStream } from './callStream.ts';
 import { createRunRegistry, type RunOutcome } from '../codeMode/runs.ts';
 import { RUN_TOKEN_HEADER } from '../codeMode/runtimeApi.ts';
 import { RUN_RESULT_BODY_LIMIT_BYTES } from '../codeMode/limits.ts';
-import { describeToolsTool } from '../codeMode/describeTools.ts';
+import { describeToolsTool, callSpellingOf } from '../codeMode/describeTools.ts';
 import type { CodeModeCtx, ProgressTiming, RunCodeMember } from '../codeMode/ctx.ts';
 import { toolUseIdOf } from '../toolResultNudges.ts';
 import { isConductorInstance } from '../conduct.ts';
@@ -383,7 +383,7 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
     const member = typeof name === 'string' ? runCodeMemberOf(name, ctx) : null;
     if (member) {
       return { kind: 'fault', code: 'TOOL_UNKNOWN', tool: null,
-        reason: `'${name}' is callable only from inside a run_code program, as cc.${member.id.replaceAll('-', '_')}.${member.name}(args)` };
+        reason: `'${name}' is callable only from inside a run_code program, as ${callSpellingOf(name as string)}` };
     }
     return { kind: 'fault', code: 'TOOL_UNKNOWN', reason: `unknown tool: ${name}`, tool: null };
   }

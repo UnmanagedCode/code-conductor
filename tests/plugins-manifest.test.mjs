@@ -791,3 +791,20 @@ test('runCode: a manifest whose module file is missing is invalid at readManifes
   assert.equal(r.errors, undefined);
   assert.equal(r.manifest.runCode.module, 'run-code/index.mjs');
 });
+
+// PINS: a member named like an Object.prototype own property is refused with an error naming the path.
+test('runCode: a member named after an Object.prototype property is invalid', () => {
+  for (const name of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'isPrototypeOf']) {
+    assert.ok(rcErrs(rc({}, [member({ name })])).some(e => e.startsWith("'runCode.members[0].name'")), name);
+  }
+  assert.equal(validateManifest(base(rc({}, [member({ name: 'tostring' })]))).errors, undefined);
+});
+
+// PINS: an inputSchema `pattern` that does not compile makes the manifest invalid, for a member and for an mcp tool, naming the property path.
+test('inputSchema: an uncompilable pattern is refused under the property path (member and tool)', () => {
+  const bad = { type: 'object', properties: { a: { type: 'string', pattern: '(' } } };
+  const m = rcErrs(rc({}, [member({ inputSchema: bad })]));
+  assert.ok(m.some(e => e.startsWith("'runCode.members[0].inputSchema.properties.a.pattern'")), JSON.stringify(m));
+  const t = validateManifest(base({ backend: { start: 'x' }, mcp: { endpoint: '/m', tools: [{ name: 't', description: 'd', inputSchema: bad }] } })).errors ?? [];
+  assert.ok(t.some(e => e.startsWith("'mcp.tools[0].inputSchema.properties.a.pattern'")), JSON.stringify(t));
+});
