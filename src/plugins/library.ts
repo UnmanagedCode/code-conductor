@@ -202,6 +202,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     description: 'Shows conductor sessions as a Gantt chart: one bar per session, grouped by project, conductor, section lead and worker, with the links between them.',
     repo: 'https://github.com/UnmanagedCode/code-gantt',
   },
+  {
+    id: 'code-skill',
+    name: 'Code Skill',
+    description: 'Inventory, usage analytics and safe authoring of the Claude Code skills your cc sessions get: what each costs in the system prompt and which ones ever fire.',
+    repo: 'https://github.com/UnmanagedCode/code-skill',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
