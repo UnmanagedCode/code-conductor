@@ -17,6 +17,7 @@ vi.mock('@shared/capabilities', () => ({
 }));
 
 import { DialogsHost } from './DialogsHost';
+import { selectInstance } from '@/app/controller';
 import { closeDialog, dialogStore, openSpawnDialog } from './api';
 import { appStore } from '@/state/app';
 import { modelsSignal } from '@/app/models';
@@ -313,5 +314,105 @@ describe('spawn dialog options', () => {
       act(() => closeDialog('spawn'));
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     }
+  });
+});
+
+describe('spawn dialog worktree hook result', () => {
+  function hookRoutes(hook: unknown) {
+    return routeFetch({
+      'POST /api/instances': () => ({ json: { id: 'i1', worktree: { worktreeName: 'wt', postWorktreeCreate: hook } } }),
+      'GET /api/settings/spawn': () => ({ json: { debugByDefault: false } }),
+    });
+  }
+  async function spawnWith(hook: unknown) {
+    hookRoutes(hook);
+    render(<DialogsHost />);
+    act(() => openSpawnDialog('p'));
+    fireEvent.click(await screen.findByRole('button', { name: /Start session/ }));
+  }
+  const hookRow = () => document.querySelector<HTMLElement>('[data-hook-tone]');
+  const hookOutput = () => document.querySelector('[data-hook-output]');
+  const hookTrigger = () => screen.getByRole('button', { name: /Worktree hook/ });
+  /** The report is shown in place, with only Done left. */
+  async function stayedOpen(label: RegExp) {
+    await screen.findByText(label);
+    expect(dialogStore.get().spawn).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Start session/ })).toBeNull();
+  }
+
+  it('a hook that ran and succeeded is shown as success, collapsed, with its output behind the trigger', async () => {
+    // A ran:true exit-0 hook keeps the dialog open, tones success, starts collapsed and expands to its output.
+    await spawnWith({ ran: true, exitCode: 0, durationMs: 5, output: 'installed' });
+    await stayedOpen(/Worktree hook: exit 0 \(5ms\)/);
+    expect(hookRow()?.dataset.hookTone).toBe('success');
+    expect(hookTrigger().getAttribute('aria-expanded')).toBe('false');
+    expect(hookOutput()).toBeNull();
+    fireEvent.click(hookTrigger());
+    expect(hookOutput()?.textContent).toBe('installed');
+  });
+
+  it('a hook that ran and failed is shown as a warning, expanded on its output', async () => {
+    // A ran:true non-zero hook keeps the dialog open, tones warning and opens expanded on its output.
+    await spawnWith({ ran: true, exitCode: 1, durationMs: 12, output: 'boom' });
+    await stayedOpen(/Worktree hook: exit 1 \(12ms\)/);
+    expect(hookRow()?.dataset.hookTone).toBe('warning');
+    expect(hookTrigger().getAttribute('aria-expanded')).toBe('true');
+    expect(hookOutput()?.textContent).toBe('boom');
+  });
+
+  it('a store hook refused as local-only is shown as a static warning line', async () => {
+    // A STORE_HOOK_LOCAL_ONLY skip keeps the dialog open as a warning line with no expandable part.
+    await spawnWith({ ran: false, source: 'store', skipped: 'STORE_HOOK_LOCAL_ONLY' });
+    await stayedOpen(/Worktree hook: not run — a store hook runs only on this machine/);
+    expect(hookRow()?.dataset.hookTone).toBe('warning');
+    expect(hookOutput()).toBeNull();
+    expect(screen.queryByRole('button', { name: /Worktree hook/ })).toBeNull();
+  });
+
+  it('a disabled hook is shown as a static neutral line', async () => {
+    // A `disabled` skip keeps the dialog open as a neutral line — neither success nor warning — with no expandable part.
+    await spawnWith({ ran: false, skipped: 'disabled' });
+    await stayedOpen(/Worktree hook: disabled/);
+    expect(hookRow()?.dataset.hookTone).toBe('neutral');
+    expect(hookOutput()).toBeNull();
+    expect(screen.queryByRole('button', { name: /Worktree hook/ })).toBeNull();
+  });
+
+  it('a hook that errored without running is shown as a warning, expanded on its message', async () => {
+    // A ran:false error keeps the dialog open, tones warning and opens expanded on the error message.
+    await spawnWith({ ran: false, error: true, output: 'EACCES: stat failed' });
+    await stayedOpen(/Worktree hook: failed/);
+    expect(hookRow()?.dataset.hookTone).toBe('warning');
+    expect(hookTrigger().getAttribute('aria-expanded')).toBe('true');
+    expect(hookOutput()?.textContent).toBe('EACCES: stat failed');
+  });
+
+  it('no hook found closes the dialog and shows no hook row', async () => {
+    // A bare {ran:false} closes the dialog as a plain spawn does.
+    await spawnWith({ ran: false });
+    await closed();
+    expect(selectInstance).toHaveBeenCalledWith('i1', expect.anything());
+    expect(screen.queryByText(/Worktree hook/)).toBeNull();
+  });
+
+  it('a null hook report closes the dialog and shows no hook row', async () => {
+    // A null postWorktreeCreate closes the dialog as a plain spawn does.
+    await spawnWith(null);
+    await closed();
+    expect(selectInstance).toHaveBeenCalledWith('i1', expect.anything());
+    expect(screen.queryByText(/Worktree hook/)).toBeNull();
+  });
+
+  it('a hook report shown on one open is gone on the next open', async () => {
+    // The hook row and the Done-only footer belong to one open; a reopen starts on a fresh form.
+    await spawnWith({ ran: false, skipped: 'disabled' });
+    await stayedOpen(/Worktree hook: disabled/);
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await closed();
+    act(() => openSpawnDialog('p'));
+    expect(await screen.findByRole('button', { name: /Start session/ })).toBeTruthy();
+    expect(hookRow()).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Done' })).toBeNull();
   });
 });

@@ -1,7 +1,8 @@
 // New session in a project: capability tier, Plan/Code, and advanced options
 // (effort, thinking, worktree, temp, debug). Sends a `tier` — never a model or
-// backend — so the server resolves the tier's binding at spawn time. A
-// postWorktreeCreate hook's result is shown in place after a successful spawn.
+// backend — so the server resolves the tier's binding at spawn time. After a
+// successful spawn, a postWorktreeCreate hook that ran, was skipped or errored
+// is reported in place; the dialog closes when no hook exists.
 import * as React from 'react';
 import { ChevronRightIcon, GitBranchIcon, LoaderCircleIcon, SparklesIcon, TerminalIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -28,6 +29,8 @@ import { FormError } from './FormError';
 import { useOpenKey } from './useOpenKey';
 
 const DEFAULT_EFFORT = '__default__';
+
+const TONE_CLASS = { warning: 'text-warning', success: 'text-success', neutral: 'text-muted-foreground' } as const;
 
 /** The tier a new session starts on: the default spawn tier if enabled, else the first enabled one. */
 export function defaultSpawnTier(): string {
@@ -112,7 +115,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
       await refreshInstances();
       if (!gestureOvertaken(gesture)) selectInstance(inst.id, { userGesture: true, gesture });
       const h: PostWorktreeHook | null | undefined = inst.worktree?.postWorktreeCreate;
-      if (h?.ran) setHook(h);
+      if (h && (h.ran || h.skipped || h.error)) setHook(h);
       else closeDialog('spawn');
     } catch (e: any) {
       setError(e.message);
@@ -122,6 +125,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
   }
 
   const hookLabel = hook && hookResultLabel(hook);
+  const tone = !hook ? null : hookFailed(hook) ? 'warning' : hook.ran ? 'success' : 'neutral';
 
   return (
     <form
@@ -221,17 +225,21 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
 
       <FormError>{error}</FormError>
 
-      {hook && (
-        <Collapsible defaultOpen={hookFailed(hook)} className="rounded-xl border">
-          <CollapsibleTrigger className={cn('group/hook flex w-full items-center gap-2 px-3 py-2 text-left text-sm', hookFailed(hook) ? 'text-warning' : 'text-success')}>
+      {hook && tone && (hook.output ? (
+        <Collapsible defaultOpen={hookFailed(hook)} className="rounded-xl border" data-hook-tone={tone}>
+          <CollapsibleTrigger className={cn('group/hook flex w-full items-center gap-2 px-3 py-2 text-left text-sm', TONE_CLASS[tone])}>
             <TerminalIcon className="size-4" /> Worktree hook: {hookLabel}
             <ChevronRightIcon className="ml-auto size-4 transition-transform group-data-[state=open]/hook:rotate-90" />
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <pre className="max-h-60 overflow-auto border-t bg-muted/40 px-3 py-2 font-mono text-xs whitespace-pre-wrap" data-hook-output>{hook.output || ''}</pre>
+            <pre className="max-h-60 overflow-auto border-t bg-muted/40 px-3 py-2 font-mono text-xs whitespace-pre-wrap" data-hook-output>{hook.output}</pre>
           </CollapsibleContent>
         </Collapsible>
-      )}
+      ) : (
+        <div data-hook-tone={tone} className={cn('flex items-center gap-2 rounded-xl border px-3 py-2 text-sm', TONE_CLASS[tone])}>
+          <TerminalIcon className="size-4" /> Worktree hook: {hookLabel}
+        </div>
+      ))}
 
       <DialogFooter>
         {hook ? (
