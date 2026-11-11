@@ -49,6 +49,12 @@ export function contributions(row: PluginRow): string[] {
 export const isUsable = (row: PluginRow) => !['invalid', 'incompatible', 'conflict'].includes(row.state);
 export const backendLocalOnly = (row: PluginRow) => (Array.isArray(row.localOnly) ? row.localOnly : []).includes('PLUGIN_BACKEND_LOCAL_ONLY');
 
+/** A plugin showing a per-row Restart: running, with code moved past its started-at sha. */
+export const canRestart = (row: PluginRow) =>
+  isUsable(row) && !!row.enabled && !!row.hasBackend && !backendLocalOnly(row) && row.state === 'ready' && !!row.stale;
+/** What Restart all would restart. */
+export const restartableRows = (rows: PluginRow[] | null) => (rows || []).filter(canRestart);
+
 /** A succeeded update can still need the user's attention: a failed hook wins over a failed restart. */
 export function updateWarning(name: string, result: UpdateResult): { text: string; tail?: string } | null {
   const hookFailed = !!result.postPull?.ran && !result.postPull.ok;

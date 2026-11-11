@@ -11,7 +11,7 @@ import { ApiError } from '@shared/http';
 import { json, post, errText, streamAction, capLog } from './api';
 import { notifyPluginsChanged, type PluginsChange } from './pluginsSignal';
 import {
-  backendLocalOnly, contributions, hookWarning, isUsable, metaBits, updatableEntries, updateChange, updateWarning,
+  backendLocalOnly, canRestart, contributions, hookWarning, isUsable, metaBits, restartableRows, updatableEntries, updateChange, updateWarning,
   type LibraryEntry, type PluginRow, type UpdateResult,
 } from './pluginLogic';
 import { createStore, useStore } from '@/state/createStore';
@@ -48,10 +48,11 @@ type PluginsState = {
   acting: Acting | null;
   busyEntry: { id: string; label: string } | null;
   updatingAll: string | null;
+  restartingAll: string | null;
 };
 const PLUGINS0: PluginsState = {
   rows: null, worktrees: {}, library: null, loaded: { text: 'Loading…' }, libLoaded: { text: 'Loading…' },
-  note: null, libNote: null, libTail: '', live: {}, busy: false, acting: null, busyEntry: null, updatingAll: null,
+  note: null, libNote: null, libTail: '', live: {}, busy: false, acting: null, busyEntry: null, updatingAll: null, restartingAll: null,
 };
 
 // The section's lists, status lines, output and running action live at module
@@ -203,6 +204,38 @@ async function updateAll() {
   }
 }
 
+async function restartAll() {
+  const targets = restartableRows(pluginsStore.get().rows);
+  if (!targets.length || !claim()) return;
+  const outcomes: { id: string; error?: string }[] = [];
+  try {
+    for (const [i, row] of targets.entries()) {
+      pluginsStore.set({
+        restartingAll: `Restarting ${i + 1}/${targets.length}…`,
+        acting: { id: row.id, action: 'restart' },
+        note: { text: `Restarting ${row.id} (${i + 1}/${targets.length})…` },
+      });
+      try {
+        await post(`/api/plugins/${row.id}/restart`);
+        outcomes.push({ id: row.id });
+      } catch (e) {
+        outcomes.push({ id: row.id, error: errText(e) });
+      }
+    }
+    pluginsStore.set({ acting: null });
+    const reloaded = await loadPlugins(true);
+    const okIds = outcomes.filter((o) => !o.error).map((o) => o.id);
+    if (okIds.length) notifyPluginsChanged({ action: 'restart', ids: okIds });
+    const failures = outcomes.filter((o) => o.error);
+    let text = `Restarted ${okIds.length} of ${targets.length} plugin${targets.length === 1 ? '' : 's'}${failures.length ? ` — ${failures.map((f) => `${f.id} failed: ${f.error}`).join('; ')}` : ''}`;
+    // The summary would otherwise cover the reload's own error on the shared Installed line.
+    if (!reloaded) text += ` — ${pluginsStore.get().loaded?.text}`;
+    pluginsStore.set({ note: { text, error: failures.length > 0 || !reloaded } });
+  } finally {
+    pluginsStore.set({ restartingAll: null, acting: null, busy: false });
+  }
+}
+
 /** Update all as either Settings page offers it: how many entries a run would update, its progress label while one runs, and whether any plugin action holds the guard. */
 export function useUpdateAllPlugins() {
   const updatable = useStore(pluginsStore, (s) => updatableEntries(s.library).length);
@@ -214,6 +247,8 @@ export function useUpdateAllPlugins() {
 export function PluginsSection() {
   const { rows, worktrees, library, loaded, libLoaded, note, libNote, libTail, live, acting, busyEntry } = useStore(pluginsStore, (s) => s);
   const { updatable, progress: updatingAll, locked, run: runUpdateAll } = useUpdateAllPlugins();
+  const restartable = useStore(pluginsStore, (s) => restartableRows(s.rows).length);
+  const restartingAll = useStore(pluginsStore, (s) => s.restartingAll);
   React.useEffect(() => { void loadPlugins(false); }, []);
   const status = note ?? loaded;
   const libStatus = libNote ?? libLoaded;
@@ -228,7 +263,16 @@ export function PluginsSection() {
       </SectionIntro>
       <SettingsCard
         title="Installed"
-        action={<Button variant="outline" size="sm" disabled={locked} onClick={() => void act('Rescanning', { id: null, action: 'rescan' }, () => post('/api/plugins/rescan'))} title="Re-scan every project for conductor.plugin.json manifests">{label(null, 'rescan', <RefreshCwIcon />, 'Rescan')}</Button>}
+        action={
+          <div className="flex flex-wrap justify-end gap-2">
+            {(restartable > 0 || restartingAll !== null) && (
+              <Button variant="outline" size="sm" disabled={locked} onClick={() => void restartAll()} title="Restart every running plugin whose code moved past the commit it started at, one at a time">
+                {restartingAll ?? `Restart all (${restartable})`}
+              </Button>
+            )}
+            <Button variant="outline" size="sm" disabled={locked} onClick={() => void act('Rescanning', { id: null, action: 'rescan' }, () => post('/api/plugins/rescan'))} title="Re-scan every project for conductor.plugin.json manifests">{label(null, 'rescan', <RefreshCwIcon />, 'Rescan')}</Button>
+          </div>
+        }
       >
         <Status text={status?.text} tone={status?.error ? 'error' : 'muted'} />
         <div className="grid gap-3" data-testid="plugin-list">
@@ -268,7 +312,7 @@ export function PluginsSection() {
                             {row.state === 'ready' || row.state === 'starting' ? (
                               <>
                                 <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Stopping ${row.id}`, { id: row.id, action: 'stop' }, () => post(`/api/plugins/${row.id}/stop`))}>{label(row.id, 'stop', <SquareIcon />, 'Stop')}</Button>
-                                {row.state === 'ready' && row.stale && (
+                                {canRestart(row) && (
                                   <Button size="sm" variant="outline" disabled={locked} onClick={() => void act(`Restarting ${row.id}`, { id: row.id, action: 'restart' }, () => post(`/api/plugins/${row.id}/restart`), { action: 'restart', ids: [row.id] })}>{label(row.id, 'restart', <RotateCwIcon />, 'Restart')}</Button>
                                 )}
                               </>
