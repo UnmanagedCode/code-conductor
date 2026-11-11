@@ -1371,3 +1371,184 @@ describe('Plugins → auto-start', () => {
     await waitFor(() => expect(autoStartSwitch('pl2')!.disabled).toBe(false));
   });
 });
+
+// Restart all: one running, stale, backend plugin per target, and one row for each way a plugin can fail the per-row Restart's conditions.
+const KB: PluginRow = { ...KA, id: 'kb', name: 'KB', project: 'kbproj' };
+const FRESH: PluginRow = { ...KA, id: 'fresh', name: 'Fresh', project: 'freshproj', stale: false };
+const STOPPED_STALE: PluginRow = { ...KA, id: 'stopped-stale', name: 'Stopped Stale', project: 'ssproj', state: 'stopped' };
+const NOBACK: PluginRow = { ...KA, id: 'noback', name: 'Noback', project: 'nbproj', hasBackend: false };
+const LOCAL: PluginRow = { ...KA, id: 'local', name: 'Local', project: 'localproj', localOnly: ['PLUGIN_BACKEND_LOCAL_ONLY'] };
+const DISABLED: PluginRow = { ...KA, id: 'disabled', name: 'Disabled', project: 'disproj', enabled: false };
+const NON_TARGETS = [FRESH, STOPPED_STALE, NOBACK, LOCAL, DISABLED];
+const RESTART_ALL_TITLE = 'Restart every running plugin whose code moved past the commit it started at, one at a time';
+const queryRestartAll = () => screen.queryByTitle(RESTART_ALL_TITLE) as HTMLButtonElement | null;
+const restartAllButton = () => screen.getByTitle(RESTART_ALL_TITLE) as HTMLButtonElement;
+const restartPosts = () => calls.filter((c) => c.method === 'POST' && /^\/api\/plugins\/[^/]+\/restart$/.test(c.url)).map((c) => c.url);
+
+describe('Plugins → Restart all', () => {
+  // The bulk count is the per-row Restart's own condition: the button is hidden with no restartable plugin, and with a mix its count equals the rows showing Restart.
+  it('Restart all is hidden with nothing restartable and counts exactly the rows showing a per-row Restart', async () => {
+    rows = NON_TARGETS;
+    serve({ 'POST /api/plugins/rescan': () => ({ ok: true }) });
+    wrap();
+    await waitFor(() => expect(pluginsLine()).toMatch(/^5\b/));
+    expect(queryRestartAll()).toBeNull();
+
+    rows = [KA, KB, ...NON_TARGETS];
+    fireEvent.click(button('Rescan'));
+    await waitFor(() => expect(queryRestartAll()).not.toBeNull());
+    expect(restartAllButton().textContent).toMatch(/^Restart all \(2\)$/);
+    expect(restartAllButton().disabled).toBe(false);
+    for (const r of [KA, KB, ...NON_TARGETS]) expect(pluginButtons(r.id).includes('Restart')).toBe(r === KA || r === KB);
+  });
+
+  // Targets restart in list order, one at a time, with progress on the button, the row and the line; non-targets are never POSTed; one reload after the last; one change naming the restarted ids.
+  it('Restart all restarts only the restartable plugins one at a time, reloads once and announces one change', async () => {
+    rows = [KA, ...NON_TARGETS, KB];
+    const ha = heldJson();
+    const hb = heldJson();
+    serve({ 'POST /api/plugins/ka/restart': () => ha.response, 'POST /api/plugins/kb/restart': () => hb.response });
+    wrap();
+    await waitFor(() => expect(queryRestartAll()).not.toBeNull());
+    const v0 = pluginsChangedSignal.version();
+
+    fireEvent.click(restartAllButton());
+    await waitFor(() => expect(restartAllButton().textContent).toMatch(/1\/2/));
+    expect(restartAllButton().disabled).toBe(true);
+    expect(restartPosts()).toEqual(['/api/plugins/ka/restart']);
+    expect(rowBtn('ka', 'Restarting…').disabled).toBe(true);
+    expect(rowBtn('kb', 'Restart').disabled).toBe(true);
+    expect(pluginsLine()).toMatch(/Restarting ka \(1\/2\)/);
+    expect(pluginsTone()).toBe('muted');
+
+    await act(async () => ha.release({}));
+    await waitFor(() => expect(restartAllButton().textContent).toMatch(/2\/2/));
+    expect(restartPosts()).toEqual(['/api/plugins/ka/restart', '/api/plugins/kb/restart']);
+    expect(pluginsLine()).toMatch(/Restarting kb \(2\/2\)/);
+
+    rows = [{ ...KA, stale: false }, ...NON_TARGETS, { ...KB, stale: false }];
+    await act(async () => hb.release({}));
+    await waitFor(() => expect(pluginsLine()).toMatch(/^Restarted 2 of 2 plugins$/));
+    expect(pluginsTone()).toBe('muted');
+    expect(restartPosts().length).toBe(2);
+    const first = postIndex('/api/plugins/ka/restart');
+    const reloads = calls.flatMap((c, i) => (i > first && c.method === 'GET' && c.url === '/api/plugins' ? [i] : []));
+    expect(reloads.length).toBe(1);
+    expect(reloads[0]).toBeGreaterThan(postIndex('/api/plugins/kb/restart'));
+    expect(pluginsChangedSignal.version()).toBe(v0 + 1);
+    expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'restart', ids: ['ka', 'kb'] });
+    expect(queryRestartAll()).toBeNull();
+  });
+
+  // Restart all shares the one-action guard: it locks every other control (Update all included) while it runs, and Update all's run locks it in turn.
+  it('Restart all and Update all lock each other and every plugin control while either runs', async () => {
+    rows = [KA, PL, OFF];
+    library = [INSTALLED, OTHER];
+    const h = heldJson();
+    serve({ 'POST /api/plugins/ka/restart': () => h.response, 'POST /api/plugins/rescan': () => ({ ok: true }) });
+    wrap();
+    await waitFor(() => expect(libLine()).toMatch(/^2\b/));
+    fireEvent.click(restartAllButton());
+    await waitFor(() => expect(restartAllButton().textContent).toMatch(/1\/1/));
+    for (const b of [button('Rescan'), rowBtn('ka', 'Stop'), kaSelect(), rowBtn('ka', 'Disable'), rowBtn('pl', 'Start'), rowBtn('off', 'Enable'), entryButton('code-share', 'Update'), entryButton('other', 'Install'), updateAllButton()]) {
+      expect(b.disabled).toBe(true);
+    }
+    fireEvent.click(updateAllButton());
+    await act(async () => {});
+    expect(streams.length).toBe(0);
+
+    rows = [{ ...KA, stale: false }, PL, OFF];
+    await act(async () => h.release({}));
+    await waitFor(() => expect(pluginsLine()).toMatch(/^Restarted 1 of 1 plugin$/));
+    for (const b of [button('Rescan'), rowBtn('ka', 'Stop'), kaSelect(), rowBtn('pl', 'Start'), entryButton('code-share', 'Update'), updateAllButton()]) {
+      expect(b.disabled).toBe(false);
+    }
+
+    rows = [KA, PL, OFF];
+    fireEvent.click(button('Rescan'));
+    await waitFor(() => expect(queryRestartAll()).not.toBeNull());
+    const before = restartPosts().length;
+    fireEvent.click(updateAllButton());
+    const s0 = await streamAt(0);
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/1\/1/));
+    expect(restartAllButton().disabled).toBe(true);
+    expect(restartAllButton().textContent).toMatch(/\(1\)/);
+    fireEvent.click(restartAllButton());
+    await act(async () => {});
+    expect(restartPosts().length).toBe(before);
+    library = [UP_TO_DATE, OTHER];
+    await finish(s0, ok({ project: 'code-share', postPull: null, restarted: null }));
+    await waitFor(() => expect(updateAllButton().textContent).toMatch(/^Update all\D*$/));
+  });
+
+  // A failed restart does not stop the run: the summary counts the successes, names the failure with its cause in the error tone, and announces only the successes; a lone failure announces nothing.
+  it('Restart all continues past a failed restart and names it; a run with no success announces nothing', async () => {
+    rows = [KA, KB];
+    let kaStatus = 409;
+    serve({
+      'POST /api/plugins/ka/restart': () => (kaStatus === 409 ? { status: 409, json: { error: "plugin 'ka' is not running" } } : {}),
+      'POST /api/plugins/kb/restart': () => { rows = [KA, { ...KB, stale: false }]; return {}; },
+    });
+    wrap();
+    await waitFor(() => expect(queryRestartAll()).not.toBeNull());
+    const v0 = pluginsChangedSignal.version();
+    fireEvent.click(restartAllButton());
+    await waitFor(() => expect(pluginsLine()).toMatch(/^Restarted 1 of 2/));
+    expect(pluginsLine()).toMatch(/ka failed: .*not running/);
+    expect(pluginsTone()).toBe('error');
+    expect(restartPosts()).toEqual(['/api/plugins/ka/restart', '/api/plugins/kb/restart']);
+    expect(pluginsChangedSignal.version()).toBe(v0 + 1);
+    expect(pluginsChangeStore.get().lastChange).toEqual({ action: 'restart', ids: ['kb'] });
+    expect(restartAllButton().textContent).toMatch(/\(1\)/);
+    expect(restartAllButton().disabled).toBe(false);
+
+    fireEvent.click(restartAllButton());
+    await waitFor(() => expect(pluginsLine()).toMatch(/^Restarted 0 of 1 plugin —/));
+    expect(pluginsChangedSignal.version()).toBe(v0 + 1);
+  });
+
+  // A section switch or reopened Settings mid-run reloads the list but re-arms nothing and does not change what the run restarts: the snapshot taken at click time stands. A reload leaving no restartable row still keeps the button shown, disabled, with its progress.
+  it('a reload during Restart all keeps it running and locked, and restarts only the click-time targets', async () => {
+    rows = [KA, KB];
+    const ha = heldJson();
+    const hb = heldJson();
+    serve({ 'POST /api/plugins/ka/restart': () => ha.response, 'POST /api/plugins/kb/restart': () => hb.response });
+    openAt('#settings/plugins');
+    await waitFor(() => expect(queryRestartAll()).not.toBeNull());
+    fireEvent.click(restartAllButton());
+    await waitFor(() => expect(restartAllButton().textContent).toMatch(/1\/2/));
+
+    // Every target reads fresh after the reload: only the in-progress term keeps the button shown.
+    rows = [{ ...KA, stale: false }, { ...KB, stale: false }];
+    await switchTo('archived');
+    await switchTo('plugins');
+    await waitFor(() => expect(gets('/api/plugins')).toBe(2));
+    await waitFor(() => expect(restartAllButton().textContent).toMatch(/1\/2/));
+    expect(restartAllButton().disabled).toBe(true);
+    expect(pluginsLine()).toMatch(/Restarting ka \(1\/2\)/);
+
+    await act(async () => ha.release({}));
+    await waitFor(() => expect(posts('/api/plugins/kb/restart').length).toBe(1));
+    rows = [{ ...KA, stale: false }, { ...KB, stale: false }];
+    await act(async () => hb.release({}));
+    await waitFor(() => expect(pluginsLine()).toMatch(/^Restarted 2 of 2/));
+  });
+
+  // A closing reload that fails leaves the pre-run list: the summary is error-toned and carries the reload's error, and Restart all is offered again from the old rows.
+  it('Restart all reports a failed closing reload and stays offered from the pre-run rows', async () => {
+    rows = [KA];
+    let down = false;
+    serve({
+      'GET /api/plugins': () => (down ? { status: 500, json: { error: 'plugins unavailable' } } : { rows, notices: [] }),
+      'POST /api/plugins/ka/restart': () => { down = true; return {}; },
+    });
+    wrap();
+    await waitFor(() => expect(queryRestartAll()).not.toBeNull());
+    fireEvent.click(restartAllButton());
+    await waitFor(() => expect(pluginsLine()).toMatch(/^Restarted 1 of 1 plugin/));
+    expect(pluginsLine()).toMatch(/plugins unavailable/);
+    expect(pluginsTone()).toBe('error');
+    expect(restartAllButton().textContent).toMatch(/\(1\)/);
+    expect(restartAllButton().disabled).toBe(false);
+  });
+});
