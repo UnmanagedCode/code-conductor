@@ -44,10 +44,10 @@ Reported as `postWorktreeCreate` (spawn and `create_worktree` results) and `post
 | `truncated: true` | `output` is the tail only (`HOOK_OUTPUT_CAP`, 16 KB) |
 
 - A hook never fails its operation: the worktree stays created and the merge stays landed (`ok: true`) whatever the hook reports.
-- The create result is also kept on the session: a session spawned with a worktree carries it as `worktree.postWorktreeCreate` in `list_sessions` / `describe_session` and every client's session list, so a worker or conductor can read it there later.
+- Read the create result in the response that created the worktree: `create_worktree`'s `postWorktreeCreate`, or `spawn_instance({createWorktree:true})`'s `worktree.postWorktreeCreate`. `list_sessions` / `describe_session` don't show it. It is `null` on a spawn into an existing worktree and on a resume.
 - The merge result is only returned to the caller, never stored.
 - The web UI shows a create result in the spawn dialog when `ran` is true, and a merge result in the merge toast, whose failure warning quotes only the last lines of `output`. **Print the line that matters last.**
-- **Never print secrets**: a create hook's `output` reaches every client that lists the session.
+- **Never print secrets**: a create hook's `output` is also served in the web UI's session list (`GET /api/instances`).
 - A merge waits for its hook inside the server's HTTP request timeout (300 s, Node's default `requestTimeout`): a merge timeout raised past it drops the merge response while the merge has still landed.
 
 ## Placement: in-repo vs out-of-repo
@@ -139,8 +139,8 @@ done
 
 - Keep the tracked `.sh` a shim: `exec "${CC_SERVER_NODE:-node}" <tracked program> "${CC_PRE_MERGE_SHA:?}" "${CC_POST_MERGE_SHA:?}"`.
 - The program diffs `PRE..POST`, does nothing when the target is a linked worktree (`git rev-parse --git-dir` ≠ `--git-common-dir`) or nothing relevant changed, otherwise chooses between applying now and preparing for the next start. It writes only ignored paths and prints one line naming the action and why.
-- When the project is cc itself, `CC_SERVER_BOOT_SHA` is what tells "apply now" from "prepare for the next start": the running server's code is that commit, so diff it against `POST` to see whether the change is safe to apply live. With `CC_SERVER_BOOT_UNKNOWN` or neither var set, prepare.
 - The logic is then versioned and unit-testable, and a branch's new logic runs on its own landing.
+- cc's own merge hook has this shape. The boot vars are set only when the merge target is the running server's own checkout, and cc's decision is `decideWebPostMerge`.
 
 ### 4. Merge: reinstall dependencies when they changed
 
