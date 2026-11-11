@@ -58,24 +58,6 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 const PLUGIN_SEP = '__';
 
-// A prototype the engine supplies (Object.prototype, Map.prototype,
-// Function.prototype, …): its own `constructor` is a native function.
-function isIntrinsicPrototype(o: object): boolean {
-  const ctor = Object.getOwnPropertyDescriptor(o, 'constructor')?.value as unknown;
-  return typeof ctor === 'function' && /\[native code\]/.test(Function.prototype.toString.call(ctor));
-}
-
-// Whether `name` is defined by `obj` itself or by a user-defined prototype
-// above it (a class instance's methods live there). The walk stops at the first
-// intrinsic prototype, so a built-in method of the same name is never a member.
-function definedByUserCode(obj: object, name: string): boolean {
-  for (let o: object | null = obj; o !== null; o = Object.getPrototypeOf(o) as object | null) {
-    if (o !== obj && isIntrinsicPrototype(o)) return false;
-    if (Object.hasOwn(o, name)) return true;
-  }
-  return false;
-}
-
 // `cc.<tool>(args)`, `cc.<plugin_ns>.<tool>(args)`, `cc.call(name, args)` and
 // `cc.describe_tools(args)`. `call` is the one dispatcher: a `<id>__<m>` the run
 // snapshot lists as a plugin member runs the member path (callMember); any
@@ -160,11 +142,11 @@ export function createCc(opts: CcOptions): unknown {
     const bad = validateArgs(decl.inputSchema, args, wire);
     if (bad) throw new ConductorError('ARGS_INVALID', bad, 400);
     const obj = await load(id, info);
-    // Resolved along the prototype chain (a class instance's methods live
-    // there), but a built-in prototype's method (`toString`, `Map#get`, …) is
-    // not an implementation.
-    if (!definedByUserCode(obj, m) || typeof obj[m] !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no function '${m}'`));
-    return Reflect.apply(obj[m] as (...a: unknown[]) => unknown, obj, [args ?? {}]);
+    // An ordinary property read: the factory object's own or inherited property
+    // (a class instance's methods live on its prototype).
+    const fn = obj[m];
+    if (typeof fn !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no function '${m}'`));
+    return Reflect.apply(fn, obj, [args ?? {}]);
   };
 
   const call: CallFn = async (name, args = {}) => {

@@ -401,23 +401,6 @@ test('guard: no agent-visible output or refusal reason mentions the mechanism by
   assert.doesNotMatch(JSON.stringify(pre), word);
 });
 
-// PINS: only an OWN function of the factory's object is a member — a declared name the object merely inherits
-// (Object.prototype's toString/constructor/valueOf/hasOwnProperty) is PLUGIN_LOAD_FAILED, never the inherited function.
-test('an inherited function never answers a declared member', async () => {
-  await serve('inherit', 'export default () => ({ own: async () => 1 });', { members: ['own', 'toString', 'constructor', 'valueOf', 'hasOwnProperty'] });
-  const v = value(await run(`
-    const out = {};
-    for (const m of ['toString', 'constructor', 'valueOf', 'hasOwnProperty', 'own']) {
-      try { out[m] = ['resolved', await cc.inherit[m]({})]; } catch (e) { out[m] = [e.code, e.reason]; }
-    }
-    return out;`));
-  for (const m of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
-    assert.equal(v[m][0], 'PLUGIN_LOAD_FAILED', m);
-    assert.match(v[m][1], new RegExp(`^inherit: TypeError: .*'${m}'`), m);
-  }
-  assert.deepEqual(v.own, ['resolved', 1]);
-});
-
 // PINS: a memoized lookup failure is rebuilt per call — each member's refusal names its own wire name.
 test('a memoized lookup failure names the member being called, not the first one', async () => {
   catalog.set('ghost2', [memberDecl('a'), memberDecl('b')]);
@@ -447,16 +430,16 @@ test('the run_code-only refusal uses the describe_tools spelling for a reserved 
 });
 
 // PINS: a class-instance factory result exposes its prototype methods as members, invoked with this = the instance;
-// a declared name the class lacks (or only Object.prototype supplies) is PLUGIN_LOAD_FAILED; a prototype method nobody declared stays unreachable.
-test('a class instance\'s prototype methods are members (this = the instance); Object.prototype names and missing methods still fail', async () => {
+// a declared name the class lacks is PLUGIN_LOAD_FAILED; a prototype method nobody declared stays unreachable.
+test('a class instance\'s prototype methods are members (this = the instance); a missing method still fails', async () => {
   await serve('klass', `class Base { async fromBase() { return 'base:' + this.k; } }
     class Api extends Base { constructor(cc) { super(); this.cc = cc; this.k = 'K'; }
       async hello() { return this.k; }
       async secret() { return 'undeclared'; } }
-    export default (ctx) => new Api(ctx.cc);`, { members: ['hello', 'fromBase', 'missing', 'toString'] });
+    export default (ctx) => new Api(ctx.cc);`, { members: ['hello', 'fromBase', 'missing'] });
   const v = value(await run(`
     const out = {};
-    for (const m of ['hello', 'fromBase', 'missing', 'toString']) {
+    for (const m of ['hello', 'fromBase', 'missing']) {
       try { out[m] = ['ok', await cc.klass[m]({})]; } catch (e) { out[m] = [e.code, e.reason]; }
     }
     return out;`));
@@ -464,7 +447,6 @@ test('a class instance\'s prototype methods are members (this = the instance); O
   assert.deepEqual(v.fromBase, ['ok', 'base:K'], 'inherited from a user base class, this intact');
   assert.equal(v.missing[0], 'PLUGIN_LOAD_FAILED');
   assert.match(v.missing[1], /^klass: TypeError: .*'missing'/);
-  assert.equal(v.toString[0], 'PLUGIN_LOAD_FAILED');
   const body = await run('return await cc.klass.secret({})');
   assert.equal(body.code, 'TOOL_UNKNOWN', 'undeclared: refused by the pre-check');
 });
@@ -477,23 +459,4 @@ test('a null-prototype factory object resolves only what it owns', async () => {
     for (const m of ['here', 'gone']) { try { out.push(await cc.nullproto[m]({})); } catch (e) { out.push(e.code); } }
     return out;`));
   assert.deepEqual(v, ['h', 'PLUGIN_LOAD_FAILED']);
-});
-
-// PINS: a name only a built-in prototype supplies (Map.prototype.get, Function.prototype.call) never answers a declared member —
-// PLUGIN_LOAD_FAILED, not the intrinsic and not a raw engine TypeError — while a user subclass's own method still resolves.
-test('built-in prototypes never supply members: Map, a Map subclass and a Function.prototype object', async () => {
-  await serve('mapres', 'export default () => new Map();', { members: ['get', 'entries'] });
-  await serve('mapsub', `class Api extends Map { async connect() { return 'c'; } }
-    export default () => new Api();`, { members: ['connect', 'get'] });
-  await serve('fnproto', 'export default () => Object.create(Function.prototype);', { members: ['call', 'bind'] });
-  const v = value(await run(`
-    const out = {};
-    for (const [ns, m] of [['mapres', 'get'], ['mapres', 'entries'], ['mapsub', 'connect'], ['mapsub', 'get'], ['fnproto', 'call'], ['fnproto', 'bind']]) {
-      try { out[ns + '.' + m] = ['ok', await cc[ns][m]({})]; } catch (e) { out[ns + '.' + m] = [e.code, e.name]; }
-    }
-    return out;`));
-  for (const k of ['mapres.get', 'mapres.entries', 'mapsub.get', 'fnproto.call', 'fnproto.bind']) {
-    assert.deepEqual(v[k], ['PLUGIN_LOAD_FAILED', 'ConductorError'], k);
-  }
-  assert.deepEqual(v['mapsub.connect'], ['ok', 'c']);
 });
