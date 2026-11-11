@@ -58,6 +58,14 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 const PLUGIN_SEP = '__';
 
+// Whether `name` is a property of `obj` or of a prototype strictly below Object.prototype.
+function definedBelowObjectPrototype(obj: object, name: string): boolean {
+  for (let o: object | null = obj; o !== null && o !== Object.prototype; o = Object.getPrototypeOf(o) as object | null) {
+    if (Object.hasOwn(o, name)) return true;
+  }
+  return false;
+}
+
 // `cc.<tool>(args)`, `cc.<plugin_ns>.<tool>(args)`, `cc.call(name, args)` and
 // `cc.describe_tools(args)`. `call` is the one dispatcher: a `<id>__<m>` the run
 // snapshot lists as a plugin member runs the member path (callMember); any
@@ -142,9 +150,10 @@ export function createCc(opts: CcOptions): unknown {
     const bad = validateArgs(decl.inputSchema, args, wire);
     if (bad) throw new ConductorError('ARGS_INVALID', bad, 400);
     const obj = await load(id, info);
-    // An own property only: a name the object merely inherits (`toString`,
+    // Resolved along the prototype chain (a class instance's methods live
+    // there), but a name only Object.prototype supplies (`toString`,
     // `constructor`, …) is not an implementation.
-    if (!Object.hasOwn(obj, m) || typeof obj[m] !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no own function '${m}'`));
+    if (!definedBelowObjectPrototype(obj, m) || typeof obj[m] !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no function '${m}'`));
     return Reflect.apply(obj[m] as (...a: unknown[]) => unknown, obj, [args ?? {}]);
   };
 

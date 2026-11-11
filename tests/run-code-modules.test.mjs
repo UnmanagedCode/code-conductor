@@ -445,3 +445,36 @@ test('the run_code-only refusal uses the describe_tools spelling for a reserved 
     assert.equal(entry.method, "cc.call('call__m', args)");
   } finally { catalog.delete('call'); }
 });
+
+// PINS: a class-instance factory result exposes its prototype methods as members, invoked with this = the instance;
+// a declared name the class lacks (or only Object.prototype supplies) is PLUGIN_LOAD_FAILED; a prototype method nobody declared stays unreachable.
+test('a class instance\'s prototype methods are members (this = the instance); Object.prototype names and missing methods still fail', async () => {
+  await serve('klass', `class Base { async fromBase() { return 'base:' + this.k; } }
+    class Api extends Base { constructor(cc) { super(); this.cc = cc; this.k = 'K'; }
+      async hello() { return this.k; }
+      async secret() { return 'undeclared'; } }
+    export default (ctx) => new Api(ctx.cc);`, { members: ['hello', 'fromBase', 'missing', 'toString'] });
+  const v = value(await run(`
+    const out = {};
+    for (const m of ['hello', 'fromBase', 'missing', 'toString']) {
+      try { out[m] = ['ok', await cc.klass[m]({})]; } catch (e) { out[m] = [e.code, e.reason]; }
+    }
+    return out;`));
+  assert.deepEqual(v.hello, ['ok', 'K']);
+  assert.deepEqual(v.fromBase, ['ok', 'base:K'], 'inherited from a user base class, this intact');
+  assert.equal(v.missing[0], 'PLUGIN_LOAD_FAILED');
+  assert.match(v.missing[1], /^klass: TypeError: .*'missing'/);
+  assert.equal(v.toString[0], 'PLUGIN_LOAD_FAILED');
+  const body = await run('return await cc.klass.secret({})');
+  assert.equal(body.code, 'TOOL_UNKNOWN', 'undeclared: refused by the pre-check');
+});
+
+// PINS: a null-prototype factory object lacking the declared name fails as PLUGIN_LOAD_FAILED (no chain to walk); one with it resolves.
+test('a null-prototype factory object resolves only what it owns', async () => {
+  await serve('nullproto', `export default () => Object.assign(Object.create(null), { here: async () => 'h' });`, { members: ['here', 'gone'] });
+  const v = value(await run(`
+    const out = [];
+    for (const m of ['here', 'gone']) { try { out.push(await cc.nullproto[m]({})); } catch (e) { out.push(e.code); } }
+    return out;`));
+  assert.deepEqual(v, ['h', 'PLUGIN_LOAD_FAILED']);
+});
