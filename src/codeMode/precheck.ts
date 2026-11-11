@@ -5,7 +5,7 @@
 // anything the scanner cannot read with certainty (computed names, bracket
 // form, template substitutions) falls through to the runtime's TOOL_UNKNOWN.
 
-import { RESERVED_METHODS, NAMESPACE_IMPORT } from './runtimeApi.ts';
+import { RESERVED_METHODS } from './runtimeApi.ts';
 
 export interface LiteralPath { path: string; segments: string[] }
 
@@ -194,23 +194,23 @@ const RESERVED = new Set<string>(RESERVED_METHODS);
 const PLUGIN_SEP = '__';
 
 // `names` is every callable wire name: a core tool's bare name, or a plugin
-// tool's `<id>__<tool>`.
-export function checkPaths(paths: LiteralPath[], names: ReadonlySet<string>): UnknownPath[] {
+// tool's `<id>__<tool>`. `members` (plugin id → names) are the plugin names only
+// a program can call; they count exactly like plugin tools.
+export function checkPaths(paths: LiteralPath[], names: ReadonlySet<string>, members: ReadonlyMap<string, ReadonlySet<string>> = new Map()): UnknownPath[] {
   const core = [...names].filter(n => !n.includes(PLUGIN_SEP));
-  const plugin = [...names].filter(n => n.includes(PLUGIN_SEP));
+  const memberWires = [...members].flatMap(([id, ms]) => [...ms].map(m => `${id}${PLUGIN_SEP}${m}`));
+  const plugin = [...new Set([...names].filter(n => n.includes(PLUGIN_SEP)).concat(memberWires))];
   const coreSet = new Set(core);
   const unknown: UnknownPath[] = [];
   for (const { path, segments } of paths) {
     const [a, b] = segments;
     if (RESERVED.has(a) || coreSet.has(a)) continue;
-    // Every plugin namespace has `import`, a plugin without tools included.
-    if (b === NAMESPACE_IMPORT) continue;
     if (b === undefined) {
       unknown.push({ path, suggestions: closeMatches(a, core).map(n => `cc.${n}`) });
       continue;
     }
     const id = a.replaceAll('_', '-');
-    if (names.has(`${id}${PLUGIN_SEP}${b}`)) continue;
+    if (names.has(`${id}${PLUGIN_SEP}${b}`) || members.get(id)?.has(b)) continue;
     const inNamespace = plugin.filter(n => n.startsWith(`${id}${PLUGIN_SEP}`));
     const suggestions = inNamespace.length > 0
       ? closeMatches(b, inNamespace.map(n => n.slice(id.length + PLUGIN_SEP.length))).map(t => `cc.${a}.${t}`)

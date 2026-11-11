@@ -28,7 +28,7 @@ import { createRunRegistry, type RunOutcome } from '../codeMode/runs.ts';
 import { RUN_TOKEN_HEADER } from '../codeMode/runtimeApi.ts';
 import { RUN_RESULT_BODY_LIMIT_BYTES } from '../codeMode/limits.ts';
 import { describeToolsTool } from '../codeMode/describeTools.ts';
-import type { CodeModeCtx, ProgressTiming } from '../codeMode/ctx.ts';
+import type { CodeModeCtx, ProgressTiming, RunCodeMember } from '../codeMode/ctx.ts';
 import { toolUseIdOf } from '../toolResultNudges.ts';
 import { isConductorInstance } from '../conduct.ts';
 import { audienceAdmits, type CallerKind, type ToolAudience } from './toolAudience.ts';
@@ -105,10 +105,13 @@ interface McpPluginHostLike {
     audience: ToolAudience;
     handler: (args: unknown, ctx: { callerId: string | null; format: McpFormat; callerKind: CallerKind }) => Promise<unknown>;
   }>;
-  // Where a plugin's run_code module is (docs/code-mode.md → Plugin modules).
-  // Read only when a program calls `cc.<ns>.import()`, so a host without it stays valid.
+  // The members plugins provide to run_code programs, and where a plugin's
+  // module is (docs/plugins.md → `runCode`). A host without them stays valid.
+  runCodeMembers?(): Array<{ id: string; members: RunCodeMember[] }>;
   runCodeModule?(id: string): Promise<
-    { kind: 'ok'; path: string; hasBackend: boolean } | { kind: 'unknown' } | { kind: 'unavailable'; reason: string }
+    | { kind: 'ok'; path: string; hasBackend: boolean; members: Array<{ name: string; inputSchema: unknown }> }
+    | { kind: 'unknown'; reason: string }
+    | { kind: 'unavailable'; reason: string }
   >;
 }
 
@@ -355,6 +358,15 @@ async function runTool(name: unknown, rawArgs: unknown, ctx: McpCtx): Promise<Ou
   }
 }
 
+// The run_code member a wire name `<id>__<name>` addresses, if a plugin declares it.
+function runCodeMemberOf(wire: string, ctx: McpCtx): { id: string; name: string } | null {
+  const sep = wire.indexOf('__');
+  if (sep <= 0) return null;
+  const id = wire.slice(0, sep);
+  const name = wire.slice(sep + 2);
+  return ctx.runCodeMembers?.get(id)?.some(m => m.name === name) ? { id, name } : null;
+}
+
 async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promise<Outcome> {
   let args: unknown = rawArgs ?? {};
   const tool = ctx.tools.find(t => t.name === name);
@@ -367,6 +379,11 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
     if (typeof name === 'string' && ctx.textOnlyTools.has(name)) {
       return { kind: 'fault', code: 'TOOL_UNAVAILABLE_IN_FORMAT', tool: null,
         reason: `'${name}' is a plugin tool with no outputSchema, so it is served in text format only — call it over JSON-RPC at /mcp?format=text` };
+    }
+    const member = typeof name === 'string' ? runCodeMemberOf(name, ctx) : null;
+    if (member) {
+      return { kind: 'fault', code: 'TOOL_UNKNOWN', tool: null,
+        reason: `'${name}' is callable only from inside a run_code program, as cc.${member.id.replaceAll('-', '_')}.${member.name}(args)` };
     }
     return { kind: 'fault', code: 'TOOL_UNKNOWN', reason: `unknown tool: ${name}`, tool: null };
   }
@@ -854,24 +871,27 @@ export function buildMcpRouter(
   // promise. A plugin-subsystem failure must never take the core tools down
   // with it.
   const NONE: ReadonlyMap<string, McpTool> = new Map();
-  async function composeTools(format: McpFormat, callerKind: CallerKind): Promise<{ tools: McpTool[]; textOnly: ReadonlyMap<string, McpTool>; barred: ReadonlyMap<string, ToolAudience> }> {
+  const NO_MEMBERS: ReadonlyMap<string, readonly RunCodeMember[]> = new Map();
+  async function composeTools(format: McpFormat, callerKind: CallerKind): Promise<{ tools: McpTool[]; textOnly: ReadonlyMap<string, McpTool>; barred: ReadonlyMap<string, ToolAudience>; runCodeMembers: ReadonlyMap<string, readonly RunCodeMember[]> }> {
     const { tools: core, barred: coreBarred } = registries[format][callerKind];
-    if (!pluginHost) return { tools: core, textOnly: NONE, barred: coreBarred };
+    if (!pluginHost) return { tools: core, textOnly: NONE, barred: coreBarred, runCodeMembers: NO_MEMBERS };
     try {
       await pluginHost.init();
       const all = pluginHost.toolsFor();
+      const runCodeMembers = new Map((pluginHost.runCodeMembers?.() ?? []).map(({ id, members }) => [id, members] as const));
       // Plugin names carry `__`, core names never do, so the maps cannot collide.
       const barred = new Map([...coreBarred, ...all.filter(t => !audienceAdmits(t.audience, callerKind)).map(t => [t.name, t.audience] as const)]);
       const plugin = all.filter(t => audienceAdmits(t.audience, callerKind));
-      if (format === 'text') return { tools: [...core, ...plugin], textOnly: NONE, barred };
+      if (format === 'text') return { tools: [...core, ...plugin], textOnly: NONE, barred, runCodeMembers };
       return {
         tools: [...core, ...plugin.filter(t => t.outputSchema)],
         textOnly: new Map(plugin.filter(t => !t.outputSchema).map(t => [t.name, t])),
         barred,
+        runCodeMembers,
       };
     } catch (e) {
       console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
-      return { tools: core, textOnly: NONE, barred: coreBarred };
+      return { tools: core, textOnly: NONE, barred: coreBarred, runCodeMembers: NO_MEMBERS };
     }
   }
 
@@ -884,9 +904,9 @@ export function buildMcpRouter(
     const callerId = resolveCaller(instances, sid);
     if (isUrlFault(callerId)) { res.json(urlFaultReply(req.body, callerId)); return; }
     const callerKind = callerKindOf(instances, callerId);
-    const { tools, textOnly, barred } = await composeTools(format, callerKind);
+    const { tools, textOnly, barred, runCodeMembers } = await composeTools(format, callerKind);
     const ctx: McpCtx = {
-      instances, tools, coreTools: registries[format][callerKind].set, textOnlyTools: textOnly, barredTools: barred, callerKind, callerId, playbookGate, capabilities,
+      instances, tools, coreTools: registries[format][callerKind].set, textOnlyTools: textOnly, barredTools: barred, runCodeMembers, callerKind, callerId, playbookGate, capabilities,
       format, limits: limitsFor(format), runs, selfUrl: selfUrlOf(req), codeModeTiming,
       cancel: callerId ? (requestId) => { inflight.get(inflightKey(callerId, requestId))?.abort(); } : undefined,
     };
@@ -981,7 +1001,7 @@ export function buildMcpRouter(
     const ac = new AbortController();
     res.on('close', () => { if (!res.writableFinished) ac.abort(); });
     const ctx: McpCtx = {
-      instances, tools, coreTools: registries.json[pre.callerKind].set, textOnlyTools: textOnly, barredTools: composed.barred, callerKind: pre.callerKind, callerId: pre.callerId, playbookGate, capabilities,
+      instances, tools, coreTools: registries.json[pre.callerKind].set, textOnlyTools: textOnly, barredTools: composed.barred, runCodeMembers: composed.runCodeMembers, callerKind: pre.callerKind, callerId: pre.callerId, playbookGate, capabilities,
       format: 'json', limits: JSON_LIMITS, runs, selfUrl: selfUrlOf(req), codeModeTiming, signal: ac.signal,
       run: pre.token === null ? null : { callerId: pre.callerId as string },
       // The alias reads no `_meta`, so its calls queue no tool-result nudge.
@@ -1037,21 +1057,23 @@ export function buildMcpRouter(
     res.status(204).end();
   }
 
-  // The run_code child's lookup of a plugin's module (`cc.<ns>.import()`): where the
-  // file is and the context its factory gets. Token-gated like /run-result.
+  // The run_code child's lookup of a plugin's members: where the module file
+  // is, the context its factory gets, and the members' input schemas. Token-gated
+  // like /run-result.
   async function runModule(req: express.Request, res: express.Response, sid: string, id: string) {
     const pre = restPreamble(req, res, sid);
     if (!pre) return;
-    if (pre.token === null) { restFault(res, 403, 'RUN_TOKEN_INVALID', `a module lookup needs the ${RUN_TOKEN_HEADER} header`); return; }
-    const found = pluginHost?.runCodeModule ? await pluginHost.runCodeModule(id) : { kind: 'unknown' as const };
-    if (found.kind === 'unknown') { restFault(res, 404, 'MODULE_UNKNOWN', `no enabled plugin '${id}' declares a runCodeModule`); return; }
-    if (found.kind === 'unavailable') { restFault(res, 409, 'MODULE_UNAVAILABLE', found.reason); return; }
+    if (pre.token === null) { restFault(res, 403, 'RUN_TOKEN_INVALID', `a member lookup needs the ${RUN_TOKEN_HEADER} header`); return; }
+    const found = pluginHost?.runCodeModule ? await pluginHost.runCodeModule(id) : { kind: 'unknown' as const, reason: `no plugin '${id}' provides run_code members` };
+    if (found.kind === 'unknown') { restFault(res, 404, 'TOOL_UNKNOWN', found.reason); return; }
+    if (found.kind === 'unavailable') { restFault(res, 409, 'TOOL_UNAVAILABLE', found.reason); return; }
     const project = pre.callerId ? instances?.liveForSession(pre.callerId)?.project ?? null : null;
     res.status(200).json({
       id,
       path: found.path,
       baseUrl: found.hasBackend ? `${selfOriginOf(req)}/plugins/${encodeURIComponent(id)}` : null,
       caller: { sessionId: pre.callerId, project },
+      members: found.members,
     });
   }
 

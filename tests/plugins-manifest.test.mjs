@@ -701,46 +701,93 @@ test('menuItems: one bad entry invalidates the whole manifest', () => {
   assertRefused(r, /menuItems\[2\]\.path/);
 });
 
-test('runCodeModule: accepted forms are preserved, trimmed, and need no backend', () => {
-  for (const v of ['run-code/index.mjs', 'mod.js', 'data..v2/x.mjs']) {
-    const r = validateManifest(base({ runCodeModule: v }));
-    assert.equal(r.errors, undefined, `runCodeModule=${v} should be accepted`);
-    assert.equal(r.manifest.runCodeModule, v);
+const member = (over = {}) => ({
+  name: 'connect', description: 'Connect to a thing.',
+  inputSchema: { type: 'object', properties: { name: { type: 'string' } } },
+  outputSchema: { type: 'object', properties: { page: { type: 'string' } }, required: ['page'], additionalProperties: false }, ...over,
+});
+const rc = (over = {}, members = [member()]) => ({ runCode: { module: 'run-code/index.mjs', members, ...over } });
+const rcErrs = (v) => validateManifest(base(v)).errors ?? [];
+
+// PINS: a valid runCode normalizes to exactly {module, members[name, description, inputSchema, outputSchema?]}, trimmed, backend-free.
+test('runCode: a valid declaration is preserved (module trimmed), needs no backend', () => {
+  for (const mod of ['run-code/index.mjs', 'mod.js', 'data..v2/x.mjs']) {
+    const r = validateManifest(base(rc({ module: mod })));
+    assert.equal(r.errors, undefined, mod);
+    assert.deepEqual(r.manifest.runCode, { module: mod, members: [member()] });
   }
-  assert.equal(validateManifest(base({ runCodeModule: '  a/b.mjs  ' })).manifest.runCodeModule, 'a/b.mjs');
+  assert.equal(validateManifest(base(rc({ module: '  a/b.mjs  ' }))).manifest.runCode.module, 'a/b.mjs');
 });
 
-test('runCodeModule: absent → key omitted; the rest of the manifest is unchanged', () => {
-  const r = validateManifest(base());
-  assert.ok(!('runCodeModule' in r.manifest));
+// PINS: absent runCode leaves the key off the normalized manifest.
+test('runCode: absent → key omitted', () => {
+  assert.ok(!('runCode' in validateManifest(base()).manifest));
 });
 
-test('runCodeModule: bad shapes are rejected with the specific error', () => {
-  const errs = (v) => validateManifest(base({ runCodeModule: v })).errors ?? [];
-  for (const v of ['', '   ', 42, null, {}]) assert.ok(errs(v).includes("'runCodeModule' must be a non-empty relative path"), JSON.stringify(v));
-  for (const v of ['/abs/x.mjs', '../x.mjs', 'a/../x.mjs']) assert.ok(errs(v).includes("'runCodeModule' must be a relative path with no '..' segment"), v);
-  for (const v of ['x.ts', 'x', 'x.mjs.txt', 'dir/']) assert.ok(errs(v).includes("'runCodeModule' must end with '.mjs' or '.js'"), v);
+// PINS: each refusal names its path (one case per error family).
+test('runCode: bad shapes are rejected with an error naming the path', () => {
+  for (const v of ['x', 5, null, []]) assert.ok(rcErrs({ runCode: v }).includes("'runCode' must be an object"), JSON.stringify(v));
+  assert.ok(rcErrs({ runCode: { module: 'a.mjs', members: [member()], extra: 1 } }).includes("unknown key 'runCode.extra'"));
+  assert.ok(rcErrs(rc({}, [member({ examples: [] })])).includes("unknown key 'runCode.members[0].examples'"));
+  for (const v of ['', '   ', 42]) assert.ok(rcErrs(rc({ module: v })).includes("'runCode.module' must be a non-empty relative path"), JSON.stringify(v));
+  for (const v of ['/abs/x.mjs', '../x.mjs', 'a/../x.mjs']) assert.ok(rcErrs(rc({ module: v })).includes("'runCode.module' must be a relative path with no '..' segment"), v);
+  for (const v of ['x.ts', 'x', 'x.mjs.txt', 'dir/']) assert.ok(rcErrs(rc({ module: v })).includes("'runCode.module' must end with '.mjs' or '.js'"), v);
+  assert.ok(rcErrs({ runCode: { members: [member()] } }).some(e => e.startsWith("'runCode.module' is required")));
+  for (const m of [undefined, [], 'x']) assert.ok(rcErrs(rc({ members: m })).includes("'runCode.members' is required (non-empty array)"), JSON.stringify(m));
+  assert.ok(rcErrs(rc({}, ['x'])).includes("'runCode.members[0]' must be an object"));
+  for (const name of [undefined, '', '1x', 'a-b', 'then', 5]) {
+    assert.ok(rcErrs(rc({}, [member({ name })])).some(e => e.startsWith("'runCode.members[0].name' is required and must match ^[A-Za-z_][A-Za-z0-9_]*$")), String(name));
+  }
+  assert.ok(rcErrs(rc({}, [member(), member()])).includes("duplicate runCode member 'connect'"));
+  for (const d of [undefined, '', '  ', 5]) assert.ok(rcErrs(rc({}, [member({ description: d })])).includes("'runCode.members[0].description' is required (non-empty string)"), String(d));
+  assert.ok(rcErrs(rc({}, [member({ returns: 'x' })])).includes("unknown key 'runCode.members[0].returns'"));
+  for (const s of [undefined, 'x', [], null]) assert.ok(rcErrs(rc({}, [member({ inputSchema: s })])).includes("'runCode.members[0].inputSchema' is required (object)"), JSON.stringify(s));
 });
 
-test('runCodeModule: a manifest whose module file is missing is invalid at readManifest; present loads', async () => {
-  const dir = await mkdtemp('cc-rcm-');
-  await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(base({ runCodeModule: 'run-code/index.mjs' })));
-  let r = await readManifest(sys(), dir);
-  assert.deepEqual(r.errors, ["runCodeModule 'run-code/index.mjs' not found"]);
-  await fs.mkdir(path.join(dir, 'run-code'));
-  await fs.writeFile(path.join(dir, 'run-code', 'index.mjs'), 'export default () => 1;');
-  r = await readManifest(sys(), dir);
+// PINS: the member's inputSchema obeys the mcp tool inputSchema subset, reported under its own label.
+test('runCode: an inputSchema outside the supported subset is refused under the member label', () => {
+  const errs = rcErrs(rc({}, [member({ inputSchema: { type: 'object', properties: { a: { type: 'string', oneOf: [] } } } })]));
+  assert.ok(errs.some(e => e.includes('runCode.members[0].inputSchema')), JSON.stringify(errs));
+});
+
+// PINS: outputSchema follows the mcp tool rule — optional, strict output subset, root type object.
+test('runCode: outputSchema is optional; a bad one is refused under the member label like a tool\'s', () => {
+  const { outputSchema: _o, ...noOut } = member();
+  const r = validateManifest(base(rc({}, [noOut])));
   assert.equal(r.errors, undefined);
-  assert.equal(r.manifest.runCodeModule, 'run-code/index.mjs');
+  assert.ok(!('outputSchema' in r.manifest.runCode.members[0]));
+  assert.ok(rcErrs(rc({}, [member({ outputSchema: { type: 'string' } })])).includes("'runCode.members[0].outputSchema.type' must be 'object'"));
+  assert.ok(rcErrs(rc({}, [member({ outputSchema: 'x' })])).some(e => e.startsWith("'runCode.members[0].outputSchema'")));
 });
 
-test('mcp.tools: a tool named `import` is refused with the specific error (reserved for cc.<ns>.import()); other names still pass', () => {
+// PINS: the retired key is just an unknown key.
+test('runCodeModule is an unknown key', () => {
+  assert.ok(rcErrs({ runCodeModule: 'run-code/index.mjs' }).includes("unknown key 'runCodeModule'"));
+});
+
+// PINS: no namespace member is reserved — an mcp tool named `import` is valid; one named like a
+// member of the SAME plugin is a collision, refused at load (not shadowed).
+test('runCode: an mcp tool named `import` is valid; a member named like one of the plugin\'s own tools is invalid', () => {
   const mcp = (name) => ({
     backend: { start: 'node server.mjs' },
     mcp: { endpoint: '/mcp', tools: [{ name, description: 'd', inputSchema: { type: 'object' } }] },
   });
-  const bad = validateManifest(base(mcp('import')));
-  assert.ok(bad.errors?.some(e => e.includes("'mcp.tools[0].name' cannot be 'import'") && e.includes('run_code module')), JSON.stringify(bad));
-  assert.equal(validateManifest(base(mcp('import_data'))).errors, undefined);
-  assert.equal(validateManifest(base(mcp('imports'))).errors, undefined);
+  assert.equal(validateManifest(base(mcp('import'))).errors, undefined);
+  const ok = validateManifest(base({ ...mcp('other'), ...rc() }));
+  assert.equal(ok.errors, undefined);
+  const bad = validateManifest(base({ ...mcp('connect'), ...rc() }));
+  assert.ok(bad.errors?.includes("'runCode.members[0].name' 'connect' is also an mcp tool of this plugin"), JSON.stringify(bad.errors));
+});
+
+// PINS: the module file's existence is checked at readManifest; present loads.
+test('runCode: a manifest whose module file is missing is invalid at readManifest; present loads', async () => {
+  const dir = await mkdtemp('cc-rcm-');
+  await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(base(rc())));
+  let r = await readManifest(sys(), dir);
+  assert.deepEqual(r.errors, ["runCode.module 'run-code/index.mjs' not found"]);
+  await fs.mkdir(path.join(dir, 'run-code'));
+  await fs.writeFile(path.join(dir, 'run-code', 'index.mjs'), 'export default () => 1;');
+  r = await readManifest(sys(), dir);
+  assert.equal(r.errors, undefined);
+  assert.equal(r.manifest.runCode.module, 'run-code/index.mjs');
 });

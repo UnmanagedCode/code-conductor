@@ -938,6 +938,7 @@ export function createPluginHost(opts: {
     playbooks: contributions.playbooks,
     claudePluginDirs: contributions.claudePluginDirs,
     runCodeModule: contributions.runCodeModule,
+    runCodeMembers: contributions.runCodeMembers,
     reportUpstreamFailure, setServerPort, stopAll,
     notices: store.notices,
   };

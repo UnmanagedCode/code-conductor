@@ -7,7 +7,7 @@ import { TOOL_AUDIENCES, type ToolAudience } from '../mcp/toolAudience.ts';
 import type { System } from '../systems/system.ts';
 import { splitSkillPart } from '../../shared/skillPart.ts';
 import { PLUGIN_ICONS, type PluginIconName } from '../../shared/pluginIcons.ts';
-import { NAMESPACE_IMPORT } from '../codeMode/runtimeApi.ts';
+import type { RunCodeMember } from '../codeMode/ctx.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(system, dir) reads + validates; validateManifest(json) normalizes a
@@ -36,9 +36,9 @@ const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 // scaffold facet), `roles` and `playbooks` are active pluginApi:1 capabilities
 // that require no backend, so a contributions-only plugin is valid. `menuItems`
 // needs a frontend: its buttons open that frontend. `claudePlugin` and
-// `runCodeModule` (a module a run_code program loads with `cc.<ns>.import()`) are
-// likewise backend-free.
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin', 'runCodeModule', 'menuItems']);
+// `runCode` (members a run_code program calls as `cc.<ns>.<name>()`, served by one
+// module) are likewise backend-free.
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'playbooks', 'claudePlugin', 'runCode', 'menuItems']);
 
 export const MENU_ITEMS_MAX = 8;
 export const MENU_LABEL_MAX = 40;
@@ -124,7 +124,7 @@ export interface PluginManifest {
   roles?: PluginRole[];
   playbooks?: PluginPlaybook[];
   claudePlugin?: string;
-  runCodeModule?: string;
+  runCode?: { module: string; members: RunCodeMember[] };
   menuItems?: PluginMenuItem[];
 }
 
@@ -208,7 +208,7 @@ async function checkFragmentFiles(system: System, dir: string, manifest: PluginM
     if (g.file) refs.push([`conventions '${g.slug}' file`, g.file, true]);
     if (g.scaffold && 'file' in g.scaffold) refs.push([`conventions '${g.slug}' scaffold file`, g.scaffold.file, false]);
   }
-  if (manifest.runCodeModule) refs.push(['runCodeModule', manifest.runCodeModule, false]);
+  if (manifest.runCode) refs.push(['runCode.module', manifest.runCode.module, false]);
   const errors: string[] = [];
   for (const [label, rel, fragment] of refs) {
     const abs = path.join(dir, rel);
@@ -261,7 +261,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
   const roles = validateRoles(raw.roles, errors);
   const playbooks = validatePlaybooks(raw.playbooks, errors);
   const claudePlugin = validateClaudePlugin(raw.claudePlugin, errors);
-  const runCodeModule = validateRunCodeModule(raw.runCodeModule, errors);
+  const runCode = validateRunCode(raw.runCode, mcp, errors);
   const menuItems = validateMenuItems(raw.menuItems, frontend, errors);
 
   if (errors.length > 0) return { errors, id: displayId(raw) };
@@ -278,7 +278,7 @@ export function validateManifest(json: unknown): ReadManifestResult {
       ...(roles ? { roles } : {}),
       ...(playbooks ? { playbooks } : {}),
       ...(claudePlugin !== undefined ? { claudePlugin } : {}),
-      ...(runCodeModule !== undefined ? { runCodeModule } : {}),
+      ...(runCode ? { runCode } : {}),
       ...(menuItems ? { menuItems } : {}),
     },
   };
@@ -315,18 +315,70 @@ function validateRelativePath(key: string, value: unknown, errors: string[]): st
   return trimmed;
 }
 
-// runCodeModule: OPTIONAL string — the one ES module a run_code program loads
-// with `cc.<ns>.import(name?)`, as a relative path (the claudePlugin rules)
-// ending in `.mjs` or `.js`. Existence is checked at load (checkFragmentFiles).
-// docs/code-mode.md → Plugin modules is the contract.
-function validateRunCodeModule(value: unknown, errors: string[]): string | undefined {
-  const rel = validateRelativePath('runCodeModule', value, errors);
-  if (rel === undefined) return undefined;
-  if (!/\.(mjs|js)$/.test(rel)) {
-    errors.push("'runCodeModule' must end with '.mjs' or '.js'");
+// runCode: OPTIONAL `{ module, members }` — named members of the plugin's own
+// namespace that a run_code program calls as `cc.<ns>.<name>(args)`. One ES
+// module (a relative path, the claudePlugin rules, `.mjs`/`.js`; existence is
+// checked at load by checkFragmentFiles) backs them all. Each member is
+// described like an mcp tool: description, inputSchema (required, the tool
+// subset) and an optional outputSchema (the tool rule). A member named like one
+// of this plugin's own mcp tools is refused, so `<id>__<name>` has one meaning.
+// docs/plugins.md → `runCode` is the contract.
+const RUN_CODE_MEMBER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function validateRunCode(value: unknown, mcp: PluginMcp | null, errors: string[]): PluginManifest['runCode'] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    errors.push("'runCode' must be an object");
     return undefined;
   }
-  return rel;
+  const rec = value as Record<string, unknown>;
+  for (const k of Object.keys(rec)) {
+    if (!['module', 'members'].includes(k)) errors.push(`unknown key 'runCode.${k}'`);
+  }
+  let module: string | undefined;
+  if (rec.module === undefined) errors.push("'runCode.module' is required (relative path)");
+  else {
+    module = validateRelativePath('runCode.module', rec.module, errors);
+    if (module !== undefined && !/\.(mjs|js)$/.test(module)) {
+      errors.push("'runCode.module' must end with '.mjs' or '.js'");
+      module = undefined;
+    }
+  }
+  const members: RunCodeMember[] = [];
+  if (!Array.isArray(rec.members) || rec.members.length === 0) {
+    errors.push("'runCode.members' is required (non-empty array)");
+  } else {
+    const toolNames = new Set((mcp?.tools ?? []).map(t => t.name));
+    const seen = new Set<string>();
+    rec.members.forEach((m, i) => {
+      const label = `runCode.members[${i}]`;
+      if (typeof m !== 'object' || m === null || Array.isArray(m)) { errors.push(`'${label}' must be an object`); return; }
+      const member = m as Record<string, unknown>;
+      for (const k of Object.keys(member)) {
+        if (!['name', 'description', 'inputSchema', 'outputSchema'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+      }
+      if (typeof member.name !== 'string' || !RUN_CODE_MEMBER_NAME_RE.test(member.name) || member.name === 'then') {
+        errors.push(`'${label}.name' is required and must match ${RUN_CODE_MEMBER_NAME_RE.source} (not 'then')`);
+      } else if (seen.has(member.name)) {
+        errors.push(`duplicate runCode member '${member.name}'`);
+      } else {
+        seen.add(member.name);
+        if (toolNames.has(member.name)) errors.push(`'${label}.name' '${member.name}' is also an mcp tool of this plugin`);
+      }
+      if (typeof member.description !== 'string' || member.description.trim() === '') {
+        errors.push(`'${label}.description' is required (non-empty string)`);
+      }
+      checkSchemaSubset(member.inputSchema, `${label}.inputSchema`, errors);
+      const outputSchema = checkOutputSchema(member.outputSchema, `${label}.outputSchema`, errors);
+      members.push({
+        name: typeof member.name === 'string' ? member.name : '',
+        description: typeof member.description === 'string' ? member.description : '',
+        inputSchema: member.inputSchema,
+        ...(outputSchema ? { outputSchema } : {}),
+      });
+    });
+  }
+  return module !== undefined && members.length > 0 ? { module, members } : undefined;
 }
 
 // The one accessor consumers use to read a manifest's Claude Code plugin roots.
@@ -744,8 +796,6 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
       }
       if (typeof tool.name !== 'string' || !TOOL_NAME_RE.test(tool.name)) {
         errors.push(`'mcp.tools[${i}].name' is required and must match ^[a-zA-Z0-9_-]+$`);
-      } else if (tool.name === NAMESPACE_IMPORT) {
-        errors.push(`'mcp.tools[${i}].name' cannot be '${NAMESPACE_IMPORT}': it is reserved for cc.<ns>.${NAMESPACE_IMPORT}(), which loads the plugin's run_code module`);
       } else if (seen.has(tool.name)) {
         errors.push(`duplicate tool name '${tool.name}'`);
       } else {

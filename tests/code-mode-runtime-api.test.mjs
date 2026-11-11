@@ -143,3 +143,43 @@ test('run registry: tokens are distinct per run and unknown tokens are unknown',
   assert.equal(runs.get('nope'), undefined);
   assert.equal(runs.deliver('nope', { result: null, resultChars: 0, truncated: false }), 'unknown');
 });
+
+function memberCc(reply, members) {
+  const calls = [];
+  const fetchFn = async (url, init) => {
+    calls.push({ url, init, body: init?.body ? JSON.parse(init.body) : null });
+    const { status = 200, body } = reply(url);
+    return new Response(JSON.stringify(body), { status });
+  };
+  return { calls, cc: createCc({ url: 'http://h/mcp/sid', token: 'tok', fetch: fetchFn, members }) };
+}
+const lookupBody = (path) => ({ id: 'x', path, baseUrl: null, caller: { sessionId: 's', project: null }, members: [] });
+
+// PINS: a snapshot member is dispatched through the member path — by dot and by cc.call —
+// (lookup GET, never a tool POST); a sibling name on the same namespace stays a plain tool POST; `import` is no longer special.
+test('a snapshot member takes the member path via cc.ns.m and cc.call; other names POST as tools', async () => {
+  const { calls, cc } = memberCc((url) => url.includes('/run-modules/')
+    ? { status: 404, body: { ok: false, code: 'TOOL_UNKNOWN', reason: 'gone' } } : { body: { ok: true } },
+  new Map([['plug', new Set(['m'])]]));
+  for (const run of [() => cc.plug.m({}), () => cc.call('plug__m', {})]) {
+    await assert.rejects(run(), (e) => e.code === 'TOOL_UNKNOWN' && e.reason.startsWith('unknown tool: plug__m'));
+  }
+  assert.deepEqual(calls.map(c => c.url), ['http://h/mcp/sid/run-modules/plug'], 'lookup memoized, no tool POST');
+  await cc.plug.other({});
+  await cc.x.import({ a: 1 });
+  assert.deepEqual(calls.slice(1).map(c => [c.init.method, c.url]), [
+    ['POST', 'http://h/mcp/sid/tools/plug__other'],
+    ['POST', 'http://h/mcp/sid/tools/x__import'],
+  ]);
+});
+
+// PINS: the snapshot Map is keyed safely — an id like `constructor` hits no prototype member; `then` and symbols stay undefined.
+test('a constructor id in the snapshot is safe; then and symbols are undefined on cc and namespaces', async () => {
+  const { calls, cc } = memberCc(() => ({ body: {} }), new Map([['other', new Set(['m'])]]));
+  await cc.call('constructor__toString', {});
+  assert.equal(calls.at(-1).url, 'http://h/mcp/sid/tools/constructor__toString');
+  assert.equal(cc.then, undefined);
+  assert.equal(cc.other.then, undefined);
+  assert.equal(cc[Symbol.iterator], undefined);
+  assert.equal(cc.other[Symbol.iterator], undefined);
+});

@@ -12,6 +12,14 @@ export interface ToolView {
   outputSchema?: unknown;
 }
 
+// A name a plugin provides to run_code programs, described like a tool.
+export interface RunCodeMember {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  outputSchema?: Record<string, unknown>;
+}
+
 export interface ProgressTiming { heartbeatMs: number; minIntervalMs: number }
 
 export interface CodeModeCtx {
@@ -38,4 +46,6 @@ export interface CodeModeCtx {
   // the keys are read), and the caller's kind.
   barredTools?: ReadonlyMap<string, unknown>;
   callerKind?: CallerKind;
+  // Plugin id → the members it declares for programs (enabled, valid plugins only).
+  runCodeMembers?: ReadonlyMap<string, readonly RunCodeMember[]>;
 }
