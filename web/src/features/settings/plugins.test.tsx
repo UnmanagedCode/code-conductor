@@ -1507,7 +1507,7 @@ describe('Plugins → Restart all', () => {
     expect(pluginsChangedSignal.version()).toBe(v0 + 1);
   });
 
-  // A section switch or reopened Settings mid-run reloads the list but re-arms nothing and does not change what the run restarts: the snapshot taken at click time stands.
+  // A section switch or reopened Settings mid-run reloads the list but re-arms nothing and does not change what the run restarts: the snapshot taken at click time stands. A reload leaving no restartable row still keeps the button shown, disabled, with its progress.
   it('a reload during Restart all keeps it running and locked, and restarts only the click-time targets', async () => {
     rows = [KA, KB];
     const ha = heldJson();
@@ -1518,7 +1518,8 @@ describe('Plugins → Restart all', () => {
     fireEvent.click(restartAllButton());
     await waitFor(() => expect(restartAllButton().textContent).toMatch(/1\/2/));
 
-    rows = [KA, { ...KB, stale: false }];
+    // Every target reads fresh after the reload: only the in-progress term keeps the button shown.
+    rows = [{ ...KA, stale: false }, { ...KB, stale: false }];
     await switchTo('archived');
     await switchTo('plugins');
     await waitFor(() => expect(gets('/api/plugins')).toBe(2));
