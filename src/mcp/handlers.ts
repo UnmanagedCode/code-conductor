@@ -197,7 +197,8 @@ export const CONDUCTOR_VIEW_KEYS = [
   'conducted',
   'debug',
   // Together with `title`, how a conductor tells its own worker from another
-  // conductor's worker on the same task — enforces "only drive what you spawned".
+  // conductor's worker on the same task — the input to the "only drive workers
+  // you spawned" convention, which the server does not enforce.
   'firstPrompt',
   'title',
   'createdAt',
