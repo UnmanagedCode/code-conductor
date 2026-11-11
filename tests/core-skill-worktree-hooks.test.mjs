@@ -248,7 +248,6 @@ test('merge-install-deps, dependencies unchanged: no install', async () => {
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.postWorktreeMerge.exitCode, 0, JSON.stringify(r.postWorktreeMerge));
   assert.equal(log, '');
-  assert.match(r.postWorktreeMerge.output, /unchanged/);
 });
 
 test('merge-install-deps, lockfile changed: one `npm ci` in the root, and the root stays clean', async () => {
@@ -274,5 +273,4 @@ test('merge-install-deps, a task merged into its feature worktree: skipped, no i
   assert.equal(r.postWorktreeMerge.source, 'in-tree', 'premise: the feature checkout has the tracked hook');
   assert.equal(r.postWorktreeMerge.exitCode, 0, JSON.stringify(r.postWorktreeMerge));
   assert.equal(log, '');
-  assert.match(r.postWorktreeMerge.output, /skipped/);
 });

@@ -10,7 +10,7 @@ description: "Use when writing, debugging or choosing where to put a cc worktree
 | Event | Script | Runs when | cwd | Extra vars |
 |---|---|---|---|---|
 | create | `post-worktree-create.sh` | after cc creates a worktree (spawn with a worktree, `create_worktree`), before any session starts in it | the new worktree | — |
-| merge | `post-worktree-merge.sh` | after a merge into the parent has landed; never for a refused merge | the merge target: the project root, or the feature checkout when a task merges into its base | `CC_PRE_MERGE_SHA`, `CC_POST_MERGE_SHA`; on cc's machine also `CC_SERVER_NODE` |
+| merge | `post-worktree-merge.sh` | after a merge into the parent has landed; never for a refused merge | the merge target: the project root, or the feature checkout when a task merges into its base | `CC_PRE_MERGE_SHA`, `CC_POST_MERGE_SHA`; on cc's machine also `CC_SERVER_NODE`; when the target is the running cc server's own checkout, `CC_SERVER_BOOT_SHA` (the commit it booted from) or else `CC_SERVER_BOOT_UNKNOWN` (why it can't vouch for one) |
 
 - One script per event (`WORKTREE_HOOKS`): to combine recipes, put them in that one file.
 - The merge hook is read from the target **after** the merge, so a branch that edits the in-tree hook runs its own version on landing.
@@ -34,17 +34,20 @@ Reported as `postWorktreeCreate` (spawn and `create_worktree` results) and `post
 
 | You see | It means |
 |---|---|
-| `ran: false`, no `skipped` | no script found in either location (see Placement) |
+| `ran: false`, no `skipped` and no `error` | no script found in either location (see Placement) |
 | `skipped: 'disabled'` | the event's kill switch is set: `ORCH_DISABLE_POST_WORKTREE_HOOK=1` (create), `ORCH_DISABLE_POST_WORKTREE_MERGE_HOOK=1` (merge) |
 | `skipped: 'STORE_HOOK_LOCAL_ONLY'` | a store hook on a project that lives on a remote system: move it in-tree |
-| `source` | `'in-tree'` or `'store'`: which copy ran |
+| `source` | `'in-tree'` or `'store'`: which location was resolved (also set on a `STORE_HOOK_LOCAL_ONLY` skip, where nothing ran) |
 | `timedOut: true`, `exitCode: null` | killed at the timeout: 120 s default (`WORKTREE_HOOK_TIMEOUT_MS`), raised per event by `ORCH_POST_WORKTREE_TIMEOUT_MS` / `ORCH_POST_WORKTREE_MERGE_TIMEOUT_MS` on the cc server |
 | `descendantsMaySurvive: true` | only `bash` was killed; what it started (an install) may still be running |
 | `error: true` | the script could not be started, or resolving it threw; `output` holds the message |
 | `truncated: true` | `output` is the tail only (`HOOK_OUTPUT_CAP`, 16 KB) |
 
 - A hook never fails its operation: the worktree stays created and the merge stays landed (`ok: true`) whatever the hook reports.
-- Only the caller sees the result. The web UI shows a create result in the spawn dialog when `ran` is true, and a merge result in the merge toast, whose failure warning quotes only the last lines of `output`. **Print the line that matters last.**
+- The create result is also kept on the session: a session spawned with a worktree carries it as `worktree.postWorktreeCreate` in `list_sessions` / `describe_session` and every client's session list, so a worker or conductor can read it there later.
+- The merge result is only returned to the caller, never stored.
+- The web UI shows a create result in the spawn dialog when `ran` is true, and a merge result in the merge toast, whose failure warning quotes only the last lines of `output`. **Print the line that matters last.**
+- **Never print secrets**: a create hook's `output` reaches every client that lists the session.
 - A merge waits for its hook inside the server's HTTP request timeout (300 s, Node's default `requestTimeout`): a merge timeout raised past it drops the merge response while the merge has still landed.
 
 ## Placement: in-repo vs out-of-repo
@@ -95,7 +98,7 @@ cp "$SRC" "$DEST/$HOOK"
 
 - **When:** installs are slow or unreliable, and worktrees can share the parent's dependency versions.
 - **Costs:**
-  - A worktree has no dependencies of its own: a branch that changes `package.json` runs against the parent's `node_modules` until it lands and recipe 4 reinstalls.
+  - A worktree has no dependencies of its own: a branch that changes `package.json` runs against the parent's `node_modules` until the change reaches a checkout recipe 4 reinstalls in (the main checkout; a task landing in a feature checkout is not enough).
   - `npm install` inside the worktree writes through the link into the parent's tree. Build and run there with the project's scripts, never `npm install`.
 - Link it from the sample below with `node_modules` in `LINKS`.
 
@@ -136,6 +139,7 @@ done
 
 - Keep the tracked `.sh` a shim: `exec "${CC_SERVER_NODE:-node}" <tracked program> "${CC_PRE_MERGE_SHA:?}" "${CC_POST_MERGE_SHA:?}"`.
 - The program diffs `PRE..POST`, does nothing when the target is a linked worktree (`git rev-parse --git-dir` ≠ `--git-common-dir`) or nothing relevant changed, otherwise chooses between applying now and preparing for the next start. It writes only ignored paths and prints one line naming the action and why.
+- When the project is cc itself, `CC_SERVER_BOOT_SHA` is what tells "apply now" from "prepare for the next start": the running server's code is that commit, so diff it against `POST` to see whether the change is safe to apply live. With `CC_SERVER_BOOT_UNKNOWN` or neither var set, prepare.
 - The logic is then versioned and unit-testable, and a branch's new logic runs on its own landing.
 
 ### 4. Merge: reinstall dependencies when they changed
