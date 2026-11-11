@@ -44,10 +44,26 @@ test('checkPaths: a known core tool, a reserved method and a known plugin tool p
   assert.deepEqual(checkPaths(literalPaths('cc.list_projects(); cc.call("x"); cc.describe_tools(); cc.code_kanban.list_cards()'), names), []);
 });
 
-test('checkPaths: cc.<ns>.import(...) passes for any plugin namespace, tool-less ones included; top-level cc.import is an unknown core tool', () => {
+// PINS: a declared run-code member passes (a tool-less plugin included), by dot and by name;
+// `import` is not special: unknown unless declared; a sibling not declared is still unknown.
+test('checkPaths: members of a plugin pass like its tools; cc.<ns>.import( is unknown unless declared', () => {
   const names = new Set(['list_projects', 'code-browser__browser_info']);
-  assert.deepEqual(checkPaths(literalPaths("await cc.code_browser.import(); await cc.code_browser.import('shot'); await cc.toolless.import()"), names), []);
-  assert.deepEqual(checkPaths(literalPaths("await cc.import('code-browser')"), names).map(u => u.path), ['cc.import']);
+  const members = new Map([['code-browser', new Set(['connect'])], ['toolless', new Set(['import'])]]);
+  assert.deepEqual(checkPaths(literalPaths('await cc.code_browser.connect({}); await cc.toolless.import({})'), names, members), []);
+  assert.deepEqual(checkPaths(literalPaths('await cc.code_browser.import({})'), names, members).map(u => u.path), ['cc.code_browser.import']);
+  assert.deepEqual(checkPaths(literalPaths('await cc.code_browser.import({})'), names).map(u => u.path), ['cc.code_browser.import']);
+  assert.deepEqual(checkPaths(literalPaths("await cc.import('code-browser')"), names, members).map(u => u.path), ['cc.import']);
+});
+
+// PINS: members join the suggestion pools, indistinguishable from tools.
+test('checkPaths: suggestions draw on members', () => {
+  const members = new Map([['code-browser', new Set(['connect'])], ['solo', new Set(['launch'])]]);
+  const [a] = checkPaths(literalPaths('cc.code_browser.conect()'), new Set(['code-browser__browser_info']), members);
+  assert.deepEqual(a.suggestions, ['cc.code_browser.connect']);
+  const [b] = checkPaths(literalPaths('cc.solo.lanch()'), new Set(), members);
+  assert.deepEqual(b.suggestions, ['cc.solo.launch']);
+  const [c] = checkPaths(literalPaths('cc.sol.launch()'), new Set(), members);
+  assert.deepEqual(c.suggestions, ['cc.solo']);
 });
 
 test('checkPaths: an unknown core tool is reported with the nearest names', () => {

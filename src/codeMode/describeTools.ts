@@ -42,6 +42,15 @@ function methodOf(wire: string, ns: string | null, tool: string): string {
   return `cc['${wire.slice(0, wire.indexOf(PLUGIN_SEP))}']['${tool}']`;
 }
 
+// How a program spells the call, `(args)` included: what the run_code-only
+// refusal tells a caller who used the wire name outside a program.
+export function callSpellingOf(wire: string): string {
+  const sep = wire.indexOf(PLUGIN_SEP);
+  const ns = wire.slice(0, sep).replaceAll('-', '_');
+  const m = methodOf(wire, ns, wire.slice(sep + PLUGIN_SEP.length));
+  return RESERVED_METHODS.includes(ns) ? m : `${m}(args)`;
+}
+
 function signatureOf(t: ToolView, ns: string | null, tool: string): string {
   const fnName = tool.replace(/[^A-Za-z0-9_$]/g, '_').replace(/^(\d)/, '_$1');
   try {
@@ -86,6 +95,12 @@ export async function describeTools(args: unknown, ctx: CodeModeCtx): Promise<{ 
     ...(ctx.tools ?? []).filter(t => !HIDDEN.has(t.name)).map(tool => ({ tool, scriptable: true })),
     ...[...(ctx.textOnlyTools ?? new Map<string, ToolView>()).values()].map(tool => ({ tool, scriptable: false })),
   ];
+  // Plugin members read as tools: the same view, under their wire name.
+  for (const [id, members] of ctx.runCodeMembers ?? []) {
+    for (const m of members) {
+      sources.push({ tool: { name: `${id}${PLUGIN_SEP}${m.name}`, description: m.description, inputSchema: m.inputSchema, outputSchema: m.outputSchema }, scriptable: true });
+    }
+  }
   const tools: ToolEntry[] = [];
   for (const { tool, scriptable } of sources) {
     const entry = entryOf(tool, scriptable, 'names');
@@ -102,7 +117,7 @@ export async function describeTools(args: unknown, ctx: CodeModeCtx): Promise<{ 
 
 export const describeToolsTool = {
   name: 'describe_tools',
-  description: 'List the tools a run_code program can call: method path, wire name, namespace, and — by detail — summary or TypeScript signature.',
+  description: 'List what a run_code program can call: method path, the name cc.call takes, namespace, and — by detail — summary or TypeScript signature.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,

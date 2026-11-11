@@ -1,8 +1,8 @@
 # Code mode — `run_code`
 
-One core MCP tool, `run_code`, runs an agent-written JavaScript function body in a Node child process. The child's `cc` object calls back into cc **as the calling session**, so every call it makes goes through the same `runTool` gate (argument validation, prefix resolution, playbook policy, event log) as a direct call. The agent chains or batches calls, filters or aggregates the results, and returns only the digest.
+One core MCP tool, `run_code`, runs an agent-written JavaScript function body in a Node child process. The child's `cc` object calls back into cc **as the calling session**, so every call it makes into cc's tools goes through the same `runTool` gate (argument validation, prefix resolution, playbook policy, event log) as a direct call. The agent chains or batches calls, filters or aggregates the results, and returns only the digest.
 
-Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the child, `describeTools.ts`, `tsSignature.ts` + `typeModel.ts`, `precheck.ts`, `runs.ts`, `progressPump.ts`, `limits.ts`), `src/mcp/callStream.ts` (the SSE writer) and the run channel in `src/mcp/server.ts`. The skill that teaches when to use it is `code-conductor:scripting` ([features.md → Core skills](features.md#core-skills)). Tests: `tests/run-code*.test.mjs` (plugin modules: `tests/run-code-modules.test.mjs`, `tests/plugins-run-code-module.test.mjs`), `tests/code-mode-*.test.mjs`.
+Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the child, `describeTools.ts`, `tsSignature.ts` + `typeModel.ts`, `precheck.ts`, `runs.ts`, `progressPump.ts`, `limits.ts`), `src/mcp/callStream.ts` (the SSE writer) and the run channel in `src/mcp/server.ts`. The skill that teaches when to use it is `code-conductor:scripting` ([features.md → Core skills](features.md#core-skills)). Tests: `tests/run-code*.test.mjs` (plugin-provided names: `tests/run-code-modules.test.mjs`, `tests/plugins-run-code-module.test.mjs`), `tests/code-mode-*.test.mjs`.
 
 ## Tool
 
@@ -34,71 +34,23 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 | Spelling | Calls |
 |---|---|
 | `await cc.<tool>(args)` | the core tool `<tool>` |
-| `await cc.<ns>.<tool>(args)` | the plugin tool `<id>__<tool>`; `<ns>` is the plugin id with `-` written `_` (an id is a slug with no `_`, so the mapping is exact) |
+| `await cc.<ns>.<tool>(args)` | the plugin name `<id>__<tool>`; `<ns>` is the plugin id with `-` written `_` (an id is a slug with no `_`, so the mapping is exact) |
 | `await cc['<id>']['<tool>'](args)` | the same, spelled with the id as is |
 | `await cc.call(name, args)` | any wire name, computed or not: `cc.call('code-kanban__list_cards', {})`. The only route to a plugin whose id is a reserved method name |
 | `await cc.describe_tools(args)` | [`describe_tools`](#describe_tools), unwrapped to its array |
-| `await cc.<ns>.import(name?)` | the module a plugin declares as `runCodeModule`: [Plugin modules](#plugin-modules). `import` is reserved in every plugin namespace, and `cc[ns].import()` works too |
 
 - **Reserved names** (`RESERVED_METHODS`, `src/codeMode/runtimeApi.ts`): `call`, `describe_tools`, `then`. `then` and symbol keys read as `undefined`, so `await cc.x` is never a thenable.
-- Every call is `POST <run url>/tools/<name>` on the REST alias, as the session. It returns the tool's JSON result.
-- **`ConductorError`** (`name`, `message` = `<code>: <reason>`, `code`, `reason`, `status`, `details?`) is thrown when the HTTP status is ≥ 400 or the body is `{ok:false}`. `status` 200 is the **tool's own refusal** (`PLAYBOOK_UNKNOWN`, `TOOL_DENIED_IN_STAGE`, `SESSION_UNKNOWN`, a plugin's code, …); 400 and up is a fault in the call (`TOOL_UNKNOWN` 404, `TOOL_UNAVAILABLE_IN_FORMAT` 404 for an untyped plugin tool, `TOOL_UNAVAILABLE_TO_CALLER` 403 for a tool outside the session's audience, `ARGS_INVALID` 400). Answers that read like failures but are results are returned: a non-zero `exitCode`, `sync_worktree`'s `action`.
-- Node built-ins load by dynamic import of a `node:` specifier. The working directory is the session's own checkout. A program's own `import()` resolves bare specifiers from cc's install (the location of `src/codeMode/runtime.ts`) and relative ones from `src/codeMode/`, never from the cwd: use `node:` specifiers or absolute paths. A plugin module's own imports resolve from the plugin's checkout instead.
+- Every call into a tool is `POST <run url>/tools/<name>` on the REST alias, as the session. It returns the tool's JSON result.
+- **`ConductorError`** (`name`, `message` = `<code>: <reason>`, `code`, `reason`, `status`, `details?`) is thrown when the HTTP status is ≥ 400 or the body is `{ok:false}`, and is also raised inside the program itself for a plugin name only a program can call (`ARGS_INVALID`, `PLUGIN_LOAD_FAILED`, `TOOL_UNKNOWN`, `TOOL_UNAVAILABLE`). `status` 200 is the **tool's own refusal** (`PLAYBOOK_UNKNOWN`, `TOOL_DENIED_IN_STAGE`, `SESSION_UNKNOWN`, a plugin's code, …); 400 and up is a fault in the call (`TOOL_UNKNOWN` 404, `TOOL_UNAVAILABLE_IN_FORMAT` 404 for an untyped plugin tool, `TOOL_UNAVAILABLE_TO_CALLER` 403 for a tool outside the session's audience, `TOOL_UNAVAILABLE` 409, `PLUGIN_LOAD_FAILED` 500, `ARGS_INVALID` 400). Answers that read like failures but are results are returned: a non-zero `exitCode`, `sync_worktree`'s `action`.
+- Node built-ins load by dynamic import of a `node:` specifier. The working directory is the session's own checkout. A program's own `import()` resolves bare specifiers from cc's install (the location of `src/codeMode/runtime.ts`) and relative ones from `src/codeMode/`, never from the cwd: use `node:` specifiers or absolute paths. A plugin's own module imports resolve from the plugin's checkout instead.
+- Some plugin names exist only inside a program: they are absent from `tools/list` and the REST listing, `describe_tools` lists them like any tool, and a call from outside a program is `TOOL_UNKNOWN`. Such a call runs inside the program, not through the tool gate. A plugin may also be unavailable on this machine (`TOOL_UNAVAILABLE` 409) or fail to load (`PLUGIN_LOAD_FAILED` 500). The mechanism is [plugins.md → `runCode`](plugins.md).
 - `run_code` called from inside a program is refused [`SCRIPT_NESTED`](#refusals).
 - A program's calls get no tool-result nudge (`SELF_TITLE_NUDGE`, `LANDING_RENEW_NUDGE`): those ride the calling tool's PostToolUse hook, keyed by the CLI's toolUseId, which a REST-alias call does not carry ([protocol.md](protocol.md) → Tool-result nudges).
 - A program cannot wait for a worker: `spawn_instance` and `send_prompt` return at once, and the worker's turn end wakes the session as usual.
 
-## Plugin modules
-
-A plugin can hand a program a live object, such as a connected browser page, that its MCP tools cannot return. The plugin declares one ES module in `conductor.plugin.json` (`runCodeModule`, [plugins.md](plugins.md)); a program loads it with `await cc.<ns>.import(name?)`, for example `cc.code_browser.import()` or `cc.code_browser.import('screenshot')`. `<ns>` is the plugin's namespace, spelled as for its tools (`-` written `_`); `cc['code-browser'].import()` and `cc[ns].import()` work too.
-
-- **`import` is reserved in every plugin namespace.** A manifest declaring an `mcp` tool named `import` is `invalid` (`'mcp.tools[i].name' cannot be 'import'…`), `checkPaths` accepts `cc.<ns>.import(` for any namespace (a tool-less plugin included), and `describe_tools` never lists it. There is no top-level `cc.import`.
-- **`name` is optional**; when given it must be a non-empty string, else the call rejects `ARGS_INVALID` (400) before any lookup.
-- **Routing is the plugin's job.** `runCodeModule` is one entry file; the factory receives `ctx.module` and picks what to return.
-
-**Module interface**
-
-```js
-// <plugin checkout>/run-code/index.mjs
-export default async function (ctx) {
-  return { /* what the program gets */ };
-}
-```
-
-| `ctx` field | Value |
-|---|---|
-| `pluginId` | the plugin's id |
-| `baseUrl` | `http://<cc loopback host>:<port>/plugins/<id>` (no trailing slash), through cc's reverse proxy, not the backend's raw port: the proxy waits out a lazy start, stays stable across restarts and admits a WebSocket upgrade with no `Origin` header. `null` when the manifest declares no `backend`. Proxy failures keep the proxy's statuses (`404` unknown or disabled, `503` failed or crashed with `tail`, `502` unreachable) |
-| `caller.sessionId` | the calling session's public id |
-| `caller.project` | that session's project, or `null` |
-| `cc` | the program's own `cc`, so a module calls tools through the same gate as the session |
-| `module` | the `name` the program passed to `import`, or `null` for `import()` |
-
-- The default export is a function (sync or async); what it returns or resolves to is what `cc.<ns>.import` resolves to. A `.js` file is ESM or CJS by its nearest `package.json`; either way the default export is the factory.
-- **Lazy, and memoized per run.** The child resolves and evaluates nothing until a program calls `import`. Node evaluates the entry file **at most once per run**; the factory runs **once per `(plugin, name)`** and its result is memoized, so repeat calls return the same promise. Each `run_code` call is a new process, so an edited module is picked up by the next run.
-- **Failures are memoized per `(plugin, name)`.** A factory that throws or rejects fails only its own name; the plugin's other names still load. A failure while **evaluating the entry file** (a syntax error, a missing dependency, a top-level throw) fails **every** name, because Node caches a module whose evaluation threw.
-- **Dependencies** resolve from the module's own location: the plugin's active checkout `node_modules`, then ancestor directories, never cc's install. The plugin must have its dependencies installed in the **active** checkout (a worktree with no `node_modules` falls through to ancestors).
-- **Identity is advisory.** A module's direct HTTP or WebSocket request to its backend carries whatever identity the module puts on it, and the backend cannot verify it came from a real run: `/mcp` has no auth and the loopback ports are reachable by any local process (see [plugins.md → Tool audience](plugins.md#tool-audience)). A module runs in the calling program's own process with the program's full authority, the run channel included (`CC_RUN_TOKEN`, `fetch`, the `cc` object): it is not isolated from the program, which is the same trust as any plugin code. A backend that wants cc-attributed identity takes the call through its MCP tool via `ctx.cc`.
-- **Environment.** The child inherits cc's `process.env` unscrubbed, like the plugin's own backend and the agent's Bash. A module reads its context from `ctx`, never from env.
-- **Large or binary output.** There is no image channel. A module returns a **file path** the agent opens with Read, written outside the caller's checkout under the plugin's data dir. A plan-mode child cannot write files, so a module that must work there sends the bytes to its backend, which writes them under `$CONDUCTOR_PLUGIN_DATA_DIR` and returns the path.
-- **Plan mode.** Modules load (reads are granted) and the network stays open; writes are denied ([Plan mode](#plan-mode)). A module that uses Playwright's `connectOverCDP` must pass `artifactsDir`, or it fails in plan mode because `mkdtemp` is denied.
-- **Remote.** A remote caller is refused [`SCRIPT_UNAVAILABLE_REMOTE`](#refusals) before any child spawns. A plugin whose project is on another system is `MODULE_UNAVAILABLE`, and its Settings row carries `RUN_CODE_MODULE_LOCAL_ONLY`.
-
-**Errors.** `import` rejects with a `ConductorError`:
-
-| `code` | `status` | When |
-|---|---|---|
-| `ARGS_INVALID` | 400 | `name` is given and is not a non-empty string |
-| `MODULE_UNKNOWN` | 404 | no discovered `ok` plugin has that id, or it declares no `runCodeModule`; or the factory threw or rejected an error whose `code` is `MODULE_UNKNOWN` (the plugin's routing refused the name), passed through with its message as `reason` |
-| `MODULE_UNAVAILABLE` | 409 | the plugin declares a module but cannot supply it; `reason` names: disabled; `invalid` / `incompatible` (with the manifest errors); project on another system; checkout not locatable |
-| `MODULE_LOAD_FAILED` | 500 | `import()` threw (syntax error, missing dependency, top-level throw), the default export is not a function, or any other factory throw or rejection. `reason` is `<plugin id>: <thrown error's name>: <its message>` (for example `code-browser: TypeError: …`); `cause` is the original error |
-| `RUN_TOKEN_INVALID` | 403 | the lookup route was called without a live run token for this session (guards the route; a program cannot trigger it) |
-
-Lookup goes through the id index of `ok` plugins, so the losing project of a duplicate-id conflict is never loaded. A backend that is stopped, crashed or failed does not block loading: the module's first request through `baseUrl` lazy-starts it or gets the proxy's `503`.
-
 ## `describe_tools`
 
-An in-script tool only: it is composed into a request that carries a run token (`describeToolsTool`), so it is in neither `tools/list` nor `GET /mcp/<sid>/tools`, and a call without a token is `TOOL_UNKNOWN`. Its source is the request's own live composition (`ctx.tools` plus `ctx.textOnlyTools`), so a plugin tool that appears between two calls is in the second, and a tool outside the session's audience is absent; it hides itself and `run_code`.
+An in-script tool only: it is composed into a request that carries a run token (`describeToolsTool`), so it is in neither `tools/list` nor `GET /mcp/<sid>/tools`, and a call without a token is `TOOL_UNKNOWN`. Its source is the request's own live composition (`ctx.tools`, `ctx.textOnlyTools`, and the plugin names only a program can call, `ctx.runCodeMembers`, appended after the tools), so a plugin tool that appears between two calls is in the second, and a tool outside the session's audience is absent; it hides itself and `run_code`.
 
 | Input | Meaning |
 |---|---|
@@ -202,7 +154,8 @@ Between the child and cc; not an application API.
 | Token | minted per run (`RunRegistry.open`), revoked when the process settles (`close`); a grandchild that outlives the run cannot call afterwards |
 | `x-cc-run-token` (`RUN_TOKEN_HEADER`) | on every call and on the result delivery. A token that is unknown, spent, or belongs to another session is `403` `RUN_TOKEN_INVALID`. A valid one sets `ctx.run` (so `run_code` refuses `SCRIPT_NESTED`) and composes `describe_tools` in |
 | `POST /mcp/<sid>/run-result` | body `{result: string \| null, resultChars: integer, truncated: boolean, error?: {name, message, code?, status?}}`; `204` accepted; `403` `RUN_TOKEN_INVALID`; `400` `ARGS_INVALID` for another shape; `409` `RUN_RESULT_DELIVERED` — the first delivery wins |
-| `GET /mcp/<sid>/run-modules/<id>` | the `import` lookup (once per `(plugin, name)`, name-independent); requires the token (`403` `RUN_TOKEN_INVALID` without a live one for this session). `200` `{id, path, baseUrl, caller: {sessionId, project}}`; `404` `MODULE_UNKNOWN`; `409` `MODULE_UNAVAILABLE`. `path` is absolute, in the plugin's active checkout |
+| `CC_RUN_MEMBERS` | `{"<plugin id>": ["<name>", …]}` as JSON: the plugin-provided names this run's pre-check saw, so the child routes them synchronously. Names only; absent = none; malformed = child exits 2 |
+| `GET /mcp/<sid>/run-modules/<id>` | the child's lookup for a namespace, once per run on its first call into it; requires the token (`403` `RUN_TOKEN_INVALID` without a live one for this session). `200` `{id, path, baseUrl, caller: {sessionId, project}, members: [{name, inputSchema}]}`; `404` `TOOL_UNKNOWN` (plugin provides none now); `409` `TOOL_UNAVAILABLE`. `path` is absolute, in the plugin's active checkout |
 
 The result goes over this channel rather than stdout because the logs are head-capped: a result printed last would be lost behind long logs. After the result is posted the child drains its streams and exits (`1` when it carries an `error`), so leftover timers cannot print after it.
 

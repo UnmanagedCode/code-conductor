@@ -9,13 +9,13 @@ import { localSystem } from '../systems/registry.ts';
 import { LOCAL_SYSTEM_ID } from '../systems/localSystem.ts';
 import type { ExecResult } from '../systems/system.ts';
 import { dualResult, textPayload, utf8Prefix, type DualResult } from '../mcp/content.ts';
-import type { CodeModeCtx } from './ctx.ts';
+import type { CodeModeCtx, RunCodeMember } from './ctx.ts';
 import {
   RUN_LOGS_CAP, PROGRESS_HEARTBEAT_MS, PROGRESS_MIN_INTERVAL_MS, clampRunCodeTimeoutMs,
 } from './limits.ts';
 import { startProgressPump, type ProgressPump } from './progressPump.ts';
 import { literalPaths, checkPaths } from './precheck.ts';
-import { RUN_URL_ENV, RUN_TOKEN_ENV } from './runtimeApi.ts';
+import { RUN_URL_ENV, RUN_TOKEN_ENV, RUN_MEMBERS_ENV } from './runtimeApi.ts';
 import { capOutcome, type RunOutcome } from './runs.ts';
 
 const RUNTIME_PATH = fileURLToPath(new URL('./runtime.ts', import.meta.url));
@@ -87,9 +87,11 @@ export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: n
   }
   const names = new Set([...(ctx.tools ?? []).map(t => t.name), ...(ctx.textOnlyTools?.keys() ?? [])]);
   const paths = literalPaths(code);
-  const unknown = checkPaths(paths, names);
+  const members = ctx.runCodeMembers ?? new Map<string, readonly RunCodeMember[]>();
+  const memberNames = new Map([...members].map(([id, ms]) => [id, new Set(ms.map(m => m.name))] as const));
+  const unknown = checkPaths(paths, names, memberNames);
   // Paths that are tools, just not this caller's: known once barred names count.
-  const stillUnknown = new Set(checkPaths(paths, new Set([...names, ...(ctx.barredTools?.keys() ?? [])])).map(u => u.path));
+  const stillUnknown = new Set(checkPaths(paths, new Set([...names, ...(ctx.barredTools?.keys() ?? [])]), memberNames).map(u => u.path));
   const notTools = unknown.filter(u => stillUnknown.has(u.path));
   if (notTools.length > 0) {
     return refusal('TOOL_UNKNOWN',
@@ -124,7 +126,12 @@ export async function runCode({ code, timeoutMs }: { code: string; timeoutMs?: n
       stdin: Buffer.from(code),
       headCapBytes: RUN_LOGS_CAP,
       signal: ctx.signal,
-      envOverlay: { [RUN_URL_ENV]: `${ctx.selfUrl}/${encodeURIComponent(ctx.callerId)}`, [RUN_TOKEN_ENV]: token },
+      envOverlay: {
+        [RUN_URL_ENV]: `${ctx.selfUrl}/${encodeURIComponent(ctx.callerId)}`,
+        [RUN_TOKEN_ENV]: token,
+        // Names only; schemas travel on the child's lookup.
+        [RUN_MEMBERS_ENV]: JSON.stringify(Object.fromEntries([...memberNames].map(([id, ns]) => [id, [...ns]]))),
+      },
       onChunk: live ? (text) => live.onOutput(text) : undefined,
     });
   } finally {

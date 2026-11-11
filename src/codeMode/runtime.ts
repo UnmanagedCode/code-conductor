@@ -3,7 +3,7 @@
 // cc's /run-result. Anything the program prints is the run's `logs`.
 
 import {
-  createCc, serializeOutcome, RUN_TOKEN_HEADER, RUN_URL_ENV, RUN_TOKEN_ENV, type SerializedOutcome,
+  createCc, serializeOutcome, RUN_TOKEN_HEADER, RUN_URL_ENV, RUN_TOKEN_ENV, RUN_MEMBERS_ENV, type SerializedOutcome,
 } from './runtimeApi.ts';
 
 const url = process.env[RUN_URL_ENV];
@@ -11,6 +11,25 @@ const token = process.env[RUN_TOKEN_ENV];
 if (!url || !token) {
   console.error(`run_code runtime: ${RUN_URL_ENV} and ${RUN_TOKEN_ENV} are required`);
   process.exit(2);
+}
+
+// `{id: [names]}` from the server; absent means no plugin members.
+function readMembers(): Map<string, Set<string>> {
+  const raw = process.env[RUN_MEMBERS_ENV];
+  const out = new Map<string, Set<string>>();
+  if (raw === undefined || raw === '') return out;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('not an object');
+    for (const [id, names] of Object.entries(parsed)) {
+      if (!Array.isArray(names) || names.some(n => typeof n !== 'string')) throw new TypeError(`'${id}' is not a list of names`);
+      out.set(id, new Set(names as string[]));
+    }
+  } catch (e) {
+    console.error(`run_code runtime: ${RUN_MEMBERS_ENV} is malformed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(2);
+  }
+  return out;
 }
 
 async function readStdin(): Promise<string> {
@@ -47,7 +66,7 @@ process.on('unhandledRejection', (e) => { void finish(serializeOutcome({ thrown:
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...a: string[]) => (cc: unknown) => Promise<unknown>;
 try {
   const fn = new AsyncFunction('cc', await readStdin());
-  const value = await fn(createCc({ url: url as string, token: token as string }));
+  const value = await fn(createCc({ url: url as string, token: token as string, members: readMembers() }));
   await finish(serializeOutcome({ value }));
 } catch (e) {
   await finish(serializeOutcome({ thrown: e }));

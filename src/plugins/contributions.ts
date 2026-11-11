@@ -6,6 +6,7 @@ import { LOCAL_SYSTEM_ID, projectPlacement, systemHandleGeneration } from '../sy
 import { placementToken } from '../projects.ts';
 import type { System } from '../systems/system.ts';
 import { splitSkillPart, type SkillPart } from '../../shared/skillPart.ts';
+import type { RunCodeMember } from '../codeMode/ctx.ts';
 
 // What enabled plugins contribute to the conductor beyond an HTTP backend:
 // convention fragments, role bindings, playbook graphs and Claude Code plugin
@@ -53,11 +54,11 @@ export type LookedUpEntry =
   | { kind: 'ok'; entry: ContributingEntry & { backend: boolean }; enabled: boolean }
   | { kind: 'broken'; state: string; errors: string[] };
 
-// `runCodeModule`'s answer. `unavailable.reason` is what the program's
-// MODULE_UNAVAILABLE refusal carries.
+// `runCodeModule`'s answer. `unknown.reason` and `unavailable.reason` are what
+// the program's TOOL_UNKNOWN / TOOL_UNAVAILABLE refusals carry.
 export type RunCodeModuleResult =
-  | { kind: 'ok'; path: string; hasBackend: boolean }
-  | { kind: 'unknown' }
+  | { kind: 'ok'; path: string; hasBackend: boolean; members: Array<{ name: string; inputSchema: unknown }> }
+  | { kind: 'unknown'; reason: string }
   | { kind: 'unavailable'; reason: string };
 
 export interface ContributionsDeps {
@@ -535,35 +536,54 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     return out;
   }
 
-  // Where the run_code module of plugin `id` is: the absolute path in its
-  // ACTIVE checkout, or why there is none. Local-only like claudePluginDirs (the
-  // module runs in a child on cc's own machine), and read live per call. The
-  // backend's runtime state deliberately does not gate this.
+  // Every enabled, valid plugin's declared run_code members. Sync, like the
+  // other catalog reads: the MCP server calls it per request after init().
+  function runCodeMembers(): Array<{ id: string; members: RunCodeMember[] }> {
+    const out: Array<{ id: string; members: RunCodeMember[] }> = [];
+    for (const entry of contributingEntries()) {
+      const rc = entry.manifest.runCode;
+      if (rc) out.push({ id: entry.id, members: rc.members });
+    }
+    return out;
+  }
+
+  // Where plugin `id`'s run_code module is (the absolute path in its ACTIVE
+  // checkout) and which members it declares, or why there is none. `unknown`:
+  // the plugin provides no members right now (absent, broken, disabled, or no
+  // `runCode`); `unavailable`: it does, but not here (another system, or no
+  // checkout to locate). Local-only like claudePluginDirs (the module runs in a
+  // child on cc's own machine), read live per call. The backend's runtime state
+  // deliberately does not gate this.
   async function runCodeModule(id: string): Promise<RunCodeModuleResult> {
     await ensureInit();
     const found = lookupEntry(id);
-    if (!found) return { kind: 'unknown' };
+    if (!found) return { kind: 'unknown', reason: `no plugin '${id}' provides run_code members` };
     if (found.kind === 'broken') {
-      return { kind: 'unavailable', reason: `plugin '${id}' is ${found.state}: ${found.errors.join('; ')}` };
+      return { kind: 'unknown', reason: `plugin '${id}' is ${found.state}: ${found.errors.join('; ')}` };
     }
     const { entry, enabled } = found;
-    const rel = entry.manifest.runCodeModule;
-    if (!rel) return { kind: 'unknown' };
-    if (!enabled) return { kind: 'unavailable', reason: `plugin '${id}' is disabled` };
+    const rc = entry.manifest.runCode;
+    if (!rc) return { kind: 'unknown', reason: `plugin '${id}' provides no run_code members` };
+    if (!enabled) return { kind: 'unknown', reason: `plugin '${id}' is disabled` };
     let place: PluginPlacement;
     try {
       if ((await projectPlacement(entry.project))?.system !== LOCAL_SYSTEM_ID) {
-        return { kind: 'unavailable', reason: `plugin '${id}' lives on another system; its run_code module is local-only` };
+        return { kind: 'unavailable', reason: `plugin '${id}' lives on another system; its run_code members are local-only` };
       }
       place = await resolvePlacement(entry);
     } catch (e) {
       return { kind: 'unavailable', reason: `plugin '${id}' checkout cannot be located: ${errMsg(e)}` };
     }
     if (place.kind !== 'ok') return { kind: 'unavailable', reason: `plugin '${id}' checkout cannot be located: its project is not registered` };
-    return { kind: 'ok', path: path.join(place.cwd, rel), hasBackend: entry.backend };
+    return {
+      kind: 'ok',
+      path: path.join(place.cwd, rc.module),
+      hasBackend: entry.backend,
+      members: rc.members.map(({ name, inputSchema }) => ({ name, inputSchema })),
+    };
   }
 
-  return { conventions, roles, playbooks, claudePluginDirs, runCodeModule, invalidate, noteRegistryChange };
+  return { conventions, roles, playbooks, claudePluginDirs, runCodeModule, runCodeMembers, invalidate, noteRegistryChange };
 }
 
 function errMsg(e: unknown): string {

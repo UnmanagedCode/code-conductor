@@ -58,11 +58,11 @@ export function validateArgs(schema: unknown, args: unknown, toolName: unknown):
   if (!isJsonRecord(a)) return 'arguments must be an object';
   const req = Array.isArray(schema.required) ? schema.required : [];
   for (const k of req) {
-    if (typeof k !== 'string' || !(k in a)) return `missing required argument: ${k}`;
+    if (typeof k !== 'string' || !Object.hasOwn(a, k)) return `missing required argument: ${k}`;
   }
   const props = asRecord(schema.properties);
   for (const [k, v] of Object.entries(a)) {
-    const p = props[k];
+    const p = Object.hasOwn(props, k) ? props[k] : undefined;
     if (!p) {
       const allowed = Object.keys(props).join(', ') || '(none)';
       return `unexpected argument '${k}' — not a recognized parameter for ${toolName ?? 'this tool'}. Allowed: ${allowed}`;
