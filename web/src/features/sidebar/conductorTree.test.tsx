@@ -94,7 +94,7 @@ describe('conductor chips', () => {
       instances: [
         conductor('A'), conductor('B'),
         worker('w1', 'A', 'zeta'), worker('w2', 'A', 'alpha', 'wt1'), worker('w3', 'A', 'zeta'),
-        worker('dead', 'A', 'other', null, { status: 'exited', ownerSessionId: null }),
+        worker('dead', 'A', 'other', null, { status: 'exited', rootSessionId: null }),
       ],
     });
     renderSidebar();
@@ -710,7 +710,7 @@ describe('section leads', () => {
 
   it('with its section lead exited, the section lead\'s block goes and its worker sits back under the lead\'s projects', async () => {
     // Invariant: only a live section lead is a direct owner; once it exits, its worker falls back to the root owner's tree.
-    await setup((f) => patch(f, 'SL', { status: 'exited', ownerSessionId: null }));
+    await setup((f) => patch(f, 'SL', { status: 'exited', rootSessionId: null }));
     const tree = expand('L');
     expect(blockOf('SL')).toBeNull();
     expect(workerRows(projectItem(tree, 'beta')!)).toContain('SW');
@@ -736,7 +736,7 @@ describe('section leads', () => {
 
   it('a dead section-lead worker is in no tree', async () => {
     // Invariant: direct ownership is live-only — a dead worker of a live section lead is in neither the section lead's tree nor the lead's.
-    await setup((f) => patch(f, 'SW', { status: 'exited', ownerSessionId: null }));
+    await setup((f) => patch(f, 'SW', { status: 'exited', rootSessionId: null }));
     expand('L');
     expand('SL');
     expect(treeRows('SL')).toEqual([]);

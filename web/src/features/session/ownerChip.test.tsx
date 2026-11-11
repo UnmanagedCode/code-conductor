@@ -42,7 +42,7 @@ describe('owner chip', () => {
 
   // Invariant: a section lead (conducted, in .conduct) shows the back-link to its lead, coloured as the lead, and goes there on click and Alt+ArrowUp.
   it('a section lead shows the back-link to its lead and goes there on click and Alt+↑', () => {
-    const lead = { ...f.c2, conducted: true, ownerSessionId: C1 };
+    const lead = { ...f.c2, conducted: true, rootSessionId: C1 };
     show(lead);
     expect(back(C1_LABEL)).not.toBeNull();
     expect(chip()!.style.getPropertyValue('--owner-color')).toBe(conductorColor(C1));
@@ -57,7 +57,7 @@ describe('owner chip', () => {
 
   // Invariant: a section lead's worker links back to the section lead (label, colour, click and Alt+ArrowUp), not to the root conductor.
   it('a section lead\'s worker shows `Back to <section lead>` and goes there on click and Alt+↑', () => {
-    const lead = { ...f.c2, conducted: true, ownerSessionId: C1 };
+    const lead = { ...f.c2, conducted: true, rootSessionId: C1 };
     seedWorkerFleet({ ...f, c2: lead });
     const sub = { ...f.w1, callerInstanceId: lead.id };
     show(sub);
@@ -75,7 +75,7 @@ describe('owner chip', () => {
 
   // Invariant: a worker spawned by an ordinary conducted worker links to the root conductor, not to its spawner.
   it('a worker spawned by an ordinary worker shows `Back to <root conductor>`', () => {
-    const mid = { ...f.w2, sessionId: 'w-mid', id: 'i-w-mid', title: 'Wmid', ownerSessionId: C1 };
+    const mid = { ...f.w2, sessionId: 'w-mid', id: 'i-w-mid', title: 'Wmid', rootSessionId: C1 };
     seedWorkerFleet(f, [mid]);
     show({ ...f.w1, callerInstanceId: mid.id });
     expect(back(C1_LABEL)).not.toBeNull();

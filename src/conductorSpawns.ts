@@ -1,4 +1,4 @@
-// Which projects each root owner has ever had a worker spawned into, and the
+// Which projects each root has ever had a worker spawned into, and the
 // worktrees those workers ran in, derived from the spawn-time facts
 // recorded on each session (`parent` by `markConducted`, `project` / `worktree`
 // by `setSessionPlace`).
@@ -10,8 +10,8 @@ import { loadSessions, type SessionsDoc } from './sessionStore.ts';
 export interface SpawnedProject { project: string; lastSpawnAt: string; worktrees: string[] }
 export type SpawnedProjectsByRoot = Record<string, SpawnedProject[]>;
 
-// The root owner a conducted session was spawned under — the rule
-// `rootOwnerOf` (src/instances.ts) applies live: climb conducted parents to the
+// The root a conducted session was spawned under — the rule
+// `rootSessionOf` (src/instances.ts) applies live: climb conducted parents to the
 // first non-conducted session. Null when the chain cannot be followed to one (a
 // missing record, a conducted record on the chain — the worker's own included —
 // with no recorded parent, or a cycle a conductor-side resume can create by

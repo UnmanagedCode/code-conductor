@@ -79,8 +79,8 @@ async function withLongOwner(page: Page, realId: string) {
     const list = (await res.json()) as Record<string, unknown>[];
     const base = list.find((i) => i.id === realId);
     if (base) {
-      list.push({ ...base, id: `${realId}-owner`, sessionId: 'e2e-owner', title: LONG_OWNER, ownerSessionId: null });
-      list.push({ ...base, id: `${realId}-worker`, sessionId: 'e2e-worker', title: 'worker', conducted: true, ownerSessionId: 'e2e-owner' });
+      list.push({ ...base, id: `${realId}-owner`, sessionId: 'e2e-owner', title: LONG_OWNER, rootSessionId: null });
+      list.push({ ...base, id: `${realId}-worker`, sessionId: 'e2e-worker', title: 'worker', conducted: true, rootSessionId: 'e2e-owner' });
     }
     await route.fulfill({ response: res, json: list });
   });

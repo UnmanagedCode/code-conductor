@@ -1440,7 +1440,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     }
   });
 
-  // Root owner → the projects it has ever had a worker spawned into, each with
+  // Root session → the projects it has ever had a worker spawned into, each with
   // the worktrees those workers ran in (the Conductors lens's idle chips, and
   // the tree's idle project rows and recorded worktree rows on every chip
   // project). Read-only over the session store.
@@ -1851,7 +1851,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
           return;
         }
         void playbookGate.checkWorkerTool({
-          sessionId: inst.sessionId, ownerSessionId: inst.parentSessionId, toolName: body.tool_name,
+          sessionId: inst.sessionId, parentSessionId: inst.parentSessionId, toolName: body.tool_name,
         }).then(({ deny }) => { res.status(200).json(workerToolsHookBody(deny)); });
         return;
       }

@@ -54,7 +54,7 @@ async function seedFleet(cc: Cc, page: Page, uniq: (s: string) => string) {
   const workers = [aSolo, aSolo2, aMixed, bMixed, aMain, bMain, bOther].map((w) => w.sessionId);
   await expect.poll(async () => {
     const all = await insts(cc);
-    return workers.every((sid) => all.find((i) => i.sessionId === sid)?.ownerSessionId);
+    return workers.every((sid) => all.find((i) => i.sessionId === sid)?.rootSessionId);
   }, { message: 'every worker reports its owner', timeout: 20_000 }).toBe(true);
 
   return { P, O, a, b, aSid: a.sessionId, aLabel, colA, colB, aSolo, aSolo2, aMixed, bMixed, aMain, bMain, bOther, hand };

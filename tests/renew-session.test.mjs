@@ -2003,7 +2003,7 @@ test('a target with LIVE SUBAGENTS is refused on the request path too', async ()
 // to that root owner and fails here rather than being masked.
 async function renewalTurnActors(srv) {
   const { condSid, wSid, worker } = await pair(srv);
-  worker.rootOwnerSessionId = 'c-root-owner-not-the-requester';
+  worker.rootSessionId = 'c-root-owner-not-the-requester';
   const starts = [];
   srv.instances.on('turn_started', (t) => { if (t.sessionId === wSid) starts.push(t.actor); });
   const req = await callTool(srv.baseUrl, 'renew_session', {

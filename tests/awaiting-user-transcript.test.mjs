@@ -260,7 +260,7 @@ test('SessionRow: list reads leave archived and conducted rows null; deriveAwait
   assert.equal(listed.get(live).awaitingUserSource, 'tool');
   assert.equal(listed.get(archived).awaitingUser, null, 'archived: not derived in a list read');
   assert.equal(listed.get(conducted).awaitingUser, null, 'conducted: never carries the flag');
-  assert.ok(!('ownerSessionId' in listed.get(live)), 'a disk row has no owner key');
+  assert.ok(!('rootSessionId' in listed.get(live)) && !('parentSessionId' in listed.get(live)), 'a disk row carries neither spawn-tree key');
 
   const described = await rowsOf({ deriveAwaitingFor: archived });
   assert.equal(described.get(archived).awaitingUser, 'question');

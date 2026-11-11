@@ -25,12 +25,12 @@ export const conductor = (sid: string, over: Record<string, any> = {}): any =>
   inst({ sessionId: sid, project: '.conduct', temp: true, ...over });
 export const worker = (sid: string, owner: string, project: string, wt: string | null = null, over: Record<string, any> = {}): any =>
   inst({
-    sessionId: sid, project, conducted: true, temp: true, ownerSessionId: owner,
+    sessionId: sid, project, conducted: true, temp: true, rootSessionId: owner,
     worktree: wt ? { worktreeName: wt } : null, firstPrompt: `${sid} prompt`, ...over,
   });
 export const hand = (sid: string, project: string, wt: string | null = null, over: Record<string, any> = {}): any =>
   inst({
-    sessionId: sid, project, conducted: false, temp: false, ownerSessionId: null,
+    sessionId: sid, project, conducted: false, temp: false, rootSessionId: null,
     worktree: wt ? { worktreeName: wt } : null, firstPrompt: `${sid} prompt`, ...over,
   });
 export const proj = (name: string, over: Record<string, any> = {}): any => ({

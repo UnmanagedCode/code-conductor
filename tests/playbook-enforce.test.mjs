@@ -1987,7 +1987,7 @@ test('a NON-ROOT conductor\'s send is attributed to itself, not to the root cond
     assert.ok(w.sessionId, JSON.stringify(w));
     const wInst = await waitFor(() => instForSession(t.instances, w.sessionId));
     await waitFor(() => wInst.status === 'idle');
-    assert.equal(wInst.rootOwnerSessionId, conductorSid, 'premise: W\'s root owner is the root conductor');
+    assert.equal(wInst.rootSessionId, conductorSid, 'premise: W\'s root owner is the root conductor');
 
     const sent = await t.callAs(lead.sessionId, 'send_prompt', { sessionId: w.sessionId, text: 'go' });
     assert.notEqual(sent.ok, false, JSON.stringify(sent));

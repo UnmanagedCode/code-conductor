@@ -317,7 +317,7 @@ describe('AppSidebar', () => {
       projects: [{ name: 'api', path: '/p', workspace: 'Acme', system: 'local', remoteId: null, worktrees: [] }] as any,
       instances: [
         inst({ sessionId: 'cond', project: '.conduct' }),
-        inst({ sessionId: 's', project: 'api', conducted: true, ownerSessionId: 'cond' }),
+        inst({ sessionId: 's', project: 'api', conducted: true, rootSessionId: 'cond' }),
       ] as any,
     });
     renderSidebar();

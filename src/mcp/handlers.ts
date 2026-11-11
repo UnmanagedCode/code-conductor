@@ -216,9 +216,10 @@ export const CONDUCTOR_VIEW_KEYS = [
   'autoResumeAt',
   'overageActive',
   'overageResetsAt',
-  // Live ownership (the root conductor of a live worker) and the sticky ask —
-  // what a conductor-first view groups and sorts by.
-  'ownerSessionId',
+  // Spawn-tree links (root conductor and immediate spawner of a live worker) and
+  // the sticky ask — what a conductor-first view groups and sorts by.
+  'rootSessionId',
+  'parentSessionId',
   'awaitingUser',
   'awaitingUserSource',
 ];
@@ -1378,7 +1379,7 @@ function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): Soft
 
 // The event-log actor of a conductor's send: the MCP caller that sent it, so a
 // non-root conductor (a section lead) is attributed to itself. Empty with no
-// caller, which leaves Instance.prompt's root-owner fallback.
+// caller, which leaves Instance.prompt's root fallback.
 function senderActor(callerId: string | null | undefined): { actor?: { type: 'conductor'; sessionId: string } } {
   return callerId ? { actor: { type: 'conductor', sessionId: callerId } } : {};
 }

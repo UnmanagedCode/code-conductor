@@ -63,7 +63,7 @@ const rows: Record<string, SessionItem[]> = {
   shop: [row('s1', 'fix login bug'), row('s2', 'docs pass')],
   'shop:feat-x': [row('s3', 'login page')],
   api: [row('s4', 'rotate keys')],
-  'api:hotfix': [row('s5', 'patch tls', { conducted: true, ownerSessionId: 'cond-a' })],
+  'api:hotfix': [row('s5', 'patch tls', { conducted: true, rootSessionId: 'cond-a' })],
   tools: [row('s6', 'lint sweep', { instanceId: 'i-s6' })],
 };
 
@@ -81,7 +81,7 @@ function run(query: string, filter = '') {
     showsProject: (p) => scopeShowsProject({ project: p, ...scope, direct: direct.get(p.name) ?? [], ownedProjects: new Set(owner ? ['api'] : []) }),
     mainShown: (p) => scopeShowsMain({ project: p, ...scope, direct: direct.get(p.name) ?? [], total: (rows[p.name] ?? []).length }).sessions,
     worktreesOf: (p) => scopeWorktrees({ project: p, worktrees: p.worktrees, ...scope }),
-    rowsOf: (project, w) => (rows[w ? `${project}:${w}` : project] ?? []).filter((r) => (owner ? r.ownerSessionId === owner : filter === 'hand' ? !r.conducted : true)),
+    rowsOf: (project, w) => (rows[w ? `${project}:${w}` : project] ?? []).filter((r) => (owner ? r.rootSessionId === owner : filter === 'hand' ? !r.conducted : true)),
   });
 }
 

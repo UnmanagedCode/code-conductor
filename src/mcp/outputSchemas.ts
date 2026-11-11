@@ -153,7 +153,8 @@ const CONDUCTOR_VIEW_TYPES: Record<string, Schema> = {
   autoResumeAt: nullable(num),
   overageActive: bool,
   overageResetsAt: nullable(num),
-  ownerSessionId: nullable(str),
+  rootSessionId: nullable(str),
+  parentSessionId: nullable(str),
   awaitingUser: AWAITING_USER,
   awaitingUserSource: AWAITING_USER_SOURCE,
 };

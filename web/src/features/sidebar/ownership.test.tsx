@@ -100,7 +100,7 @@ describe('Projects-lens ownership colour', () => {
     // Invariant: only a live owner draws a bar; a conducted flag alone does not.
     const f = fleet();
     f.projects = f.projects.map((p) => (p.name === 'mixed' ? { ...p, worktrees: [wt('mix', { sessions: { count: 1, lastActivity: 5 } })] } : p));
-    f.instances.push(worker('ex', A, 'mixed', 'mix', { status: 'exited', ownerSessionId: null }));
+    f.instances.push(worker('ex', A, 'mixed', 'mix', { status: 'exited', rootSessionId: null }));
     loadSessions.mockImplementation(async (_p: string, w: string | null) =>
       (w === 'mix' ? [disk('disk-c', 'old conducted', { conducted: true, lastActivity: 5 })] : []));
     seedFleet(f);
@@ -140,7 +140,7 @@ describe('Projects-lens ownership colour', () => {
     const before = rowOf('wa-main1');
     expect(barOf(before)).toEqual({ bar: true, color: COLOUR.A });
     act(() => appStore.set({
-      instances: f.instances.map((i) => (i.sessionId === 'wa-main1' ? { ...i, status: 'exited', ownerSessionId: null } : i)),
+      instances: f.instances.map((i) => (i.sessionId === 'wa-main1' ? { ...i, status: 'exited', rootSessionId: null } : i)),
     }));
     await settle();
     expect(rowOf('wa-main1') === before).toBe(true);
@@ -274,14 +274,14 @@ describe('section-lead owner colour', () => {
 
   it("with the section lead exited, its worker falls back to the lead's colour", async () => {
     // Invariant: only a live section lead is a direct owner; once it exits, the row carries the root owner's colour and name.
-    await setup((f) => move(f, 'SL', { status: 'exited', ownerSessionId: null }));
+    await setup((f) => move(f, 'SL', { status: 'exited', rootSessionId: null }));
     expect(barOf(rowOf('SW'))).toEqual({ bar: true, color: L_COLOUR });
     expect(openOf('SW').title).toMatch(/\nconductor: Lead$/);
   });
 
   it('a dead worker of a live section lead carries no owner colour and names no conductor', async () => {
     // Invariant: a session row's owner is the live-gated direct owner — a worker with no reported owner is nobody's, even while the section lead that spawned it is live.
-    await setup((f) => move(f, 'SW', { status: 'exited', ownerSessionId: null }));
+    await setup((f) => move(f, 'SW', { status: 'exited', rootSessionId: null }));
     expect(rowOf('SW')).not.toBeNull();
     expect(barOf(rowOf('SW'))).toEqual(NO_BAR);
     expect(openOf('SW').title).not.toContain('conductor:');
@@ -290,7 +290,7 @@ describe('section-lead owner colour', () => {
 
   it("a worktree whose only worker is a live section lead's dead worker has no owner on its head", async () => {
     // Invariant: the worktree-head owner map is live-gated — a dead worker of a live section lead adds no owner to its place.
-    await setup((f) => move(f, 'SW', { worktree: { worktreeName: 'wt-b' }, status: 'exited', ownerSessionId: null }));
+    await setup((f) => move(f, 'SW', { worktree: { worktreeName: 'wt-b' }, status: 'exited', rootSessionId: null }));
     expect(headOf('wt-b')).not.toBeNull();
     expect(barOf(headOf('wt-b'))).toEqual(NO_BAR);
     expect(headOf('wt-b').hasAttribute('title')).toBe(false);

@@ -82,9 +82,9 @@ describe('groupProjects', () => {
 describe('filter', () => {
   const instances = [
     inst({ sessionId: 'cond', project: '.conduct', id: 'c1', title: 'Big refactor' }),
-    inst({ sessionId: 'w1', project: 'api', ownerSessionId: 'cond', conducted: true }),
+    inst({ sessionId: 'w1', project: 'api', rootSessionId: 'cond', conducted: true }),
     inst({ sessionId: 'hand-owner', project: 'api' }),
-    inst({ sessionId: 'w2', project: 'api', ownerSessionId: 'hand-owner', conducted: true }),
+    inst({ sessionId: 'w2', project: 'api', rootSessionId: 'hand-owner', conducted: true }),
   ];
   const conductors = deriveConductors({ conductRows: [], instances });
   it('offers All, Hand-spawned, each conductor with a chip (by title), then other live owners', () => {
@@ -106,10 +106,10 @@ describe('filterProjects', () => {
     // Invariant: the filter's project set is the owner's chip projects (direct workers, registered spawn history) unioned with the projects of the live instances whose root owner it is; another owner's and a hand session's projects stay out.
     const instances = [
       inst({ sessionId: 'L', project: '.conduct' }),
-      inst({ sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L' }),
-      inst({ sessionId: 'LW', project: 'alpha', conducted: true, ownerSessionId: 'L' }),
-      inst({ sessionId: 'SW', project: 'beta', conducted: true, ownerSessionId: 'L', callerInstanceId: 'i-SL' }),
-      inst({ sessionId: 'OW', project: 'other', conducted: true, ownerSessionId: 'O' }),
+      inst({ sessionId: 'SL', project: '.conduct', conducted: true, rootSessionId: 'L' }),
+      inst({ sessionId: 'LW', project: 'alpha', conducted: true, rootSessionId: 'L' }),
+      inst({ sessionId: 'SW', project: 'beta', conducted: true, rootSessionId: 'L', callerInstanceId: 'i-SL' }),
+      inst({ sessionId: 'OW', project: 'other', conducted: true, rootSessionId: 'O' }),
       inst({ sessionId: 'HS', project: 'hand' }),
     ];
     const spawns = { L: [{ project: 'idle', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }] };
@@ -122,14 +122,14 @@ describe('filterProjects', () => {
 describe('revealTarget', () => {
   const projects = [{ name: 'api', workspace: 'Acme', worktrees: [] }] as any[];
   it('opens the workspace, the worktree group and the place, and the owning conductor', () => {
-    const w = inst({ sessionId: 'w', project: 'api', worktree: { worktreeName: 'wt1' }, ownerSessionId: 'cond', conducted: true });
+    const w = inst({ sessionId: 'w', project: 'api', worktree: { worktreeName: 'wt1' }, rootSessionId: 'cond', conducted: true });
     const conductors = deriveConductors({ conductRows: [], instances: [inst({ sessionId: 'cond', project: '.conduct' }), w] });
     const t = revealTarget({ inst: w, instances: [w], projects, conductors, filter: '' });
     expect(t).toMatchObject({ workspace: 'Acme', worktreesOf: 'api', sessionsKey: 'api:wt1', conductor: 'cond', sectionLead: null, inactive: false, filter: null });
   });
   it('opens Inactive for a worker of a dead conductor; a selected conductor opens no bubble', () => {
     const c = inst({ sessionId: 'cond', project: '.conduct', status: 'exited' });
-    const w = inst({ sessionId: 'w', project: 'api', ownerSessionId: 'cond', conducted: true });
+    const w = inst({ sessionId: 'w', project: 'api', rootSessionId: 'cond', conducted: true });
     const instances = [c, w];
     const conductors = deriveConductors({ conductRows: [], instances });
     expect(revealTarget({ inst: w, instances, projects, conductors, filter: '' })).toMatchObject({ conductor: 'cond', inactive: true });
@@ -138,8 +138,8 @@ describe('revealTarget', () => {
   it('selecting a section lead expands its lead\'s tree; a top-level conductor opens no bubble', () => {
     // Invariant: a conducted .conduct session reveals as a worker of its lead; a non-conducted one is a conductor and reveals nothing.
     const L = inst({ sessionId: 'L', project: '.conduct' });
-    const H = inst({ sessionId: 'H', project: '.conduct', conducted: false, ownerSessionId: null });
-    const SL = inst({ sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L' });
+    const H = inst({ sessionId: 'H', project: '.conduct', conducted: false, rootSessionId: null });
+    const SL = inst({ sessionId: 'SL', project: '.conduct', conducted: true, rootSessionId: 'L' });
     const instances = [L, SL, H];
     const conductors = deriveConductors({ conductRows: [], instances });
     expect(revealTarget({ inst: SL, instances, projects, conductors, filter: '' })).toMatchObject({ conductor: 'L', inactive: false, sessionsKey: null, workspace: null, filter: null });
@@ -149,9 +149,9 @@ describe('revealTarget', () => {
   it('a section lead\'s worker reveals its section lead as well as its lead', () => {
     // Invariant: a worker whose live direct owner differs from its root owner names that owner as sectionLead; the root stays the conductor, and a worker owned directly by its lead (or the section lead itself) names none.
     const L = inst({ sessionId: 'L', project: '.conduct' });
-    const SL = inst({ sessionId: 'SL', project: '.conduct', conducted: true, ownerSessionId: 'L' });
-    const LW = inst({ sessionId: 'LW', project: 'api', conducted: true, ownerSessionId: 'L' });
-    const SW = inst({ sessionId: 'SW', project: 'api', conducted: true, ownerSessionId: 'L', callerInstanceId: 'i-SL' });
+    const SL = inst({ sessionId: 'SL', project: '.conduct', conducted: true, rootSessionId: 'L' });
+    const LW = inst({ sessionId: 'LW', project: 'api', conducted: true, rootSessionId: 'L' });
+    const SW = inst({ sessionId: 'SW', project: 'api', conducted: true, rootSessionId: 'L', callerInstanceId: 'i-SL' });
     const instances = [L, SL, LW, SW];
     const conductors = deriveConductors({ conductRows: [], instances });
     expect(revealTarget({ inst: SW, instances, projects, conductors, filter: '' })).toMatchObject({ conductor: 'L', sectionLead: 'SL' });
@@ -160,7 +160,7 @@ describe('revealTarget', () => {
   });
   it('switches a filter that hides the row: to the owner, Hand-spawned, or All', () => {
     const conductors = { live: [], inactive: [] };
-    const owned = inst({ sessionId: 'w', project: 'api', ownerSessionId: 'cond', conducted: true });
+    const owned = inst({ sessionId: 'w', project: 'api', rootSessionId: 'cond', conducted: true });
     const hand = inst({ sessionId: 'h', project: 'api' });
     const orphan = inst({ sessionId: 'o', project: 'api', conducted: true });
     const instances = [owned, hand, orphan];

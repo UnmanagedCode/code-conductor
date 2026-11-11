@@ -15,10 +15,10 @@ const cond = (sid, o = {}) => ({
   id: `inst-${sid}`, project: '.conduct', sessionId: sid, status: 'idle', createdAt: 1000, ...o,
 });
 const handInst = (sid, o = {}) => ({
-  id: `inst-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: false, ownerSessionId: null, createdAt: 1000, ...o,
+  id: `inst-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: false, rootSessionId: null, createdAt: 1000, ...o,
 });
 const workerInst = (sid, owner, o = {}) => ({
-  id: `inst-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: true, ownerSessionId: owner, createdAt: 1000, ...o,
+  id: `inst-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: true, rootSessionId: owner, createdAt: 1000, ...o,
 });
 
 function strip(instances, conductRows = []) {
@@ -308,7 +308,7 @@ test('a section lead is in no strip group in any run state; the lead and a hand 
     const g = strip([
       cond('L'),
       handInst('HS', { status: 'turn' }),
-      cond('SL', { conducted: true, ownerSessionId: 'L', status }),
+      cond('SL', { conducted: true, rootSessionId: 'L', status }),
     ]);
     assert.deepEqual(groupOf(g, 'SL'), [], `section lead (${status}) is listed nowhere`);
     assert.deepEqual(groupOf(g, 'L').length, 1, 'the lead is listed');

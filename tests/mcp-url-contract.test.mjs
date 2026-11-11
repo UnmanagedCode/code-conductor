@@ -70,7 +70,8 @@ test('/mcp/<sessionId> attributes the call: titles the caller, owns what it spaw
     const spawned = await post(mcpUrl(srv.baseUrl, { caller: sid, format: 'text' }),
       call('spawn_instance', { project: 'uc-attr', mode: 'bypassPermissions' }));
     const view = JSON.parse(spawned.body.result.content[0].text);
-    assert.equal(view.ownerSessionId, sid, 'the spawned worker is owned by the path caller');
+    assert.equal(view.rootSessionId, sid, 'the spawned worker is rooted at the path caller');
+    assert.equal(view.parentSessionId, sid, 'and its parent is the path caller');
   } finally { await srv.close(); }
 });
 

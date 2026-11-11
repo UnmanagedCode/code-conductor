@@ -24,7 +24,8 @@ export type Instance = {
   pristine?: boolean;
   conducted?: boolean;
   callerInstanceId?: string | null;
-  ownerSessionId?: string | null;
+  rootSessionId?: string | null;
+  parentSessionId?: string | null;
   awaitingWake?: boolean;
   waitingOnJob?: boolean;
   awaitingUser?: 'question' | 'plan' | null;

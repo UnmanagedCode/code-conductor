@@ -24,7 +24,7 @@ export function useSidebarModel() {
       rows: [...conductRows, ...[...sessionsCache.values()].flat()],
     });
     // Root owners scope the conductor filter; direct owners (a live section lead over its lead) colour the rows and worktree heads.
-    const owners = ownersByPlace(instances, (i) => i.ownerSessionId ?? null);
+    const owners = ownersByPlace(instances, (i) => i.rootSessionId ?? null);
     const barOwners = ownersByPlace(instances, (i) => liveDirectOwnerOf(i, instances));
     const byId = new Map(instances.map((i) => [i.id, i]));
     /** A session row's direct owner, from its live instance; a disk-only row has none. */

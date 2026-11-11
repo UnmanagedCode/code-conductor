@@ -81,7 +81,7 @@ function parts(project: string) {
 /** A project row listed alone: no Sessions subnode, no Worktrees group, no rows, no hint. */
 const BARE = { sessions: false, worktrees: false, rows: 0, hint: false };
 /** The fleet's instances with each of B's workers exited (the server clears a dead instance's owner). */
-const withoutB = (f: Fleet) => f.instances.map((i) => (i.ownerSessionId === B ? { ...i, status: 'exited', ownerSessionId: null } : i));
+const withoutB = (f: Fleet) => f.instances.map((i) => (i.rootSessionId === B ? { ...i, status: 'exited', rootSessionId: null } : i));
 /** The fleet plus a worktree `solo-b` holding only B's worker, so `solo` lists a worktree A does not hold. */
 function splitSolo(): Fleet {
   const f = fleet();
