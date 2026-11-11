@@ -46,7 +46,7 @@ Reported as `postWorktreeCreate` (spawn and `create_worktree` results) and `post
 - A hook never fails its operation: the worktree stays created and the merge stays landed (`ok: true`) whatever the hook reports.
 - Read the create result in the response that created the worktree: `create_worktree`'s `postWorktreeCreate`, or `spawn_instance({createWorktree:true})`'s `worktree.postWorktreeCreate`. `list_sessions` / `describe_session` don't show it. It is `null` on a spawn into an existing worktree and on a resume.
 - The merge result is only returned to the caller, never stored.
-- The web UI shows a create result in the spawn dialog when `ran` is true, and a merge result in the merge toast, whose failure warning quotes only the last lines of `output`. **Print the line that matters last.**
+- The web UI's spawn dialog (`SpawnDialog.tsx`) shows a create result whenever a hook was found (it ran, was skipped, or errored), with `output` expandable and expanded on failure; it stays silent only when no hook exists. The merge toast's failure warning quotes only the last lines of `output`. **Print the line that matters last.**
 - **Never print secrets**: a create hook's `output` is also served in the web UI's session list (`GET /api/instances`).
 - A merge waits for its hook inside the server's HTTP request timeout (300 s, Node's default `requestTimeout`): a merge timeout raised past it drops the merge response while the merge has still landed.
 
