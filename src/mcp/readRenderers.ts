@@ -204,7 +204,8 @@ const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'lastRotatedAt', default: null, label: 'rotated', fmt: ts },
   { key: 'rotationReason', default: null, label: 'rotated-by' },
   { key: 'segmentCount', default: 1, label: 'segments' },
-  { key: 'ownerSessionId', default: null, label: 'owner' },
+  { key: 'rootSessionId', default: null, label: 'root' },
+  { key: 'parentSessionId', default: null, label: 'parent' },
   { key: 'awaitingUser', default: null, label: 'awaiting-user' },
   { key: 'awaitingUserSource', default: null, label: 'awaiting-user-via' },
 ];

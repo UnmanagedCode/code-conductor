@@ -206,7 +206,7 @@ describe('session lifecycle relays', () => {
     for (const opts of [{ author: 'human' }, { author: 'conductor' }, {}, { internal: true, author: 'human' }]) {
       const worker = await instances.create({ project: name, mode: 'bypassPermissions', conducted: true, callerInstanceId: owner.id });
       await idle(worker.id);
-      assert.equal(worker.rootOwnerSessionId, owner.sessionId, 'premise: the worker\'s root owner is the spawner');
+      assert.equal(worker.rootSessionId, owner.sessionId, 'premise: the worker\'s root owner is the spawner');
       const from = seen.length;
       await worker.prompt('go', [], opts);
       await waitFor(() => of(worker.sessionId, from).some(x => x.e === 'turn_ended'));

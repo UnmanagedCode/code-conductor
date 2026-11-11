@@ -241,7 +241,7 @@ interface InstanceConstructorInput {
   conducted?: boolean;
   callerInstanceId?: string | null;
   parentSessionId?: string | null;
-  rootOwnerSessionId?: string | null;
+  rootSessionId?: string | null;
   debug?: boolean;
   claudePluginDirs?: string[];
   conventionSkillsDir?: string | null;
@@ -399,14 +399,14 @@ export function isDeadStatus(status: unknown): boolean {
   return status === 'exited' || status === 'crashed';
 }
 
-// The root owner a new instance inherits from its spawner: a conducted caller
+// The root a new instance inherits from its spawner: a conducted caller
 // passes on its own root, anything else IS the root. Resolved once at create so a
 // grandchild stays attributed to its conductor after the intermediate worker has
 // exited and left byId. By induction the result is a non-conducted session's id,
 // or null.
-function rootOwnerOf(caller: Instance | undefined): string | null {
+function rootSessionOf(caller: Instance | undefined): string | null {
   if (!caller) return null;
-  return caller.conducted ? caller.rootOwnerSessionId : caller.sessionId;
+  return caller.conducted ? caller.rootSessionId : caller.sessionId;
 }
 
 // An instance with a process attached, or inside a window where one is coming
@@ -766,8 +766,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   parentSessionId: string | null;
   // Public sessionId of the root of this instance's live spawn chain, resolved
   // once at create (see _doCreateResolved) and never persisted. Reported as
-  // summary().ownerSessionId only while this conducted instance is live.
-  rootOwnerSessionId: string | null;
+  // summary().rootSessionId only while this conducted instance is live.
+  rootSessionId: string | null;
   // The sticky ask this session is waiting on the user for (src/awaitingUser.ts),
   // hydrated from the transcript at launch and reduced from live events after.
   // Never set on a conducted worker; never persisted.
@@ -986,7 +986,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootOwnerSessionId = null, debug = false, claudePluginDirs = [], conventionSkillsDir = null, launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootSessionId = null, debug = false, claudePluginDirs = [], conventionSkillsDir = null, launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
     super();
     this.id = id;
     this._platform = platform;
@@ -1063,7 +1063,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // build a caller→workers map for the sub-agent panel.
     this.callerInstanceId = callerInstanceId ?? null;
     this.parentSessionId = parentSessionId ?? null;
-    this.rootOwnerSessionId = rootOwnerSessionId ?? null;
+    this.rootSessionId = rootSessionId ?? null;
     this._awaitingUser = null;
     this.liveTurnEnds = 0;
     this.lastTurnError = false;
@@ -1463,6 +1463,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     const gate = this._overageGate ? this._overageGate() : { active: false, resetsAt: null };
     // A pristine conductor listed under its draft shows the draft; a manual title wins.
     const title = this.title ?? this.draftTitle;
+    const linked = this.conducted && !isDeadStatus(this.status);
     return {
       id: this.id,
       project: this.project,
@@ -1505,9 +1506,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       pristine: this.pristine,
       conducted: this.conducted,
       callerInstanceId: this.callerInstanceId,
-      // The root conductor's public id — for a live conducted worker only; a
-      // dead instance and a hand-spawned session report null.
-      ownerSessionId: this.conducted && !isDeadStatus(this.status) ? this.rootOwnerSessionId : null,
+      // Spawn-tree links (public sessionIds) — for a live conducted worker only; a
+      // dead instance and a hand-spawned session report null for both.
+      rootSessionId: linked ? this.rootSessionId : null,
+      parentSessionId: linked ? this.parentSessionId : null,
       awaitingUser: this._awaitingUser?.kind ?? null,
       awaitingUserSource: this._awaitingUser?.source ?? null,
       debug: this.debug,
@@ -3784,7 +3786,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // owner.
     this._turnActor = actor ?? (internal ? null
       : author === 'human' ? { type: 'human' }
-      : author === 'conductor' ? { type: 'conductor', ...(this.rootOwnerSessionId ? { sessionId: this.rootOwnerSessionId } : {}) }
+      : author === 'conductor' ? { type: 'conductor', ...(this.rootSessionId ? { sessionId: this.rootSessionId } : {}) }
       : null);
     this._setStatus('turn');
     this._turnActor = null;
@@ -4644,7 +4646,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     const author = combineAuthors(entries.map(e => e.author));
     // The turn's actor: the one sender when every parked steer had the same one.
     // Steers from DIFFERENT conductors open a turn no single conductor owns —
-    // `{type:'conductor'}` with no sessionId, never the root owner, who may be
+    // `{type:'conductor'}` with no sessionId, never the root, who may be
     // neither sender. Any other mix falls back to the combined author.
     const same = entries.every(e => JSON.stringify(e.actor) === JSON.stringify(entries[0].actor));
     const actor: Actor | undefined = same ? entries[0].actor : author === 'conductor' ? { type: 'conductor' } : undefined;
@@ -5811,7 +5813,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // isIdleCaller covers.
   //
   // The tree is every conducted session carrying the root's durable attribution
-  // (rootOwnerSessionId, fixed at create) plus everything those and the root own
+  // (rootSessionId, fixed at create) plus everything those and the root own
   // transitively (ownedTreeOf). The ownership walk alone is not enough: a section
   // lead that leaves byId (a temp one's exit, a remove) takes its ownership edges
   // with it, while its workers may still be mid-turn.
@@ -5823,7 +5825,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const jobWaiting = this._jobWaiters();
     const seeds = [rootId];
     for (const inst of this.byId.values()) {
-      if (inst.conducted && root.sessionId && inst.rootOwnerSessionId === root.sessionId) seeds.push(inst.id);
+      if (inst.conducted && root.sessionId && inst.rootSessionId === root.sessionId) seeds.push(inst.id);
     }
     const tree = new Set<string>();
     for (const seed of seeds) {
@@ -6679,7 +6681,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       conducted: conductedFlag,
       callerInstanceId: callerInstanceId ?? null,
       parentSessionId: (callerInstanceId ? this.byId.get(callerInstanceId)?.sessionId : null) ?? null,
-      rootOwnerSessionId: rootOwnerOf(callerInstanceId ? this.byId.get(callerInstanceId) : undefined),
+      rootSessionId: rootSessionOf(callerInstanceId ? this.byId.get(callerInstanceId) : undefined),
       // `debug` falls back to the persisted conductor-wide default only when
       // the caller omitted it (undefined) — an explicit true/false always wins.
       // `??` also treats an explicit `null` as "omitted" (falls through to the

@@ -193,7 +193,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'backend, model, contextTokens, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
         'lastResponseAt, queuedCount, autoResumeAt, ' +
-        'overageActive, overageResetsAt, ownerSessionId, awaitingUser, awaitingUserSource, ' +
+        'overageActive, overageResetsAt, rootSessionId, parentSessionId, awaitingUser, awaitingUserSource, ' +
         'awaitingWake, playbook, stage}. ' +
         fmt('Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
           'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity',
@@ -214,8 +214,10 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'rotated has a fresh context, not a stalled one. `segmentCount` is how many times over. ' +
         '`worktree` is the worktree\'s full metadata object (or null)' +
         fmt('; the rendering shows its name', '') + '. ' +
-        '`ownerSessionId` is the sessionId of the conductor at the root of a live worker\'s spawn ' +
-        'chain — null for a hand-spawned session, and for any session that is not live. ' +
+        '`rootSessionId` is the sessionId of the conductor at the root of a live worker\'s spawn chain; ' +
+        '`parentSessionId` is the session that spawned or last resumed it — for a section lead\'s worker, the ' +
+        'section lead — and still names that session after it exits. Both are null for a hand-spawned ' +
+        'session and for any session that is not live. ' +
         '`awaitingUser` (`question` | `plan` | null) says the session asked the user something and no ' +
         'real user message has arrived since; `awaitingUserSource` is `tool` (AskUserQuestion / ' +
         'ExitPlanMode) or `text` (a turn that ended asking). It is sticky, never set on a conducted ' +
@@ -223,7 +225,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'answer_question, approve_plan, reject_plan) counts as a real user message and clears it. ' +
         fmt('The rendering omits pid / createdAt, names a firstPrompt the server or the CLI wrote (`Wake: …`, ' +
           'a forward by its instruction\'s first line, `Context renewed`) rather than printing it raw, and shows ' +
-          'temp / conducted / debug / overage / auto-resume / resumes-hot / owner / awaiting-user only ' +
+          'temp / conducted / debug / overage / auto-resume / resumes-hot / root / parent / awaiting-user only ' +
           'when they deviate from ' +
           'their default — so anything on a `flags` line is news. ' +
           '**`resumes-hot` means resuming that session comes up in bypassPermissions**',

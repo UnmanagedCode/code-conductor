@@ -275,7 +275,7 @@ test('surfaces: GET /api/instances, GET /api/projects/:name/sessions, and the li
   const row = rows.find(r => r.id === inst.id);
   assert.equal(row.awaitingUser, 'question');
   assert.equal(row.awaitingUserSource, 'text');
-  assert.equal(row.ownerSessionId, null, 'a hand-spawned session has no owner');
+  assert.equal(row.rootSessionId, null, 'a hand-spawned session has no root');
 
   // An inactive row: a seeded transcript no process is attached to.
   const sid = `ee00ff11-0000-4000-8000-${String(++n).padStart(12, '0')}`;
@@ -287,7 +287,7 @@ test('surfaces: GET /api/instances, GET /api/projects/:name/sessions, and the li
   const disk = (Array.isArray(sessions) ? sessions : sessions.sessions).find(s => s.sessionId === sid);
   assert.equal(disk.awaitingUser, 'plan');
   assert.equal(disk.awaitingUserSource, 'tool');
-  assert.ok(!('ownerSessionId' in disk));
+  assert.ok(!('rootSessionId' in disk) && !('parentSessionId' in disk));
 
   const listed = await mcpText('list_sessions', { project: inst.project });
   const liveBlock = listed.slice(listed.indexOf(`LIVE ${inst.sessionId}`));

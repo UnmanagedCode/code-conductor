@@ -69,7 +69,7 @@ async function rig(seed, conductors) {
   const instances = stubManager(conductors);
   const gate = createPlaybookGate({ instances, lease: OPEN_LEASE, file: () => file });
   const rows = async () => (await readEventLog(file)).slice(seed.length).map(({ v, ts, ...r }) => r);
-  const ask = (sessionId, toolName, ownerSessionId = OWNER) => gate.checkWorkerTool({ sessionId, ownerSessionId, toolName });
+  const ask = (sessionId, toolName, parentSessionId = OWNER) => gate.checkWorkerTool({ sessionId, parentSessionId, toolName });
   return { gate, rows, ask, instances };
 }
 
@@ -221,12 +221,12 @@ test('a log that cannot be loaded fails open, with a warning', async () => {
   const dir = await mkdtemp('cc-pbworkertools-dir-');
   const gate = createPlaybookGate({ instances: stubManager({ [OWNER]: 'enforce' }), lease: OPEN_LEASE, file: () => dir });
   const seen = await warnings(async () => {
-    assert.deepEqual(await gate.checkWorkerTool({ sessionId: 'w1', ownerSessionId: OWNER, toolName: 'Edit' }), { deny: null });
+    assert.deepEqual(await gate.checkWorkerTool({ sessionId: 'w1', parentSessionId: OWNER, toolName: 'Edit' }), { deny: null });
   });
   assert.ok(seen.some(m => m.includes('worker-tools')), `warned: ${JSON.stringify(seen)}`);
 });
 
 test('a session with no sessionId yet passes', async () => {
   const r = await rig(IN_REVIEW, { [OWNER]: 'enforce' });
-  assert.deepEqual(await r.gate.checkWorkerTool({ sessionId: null, ownerSessionId: OWNER, toolName: 'Edit' }), { deny: null });
+  assert.deepEqual(await r.gate.checkWorkerTool({ sessionId: null, parentSessionId: OWNER, toolName: 'Edit' }), { deny: null });
 });

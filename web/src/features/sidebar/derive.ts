@@ -20,7 +20,7 @@ export type SessionItem = {
   conducted?: boolean;
   archived?: boolean;
   synthetic?: boolean;
-  ownerSessionId?: string | null;
+  rootSessionId?: string | null;
   playbook?: string | null;
   stage?: string | null;
   [k: string]: unknown;
@@ -50,7 +50,7 @@ export function mergeLive(onDisk: any[] | null | undefined, live: Instance[]): S
       row.instanceWaitingOnJob = !!inst.waitingOnJob;
       row.conducted = !!inst.conducted || !!row.conducted;
       if (inst.title) row.title = inst.title;
-      row.ownerSessionId = inst.ownerSessionId ?? null;
+      row.rootSessionId = inst.rootSessionId ?? null;
     } else {
       byId.set(inst.sessionId, sessionFromInstance(inst));
     }
@@ -111,7 +111,7 @@ export function chipsOf(sid: string, instances: Instance[], spawns: Record<strin
 export function filterProjects(owner: string, instances: Instance[], spawns: Record<string, SpawnedProject[]>, registered: Set<string>): Set<string> {
   return new Set([
     ...chipsOf(owner, instances, spawns, registered).map((c) => c.project),
-    ...instances.filter((i) => i.ownerSessionId === owner).map((i) => i.project),
+    ...instances.filter((i) => i.rootSessionId === owner).map((i) => i.project),
   ]);
 }
 
@@ -124,7 +124,7 @@ export function filterOptions(
     if (chipsOf(c.sessionId, instances, spawns, registered).length > 0) order.push(c.sessionId);
   }
   for (const i of instances) {
-    const sid = i.ownerSessionId;
+    const sid = i.rootSessionId;
     if (sid && !order.includes(sid)) order.push(sid);
   }
   return [
@@ -137,7 +137,7 @@ export function filterOptions(
 /** Does `filter` show this instance's row? */
 export function filterShows(filter: Filter, inst: Instance) {
   const owner = filterOwner(filter);
-  if (owner) return inst.ownerSessionId === owner;
+  if (owner) return inst.rootSessionId === owner;
   return filter === 'hand' ? !inst.conducted : true;
 }
 
@@ -147,7 +147,7 @@ export type ScopeCtx = { filter: Filter; owners: Map<string, Set<string>>; byWor
 /** A place's rows under the scope: an owner's (live) rows, or the non-conducted ones for Hand. */
 export function scopeSessionRows<T extends SessionItem>(rows: T[], filter: Filter): T[] {
   const owner = filterOwner(filter);
-  return rows.filter((s) => (owner ? s.ownerSessionId === owner : filter === 'hand' ? !s.conducted : true));
+  return rows.filter((s) => (owner ? s.rootSessionId === owner : filter === 'hand' ? !s.conducted : true));
 }
 
 const worktreeHasHand = (project: string, wt: Worktree, byWorktree: ScopeCtx['byWorktree']) =>
@@ -180,7 +180,7 @@ export function scopeShowsMain({ project, direct, total, filter, owners, byWorkt
   const owner = filterOwner(filter);
   if (owner) {
     return {
-      sessions: direct.some((i) => i.ownerSessionId === owner),
+      sessions: direct.some((i) => i.rootSessionId === owner),
       worktrees: worktrees.some((wt) => owners.get(placeKeyOf(project.name, wt.worktreeName))?.has(owner)),
     };
   }
@@ -248,7 +248,7 @@ export function revealTarget({ inst, instances, projects, conductors, filter }: 
 }): RevealTarget {
   const t: RevealTarget = { workspace: null, worktreesOf: null, sessionsKey: null, conductor: null, sectionLead: null, inactive: false, filter: null };
   const isConductor = isTopLevelConductor(inst);
-  const conductorSid = isConductor ? inst.sessionId : inst.ownerSessionId;
+  const conductorSid = isConductor ? inst.sessionId : inst.rootSessionId;
   const inInactive = conductors.inactive.some((c) => c.sessionId === conductorSid);
   if (conductorSid && (inInactive || conductors.live.some((c) => c.sessionId === conductorSid))) {
     if (!isConductor) t.conductor = conductorSid;
@@ -256,7 +256,7 @@ export function revealTarget({ inst, instances, projects, conductors, filter }: 
   }
   if (!isConductor) {
     const direct = liveDirectOwnerOf(inst, instances);
-    if (direct && direct !== inst.ownerSessionId) t.sectionLead = direct;
+    if (direct && direct !== inst.rootSessionId) t.sectionLead = direct;
   }
   const p = isConductor ? null : projects.find((q) => q.name === inst.project);
   if (p) {
@@ -265,7 +265,7 @@ export function revealTarget({ inst, instances, projects, conductors, filter }: 
     const wt = wtName(inst);
     if (wt) t.worktreesOf = p.name;
     t.sessionsKey = placeKeyOf(p.name, wt);
-    if (!filterShows(filter, inst)) t.filter = inst.ownerSessionId || (inst.conducted ? '' : 'hand');
+    if (!filterShows(filter, inst)) t.filter = inst.rootSessionId || (inst.conducted ? '' : 'hand');
   }
   return t;
 }

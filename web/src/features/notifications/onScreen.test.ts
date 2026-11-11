@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // (the notifications.test.ts rig injects its own predicate instead).
 
 const inst = (sid: string, o: Record<string, unknown> = {}) => ({
-  id: `i-${sid}`, project: 'proj', sessionId: sid, status: 'turn', conducted: false, ownerSessionId: null,
+  id: `i-${sid}`, project: 'proj', sessionId: sid, status: 'turn', conducted: false, rootSessionId: null,
   createdAt: 1000, liveAsks: 0, liveTurnEnds: 0, lastTurnError: false, awaitingUser: null, awaitingUserSource: null, ...o,
 });
 const done = (sid: string) => inst(sid, { status: 'idle', liveTurnEnds: 1 });

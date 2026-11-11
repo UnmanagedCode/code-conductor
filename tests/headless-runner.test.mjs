@@ -166,7 +166,7 @@ test('a grandchild whose section lead was removed still holds the run until it i
   // A section lead: a `.conduct` session — the only kind of spawned session offered spawn_instance.
   const lead = await spawnWorker(r.root, WORKER_GATED, path.join(home, 'lead-stdin.jsonl'), { project: CONDUCT_PROJECT_NAME, playbook: 'section-lead', stage: 'section-lead' });
   const grandchild = await spawnWorker(lead, WORKER_GATED, path.join(home, 'grandchild-stdin.jsonl'), { project: 'demo2' });
-  assert.equal(grandchild.rootOwnerSessionId, r.root.sessionId, 'fixture check: durable root attribution at depth 2');
+  assert.equal(grandchild.rootSessionId, r.root.sessionId, 'fixture check: durable root attribution at depth 2');
   await grandchild.promptOrQueueSteer('work');
   await waitFor(() => grandchild.status === 'turn');
   await server.instances.remove(lead.id);

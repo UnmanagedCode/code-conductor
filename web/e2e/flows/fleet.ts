@@ -4,7 +4,7 @@ import { conductorColor } from '../../../shared/conductorColor.ts';
 import { api, LIVE_WORKER_MODEL, mcpCall } from '../harness/api.ts';
 import { expect, type Cc } from '../harness/fixtures.ts';
 
-export type FleetInst = { id: string; sessionId: string; status: string; temp?: boolean; ownerSessionId?: string | null };
+export type FleetInst = { id: string; sessionId: string; status: string; temp?: boolean; rootSessionId?: string | null };
 
 export const insts = async (cc: Cc): Promise<FleetInst[]> => (await api<FleetInst[]>(cc, 'GET', '/api/instances')).body;
 export const liveModel = (cc: Cc) => (cc.engine === 'live' ? { model: LIVE_WORKER_MODEL } : {});

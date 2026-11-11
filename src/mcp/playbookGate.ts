@@ -43,7 +43,7 @@
 // call of every session; the binding and the stage's `workerTools` are read
 // per call, so a move or a definition edit governs the next call. Answers
 // `{deny: reason}` or `{deny: null}`; a match writes one `refused` row by the
-// worker at either level. Level = the owner conductor's (live, else folded,
+// worker at either level. Level = the parent conductor's (live, else folded,
 // else the Settings default). It FAILS OPEN — passes and warns — when the
 // binding's playbook or stage is no longer loaded or the log cannot be loaded:
 // failing closed would deny every tool on every session until restart, since
@@ -91,9 +91,9 @@ export interface PlaybookGate {
   // the caller named — see InstanceManager.resolveResumeRef.
   check(input: { toolName: unknown; args: unknown; callerId: string | null; resumeHandle?: string }): Promise<GateOutcome>;
   // A worker's OWN tool call against its stage's `workerTools` (header →
-  // THE SECOND SCOPE). `ownerSessionId` is the conductor that spawned or
+  // THE SECOND SCOPE). `parentSessionId` is the conductor that spawned or
   // resumed it, the source of the level. Never throws.
-  checkWorkerTool(input: { sessionId: string | null; ownerSessionId: string | null; toolName: string }): Promise<{ deny: string | null }>;
+  checkWorkerTool(input: { sessionId: string | null; parentSessionId: string | null; toolName: string }): Promise<{ deny: string | null }>;
   // READ SURFACE for the introspection tools (src/mcp/handlers.ts). Named methods
   // rather than handing out the log, so there is exactly one projection in the
   // process — a second one folded independently would drift from the one that
@@ -284,7 +284,7 @@ export function createPlaybookGate(
   }
 
   async function checkWorkerTool(
-    { sessionId, ownerSessionId, toolName }: { sessionId: string | null; ownerSessionId: string | null; toolName: string },
+    { sessionId, parentSessionId, toolName }: { sessionId: string | null; parentSessionId: string | null; toolName: string },
   ): Promise<{ deny: string | null }> {
     const pass = { deny: null };
     if (!sessionId) return pass;
@@ -308,11 +308,11 @@ export function createPlaybookGate(
       const resolved = resolveWorkerTool(stage, toolName);
       if (resolved.decision === 'allow') return pass;
       const { key } = resolved;
-      const owner = ownerSessionId ? instances?.liveForSession(ownerSessionId) ?? null : null;
-      const liveOwner = owner && isConductorInstance(owner) ? owner : null;
-      const mode: PlaybookEnforcement = liveOwner?.playbookEnforcement
-        ?? (ownerSessionId && proj.enforcement.has(ownerSessionId)
-          ? normalizePlaybookEnforcement(proj.enforcement.get(ownerSessionId))
+      const parent = parentSessionId ? instances?.liveForSession(parentSessionId) ?? null : null;
+      const liveParent = parent && isConductorInstance(parent) ? parent : null;
+      const mode: PlaybookEnforcement = liveParent?.playbookEnforcement
+        ?? (parentSessionId && proj.enforcement.has(parentSessionId)
+          ? normalizePlaybookEnforcement(proj.enforcement.get(parentSessionId))
           : await getDefaultPlaybookEnforcement());
       const reason = workerToolDeniedReason({ playbook: bound.playbook, stage: bound.stage, toolName, key });
       await append({
@@ -320,7 +320,7 @@ export function createPlaybookGate(
         outcome: 'refused', refusal: { code: WORKER_TOOL_DENIED_IN_STAGE, reason },
       });
       if (mode === 'warn') {
-        liveOwner?._emitUi({
+        liveParent?._emitUi({
           kind: 'system', subtype: 'playbook_warn',
           data: { tool: toolName, code: WORKER_TOOL_DENIED_IN_STAGE, reason, sessionId },
         });

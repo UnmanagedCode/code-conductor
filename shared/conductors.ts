@@ -2,7 +2,7 @@
 // colour. No DOM: every function maps the rows the sidebar already receives
 // (`/api/instances` and the `.conduct` disk list) to plain values.
 //
-// Ownership is live-only by construction: the server reports `ownerSessionId`
+// Ownership is live-only by construction: the server reports `rootSessionId`
 // (the root conductor of a spawn chain) only on a live conducted instance
 // (null on a hand-spawned session and on anything dead, never on a disk row),
 // so nothing here needs its own liveness check to decide what a conductor
@@ -36,7 +36,7 @@ export type InstanceFields = {
   mode?: string;
   temp?: boolean;
   conducted?: boolean;
-  ownerSessionId?: string | null;
+  rootSessionId?: string | null;
   callerInstanceId?: string | null;
   awaitingWake?: boolean;
   waitingOnJob?: boolean;
@@ -106,7 +106,7 @@ export type InstanceSessionRow<S extends string | null = string | null> = {
   instanceAwaitingWake: boolean;
   instanceWaitingOnJob: boolean;
   conducted: boolean;
-  ownerSessionId: string | null;
+  rootSessionId: string | null;
   playbook: string | null;
   stage: string | null;
   synthetic: true;
@@ -149,7 +149,7 @@ export function sessionFromInstance<I extends InstanceFields>(inst: I): Instance
     instanceAwaitingWake: !!inst.awaitingWake,
     instanceWaitingOnJob: !!inst.waitingOnJob,
     conducted: !!inst.conducted,
-    ownerSessionId: inst.ownerSessionId ?? null,
+    rootSessionId: inst.rootSessionId ?? null,
     playbook: inst.playbook ?? null,
     stage: inst.stage ?? null,
     synthetic: true,
@@ -259,17 +259,17 @@ export function sectionLeadRow(inst: InstanceFields & { sessionId: string }, con
 
 // Who owns a worker, nearest first: the instance that spawned it when that is
 // a live section lead (conducted, in `.conduct`, with a session), else the
-// root owner the server reports.
+// root the server reports (`rootSessionId`).
 export function directOwnerOf(inst: InstanceFields, instances: readonly InstanceFields[]): string | null {
   const spawner = inst.callerInstanceId ? instances.find(i => i.id === inst.callerInstanceId) : undefined;
   if (spawner && spawner.project === CONDUCT_PROJECT && spawner.conducted && isLiveStatus(spawner.status) && spawner.sessionId) return spawner.sessionId;
-  return inst.ownerSessionId ?? null;
+  return inst.rootSessionId ?? null;
 }
 
 // directOwnerOf for a live owned instance only: null wherever the server
 // reports no owner, so a dead worker of a live section lead is nobody's.
 export function liveDirectOwnerOf(inst: InstanceFields, instances: readonly InstanceFields[]): string | null {
-  return inst.ownerSessionId ? directOwnerOf(inst, instances) : null;
+  return inst.rootSessionId ? directOwnerOf(inst, instances) : null;
 }
 
 // A conductor's live direct workers: a live section lead's workers belong to

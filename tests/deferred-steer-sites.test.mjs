@@ -299,7 +299,7 @@ async function leadSession() {
 // Run `send` against `inst`, drive the stop + turn end, and return the actor of
 // the turn the flushed steer opens.
 async function steeredTurnActor(inst, send) {
-  inst.rootOwnerSessionId = ROOT_OWNER;
+  inst.rootSessionId = ROOT_OWNER;
   const starts = [];
   const onStart = (t) => { if (t.sessionId === inst.sessionId) starts.push(t.actor); };
   instances.on('turn_started', onStart);

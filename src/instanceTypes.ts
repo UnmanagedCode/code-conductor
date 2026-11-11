@@ -74,9 +74,10 @@ export interface InstanceSummary {
   pristine?: boolean;
   // The sidebar's label for the session, never empty (sessionLabel, shared/promptPreview.ts).
   displayLabel: string;
-  // Live ownership + the sticky ask (docs/architecture.md → "Ownership and
-  // awaitingUser"). `ownerSessionId` is non-null only on a live conducted row.
-  ownerSessionId?: string | null;
+  // Spawn-tree links + the sticky ask (docs/architecture.md → "Ownership and
+  // awaitingUser"). Both links are non-null only on a live conducted row.
+  rootSessionId?: string | null;
+  parentSessionId?: string | null;
   awaitingUser?: 'question' | 'plan' | null;
   awaitingUserSource?: 'tool' | 'text' | null;
   // The latest top-level API call's prompt (contextReading), or null until a

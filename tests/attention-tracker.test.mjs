@@ -11,11 +11,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { createAttentionTracker } = await import(pathToFileURL(path.resolve(__dirname, '..', 'shared', 'attention.ts')).href);
 
 const hand = (sid, o = {}) => ({
-  id: `i-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: false, ownerSessionId: null,
+  id: `i-${sid}`, project: 'p', sessionId: sid, status: 'idle', conducted: false, rootSessionId: null,
   createdAt: 1000, liveAsks: 0, liveTurnEnds: 0, lastTurnError: false, awaitingUser: null, awaitingUserSource: null, ...o,
 });
 const cond = (sid, o = {}) => hand(sid, { project: '.conduct', ...o });
-const worker = (sid, owner, o = {}) => hand(sid, { conducted: true, ownerSessionId: owner, ...o });
+const worker = (sid, owner, o = {}) => hand(sid, { conducted: true, rootSessionId: owner, ...o });
 const kinds = (ts) => ts.map(t => `${t.kind}:${t.sessionId}`);
 
 // A tracker that has already seen `first`, so its baselines are set.
@@ -244,7 +244,7 @@ test('held → Waiting → ask cleared emits one waiting and no finished', () =>
 
 // Invariant: a section lead entering Finished raises no transition; the lead does.
 test('a section lead finishing a turn notifies nothing; its lead does', () => {
-  const sl = (o = {}) => cond('SL', { conducted: true, ownerSessionId: 'L', ...o });
+  const sl = (o = {}) => cond('SL', { conducted: true, rootSessionId: 'L', ...o });
   const t = seen([cond('L', { status: 'turn' }), sl({ status: 'turn' })]);
   assert.deepEqual(kinds(t.observe([cond('L', { liveTurnEnds: 1 }), sl({ liveTurnEnds: 1 })])), ['finished:L']);
 });
