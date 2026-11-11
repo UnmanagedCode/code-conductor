@@ -478,3 +478,22 @@ test('a null-prototype factory object resolves only what it owns', async () => {
     return out;`));
   assert.deepEqual(v, ['h', 'PLUGIN_LOAD_FAILED']);
 });
+
+// PINS: a name only a built-in prototype supplies (Map.prototype.get, Function.prototype.call) never answers a declared member —
+// PLUGIN_LOAD_FAILED, not the intrinsic and not a raw engine TypeError — while a user subclass's own method still resolves.
+test('built-in prototypes never supply members: Map, a Map subclass and a Function.prototype object', async () => {
+  await serve('mapres', 'export default () => new Map();', { members: ['get', 'entries'] });
+  await serve('mapsub', `class Api extends Map { async connect() { return 'c'; } }
+    export default () => new Api();`, { members: ['connect', 'get'] });
+  await serve('fnproto', 'export default () => Object.create(Function.prototype);', { members: ['call', 'bind'] });
+  const v = value(await run(`
+    const out = {};
+    for (const [ns, m] of [['mapres', 'get'], ['mapres', 'entries'], ['mapsub', 'connect'], ['mapsub', 'get'], ['fnproto', 'call'], ['fnproto', 'bind']]) {
+      try { out[ns + '.' + m] = ['ok', await cc[ns][m]({})]; } catch (e) { out[ns + '.' + m] = [e.code, e.name]; }
+    }
+    return out;`));
+  for (const k of ['mapres.get', 'mapres.entries', 'mapsub.get', 'fnproto.call', 'fnproto.bind']) {
+    assert.deepEqual(v[k], ['PLUGIN_LOAD_FAILED', 'ConductorError'], k);
+  }
+  assert.deepEqual(v['mapsub.connect'], ['ok', 'c']);
+});

@@ -58,9 +58,19 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 const PLUGIN_SEP = '__';
 
-// Whether `name` is a property of `obj` or of a prototype strictly below Object.prototype.
-function definedBelowObjectPrototype(obj: object, name: string): boolean {
-  for (let o: object | null = obj; o !== null && o !== Object.prototype; o = Object.getPrototypeOf(o) as object | null) {
+// A prototype the engine supplies (Object.prototype, Map.prototype,
+// Function.prototype, …): its own `constructor` is a native function.
+function isIntrinsicPrototype(o: object): boolean {
+  const ctor = Object.getOwnPropertyDescriptor(o, 'constructor')?.value as unknown;
+  return typeof ctor === 'function' && /\[native code\]/.test(Function.prototype.toString.call(ctor));
+}
+
+// Whether `name` is defined by `obj` itself or by a user-defined prototype
+// above it (a class instance's methods live there). The walk stops at the first
+// intrinsic prototype, so a built-in method of the same name is never a member.
+function definedByUserCode(obj: object, name: string): boolean {
+  for (let o: object | null = obj; o !== null; o = Object.getPrototypeOf(o) as object | null) {
+    if (o !== obj && isIntrinsicPrototype(o)) return false;
     if (Object.hasOwn(o, name)) return true;
   }
   return false;
@@ -151,9 +161,9 @@ export function createCc(opts: CcOptions): unknown {
     if (bad) throw new ConductorError('ARGS_INVALID', bad, 400);
     const obj = await load(id, info);
     // Resolved along the prototype chain (a class instance's methods live
-    // there), but a name only Object.prototype supplies (`toString`,
-    // `constructor`, …) is not an implementation.
-    if (!definedBelowObjectPrototype(obj, m) || typeof obj[m] !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no function '${m}'`));
+    // there), but a built-in prototype's method (`toString`, `Map#get`, …) is
+    // not an implementation.
+    if (!definedByUserCode(obj, m) || typeof obj[m] !== 'function') throw loadFailed(id, new TypeError(`the loaded module has no function '${m}'`));
     return Reflect.apply(obj[m] as (...a: unknown[]) => unknown, obj, [args ?? {}]);
   };
 
