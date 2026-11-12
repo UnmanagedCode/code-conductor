@@ -210,6 +210,12 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-library',
+    name: 'Code Library',
+    description: 'Save reusable run_code modules and run them from any later program with cc.code_library.run.',
+    repo: 'https://github.com/UnmanagedCode/code-library',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
