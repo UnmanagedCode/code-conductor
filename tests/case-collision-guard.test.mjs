@@ -7,10 +7,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -87,9 +87,8 @@ test('rule A flags full paths and implied directories that differ only by case',
   });
 });
 
-test('repoPaths lists tracked and untracked files, not ignored ones', (t) => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'cc-case-collision-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+test('repoPaths lists tracked and untracked files, not ignored ones', () => {
+  const dir = mkdtempSync('cc-case-collision-');
   const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
   git('init', '-q');
   writeFileSync(path.join(dir, 'JsonTree.tsx'), '');
