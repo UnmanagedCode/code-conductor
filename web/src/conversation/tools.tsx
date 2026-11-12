@@ -17,7 +17,7 @@ import { CALL_USAGE_TITLE, callUsageText, describeToolInput, formatElapsed, rend
 import { ImageZoom } from './ImageZoom';
 import { tokenizeJs, type JsTokenKind } from './jsTokens';
 import { SYNTAX_CLASS } from './syntaxClass';
-import { JsonTree } from './JsonTree';
+import { JsonTreeView } from './JsonTreeView';
 import { defaultOpen, detectJson, toResultParts, type JsonContainer } from './jsonTree';
 
 export type RenderCtx = {
@@ -352,7 +352,7 @@ function ArgsJson({ text, parsed = false, node, model }: { text: string; parsed?
     >
       <summary className="cursor-pointer text-xs text-muted-foreground select-none hover:text-foreground">Arguments</summary>
       {doc
-        ? <div className="mt-1 max-h-80 overflow-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs leading-5"><JsonTree doc={doc} source={text} isOpen={isOpen} onToggle={onToggle} /></div>
+        ? <div className="mt-1 max-h-80 overflow-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs leading-5"><JsonTreeView doc={doc} source={text} isOpen={isOpen} onToggle={onToggle} /></div>
         : <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs leading-5">{text}</pre>}
     </details>
   );
@@ -397,7 +397,7 @@ export function ResultBlock({ node, model }: { node: ResultNode; model: Conversa
             {parts.map((p, i) => p.kind === 'text'
               ? <pre key={i} className="whitespace-pre-wrap">{showText(p.text)}</pre>
               : (
-                <JsonTree
+                <JsonTreeView
                   key={i}
                   doc={p.doc}
                   source={p.text}
