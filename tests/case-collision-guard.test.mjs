@@ -66,6 +66,11 @@ test('rule B flags test files too', () => {
     [['fx/a/Foo.test.ts', 'fx/a/foo.test.tsx']]);
 });
 
+test('rule B treats .json as a module extension', () => {
+  assert.deepEqual(moduleStemCollisions(['fx/a/Config.json', 'fx/a/config.ts']),
+    [['fx/a/Config.json', 'fx/a/config.ts']]);
+});
+
 test('rule B leaves distinct stems and non-module extensions alone', async (t) => {
   const rows = {
     'a renamed component beside its helper and its test': ['fx/conv/JsonTreeView.tsx', 'fx/conv/jsonTree.ts', 'fx/conv/jsonTree.test.ts'],
