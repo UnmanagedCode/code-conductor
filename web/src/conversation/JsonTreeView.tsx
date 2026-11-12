@@ -78,7 +78,7 @@ function JsonValue({ node, k, idx, comma, ctx }: { node: JsonNode; k: string | n
 }
 
 /** One JSON block as an indented, foldable tree of text children only (never HTML), with a copy of its exact source. */
-export function JsonTree({ doc, source, isOpen, onToggle }: {
+export function JsonTreeView({ doc, source, isOpen, onToggle }: {
   doc: JsonDoc; source: string; isOpen: (n: JsonContainer) => boolean; onToggle: (n: JsonContainer, open: boolean) => void;
 }) {
   const ctx = React.useMemo<Ctx>(() => ({ source, isOpen, onToggle }), [source, isOpen, onToggle]);
