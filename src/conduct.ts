@@ -30,6 +30,15 @@ export function isConductorInstance(inst: { project: string } | null | undefined
   return !!inst && inst.project === CONDUCT_PROJECT_NAME;
 }
 
+// A session's kind: the word the MCP tool audience gates on (`callerKindOf`,
+// src/mcp/server.ts) and the one a session's child env carries as
+// CC_SESSION_KIND — one function, so the two cannot drift. A section lead is a
+// `.conduct` session and reads `conductor`.
+export type SessionKind = 'conductor' | 'worker';
+export function sessionKindOf(inst: { project: string } | null | undefined): SessionKind {
+  return isConductorInstance(inst) ? 'conductor' : 'worker';
+}
+
 // Idempotent: ensures the `.conduct` dir exists (it is the cwd of every
 // conductor session, so it must be present before spawn) and that its
 // `CLAUDE.md` imports the generated role doc.

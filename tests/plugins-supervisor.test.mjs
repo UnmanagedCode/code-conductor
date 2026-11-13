@@ -272,14 +272,20 @@ test('readiness via healthPath; child gets $PORT and reaches ready', async (t) =
   assert.ok(rec.startedAt);
 });
 
-// An outer cc's CONDUCTOR_MCP_URL (this server itself running as a worker)
-// never reaches a plugin child: only the env the registry hands over names it.
-test('a plugin child gets CONDUCTOR_MCP_URL from its env only, never inherited', async (t) => {
-  const saved = process.env.CONDUCTOR_MCP_URL;
-  process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
+// An outer cc's CONDUCTOR_MCP_URL / CONDUCTOR_URL and its session identity
+// (this server itself running as a worker) never reach a plugin child: only the
+// env the registry hands over names them, and a backend serves many sessions.
+test('a plugin child gets CONDUCTOR_MCP_URL, CONDUCTOR_URL and no session identity from its env only, never inherited', async (t) => {
+  const planted = {
+    CONDUCTOR_MCP_URL: 'http://outer.invalid/mcp/planted',
+    CONDUCTOR_URL: 'http://outer.invalid',
+    CC_SESSION_ID: 'outer-planted',
+    CC_SESSION_KIND: 'planted',
+  };
+  const saved = Object.fromEntries(Object.keys(planted).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, planted);
   t.after(() => {
-    if (saved === undefined) delete process.env.CONDUCTOR_MCP_URL;
-    else process.env.CONDUCTOR_MCP_URL = saved;
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   });
   const sup = createSupervisor();
   const bare = await startAndSettle(t, sup, {
@@ -290,6 +296,9 @@ test('a plugin child gets CONDUCTOR_MCP_URL from its env only, never inherited',
   });
   const env = await (await fetch(`http://127.0.0.1:${bare.rec.port}/env`)).json();
   assert.equal(env.mcpUrl, null);
+  assert.equal(env.conductorUrl, null);
+  assert.equal(env.sessionId, null);
+  assert.equal(env.sessionKind, null);
 });
 
 test('readiness via readyWhen stdout regex', async (t) => {

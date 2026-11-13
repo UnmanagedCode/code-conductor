@@ -570,6 +570,25 @@ describe('T2: the spawn env', () => {
     }
   });
 
+  // Hooks and MCP servers run where the CLI runs — on this machine, inside the
+  // chroot — so a remote worker carries its session identity exactly like a
+  // local one. Outer values are planted so "carries" cannot mean "inherited".
+  test('every worker, local and remote, carries its own CC_SESSION_ID and CC_SESSION_KIND', async () => {
+    const saved = { CC_SESSION_ID: process.env.CC_SESSION_ID, CC_SESSION_KIND: process.env.CC_SESSION_KIND };
+    process.env.CC_SESSION_ID = 'outer-planted';
+    process.env.CC_SESSION_KIND = 'planted';
+    try {
+      for (const project of ['app', 'localproj']) {
+        const inst = await spawnIn(project);
+        await waitFor(() => inst.sessionId);
+        assert.equal(inst._spawnEnv.CC_SESSION_ID, inst.sessionId, project);
+        assert.equal(inst._spawnEnv.CC_SESSION_KIND, 'worker', project);
+      }
+    } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  });
+
   // No worker, local or remote, gets CONDUCTOR_MCP_URL: workers chain cc calls
   // through run_code. A host value is planted first so "absent" means deleted.
   test('CONDUCTOR_MCP_URL: neither a local nor a remote worker inherits the host value', async () => {

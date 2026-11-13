@@ -87,7 +87,7 @@ import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from '.
 import { applySessionTitle, forkTitle } from './sessionTitles.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { IdleRenewNudgeController, type NudgeTimers } from './idleRenewNudge.ts';
-import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance, materializeCurrentConduct } from './conduct.ts';
+import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance, materializeCurrentConduct, sessionKindOf } from './conduct.ts';
 import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // The DEFAULT is imported rather than restated: a second copy of the level this
 // field is born at would drift from the allow-list that validates it. Safe as a
@@ -235,6 +235,7 @@ interface InstanceConstructorInput {
   backend?: string;
   hookCallbackUrl?: string | null;
   mcpServerUrl?: string | null;
+  conductorUrl?: string | null;
   worktree?: WorktreeMeta | null;
   temp?: boolean;
   pristine?: boolean;
@@ -727,6 +728,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   backend: string;
   hookCallbackUrl: string | null;
   mcpServerUrl: string | null;
+  // cc's base URL (`http://127.0.0.1:<port>`), exported as CONDUCTOR_URL; null
+  // when the manager has no port. Frozen at create like mcpServerUrl.
+  conductorUrl: string | null;
   claudePluginDirs: string[];
   // Where this session's convention skill roots are generated
   // (src/conventionSkills.ts), fixed at create; null writes none.
@@ -986,7 +990,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootSessionId = null, debug = false, claudePluginDirs = [], conventionSkillsDir = null, launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, conductorUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootSessionId = null, debug = false, claudePluginDirs = [], conventionSkillsDir = null, launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
     super();
     this.id = id;
     this._platform = platform;
@@ -1022,6 +1026,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.acceptsMidTurnSteering = resolveMidTurnSteering({ backend: this.backend, model: this.model });
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
+    this.conductorUrl = conductorUrl;
     this._redirect = null;
     this._fuse = null;
     this._redirectPlacement = null;
@@ -2814,9 +2819,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Remote workers get the same host value: their CLI runs on this machine,
     // and their redirected Bash runs on the remote without cc's env.
     spawnEnv.CC_PROJECTS_ROOT = path.resolve(projectsRoot());
-    // A worker has no script URL: it chains cc calls through `run_code`
-    // (docs/code-mode.md). CONDUCTOR_MCP_URL names a plugin backend's server,
-    // so an outer cc's value is deleted and never leaks into a worker.
+    // Session identity for hooks / MCP servers in this session (docs/protocol.md
+    // → Session identity env). cc-managed like CC_PROJECTS_ROOT. The deletes back
+    // up cliEnvBase's strip, so an outer session's value can never survive.
+    if (this.sessionId) spawnEnv.CC_SESSION_ID = this.sessionId; else delete spawnEnv.CC_SESSION_ID;
+    spawnEnv.CC_SESSION_KIND = sessionKindOf(this);
+    if (this.conductorUrl) spawnEnv.CONDUCTOR_URL = this.conductorUrl; else delete spawnEnv.CONDUCTOR_URL;
+    // No session gets CONDUCTOR_MCP_URL: its own MCP endpoint comes through
+    // --mcp-config, and a worker chains cc calls through `run_code`
+    // (docs/code-mode.md). The variable names a plugin backend's server, so an
+    // outer cc's value is deleted and never leaks into a session.
     delete spawnEnv.CONDUCTOR_MCP_URL;
     // Settings → Models → Task tools. The CLI offers TaskCreate/Get/List/Update
     // only on its own model allowlist (Claude ≤4.x) unless this is truthy; the env
@@ -5732,17 +5744,23 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._claudePluginDirsResolver = typeof fn === 'function' ? (fn as () => Promise<string[]>) : (async () => []);
   }
 
+  // cc's own loopback origin, the one spelling every URL below builds on, and
+  // the CONDUCTOR_URL a session's env carries. null until the port is bound.
+  conductorUrl(): string | null {
+    return this.serverPort ? `http://127.0.0.1:${this.serverPort}` : null;
+  }
+
   hookCallbackUrl(id: string): string | null {
-    if (!this.serverPort) return null;
-    return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/hook-callback`;
+    const base = this.conductorUrl();
+    return base && `${base}/api/instances/${id}/hook-callback`;
   }
 
   // Where a redirected Bash's local forwarder posts the worker's original
   // command. Loopback for the same reason the hook callback is: the forwarder
   // is a child of the CLI, which is a child of this process.
   bashForwardUrl(id: string): string | null {
-    if (!this.serverPort) return null;
-    return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/bash-forward`;
+    const base = this.conductorUrl();
+    return base && `${base}/api/instances/${id}/bash-forward`;
   }
 
   // Auto-registered orchestrator MCP server URL. Returns the BASE URL —
@@ -5751,9 +5769,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // calling (it is the ownership edge the turn_end wake is routed along).
   // Honours ORCH_DISABLE_MCP_AUTOREGISTER at call time.
   mcpServerUrl(): string | null {
-    if (!this.serverPort) return null;
-    if (process.env.ORCH_DISABLE_MCP_AUTOREGISTER === '1') return null;
-    return `http://127.0.0.1:${this.serverPort}/mcp`;
+    const base = this.conductorUrl();
+    if (!base || process.env.ORCH_DISABLE_MCP_AUTOREGISTER === '1') return null;
+    return `${base}/mcp`;
   }
 
   // Resolve the caller segment of an `/mcp/<sessionId>` URL: the id itself when
@@ -6675,6 +6693,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // Base MCP URL — the per-worker `/<sessionId>` path segment is appended in
       // Instance.spawn() once the sessionId is known.
       mcpServerUrl: this.mcpServerUrl(),
+      conductorUrl: this.conductorUrl(),
       worktree: worktreeMeta,
       temp: !!temp,
       pristine: !!pristine,

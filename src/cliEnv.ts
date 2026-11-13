@@ -24,11 +24,18 @@ import type { Platform } from './platform/index.ts';
 // which spawns in its own dir precisely so its jsonl never surfaces as a
 // project — in ONE directory. That is strictly worse than the collision this
 // module's callers exist to fix, and cc never sets the variable itself.
+//
+// The session identity trio (docs/protocol.md → Session identity env): an
+// outer cc session's identity (this cc running inside one) never reaches a CLI
+// this cc spawns; Instance.spawn sets a session's own after this strip.
 const STRIPPED = [
   'CLAUDE_CODE_DISABLE_1M_CONTEXT',
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
   'CLAUDE_CODE_PROJECT_DIR_NAME',
+  'CC_SESSION_ID',
+  'CC_SESSION_KIND',
+  'CONDUCTOR_URL',
 ] as const;
 
 export function cliEnvBase(platform: Platform): NodeJS.ProcessEnv {

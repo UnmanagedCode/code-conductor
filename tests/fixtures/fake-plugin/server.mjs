@@ -47,6 +47,8 @@ const server = http.createServer(async (req, res) => {
       port: PORT,
       conductorUrl: process.env.CONDUCTOR_URL ?? null,
       mcpUrl: process.env.CONDUCTOR_MCP_URL ?? null,
+      sessionId: process.env.CC_SESSION_ID ?? null,
+      sessionKind: process.env.CC_SESSION_KIND ?? null,
       pluginId: process.env.CONDUCTOR_PLUGIN_ID ?? null,
       projectsRoot: process.env.PROJECTS_ROOT ?? null,
       conductorProjectDir: process.env.CONDUCTOR_PROJECT_DIR ?? null,
