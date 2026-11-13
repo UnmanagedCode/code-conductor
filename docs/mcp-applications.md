@@ -126,9 +126,29 @@ An agent chains or batches calls with the `run_code` tool: one JavaScript progra
 | Var | Set for | Value |
 |---|---|---|
 | `CONDUCTOR_MCP_URL` | a plugin backend (`src/plugins/registry.ts`, beside `CONDUCTOR_URL`) | `<CONDUCTOR_URL>/mcp`: anonymous |
+| `CONDUCTOR_URL` | a plugin backend, and every session's `claude` child (its hooks, MCP servers, local `Bash`) | `http://127.0.0.1:<port>`, cc's base URL |
+| `CC_SESSION_ID` | every session's `claude` child | the session's public `sessionId` |
+| `CC_SESSION_KIND` | every session's `claude` child | `conductor` or `worker` |
 
 - A plugin's value is set whenever cc has a port.
 - A worker has no `CONDUCTOR_MCP_URL`: its programs call through `run_code`. An inherited value (cc itself running as some cc's worker) is removed, never passed on: by `Instance.launch` for workers and by the supervisor's `spawnChild` for plugins.
+- The session variables' contract (lifetime, the kind rule, remote sessions, where they never reach) is [protocol.md → Session identity env](protocol.md#subprocess-protocol). A plugin backend gets no `CC_SESSION_*`: it serves many sessions and reads its caller from the forwarded `caller.sessionId`.
+
+### Resolve your own session
+
+A hook or MCP server inside a cc session finds its project, worktree and playbook stage with `describe_session`, through the **anonymous** REST alias:
+
+```
+POST $CONDUCTOR_URL/mcp/tools/describe_session
+content-type: application/json
+
+{"sessionId": "$CC_SESSION_ID"}
+```
+
+- A live session answers `{sessionId, live: {project, cwd, worktree, playbook, stage, conducted, parentSessionId, rootSessionId, …}}`, the `describe_session` live arm in `src/mcp/outputSchemas.ts`. `worktree` is `{worktreeName, branch, baseBranch, baseSha, …}`, or `null` on the main checkout.
+- A dead session answers the `retired` arm (`project`, `worktree` and `path` at the top level).
+- **Call anonymously, not as `/mcp/$CC_SESSION_ID/…`.** `describe_session` declares `sessionId`, so a *conductor* caller is governed: every call would pass through the playbook gate and append a `call` row to the event log. The anonymous alias is read-only, ungoverned and unattributed.
+- `project` and `worktree` are fixed for a session's life, so cache them by `CC_SESSION_ID`. `stage` moves with the playbook: re-read it when it matters. `playbook_state` takes the same `sessionId` for the full run picture.
 
 ## JSON-format ceilings
 
