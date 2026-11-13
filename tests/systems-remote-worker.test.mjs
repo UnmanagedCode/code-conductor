@@ -1045,7 +1045,7 @@ describe('a RESUME whose launcher does not resolve', () => {
 
   test('leaves the superseded instance registered and answering to the session', async () => {
     const created = await api(baseUrl, 'POST', '/api/instances',
-      { project: 'app', temp: false, mode: 'bypassPermissions' });
+      { project: 'app', persistent: true, mode: 'bypassPermissions' });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const husk = instances.get(created.body.id);
     await waitFor(() => husk.status === 'idle' && husk.sessionId);
@@ -1056,7 +1056,7 @@ describe('a RESUME whose launcher does not resolve', () => {
     await seedSessionJsonl(husk.transcriptPlace, husk.backingSessionId);
     await husk.kill({ graceMs: 50 });
     await waitFor(() => !husk.proc && (husk.status === 'exited' || husk.status === 'crashed'));
-    assert.equal(instances.get(husk.id), husk, 'premise: a non-temp exit is RETAINED in byId');
+    assert.equal(instances.get(husk.id), husk, 'premise: a persistent exit is RETAINED in byId');
 
     launcher.inProcess = false;
     const saved = process.env.CLAUDE_BIN;

@@ -185,7 +185,7 @@ The consequences of being a substitution backend:
     `_mutating`: the session stays live for `isSessionLive` (a resume cannot
     reclaim the instance), an exit delivers no EXITED wake to an owner, and REST
     respawn is refused `409`.
-  - `_suppressTempDelete` is held from the kill until confirmation (a temp
+  - `_exitSuppressed` is held from the kill until confirmation (a normal
     session is not archived by the attempt; no exit cause is recorded) — the
     relaunch window rewind and prune share (architecture.md → "Relaunch window"). From
     confirmation on an exit records its cause and `launch_failed` as usual — it
@@ -193,7 +193,7 @@ The consequences of being a substitution backend:
     `SESSION_NOT_LIVE` with the exit details — but, `_relaunching` being still
     held, no EXITED wake is delivered, then or when the switch settles: an owner
     learns of it on its next engagement, or from the heartbeat's "did NOT finish"
-    stub. A temp session the attempt leaves
+    stub. A normal session the attempt leaves
     with no process while still suppressed (a cancel, a double failure) is
     archived in `finally`, as its exit would have been.
   - The relaunch's replay skips the jsonl's context-usage seed (`_skipUsageSeed`,
@@ -616,7 +616,7 @@ the row:
   every instance in `byId`, *including exited ones*: an exited instance is still
   respawnable (crash-respawn, overage auto-resume, rewind), and it is exactly that
   later relaunch that would hit the real `claude`. So **killing is not enough** — the
-  kill button leaves a non-temp instance in `byId` and the 409 repeats; only the
+  kill button leaves a persistent instance in `byId` and the 409 repeats; only the
   session archive/delete paths call `instances.remove()`.
 
 Once nothing references it, any tier/role left pointing at one of its models reverts

@@ -378,7 +378,7 @@ describe('a healthy instance killed normally', () => {
     await new Promise((r) => setImmediate(r));
     // The fake child emits BOTH 'exit' and 'close'. The latch is one-shot, so
     // the single terminal path runs once: two exit rows would mean two
-    // _handleExit runs (two _redirect.close()s, two temp archives).
+    // _handleExit runs (two _redirect.close()s, two exit archives).
     assert.equal(sysOf(inst, 'exit').length, 1, 'exactly one terminal exit');
     assert.equal(inst.proc, null);
     assert.equal(refdTimers() - before, 0, 'no ref\'d timer outlived the settled kill');

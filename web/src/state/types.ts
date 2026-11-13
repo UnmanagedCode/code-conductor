@@ -19,7 +19,7 @@ export type Instance = {
   role?: string | null;
   cwd?: string;
   worktree?: InstanceWorktree | null;
-  temp?: boolean;
+  persistent?: boolean;
   /** A conductor from New conductor with no prompt yet (app/pristine.ts). */
   pristine?: boolean;
   conducted?: boolean;

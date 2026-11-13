@@ -1,7 +1,7 @@
 // Tests for cross-process safety of the session store's archived flag
 // (src/sessionStore.ts → setSegmentArchived).
 // The core bug: during a hot restart the old process fires an archive write
-// fire-and-forget while the new process boots and calls sweepPendingTempCleanup
+// fire-and-forget while the new process boots and calls sweepPendingArchive
 // — two independent writeChains racing on the same file, last-writer-wins.
 // The fix: a cross-process O_EXCL lockfile around each mutation, with a strict
 // re-read under the lock so stale/empty loads never clobber live data.

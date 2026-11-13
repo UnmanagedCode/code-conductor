@@ -1,9 +1,9 @@
 // THE session store: one global file, `<store>/sessions.json`, keyed by a
 // session's PERMANENT public id. It holds every fact cc records about a session:
 //
-//   { "sessions": { "<publicId>": {
+//   { "version": 2, "sessions": { "<publicId>": {
 //       "current":  "<backingId>",
-//       "segments": [ { "id", "reason", "at", "dropped"?, "temp"?, "archived"? } ],
+//       "segments": [ { "id", "reason", "at", "dropped"?, "persistent"?, "archived"? } ],
 //       "title"?, "mode"?, "backend"?: {backend, model, contextWindowTokens},
 //       "summaries"?: { <tier>: {summary, generatedAt, messageCount} },
 //       "conducted"?, "turnEndSeq"?, "viewedSeq"?, "parent"?, "project"?,
@@ -13,7 +13,7 @@
 //   - SESSION facts (title, mode, backend, summaries, conducted, the turn marks,
 //     parent, project, worktree) sit on the record. A rotation moves only `current`, so nothing
 //     has to carry them from one transcript to the next.
-//   - TRANSCRIPT facts (temp, archived) sit on the segment they describe: each
+//   - TRANSCRIPT facts (persistent, archived) sit on the segment they describe: each
 //     segment is one jsonl, and each jsonl is one listing row.
 // Every optional field is present only when set — `true`, a non-empty value, or
 // a positive count — and the parser keeps a flag only when it is `=== true`.
@@ -49,7 +49,7 @@
 //     caller, but by burning its bounded retries).
 //   - precheck: runs INSIDE serialize (so it sees every earlier same-process
 //     write) against the cached doc, and returns without locking or writing when
-//     nothing would change. The per-turn mode/temp/conducted writes cost one
+//     nothing would change. The per-turn mode/persistent/conducted writes cost one
 //     `stat` each in steady state.
 //   - withLock (src/storeLock.ts): the cross-process correctness guard. The
 //     contended window is a hot restart, where the exiting and booting servers
@@ -71,7 +71,7 @@
 // in-mutation read quarantines a corrupt primary to `.corrupt-<pid>-<ts>` and
 // recovers from `.bak`; absent primary AND absent `.bak` is legitimately empty;
 // any other I/O error aborts the mutation. The file is ALWAYS written, never
-// unlinked — an empty store is `{"sessions":{}}` — so an absent primary always
+// unlinked — an empty store is `{"version":2,"sessions":{}}` — so an absent primary always
 // means external loss.
 // The `.bak` refresh is skipped when a write would drop the record count or the
 // archived-segment count by more than one against the current `.bak`: no single
@@ -84,7 +84,7 @@
 // replay), and registered here by trackLineageWrite. `loadSessions` — the
 // chokepoint every async reader funnels through — awaits one snapshot of that
 // set, so a read never serves the pre-rotation record. Segment-level writers
-// await it too before resolving, so a per-turn `setSegmentTemp(newId)` after a
+// await it too before resolving, so a per-turn `setSegmentPersistent(newId)` after a
 // typed `/clear` lands on the recorded segment rather than forking a base-case
 // record. Session-level writers don't need it: the public id doesn't move.
 // DEADLOCK RULE: nothing reachable from a kicked write (recordRotation,
@@ -93,7 +93,7 @@
 // A rejected kicked write is swallowed by the barrier (its failure has an owner:
 // Instance._lineageError → flushLineage). `mintPublicId` is awaited in launch()
 // and deliberately untracked; a read racing a fresh spawn just misses the new
-// record, which is the base case. The spawn-time facts (temp, backend,
+// record, which is the base case. The spawn-time facts (persistent, backend,
 // conducted, mode) are likewise untracked: launch() awaits them, so a read
 // ordered after an awaited launch() caller sees them, and a read racing an
 // in-flight launch may miss them. Each such write takes the store lock on its
@@ -117,6 +117,10 @@ import { normalizeTitle } from './sessionTitles.ts';
 import { normalizeSummaryTiers, normalizeTierRecord, SUMMARY_LENGTHS, type SummaryTiers, type TierRecord } from './sessionSummaries.ts';
 
 export type RotationReason = 'initial' | 'renew' | 'prune';
+// The doc's `version`, written first by every serialize. The parser does not
+// gate on it: migration 0043 is its only reader.
+export const SESSIONS_DOC_VERSION = 2;
+
 export const VALID_REASONS: ReadonlySet<RotationReason> = new Set<RotationReason>(['initial', 'renew', 'prune']);
 
 export interface Segment {
@@ -124,7 +128,7 @@ export interface Segment {
   reason: RotationReason;
   at: string;
   dropped?: true;
-  temp?: true;
+  persistent?: true;
   archived?: true;
 }
 
@@ -264,7 +268,7 @@ export function parseSessionsDoc(obj: unknown): SessionsDoc {
       segments.push({
         id: s.id, reason: s.reason as RotationReason, at: typeof s.at === 'string' ? s.at : '',
         ...(s.dropped === true ? { dropped: true as const } : {}),
-        ...(s.temp === true ? { temp: true as const } : {}),
+        ...(s.persistent === true ? { persistent: true as const } : {}),
         ...(s.archived === true ? { archived: true as const } : {}),
       });
     }
@@ -302,7 +306,7 @@ export function serializeSessionsDoc(doc: SessionsDoc): string {
       segments: r.segments.map(s => ({
         id: s.id, reason: s.reason, at: s.at,
         ...(s.dropped ? { dropped: true } : {}),
-        ...(s.temp ? { temp: true } : {}),
+        ...(s.persistent ? { persistent: true } : {}),
         ...(s.archived ? { archived: true } : {}),
       })),
       ...(r.title ? { title: r.title } : {}),
@@ -323,7 +327,7 @@ export function serializeSessionsDoc(doc: SessionsDoc): string {
       })) } : {}),
     };
   }
-  return JSON.stringify({ sessions }, null, 2) + '\n';
+  return JSON.stringify({ version: SESSIONS_DOC_VERSION, sessions }, null, 2) + '\n';
 }
 
 export function indexSessions(doc: SessionsDoc): SessionIndex {
@@ -865,16 +869,16 @@ export function setSummary(id: string, length: string, record: unknown): Promise
 
 // ── transcript-level facts ───────────────────────────────────────────────────
 
-function segmentFlag(index: SessionIndex, backingId: string, flag: 'temp' | 'archived'): boolean {
+function segmentFlag(index: SessionIndex, backingId: string, flag: 'persistent' | 'archived'): boolean {
   const owner = index.byBacking.get(backingId);
   if (!owner) return false;
   const seg = (index.byPublic.get(owner) as SessionRecord).segments.find(s => s.id === backingId && !s.dropped);
   return seg?.[flag] === true;
 }
 
-export async function isTemp(backingId: string): Promise<boolean> {
+export async function isPersistent(backingId: string): Promise<boolean> {
   if (typeof backingId !== 'string' || !backingId) return false;
-  return segmentFlag(await loadSessions(), backingId, 'temp');
+  return segmentFlag(await loadSessions(), backingId, 'persistent');
 }
 
 export async function isArchived(backingId: string): Promise<boolean> {
@@ -882,14 +886,14 @@ export async function isArchived(backingId: string): Promise<boolean> {
   return segmentFlag(await loadSessions(), backingId, 'archived');
 }
 
-function setFlag(seg: Segment, flag: 'temp' | 'archived', on: boolean): void {
+function setFlag(seg: Segment, flag: 'persistent' | 'archived', on: boolean): void {
   if (on) seg[flag] = true; else delete seg[flag];
 }
 
 // Shared body of the segment flag setters. Awaits the read barrier first (see
 // the header) — so it must never be reached from a kicked write.
 async function segmentWrite(
-  op: string, backingId: string, flag: 'temp' | 'archived', on: boolean, owner: string | null | undefined,
+  op: string, backingId: string, flag: 'persistent' | 'archived', on: boolean, owner: string | null | undefined,
 ): Promise<boolean> {
   await awaitKickedWrites();
   return mutateSessions(op, backingId, (doc) => {
@@ -907,9 +911,9 @@ async function segmentWrite(
   });
 }
 
-export function setSegmentTemp(backingId: string | null | undefined, on: boolean, { owner }: { owner?: string | null } = {}): Promise<boolean> {
+export function setSegmentPersistent(backingId: string | null | undefined, on: boolean, { owner }: { owner?: string | null } = {}): Promise<boolean> {
   if (typeof backingId !== 'string' || !backingId) return Promise.resolve(false);
-  return segmentWrite('setSegmentTemp', backingId, 'temp', on, owner);
+  return segmentWrite('setSegmentPersistent', backingId, 'persistent', on, owner);
 }
 
 export function setSegmentArchived(backingId: string | null | undefined, on: boolean, { owner }: { owner?: string | null } = {}): Promise<boolean> {

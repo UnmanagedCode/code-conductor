@@ -21,7 +21,7 @@ const label = (what: string) => `machinery-${what}-${test.info().project.name}`;
 const fakeOnly = (cc: Cc) => test.skip(cc.engine === 'live', "the flows drive the fake engine's machinery scenario");
 
 /** Starts a session in a new project and sends the held run's prompt. */
-async function heldRun(page: Page, cc: Cc, what: string, opts: { temp?: boolean } = {}): Promise<Session> {
+async function heldRun(page: Page, cc: Cc, what: string, opts: { persistent?: boolean } = {}): Promise<Session> {
   const project = label(what);
   await createProject(cc, project);
   await next.open(page);
@@ -159,7 +159,7 @@ export async function statisticsFlow({ page, cc }: Args): Promise<void> {
   // B's project exists before the page loads: the sidebar lists the projects it loaded with.
   const b = label('stats-b');
   await createProject(cc, b);
-  const a = await heldRun(page, cc, 'stats-a', { temp: false });
+  const a = await heldRun(page, cc, 'stats-a', { persistent: true });
   await release(page, cc, a);
   await openOuterGroup(page);
   await expectLines(page, false, 'by default');

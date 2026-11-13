@@ -38,7 +38,7 @@ async function driver() {
 // A hand-spawned (REST, non-conducted) project session.
 async function handSpawned(project) {
   await api(baseUrl, 'POST', '/api/projects', { name: project });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', temp: false });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', persistent: true });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);

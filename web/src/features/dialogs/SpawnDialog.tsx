@@ -1,5 +1,5 @@
 // New session in a project: capability tier, Plan/Code, and advanced options
-// (effort, thinking, worktree, temp, debug). Sends a `tier` — never a model or
+// (effort, thinking, worktree, persistent, debug). Sends a `tier` — never a model or
 // backend — so the server resolves the tier's binding at spawn time. After a
 // successful spawn, a postWorktreeCreate hook that ran, was skipped or errored
 // is reported in place; the dialog closes when no hook exists.
@@ -60,7 +60,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
   const [effort, setEffort] = React.useState(DEFAULT_EFFORT);
   const [thinking, setThinking] = React.useState('adaptive');
   const [worktree, setWorktree] = React.useState(!!worktreeIntent);
-  const [temp, setTemp] = React.useState(!worktreeIntent);
+  const [persistent, setPersistent] = React.useState(!!worktreeIntent);
   const [debug, setDebug] = React.useState(false);
   const debugTouched = React.useRef(false);
   const [advanced, setAdvanced] = React.useState(false);
@@ -103,7 +103,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
       tier,
       thinking,
       worktree: worktreeIntent ? worktreeIntent : worktree ? true : undefined,
-      temp: temp || undefined,
+      persistent: persistent || undefined,
       debug,
       autoApprovePlan: mode === 'plan' || undefined,
     };
@@ -218,7 +218,7 @@ function SpawnBody({ project, worktreeIntent }: { project: string; worktreeInten
             </div>
           </div>
           <CheckRow id="sd-worktree" checked={worktree} disabled={!!worktreeIntent || !isGit || unborn} onChange={setWorktree} label="Run in an isolated git worktree" hint={worktreeHint} />
-          <CheckRow id="sd-temp" checked={temp} onChange={setTemp} label="Temp session" hint="The transcript is removed when the session ends." />
+          <CheckRow id="sd-persistent" checked={persistent} onChange={setPersistent} label="Persistent session" hint="Stays listed when it ends instead of being archived. The transcript is kept and the session can be resumed either way." />
           <CheckRow id="sd-debug" checked={debug} onChange={(v) => { debugTouched.current = true; setDebug(v); }} label="Debug mode" hint={<>Captures stdin, stdout and stderr to <code className="font-mono">&lt;cwd&gt;/.code-conductor/debug/&lt;instance-id&gt;/</code></>} />
         </CollapsibleContent>
       </Collapsible>

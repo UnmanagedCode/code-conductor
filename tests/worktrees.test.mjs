@@ -463,7 +463,7 @@ test('POST /sync reports commit-required (and prompts nobody) when the pure-behi
 test('POST /sync auto-rebases the worktree when it has diverged without conflicts', async () => {
   const repoPath = await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
+    persistent: true, project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
   const id = created.body.id;
@@ -538,7 +538,7 @@ test('POST /sync reports rebase-conflict (and prompts nobody) when the diverged 
 test('POST /sync reports the conflict on a dead instance — measuring needs no subprocess', async () => {
   const repoPath = await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
+    persistent: true, project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
   const id = created.body.id;
@@ -569,7 +569,7 @@ test('POST /sync reports the conflict on a dead instance — measuring needs no 
 test('POST /rebase-prompt refuses SESSION_NOT_LIVE when the instance is not running', async () => {
   const repoPath = await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'demo', mode: 'bypassPermissions', worktree: true,
+    persistent: true, project: 'demo', mode: 'bypassPermissions', worktree: true,
   });
   const wtName = created.body.worktree.worktreeName;
   const id = created.body.id;

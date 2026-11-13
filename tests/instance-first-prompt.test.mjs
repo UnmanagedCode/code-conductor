@@ -28,8 +28,8 @@ async function setupWithProject(name = 'firstprompt') {
   return { baseUrl, instances };
 }
 
-// `firstPrompt` is captured on the Instance for use by the sidebar — the
-// Temp Sessions subnode synthesizes its rows from live-instance summary
+// `firstPrompt` is captured on the Instance for use by the sidebar — a live
+// normal session's row is synthesized from live-instance summary
 // data only (no jsonl read), so without this the row would forever show
 // "(new session)" once a prompt had been sent.
 
@@ -141,7 +141,7 @@ test('displayLabel of a pristine conductor listed under its draft is the draft; 
   const realTimers = instances.pristineTimers;
   instances.pristineTimers = { setTimeout: () => ({}), clearTimeout: () => {} };
   try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', role: 'conductor', temp: true, pristine: true });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', role: 'conductor', pristine: true });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);

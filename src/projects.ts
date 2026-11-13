@@ -1901,7 +1901,7 @@ export interface SessionRow {
   firstPrompt: string | null;
   title: string | null;
   conducted: boolean;
-  temp: boolean;
+  persistent: boolean;
   archived: boolean;
   // The record's turn marks (sessionStore.ts getTurnMarks), 0 when absent.
   turnEndSeq: number;
@@ -1955,10 +1955,10 @@ export async function listSessionsForCwdWithCounts(
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
     // The exclusion filter runs BEFORE the projection, deliberately: both
-    // tempSessionIdsForPlace and liveBackingIdsForPlace yield backing ids, because
+    // normalSessionIdsForPlace and liveBackingIdsForPlace yield backing ids, because
     // what they exclude is a FILE. Projecting first would make every set miss.
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
-    // Session facts come off the record; temp/archived off this file's segment.
+    // Session facts come off the record; persistent/archived off this file's segment.
     const { record, segment } = fileFacts(index, sid);
     const isArchived = segment?.archived === true;
     const isConducted = record?.conducted === true;
@@ -1975,7 +1975,7 @@ export async function listSessionsForCwdWithCounts(
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
     const rowId = projectRowId(sid, index);
-    // Cost bound: archived rows (every exited conductor, being temp) are not
+    // Cost bound: archived rows (every exited conductor, being normal) are not
     // derived in a list read unless `deriveAwaitingFor` names the row. A
     // conducted row never is — it never carries the flag, on any surface.
     let ask: Awaited<ReturnType<typeof deriveAwaitingUser>> = null;
@@ -1987,14 +1987,14 @@ export async function listSessionsForCwdWithCounts(
     }
     out.push({
       // The one projected field. A superseded segment's row shows its
-      // session's title, conducted flag and mode, and its own temp/archived.
+      // session's title, conducted flag and mode, and its own persistent/archived.
       sessionId: rowId,
       firstPrompt,
       title: record?.title ?? null,
       conducted: isConducted,
       turnEndSeq: record?.turnEndSeq ?? 0,
       viewedSeq: record?.viewedSeq ?? 0,
-      temp: segment?.temp === true,
+      persistent: segment?.persistent === true,
       archived: isArchived,
       lastActivity: await lastActivityOf(full, stat),
       size: stat.size,
@@ -2443,7 +2443,7 @@ export interface ArchivedSessionRow {
 // filename precisely so each archived transcript stays individually addressable
 // for restore/delete — see projectRowId.
 export async function listArchivedGroupedByProject(): Promise<{ project: string; sessions: ArchivedSessionRow[] }[]> {
-  // `.conduct` is included here so its archived temp sessions are visible in
+  // `.conduct` is included here so its archived normal sessions are visible in
   // Settings → Archived — the same opt-in findSessionLocation makes.
   const projects: ProjectInfo[] = await listProjects({ includeConduct: true });
   const recordedWorktrees = await recordedWorktreesByProject();

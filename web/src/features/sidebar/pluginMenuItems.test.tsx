@@ -16,7 +16,7 @@ vi.mock('@/app/sessionActions', () => ({
   loadSessions: vi.fn(() => Promise.resolve([])),
   closeSession: vi.fn(),
   resumeSession: vi.fn(),
-  promoteSession: vi.fn(),
+  persistSession: vi.fn(),
   removeWorktree: vi.fn(),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));

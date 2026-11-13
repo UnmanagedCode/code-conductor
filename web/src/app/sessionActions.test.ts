@@ -27,7 +27,7 @@ import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';
 import {
-  archiveSession, closeSession, forkActiveSession, forkRenewal, forkWholeSession, performProjectDelete, promoteSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
+  archiveSession, closeSession, forkActiveSession, forkRenewal, forkWholeSession, performProjectDelete, persistSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
   rewindRenewal,
 } from './sessionActions';
 
@@ -60,9 +60,9 @@ beforeEach(() => {
 
 describe('closing a session', () => {
   it('one step down: stop only a live persistent session; idle stops silently', () => {
-    expect(closeActionOf({ instanceId: 'i', status: 'idle', temp: false })).toBe('stop');
-    expect(closeActionOf({ instanceId: 'i', status: 'idle', temp: true })).toBe('archive');
-    expect(closeActionOf({ instanceId: null, status: null, temp: false })).toBe('archive');
+    expect(closeActionOf({ instanceId: 'i', status: 'idle', persistent: true })).toBe('stop');
+    expect(closeActionOf({ instanceId: 'i', status: 'idle' })).toBe('archive');
+    expect(closeActionOf({ instanceId: null, status: null, persistent: true })).toBe('archive');
     expect(CLOSE_TITLES).toEqual({ stop: 'Stop session', archive: 'Archive session (keeps history)' });
     expect(stopNeedsConfirm('idle')).toBe(false);
     expect(stopNeedsConfirm('turn')).toBe(true);
@@ -73,7 +73,7 @@ describe('closing a session', () => {
     appStore.set({ activeId: 'i1' });
     const stale: unknown[] = [];
     const off = on('sessionsStale', (p) => stale.push(p));
-    await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle' });
+    await closeSession({ projectName: 'p', persistent: true, instanceId: 'i1', sessionId: 's1', status: 'idle' });
     expect(calls).toEqual([{ url: '/api/instances/i1', method: 'DELETE', body: undefined }]);
     expect(confirms).toHaveLength(0);
     expect(appStore.get().activeId).toBeNull();
@@ -82,7 +82,7 @@ describe('closing a session', () => {
     expect(controller.refreshInstances).toHaveBeenCalled();
 
     appStore.set({ activeId: 'other' });
-    await closeSession({ projectName: 'p', instanceId: 'i2', sessionId: 's2', status: 'idle' });
+    await closeSession({ projectName: 'p', persistent: true, instanceId: 'i2', sessionId: 's2', status: 'idle' });
     expect(appStore.get().activeId).toBe('other');
     off();
   });
@@ -90,7 +90,7 @@ describe('closing a session', () => {
   it('a busy session asks once; declining sends nothing', async () => {
     stubFetch(() => ({}));
     confirmAnswer.value = false;
-    await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'turn', preview: 'Fix the bug' });
+    await closeSession({ projectName: 'p', persistent: true, instanceId: 'i1', sessionId: 's1', status: 'turn', preview: 'Fix the bug' });
     expect(confirms).toHaveLength(1);
     expect(confirms[0].title).toMatch(/Stop session “Fix the bug”/);
     expect(calls).toHaveLength(0);
@@ -109,7 +109,7 @@ describe('closing a session', () => {
     for (const status of ['turn', 'running', 'spawning']) {
       calls = [];
       confirms.length = 0;
-      await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
+      await closeSession({ projectName: 'p', persistent: true, instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
       expect(confirms, status).toHaveLength(1);
       expect(confirms[0].title, status).toMatch(/^Stop session “Alpha”\?/);
       expect(confirms[0].description, status).toMatch(/transcript is kept/);
@@ -125,7 +125,7 @@ describe('closing a session', () => {
     const off = on('sessionsStale', (p) => stale.push(p));
     for (const status of ['turn', 'running', 'spawning']) {
       confirms.length = 0;
-      await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
+      await closeSession({ projectName: 'p', persistent: true, instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
       expect(confirms, status).toHaveLength(1);
       expect(calls, status).toEqual([]);
       expect(appStore.get().activeId, status).toBe('i1');
@@ -140,7 +140,7 @@ describe('closing a session', () => {
     stubFetch(() => ({ body: { ok: true } }));
     for (const status of ['exited', 'crashed']) {
       calls = [];
-      await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
+      await closeSession({ projectName: 'p', persistent: true, instanceId: 'i1', sessionId: 's1', status, preview: 'Alpha' });
       expect(confirms.at(-1).title, status).toMatch(/^Archive session/);
       expect(calls, status).toEqual([{ url: '/api/projects/p/sessions/s1/archive', method: 'POST', body: undefined }]);
     }
@@ -148,7 +148,7 @@ describe('closing a session', () => {
 
   it('a failed stop reports the error and refreshes nothing', async () => {
     stubFetch(() => ({ status: 500, body: { error: 'boom' } }));
-    await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle' });
+    await closeSession({ projectName: 'p', persistent: true, instanceId: 'i1', sessionId: 's1', status: 'idle' });
     expect(toasts[0]).toEqual(['error', 'Could not stop the session', 'boom']);
     expect(controller.refreshInstances).not.toHaveBeenCalled();
   });
@@ -156,15 +156,15 @@ describe('closing a session', () => {
   // A stop with no server names the one unreachable message, not the browser's wording.
   it('a stop with no server names the unreachable message', async () => {
     stubFetch(() => new TypeError('Failed to fetch'));
-    await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle' });
+    await closeSession({ projectName: 'p', persistent: true, instanceId: 'i1', sessionId: 's1', status: 'idle' });
     expect(calls).toEqual([{ url: '/api/instances/i1', method: 'DELETE', body: undefined }]);
     expect(toasts).toEqual([['error', 'Could not stop the session', SERVER_UNREACHABLE_MESSAGE]]);
     expect(controller.refreshInstances).not.toHaveBeenCalled();
   });
 
-  it('a temp or not-live session is archived after confirming; declining sends nothing', async () => {
+  it('a normal or not-live session is archived after confirming; declining sends nothing', async () => {
     stubFetch(() => ({ body: { ok: true } }));
-    await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle', temp: true });
+    await closeSession({ projectName: 'p', instanceId: 'i1', sessionId: 's1', status: 'idle' });
     expect(confirms[0].title).toMatch(/^Archive session/);
     expect(calls).toEqual([{ url: '/api/projects/p/sessions/s1/archive', method: 'POST', body: undefined }]);
     calls = [];
@@ -219,27 +219,29 @@ describe('closing a session', () => {
   });
 });
 
-describe('promote, resume, rewind, fork, delete', () => {
-  it('promoting asks first (conductor wording for .conduct), POSTs promote and refreshes instances only', async () => {
+describe('persist, resume, rewind, fork, delete', () => {
+  it('persisting asks first (conductor wording for .conduct), POSTs persist and refreshes instances only', async () => {
     stubFetch(() => ({ body: { ok: true } }));
-    await promoteSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Plan it' });
+    await persistSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Plan it' });
     expect(confirms[0].title).toBe('Make this conductor persistent?');
-    expect(calls).toEqual([{ url: '/api/instances/c1/promote', method: 'POST', body: undefined }]);
+    expect(calls).toEqual([{ url: '/api/instances/c1/persist', method: 'POST', body: undefined }]);
     expect(controller.refreshInstances).toHaveBeenCalledTimes(1);
     expect(controller.refreshProjects).not.toHaveBeenCalled();
     calls = [];
-    await promoteSession({ projectName: 'p', instanceId: 'w1' });
+    await persistSession({ projectName: 'p', instanceId: 'w1' });
     expect(confirms[1].title).toBe('Keep this session in p?');
+    expect(confirms[1].description).toMatch(/stay listed in Sessions instead of being archived/);
+    expect(calls).toEqual([{ url: '/api/instances/w1/persist', method: 'POST', body: undefined }]);
     confirmAnswer.value = false;
     calls = [];
-    await promoteSession({ projectName: 'p', instanceId: 'w1' });
+    await persistSession({ projectName: 'p', instanceId: 'w1' });
     expect(calls).toHaveLength(0);
   });
 
-  it('declining the conductor promote sends nothing and refreshes nothing', async () => {
+  it('declining the conductor persist sends nothing and refreshes nothing', async () => {
     stubFetch(() => ({ body: { ok: true } }));
     confirmAnswer.value = false;
-    await promoteSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Alpha' });
+    await persistSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Alpha' });
     expect(confirms).toHaveLength(1);
     expect(confirms[0].title).toBe('Make this conductor persistent?');
     expect(calls).toEqual([]);
@@ -247,10 +249,10 @@ describe('promote, resume, rewind, fork, delete', () => {
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
-  it('a failed promote reports the error and refreshes nothing', async () => {
+  it('a failed persist reports the error and refreshes nothing', async () => {
     stubFetch(() => ({ status: 500, body: { error: 'boom' } }));
-    await promoteSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Alpha' });
-    expect(calls).toEqual([{ url: '/api/instances/c1/promote', method: 'POST', body: undefined }]);
+    await persistSession({ projectName: '.conduct', instanceId: 'c1', preview: 'Alpha' });
+    expect(calls).toEqual([{ url: '/api/instances/c1/persist', method: 'POST', body: undefined }]);
     expect(toasts).toEqual([['error', 'Could not make the session persistent', 'boom']]);
     expect(controller.refreshInstances).not.toHaveBeenCalled();
     expect(controller.refreshProjects).not.toHaveBeenCalled();

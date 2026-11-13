@@ -1,6 +1,6 @@
 // What an instance's event pager reads, kept after the instance has left the
 // manager — so a web pane that was watching it when it was killed (or exited as
-// a temp worker) keeps paging scroll-back by instance id, in the cursor space it
+// a normal worker) keeps paging scroll-back by instance id, in the cursor space it
 // already holds. Ring `_seq`s include stream-only events and so do not match a
 // transcript's archive stamping (src/eventArchive.ts stampArchiveEvents): that
 // pane cannot switch to a disk-numbered source mid-scroll.

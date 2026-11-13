@@ -262,7 +262,7 @@ test('e2e crash: a worker killed outright with a job tracked leaves no row waiti
   await waitFor(() => worker.status === 'crashed');
   const all = await rows();
   const w = all.find(r => r.id === worker.id);
-  assert.ok(w, 'the non-temp worker is retained');
+  assert.ok(w, 'the persistent worker is retained');
   assert.deepEqual(w.backgroundJobs, []);
   for (const r of all) assert.equal(r.waitingOnJob, false, `${r.id} still waiting on a job`);
 });

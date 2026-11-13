@@ -2,7 +2,7 @@
 // turn_end will ever come, so the exit itself is the wake. Every armed owner is
 // woken at once, exactly once, with an EXITED stub naming the worker's
 // sessionId, and the armed entry (and its heartbeat interval) is gone at the
-// same moment — temp and non-temp alike. A commanded kill is NOT this path; its
+// same moment — normal and persistent alike. A commanded kill is NOT this path; its
 // heartbeat retirement is pinned in idle-wake-heartbeat.
 //
 // The crash is a SIGKILL straight to the in-process child after its stderr line
@@ -38,7 +38,7 @@ async function armedMidTurn(callerId, worker) {
   await waitFor(() => instances.hasArmedWake(worker.id));
 }
 
-test('a TEMP worker that crashes mid-turn wakes its owner once with EXITED, and its armed entry is gone', async () => {
+test('a NORMAL worker that crashes mid-turn wakes its owner once with EXITED, and its armed entry is gone', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnDriver();
   const workerSid = await spawnReadyWithScenario('p', SCENARIO_OPEN);
@@ -58,7 +58,7 @@ test('a TEMP worker that crashes mid-turn wakes its owner once with EXITED, and 
   assert.deepEqual(instances._idleSubscriberSnapshot(), {}, 'no armed entry — so no heartbeat interval — remains');
 });
 
-test('a NON-temp worker that crashes mid-turn wakes its owner with EXITED at once, not a later heartbeat', async () => {
+test('a PERSISTENT worker that crashes mid-turn wakes its owner with EXITED at once, not a later heartbeat', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnDriver();
   const worker = await restWorker('p', SCENARIO_OPEN);
@@ -68,7 +68,7 @@ test('a NON-temp worker that crashes mid-turn wakes its owner with EXITED at onc
   await crashMidFlight(worker, 'fatal: socket hang up');
   await waitFor(() => exitedStubs(caller, worker.sessionId).length >= 1);
   await settle();
-  assert.ok(instances.byId.has(worker.id), 'precondition: non-temp, still registered');
+  assert.ok(instances.byId.has(worker.id), 'precondition: persistent, still registered');
   // At once: the heartbeat window is the default (ORCH_SUBSCRIBE_TIMEOUT_MS), far
   // beyond waitFor's deadline, so only the exit itself can have delivered this.
   assert.equal(exitedStubs(caller, worker.sessionId).length, 1);
@@ -76,7 +76,7 @@ test('a NON-temp worker that crashes mid-turn wakes its owner with EXITED at onc
 });
 
 // The recipient is mid-turn on a model that cannot take an injected message, so
-// the EXITED wake is held until its own turn_end — by which time the temp target
+// the EXITED wake is held until its own turn_end — by which time the normal target
 // has been purged and its instance is gone. Fakes, injected into the real
 // manager's byId, are the only way to hold the recipient in that state.
 test('an EXITED wake held for a mid-turn recipient still names the sessionId after its target is purged', async () => {
@@ -119,7 +119,7 @@ test('an EXITED wake held for a mid-turn recipient still names the sessionId aft
 // The CLI closes cleanly (code 0) with nobody having asked it to — the in-process
 // child's SIGTERM closes its reader and it exits 0, bypassing Instance.kill. No
 // turn_end is coming, so the owner is still owed a wake.
-test('an uncommanded CLEAN exit mid-turn still wakes the owner of a temp worker with EXITED', async () => {
+test('an uncommanded CLEAN exit mid-turn still wakes the owner of a normal worker with EXITED', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnDriver();
   const workerSid = await spawnReadyWithScenario('p', SCENARIO_OPEN);

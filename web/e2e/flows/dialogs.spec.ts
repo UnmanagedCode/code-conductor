@@ -337,7 +337,7 @@ type LiveInst = { id: string; status: string; sessionId: string | null };
 /** Creates `project`, spawns a persistent session there, waits for it to idle and gives it a transcript. */
 async function idleSession(cc: Cc, project: string): Promise<{ id: string; sessionId: string }> {
   await createProject(cc, project);
-  const { id } = await spawnSession(cc, project, { temp: false });
+  const { id } = await spawnSession(cc, project, { persistent: true });
   let row: LiveInst | undefined;
   await expect.poll(async () => {
     row = ((await api(cc, 'GET', '/api/instances')).body as LiveInst[]).find((i) => i.id === id);
@@ -616,7 +616,7 @@ test('A workspace is created from the project menu, edited from its pencil with 
 test('The power menu offers Restart and Shut down: Restart posts no autoContinue and reloads once the server is back; Shut down shows that cc has stopped and does not reload', async ({ page, cc, ui, uniq }) => {
   const p = uniq('pwr');
   await createProject(cc, p);
-  await spawnSession(cc, p, { temp: false });
+  await spawnSession(cc, p, { persistent: true });
   let boot = 0;
   const restarts: unknown[] = [];
   const shutdowns: unknown[] = [];

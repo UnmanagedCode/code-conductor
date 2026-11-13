@@ -32,10 +32,10 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-async function spawnConductor({ temp = true } = {}) {
+async function spawnConductor({ persistent = false } = {}) {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: '.conduct', model: 'claude-haiku-4-5', temp, mode: 'bypassPermissions',
+    project: '.conduct', model: 'claude-haiku-4-5', persistent, mode: 'bypassPermissions',
   });
   assert.equal(r.status, 201);
   await waitFor(() => instances.get(r.body.id)?.status === 'idle');
@@ -82,7 +82,7 @@ test('spawning a conductor writes the composed doc to .conduct/CONVENTIONS.md', 
 test('a normal-project instance triggers no materialization', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'plain' });
   const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'plain', model: 'claude-haiku-4-5', temp: true,
+    project: 'plain', model: 'claude-haiku-4-5',
   });
   assert.equal(r.status, 201);
   await waitFor(() => instances.get(r.body.id)?.status === 'idle');
@@ -97,8 +97,8 @@ test('a normal-project instance triggers no materialization', async () => {
 });
 
 test('resume rewrites the doc in place — same path, new content after a selection change', async () => {
-  // temp:false so the instance survives exit in byId and stays respawnable.
-  const id = await spawnConductor({ temp: false });
+  // persistent: true so the instance survives exit in byId and stays respawnable.
+  const id = await spawnConductor({ persistent: true });
 
   const target = conductConventionsPath();
   const firstDoc = await fs.readFile(target, 'utf8');
@@ -156,7 +156,7 @@ test('the doc and the import are correct AT the moment the process is launched',
     await fs.rm(conductConventionsPath(), { force: true });
 
     const r = await api(ctx2.baseUrl, 'POST', '/api/instances', {
-      project: '.conduct', model: 'claude-haiku-4-5', temp: false, mode: 'bypassPermissions',
+      project: '.conduct', model: 'claude-haiku-4-5', persistent: true, mode: 'bypassPermissions',
     });
     assert.equal(r.status, 201);
     const id = r.body.id;

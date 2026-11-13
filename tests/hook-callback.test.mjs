@@ -126,7 +126,7 @@ const NUDGE_BODY = (n) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 async function spawnConductor({ mode = 'bypassPermissions' } = {}) {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', mode });
   assert.equal(r.status, 201);
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
@@ -342,7 +342,7 @@ async function withBoundWorker(enforcement, fn) {
     assert.equal(await getDefaultPlaybookEnforcement(), 'enforce', 'premise: the persisted default is enforce');
     await api(own.baseUrl, 'POST', '/api/projects', { name: 'h' });
     await api(own.baseUrl, 'POST', '/api/projects/.conduct/ensure');
-    const c = await api(own.baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions', playbookEnforcement: enforcement });
+    const c = await api(own.baseUrl, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: enforcement });
     assert.equal(c.status, 201);
     const conductor = own.instances.get(c.body.id);
     await waitFor(() => conductor?.status === 'idle');

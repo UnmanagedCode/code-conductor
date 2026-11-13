@@ -1,8 +1,8 @@
-// The boot sweep of `<orchStoreRoot>/pending-temp-cleanup.json`: a list of temp
+// The boot sweep of `<orchStoreRoot>/pending-archive.json`: a list of normal
 // sessions to archive (jsonl kept, subagents dir deleted, segment retired), then
 // the file is unlinked. Idempotent and crash-safe. cc itself writes no such
-// file; a build whose restart archives temps writes one on its restart, and
-// this sweep consumes it on the boot that follows.
+// file; a build whose restart archives normal sessions writes one on its
+// restart, and this sweep consumes it on the boot that follows.
 //
 // Entries may omit `place` — migration 0036 clears the placement of any entry
 // written before the file carried one. Those entries skip the dir cleanup and
@@ -16,13 +16,13 @@ import { readFileSync, rmSync, existsSync } from 'node:fs';
 import { orchStoreRoot, subAgentDirPath, type TranscriptPlacement } from './projects.ts';
 import { retireSegments } from './sessionLineage.ts';
 
-export const PENDING_TEMP_CLEANUP_FILENAME = 'pending-temp-cleanup.json';
+export const PENDING_ARCHIVE_FILENAME = 'pending-archive.json';
 
-export function pendingTempCleanupPath(): string {
-  return path.join(orchStoreRoot(), PENDING_TEMP_CLEANUP_FILENAME);
+export function pendingArchivePath(): string {
+  return path.join(orchStoreRoot(), PENDING_ARCHIVE_FILENAME);
 }
 
-interface PendingTempCleanupEntry {
+interface PendingArchiveEntry {
   place?: TranscriptPlacement | null;
   sessionId: string;
 }
@@ -32,11 +32,11 @@ interface ManifestLogger {
   warn?: (...args: unknown[]) => void;
 }
 
-export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogger } = {}): { swept: number } {
-  const file = pendingTempCleanupPath();
+export function sweepPendingArchive({ log = console }: { log?: ManifestLogger } = {}): { swept: number } {
+  const file = pendingArchivePath();
   if (!existsSync(file)) return { swept: 0 };
 
-  let entries: PendingTempCleanupEntry[] = [];
+  let entries: PendingArchiveEntry[] = [];
   try {
     const raw = readFileSync(file, 'utf8');
     const parsed: unknown = JSON.parse(raw);
@@ -50,7 +50,7 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
       }
     }
   } catch (e) {
-    log.warn?.('temp-cleanup: failed to parse manifest; removing', errMsg(e));
+    log.warn?.('pending-archive: failed to parse manifest; removing', errMsg(e));
     try { rmSync(file, { force: true }); } catch { /* ignore */ }
     return { swept: 0 };
   }
@@ -73,7 +73,7 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
   retireSegments(retire).catch(() => {});
 
   try { rmSync(file, { force: true }); } catch { /* ignore */ }
-  if (swept > 0) log.log?.(`temp-cleanup: swept ${swept} temp session(s) from previous run (archived)`);
+  if (swept > 0) log.log?.(`pending-archive: swept ${swept} session(s) from previous run (archived)`);
   return { swept };
 }
 

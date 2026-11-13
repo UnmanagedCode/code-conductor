@@ -9,8 +9,8 @@
 //   The drain — run in the OLD process by runRestart (src/restart.ts) for a
 //   Restart or a Shut down: drainToIdle winds every live turn down to idle
 //   (networking stays UP so in-flight hook round-trips finish and the UI shows
-//   progress); then either finishDrain writes the manifest (temps are carried
-//   over), closes subprocesses without deleting their jsonl and removes the
+//   progress); then either finishDrain writes the manifest (normal sessions are
+//   carried over too), closes subprocesses without deleting their jsonl and removes the
 //   running record, after runRestart has torn networking down, or, when the
 //   relaunch's preparation fails after the drain, abortDrain hands the sessions
 //   back.
@@ -322,7 +322,7 @@ export function buildResumeEntries(instances: InstanceManagerLike, { subtreeOf, 
       // uniformly for every backend).
       backend: (s.backend ?? CLAUDE_BACKEND_ID) as string,
       worktreeName: ((s.worktree as { worktreeName: string | null } | null)?.worktreeName ?? null),
-      temp: !!s.temp,
+      persistent: !!s.persistent,
       conducted: !!s.conducted,
       debug: !!s.debug,
       title: (s.title ?? null) as string | null,
@@ -376,8 +376,8 @@ export function buildResumeEntries(instances: InstanceManagerLike, { subtreeOf, 
 }
 
 // Steps 4–6 of the drain, after the caller has torn networking down: write the
-// manifest (temps are carried over, not archived), gracefully close subprocesses
-// without deleting temp jsonl, then remove the running record — the manifest is
+// manifest (normal sessions are carried over, not archived), gracefully close
+// subprocesses without archiving any session, then remove the running record — the manifest is
 // now the clean-stop fact. `clis` (the running recorder's rows) ride in the
 // manifest, so a CLI that ignores EOF past the stop's grace is still reaped at
 // the next boot. Returns the manifest entries written.
@@ -391,7 +391,7 @@ export function finishDrain(
   try { writeResumeManifest(entries, { deliver, clis }); }
   catch (e) { log.warn?.('resume-restart: manifest write failed', errMsg(e)); }
 
-  // (5) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.
+  // (5) Gracefully close subprocesses (stdin EOF) WITHOUT archiving normal sessions.
   try { instances.shutdownForResumeSync(); }
   catch (e) { log.warn?.('resume-restart: shutdownForResumeSync error', errMsg(e)); }
 
@@ -509,7 +509,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
           contextWindowTokens: e.contextWindowTokens ?? undefined,
           backend: e.backend ?? undefined,
           worktree: e.worktreeName ?? null,
-          temp: !!e.temp,
+          persistent: !!e.persistent,
           conducted: !!e.conducted,
           debug: !!e.debug,
           autoApprovePlan: !!e.autoApprovePlan,
@@ -606,7 +606,7 @@ export interface ResumeEntry {
   contextWindowTokens: number | null;
   backend: string;
   worktreeName: string | null;
-  temp: boolean;
+  persistent: boolean;
   conducted: boolean;
   debug: boolean;
   title: string | null;

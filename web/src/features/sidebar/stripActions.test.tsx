@@ -19,12 +19,12 @@ const loadSessions = vi.fn((..._a: any[]): Promise<any[]> => Promise.resolve([])
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
 const removeWorktree = vi.fn();
-const promoteSession = vi.fn();
+const persistSession = vi.fn();
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: (...a: unknown[]) => loadSessions(...a),
   closeSession: (...a: unknown[]) => closeSession(...a),
   resumeSession: (...a: unknown[]) => resumeSession(...a),
-  promoteSession: (...a: unknown[]) => promoteSession(...a),
+  persistSession: (...a: unknown[]) => persistSession(...a),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -52,7 +52,7 @@ beforeEach(() => {
   closeSession.mockReset();
   resumeSession.mockReset();
   removeWorktree.mockReset();
-  promoteSession.mockReset();
+  persistSession.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   invalidateSessions();
   sidebarStore.set({ collapsedSessions: [], expandedWorktrees: [], expandedWorkspaces: [], expandedConductors: [], inactiveOpen: false, filter: '' });
@@ -78,11 +78,11 @@ describe('the strip ×', () => {
     }
   });
 
-  it('the strip × is named Stop session on a live persistent entry and Archive session on a live temp one, for conductors and hand-spawned sessions', async () => {
+  it('the strip × is named Stop session on a live persistent entry and Archive session on a live normal one, for conductors and hand-spawned sessions', async () => {
     // Invariant: the × names the action the session's state maps to, for both entry kinds.
     seed({
       projects: [proj('p')],
-      instances: [conductor('Cp', { temp: false }), conductor('Ct', { temp: true }), hand('hp', 'p', null, { temp: false }), hand('ht', 'p', null, { temp: true })],
+      instances: [conductor('Cp', { persistent: true }), conductor('Ct', {}), hand('hp', 'p', null, { persistent: true }), hand('ht', 'p', null, { persistent: false })],
     });
     renderSidebar();
     await settle();
@@ -93,15 +93,15 @@ describe('the strip ×', () => {
   });
 
   it('making a session persistent re-names the same × node and keeps the same entry node', async () => {
-    // Invariant: a temp flip re-labels the × in place, for a conductor and a hand-spawned entry, and neither the × nor the entry is re-created.
-    seed({ projects: [proj('p')], instances: [conductor('A', { temp: true }), hand('h', 'p', null, { temp: true })] });
+    // Invariant: a persistent flip re-labels the × in place, for a conductor and a hand-spawned entry, and neither the × nor the entry is re-created.
+    seed({ projects: [proj('p')], instances: [conductor('A', {}), hand('h', 'p', null, { persistent: false })] });
     renderSidebar();
     await settle();
     const x = { A: closeOf('A'), h: closeOf('h') };
     const entry = { A: stripEntryOf('A'), h: stripEntryOf('h') };
     expect(x.A.getAttribute('aria-label')).toBe(CLOSE_TITLES.archive);
     expect(x.h.getAttribute('aria-label')).toBe(CLOSE_TITLES.archive);
-    reseed({ projects: [proj('p')], instances: [conductor('A', { temp: false }), hand('h', 'p', null, { temp: false })] });
+    reseed({ projects: [proj('p')], instances: [conductor('A', { persistent: true }), hand('h', 'p', null, { persistent: true })] });
     for (const sid of ['A', 'h'] as const) {
       expect(closeOf(sid), sid).toBe(x[sid]);
       expect(stripEntryOf(sid), sid).toBe(entry[sid]);
@@ -137,7 +137,7 @@ describe("a strip × closes through closeSession with the entry's facts and neve
     seed({
       projects: [proj('p')],
       conductSessions: [{ sessionId: 'D', title: 'Done', lastActivity: 1 }],
-      instances: [conductor('A', { title: 'Alpha', temp: false })],
+      instances: [conductor('A', { title: 'Alpha', persistent: true })],
     });
     renderSidebar();
     await settle();
@@ -146,13 +146,13 @@ describe("a strip × closes through closeSession with the entry's facts and neve
     resumeSession.mockReset();
     closeVia('A');
     expect(closeSession.mock.calls).toEqual([[
-      { projectName: '.conduct', worktreeName: null, sessionId: 'A', instanceId: 'i-A', status: 'idle', temp: false, preview: 'Alpha', synthetic: true },
+      { projectName: '.conduct', worktreeName: null, sessionId: 'A', instanceId: 'i-A', status: 'idle', persistent: true, preview: 'Alpha', synthetic: true },
     ]]);
     expect(selectInstance).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();
   });
 
-  it('a live temp conductor with a transcript on disk', async () => {
+  it('a live normal conductor with a transcript on disk', async () => {
     // Invariant: a conductor listed on disk is not synthetic, and its busy status and merged title travel in the payload.
     seed({
       projects: [proj('p')],
@@ -163,7 +163,7 @@ describe("a strip × closes through closeSession with the entry's facts and neve
     await settle();
     closeVia('B');
     expect(closeSession.mock.calls).toEqual([[
-      { projectName: '.conduct', worktreeName: null, sessionId: 'B', instanceId: 'i-B', status: 'turn', temp: true, preview: 'Beta', synthetic: false },
+      { projectName: '.conduct', worktreeName: null, sessionId: 'B', instanceId: 'i-B', status: 'turn', persistent: false, preview: 'Beta', synthetic: false },
     ]]);
     expect(selectInstance).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();
@@ -171,25 +171,25 @@ describe("a strip × closes through closeSession with the entry's facts and neve
 
   it('a hand-spawned session in a worktree', async () => {
     // Invariant: a hand-spawned entry closes in its own project and worktree, as a persistent non-synthetic session.
-    seed({ projects: [proj('p', { worktrees: [wt('wt')] })], instances: [hand('h', 'p', 'wt', { title: 'Hand', temp: false })] });
+    seed({ projects: [proj('p', { worktrees: [wt('wt')] })], instances: [hand('h', 'p', 'wt', { title: 'Hand', persistent: true })] });
     renderSidebar();
     await settle();
     closeVia('h');
     expect(closeSession.mock.calls).toEqual([[
-      { projectName: 'p', worktreeName: 'wt', sessionId: 'h', instanceId: 'i-h', status: 'idle', temp: false, preview: 'Hand', synthetic: false },
+      { projectName: 'p', worktreeName: 'wt', sessionId: 'h', instanceId: 'i-h', status: 'idle', persistent: true, preview: 'Hand', synthetic: false },
     ]]);
     expect(selectInstance).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();
   });
 
-  it('a hand-spawned temp session is synthetic: its transcript is never listed while it lives', async () => {
-    // Invariant: a live temp hand-spawned session closes as temp and synthetic, in its main checkout.
-    seed({ projects: [proj('p')], instances: [hand('ht', 'p', null, { title: 'HT', temp: true })] });
+  it('a hand-spawned normal session is synthetic: its transcript is never listed while it lives', async () => {
+    // Invariant: a live normal hand-spawned session closes as normal and synthetic, in its main checkout.
+    seed({ projects: [proj('p')], instances: [hand('ht', 'p', null, { title: 'HT', persistent: false })] });
     renderSidebar();
     await settle();
     closeVia('ht');
     expect(closeSession.mock.calls).toEqual([[
-      { projectName: 'p', worktreeName: null, sessionId: 'ht', instanceId: 'i-ht', status: 'idle', temp: true, preview: 'HT', synthetic: true },
+      { projectName: 'p', worktreeName: null, sessionId: 'ht', instanceId: 'i-ht', status: 'idle', persistent: false, preview: 'HT', synthetic: true },
     ]]);
     expect(selectInstance).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();

@@ -84,7 +84,7 @@ describe('a mirror advertisement that moves under a live session', () => {
     });
     assert.equal((await adoptProject(project, projPath, { system: id })).ok, true);
 
-    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
     await waitForIdleOrExit(inst);

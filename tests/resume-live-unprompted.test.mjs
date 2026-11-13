@@ -64,7 +64,7 @@ test('a resumed, not-yet-prompted session appears live in GET /api/instances and
     // Create + let the CLI settle, then kill it so it can be resumed
     // (create() refuses to resume a session a live process already owns).
     const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions', model: 'claude-sonnet-4-6',
+      persistent: true, project: 'demo', mode: 'bypassPermissions', model: 'claude-sonnet-4-6',
     });
     assert.equal(created.status, 201);
     const firstId = created.body.id;

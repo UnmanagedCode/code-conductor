@@ -347,7 +347,7 @@ const INSTANCE = {
   contextTokens: 84213,
   contextWindowTokens: 1000000,
   pid: 4881,
-  temp: false,
+  persistent: false,
   conducted: false,
   debug: false,
   firstPrompt: 'Do the thing',
@@ -372,7 +372,7 @@ const grp = (over = {}) => ({
 // playbook join and the EFFECTIVE resume mode.
 const stoppedRow = (over = {}) => ({
   sessionId: SID_B, firstPrompt: 'Draft release notes', title: null,
-  conducted: false, temp: false, archived: false, lastActivity: 1786001000000, size: 4300,
+  conducted: false, persistent: false, archived: false, lastActivity: 1786001000000, size: 4300,
   playbook: null, stage: null, resumeMode: 'plan', ...over,
 });
 const liveOnly = (rows, opts) => renderSessions([grp({ live: rows })], opts);
@@ -399,10 +399,10 @@ describe('renderSessions — live rows', () => {
   test('every deviating field surfaces on the flags line', () => {
     const out = liveOnly([{
       ...INSTANCE,
-      temp: true, conducted: true, debug: true,
+      persistent: true, conducted: true, debug: true,
       overageActive: true, overageResetsAt: 1786020000000, autoResumeAt: 1786021000000,
     }]);
-    assert.match(out, /^ {8}flags temp {2}conducted {2}debug {2}OVERAGE {2}overage-resets 2026-08-06 12:40Z {2}auto-resume 2026-08-06 12:56Z$/m);
+    assert.match(out, /^ {8}flags persistent {2}conducted {2}debug {2}OVERAGE {2}overage-resets 2026-08-06 12:40Z {2}auto-resume 2026-08-06 12:56Z$/m);
   });
 
   test('the context line keeps its shape when either figure is unknown', () => {
@@ -479,7 +479,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
     // A SessionRow has no status/effort/model. Rendering it in the live 7-line
     // shape would claim those were looked up and came back empty; the reader
     // must be able to tell the two apart at a glance.
-    assert.equal(renderSessions([grp({ live: [INSTANCE], inactive: [stoppedRow({ conducted: true, temp: true })] })]), [
+    assert.equal(renderSessions([grp({ live: [INSTANCE], inactive: [stoppedRow({ conducted: true, persistent: true })] })]), [
       'SESSIONS (live 1 · inactive 1 · archived 0)',
       '',
       '▸ code-conductor  /w/cc-projects/code-conductor   live 1 · inactive 1 · archived 0',
@@ -494,7 +494,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
       '        title Recon read tools plain-text rendering',
       '        last 2026-08-06 07:23Z',
       '',
-      `    ${SID_B}  2026-08-06 07:23Z  —  conducted,temp  Draft release notes`,
+      `    ${SID_B}  2026-08-06 07:23Z  —  conducted,persistent  Draft release notes`,
     ].join('\n'));
   });
 
@@ -611,9 +611,17 @@ describe('renderSessions — the resumes-hot safety flag', () => {
     assert.ok(!out.includes('resumes-hot'), `plan does not resume hot:\n${out}`);
   });
 
-  test('the flag joins the same flags cell as temp/conducted', () => {
-    const out = renderSessions([grp({ inactive: [stoppedRow({ temp: true, resumeMode: 'bypassPermissions' })] })]);
-    assert.match(out, /temp,resumes-hot/);
+  test('the flag joins the same flags cell as persistent/conducted', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ persistent: true, resumeMode: 'bypassPermissions' })] })]);
+    assert.match(out, /persistent,resumes-hot/);
+  });
+
+  test('the persistent flag renders only when it is true', () => {
+    assert.match(renderSessions([grp({ inactive: [stoppedRow({ persistent: true })] })]), /\bpersistent\b/);
+    assert.ok(!/\bpersistent\b/.test(renderSessions([grp({ inactive: [stoppedRow({ persistent: false })] })])),
+      'a normal session carries no flag');
+    assert.match(liveOnly([{ ...INSTANCE, persistent: true }]), /^ {8}flags persistent$/m);
+    assert.ok(!liveOnly([{ ...INSTANCE, persistent: false }]).includes('persistent'), 'a normal live worker carries no flag');
   });
 });
 
@@ -643,14 +651,14 @@ describe('renderSession (describe_session)', () => {
       project: 'code-conductor',
       worktree: 'code-conductor_worktree_dcd22e',
       path: '/w/cc-projects/code-conductor_worktree_dcd22e',
-      retired: stoppedRow({ playbook: 'relay', stage: 'implement', conducted: true, temp: true,
+      retired: stoppedRow({ playbook: 'relay', stage: 'implement', conducted: true, persistent: true,
         resumeMode: 'bypassPermissions' }),
     }), [
       `SESSION ${SID_B}   retired`,
       '    project code-conductor   worktree code-conductor_worktree_dcd22e',
       '    path /w/cc-projects/code-conductor_worktree_dcd22e',
       '',
-      `${SID_B}  2026-08-06 07:23Z  relay/implement  conducted,temp,resumes-hot  Draft release notes`,
+      `${SID_B}  2026-08-06 07:23Z  relay/implement  conducted,persistent,resumes-hot  Draft release notes`,
     ].join('\n'));
   });
 

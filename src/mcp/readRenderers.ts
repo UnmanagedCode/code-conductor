@@ -192,7 +192,7 @@ export function renderProjects(projects: unknown): string {
 // firstPrompt renders as readablePrompt names it, the same as a session label.
 
 const INSTANCE_DEVIANT: DeviantSpec[] = [
-  { key: 'temp', default: false, label: 'temp' },
+  { key: 'persistent', default: false, label: 'persistent' },
   { key: 'conducted', default: false, label: 'conducted' },
   { key: 'debug', default: false, label: 'debug' },
   { key: 'overageActive', default: false, label: 'OVERAGE' },
@@ -259,7 +259,7 @@ function instanceRows(rows: Row[]): Array<string | string[]> {
 // about. `size` is gone: it identifies nothing and cost a column.
 const SESSION_DEVIANT: DeviantSpec[] = [
   { key: 'conducted', default: false, label: 'conducted' },
-  { key: 'temp', default: false, label: 'temp' },
+  { key: 'persistent', default: false, label: 'persistent' },
   { key: 'archived', default: false, label: 'archived' },
   // Safety flag, not a mode column. It reads off SessionRow.resumeMode, which
   // is the EFFECTIVE mode (recorded, else DEFAULT_RESUME_MODE) — so a session

@@ -16,7 +16,7 @@ process.env.ORCH_STORE_LOCK_RETRY_MAX = '2';
 process.env.ORCH_STORE_LOCK_RETRY_BASE_MS = '5';
 
 const { bootServer, api, waitFor, waitForIdleOrExit, freshProjectsRoot, rmrf } = await import('./helpers.mjs');
-const { sessionsFile, isTemp } = await import('../src/sessionStore.ts');
+const { sessionsFile, isPersistent } = await import('../src/sessionStore.ts');
 const { claudeProjectsRoot, encodeCwd } = await import('../src/projects.ts');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,16 +51,16 @@ test('a spawn-time write that fails on a held store lock is logged and never rej
       deadline = setTimeout(() => rej(new Error('launch() hung on a held store lock')), 5000);
     });
     const inst = await Promise.race([
-      instances.create({ project: 'p', resume: sid, temp: true, mode: 'plan' }),
+      instances.create({ project: 'p', resume: sid, persistent: true, mode: 'plan' }),
       timeout,
     ]);
     await waitForIdleOrExit(inst);
-    for (const op of ['setSegmentTemp', 'setSessionMode']) {
+    for (const op of ['setSegmentPersistent', 'setSessionMode']) {
       assert.ok(warns.some(w => w.includes(`sessionStore: ${op} ${sid} failed:`) && w.includes('could not acquire')),
         `the store logged the failed ${op}:\n${warns.join('\n')}`);
     }
-    // Reads take no lock: temp absent proves the write really failed.
-    assert.equal(await isTemp(sid), false, 'forcing engaged: the temp write did not land');
+    // Reads take no lock: persistent absent proves the write really failed.
+    assert.equal(await isPersistent(sid), false, 'forcing engaged: the persistent write did not land');
   } finally {
     clearTimeout(deadline);
     console.warn = origWarn;

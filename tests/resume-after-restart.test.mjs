@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
-import { setTitle, getTitle } from '../src/sessionStore.ts';
+import { setTitle, getTitle, isArchived } from '../src/sessionStore.ts';
 import { SOFT_INTERRUPT_MARKER } from '../src/parser.ts';
 import {
   resumeManifestPath,
@@ -92,35 +92,38 @@ test('resume manifest write/read/clear round-trip + corrupt handling', async () 
   await assert.rejects(() => fs.access(resumeManifestPath()));
 });
 
-// --- 2. shutdownForResumeSync preserves temp jsonl -------------------------
+// --- 2. shutdownForResumeSync archives nothing -----------------------------
 
-test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal jsonl', async () => {
+test('shutdownForResumeSync ends subprocesses but archives neither a normal nor a persistent session', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'resumekeep' });
-  const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumekeep', temp: true });
-  const tempInst = instances.get(tempRes.body.id);
-  await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
   const normalRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumekeep' });
   const normalInst = instances.get(normalRes.body.id);
   await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
+  const persistentRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumekeep', persistent: true });
+  const persistentInst = instances.get(persistentRes.body.id);
+  await waitFor(() => persistentInst.status === 'idle' && persistentInst.sessionId);
 
-  const dir = path.join(claudeProjectsRoot, encodeCwd(tempInst.cwd));
+  const dir = path.join(claudeProjectsRoot, encodeCwd(normalInst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  const tempJsonl = path.join(dir, `${tempInst.backingSessionId}.jsonl`);
   const normalJsonl = path.join(dir, `${normalInst.backingSessionId}.jsonl`);
-  await fs.writeFile(tempJsonl, '{"type":"user","uuid":"u1"}\n');
-  await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u2"}\n');
+  const persistentJsonl = path.join(dir, `${persistentInst.backingSessionId}.jsonl`);
+  await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u1"}\n');
+  await fs.writeFile(persistentJsonl, '{"type":"user","uuid":"u2"}\n');
 
   instances.shutdownForResumeSync();
   // Wait for the async _handleExit to fire (clears proc) — the
-  // _suppressTempDelete guard must keep it from deleting the jsonl. Poll the
-  // real signal instead of a fixed sleep.
-  await waitFor(() => tempInst.proc === null && normalInst.proc === null, { timeout: 20000 });
+  // _exitSuppressed guard must keep it from archiving the normal session.
+  // Poll the real signal instead of a fixed sleep.
+  await waitFor(() => normalInst.proc === null && persistentInst.proc === null, { timeout: 20000 });
+  await Promise.all([...instances._exitArchives]);
 
-  await fs.access(tempJsonl);   // temp jsonl PRESERVED
   await fs.access(normalJsonl);
+  await fs.access(persistentJsonl);
+  assert.equal(await isArchived(normalInst.backingSessionId), false, 'a normal session is carried over, not archived');
+  assert.equal(await isArchived(persistentInst.backingSessionId), false);
 });
 
-// The resume-restart drain ends every CLI's stdin with `_suppressTempDelete` set
+// The resume-restart drain ends every CLI's stdin with `_exitSuppressed` set
 // and no kill() — an exit nobody "commanded" in the _killing sense, and exactly
 // what every orchestrator restart does. It is not a spontaneous exit: no cause, no
 // log line, and no EXITED wake for an owner armed on the session. The wake is
@@ -129,7 +132,7 @@ test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal js
 test('shutdownForResumeSync records no exit cause, logs no spontaneous exit, and fires no EXITED wake', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'resumequiet' });
   const spawnRest = async () => {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'resumequiet', temp: true });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'resumequiet' });
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     return inst;
@@ -158,7 +161,7 @@ test('shutdownForResumeSync records no exit cause, logs no spontaneous exit, and
     console.warn = origWarn;
     hub.deliver = realDeliver;
   }
-  assert.equal(worker._suppressTempDelete, true, 'precondition: the drain flag was set');
+  assert.equal(worker._exitSuppressed, true, 'precondition: the drain flag was set');
   assert.equal(worker.status, 'exited', 'precondition: the CLI ended through the exit path');
   assert.equal(instances.exitCauseFor(worker.sessionId), null);
   assert.equal(instances.exitCauseFor(owner.sessionId), null);
@@ -311,7 +314,7 @@ test('restoreFromResumeManifest resumes top-level sessions only and tells each r
       {
         project: '.conduct', sessionId: conductorSid, cwd: conductCwd,
         mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
-        worktreeName: null, temp: true, conducted: false, debug: false, title: null,
+        worktreeName: null, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'conductor',
         workers: [
           { project: 'realproj', sessionId: workerSid, worktreeName: 'realproj_worktree_zz', parentSessionId: conductorSid },
@@ -321,31 +324,31 @@ test('restoreFromResumeManifest resumes top-level sessions only and tells each r
       {
         project: '.conduct', sessionId: bareConductorSid, cwd: conductCwd,
         mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
-        worktreeName: null, temp: true, conducted: false, debug: false, title: null,
+        worktreeName: null, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'conductor',
       },
       {
         project: 'realproj', sessionId: workerSid, cwd: otherCwd,
         mode: 'plan', effort: 'high', thinking: 'adaptive', model: null,
-        worktreeName: 'realproj_worktree_zz', temp: true, conducted: true, debug: false,
+        worktreeName: 'realproj_worktree_zz', conducted: true, debug: false,
         title: null, autoApprovePlan: false, group: 'worker',
       },
       {
         project: 'realproj', sessionId: grandSid, cwd: otherCwd,
         mode: 'plan', effort: 'high', thinking: 'adaptive', model: null,
-        worktreeName: null, temp: true, conducted: true, debug: false,
+        worktreeName: null, conducted: true, debug: false,
         title: null, autoApprovePlan: false, group: 'worker',
       },
       {
         project: 'realproj', sessionId: otherSid, cwd: otherCwd,
         mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
-        worktreeName: null, temp: false, conducted: false, debug: false, title: null,
+        worktreeName: null, persistent: true, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'other',
       },
       {
         project: 'realproj', sessionId: otherRootSid, cwd: otherCwd,
         mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
-        worktreeName: null, temp: false, conducted: false, debug: false, title: null,
+        worktreeName: null, persistent: true, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'other',
         workers: [
           { project: 'realproj', sessionId: otherChildSid, worktreeName: null, parentSessionId: otherRootSid },
@@ -416,7 +419,7 @@ test('a manifest carrying the retired playbookEnforcement `off` resurrects at wa
   writeResumeManifest([{
     project: '.conduct', sessionId: conductorSid, cwd: conductCwd,
     mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
-    worktreeName: null, temp: true, conducted: false, debug: false, title: null,
+    worktreeName: null, conducted: false, debug: false, title: null,
     autoApprovePlan: false, playbookEnforcement: 'off', group: 'conductor',
   }]);
 
@@ -439,7 +442,7 @@ test('a restarted conductor keeps its OWN level, not a default that changed unde
   // any test that lets the two values coincide.
   await ensureConductProject();
   const res = await api(baseUrl, 'POST', '/api/instances', {
-    project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions', temp: true, playbookEnforcement: 'enforce',
+    project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions', playbookEnforcement: 'enforce',
   });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   const inst = instances.get(res.body.id);
@@ -695,7 +698,7 @@ test('restoreFromResumeManifest prompts busy sessions but not idle sessions', as
       await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
     }
 
-    const baseEntry = { project: 'busygate', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
+    const baseEntry = { project: 'busygate', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, persistent: true, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     writeResumeManifest([
       { ...baseEntry, sessionId: busySid, wasBusy: true  },
@@ -741,17 +744,17 @@ test('restoreFromResumeManifest prompts busy sessions but not idle sessions', as
 
 test('drainToManifest excludes exited instances still retained in byId', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'liveonly' });
-  const deadRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
+  const deadRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly', persistent: true });
   const dead = instances.get(deadRes.body.id);
   await waitFor(() => dead.status === 'idle' && dead.sessionId);
   const liveRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
   const live = instances.get(liveRes.body.id);
   await waitFor(() => live.status === 'idle' && live.sessionId);
 
-  // Kill one (non-temp) instance: proc becomes null but it stays in byId.
+  // Kill one (persistent) instance: proc becomes null but it stays in byId.
   await dead.kill({ graceMs: 50 });
   assert.equal(dead.proc, null);
-  assert.ok(instances.byId.has(dead.id), 'exited non-temp instance retained in byId');
+  assert.ok(instances.byId.has(dead.id), 'exited persistent instance retained in byId');
 
   const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
   const sids = entries.map(e => e.sessionId);
@@ -835,11 +838,11 @@ test('the restart manifest carries the PUBLIC id, so a rotated session resumes i
   clearResumeManifest();
 });
 
-// --- 12. firstPrompt round-trips through manifest (temp session title bug) ---
+// --- 12. firstPrompt round-trips through manifest (normal session title) ---
 
-test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores it on a temp session', async () => {
+test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores it on a normal session', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'fp-roundtrip' });
-  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'fp-roundtrip', temp: true });
+  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'fp-roundtrip' });
   const inst = instances.get(res.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
@@ -856,7 +859,7 @@ test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores i
   const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
   assert.equal(entries.length, 1, 'one entry in manifest');
   assert.equal(entries[0].firstPrompt, 'my first test prompt', 'firstPrompt persisted to manifest');
-  assert.equal(entries[0].temp, true, 'temp flag preserved in manifest');
+  assert.equal(entries[0].persistent, false, 'a normal session is recorded normal in the manifest');
 
   // Wait for the process to die after shutdownForResumeSync.
   await waitFor(() => inst.proc === null, { timeout: 20000 });
@@ -866,9 +869,41 @@ test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores i
 
   // The restored instance is a fresh object (new id) with the same sessionId.
   const newInst = [...instances.byId.values()].find(i => i.sessionId === inst.sessionId && i.id !== inst.id);
-  assert.ok(newInst, 'new instance created for the restored temp session');
+  assert.ok(newInst, 'new instance created for the restored normal session');
   assert.equal(newInst.firstPrompt, 'my first test prompt', 'firstPrompt restored on new instance');
-  assert.equal(newInst.temp, true, 'temp flag preserved on restored instance');
+  assert.equal(newInst.persistent, false, 'restored as a normal session');
+  clearResumeManifest();
+});
+
+test('the drained manifest carries persistent, and restore brings a persistent and a normal session back as themselves', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'kind-roundtrip' });
+  const spawned = {};
+  for (const persistent of [true, false]) {
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'kind-roundtrip', persistent });
+    const inst = instances.get(res.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    spawned[persistent] = inst;
+  }
+
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  for (const persistent of [true, false]) {
+    const entry = entries.find(e => e.sessionId === spawned[persistent].sessionId);
+    assert.equal(entry.persistent, persistent, 'the manifest entry carries the session\'s kind');
+    assert.equal('temp' in entry, false);
+  }
+  await waitFor(() => spawned[true].proc === null && spawned[false].proc === null, { timeout: 20000 });
+
+  const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+  assert.equal(restored, 2);
+  for (const persistent of [true, false]) {
+    const old = spawned[persistent];
+    const back = [...instances.byId.values()].find(i => i.sessionId === old.sessionId && i.id !== old.id);
+    assert.ok(back, 'restored');
+    assert.equal(back.persistent, persistent, `a ${persistent ? 'persistent' : 'normal'} session comes back as itself`);
+  }
   clearResumeManifest();
 });
 
@@ -877,7 +912,7 @@ test('drainToManifest captures a custom title; restoreFromResumeManifest restore
   // via inst.setTitle. The stored title is cleared before restore, so
   // _hydrateTitle has nothing to find and the manifest is the only source.
   await api(baseUrl, 'POST', '/api/projects', { name: 'title-roundtrip' });
-  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'title-roundtrip', temp: true });
+  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'title-roundtrip' });
   const inst = instances.get(res.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
   await setTitle(inst.sessionId, 'Restart survivor');
@@ -1085,7 +1120,7 @@ test('restoreFromResumeManifest tells a root its background work died with the r
       await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
     }
     const workers = [{ project: 'bglost', sessionId: wSid, worktreeName: null, parentSessionId: cSid }];
-    const base = { mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, wasBusy: true };
+    const base = { mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, persistent: true, conducted: false, debug: false, title: null, autoApprovePlan: false, wasBusy: true };
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     writeResumeManifest([
       { ...base, project: '.conduct', sessionId: cSid, cwd: conductCwd, group: 'conductor', workers, backgroundWorkLost: [wSid] },
@@ -1167,7 +1202,7 @@ test('restoreFromResumeManifest delivers the restart prompt exactly once to a se
     const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
     await fs.mkdir(dir, { recursive: true });
     for (const sid of [aSid, bSid]) await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
-    const base = { project: 'attached', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other', wasBusy: true };
+    const base = { project: 'attached', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, persistent: true, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other', wasBusy: true };
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     // B first, so the restore reaches it while the browser's resume is in flight.
     writeResumeManifest([{ ...base, sessionId: bSid }, { ...base, sessionId: aSid }]);
@@ -1236,7 +1271,7 @@ async function adoptConductorWith(fields, prepare) {
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   writeResumeManifest([{
     project: CONDUCT_PROJECT_NAME, sessionId: sid, cwd, mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
-    worktreeName: null, temp: false, conducted: false, title: null, group: 'conductor', wasBusy: true, ...fields,
+    worktreeName: null, persistent: true, conducted: false, title: null, group: 'conductor', wasBusy: true, ...fields,
   }]);
   try {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: CONDUCT_PROJECT_NAME, resume: sid });
@@ -1507,7 +1542,7 @@ test('restoreFromResumeManifest restores overageStoppedWorkers onto the revived 
     writeResumeManifest([{
       project: 'ovg-swk', sessionId: sid, cwd, mode: 'bypassPermissions',
       effort: null, thinking: null, model: null, contextWindowTokens: null,
-      backend: 'claude', worktreeName: null, temp: false, conducted: false,
+      backend: 'claude', worktreeName: null, persistent: true, conducted: false,
       debug: false, title: null, firstPrompt: null, autoApprovePlan: false,
       playbookEnforcement: getDefaultPlaybookEnforcement(), group: 'conductor',
       wasBusy: true,
@@ -1564,7 +1599,7 @@ test('restoreFromResumeManifest fires a PAST-DUE overage resume promptly on boot
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     writeResumeManifest([{
       project: 'ovg-past', sessionId: sid, cwd, mode: 'plan', effort: 'high',
-      thinking: 'adaptive', model: null, worktreeName: null, temp: false,
+      thinking: 'adaptive', model: null, worktreeName: null, persistent: true,
       conducted: false, debug: false, title: null, autoApprovePlan: false,
       group: 'other', wasBusy: false,
       overageStopped: true, overageResumeAt: nowSec() - 10, overageResetsAt: nowSec() - 15,
@@ -1628,7 +1663,7 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
     }
 
     const futureAt = nowSec() + 3600; // 1h out — never fires within the test
-    const base = { project: 'ovg-fut', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
+    const base = { project: 'ovg-fut', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, persistent: true, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     writeResumeManifest([
       { ...base, sessionId: ovgSid, wasBusy: false, overageStopped: true, overageResumeAt: futureAt, overageResetsAt: futureAt - 5,
@@ -1692,7 +1727,7 @@ test('restoreFromResumeManifest refuses a persisted overage mark when the policy
     }
 
     const futureAt = nowSec() + 3600;
-    const base = { project: 'ovg-pol', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
+    const base = { project: 'ovg-pol', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, persistent: true, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
     const mark = { overageStopped: true, overageResumeAt: futureAt, overageResetsAt: futureAt - 5,
       overageQueue: [{ text: 'queued while paused', attachments: [], ts: Date.now() }] };
     await fs.mkdir(orchStoreRoot(), { recursive: true });
@@ -1795,7 +1830,7 @@ test('a restored session whose custom-model row was DELETED keeps its last known
       mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive',
       // The model is NOT in customModels — the row was deleted before restart.
       backend: 'codex', model: 'gpt-5.6-sol[1m]', contextWindowTokens: 1_000_000,
-      worktreeName: null, temp: false, conducted: false, debug: false, title: null,
+      worktreeName: null, persistent: true, conducted: false, debug: false, title: null,
       autoApprovePlan: false, group: 'other',
     }]);
 

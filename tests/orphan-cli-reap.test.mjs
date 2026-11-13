@@ -116,7 +116,7 @@ test('an unverifiable pid is not signalled, a warning names it, and the restore 
   await seedSessionJsonl(localPlace(cwd), sessionId);
   const entry = {
     project: 'unv', sessionId, cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null,
-    worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false,
+    worktreeName: null, persistent: true, conducted: false, debug: false, title: null, autoApprovePlan: false,
     group: 'other', wasBusy: true,
   };
   const signalled = [];

@@ -33,11 +33,11 @@ process.env.PROJECTS_ROOT = path.join(tmp, 'project');
 process.env.CLAUDE_PROJECTS_ROOT = path.join(tmp, 'claude-projects');
 
 const {
-  loadLineage, mintPublicId, recordRotation, revertRotation, undoRenewal, retireSegment, chainFor,
+  loadLineage, mintPublicId, recordRotation, revertRotation, undoRenewal, retireSegment, retireSegments, chainFor,
   resolveBacking, publicIdFor, segmentsFor, dropSegment, trackLineageWrite,
   PUBLIC_ID_LEN, PUBLIC_ID_LEN_EXTENDED, RENEWAL_MOVED,
 } = await import('../src/sessionLineage.ts');
-const { setSegmentTemp } = await import('../src/sessionStore.ts');
+const { setSegmentPersistent } = await import('../src/sessionStore.ts');
 
 const STORE_FILE = () => path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'sessions.json');
 
@@ -224,12 +224,12 @@ test('revertRotation on a minted session keeps the row (initial id !== public id
 });
 
 // A session whose `pre` segment was renewed into `renewed` and then pruned into
-// `pruned`, the way the production writers leave it: `pre` archived, temp
-// carried forward when the session is temp.
-async function renewedThenPruned({ head, temp }) {
+// `pruned`, the way the production writers leave it: `pre` archived,
+// persistent carried forward when the session is persistent.
+async function renewedThenPruned({ head, persistent }) {
   const pre = backing(head);
   const pub = await mintPublicId(pre);
-  if (temp) await setSegmentTemp(pre, true);
+  if (persistent) await setSegmentPersistent(pre, true);
   const renewed = backing(head, '1111');
   const pruned = backing(head, '2222');
   await recordRotation(pub, renewed, 'renew');
@@ -239,32 +239,52 @@ async function renewedThenPruned({ head, temp }) {
   return { pub, pre, renewed, pruned };
 }
 
-test('undoRenewal splices the post run, re-points current, un-archives pre and restores temp', async () => {
+test('undoRenewal splices the post run, re-points current, un-archives pre and sets persistent to the session\'s', async () => {
   await reset();
-  const t = await renewedThenPruned({ head: 'ad0ad0ad', temp: true });
+  const t = await renewedThenPruned({ head: 'ad0ad0ad', persistent: true });
   assert.equal((await chainFor(t.pub)).find(s => s.id === t.pre)?.archived, true, 'precondition: pre is archived');
-  await undoRenewal(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], temp: true });
+  await undoRenewal(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], persistent: true });
   const chain = await chainFor(t.pub);
-  assert.deepEqual(chain.map(s => [s.id, s.reason, !!s.archived, !!s.temp, !!s.dropped]), [[t.pre, 'initial', false, true, false]],
-    'the post run is spliced out (no tombstone), pre is live, un-archived and temp again');
+  assert.deepEqual(chain.map(s => [s.id, s.reason, !!s.archived, !!s.persistent, !!s.dropped]), [[t.pre, 'initial', false, true, false]],
+    'the post run is spliced out (no tombstone), pre is live, un-archived and persistent');
   assert.equal(await resolveBacking(t.pub), t.pre, 'current is pre');
   assert.equal(await publicIdFor(t.renewed), t.renewed, 'a spliced id no longer resolves to the session');
   assert.equal(await publicIdFor(t.pruned), t.pruned);
 
-  const p = await renewedThenPruned({ head: 'ad1ad1ad', temp: false });
-  await setSegmentTemp(p.pre, true);
-  await undoRenewal(p.pub, { pre: p.pre, post: [p.renewed, p.pruned], temp: false });
-  assert.deepEqual((await chainFor(p.pub)).map(s => [s.id, !!s.archived, !!s.temp]), [[p.pre, false, false]],
-    'a persistent session\'s pre segment comes back without temp');
+  // The flag is the instance's, passed in, not whatever the segment carried at
+  // the rotation: a session made persistent since gets it.
+  const p = await renewedThenPruned({ head: 'ad1ad1ad', persistent: true });
+  await undoRenewal(p.pub, { pre: p.pre, post: [p.renewed, p.pruned], persistent: false });
+  assert.deepEqual((await chainFor(p.pub)).map(s => [s.id, !!s.archived, !!s.persistent]), [[p.pre, false, false]],
+    'a normal session\'s pre segment comes back without persistent');
+  const q = await renewedThenPruned({ head: 'ad6ad6ad', persistent: false });
+  await undoRenewal(q.pub, { pre: q.pre, post: [q.renewed, q.pruned], persistent: true });
+  assert.deepEqual((await chainFor(q.pub)).map(s => [s.id, !!s.archived, !!s.persistent]), [[q.pre, false, true]],
+    'a session made persistent since the rotation gets persistent on its pre segment');
+});
+
+test('retireSegments archives and leaves persistent untouched', async () => {
+  await reset();
+  const kept = backing('ae0ae0ae'), plain = backing('ae1ae1ae');
+  await mintPublicId(kept);
+  await mintPublicId(plain);
+  await setSegmentPersistent(kept, true);
+  await retireSegments([kept, plain]);
+  const flags = async (id) => {
+    const seg = (await chainFor(await publicIdFor(id))).find(s => s.id === id);
+    return [!!seg.archived, !!seg.persistent];
+  };
+  assert.deepEqual(await flags(kept), [true, true], 'a persistent segment is archived and stays persistent');
+  assert.deepEqual(await flags(plain), [true, false], 'a normal segment is archived and stays normal');
 });
 
 test('undoRenewal is a no-op once applied', async () => {
   await reset();
-  const t = await renewedThenPruned({ head: 'ad2ad2ad', temp: false });
-  await undoRenewal(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], temp: false });
+  const t = await renewedThenPruned({ head: 'ad2ad2ad', persistent: false });
+  await undoRenewal(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], persistent: false });
   const before = await fs.readFile(STORE_FILE());
   const { mtimeMs } = await fs.stat(STORE_FILE());
-  await undoRenewal(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], temp: false });
+  await undoRenewal(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], persistent: false });
   assert.deepEqual(await fs.readFile(STORE_FILE()), before, 'the store is byte-identical');
   assert.equal((await fs.stat(STORE_FILE())).mtimeMs, mtimeMs, 'and was not rewritten');
 });
@@ -280,25 +300,25 @@ test('undoRenewal refuses RENEWAL_MOVED when the chain moved', async () => {
     }, why);
     assert.deepEqual(await fs.readFile(STORE_FILE()), before, `${why}: nothing written`);
   };
-  const t = await renewedThenPruned({ head: 'ad3ad3ad', temp: false });
+  const t = await renewedThenPruned({ head: 'ad3ad3ad', persistent: false });
   const later = backing('ad3ad3ad', '3333');
   await recordRotation(t.pub, later, 'renew');
-  await refused(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], temp: false }, 'a rotation landed after the post run');
-  await refused(t.pub, { pre: t.renewed, post: [t.pruned], temp: false }, 'the post run is not the whole tail after pre');
-  await refused(t.pub, { pre: t.pre, post: [t.renewed, t.pruned, later, backing('ad3ad3ad', '4444')], temp: false },
+  await refused(t.pub, { pre: t.pre, post: [t.renewed, t.pruned], persistent: false }, 'a rotation landed after the post run');
+  await refused(t.pub, { pre: t.renewed, post: [t.pruned], persistent: false }, 'the post run is not the whole tail after pre');
+  await refused(t.pub, { pre: t.pre, post: [t.renewed, t.pruned, later, backing('ad3ad3ad', '4444')], persistent: false },
     'the post run names a segment the chain lacks');
-  await refused('nosuchrecord', { pre: t.pre, post: [t.renewed], temp: false }, 'no record');
+  await refused('nosuchrecord', { pre: t.pre, post: [t.renewed], persistent: false }, 'no record');
 
-  const d = await renewedThenPruned({ head: 'ad4ad4ad', temp: false });
+  const d = await renewedThenPruned({ head: 'ad4ad4ad', persistent: false });
   await dropSegment(d.pre);
-  await refused(d.pub, { pre: d.pre, post: [d.renewed, d.pruned], temp: false }, 'pre is a tombstone');
+  await refused(d.pub, { pre: d.pre, post: [d.renewed, d.pruned], persistent: false }, 'pre is a tombstone');
 
   // The tail is exactly the post run and current is the newest live segment,
   // but the run ends in a tombstone, so current is not its last entry.
-  const c = await renewedThenPruned({ head: 'ad5ad5ad', temp: false });
+  const c = await renewedThenPruned({ head: 'ad5ad5ad', persistent: false });
   await dropSegment(c.pruned);
   assert.equal(await resolveBacking(c.pub), c.renewed, 'precondition: current fell back to the renew segment');
-  await refused(c.pub, { pre: c.pre, post: [c.renewed, c.pruned], temp: false }, 'current is not the post run\'s last entry');
+  await refused(c.pub, { pre: c.pre, post: [c.renewed, c.pruned], persistent: false }, 'current is not the post run\'s last entry');
 });
 
 test('dropSegment: on current, mid-chain, and last-remaining', async () => {

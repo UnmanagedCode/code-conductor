@@ -1,5 +1,5 @@
 // An open session pane whose instance leaves every list (a conductor's
-// kill_instance, a temp worker's exit) stays where it is as a read-only "ended"
+// kill_instance, a normal worker's exit) stays where it is as a read-only "ended"
 // pane: the same transcript node, the reader's scroll-back, the composer
 // disabled with the draft still in it, and a banner saying it ended. Selecting
 // another session, or the UI's own Stop, leaves no ended pane behind.
@@ -21,7 +21,7 @@ vi.mock('@/ui/feedback', () => ({
 }));
 
 const inst = (id: string, sessionId: string, extra: Partial<Instance> = {}): Instance => ({
-  id, sessionId, project: 'p', status: 'idle', displayStatus: 'idle', mode: 'bypassPermissions', temp: true, ...extra,
+  id, sessionId, project: 'p', status: 'idle', displayStatus: 'idle', mode: 'bypassPermissions', ...extra,
 });
 
 const TAIL: UiEvent[] = [

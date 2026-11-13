@@ -25,8 +25,8 @@ test('archive endpoint keeps .jsonl, marks archived, and the session leaves the 
   const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'arclife' });
-    // A non-temp session — the new "remove" must archive any session.
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife', temp: false });
+    // A persistent session — the "remove" must archive any session.
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife', persistent: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     const sid = inst.backingSessionId;   // filenames + the archived segment flag
@@ -66,7 +66,7 @@ test('restore drops the session from /api/archived and clears the archived flag'
   const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'arclife2' });
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife2', temp: false });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife2', persistent: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     const sid = inst.backingSessionId;   // filenames + the archived segment flag
@@ -92,7 +92,7 @@ test('permanent delete from the archive removes the .jsonl AND unmarks archived 
   const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'arclife3' });
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife3', temp: false });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife3', persistent: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     const sid = inst.backingSessionId;   // filenames + the archived segment flag
@@ -147,7 +147,7 @@ test('.conduct archived sessions appear in /api/archived and are restorable', as
     await fs.mkdir(sessionDir, { recursive: true });
     await fs.writeFile(path.join(sessionDir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
 
-    // Mark it archived (simulates what happens when a conductor temp session is killed).
+    // Mark it archived (simulates what happens when a normal conductor session is killed).
     await setSegmentArchived(sid, true);
     assert.equal(await isArchived(sid), true);
 
@@ -173,11 +173,11 @@ test('.conduct archived sessions appear in /api/archived and are restorable', as
   } finally { await close(); }
 });
 
-test('a live temp .conduct conductor archives through the project archive route: stopped, gone from /api/instances, absent from the .conduct list', async () => {
+test('a live normal .conduct conductor archives through the project archive route: stopped, gone from /api/instances, absent from the .conduct list', async () => {
   const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     await ensureConductProject();
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions' });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions' });
     assert.equal(res.status, 201, JSON.stringify(res.body));
     const id = res.body.id;
     const inst = instances.get(id);

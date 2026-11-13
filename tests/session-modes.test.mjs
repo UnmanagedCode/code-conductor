@@ -67,7 +67,7 @@ test('a fresh spawn default is cold and distinct from the resume default', () =>
 // ---------- the renderer honours the rule ----------
 
 const row = (over = {}) => ({
-  sessionId: SID_A, firstPrompt: null, title: 't', conducted: false, temp: false,
+  sessionId: SID_A, firstPrompt: null, title: 't', conducted: false, persistent: true,
   archived: false, lastActivity: 1, size: 1, playbook: null, stage: null,
   resumeMode: DEFAULT_RESUME_MODE, ...over,
 });

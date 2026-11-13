@@ -77,7 +77,7 @@ describe('criterion 5 — a re-advertised geometry is session-fatal, without mou
     });
     assert.equal((await adoptProject(project, projPath, { system: id })).ok, true);
 
-    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle');

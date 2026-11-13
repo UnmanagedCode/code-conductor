@@ -160,11 +160,11 @@ test('a commanded kill\'s clean exit is not an uncommanded exit: no cause, no ow
   assert.deepEqual(wakes, [], 'no owner is woken with an EXITED stub');
 });
 
-function fakeLive({ ignoresEof, temp = false, pid }) {
+function fakeLive({ ignoresEof, persistent = false, pid }) {
   const log = [];
   return {
-    proc: { stdin: { end() { log.push('eof'); } } }, pid, temp, log, get ended() { return log.filter(e => e === 'eof').length; },
-    ignoresEof, _suppressTempDelete: false, _fuse: null, interruptTurnForStop() { log.push('interrupt'); },
+    proc: { stdin: { end() { log.push('eof'); } } }, pid, persistent, log, get ended() { return log.filter(e => e === 'eof').length; },
+    ignoresEof, _exitSuppressed: false, _fuse: null, interruptTurnForStop() { log.push('interrupt'); },
   };
 }
 
@@ -175,14 +175,14 @@ test('shutdownForResumeSync EOFs every live instance and tree-kills survivors wh
   const mgr = new InstanceManager({ platform: { ...posixPlatform, softSigterm: false, killProcess: (t, s) => kills.push([t, s]) } });
   mgr._usageMonitor.stop();
   // This process's own pid is "alive" and never exits: a survivor. Use a tiny deadline by mocking Date.
-  const stuck = fakeLive({ pid: process.pid });
-  const temp = fakeLive({ pid: process.pid, temp: true });
-  mgr.byId.set('a', stuck); mgr.byId.set('t', temp);
+  const stuck = fakeLive({ pid: process.pid, persistent: true });
+  const normal = fakeLive({ pid: process.pid });
+  mgr.byId.set('a', stuck); mgr.byId.set('t', normal);
   let now = 1_000_000;
   const realNow = Date.now;
   Date.now = () => (now += 1000);
   try { mgr.shutdownForResumeSync(); } finally { Date.now = realNow; }
   assert.deepEqual(stuck.log, ['eof']);
-  assert.deepEqual(temp.log, ['eof']);
+  assert.deepEqual(normal.log, ['eof']);
   assert.equal(kills.length, 2, 'every instance still alive at the deadline is killed');
 });

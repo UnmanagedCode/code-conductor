@@ -23,12 +23,12 @@ const loadSessions = vi.fn((..._a: any[]): Promise<any[]> => Promise.resolve([])
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
 const removeWorktree = vi.fn();
-const promoteSession = vi.fn();
+const persistSession = vi.fn();
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: (...a: unknown[]) => loadSessions(...a),
   closeSession: (...a: unknown[]) => closeSession(...a),
   resumeSession: (...a: unknown[]) => resumeSession(...a),
-  promoteSession: (...a: unknown[]) => promoteSession(...a),
+  persistSession: (...a: unknown[]) => persistSession(...a),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -124,7 +124,7 @@ beforeEach(() => {
   closeSession.mockReset();
   resumeSession.mockReset();
   removeWorktree.mockReset();
-  promoteSession.mockReset();
+  persistSession.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   invalidateSessions();
   sidebarStore.set({ collapsedSessions: [], expandedConductors: [], inactiveOpen: false, filter: '', ...FLEET_UI });
@@ -233,7 +233,7 @@ describe('Hand-spawned only', () => {
     seedFleet(fleet());
     renderSidebar();
     await settle();
-    expect(listItems('mixed:mix')).toEqual(['h-mix', 'sep:Conducted · 2', 'wa-mix', 'wb-mix']);
+    expect(listItems('mixed:mix')).toEqual(['sep:Persistent · 1', 'h-mix', 'sep:Conducted · 2', 'wa-mix', 'wb-mix']);
     expect(projectNames()).toEqual(['solo', 'mixed', 'main', 'hand', 'idle']);
     await pick('Hand-spawned only');
     expect(listItems('mixed:mix')).toEqual(['h-mix']);
@@ -261,7 +261,7 @@ describe('Hand-spawned only', () => {
     expect(worktreeNames('solo')).toEqual(['solo-a']);
     expect(toggleOf('solo').textContent).toBe('Worktrees (2)');
     expect(rowIds('solo:solo-a')).toEqual(['h-solo']);
-    expect(el('[data-sessions-summary="solo:solo-a"]').textContent).toBe('Sessions (3) · 3 live');
+    expect(el('[data-sessions-summary="solo:solo-a"]').textContent).toBe('Persistent sessions (3) · 3 live');
     await pick('All sessions');
     expect(worktreeNames('solo')).toEqual(['solo-a', 'solo-b']);
     expect(document.querySelector('[data-sessions="solo"]')).not.toBeNull();

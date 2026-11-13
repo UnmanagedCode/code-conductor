@@ -34,7 +34,7 @@ export type InstanceFields = {
   displayStatus?: string | null;
   sessionId: string | null;
   mode?: string;
-  temp?: boolean;
+  persistent?: boolean;
   conducted?: boolean;
   rootSessionId?: string | null;
   callerInstanceId?: string | null;
@@ -76,7 +76,7 @@ export type ConductorRow = {
   instanceWaitingOnJob: boolean;
   awaitingUser: AskKind | null;
   awaitingUserSource: AskSource | null;
-  instanceTemp: boolean;
+  instancePersistent: boolean;
   autoResumeAt: number | null;
   queuedCount: number;
   live: boolean;
@@ -102,7 +102,7 @@ export type InstanceSessionRow<S extends string | null = string | null> = {
   instanceStatus: string;
   instanceDisplayStatus: string | null | undefined;
   instanceMode: string | undefined;
-  instanceTemp: boolean;
+  instancePersistent: boolean;
   instanceAwaitingWake: boolean;
   instanceWaitingOnJob: boolean;
   conducted: boolean;
@@ -145,7 +145,7 @@ export function sessionFromInstance<I extends InstanceFields>(inst: I): Instance
     instanceStatus: inst.status,
     instanceDisplayStatus: inst.displayStatus,
     instanceMode: inst.mode,
-    instanceTemp: !!inst.temp,
+    instancePersistent: !!inst.persistent,
     instanceAwaitingWake: !!inst.awaitingWake,
     instanceWaitingOnJob: !!inst.waitingOnJob,
     conducted: !!inst.conducted,
@@ -182,8 +182,9 @@ function conductorRowFromDisk(r: ConductRow & { sessionId: string }, onDisk: boo
     // its disk row reports.
     awaitingUser: null,
     awaitingUserSource: null,
-    // Instance-only: only a live instance can be promoted.
-    instanceTemp: false,
+    // Instance-only. A disk-only row is never live, so the value cannot change
+    // its × action: closeActionOf returns `archive` for any non-live row.
+    instancePersistent: false,
     // Instance-only: an armed overage resume and its queue live on the
     // instance.
     autoResumeAt: null,
@@ -203,7 +204,7 @@ function overlayInstance(row: ConductorRow, inst: InstanceFields): void {
   row.instanceWaitingOnJob = !!inst.waitingOnJob;
   row.awaitingUser = inst.awaitingUser ?? null;
   row.awaitingUserSource = inst.awaitingUserSource ?? null;
-  row.instanceTemp = !!inst.temp;
+  row.instancePersistent = !!inst.persistent;
   row.autoResumeAt = inst.autoResumeAt ?? null;
   row.queuedCount = inst.queuedCount ?? 0;
   if (inst.title) row.title = inst.title;

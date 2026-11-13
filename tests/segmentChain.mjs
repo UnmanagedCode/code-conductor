@@ -84,7 +84,7 @@ export async function writeLineageRow(publicId, segments) {
     current: live[live.length - 1].id,
     segments: segments.map((s, i) => ({
       id: s.id, reason: s.reason, at: s.at ?? atFor(i), ...(s.dropped === true ? { dropped: true } : {}),
-      ...(s.temp === true ? { temp: true } : {}), ...(s.archived === true ? { archived: true } : {}),
+      ...(s.persistent === true ? { persistent: true } : {}), ...(s.archived === true ? { archived: true } : {}),
     })),
   };
   await fs.mkdir(orchStoreRoot(), { recursive: true });
@@ -177,7 +177,7 @@ export async function bootLiveAcrossSeams({ ctx, project, publicId, segments, li
   if (beforeResume) await beforeResume();
   const id = await withRingCap(ringCap, async () => {
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project, mode: 'bypassPermissions', resume: publicId,
+      persistent: true, project, mode: 'bypassPermissions', resume: publicId,
     });
     assert.equal(r.status, 201, `resume ${publicId}: ${JSON.stringify(r.body)}`);
     return r.body.id;

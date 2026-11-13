@@ -139,7 +139,7 @@ const CONDUCTOR_VIEW_TYPES: Record<string, Schema> = {
   contextWindowTokens: nullable(int),
   pid: nullable(int),
   worktree: INSTANCE_WORKTREE,
-  temp: bool,
+  persistent: bool,
   conducted: bool,
   debug: bool,
   firstPrompt: nullable(str),
@@ -177,7 +177,7 @@ const ROW_VIEW = extend(CONDUCTOR_VIEW, keyed(LIST_ONLY_KEYS, LIST_ONLY_TYPES, '
 // A stopped session's row (SessionRow, src/projects.ts) plus its playbook binding.
 const SESSION_ROW = obj({
   sessionId: str, firstPrompt: nullable(str), title: nullable(str), conducted: bool,
-  turnEndSeq: int, viewedSeq: int, temp: bool, archived: bool, lastActivity: num, size: num,
+  turnEndSeq: int, viewedSeq: int, persistent: bool, archived: bool, lastActivity: num, size: num,
   resumeMode: str, awaitingUser: AWAITING_USER, awaitingUserSource: AWAITING_USER_SOURCE,
   playbook: nullable(str), stage: nullable(str),
 });

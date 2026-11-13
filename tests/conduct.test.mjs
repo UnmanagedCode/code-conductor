@@ -169,13 +169,12 @@ test('POST /api/instances with project=.conduct spawns successfully', async () =
   const r = await api(baseUrl, 'POST', '/api/instances', {
     project: '.conduct',
     model: 'claude-haiku-4-5',
-    temp: true,
     mode: 'bypassPermissions',
   });
   assert.equal(r.status, 201);
   const id = r.body.id;
   assert.equal(r.body.project, '.conduct');
-  assert.equal(r.body.temp, true);
+  assert.equal(r.body.persistent, false);
 
   await waitFor(() => instances.get(id)?.status === 'idle');
 
@@ -190,7 +189,7 @@ test('creating a .conduct instance with no .conduct record ensures the project a
   const { readProjectRecord } = await import('../src/projects.ts');
   assert.equal(await readProjectRecord('.conduct'), null, 'fixture: no .conduct record yet');
   const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions',
+    project: '.conduct', role: 'conductor', mode: 'bypassPermissions',
   });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   assert.notEqual(await readProjectRecord('.conduct'), null, 'the record exists');
@@ -204,7 +203,7 @@ test('creating a .conduct instance with no .conduct record ensures the project a
 test('two concurrent first .conduct creates both return 201', async () => {
   const { readProjectRecord } = await import('../src/projects.ts');
   assert.equal(await readProjectRecord('.conduct'), null, 'fixture: no .conduct record yet');
-  const body = { project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions' };
+  const body = { project: '.conduct', role: 'conductor', mode: 'bypassPermissions' };
   const [a, b] = await Promise.all([
     api(baseUrl, 'POST', '/api/instances', body),
     api(baseUrl, 'POST', '/api/instances', body),

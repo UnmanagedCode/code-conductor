@@ -4,7 +4,7 @@
 // so a write still queued when close() returns lands in whatever store is
 // current next. These tests pin the three pieces that close that window:
 // settleSessionWrites (src/sessionStore.ts), InstanceManager.shutdown()
-// awaiting each temp instance's exit archive (src/instances.ts), and the drain
+// awaiting each normal instance's exit archive (src/instances.ts), and the drain
 // call inside bootServer().close() (tests/helpers.mjs).
 //
 // Every parked promise is released in `finally`: the drain waits for it, so a
@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { bootServer, freshProjectsRoot, api, waitFor, instForSession, settle, rmrf } from './helpers.mjs';
 import {
-  setSegmentTemp, markConducted, isTemp, isArchived, trackLineageWrite, settleSessionWrites,
+  setSegmentPersistent, markConducted, isPersistent, isArchived, trackLineageWrite, settleSessionWrites,
 } from '../src/sessionStore.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,7 +67,7 @@ test('settleSessionWrites waits for a write parked on the read barrier, then for
     try {
       trackLineageWrite(new Promise((r) => { release = r; }));
       let landed = false;
-      const write = setSegmentTemp(randomUUID(), true).then(() => { landed = true; });
+      const write = setSegmentPersistent(randomUUID(), true).then(() => { landed = true; });
       let drained = false;
       const drain = settleSessionWrites().then(() => { drained = true; });
       await settle();
@@ -95,35 +95,34 @@ test('settleSessionWrites waits for a serialized write in flight', async () => {
   });
 });
 
-// INVARIANT: InstanceManager.shutdown() resolves only after every temp
-// instance's exit archive (`_archiveTempSession` → retireSegment) has landed.
+// INVARIANT: InstanceManager.shutdown() resolves only after every normal
+// instance's exit archive (`_archiveSession` → retireSegment) has landed.
 // The archive is fired from _handleExit and its retireSegment is called only
 // after an fs.rm, so neither the serialize chain nor the read barrier sees it
 // when kill() resolves — shutdown() has to await it itself.
 // INVARIANT (also): once an exit archive has settled, the manager's
 // `_exitArchives` no longer holds it — the set is only what is in flight, so a
-// long-running orchestrator does not keep one settled promise per temp worker.
-test('shutdown resolves only after a temp worker\'s exit archive has landed', async () => {
+// long-running orchestrator does not keep one settled promise per normal worker.
+test('shutdown resolves only after a normal worker\'s exit archive has landed', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
     await waitFor(() => instForSession(srv.instances, spawn.sessionId)?.status === 'idle');
     const backing = instForSession(srv.instances, spawn.sessionId).backingSessionId;
-    await waitFor(() => isTemp(backing));
 
     await srv.instances.shutdown();
     // Read BEFORE close(): close() drains the store, which would mask a
     // shutdown() that returned early.
     assert.equal(await isArchived(backing), true, 'the exit archive retired the segment before shutdown() resolved');
-    assert.equal(await isTemp(backing), false, 'and cleared its temp flag');
+    assert.equal(await isPersistent(backing), false, 'and left it normal');
     assert.equal(srv.instances._exitArchives.size, 0, 'a settled exit archive leaves the manager\'s set');
   } finally {
     await srv.close();
   }
 });
 
-// INVARIANT: shutdown() also waits for the exit archive of a temp instance
+// INVARIANT: shutdown() also waits for the exit archive of a normal instance
 // that has ALREADY LEFT byId — killed by kill_instance (remove()) before
 // shutdown. Its archive is still pending, and nothing store-side tracks it:
 // the retireSegment is issued only after an fs.rm and an await on the
@@ -132,7 +131,7 @@ test('shutdown resolves only after a temp worker\'s exit archive has landed', as
 // keeps the archive pending for as long as the test needs.
 // INVARIANT (also): the archive is in `_exitArchives` while it is pending and
 // gone from it once settled, for a removed instance as for a live one.
-test('shutdown waits for the exit archive of a temp worker already removed by kill_instance', async () => {
+test('shutdown waits for the exit archive of a normal worker already removed by kill_instance', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   let release = () => {};
   try {
@@ -141,7 +140,6 @@ test('shutdown waits for the exit archive of a temp worker already removed by ki
     await waitFor(() => instForSession(srv.instances, spawn.sessionId)?.status === 'idle');
     const inst = instForSession(srv.instances, spawn.sessionId);
     const backing = inst.backingSessionId;
-    await waitFor(() => isTemp(backing));
     inst._lineageWrite = new Promise((r) => { release = r; });
 
     await callTool(srv.baseUrl, 'kill_instance', { sessionId: spawn.sessionId });
@@ -155,7 +153,7 @@ test('shutdown waits for the exit archive of a temp worker already removed by ki
     release();
     await shutdown;
     assert.equal(await isArchived(backing), true, 'the archive retired the segment before shutdown() resolved');
-    assert.equal(await isTemp(backing), false, 'and cleared its temp flag');
+    assert.equal(await isPersistent(backing), false, 'and left it normal');
     assert.equal(srv.instances._exitArchives.size, 0, 'a settled exit archive leaves the manager\'s set');
   } finally {
     release();
@@ -184,14 +182,14 @@ test('close() does not retarget the store while a store write is pending', async
     const id = randomUUID();
     trackLineageWrite(new Promise((r) => { release = r; }));
     let landed = false;
-    const write = setSegmentTemp(id, true).then(() => { landed = true; });
+    const write = setSegmentPersistent(id, true).then(() => { landed = true; });
     srv.server.once('close', () => setImmediate(release));
 
     await srv.close();
     assert.equal(landed, true, 'close() resolved only after the pending write landed');
     await write;
     assert.equal(process.env.PROJECTS_ROOT, next.projectsRoot, 'precondition: close() restored the prior root');
-    assert.equal(await isTemp(id), false, 'the write did not land in the root close() restored');
+    assert.equal(await isPersistent(id), false, 'the write did not land in the root close() restored');
   } finally {
     release();
     restoreEnv();

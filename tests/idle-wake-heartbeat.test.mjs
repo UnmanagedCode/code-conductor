@@ -120,7 +120,7 @@ test('a heartbeat on a target that is GONE FOR GOOD retires itself after one pin
   await waitFor(() => worker.status === 'turn');
   await waitFor(() => instances._idleHub.hasArmedWake(worker.id));
 
-  // The process dies mid-turn, with nothing reviving it. Non-temp, so the instance
+  // The process dies mid-turn, with nothing reviving it. Persistent, so the instance
   // stays in byId and no purge runs.
   await worker.kill();
   await waitFor(() => !worker.proc);

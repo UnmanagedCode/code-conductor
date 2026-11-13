@@ -190,7 +190,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         fmt(' A group header carries its branch, ahead/behind, and `live N · inactive N · archived N`.', '') +
         ' Each LIVE worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, backgroundJobs, mode, effort, thinking, ' +
-        'backend, model, contextTokens, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
+        'backend, model, contextTokens, contextWindowTokens, pid, worktree, persistent, conducted, debug, ' +
         'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
         'lastResponseAt, queuedCount, autoResumeAt, ' +
         'overageActive, overageResetsAt, rootSessionId, parentSessionId, awaitingUser, awaitingUserSource, ' +
@@ -225,7 +225,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'answer_question, approve_plan, reject_plan) counts as a real user message and clears it. ' +
         fmt('The rendering omits pid / createdAt, names a firstPrompt the server or the CLI wrote (`Wake: …`, ' +
           'a forward by its instruction\'s first line, `Context renewed`) rather than printing it raw, and shows ' +
-          'temp / conducted / debug / overage / auto-resume / resumes-hot / root / parent / awaiting-user only ' +
+          'persistent / conducted / debug / overage / auto-resume / resumes-hot / root / parent / awaiting-user only ' +
           'when they deviate from ' +
           'their default — so anything on a `flags` line is news. ' +
           '**`resumes-hot` means resuming that session comes up in bypassPermissions**',

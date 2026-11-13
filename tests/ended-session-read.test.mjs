@@ -72,7 +72,7 @@ const ONE_TURN = [
   { type: 'assistant', uuid: 'a0', message: { id: 'm_done', role: 'assistant', content: [{ type: 'text', text: 'WORKTREE-WORK-DONE' }] } },
 ];
 
-// A conducted (MCP-spawned, temp) worker in a fresh worktree of `demo`, driven
+// A conducted (MCP-spawned, normal) worker in a fresh worktree of `demo`, driven
 // through one turn, with its transcript seeded at the worktree's place. Not yet
 // killed: each test decides what it reads before and after.
 async function workerInWorktree(ctx, lines = ONE_TURN) {
@@ -417,18 +417,18 @@ test('the recorded-place fallback locates a session under its own project, at th
   } finally { await ctx.close(); }
 });
 
-// 12 — INVARIANT: remove() freezes the pager. A NON-temp instance leaves byId
-// only through remove() (no temp-exit drop), and its lineage-events still page
+// 12 — INVARIANT: remove() freezes the pager. A PERSISTENT instance leaves byId
+// only through remove() (no exit drop), and its lineage-events still page
 // by instance id with the cursor it handed out while live.
-test('a removed non-temp instance\'s lineage-events still page with its live cursor', async () => {
+test('a removed persistent instance\'s lineage-events still page with its live cursor', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     await makeRealRepo(ctx, 'demo');
-    const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', persistent: true });
     assert.equal(spawned.status, 201, JSON.stringify(spawned.body));
     const { id, sessionId } = spawned.body;
     const inst = ctx.instances.get(id);
-    assert.equal(inst.temp, false, 'fixture check: not temp');
+    assert.equal(inst.persistent, true, 'fixture check: persistent');
     await waitFor(() => inst.status === 'idle');
     await driveTurn(ctx.instances, sessionId, () => callTool(ctx.baseUrl, 'send_prompt', { sessionId, text: 'go' }));
     const url = (q) => `/api/instances/${id}/lineage-events${q}`;
@@ -447,10 +447,10 @@ test('a removed non-temp instance\'s lineage-events still page with its live cur
   } finally { await ctx.close(); }
 });
 
-// 13 — INVARIANT: a temp worker that exits ON ITS OWN (no kill_instance, so no
-// remove()) is dropped by the temp-exit path, which freezes its pager: its
+// 13 — INVARIANT: a normal worker that exits ON ITS OWN (no kill_instance, so no
+// remove()) is dropped by the exit-drop path, which freezes its pager: its
 // instance-id route still pages.
-test('a temp worker that exits on its own still pages its lineage-events by instance id', async () => {
+test('a normal worker that exits on its own still pages its lineage-events by instance id', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const { sid, instanceId } = await workerInWorktree(ctx);

@@ -6,15 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot, localPlace} from '../src/projects.ts';
 import {
-  pendingTempCleanupPath,
-  sweepPendingTempCleanup,
-} from '../src/tempCleanup.ts';
+  pendingArchivePath,
+  sweepPendingArchive,
+} from '../src/pendingArchive.ts';
 
-// A pending-temp-cleanup.json in the shape the boot sweep reads.
-async function plantPendingTempCleanup(entries) {
-  await fs.writeFile(pendingTempCleanupPath(), JSON.stringify({ writtenAt: new Date().toISOString(), entries }));
+// A pending-archive.json in the shape the boot sweep reads.
+async function plantPendingArchive(entries) {
+  await fs.writeFile(pendingArchivePath(), JSON.stringify({ writtenAt: new Date().toISOString(), entries }));
 }
-import { isArchived, isTemp, setSegmentArchived } from '../src/sessionStore.ts';
+import { isArchived, isPersistent, setSegmentArchived } from '../src/sessionStore.ts';
 import { archivedIds as loadAllArchived } from './sessionFacts.mjs';
 
 const markArchived = (id) => setSegmentArchived(id, true);
@@ -111,15 +111,15 @@ test('deleting CURRENT falls the chain back to the newest survivor', async () =>
     'current retreats to the newest surviving segment, so the public id still opens something');
 });
 
-test('killing a temp instance archives the session — .jsonl kept, archived flag set', async () => {
+test('killing a normal instance archives the session — .jsonl kept, archived flag set', async () => {
   {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivetest' });
 
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivetest', temp: true });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivetest' });
     assert.equal(res.status, 201);
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
+    const sid = inst.backingSessionId;   // filenames + the archived/persistent segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
 
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
@@ -136,8 +136,8 @@ test('killing a temp instance archives the session — .jsonl kept, archived fla
     await waitFor(async () => (await isArchived(sid)));
     assert.equal(await isArchived(sid), true);
 
-    // …and no longer temp.
-    assert.equal(await isTemp(sid), false);
+    // …and stays normal.
+    assert.equal(await isPersistent(sid), false);
   }
 });
 
@@ -145,10 +145,10 @@ test('archived session appears in list_sessions with archived:true, excluded fro
   {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivelist' });
 
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivelist', temp: true });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivelist' });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
+    const sid = inst.backingSessionId;   // filenames + the archived/persistent segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -186,10 +186,10 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
   {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archiverestore' });
 
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archiverestore', temp: true });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archiverestore' });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
+    const sid = inst.backingSessionId;   // filenames + the archived/persistent segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -212,14 +212,14 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
   }
 });
 
-test('killing a non-temp instance does NOT archive it', async () => {
+test('killing a persistent instance does NOT archive it', async () => {
   {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'archivenotemp' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'archivepersistent' });
 
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivenotemp', temp: false });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivepersistent', persistent: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
+    const sid = inst.backingSessionId;   // filenames + the archived/persistent segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -229,18 +229,18 @@ test('killing a non-temp instance does NOT archive it', async () => {
     // Give any async store writes a moment to settle.
     await new Promise(r => setTimeout(r, 100));
 
-    assert.equal(await isArchived(sid), false, 'non-temp session must NOT be archived on kill');
+    assert.equal(await isArchived(sid), false, 'a persistent session must NOT be archived on kill');
   }
 });
 
-test('MCP kill_instance archives temp session', async () => {
+test('MCP kill_instance archives a normal session', async () => {
   {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivemcp' });
 
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivemcp', temp: true });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivemcp' });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
+    const sid = inst.backingSessionId;   // filenames + the archived/persistent segment flags
     const publicId = inst.sessionId;     // what a listed row and a REST path carry
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -256,7 +256,33 @@ test('MCP kill_instance archives temp session', async () => {
   }
 });
 
-test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
+test('archive then restore then resume keeps a persistent session persistent and a normal one normal', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'archivekind' });
+  const kinds = {};
+  for (const persistent of [true, false]) {
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivekind', persistent });
+    const inst = instances.get(res.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    kinds[persistent] = { sid: inst.backingSessionId, publicId: inst.sessionId };
+    await materializeJsonl(claudeProjectsRoot, inst);
+    let r = await api(baseUrl, 'POST', `/api/projects/archivekind/sessions/${inst.sessionId}/archive`);
+    if (r.status === 409) r = await api(baseUrl, 'POST', `/api/projects/archivekind/sessions/${inst.sessionId}/archive?force=1`);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    await waitFor(() => !instances.get(inst.id));
+    await waitFor(async () => isArchived(inst.backingSessionId));
+  }
+  for (const persistent of [true, false]) {
+    const { sid, publicId } = kinds[persistent];
+    assert.equal(await isPersistent(sid), persistent, 'archiving keeps the session\'s kind');
+    const restore = await api(baseUrl, 'POST', `/api/projects/archivekind/sessions/${publicId}/restore`);
+    assert.equal(restore.status, 200);
+    const resumed = await api(baseUrl, 'POST', '/api/instances', { project: 'archivekind', resume: publicId });
+    assert.equal(resumed.status, 201, JSON.stringify(resumed.body));
+    assert.equal(resumed.body.persistent, persistent, `a restored ${persistent ? 'persistent' : 'normal'} session resumes as what it was`);
+  }
+});
+
+test('sweepPendingArchive keeps .jsonl and marks archived', async () => {
   {
     const cwd = '/tmp/cc-archive-sweep-' + Math.random().toString(36).slice(2);
     const sid = 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff';
@@ -269,10 +295,10 @@ test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
     await fs.writeFile(path.join(subagentsDir, 'a.jsonl'), '{}\n');
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    await plantPendingTempCleanup([{ place: localPlace(cwd), sessionId: sid }]);
-    const manifest = pendingTempCleanupPath();
+    await plantPendingArchive([{ place: localPlace(cwd), sessionId: sid }]);
+    const manifest = pendingArchivePath();
 
-    const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
+    const result = sweepPendingArchive({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
 
     // .jsonl must survive.
@@ -284,7 +310,7 @@ test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
   }
 });
 
-test('sweepPendingTempCleanup archives a PLACELESS entry but leaves its subagent dir', async () => {
+test('sweepPendingArchive archives a PLACELESS entry but leaves its subagent dir', async () => {
   {
     const cwd = '/tmp/cc-placeless-sweep-' + Math.random().toString(36).slice(2);
     const sid = 'cccccccc-dddd-eeee-ffff-000000000001';
@@ -293,9 +319,9 @@ test('sweepPendingTempCleanup archives a PLACELESS entry but leaves its subagent
     await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
     await fs.writeFile(path.join(dir, sid, 'a.jsonl'), '{}\n');
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    await plantPendingTempCleanup([{ place: null, sessionId: sid }]);
+    await plantPendingArchive([{ place: null, sessionId: sid }]);
 
-    const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
+    const result = sweepPendingArchive({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
     // Bookkeeping happens; the directory does not, because a placeless entry
     // names no directory and guessing one could delete another remote's.
@@ -304,7 +330,7 @@ test('sweepPendingTempCleanup archives a PLACELESS entry but leaves its subagent
   }
 });
 
-test('sweepPendingTempCleanup archives from a hand-written manifest with only entries', async () => {
+test('sweepPendingArchive archives from a hand-written manifest with only entries', async () => {
   {
     const cwd = '/tmp/cc-legacy-sweep-' + Math.random().toString(36).slice(2);
     const sid = 'bbbbbbbb-cccc-dddd-eeee-000000000000';
@@ -317,12 +343,12 @@ test('sweepPendingTempCleanup archives from a hand-written manifest with only en
     await fs.writeFile(path.join(subagentsDir, 'a.jsonl'), '{}\n');
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    const file = pendingTempCleanupPath();
+    const file = pendingArchivePath();
     const payload = { writtenAt: new Date().toISOString(), entries: [{ place: localPlace(cwd), sessionId: sid }] };
     const { writeFileSync } = await import('node:fs');
     writeFileSync(file, JSON.stringify(payload));
 
-    const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
+    const result = sweepPendingArchive({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
     // Sweeping keeps the transcript, cleans the subagent dir, and marks archived.
     await fs.access(jsonlFile);

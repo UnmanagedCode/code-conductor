@@ -120,7 +120,7 @@ describe('a session on a project on a system', () => {
   // retired session with bytes on disk and no process, which is exactly the
   // state every locate has to answer for.
   async function retiredSession({ project, worktree } = {}) {
-    const r = await api(baseUrl, 'POST', '/api/instances', worktree ? { project, worktree } : { project });
+    const r = await api(baseUrl, 'POST', '/api/instances', worktree ? { project, worktree, persistent: true } : { project, persistent: true });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.sessionId && inst.backingSessionId);

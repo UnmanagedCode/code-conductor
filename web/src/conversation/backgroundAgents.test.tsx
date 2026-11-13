@@ -41,7 +41,7 @@ function liveModel() {
 
 /**
  * The session's events as a restart replays them: the transcript plus its sub-agent files under a
- * temp projects root, every sub-agent file but those `omit` names.
+ * scratch projects root, every sub-agent file but those `omit` names.
  */
 async function replayEvents({ omit = [] as string[] } = {}): Promise<UiEvent[]> {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-bga-'));

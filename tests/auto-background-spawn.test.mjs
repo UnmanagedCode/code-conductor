@@ -29,7 +29,7 @@ async function withHostValues(values, fn) {
 
 async function spawnIdle(ctx, body = {}) {
   const r = await api(ctx.baseUrl, 'POST', '/api/instances',
-    { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5', temp: true, ...body });
+    { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5', ...body });
   assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst._spawnArgv);
@@ -83,7 +83,7 @@ test('the threshold is read per launch: a resume after a threshold change carrie
   try {
     await withHostValues({}, async () => {
       await setAutoBackground({ enabled: true });
-      const first = await spawnIdle(ctx, { temp: false });
+      const first = await spawnIdle(ctx, { persistent: true });
       assert.equal(first._spawnEnv[MS], '120000', 'premise: launched at the default threshold');
       const sid = first.sessionId;
       await seedSessionJsonl(first.transcriptPlace, first.backingSessionId);

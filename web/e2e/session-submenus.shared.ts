@@ -24,7 +24,7 @@ export async function seedSession(cc: Cc): Promise<void> {
   for (const l of LABELS) expect(listed, `seeded ${l}`).toContain(l);
   const project = `submenus-${test.info().project.name}`;
   await createProject(cc, project);
-  const spawned = await spawnSession(cc, project, { temp: false });
+  const spawned = await spawnSession(cc, project, { persistent: true });
   await expect.poll(async () => {
     const row = ((await api(cc, 'GET', '/api/instances')).body as { id: string; status: string; sessionId: string | null }[]).find((r) => r.id === spawned.id);
     return row?.status === 'idle' && !!row.sessionId;

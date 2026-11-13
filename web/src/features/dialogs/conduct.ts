@@ -1,5 +1,5 @@
-// Conduct: spawn a conductor straight away (no dialog) — a temp session in the
-// hidden `.conduct` project, code mode, on the Conductor role, pristine (listed
+// Conduct: spawn a conductor straight away (no dialog) — a pristine session in the
+// hidden `.conduct` project, code mode, on the Conductor role (listed
 // nowhere until its first prompt; app/pristine.ts). The server
 // ensures the project and resolves the role's current model and default effort.
 // The created instance is selected as soon as the create answers; the project

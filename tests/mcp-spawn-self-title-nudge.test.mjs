@@ -76,7 +76,7 @@ async function postHook(instanceId, toolUseId, toolName = SPAWN_TOOL, extra = {}
 const NUDGE_ANSWER = () => ({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: handlers.SELF_TITLE_NUDGE } });
 
 async function spawnIdle(project, mode = 'bypassPermissions', extra = {}) {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, temp: true, mode, ...extra });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode, ...extra });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');

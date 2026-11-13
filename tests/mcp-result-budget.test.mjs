@@ -224,7 +224,7 @@ test('boundary, playbook gate: a STAGE_UNKNOWN refusal echoing a huge stage is c
     await withLog(async (logged) => {
       await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
       const conductor = await api(ctx.baseUrl, 'POST', '/api/instances', {
-        project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'enforce',
+        project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: 'enforce',
       });
       assert.equal(conductor.status, 201, JSON.stringify(conductor.body));
       await waitFor(() => ctx.instances.get(conductor.body.id)?.status === 'idle');

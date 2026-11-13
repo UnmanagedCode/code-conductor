@@ -19,12 +19,12 @@ after(async () => { await server.close(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await server.instances.shutdown(); await rmrf(home); });
 
-test('the New-conductor body names the conduct project, the conductor role, a pristine temp spawn', () => {
+test('the New-conductor body names the conduct project, the conductor role, a pristine normal spawn', () => {
   assert.equal(newConductorSpawnBody('code').project, CONDUCT_PROJECT_NAME);
   assert.deepEqual(newConductorSpawnBody('code'),
-    { project: CONDUCT_PROJECT_NAME, role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true });
+    { project: CONDUCT_PROJECT_NAME, role: 'conductor', mode: 'bypassPermissions', pristine: true });
   assert.deepEqual(newConductorSpawnBody('plan'),
-    { project: CONDUCT_PROJECT_NAME, role: 'conductor', temp: true, mode: 'plan', pristine: true });
+    { project: CONDUCT_PROJECT_NAME, role: 'conductor', mode: 'plan', pristine: true });
 });
 
 test('spawnFromBody spawns what the route spawns for the same body', async () => {
@@ -34,7 +34,7 @@ test('spawnFromBody spawns what the route spawns for the same body', async () =>
   const routed = server.instances.get(viaRoute.body.id);
   for (const inst of [routed, direct]) {
     assert.equal(inst.project, CONDUCT_PROJECT_NAME);
-    assert.equal(inst.temp, true);
+    assert.equal(inst.persistent, false);
     assert.equal(inst.pristine, true);
     assert.equal(inst.mode, 'plan');
   }
@@ -43,16 +43,39 @@ test('spawnFromBody spawns what the route spawns for the same body', async () =>
   await waitFor(() => direct.status === 'idle');
 });
 
-test('spawnFromBody maps a temp spawn with no mode to bypassPermissions', async () => {
-  const inst = await spawnFromBody(server.instances, { project: CONDUCT_PROJECT_NAME, role: 'conductor', temp: true });
-  assert.equal(inst.mode, 'bypassPermissions');
+test('spawnFromBody passes a mode-less spawn\'s mode through untouched, persistent or not', async () => {
+  for (const persistent of [undefined, false, true]) {
+    const inst = await spawnFromBody(server.instances, { project: CONDUCT_PROJECT_NAME, role: 'conductor', persistent });
+    assert.equal(inst.mode, 'plan', `persistent: ${persistent}`);
+    assert.equal(inst.persistent, persistent === true);
+  }
 });
 
-test('spawnFromBody refuses pristine off a fresh conduct temp spawn with the route\'s code', async () => {
-  await assert.rejects(
-    spawnFromBody(server.instances, { ...newConductorSpawnBody('code'), resume: 'deadbeef' }),
-    (e) => e.statusCode === 400 && e.code === 'PRISTINE_NOT_FRESH_CONDUCTOR',
-  );
+test('spawnFromBody refuses a non-boolean persistent with a 400, before any spawn', async () => {
+  const before = server.instances.byId.size;
+  for (const persistent of ['false', 1]) {
+    await assert.rejects(
+      spawnFromBody(server.instances, { project: CONDUCT_PROJECT_NAME, role: 'conductor', persistent }),
+      (e) => e.statusCode === 400 && /persistent must be a boolean/.test(e.message),
+    );
+  }
+  assert.equal(server.instances.byId.size, before);
+});
+
+test('spawnFromBody refuses pristine off a fresh normal conduct spawn with the route\'s code', async () => {
+  for (const body of [
+    { ...newConductorSpawnBody('code'), resume: 'deadbeef' },
+    { ...newConductorSpawnBody('code'), persistent: true },
+    { ...newConductorSpawnBody('code'), project: 'elsewhere' },
+  ]) {
+    await assert.rejects(
+      spawnFromBody(server.instances, body),
+      (e) => e.statusCode === 400 && e.code === 'PRISTINE_NOT_FRESH_CONDUCTOR',
+      JSON.stringify(body),
+    );
+  }
+  const accepted = await spawnFromBody(server.instances, newConductorSpawnBody('code'));
+  assert.equal(accepted.pristine, true, 'a bare fresh .conduct body is accepted');
 });
 
 test('spawnFromBody refuses an unknown playbookEnforcement with a 400, before any spawn', async () => {

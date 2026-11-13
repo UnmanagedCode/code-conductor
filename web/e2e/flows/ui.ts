@@ -36,8 +36,8 @@ export interface Ui {
   conduct(page: Page): Promise<void>;
   /** The project's row in the Projects lens. */
   projectRow(page: Page, name: string): Promise<Locator>;
-  /** Starts a session in `project` from its sidebar row with the dialog's defaults; `temp: false` unticks Temp session (under Advanced options) first. */
-  startSessionIn(page: Page, project: string, opts?: { temp?: boolean }): Promise<void>;
+  /** Starts a session in `project` from its sidebar row with the dialog's defaults; `persistent: true` ticks Persistent session (under Advanced options) first. */
+  startSessionIn(page: Page, project: string, opts?: { persistent?: boolean }): Promise<void>;
   sessionHeader(page: Page): Locator;
   /** The active session's Terminate, from its overflow menu, answering the confirm with `accept`. */
   terminate(page: Page, accept: boolean): Promise<void>;
@@ -358,14 +358,14 @@ export interface Ui {
 export type ConductorChip = { project: string; kind: 'live' | 'idle' };
 export type RowLayout = {
   label: { minWidth: number; basis: number; grow: string; width: number; textHeight: number; truncated: boolean };
-  fixed: { part: 'ago' | 'promote' | 'close'; shrink: string; inside: boolean }[];
+  fixed: { part: 'ago' | 'persist' | 'close'; shrink: string; inside: boolean }[];
 };
 
 // Sidebar B3 (card 2026-0642)
 /** What a project's entry holds below its row: a main-checkout Sessions subnode, a Worktrees group, its session rows, the empty-project hint. */
 export type ProjectParts = { sessions: boolean; worktrees: boolean; rows: number; hint: boolean };
 /** Reads `rowLayout` in the page: the label box is the first of `labels` that matches, its text the label's `text` descendant or else the label itself, and `fixed` the row's ago / ↑ / × by part. */
-const measureRow = (row: Locator, sel: { labels: string[]; text: string; fixed: Record<'ago' | 'promote' | 'close', string> }) =>
+const measureRow = (row: Locator, sel: { labels: string[]; text: string; fixed: Record<'ago' | 'persist' | 'close', string> }) =>
   row.evaluate((e, s): RowLayout => {
     const label = s.labels.map((l) => e.querySelector<HTMLElement>(l)).find((l) => l);
     if (!label) throw new Error(`rowLayout: no label in the row matched any of ${JSON.stringify(s.labels)}`);
@@ -373,7 +373,7 @@ const measureRow = (row: Locator, sel: { labels: string[]; text: string; fixed: 
     const ls = getComputedStyle(label);
     const r = e.getBoundingClientRect();
     const fixed: RowLayout['fixed'] = [];
-    for (const part of ['ago', 'promote', 'close'] as const) {
+    for (const part of ['ago', 'persist', 'close'] as const) {
       for (const f of e.querySelectorAll<HTMLElement>(s.fixed[part])) {
         const fr = f.getBoundingClientRect();
         fixed.push({
@@ -503,10 +503,10 @@ export const next: Ui = {
     await openProjectMenuItem(page, project, 'New session');
     const dialog = page.getByRole('dialog', { name: 'New session' });
     await expect(dialog).toBeVisible();
-    if (opts.temp === false) {
-      const temp = dialog.locator('#sd-temp');
-      if (!(await temp.isVisible())) await dialog.getByRole('button', { name: 'Advanced options' }).click();
-      await temp.setChecked(false);
+    if (opts.persistent) {
+      const persistent = dialog.locator('#sd-persistent');
+      if (!(await persistent.isVisible())) await dialog.getByRole('button', { name: 'Advanced options' }).click();
+      await persistent.setChecked(true);
     }
     await dialog.getByRole('button', { name: 'Start session' }).click();
     await expect(dialog).toBeHidden();
@@ -680,7 +680,7 @@ export const next: Ui = {
     return dialog;
   },
   async spawnAdvanced(dialog) {
-    if (!(await dialog.locator('#sd-temp').isVisible())) await dialog.getByRole('button', { name: 'Advanced options' }).click();
+    if (!(await dialog.locator('#sd-persistent').isVisible())) await dialog.getByRole('button', { name: 'Advanced options' }).click();
   },
   async spawnTiers(dialog) {
     const offered = await dialog.locator('[role="radio"][data-tier]').evaluateAll((els) => els.map((e) => e.getAttribute('data-tier') ?? ''));
@@ -942,7 +942,7 @@ export const next: Ui = {
       text: 'span.truncate',
       fixed: {
         ago: ':scope > [data-row-open] > [data-ago]',
-        promote: ':scope > button[aria-label="Make persistent"]',
+        persist: ':scope > button[aria-label="Make persistent"]',
         close: ':scope > button[aria-label="Stop session"], :scope > button[aria-label="Archive session (keeps history)"]',
       },
     });

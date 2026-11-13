@@ -36,7 +36,7 @@ How the web UI (`web/`) is tested: its Vitest and Playwright suites ([Suites](#s
 | Lazy history "load earlier" | the transcript never grows past the snapshot tail |
 | OS notification body | headless Chromium refuses `ServiceWorkerRegistration.showNotification` without a grantable permission |
 | Backend-specific rows (e.g. a substitution backend's `—` cost) | no such backend configured |
-| A dead worker's session row changing in place | conducted workers are temp, so killing one archives it and its row leaves the list. A persistent node (a worktree head) still shows in-place changes; a session row's change needs a happy-dom test |
+| A dead worker's session row changing in place | conducted workers are normal, so killing one archives it and its row leaves the list. A persistent node (a worktree head) still shows in-place changes; a session row's change needs a happy-dom test |
 
 **Reachable with seeding:**
 - **A session on disk after exit** (Inactive/archived rows, resume): seed a jsonl named by the session's **backing** id, read from the sandbox store's `sessions.json` → `.sessions[<publicId>].current`. A file named by the public id matches no archive marker, and a check can go green on it by accident.
@@ -54,7 +54,7 @@ How the web UI (`web/`) is tested: its Vitest and Playwright suites ([Suites](#s
 - the header chip and usage popover, with an `/api/usage` fixture injected at the network boundary;
 - the costs dashboard;
 - settings model lists, including custom-model and backend add/delete across a hard reload;
-- the spawn / conduct / promote / resume / rewind / fork / delete-project / sync / merge / conventions flows.
+- the spawn / conduct / persist / resume / rewind / fork / delete-project / sync / merge / conventions flows.
 
 Injecting a fixture at the network boundary still exercises the real module.
 

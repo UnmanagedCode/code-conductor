@@ -49,7 +49,7 @@ function pluginDirArgs(argv) {
 }
 
 async function spawnIn(project, body = {}) {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', ...body });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions', ...body });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const id = r.body.id;
   await waitFor(() => instances.get(id)?.status === 'idle');
@@ -334,7 +334,7 @@ test('a workspace compose failure costs a worker its convention skills, not its 
   assert.ok(warnings.some(w => w.includes('convention skills') && /empty description/.test(w)), JSON.stringify(warnings));
 
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: '.conduct', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
   assert.ok(r.status >= 400, `the conductor launch is refused: ${r.status} ${JSON.stringify(r.body)}`);
   assert.match(JSON.stringify(r.body), /empty description/);
 });

@@ -4,7 +4,7 @@ import { conductorColor } from '../../../shared/conductorColor.ts';
 import { api, LIVE_WORKER_MODEL, mcpCall } from '../harness/api.ts';
 import { expect, type Cc } from '../harness/fixtures.ts';
 
-export type FleetInst = { id: string; sessionId: string; status: string; temp?: boolean; rootSessionId?: string | null };
+export type FleetInst = { id: string; sessionId: string; status: string; persistent?: boolean; rootSessionId?: string | null };
 
 export const insts = async (cc: Cc): Promise<FleetInst[]> => (await api<FleetInst[]>(cc, 'GET', '/api/instances')).body;
 export const liveModel = (cc: Cc) => (cc.engine === 'live' ? { model: LIVE_WORKER_MODEL } : {});
@@ -19,9 +19,9 @@ export async function idleInst(cc: Cc, pred: (i: FleetInst) => boolean, what: st
   return found!;
 }
 
-export async function spawnConductor(cc: Cc, temp: boolean): Promise<FleetInst> {
+export async function spawnConductor(cc: Cc, persistent: boolean): Promise<FleetInst> {
   const r = await api(cc, 'POST', '/api/instances', {
-    project: '.conduct', mode: 'bypassPermissions', temp, playbookEnforcement: 'warn', ...liveModel(cc),
+    project: '.conduct', mode: 'bypassPermissions', persistent, playbookEnforcement: 'warn', ...liveModel(cc),
   });
   expect(r.status, `POST /api/instances (.conduct): ${JSON.stringify(r.body)}`).toBeLessThan(300);
   return idleInst(cc, (i) => i.id === r.body.id, `conductor ${r.body.id} idle`);

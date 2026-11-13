@@ -12,7 +12,7 @@ import type { Ui } from './ui.ts';
 test.use({ ccOptions: { server: 'sidebar-fleet' } });
 
 /**
- * Two live conductors in distinct colours — A temp and titled, B persistent and
+ * Two live conductors in distinct colours — A normal and titled, B persistent and
  * untitled — with A's workers in a single-owner worktree `solo-a`, A's and B's
  * in a mixed worktree `mixed` beside a hand-spawned session, both in P's main
  * checkout, and one of B's in a second project O.
@@ -23,16 +23,16 @@ async function seedFleet(cc: Cc, page: Page, uniq: (s: string) => string) {
   await createProject(cc, P);
   await createProject(cc, O);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const a = await spawnConductor(cc, true);
+  const a = await spawnConductor(cc, false);
   const aLabel = uniq('Alpha');
   await api(cc, 'PUT', `/api/sessions/${a.sessionId}/title`, { title: aLabel });
-  let b = await spawnConductor(cc, false);
+  let b = await spawnConductor(cc, true);
   // Session ids are random, so A and B can share a hue slot: re-spawn B until they differ.
   const colA = await colourOf(page, a.sessionId);
   let colB = await colourOf(page, b.sessionId);
   for (let tries = 0; tries < 4 && colB === colA; tries++) {
     await api(cc, 'DELETE', `/api/instances/${b.id}`);
-    b = await spawnConductor(cc, false);
+    b = await spawnConductor(cc, true);
     colB = await colourOf(page, b.sessionId);
   }
   expect(colB, 'A and B share a hue slot after 4 tries').not.toBe(colA);
@@ -47,7 +47,7 @@ async function seedFleet(cc: Cc, page: Page, uniq: (s: string) => string) {
   await seedTranscript(cc, bMain.id, 'bravo: main-checkout chore');
   const bOther = await spawnWorker(cc, b.sessionId, { project: O });
 
-  const handRes = await api(cc, 'POST', '/api/instances', { project: P, worktree: 'mixed', mode: 'bypassPermissions', temp: false, ...liveModel(cc) });
+  const handRes = await api(cc, 'POST', '/api/instances', { project: P, worktree: 'mixed', mode: 'bypassPermissions', persistent: true, ...liveModel(cc) });
   expect(handRes.status, `POST /api/instances (hand): ${JSON.stringify(handRes.body)}`).toBeLessThan(300);
   const hand = await idleInst(cc, (i) => i.id === handRes.body.id, 'hand-spawned session idle');
 
@@ -65,7 +65,7 @@ test('the Projects lens lists no .conduct row while a conductor is live and .con
   const project = uniq('lens7');
   await createProject(cc, project);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const c = await spawnConductor(cc, false);
+  const c = await spawnConductor(cc, true);
   await seedTranscript(cc, c.id, 'lens7 conductor');
   await expect.poll(async () => ((await api(cc, 'GET', '/api/projects/.conduct/sessions')).body as { sessionId: string }[]).some((r) => r.sessionId === c.sessionId)).toBe(true);
   await ui.open(page);

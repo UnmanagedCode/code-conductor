@@ -11,7 +11,7 @@ import { promptPreview, sessionLabel } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import type { Project, Worktree } from '@/state/types';
-import { closeSession, promoteSession, resumeSession, type CloseArgs } from '@/app/sessionActions';
+import { closeSession, persistSession, resumeSession, type CloseArgs } from '@/app/sessionActions';
 import { selectInstance } from '@/app/controller';
 import { closeSidebarOnMobile } from '@/app/ui';
 import { openProjectRemoteDialog } from '@/features/dialogs/api';
@@ -121,16 +121,16 @@ export function IconAction({ label, onClick, children, className }: { label: str
   );
 }
 
-export function PromoteButton({ getArgs }: { getArgs: () => { projectName: string; instanceId: string; preview?: string | null } }) {
+export function PersistButton({ getArgs }: { getArgs: () => { projectName: string; instanceId: string; preview?: string | null } }) {
   return (
-    <IconAction label="Make persistent" onClick={() => void promoteSession(getArgs())} className="text-primary">
+    <IconAction label="Make persistent" onClick={() => void persistSession(getArgs())} className="text-primary">
       <ArrowUpIcon className="size-3.5" />
     </IconAction>
   );
 }
 
 export function CloseButton({ args }: { args: CloseArgs }) {
-  const action = closeActionOf({ instanceId: args.instanceId ?? null, status: args.status ?? null, temp: !!args.temp }) as 'stop' | 'archive';
+  const action = closeActionOf({ instanceId: args.instanceId ?? null, status: args.status ?? null, persistent: !!args.persistent }) as 'stop' | 'archive';
   return (
     <IconAction label={CLOSE_TITLES[action]} onClick={() => void closeSession(args)} className={REVEAL}>
       {action === 'stop' ? <SquareIcon className="size-3" /> : <ArchiveIcon className="size-3.5" />}
@@ -160,7 +160,7 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
   const title = (session.title ?? '').trim();
   const preview = promptPreview(session.firstPrompt);
   const tooltip = [session.sessionId, title && preview ? preview : null, owner ? `conductor: ${ownerTitle?.(owner) ?? owner}` : null].filter(Boolean).join('\n');
-  const showPromote = !!session.instanceTemp && live && status !== 'exited' && status !== 'crashed';
+  const showPersist = !session.instancePersistent && live && status !== 'exited' && status !== 'crashed';
   const open = () => {
     if (session.instanceId) selectInstance(session.instanceId, { userGesture: true });
     else void resumeSession({ projectName, worktreeName, sessionId: session.sessionId });
@@ -193,18 +193,18 @@ export function SessionRow({ session, projectName, worktreeName, activeId, unrea
         >
           <Dot status={status} awaitingWake={session.instanceAwaitingWake} waitingOnJob={session.instanceWaitingOnJob} />
           <span className="flex min-w-[2em] flex-1 flex-col">
-            {/* Temp rows read warm, conducted rows cool; a temp conducted row stays warm. */}
-            <span className={cn('truncate', !title && !preview && 'italic', session.instanceTemp ? 'text-primary' : (session as any).conducted && 'text-info')}><Highlight text={label} tokens={highlight} /></span>
+            {/* Normal rows read warm, conducted rows cool; a normal conducted row stays warm. */}
+            <span className={cn('truncate', !title && !preview && 'italic', !session.instancePersistent ? 'text-primary' : (session as any).conducted && 'text-info')}><Highlight text={label} tokens={highlight} /></span>
             {stage && <span className="truncate text-[11px] font-normal text-plan" data-stage>{stage}</span>}
           </span>
           <Ago ms={session.lastActivity} />
           <UnreadPill n={unread} />
         </button>
-        {showPromote && <PromoteButton getArgs={() => ({ projectName, instanceId: session.instanceId!, preview: label })} />}
+        {showPersist && <PersistButton getArgs={() => ({ projectName, instanceId: session.instanceId!, preview: label })} />}
         {showDelete && (
           <CloseButton args={{
             projectName, worktreeName, sessionId: session.sessionId, instanceId: session.instanceId ?? null,
-            status: session.instanceDisplayStatus ?? session.instanceStatus ?? null, temp: !!session.instanceTemp,
+            status: session.instanceDisplayStatus ?? session.instanceStatus ?? null, persistent: !!session.instancePersistent,
             preview: label, synthetic: !!session.synthetic,
           }} />
         )}

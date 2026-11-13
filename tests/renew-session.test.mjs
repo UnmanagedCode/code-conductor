@@ -22,7 +22,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../shared/wakeCallback.ts';
 import { RENEW_SUMMARY_TEMPLATE, LINEAGE_RETRY_ATTEMPTS } from '../src/sessionRenew.ts';
 import { MECHANICAL_STATE_HEADER } from '../shared/renewSeed.ts';
-import { isConducted, isTemp, isArchived, getTitle, getSessionMode } from '../src/sessionStore.ts';
+import { isConducted, isPersistent, isArchived, getTitle, getSessionMode } from '../src/sessionStore.ts';
 import { rotate } from './segmentChain.mjs';
 import { encodeCwd } from '../src/projects.ts';
 
@@ -402,7 +402,7 @@ test('…and on the SPONTANEOUS-EXIT variant, where the instance never left byId
   let releaseWrite;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { persistent: true, project: 'p', mode: 'bypassPermissions' });
     const publicId = spawn.body.sessionId;
     await waitFor(() => instForSession(srv.instances, publicId)?.status === 'idle');
     const inst = instForSession(srv.instances, publicId);
@@ -471,24 +471,25 @@ test('no duplicate worker: the public id still resolves live after a rotation', 
   }
 });
 
-test('renew_session keeps temp + conducted through the rotation and archives the pre-clear segment', async () => {
+test('renew_session keeps persistent + conducted through the rotation and archives the pre-clear segment', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    // spawn_instance defaults to temp:true AND conducted:true — the one call that
-    // exercises BOTH durable sidecars in a single rotation.
+    // spawn_instance yields a conducted worker; making it persistent puts BOTH
+    // durable facts through a single rotation.
     const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
     const sid1 = spawn.sessionId;
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const inst = instForSession(srv.instances, sid1);
     const id = inst.id;
-    // Conducted is a SESSION fact (keyed by the public id); temp is a TRANSCRIPT
-    // fact, on the segment each backing id names. Both are durable from spawn.
+    await inst.makePersistent();
+    // Conducted is a SESSION fact (keyed by the public id); persistent is a
+    // TRANSCRIPT fact, on the segment each backing id names.
     const oldBacking = inst.backingSessionId;
     assert.notEqual(oldBacking, sid1, 'precondition: the two ids have diverged');
     assert.equal(inst.conducted, true, 'spawn_instance yields a conducted worker');
-    assert.equal(inst.temp, true, 'spawn_instance yields a temp worker');
-    await waitFor(async () => (await isTemp(oldBacking)) && (await isConducted(sid1)));
+    assert.equal(inst.persistent, true, 'precondition: the worker is persistent');
+    await waitFor(async () => (await isPersistent(oldBacking)) && (await isConducted(sid1)));
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on with the migration' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
@@ -497,14 +498,15 @@ test('renew_session keeps temp + conducted through the rotation and archives the
     const rotated = instForSession(srv.instances, NEW_SID);
     assert.equal(rotated.id, id, 'same Instance across the clear');
     assert.equal(rotated.conducted, true, 'rotated session is still conducted');
-    assert.equal(rotated.temp, true, 'rotated session is still temp');
+    assert.equal(rotated.persistent, true, 'rotated session is still persistent');
     // The rotation write itself (kicked in system/init, flushed before the
-    // reseed) gives the new segment the temp flag and archives the pre-clear one.
-    // Conducted never moved: it is on the session, which both ids resolve to.
-    assert.equal(await isTemp(NEW_SID), true, 'the new segment inherited temp');
+    // reseed) gives the new segment the persistent flag and archives the
+    // pre-clear one. Conducted never moved: it is on the session, which both ids
+    // resolve to.
+    assert.equal(await isPersistent(NEW_SID), true, 'the new segment inherited persistent');
     assert.equal(await isConducted(NEW_SID), true, 'the new segment resolves to the conducted session');
     assert.equal(await isArchived(oldBacking), true, 'the pre-clear segment is archived');
-    assert.equal(await isTemp(oldBacking), false, 'and no longer temp');
+    assert.equal(await isPersistent(oldBacking), true, 'and keeps persistent: archiving leaves the kind alone');
     // …and the session's own identity is untouched by any of it.
     assert.equal(rotated.sessionId, sid1, 'the public id is pinned across the rotation');
   } finally {

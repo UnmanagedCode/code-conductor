@@ -245,14 +245,14 @@ describe('title block', () => {
     return [...line1().children].filter((el) => el !== h1) as HTMLElement[];
   };
 
-  it('no TEMP or DEBUG badge at either width; debug capture shows only as the ⋮ item', async () => {
-    // Invariant: at either width the header shows no TEMP or DEBUG badge, and a debug session's ⋮ debug-capture item says capture is on, which a non-debug session's does not.
+  it('no PERSISTENT or DEBUG badge at either width; debug capture shows only as the ⋮ item', async () => {
+    // Invariant: at either width the header shows no PERSISTENT or DEBUG badge, and a debug session's ⋮ debug-capture item says capture is on, which a non-debug session's does not.
     let seen = 0;
     for (const w of [false, true]) {
       setWide(w);
-      const r = render(tree(base({ temp: true, debug: true, debugDir: '/tmp/d' })));
+      const r = render(tree(base({ persistent: true, debug: true, debugDir: '/tmp/d' })));
       const where = w ? 'wide' : 'narrow';
-      expect([...header().querySelectorAll('*')].filter((el) => /^(temp|debug)$/i.test(el.textContent!.trim())), where).toEqual([]);
+      expect([...header().querySelectorAll('*')].filter((el) => /^(persistent|debug)$/i.test(el.textContent!.trim())), where).toEqual([]);
       const menu = await openMenu();
       expect(within(menu).getByRole('menuitem', { name: /debug capture/i }).textContent!.trim(), where).toMatch(/debug capture.*\bon\b/i);
       r.unmount();

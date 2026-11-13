@@ -84,7 +84,7 @@ describe('session lifecycle relays', () => {
 
   test('a kill emits session_exited once with the kill\'s actor; a respawn then announces {resume, cause:respawn}', async () => {
     const name = await project();
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: name, mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: name, mode: 'bypassPermissions' });
     const id = r.body.id;
     await idle(id);
     const inst = instances.get(id);
@@ -112,7 +112,7 @@ describe('session lifecycle relays', () => {
 
   test('an exit with no commanded actor is attributed to system', async () => {
     const name = await project();
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: name, mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: name, mode: 'bypassPermissions' });
     const id = r.body.id;
     await idle(id);
     const inst = instances.get(id);
@@ -131,7 +131,7 @@ describe('session lifecycle relays', () => {
     // second exit — one per announced launch; (2) a kill actor set while there is
     // no process (no edge consumes it) does not survive the next launch.
     const name = await project();
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: name, mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: name, mode: 'bypassPermissions' });
     const id = r.body.id;
     await idle(id);
     const inst = instances.get(id);

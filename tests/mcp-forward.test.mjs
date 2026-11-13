@@ -359,10 +359,10 @@ test('forward: a killed-but-known source with nothing on disk soft-refuses NOTHI
   const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions' }));
   const sourceSid = spawn.sessionId;
   await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
-  await instForSession(instances, sourceSid).promoteToNormal();
+  await instForSession(instances, sourceSid).makePersistent();
   const targetSid = await spawnReady('p');
 
-  // Kill the subprocess directly (NOT instances.remove) so the non-temp
+  // Kill the subprocess directly (NOT instances.remove) so the persistent
   // instance stays known but loses its proc (see tests/mcp.test.mjs). The fake
   // engine wrote no jsonl, so there is nothing to serve the forward from —
   // liveness is no longer what decides, READABILITY is.
@@ -561,7 +561,7 @@ test('forward: a fully retired source is relayed from disk, verbatim, with its o
       { type: 'assistant', message: { id: 'm_rv', role: 'assistant', content: [{ type: 'text', text: 'retired reviewer findings' }] } },
     ]);
 
-  // A TEMP worker is DROPPED from byId on exit, so this is the fully-retired
+  // A NORMAL worker is DROPPED from byId on exit, so this is the fully-retired
   // case: no instance record anywhere, only the transcript.
   await instForSession(instances, sourceSid).kill({ graceMs: 200 });
   await waitFor(() => instances.idsForSession(sourceSid).length === 0);

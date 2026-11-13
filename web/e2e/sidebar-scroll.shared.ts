@@ -46,7 +46,7 @@ async function openProjects(page: Page): Promise<Locator> {
 /** A real hand session in `project`, idle (it lands in the strip's Finished group). */
 async function handSession(cc: Cc, project: string) {
   await createProject(cc, project);
-  const r = await api(cc, 'POST', '/api/instances', { project, mode: 'bypassPermissions', temp: false, ...liveModel(cc) });
+  const r = await api(cc, 'POST', '/api/instances', { project, mode: 'bypassPermissions', persistent: true, ...liveModel(cc) });
   expect(r.status, `POST /api/instances (hand): ${JSON.stringify(r.body)}`).toBeLessThan(300);
   return idleInst(cc, (i) => i.id === r.body.id, 'hand-spawned session idle');
 }

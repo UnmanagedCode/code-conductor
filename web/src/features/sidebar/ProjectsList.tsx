@@ -113,13 +113,29 @@ const BAND = 'sticky top-0 z-10 -mx-2 flex h-8 items-center gap-1.5 border-y bor
 const BANDED_LIST = 'space-y-0.5 [&_[data-active]]:scroll-mt-9';
 
 type SessionsSummary = { total: number; live: number; last?: number };
-/** `<Noun> (N) · K live · last <ago>`: the Sessions list's summary. */
-const summaryText = ({ total, live, last }: SessionsSummary, noun = 'Sessions') =>
-  `${noun} (${total})${live > 0 ? ` · ${live} live` : ''}${last ? ` · last ${formatAgo(last)}` : ''}`;
+/** The Sessions list's summary facts: `<Noun> (N)`, `K live`, `last <ago>`. */
+const summaryParts = ({ total, live, last }: SessionsSummary, noun = 'Sessions') =>
+  [`${noun} (${total})`, ...(live > 0 ? [`${live} live`] : []), ...(last ? [`last ${formatAgo(last)}`] : [])];
+/** `<Noun> (N) · K live · last <ago>`: the summary as one string. */
+const summaryText = (summary: SessionsSummary, noun = 'Sessions') => summaryParts(summary, noun).join(' · ');
+
+/** The summary as unbreakable facts: a narrow line wraps between facts, never inside one, and clips none. */
+function SummaryFacts({ summary, noun }: { summary: SessionsSummary; noun: string }) {
+  return (
+    <>
+      {summaryParts(summary, noun).map((part, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && ' '}
+          <span className="whitespace-nowrap">{i > 0 ? `· ${part}` : part}</span>
+        </React.Fragment>
+      ))}
+    </>
+  );
+}
 
 function SummaryLine({ summary, placeKey, noun }: { summary: SessionsSummary; placeKey: string; noun: string }) {
   useAgoTick();
-  return <div className="px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-summary={placeKey}>{summaryText(summary, noun)}</div>;
+  return <div className="px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums" data-sessions-summary={placeKey}><SummaryFacts summary={summary} noun={noun} /></div>;
 }
 
 /** The rail a group hangs on: sessions and worktrees nest under a project's folder. */
@@ -135,7 +151,7 @@ function GroupToggle({ open, onToggle, label, children }: {
       aria-expanded={open}
       aria-label={label}
       onClick={onToggle}
-      className="flex h-7 w-full items-center gap-1 rounded-md px-1 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+      className="flex min-h-7 w-full items-center gap-1 rounded-md px-1 py-1 text-left text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
     >
       <ChevronRightIcon className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')} />
       {children}
@@ -157,18 +173,18 @@ function useSessionRows({ ctx, project, worktreeName, liveInstances, load }: {
   const narrowIds = narrowTo ? new Set(narrowTo.map((r) => r.sessionId)) : null;
   const rows = scopeSessionRows(mergeLive(sessionsCache.get(key) ?? (ctx.tf.active ? heldRowsOf(key) : null) ?? [], liveInstances), ctx.ui.filter)
     .filter((s) => !narrowIds || narrowIds.has(s.sessionId));
-  const { normal, temp, conducted } = sessionSections(rows);
-  // One visible group goes unlabelled and the summary names it; two or more label Temp and Conducted.
-  const shown = [normal, temp, conducted].filter((g) => g.length > 0).length;
-  const noun = !load || shown !== 1 || normal.length > 0 ? 'Sessions' : temp.length > 0 ? 'Temp sessions' : 'Conducted sessions';
-  return { key, status, rows, normal, temp, conducted, shown, noun };
+  const { normal, persistent, conducted } = sessionSections(rows);
+  // One visible group goes unlabelled and the summary names it; two or more label Persistent and Conducted.
+  const shown = [normal, persistent, conducted].filter((g) => g.length > 0).length;
+  const noun = !load || shown !== 1 || normal.length > 0 ? 'Sessions' : persistent.length > 0 ? 'Persistent sessions' : 'Conducted sessions';
+  return { key, status, rows, normal, persistent, conducted, shown, noun };
 }
 type SessionRowsData = ReturnType<typeof useSessionRows>;
 
 function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
   ctx: Ctx; project: string; worktreeName: string | null; data: SessionRowsData; showOwner: boolean;
 }) {
-  const { key, status, rows, normal, temp, conducted, shown } = data;
+  const { key, status, rows, normal, persistent, conducted, shown } = data;
   const row = (s: SessionItem) => (
     <SessionRow
       key={s.sessionId}
@@ -182,7 +198,7 @@ function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
       highlight={ctx.tf.active ? ctx.tf.tokens : undefined}
     />
   );
-  const label = (kind: 'temp' | 'conducted', name: string, n: number) => (
+  const label = (kind: 'persistent' | 'conducted', name: string, n: number) => (
     <li className="flex items-center gap-2 px-2 pt-1.5 pb-0.5 text-[11px] font-normal text-muted-foreground/70" data-session-group={kind}>
       <span className="shrink-0">{name} · {n}</span>
       <span className="h-px flex-1 bg-sidebar-border" />
@@ -198,7 +214,7 @@ function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
         </li>
       )}
       {normal.map(row)}
-      {temp.length > 0 && <>{shown > 1 && label('temp', 'Temp', temp.length)}{temp.map(row)}</>}
+      {persistent.length > 0 && <>{shown > 1 && label('persistent', 'Persistent', persistent.length)}{persistent.map(row)}</>}
       {conducted.length > 0 && <>{shown > 1 && label('conducted', 'Conducted', conducted.length)}{conducted.map(row)}</>}
     </ul>
   );
@@ -219,7 +235,7 @@ export function SessionsList({ ctx, project, worktreeName, liveInstances, showOw
 
 function SessionsLabel({ summary, placeKey, noun }: { summary: SessionsSummary; placeKey: string; noun: string }) {
   useAgoTick();
-  return <span className="min-w-0 truncate tabular-nums" data-sessions-summary={placeKey}>{summaryText(summary, noun)}</span>;
+  return <span className="min-w-0 tabular-nums" data-sessions-summary={placeKey}><SummaryFacts summary={summary} noun={noun} /></span>;
 }
 
 /** A project's main-checkout sessions: a collapsible group whose header is the summary line. Open by default. */

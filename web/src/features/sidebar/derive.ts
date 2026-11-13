@@ -14,7 +14,7 @@ export type SessionItem = {
   instanceId?: string | null;
   instanceStatus?: string | null;
   instanceDisplayStatus?: string | null;
-  instanceTemp?: boolean;
+  instancePersistent?: boolean;
   instanceAwaitingWake?: boolean;
   instanceWaitingOnJob?: boolean;
   conducted?: boolean;
@@ -36,7 +36,7 @@ export const placeKeyOf = (project: string, worktree?: string | null) => (worktr
  * isn't on disk yet becomes a synthetic row. Newest activity first.
  */
 export function mergeLive(onDisk: any[] | null | undefined, live: Instance[]): SessionItem[] {
-  const byId = new Map<string, SessionItem>((onDisk ?? []).map((s) => [s.sessionId, { ...s, instanceTemp: !!s.temp }]));
+  const byId = new Map<string, SessionItem>((onDisk ?? []).map((s) => [s.sessionId, { ...s, instancePersistent: !!s.persistent }]));
   for (const inst of live) {
     if (!hasSessionId(inst)) continue;
     const row = byId.get(inst.sessionId);
@@ -45,7 +45,7 @@ export function mergeLive(onDisk: any[] | null | undefined, live: Instance[]): S
       row.instanceStatus = inst.status;
       row.instanceDisplayStatus = inst.displayStatus;
       row.instanceMode = inst.mode;
-      row.instanceTemp = !!inst.temp;
+      row.instancePersistent = !!inst.persistent;
       row.instanceAwaitingWake = !!inst.awaitingWake;
       row.instanceWaitingOnJob = !!inst.waitingOnJob;
       row.conducted = !!inst.conducted || !!row.conducted;
@@ -221,12 +221,12 @@ export function groupProjects({ projects, workspaces, visible, filtering, keep }
   return { groups, unassigned: unassigned.filter(visible) };
 }
 
-/** The Sessions subnode's row order: normal, then temp, then conducted (archived rows dropped). */
+/** The Sessions subnode's row order: normal, then persistent, then conducted (archived rows dropped). */
 export function sessionSections(rows: SessionItem[]) {
   const live = rows.filter((s) => !s.archived);
   return {
-    normal: live.filter((s) => !s.conducted && !s.instanceTemp),
-    temp: live.filter((s) => !s.conducted && s.instanceTemp),
+    normal: live.filter((s) => !s.conducted && !s.instancePersistent),
+    persistent: live.filter((s) => !s.conducted && s.instancePersistent),
     conducted: live.filter((s) => s.conducted),
   };
 }

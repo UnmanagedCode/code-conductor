@@ -22,4 +22,3 @@ async function flagged(flag) {
 }
 
 export const archivedIds = () => flagged('archived');
-export const tempIds = () => flagged('temp');

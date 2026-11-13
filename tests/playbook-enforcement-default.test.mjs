@@ -63,7 +63,7 @@ const writeStore = async (obj) => {
 async function spawnConductor(body = {}) {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   const spawned = await api(baseUrl, 'POST', '/api/instances',
-    { project: '.conduct', mode: 'bypassPermissions', temp: true, ...body });
+    { project: '.conduct', mode: 'bypassPermissions', ...body });
   assert.equal(spawned.status, 201, `conductor spawn failed: ${JSON.stringify(spawned.body)}`);
   return spawned.body.id;
 }
@@ -191,7 +191,7 @@ test('the persisted level is read live — a change lands on the next spawn, no 
 test('a non-conductor instance is unaffected by the setting', async () => {
   await setDefaultPlaybookEnforcement(OTHER);
   await registerLocalProject('demo', path.join(ctx.projectsRoot, 'demo'));
-  const spawned = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+  const spawned = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
   assert.equal(spawned.status, 201, JSON.stringify(spawned.body));
   assert.equal(instances.get(spawned.body.id).playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT,
     'the field is never read off a worker; it keeps the constructor value');

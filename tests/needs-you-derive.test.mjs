@@ -114,9 +114,9 @@ test('conducted workers never appear in any status, even with awaitingUser force
   assert.deepEqual(sids(all), ['A']);
 });
 
-test('a .conduct temp instance counts as a conductor; a hand-spawned session that owns workers is still hand-spawned', () => {
+test('a .conduct normal instance counts as a conductor; a hand-spawned session that owns workers is still hand-spawned', () => {
   const g = strip([
-    cond('T', { temp: true, status: 'turn' }),
+    cond('T', { status: 'turn' }),
     handInst('h', { status: 'turn' }),
     workerInst('w', 'h'),
     handInst('h2'),
@@ -222,21 +222,21 @@ test('isStripEmpty holds for no instances and for conducted workers only; a busy
   assert.equal(N.isStripEmpty(strip([handInst('h')])), false);
 });
 
-// Invariant: every entry carries the close facts (project, worktree, temp, synthetic) the strip's × sends, for a conductor and a hand-spawned session in a worktree.
-test('entries carry projectName, worktreeName, temp and synthetic for the strip ×', () => {
+// Invariant: every entry carries the close facts (project, worktree, persistent, synthetic) the strip's × sends, for a conductor and a hand-spawned session in a worktree.
+test('entries carry projectName, worktreeName, persistent and synthetic for the strip ×', () => {
   const wt = { worktreeName: 'wt', branch: 'cc/wt', baseBranch: 'main' };
   const g = strip([
-    cond('C', { temp: false }),
-    cond('D', { temp: true }),
-    handInst('H', { worktree: wt, temp: false }),
-    handInst('T', { temp: true }),
+    cond('C', { persistent: true }),
+    cond('D'),
+    handInst('H', { worktree: wt, persistent: true }),
+    handInst('T'),
   ], [{ sessionId: 'C', lastActivity: 1 }]);
   const entry = (sid) => [...g.waiting, ...g.running, ...g.finished].find(e => e.sessionId === sid);
-  const facts = (e) => ({ projectName: e.projectName, worktreeName: e.worktreeName, temp: e.temp, synthetic: e.synthetic });
-  assert.deepEqual(facts(entry('C')), { projectName: '.conduct', worktreeName: null, temp: false, synthetic: false }, 'a conductor with a listed transcript');
-  assert.deepEqual(facts(entry('D')), { projectName: '.conduct', worktreeName: null, temp: true, synthetic: true }, 'a conductor with no listed transcript');
-  assert.deepEqual(facts(entry('H')), { projectName: 'p', worktreeName: 'wt', temp: false, synthetic: false }, 'a persistent hand-spawned session in a worktree');
-  assert.deepEqual(facts(entry('T')), { projectName: 'p', worktreeName: null, temp: true, synthetic: true }, 'a temp hand-spawned session is synthetic');
+  const facts = (e) => ({ projectName: e.projectName, worktreeName: e.worktreeName, persistent: e.persistent, synthetic: e.synthetic });
+  assert.deepEqual(facts(entry('C')), { projectName: '.conduct', worktreeName: null, persistent: true, synthetic: false }, 'a conductor with a listed transcript');
+  assert.deepEqual(facts(entry('D')), { projectName: '.conduct', worktreeName: null, persistent: false, synthetic: true }, 'a conductor with no listed transcript');
+  assert.deepEqual(facts(entry('H')), { projectName: 'p', worktreeName: 'wt', persistent: true, synthetic: false }, 'a persistent hand-spawned session in a worktree');
+  assert.deepEqual(facts(entry('T')), { projectName: 'p', worktreeName: null, persistent: false, synthetic: true }, 'a normal hand-spawned session is synthetic');
 });
 
 test('topLevelEntries and deriveStrip agree on a running hand session: it is listed under Running', () => {

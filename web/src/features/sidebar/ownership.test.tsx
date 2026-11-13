@@ -21,12 +21,12 @@ const loadSessions = vi.fn((..._a: any[]): Promise<any[]> => Promise.resolve([])
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
 const removeWorktree = vi.fn();
-const promoteSession = vi.fn();
+const persistSession = vi.fn();
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: (...a: unknown[]) => loadSessions(...a),
   closeSession: (...a: unknown[]) => closeSession(...a),
   resumeSession: (...a: unknown[]) => resumeSession(...a),
-  promoteSession: (...a: unknown[]) => promoteSession(...a),
+  persistSession: (...a: unknown[]) => persistSession(...a),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -45,7 +45,7 @@ beforeEach(() => {
   closeSession.mockReset();
   resumeSession.mockReset();
   removeWorktree.mockReset();
-  promoteSession.mockReset();
+  persistSession.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   invalidateSessions();
   sidebarStore.set({ collapsedSessions: [], expandedConductors: [], inactiveOpen: false, filter: '', ...FLEET_UI });
@@ -153,7 +153,7 @@ describe('Projects-lens ownership colour', () => {
     // Invariant: the live overlay of a disk row carries the instance's owner onto that row.
     const f = fleet();
     f.projects = f.projects.map((p) => (p.name === 'main' ? { ...p, sessions: { count: 1, archivedCount: 0, handCount: 0, lastActivity: 5 } } : p));
-    f.instances = f.instances.map((i) => (i.sessionId === 'wa-main1' ? { ...i, temp: false } : i));
+    f.instances = f.instances.map((i) => (i.sessionId === 'wa-main1' ? { ...i, persistent: true } : i));
     loadSessions.mockImplementation(async (p: string, w: string | null) =>
       (p === 'main' && w === null ? [disk('wa-main1', 'resumed worker', { conducted: true, lastActivity: 5 })] : []));
     seedFleet(f);
