@@ -37,15 +37,17 @@ export interface ResumeLifecycle {
   dispose(): void;
 }
 
-export function startResumeLifecycle({ instances, recorder, pending, log = console, staggerMs }: {
+export function startResumeLifecycle({ instances, recorder, pending, log = console, staggerMs, wait }: {
   instances: InstanceManagerLike; recorder: RunningRecorder; pending: PendingContinue; log?: Log; staggerMs?: number;
+  // The restore's stagger sleep (a test seam).
+  wait?: (ms: number) => Promise<void>;
 }): ResumeLifecycle {
   // Read before the recorder's first write replaces the record.
   const source = takeRestoreSource({ log });
   recorder.start();
   const onTurn = (t: TurnStarted): void => { pending.drop(t.sessionId); };
   instances.on('turn_started', onTurn);
-  const restored = restoreFromResumeManifest({ instances, log, source, pending, staggerMs })
+  const restored = restoreFromResumeManifest({ instances, log, source, pending, staggerMs, wait })
     .catch((e: unknown) => {
       log.warn?.('resume-restart restore failed:', e instanceof Error ? e.message : String(e));
       return { restored: 0 };

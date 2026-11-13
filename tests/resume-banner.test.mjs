@@ -54,9 +54,9 @@ afterEach(async () => {
 });
 
 // One boot's lifecycle with a fresh recorder and pending store.
-function boot({ pending = createPendingContinue({ log: QUIET }) } = {}) {
+function boot({ pending = createPendingContinue({ log: QUIET }), wait } = {}) {
   const recorder = createRunningRecorder({ instances, platform: hostPlatform, log: QUIET, debounceMs: 20 });
-  const l = startResumeLifecycle({ instances, recorder, pending, log: QUIET, staggerMs: 0 });
+  const l = startResumeLifecycle({ instances, recorder, pending, log: QUIET, staggerMs: 0, wait });
   lifecycles.push(l);
   return { ...l, pending };
 }
@@ -159,13 +159,13 @@ test('Continue delivers each notice exactly once across tabs', async (t) => {
   ]);
   const sent = [...first.body.sent, ...second.body.sent].sort();
   assert.deepEqual(sent, [a, b].sort(), 'each session is sent to by exactly one Continue');
-  assert.deepEqual([...first.body.dropped, ...second.body.dropped], []);
+  assert.deepEqual([...first.body.dropped, ...second.body.dropped, ...first.body.kept, ...second.body.kept], []);
   await waitFor(() => noticeEchoes(a).length === 1 && noticeEchoes(b).length === 1);
   assert.deepEqual(noticeEchoes(a), [texts[a]]);
   assert.deepEqual(noticeEchoes(b), [texts[b]]);
   assert.deepEqual(ctx.pendingContinue.list(), []);
   await waitFor(() => hints.length >= 1);
-  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [] });
+  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [], kept: [] });
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(noticeEchoes(a).length + noticeEchoes(b).length, 2, 'nothing more was sent');
 });
@@ -173,7 +173,7 @@ test('Continue delivers each notice exactly once across tabs', async (t) => {
 // Invariant: Continue drops the notice of a session no longer live.
 test('Continue drops a notice whose session is not live', async () => {
   ctx.pendingContinue.add({ sessionId: sid(29), kind: 'restart', text: RESUME_TEXT, workers: [], at: '' });
-  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [sid(29)] });
+  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [sid(29)], kept: [] });
   assert.deepEqual(ctx.pendingContinue.list(), []);
 });
 
@@ -287,6 +287,52 @@ test('a manifest with no deliver field auto-continues', async () => {
 // Invariant: a notice outlives further stops until it is clicked — a second
 // gated restart and then a crash each respawn the session silently with the
 // notice intact, and Continue then delivers it.
+// Invariant: a Continue that arrives while the boot restore is still bringing a
+// session up never drops that session's notice — it is kept (the banner stays),
+// and once the restore has settled a Continue delivers it, exactly once. A
+// notice whose session the restore never had is still dropped at once.
+test('Continue before the restore has reached a session keeps its notice, and delivers it once the restore settles', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'early' });
+  const [b, a, gone] = [sid(91), sid(92), sid(93)];
+  writeResumeManifest([await entry('early', b, { wasBusy: false }), await entry('early', a, { wasBusy: false })], { deliver: 'gated' });
+  const notice = { sessionId: a, kind: 'restart', text: RESUME_TEXT, workers: [], at: 'earlier' };
+  ctx.pendingContinue.add(notice);
+  ctx.pendingContinue.add({ ...notice, sessionId: gone });
+  // Hold the restore in its stagger, after the first session and before the second.
+  let release;
+  let held;
+  const holding = new Promise((r) => { held = r; });
+  const wait = () => { held(); return new Promise((r) => { release = r; }); };
+  const l = boot({ pending: ctx.pendingContinue, wait });
+  await holding;
+  assert.ok(instances.liveForSession(b), 'premise: the first session is up');
+  assert.equal(instances.liveForSession(a), null, 'premise: the restore has not reached the second');
+
+  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [gone], kept: [a] });
+  assert.deepEqual(ctx.pendingContinue.list(), [notice], 'the notice is kept, so the banner stays');
+  assert.deepEqual((await api(baseUrl, 'GET', '/api/resume-notices')).body.notices.map((n) => n.sessionId), [a]);
+
+  release();
+  assert.deepEqual(await l.restored, { restored: 2 });
+  assert.deepEqual(noticeEchoes(a), [], 'the restore itself sends nothing');
+  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [a], dropped: [], kept: [] });
+  await waitFor(() => noticeEchoes(a).length === 1);
+  assert.deepEqual(noticeEchoes(a), [RESUME_TEXT]);
+});
+
+// Invariant: a session the restore failed to bring up is no longer restoring, so
+// Continue then drops its notice rather than keeping it forever.
+test('once the restore has settled, a notice whose session did not come up is dropped', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'nocome' });
+  const a = sid(95);
+  // No transcript: the resume pre-flight refuses it, so the restore settles without it.
+  writeResumeManifest([{ ...(await entry('nocome', sid(96))), sessionId: a, wasBusy: false }], { deliver: 'gated' });
+  ctx.pendingContinue.add({ sessionId: a, kind: 'restart', text: RESUME_TEXT, workers: [], at: '' });
+  const l = boot({ pending: ctx.pendingContinue });
+  assert.deepEqual(await l.restored, { restored: 0 });
+  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [a], kept: [] });
+});
+
 test('a notice survives a second restart and a crash, then Continue delivers it', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'keep' });
   const a = sid(71);
@@ -317,7 +363,7 @@ test('a notice survives a second restart and a crash, then Continue delivers it'
   assert.deepEqual(ctx.pendingContinue.list(), [notice], 'the notice is intact');
   assert.deepEqual(noticeEchoes(a), []);
 
-  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [a], dropped: [] });
+  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [a], dropped: [], kept: [] });
   await waitFor(() => noticeEchoes(a).length === 1);
   assert.deepEqual(noticeEchoes(a), [notice.text]);
 });

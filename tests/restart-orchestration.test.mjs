@@ -155,6 +155,18 @@ test('restart', async (t) => {
       assert.equal(fs.existsSync(runningRecordPath()), false);
     });
   }
+  // Invariant: the running record is removed only after the CLIs are stopped, so a
+  // crash during the stop leaves it (beside the manifest) for the boot's orphan reap.
+  await t.test('the record outlives the CLI stop: written manifest and record both exist while shutdownForResumeSync runs', async () => {
+    writeRunningRecord({ instances: [], clis: [] });
+    const r = rig();
+    const instances = resumeInstances(r.order, [{ id: 'a', status: 'turn' }]);
+    const seen = [];
+    instances.shutdownForResumeSync = () => { seen.push({ record: fs.existsSync(runningRecordPath()), manifest: fs.existsSync(resumeManifestPath()) }); };
+    await r.run('restart', { instances });
+    assert.deepEqual(seen, [{ record: true, manifest: true }]);
+    assert.equal(fs.existsSync(runningRecordPath()), false, 'removed once the stop returned');
+  });
   await t.test('with no live session the record is still removed and no manifest is written', async () => {
     writeRunningRecord({ instances: [], clis: [] });
     const r = rig();

@@ -10,8 +10,8 @@
 //   Restart or a Shut down: drainToIdle winds every live turn down to idle
 //   (networking stays UP so in-flight hook round-trips finish and the UI shows
 //   progress); then either finishDrain writes the manifest (temps are carried
-//   over), removes the running record, and closes subprocesses without deleting
-//   their jsonl, after runRestart has torn networking down, or, when the
+//   over), closes subprocesses without deleting their jsonl and removes the
+//   running record, after runRestart has torn networking down, or, when the
 //   relaunch's preparation fails after the drain, abortDrain hands the sessions
 //   back.
 //   The restore (restoreFromResumeManifest) — run in the NEW process on boot:
@@ -374,25 +374,28 @@ export function buildResumeEntries(instances: InstanceManagerLike, { subtreeOf, 
   return entries;
 }
 
-// Steps 4–5 of the drain, after the caller has torn networking down: write the
-// manifest (temps are carried over, not archived), remove the running record —
-// the manifest is now the clean-stop fact — then gracefully close subprocesses
-// without deleting temp jsonl. Returns the manifest entries written.
+// Steps 4–6 of the drain, after the caller has torn networking down: write the
+// manifest (temps are carried over, not archived), gracefully close subprocesses
+// without deleting temp jsonl, then remove the running record — the manifest is
+// now the clean-stop fact. Returns the manifest entries written.
 export function finishDrain(
   { instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog },
   facts: DrainState,
   { deliver = 'auto' }: { deliver?: Deliver } = {},
 ): ResumeEntry[] {
-  // (4) Build + write the manifest, then drop the record. In this order, so a
-  // crash between the two leaves both, and the manifest wins at boot.
+  // (4) Build + write the manifest.
   const entries = buildResumeEntries(instances, facts);
   try { writeResumeManifest(entries, { deliver }); }
   catch (e) { log.warn?.('resume-restart: manifest write failed', errMsg(e)); }
-  clearRunningRecord();
 
   // (5) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.
   try { instances.shutdownForResumeSync(); }
   catch (e) { log.warn?.('resume-restart: shutdownForResumeSync error', errMsg(e)); }
+
+  // (6) Drop the record only now. A crash anywhere before this leaves both
+  // files: the boot restores from the manifest, and the orphan reap — which
+  // reads only the record — still terminates any CLI the stop left running.
+  clearRunningRecord();
 
   return entries;
 }
@@ -445,9 +448,12 @@ function waitForIdleOnce(inst: InstanceLike, { timeoutMs = 60000 }: { timeoutMs?
 // `source` is what takeRestoreSource read (startResumeLifecycle, src/resumeBoot.ts,
 // takes it before the recorder starts); omitted, this takes it itself. A gated
 // source stores each busy session's notice in `pending` instead of prompting it.
-export async function restoreFromResumeManifest({ instances, log = console, staggerMs = RESUME_STAGGER_MS, source, pending = null }: {
+// Every top-level session is in `pending.restoring` from the synchronous start of
+// this call until the loop has settled it, so a Continue meanwhile keeps its
+// notice. `wait` is the stagger's sleep (a test holds the loop with it).
+export async function restoreFromResumeManifest({ instances, log = console, staggerMs = RESUME_STAGGER_MS, source, pending = null, wait = sleep }: {
   instances?: InstanceManagerLike | null; log?: RestartLog; staggerMs?: number;
-  source?: RestoreSource | null; pending?: PendingContinue | null;
+  source?: RestoreSource | null; pending?: PendingContinue | null; wait?: (ms: number) => Promise<void>;
 } = {}): Promise<{ restored: number }> {
   if (!instances) return { restored: 0 };
   // Read + unlink first: at-most-once, so a crash mid-restore can't loop.
@@ -457,120 +463,128 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
   // so a single boundary cast narrows the unknown[] read.
   const entries = src.entries as ResumeEntry[];
 
-  if (entries.some((e) => e.group === 'conductor')) {
-    try { await ensureConductProject(); } catch (e) { log.warn?.('resume-restart: ensureConductProject failed', errMsg(e)); }
-  }
-
+  const restoring = pending?.restoring;
+  for (const e of entries) if (e.group !== 'worker') restoring?.add(e.sessionId);
   let restored = 0;
-  let first = true;
-  for (const e of entries) {
-    // Group 2 — conducted workers: left untouched; the conductor they
-    // were spawned under re-spawns them (jsonl preserved); workers of a hand-spawned session stay stopped, resumable from the UI. Skip in the boot loop.
-    if (e.group === 'worker') continue;
-    if (!first) await sleep(staggerMs);
-    first = false;
-    try {
-      // The browser's anchor auto-resume can attach a carried-over session before
-      // the staggered restore reaches it. Adopt that instance so the session still
-      // gets its restart prompt; this loop is its only sender, so it arrives once.
-      // No await separates this check from create()'s synchronous guards, so a
-      // resume still in flight is coalesced there rather than refused.
-      const attached = instances.liveForSession(e.sessionId);
-      if (attached) {
-        log.log?.(`resume-restart: ${e.sessionId} was already attached; delivering its restart prompt there`);
-        // The browser created it with the defaults; bring it to what the create()
-        // below would have set. Debug has no runtime disable, so it is only raised.
-        attached.setPlaybookEnforcement(normalizePlaybookEnforcement(e.playbookEnforcement));
-        attached.setAutoApprovePlan(!!e.autoApprovePlan);
-        if (e.debug) {
-          const r = attached.enableDebug();
-          if (!r.ok) log.warn?.(`resume-restart: ${e.sessionId}: enabling debug failed: ${r.reason}`);
-        }
-      }
-      const inst = attached ?? await instances.create({
-        project: e.project,
-        resume: e.sessionId,
-        mode: e.mode,
-        effort: e.effort,
-        thinking: e.thinking,
-        model: e.model ?? undefined,
-        contextWindowTokens: e.contextWindowTokens ?? undefined,
-        backend: e.backend ?? undefined,
-        worktree: e.worktreeName ?? null,
-        temp: !!e.temp,
-        conducted: !!e.conducted,
-        debug: !!e.debug,
-        autoApprovePlan: !!e.autoApprovePlan,
-        // Normalized on the READ side, not just where the manifest is written:
-        // this file is the one store a PREVIOUS build's retired 'off' can reach
-        // this process through, and it is read exactly once before being deleted,
-        // which is why absorbing it here needs no migration.
-        playbookEnforcement: normalizePlaybookEnforcement(e.playbookEnforcement),
-        callerInstanceId: null,
-        launchCause: 'restore',
-      });
-      if (e.title) inst.setTitle(e.title);
-      if (e.firstPrompt && !inst.firstPrompt) {
-        inst.firstPrompt = e.firstPrompt;
-        inst.emit('status', inst.summary());
-      }
-      const st = await waitForIdleOnce(inst);
-      if (st !== 'idle') {
-        log.warn?.(`resume-restart: ${e.sessionId} came up '${st}'; skipping resume notification`);
-        continue;
-      }
-      // Re-arm a pending overage auto-resume. Done AFTER the session is live +
-      // idle (well past create()→spawn()'s flag-clear, so the clear can't wipe
-      // it) and fire-and-forget like the resume notification below — no new
-      // await on the boot hot path. armRestored re-inserts the persisted
-      // deadline as-is; the wall-clock sweep fires it on the first tick if it
-      // already elapsed during the restart.
-      // `_inUsageWindowFlow(inst)` guards against re-arming an auto-resume onto a
-      // now-exempt (e.g. ollama-only) restored session — such a session never
-      // persisted overageStopped:true, so this is belt-and-braces. Its root scoping
-      // (card 2026-0212) cannot change the answer here: restored entries are created
-      // with `callerInstanceId: null` and worker-group entries are skipped above, so
-      // the root of a restored instance is always itself.
-      //
-      // Policy beats a persisted mark: pending-resume.json records the MARK,
-      // settings.json records the POLICY. If the operator moved off stop-resume, the
-      // mark is dead — do not revive it (card 2026-0231). Under 'stop-resume'
-      // honourMark === e.overageStopped, so behaviour is byte-identical to before.
-      const honourMark = !!e.overageStopped && getOnOverageAction() === 'stop-resume';
-      if (honourMark && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
-        inst._overageResetsAt = e.overageResetsAt ?? null;
-        inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
-        inst._overageWasIdleParked = !!e.overageIdleParked;
-        inst._overageDroppedCallbacks = !!e.overageStoppedWorkers; // pre-rename key, see the writer
-        inst._overageUnarmedWorkers = !!e.overageUnarmedWorkers;
-        // Restore queued messages BEFORE re-arming so armRestored's status emit
-        // carries the restored queuedCount (badge shows "· N queued").
-        inst._overageQueue = Array.isArray(e.overageQueue) ? e.overageQueue : [];
-        try { instances._armRestoredAutoResume(inst, (e.overageResumeAt ?? 0) * 1000); }
-        catch (err) { log.warn?.('resume-restart: overage re-arm failed', errMsg(err)); }
-      }
-      // Only notify sessions that had work in flight at the stop (wasBusy).
-      // Idle sessions are resurrected silently — they have nothing to resume.
-      // Skip overage-stopped sessions: the sweep delivers the resume preamble their
-      // restored selectors resolve to (overageResumeKind — an idle-parked entry gets
-      // IDLE_PARKED_RESUME_TEXT, not AUTO_RESUME_TEXT) once the window resets, so a
-      // notice here would double-prompt. A mark DECLINED by the policy gate above
-      // is not skipped: it falls back to the ordinary path, which is exactly what a
-      // plain-`stop` session gets.
-      if (e.wasBusy !== false && !honourMark) {
-        const text = noticeFor(e, src.kind);
-        if (src.deliver === 'auto') {
-          try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
-        } else if (pending) {
-          pending.add({ sessionId: e.sessionId, kind: src.kind, text, workers: e.workers?.map((w) => w.sessionId) ?? [], at: new Date().toISOString() });
-        } else {
-          log.warn?.(`resume-restart: ${e.sessionId}: a gated notice with no pending store; dropped`);
-        }
-      }
-      restored++;
-    } catch (err) {
-      log.warn?.(`resume-restart: failed to resume ${e.sessionId}: ${errMsg(err)}`);
+  try {
+    if (entries.some((e) => e.group === 'conductor')) {
+      try { await ensureConductProject(); } catch (e) { log.warn?.('resume-restart: ensureConductProject failed', errMsg(e)); }
     }
+
+    let first = true;
+    for (const e of entries) {
+      // Group 2 — conducted workers: left untouched; the conductor they
+      // were spawned under re-spawns them (jsonl preserved); workers of a hand-spawned session stay stopped, resumable from the UI. Skip in the boot loop.
+      if (e.group === 'worker') continue;
+      if (!first) await wait(staggerMs);
+      first = false;
+      try {
+        // The browser's anchor auto-resume can attach a carried-over session before
+        // the staggered restore reaches it. Adopt that instance so the session still
+        // gets its restart prompt; this loop is its only sender, so it arrives once.
+        // No await separates this check from create()'s synchronous guards, so a
+        // resume still in flight is coalesced there rather than refused.
+        const attached = instances.liveForSession(e.sessionId);
+        if (attached) {
+          log.log?.(`resume-restart: ${e.sessionId} was already attached; delivering its restart prompt there`);
+          // The browser created it with the defaults; bring it to what the create()
+          // below would have set. Debug has no runtime disable, so it is only raised.
+          attached.setPlaybookEnforcement(normalizePlaybookEnforcement(e.playbookEnforcement));
+          attached.setAutoApprovePlan(!!e.autoApprovePlan);
+          if (e.debug) {
+            const r = attached.enableDebug();
+            if (!r.ok) log.warn?.(`resume-restart: ${e.sessionId}: enabling debug failed: ${r.reason}`);
+          }
+        }
+        const inst = attached ?? await instances.create({
+          project: e.project,
+          resume: e.sessionId,
+          mode: e.mode,
+          effort: e.effort,
+          thinking: e.thinking,
+          model: e.model ?? undefined,
+          contextWindowTokens: e.contextWindowTokens ?? undefined,
+          backend: e.backend ?? undefined,
+          worktree: e.worktreeName ?? null,
+          temp: !!e.temp,
+          conducted: !!e.conducted,
+          debug: !!e.debug,
+          autoApprovePlan: !!e.autoApprovePlan,
+          // Normalized on the READ side, not just where the manifest is written:
+          // this file is the one store a PREVIOUS build's retired 'off' can reach
+          // this process through, and it is read exactly once before being deleted,
+          // which is why absorbing it here needs no migration.
+          playbookEnforcement: normalizePlaybookEnforcement(e.playbookEnforcement),
+          callerInstanceId: null,
+          launchCause: 'restore',
+        });
+        if (e.title) inst.setTitle(e.title);
+        if (e.firstPrompt && !inst.firstPrompt) {
+          inst.firstPrompt = e.firstPrompt;
+          inst.emit('status', inst.summary());
+        }
+        const st = await waitForIdleOnce(inst);
+        if (st !== 'idle') {
+          log.warn?.(`resume-restart: ${e.sessionId} came up '${st}'; skipping resume notification`);
+          continue;
+        }
+        // Re-arm a pending overage auto-resume. Done AFTER the session is live +
+        // idle (well past create()→spawn()'s flag-clear, so the clear can't wipe
+        // it) and fire-and-forget like the resume notification below — no new
+        // await on the boot hot path. armRestored re-inserts the persisted
+        // deadline as-is; the wall-clock sweep fires it on the first tick if it
+        // already elapsed during the restart.
+        // `_inUsageWindowFlow(inst)` guards against re-arming an auto-resume onto a
+        // now-exempt (e.g. ollama-only) restored session — such a session never
+        // persisted overageStopped:true, so this is belt-and-braces. Its root scoping
+        // (card 2026-0212) cannot change the answer here: restored entries are created
+        // with `callerInstanceId: null` and worker-group entries are skipped above, so
+        // the root of a restored instance is always itself.
+        //
+        // Policy beats a persisted mark: pending-resume.json records the MARK,
+        // settings.json records the POLICY. If the operator moved off stop-resume, the
+        // mark is dead — do not revive it (card 2026-0231). Under 'stop-resume'
+        // honourMark === e.overageStopped, so behaviour is byte-identical to before.
+        const honourMark = !!e.overageStopped && getOnOverageAction() === 'stop-resume';
+        if (honourMark && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
+          inst._overageResetsAt = e.overageResetsAt ?? null;
+          inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
+          inst._overageWasIdleParked = !!e.overageIdleParked;
+          inst._overageDroppedCallbacks = !!e.overageStoppedWorkers; // pre-rename key, see the writer
+          inst._overageUnarmedWorkers = !!e.overageUnarmedWorkers;
+          // Restore queued messages BEFORE re-arming so armRestored's status emit
+          // carries the restored queuedCount (badge shows "· N queued").
+          inst._overageQueue = Array.isArray(e.overageQueue) ? e.overageQueue : [];
+          try { instances._armRestoredAutoResume(inst, (e.overageResumeAt ?? 0) * 1000); }
+          catch (err) { log.warn?.('resume-restart: overage re-arm failed', errMsg(err)); }
+        }
+        // Only notify sessions that had work in flight at the stop (wasBusy).
+        // Idle sessions are resurrected silently — they have nothing to resume.
+        // Skip overage-stopped sessions: the sweep delivers the resume preamble their
+        // restored selectors resolve to (overageResumeKind — an idle-parked entry gets
+        // IDLE_PARKED_RESUME_TEXT, not AUTO_RESUME_TEXT) once the window resets, so a
+        // notice here would double-prompt. A mark DECLINED by the policy gate above
+        // is not skipped: it falls back to the ordinary path, which is exactly what a
+        // plain-`stop` session gets.
+        if (e.wasBusy !== false && !honourMark) {
+          const text = noticeFor(e, src.kind);
+          if (src.deliver === 'auto') {
+            try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
+          } else if (pending) {
+            pending.add({ sessionId: e.sessionId, kind: src.kind, text, workers: e.workers?.map((w) => w.sessionId) ?? [], at: new Date().toISOString() });
+          } else {
+            log.warn?.(`resume-restart: ${e.sessionId}: a gated notice with no pending store; dropped`);
+          }
+        }
+        restored++;
+      } catch (err) {
+        log.warn?.(`resume-restart: failed to resume ${e.sessionId}: ${errMsg(err)}`);
+      } finally {
+        restoring?.delete(e.sessionId);
+      }
+    }
+  } finally {
+    for (const e of entries) restoring?.delete(e.sessionId);
   }
   if (restored > 0) log.log?.(`resume-restart: resumed ${restored} session(s) from previous run`);
   return { restored };

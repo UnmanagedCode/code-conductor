@@ -8,7 +8,8 @@
 //     resume banner (src/pendingContinue.ts).
 //   - `running-sessions.json`, the running record: rewritten by the running
 //     recorder (src/runningRecord.ts) whenever the live set changes, and
-//     removed by finishDrain right after it writes the manifest. Its presence
+//     removed by finishDrain once it has written the manifest and stopped the
+//     CLIs. Its presence
 //     WITHOUT a manifest means the previous process stopped without a drain —
 //     a crash, a kill or a reboot.
 //
@@ -123,9 +124,9 @@ export function clearRunningRecord(): void {
 }
 
 // Read both files and unlink both (at-most-once). A manifest wins over a record
-// — finishDrain writes the manifest before it removes the record, so both
-// present is a clean stop that died between the two. A record alone is an
-// unclean stop, always gated.
+// — finishDrain writes the manifest, stops the CLIs, and only then removes the
+// record, so both present is a clean stop that died in between. A record alone
+// is an unclean stop, always gated.
 export function takeRestoreSource({ log = console }: { log?: ManifestLogger } = {}): RestoreSource | null {
   const manifest = readResumeManifest({ log });
   const record = manifest.present ? null : readRunningRecord({ log });

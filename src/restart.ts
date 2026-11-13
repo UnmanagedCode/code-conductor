@@ -61,8 +61,8 @@ export type ExitForShutdown = (opts: { log?: RestartLog; rootLock?: RootLock | n
  * One Restart or Shut down. Both drain every live turn to idle and finish the
  * drain into the resume manifest (`deliver` says how the next boot delivers
  * the continue notices; a shutdown's is always `gated`). The running recorder
- * is paused for the drain, so the closing CLIs cannot write the record back
- * after finishDrain removed it.
+ * is paused for the drain, so the closing CLIs' status events cannot rewrite
+ * the record finishDrain removes after stopping them.
  *
  * A restart is prepared first. When node_modules needs no change every failure
  * is found before any session is touched:

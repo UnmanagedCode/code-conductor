@@ -12,6 +12,11 @@
 //
 // Every operation is a synchronous read-modify-write with an atomic write, so
 // two tabs clicking Continue at once cannot both take the same notices.
+//
+// A boot restore brings its sessions up one by one (staggered), while the banner
+// already lists the notices that survived the previous stop. `restoring` holds
+// the sessions that restore has yet to settle; Continue keeps their notices
+// (the banner stays) instead of reading "not live" as "stopped by the user".
 
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync, mkdirSync, renameSync } from 'node:fs';
@@ -38,9 +43,13 @@ export interface PendingContinue {
   add(notice: PendingNotice): void;
   // Drop the session's notice; true when there was one.
   drop(sessionId: string): boolean;
-  // Every notice, removing them all.
-  take(): PendingNotice[];
+  // Remove and return every notice, or with `keep`, every notice it does not
+  // keep — one write either way.
+  take(keep?: (notice: PendingNotice) => boolean): PendingNotice[];
   list(): PendingNotice[];
+  // Sessions the running boot restore has not settled yet (resumeRestart.ts
+  // fills and drains it).
+  readonly restoring: Set<string>;
 }
 
 interface Log {
@@ -107,32 +116,39 @@ export function createPendingContinue({ onChange = () => {}, log = console }: { 
       changed();
       return true;
     },
-    take() {
+    take(keep) {
       const all = readPendingNotices({ log });
-      if (all.length === 0) return [];
-      writeNotices([]);
+      const kept = keep ? all.filter(keep) : [];
+      if (kept.length === all.length) return [];
+      writeNotices(kept);
       changed();
-      return all;
+      return keep ? all.filter((n) => !keep(n)) : all;
     },
     list() {
       return readPendingNotices({ log });
     },
+    restoring: new Set<string>(),
   };
 }
 
-// Continue: take every notice, then send each to its session if it is live; a
-// notice whose session is not live is dropped (the user stopped it).
+// Continue: keep the notices of sessions the boot restore is still bringing up,
+// take the rest, and send each to its session if it is live; a notice whose
+// session is not live once the restore is done with it is dropped (the user
+// stopped it).
 export function continuePendingNotices({ pending, instances, log = console }: {
   pending: PendingContinue; instances: InstanceManagerLike; log?: Log;
-}): { sent: string[]; dropped: string[] } {
+}): { sent: string[]; dropped: string[]; kept: string[] } {
   const sent: string[] = [];
   const dropped: string[] = [];
-  for (const n of pending.take()) {
+  const restoring = (n: PendingNotice) => pending.restoring.has(n.sessionId);
+  // Synchronous from here to the take, so no other Continue can interleave.
+  const kept = pending.list().filter(restoring).map((n) => n.sessionId);
+  for (const n of pending.take(restoring)) {
     const inst = instances.liveForSession(n.sessionId);
     if (!inst) { dropped.push(n.sessionId); continue; }
     sent.push(n.sessionId);
     inst.prompt(n.text).catch((e: unknown) =>
       log.warn?.(`pending-continue: sending the notice to ${n.sessionId} failed`, e instanceof Error ? e.message : String(e)));
   }
-  return { sent, dropped };
+  return { sent, dropped, kept };
 }
