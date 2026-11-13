@@ -17,6 +17,7 @@ import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './he
 import { mkdtemp } from './tmpRegistry.mjs';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { encodeCwd } from '../src/projects.ts';
+import { OPEN_LEASE } from './playbook-fixtures.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -42,8 +43,8 @@ async function withPlanted(fn) {
   }
 }
 
-async function bootWith(scenarioPath, fn) {
-  const ctx = await bootServer({ scenarioPath });
+async function bootWith(scenarioPath, fn, opts = {}) {
+  const ctx = await bootServer({ scenarioPath, ...opts });
   try { return await withPlanted(() => fn(ctx)); }
   finally { await ctx.close(); }
 }
@@ -224,7 +225,8 @@ test('I7 the documented recipe resolves: POST $CONDUCTOR_URL/mcp/tools/describe_
     const d2 = await describe(worker._spawnEnv);
     assert.equal(d2.live.project, 'demo');
     assert.equal(d2.live.stage, 'freeform');
-  });
+  // The stage is read from the event log, which a lease-less test server never writes.
+  }, { eventLogLease: OPEN_LEASE });
 });
 
 test('I8 CONDUCTOR_URL is absent (an outer value deleted) when the manager has no server port; the session id is still set', async () => {

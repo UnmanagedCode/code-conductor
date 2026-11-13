@@ -30,7 +30,7 @@ import { RUN_RESULT_BODY_LIMIT_BYTES } from '../codeMode/limits.ts';
 import { describeToolsTool, callSpellingOf } from '../codeMode/describeTools.ts';
 import type { CodeModeCtx, ProgressTiming, RunCodeMember } from '../codeMode/ctx.ts';
 import { toolUseIdOf } from '../toolResultNudges.ts';
-import { isConductorInstance } from '../conduct.ts';
+import { sessionKindOf } from '../conduct.ts';
 import { audienceAdmits, type CallerKind, type ToolAudience } from './toolAudience.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -749,11 +749,12 @@ function resolveCaller(instances: InstanceManagerLike | null | undefined, sid: s
 }
 
 // The caller's kind for plugin-tool audience. Binary over sessions: a .conduct
-// session (top-level conductor or section lead — isConductorInstance) is a
-// conductor; every other live session is a worker. No session → anonymous.
+// session (top-level conductor or section lead) is a conductor; every other
+// live session is a worker (sessionKindOf — the same word the session's own env
+// carries as CC_SESSION_KIND). No session → anonymous.
 function callerKindOf(instances: InstanceManagerLike | null | undefined, callerId: string | null): CallerKind {
   if (callerId === null) return 'anonymous';
-  return isConductorInstance(instances?.liveForSession(callerId)) ? 'conductor' : 'worker';
+  return sessionKindOf(instances?.liveForSession(callerId));
 }
 
 // A URL-level fault's REST status: an unknown caller names a resource that is

@@ -94,10 +94,15 @@ export function createSupervisor({
 
   function spawnChild({ id, manifest, cwd, env }: SupervisorStartInput, port: number): ChildRecord {
     const { command, args } = platform.commandFor({ shell: manifest.backend.start });
-    // An outer cc's CONDUCTOR_MCP_URL (this server running as some cc's
-    // worker) must never reach a plugin: only the one `env` names is this
-    // server's.
-    const { CONDUCTOR_MCP_URL: _outer, ...inherited } = process.env;
+    // An outer cc's CONDUCTOR_MCP_URL / CONDUCTOR_URL and session identity
+    // (this server running as some cc's worker) must never reach a plugin: only
+    // the URLs `env` names are this server's, and a backend serves many
+    // sessions — it learns its caller from the forwarded `caller.sessionId`.
+    const {
+      CONDUCTOR_MCP_URL: _outerMcp, CONDUCTOR_URL: _outerUrl,
+      CC_SESSION_ID: _outerSid, CC_SESSION_KIND: _outerKind,
+      ...inherited
+    } = process.env;
     const proc = _spawn(command, args, {
       ...platform.spawnOptions('daemon'),
       cwd,
