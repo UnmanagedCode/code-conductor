@@ -193,8 +193,8 @@ const isEsrch = (e: unknown): boolean => (e as NodeJS.ErrnoException)?.code === 
 
 /**
  * Terminate every CLI the running record or the resume manifest names that is
- * still the process the file saw. Reads both without consuming either; a row
- * in both (same pid and start) is reaped once. The manifest's rows cover a CLI
+ * still the process the file saw. Reads both without consuming either; a pid
+ * in both is reaped once, from a row with a known start when either has one. The manifest's rows cover a CLI
  * that outlived a clean stop (finishDrain removes the record); the record's, a
  * stop with no drain. Every row is read concurrently, and each row is signalled
  * in its own continuation, right after its own read matched, so no check is
@@ -208,18 +208,28 @@ export async function reapOrphanedClis({
   platform, log = console, termGraceMs = ORPHAN_CLI_TERM_GRACE_MS,
 }: { platform: Platform; log?: Log; termGraceMs?: number }): Promise<ReapResult> {
   const result: ReapResult = { terminated: [], unverifiable: [], reused: [] };
-  const rows = new Map<string, RunningCli>();
+  // Both files describe one boot's live set, so a pid is one CLI: its rows with
+  // a known start (deduplicated by start) win over a null-start row for it; two
+  // different known starts are both kept, and the start check sorts them out.
+  const byPid = new Map<number, Map<string | null, RunningCli>>();
   for (const c of [...(readRunningRecord({ log })?.clis ?? []), ...readResumeManifest({ log }).clis]) {
-    rows.set(`${c.pid}:${c.start}`, c);
+    const starts = byPid.get(c.pid) ?? new Map<string | null, RunningCli>();
+    starts.set(c.start, c);
+    byPid.set(c.pid, starts);
   }
-  if (rows.size === 0) return result;
+  const rows: RunningCli[] = [];
+  for (const starts of byPid.values()) {
+    const known = [...starts.values()].filter((c) => c.start !== null);
+    rows.push(...(known.length ? known : [...starts.values()]));
+  }
+  if (rows.length === 0) return result;
   const signal = (c: RunningCli, sig: 'SIGTERM' | 'SIGKILL'): void => {
     if (c.group) platform.killGroup(c.pid, sig);
     else platform.killProcess(c.pid, sig);
   };
   const readStart = (pid: number): Promise<string | null> => platform.processStartTime(pid).catch(() => null);
   const signalled: RunningCli[] = [];
-  await Promise.all([...rows.values()].map(async (c) => {
+  await Promise.all(rows.map(async (c) => {
     const now = c.start === null ? null : await readStart(c.pid);
     if (now === null) {
       if (pidIsAlive(c.pid)) {

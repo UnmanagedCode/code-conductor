@@ -279,3 +279,29 @@ test('the reap reads the record and the manifest, deduplicated, and consumes nei
   assert.ok(readRunningRecord({ log: QUIET }));
   assert.equal(readResumeManifest({ log: QUIET }).present, true);
 });
+
+// Invariant: within one boot both files describe the same live set, so one pid
+// is one CLI — a row with a known start wins over the same pid's null-start row:
+// one read, no "unverifiable" warning, one SIGTERM.
+test('the same pid with a null start in the record and a start in the manifest is reaped once, as verifiable', async (t) => {
+  const home = await makeTmpHome();
+  const restoreEnv = useHome(home);
+  const s = sleeper();
+  t.after(async () => { kill(s.pid); restoreEnv(); await rmrf(home); });
+  writeRunningRecord({ instances: [], clis: [{ sessionId: 'x', pid: s.pid, start: null, group: false }] });
+  writeResumeManifest([], { deliver: 'gated', clis: [{ sessionId: 'x', pid: s.pid, start: 'S', group: false }] });
+  const reads = [];
+  const signals = [];
+  const warns = [];
+  const platform = {
+    ...hostPlatform,
+    processStartTime: async (pid) => { reads.push(pid); return 'S'; },
+    killProcess: (pid, sig) => { signals.push([pid, sig]); if (sig === 'SIGTERM') kill(pid); },
+    killGroup: () => { throw new Error('no group was recorded'); },
+  };
+  const r = await reapOrphanedClis({ platform, log: { log() {}, warn: (...a) => warns.push(a.join(' ')) }, termGraceMs: 500 });
+  assert.deepEqual(reads, [s.pid]);
+  assert.deepEqual(warns, []);
+  assert.deepEqual(signals, [[s.pid, 'SIGTERM']]);
+  assert.deepEqual(r, { terminated: [s.pid], unverifiable: [], reused: [] });
+});
