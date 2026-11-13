@@ -613,53 +613,39 @@ test('A workspace is created from the project menu, edited from its pencil with 
   await page.unrouteAll({ behavior: 'wait' });
 });
 
-test('With live sessions the restart button asks first: dismissing restarts nothing, the plain choice posts resume:false and the resume choice resume:true, each reloading once the server is back; with no sessions it restarts plain without asking', async ({ page, cc, ui, uniq }) => {
-  const p = uniq('rst');
+test('The power menu offers Restart and Shut down: Restart posts no autoContinue and reloads once the server is back; Shut down shows that cc has stopped and does not reload', async ({ page, cc, ui, uniq }) => {
+  const p = uniq('pwr');
   await createProject(cc, p);
-  const { sessionId } = await spawnSession(cc, p, { temp: false });
-  // The restart button counts the instance list the UI has loaded, which arrives after the sidebar mounts.
-  const asks = async () => { await expect.poll(async () => ui.sessionRowLive(await ui.sessionRow(page, p, sessionId))).toBe(true); };
+  await spawnSession(cc, p, { temp: false });
   let boot = 0;
   const restarts: unknown[] = [];
+  const shutdowns: unknown[] = [];
   await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, bootId: `pw-${boot}` } }));
   await page.route('**/api/admin/restart', (route) => {
     restarts.push(route.request().postDataJSON());
     boot++;
     return route.fulfill({ status: 202, json: { ok: true } });
   });
+  await page.route('**/api/admin/shutdown', (route) => {
+    shutdowns.push(route.request().postDataJSON());
+    return route.fulfill({ status: 202, json: { ok: true } });
+  });
 
   await ui.open(page);
-  await asks();
-  await ui.clickRestart(page);
-  const d = ui.restartDialog(page);
-  await expect(d).toBeVisible();
-  await expect(ui.restartChoice(d, 'only')).toBeVisible();
-  await expect(ui.restartChoice(d, 'resume')).toBeVisible();
-  await ui.dismissRestart(page, d);
-  expect(restarts).toEqual([]);
-
-  let reloaded = page.waitForEvent('load');
-  await ui.clickRestart(page);
-  await ui.restartChoice(ui.restartDialog(page), 'only').click();
+  const menu = await ui.openPowerMenu(page);
+  await expect(menu.getByRole('menuitem')).toHaveText(['Restart', 'Shut down']);
+  const reloaded = page.waitForEvent('load');
+  await ui.powerItem(menu, 'Restart').click();
   await reloaded;
   await expect.poll(() => restarts.length).toBe(1);
-  expect(restarts).toEqual([{ resume: false }]);
+  expect(restarts).toEqual([{}]);
 
   await ui.open(page);
-  await asks();
-  reloaded = page.waitForEvent('load');
-  await ui.clickRestart(page);
-  await ui.restartChoice(ui.restartDialog(page), 'resume').click();
-  await reloaded;
-  await expect.poll(() => restarts.length).toBe(2);
-  expect(restarts).toEqual([{ resume: false }, { resume: true }]);
-
-  await page.route('**/api/instances', (route) => route.request().method() === 'GET' ? route.fulfill({ json: [] }) : route.fallback());
-  await ui.open(page);
-  reloaded = page.waitForEvent('load');
-  await ui.clickRestart(page);
-  await reloaded;
-  await expect.poll(() => restarts.length).toBe(3);
-  expect(restarts).toEqual([{ resume: false }, { resume: true }, { resume: false }]);
+  let loads = 0;
+  page.on('load', () => { loads++; });
+  await ui.powerItem(await ui.openPowerMenu(page), 'Shut down').click();
+  await expect(page.locator('[data-sidebar-status]').first()).toContainText('cc has stopped — start it again to continue');
+  expect(shutdowns).toHaveLength(1);
+  expect(loads).toBe(0);
   await page.unrouteAll({ behavior: 'wait' });
 });
