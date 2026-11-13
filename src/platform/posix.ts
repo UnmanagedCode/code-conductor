@@ -20,15 +20,8 @@ export interface PosixDeps {
   // `/proc/<pid>/stat` is readable (Linux, Android): a start time is its field 22.
   hasProcStat: () => boolean;
   procStart: (pid: number) => string | null;
-  // `ps -o lstart= -p <pid>`'s stdout, or null when ps fails (no such pid, no ps).
-  psLstart: (pid: number) => Promise<string | null>;
-}
-
-function psLstart(pid: number): Promise<string | null> {
-  return new Promise((resolve) => {
-    const child = execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: START_TIME_TIMEOUT_MS }, (err, stdout) => resolve(err ? null : String(stdout)));
-    child.on('error', () => resolve(null));
-  });
+  // Runs a helper process (`ps`) and calls back with its stdout.
+  execFile: (file: string, args: string[], opts: { timeout: number }, cb: (err: Error | null, stdout: string) => void) => { on(event: 'error', fn: () => void): unknown };
 }
 
 export function createPosixPlatform(overrides: Partial<PosixDeps> = {}): Platform {
@@ -40,7 +33,7 @@ export function createPosixPlatform(overrides: Partial<PosixDeps> = {}): Platfor
     closeFd: closeSync,
     hasProcStat: () => existsSync('/proc/self/stat'),
     procStart: procStartSync,
-    psLstart,
+    execFile: (file, args, opts, cb) => execFile(file, args, opts, (err, stdout) => cb(err, String(stdout))),
     ...overrides,
   };
   const fits = (p: string): boolean => Buffer.byteLength(p) <= SOCK_PATH_MAX;
@@ -72,7 +65,12 @@ export function createPosixPlatform(overrides: Partial<PosixDeps> = {}): Platfor
     // `ps`'s lstart (macOS) otherwise.
     async processStartTime(pid) {
       if (d.hasProcStat()) return d.procStart(pid);
-      const out = (await d.psLstart(pid))?.trim();
+      const stdout = await new Promise<string | null>((resolve) => {
+        // Capped, so a hung ps cannot hold the boot's orphan reap.
+        const child = d.execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: START_TIME_TIMEOUT_MS }, (err, out) => resolve(err ? null : out));
+        child.on('error', () => resolve(null));
+      });
+      const out = stdout?.trim();
       return out ? out : null;
     },
     splitCommand(line) {
