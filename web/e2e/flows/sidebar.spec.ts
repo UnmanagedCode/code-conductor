@@ -2,6 +2,7 @@ import type { Locator } from '@playwright/test';
 import { api, createProject, spawnSession } from '../harness/api.ts';
 import { expect, test, type Cc } from './test.ts';
 import { seedTranscript } from '../harness/transcript.ts';
+import { spawnConductor, spawnWorker } from './fleet.ts';
 
 test('a fresh profile opens on the Conductors lens, and the chosen lens survives a reload', async ({ page, ui }) => {
   await ui.open(page);
@@ -38,12 +39,33 @@ test('the ≡ menu opens the Add-project dialog', async ({ page, ui }) => {
 // Sidebar B (card 2026-0628)
 /** Pixel 7 projects (phone, android) show the sidebar as a drawer. */
 const drawerViewport = () => test.info().project.name !== 'desktop';
-/** Whether a summary line fits on one line: no horizontal overflow, content box under 1.5 line-heights. */
-const fitsOneLine = (summary: Locator) => summary.evaluate((e) => {
-  const cs = getComputedStyle(e);
-  const lineHeight = cs.lineHeight === 'normal' ? parseFloat(cs.fontSize) * 1.2 : parseFloat(cs.lineHeight);
-  const content = e.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-  return { overflow: e.scrollWidth - e.clientWidth, content, lineHeight, fits: e.scrollWidth <= e.clientWidth + 1 && content < 1.5 * lineHeight };
+/**
+ * Whether a summary line shows every fact whole: no horizontal overflow, and each of `<noun> (N)`, `K live` and
+ * `last <ago>` laid out as one unbroken piece inside the line's box. Read off the text's own layout, so a clipped
+ * (ellipsised) fact and a fact split across two lines both fail, whatever the markup.
+ */
+const factsFit = (summary: Locator) => summary.evaluate((e) => {
+  const text = e.textContent ?? '';
+  const facts = [/^.*?\(\d+\)/, /\d+ live/, /last \S+ ago/].map((re) => re.exec(text)).filter((m): m is RegExpExecArray => !!m);
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
+  const at = (offset: number): [Text, number] => {
+    for (const n of nodes) { if (offset <= n.length) return [n, offset]; offset -= n.length; }
+    return [nodes[nodes.length - 1], nodes[nodes.length - 1].length];
+  };
+  const box = e.getBoundingClientRect();
+  const placed = facts.map((m) => {
+    const range = document.createRange();
+    range.setStart(...at(m.index));
+    range.setEnd(...at(m.index + m[0].length));
+    const rects = [...range.getClientRects()].filter((r) => r.width > 0);
+    const lines = new Set(rects.map((r) => Math.round(r.top))).size;
+    const inside = rects.every((r) => r.left >= box.left - 0.5 && r.right <= box.right + 0.5);
+    return { fact: m[0], lines, inside };
+  });
+  const overflow = e.scrollWidth - e.clientWidth;
+  return { overflow, placed, fits: facts.length === 3 && overflow <= 1 && placed.every((f) => f.lines === 1 && f.inside) };
 });
 type LiveInst = { id: string; status: string; sessionId: string | null; worktree?: { worktreeName: string } | null };
 /** Spawns a persistent session in `project`, waits for it to idle, seeds its transcript; returns the instance. */
@@ -86,7 +108,7 @@ test('a live session row in the Projects lens opens it, and once stopped its row
   await expect(ui.sessionHeader(page).locator(`[title="session ${sid}"]`)).toBeVisible();
 });
 
-test('the main checkout and a worktree each head their Sessions list with Sessions (N) · K live · last <ago>', async ({ page, cc, ui, uniq }) => {
+test('the main checkout and a worktree each head their Sessions list with Persistent sessions (N) · K live · last <ago>, every fact shown whole', async ({ page, cc, ui, uniq }) => {
   // Invariant: the summary text is visible on the main checkout's list and on the worktree's.
   const project = uniq('summ');
   await createProject(cc, project);
@@ -94,9 +116,9 @@ test('the main checkout and a worktree each head their Sessions list with Sessio
   const stopped = await persistentSession(cc, project, 'main prompt');
   const w = await persistentSession(cc, project, 'worktree prompt', { worktree: true });
   const worktree = w.worktree!.worktreeName;
-  // The live ones are normal, so each place shows two groups and its summary keeps the noun Sessions.
-  const { id: liveMain } = await spawnSession(cc, project);
-  const { id: liveWt } = await spawnSession(cc, project, { worktree });
+  // Every session is persistent, so each place's one visible group names its summary: the longest noun.
+  const { id: liveMain } = await spawnSession(cc, project, { persistent: true });
+  const { id: liveWt } = await spawnSession(cc, project, { persistent: true, worktree });
   for (const id of [stopped.id, w.id]) await api(cc, 'DELETE', `/api/instances/${id}`);
   const place = (i: LiveInst) => i.worktree?.worktreeName ?? null;
   await expect.poll(async () => ((await api(cc, 'GET', '/api/instances')).body as (LiveInst & { project: string })[])
@@ -116,16 +138,35 @@ test('the main checkout and a worktree each head their Sessions list with Sessio
   expect(diskMain).not.toContain(sidOf(liveMain));
   expect(diskWt).not.toContain(sidOf(liveWt));
   await ui.open(page);
-  const SUMMARY = /^Sessions \(2\) · 1 live · last \d+[sm] ago$/;
+  const SUMMARY = /^Persistent sessions \(2\) · 1 live · last \d+[sm] ago$/;
   const main = await ui.sessionsSummary(page, project, null);
   await expect(main).toBeVisible();
   await expect(main).toHaveText(SUMMARY);
-  // Invariant: the summary line fits on one line, neither overflowing nor wrapping.
-  const mainFit = await fitsOneLine(main);
+  // Invariant: no fact of the summary is clipped or split, at the default sidebar width.
+  const mainFit = await factsFit(main);
   expect(mainFit.fits, JSON.stringify(mainFit)).toBe(true);
   const wtSummary = await ui.sessionsSummary(page, project, worktree);
   await expect(wtSummary).toBeVisible();
   await expect(wtSummary).toHaveText(SUMMARY);
-  const wtFit = await fitsOneLine(wtSummary);
+  const wtFit = await factsFit(wtSummary);
   expect(wtFit.fits, JSON.stringify(wtFit)).toBe(true);
+});
+
+test('a place whose only sessions are conducted heads its list with Conducted sessions (N) · K live · last <ago>, every fact shown whole', async ({ page, cc, ui, uniq }) => {
+  // Invariant: the conducted-only noun leaves the count and the live/last facts unclipped and unsplit too.
+  const project = uniq('summc');
+  await createProject(cc, project);
+  await api(cc, 'POST', '/api/projects/.conduct/ensure');
+  const conductor = await spawnConductor(cc, true);
+  // One stopped conducted session on disk (persisted, so its stop keeps it listed) and one live.
+  const stopped = await spawnWorker(cc, conductor.sessionId, { project });
+  expect((await api(cc, 'POST', `/api/instances/${stopped.id}/persist`)).status).toBe(200);
+  await seedTranscript(cc, stopped.id, 'conducted prompt');
+  await api(cc, 'DELETE', `/api/instances/${stopped.id}`);
+  await spawnWorker(cc, conductor.sessionId, { project });
+  await ui.open(page);
+  const main = await ui.sessionsSummary(page, project, null);
+  await expect(main).toHaveText(/^Conducted sessions \(2\) · 1 live · last \d+[sm] ago$/);
+  const fit = await factsFit(main);
+  expect(fit.fits, JSON.stringify(fit)).toBe(true);
 });
