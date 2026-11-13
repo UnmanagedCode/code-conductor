@@ -182,7 +182,8 @@ function conductorRowFromDisk(r: ConductRow & { sessionId: string }, onDisk: boo
     // its disk row reports.
     awaitingUser: null,
     awaitingUserSource: null,
-    // Instance-only: a disk-only row is never live, so neither ↑ nor × reads it.
+    // Instance-only. A disk-only row is never live, so the value cannot change
+    // its × action: closeActionOf returns `archive` for any non-live row.
     instancePersistent: false,
     // Instance-only: an armed overage resume and its queue live on the
     // instance.
