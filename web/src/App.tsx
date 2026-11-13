@@ -14,6 +14,7 @@ import { SessionView } from '@/features/session/SessionView';
 import { PluginView } from '@/features/views/PluginView';
 import { dockModeStore } from '@/features/views/dock';
 import { LazyDialogsHost } from '@/features/dialogs/LazyDialogsHost';
+import { ResumeBanner } from '@/features/resume/ResumeBanner';
 import { focusContent } from '@/lib/modalFocus';
 
 // Full-page views load on first use; the session view is the app's landing page.
@@ -64,14 +65,17 @@ export function App() {
             <AppSidebar mobile />
           </SheetContent>
         </Sheet>
-        <div className="flex min-w-0 flex-1">
-          {/* Hidden, still mounted, while the plugin column fills the row (a split too narrow to fit shows over the session). */}
-          <div className="contents" hidden={columnFull}>
-            <Suspense fallback={<ViewFallback />}>
-              <MainView />
-            </Suspense>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <ResumeBanner />
+          <div className="flex min-h-0 min-w-0 flex-1">
+            {/* Hidden, still mounted, while the plugin column fills the row (a split too narrow to fit shows over the session). */}
+            <div className="contents" hidden={columnFull}>
+              <Suspense fallback={<ViewFallback />}>
+                <MainView />
+              </Suspense>
+            </div>
+            <PluginView />
           </div>
-          <PluginView />
         </div>
       </div>
       <LazyDialogsHost />
