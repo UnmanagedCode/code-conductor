@@ -27,6 +27,11 @@ import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 
 export const RUNNING_RECORD_DEBOUNCE_MS = 250;
 export const ORPHAN_CLI_TERM_GRACE_MS = 2000;
+// A start-time read that answers null is retried, START_TIME_RETRY_MS after the
+// first failure and doubling, until START_TIME_ATTEMPTS reads in all; the row
+// stays null after that.
+export const START_TIME_ATTEMPTS = 4;
+export const START_TIME_RETRY_MS = 1000;
 const ORPHAN_POLL_MS = 50;
 
 interface Log {
@@ -63,8 +68,9 @@ export function cliRows(
 
 export function createRunningRecorder({
   instances, platform, log = console, debounceMs = RUNNING_RECORD_DEBOUNCE_MS, write = writeRunningRecord,
+  startRetryMs = START_TIME_RETRY_MS,
 }: {
-  instances: InstanceManagerLike; platform: Platform; log?: Log; debounceMs?: number;
+  instances: InstanceManagerLike; platform: Platform; log?: Log; debounceMs?: number; startRetryMs?: number;
   // The file write; a test counts calls through it.
   write?: typeof writeRunningRecord;
 }): RunningRecorder {
@@ -72,21 +78,39 @@ export function createRunningRecorder({
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastJson: string | null = null;
   // Start times by CLI process handle, so a later process reusing a pid never
-  // inherits an earlier one's start. A null is cached too: the host cannot tell.
-  const starts = new WeakMap<object, string | null>();
+  // inherits an earlier one's start. Only a read value is cached; a null read
+  // is retried with backoff (START_TIME_ATTEMPTS), and the row stays null
+  // meanwhile and after.
+  const starts = new WeakMap<object, string>();
+  const failures = new WeakMap<object, number>();
   const resolving = new WeakSet<object>();
+  const retries = new Set<ReturnType<typeof setTimeout>>();
   const group = !!platform.spawnOptions('child').detached;
+
+  // A read counts only while `proc` is still the instance's live CLI: cc holds
+  // the child, so its pid cannot be reused until the exit that clears `proc`.
+  const read = (inst: InstanceLike, proc: object, pid: number): void => {
+    if (state === 'stopped' || inst.proc !== proc) return;
+    resolving.add(proc);
+    platform.processStartTime(pid)
+      .catch(() => null)
+      .then((t) => {
+        resolving.delete(proc);
+        if (inst.proc !== proc) return;
+        if (t !== null) { starts.set(proc, t); schedule(); return; }
+        const failed = (failures.get(proc) ?? 0) + 1;
+        failures.set(proc, failed);
+        if (failed >= START_TIME_ATTEMPTS || state === 'stopped') return;
+        const timer = setTimeout(() => { retries.delete(timer); read(inst, proc, pid); }, startRetryMs * 2 ** (failed - 1));
+        retries.add(timer);
+      });
+  };
 
   const resolveStart = (inst: InstanceLike): string | null => {
     const proc = inst.proc as object;
-    if (starts.has(proc)) return starts.get(proc) ?? null;
-    if (!resolving.has(proc) && typeof inst.pid === 'number') {
-      resolving.add(proc);
-      // cc holds the child, so its pid cannot be reused while this resolves.
-      platform.processStartTime(inst.pid)
-        .catch(() => null)
-        .then((t) => { starts.set(proc, t); resolving.delete(proc); schedule(); });
-    }
+    const known = starts.get(proc);
+    if (known !== undefined) return known;
+    if (!resolving.has(proc) && !failures.has(proc) && typeof inst.pid === 'number') read(inst, proc, inst.pid);
     return null;
   };
 
@@ -142,6 +166,8 @@ export function createRunningRecorder({
       }
       state = 'stopped';
       cancel();
+      for (const t of retries) clearTimeout(t);
+      retries.clear();
     },
   };
 }
@@ -161,7 +187,10 @@ const isEsrch = (e: unknown): boolean => (e as NodeJS.ErrnoException)?.code === 
  * Terminate every CLI the running record names that is still the process the
  * record saw. Reads the record without consuming it. SIGTERM first, through the
  * platform's kill helpers; then up to `termGraceMs` for the pids to go, and a
- * SIGKILL for any survivor whose start time still matches. Never throws.
+ * SIGKILL for any survivor whose start time still matches. The start times are
+ * read concurrently, so the whole reap takes at most about two reads
+ * (START_TIME_TIMEOUT_MS each, where a read runs a helper process) plus
+ * `termGraceMs`. Never throws.
  */
 export async function reapOrphanedClis({
   platform, log = console, termGraceMs = ORPHAN_CLI_TERM_GRACE_MS,
@@ -173,20 +202,23 @@ export async function reapOrphanedClis({
     if (c.group) platform.killGroup(c.pid, sig);
     else platform.killProcess(c.pid, sig);
   };
+  // Every identity read at once, so the reap waits about one read, not one per row.
+  const startsNow = await Promise.all(record.clis.map((c) =>
+    c.start === null ? null : platform.processStartTime(c.pid).catch(() => null)));
   const signalled: RunningCli[] = [];
-  for (const c of record.clis) {
-    const now = c.start === null ? null : await platform.processStartTime(c.pid).catch(() => null);
+  record.clis.forEach((c, i) => {
+    const now = startsNow[i];
     if (now === null) {
       if (pidIsAlive(c.pid)) {
         result.unverifiable.push(c.pid);
         log.warn?.(`orphan-reap: session ${c.sessionId}'s CLI pid ${c.pid} is still running but its identity cannot be verified; leaving it running`);
       }
-      continue;
+      return;
     }
     if (now !== c.start) {
       result.reused.push(c.pid);
       log.log?.(`orphan-reap: pid ${c.pid} (session ${c.sessionId}) now names another process; left alone`);
-      continue;
+      return;
     }
     try {
       signal(c, 'SIGTERM');
@@ -196,17 +228,18 @@ export async function reapOrphanedClis({
     } catch (e) {
       if (!isEsrch(e)) log.warn?.(`orphan-reap: signalling pid ${c.pid} failed`, e instanceof Error ? e.message : String(e));
     }
-  }
+  });
   const deadline = Date.now() + termGraceMs;
   let survivors = signalled.filter((c) => pidIsAlive(c.pid));
   while (survivors.length && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, ORPHAN_POLL_MS));
     survivors = survivors.filter((c) => pidIsAlive(c.pid));
   }
-  for (const c of survivors) {
-    if (await platform.processStartTime(c.pid).catch(() => null) !== c.start) continue;
+  const startsLater = await Promise.all(survivors.map((c) => platform.processStartTime(c.pid).catch(() => null)));
+  survivors.forEach((c, i) => {
+    if (startsLater[i] !== c.start) return;
     try { signal(c, 'SIGKILL'); }
     catch (e) { if (!isEsrch(e)) log.warn?.(`orphan-reap: SIGKILL of pid ${c.pid} failed`, e instanceof Error ? e.message : String(e)); }
-  }
+  });
   return result;
 }

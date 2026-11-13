@@ -9,7 +9,7 @@
 import path from 'node:path';
 import { execFileSync as nodeExecFileSync, execFile as nodeExecFile } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import type { ChildHandle, KillSignal, Platform } from './platform.ts';
+import { START_TIME_TIMEOUT_MS, type ChildHandle, type KillSignal, type Platform } from './platform.ts';
 import { lockDirHash, NO_RELEASE } from './rootLockAddress.ts';
 
 const w = path.win32;
@@ -25,8 +25,6 @@ export interface Win32Deps {
   // Runs `file args` and resolves its stdout, or null on any failure.
   execFile: (file: string, args: string[], opts: { windowsHide: boolean; timeout: number }) => Promise<string | null>;
 }
-
-const START_TIME_TIMEOUT_MS = 5000;
 
 function execFileStdout(file: string, args: string[], opts: { windowsHide: boolean; timeout: number }): Promise<string | null> {
   return new Promise((resolve) => {

@@ -27,6 +27,10 @@ export interface SocketAddress { path: string; release(): void }
 // A flag marks a feature this host can run; when off, the feature is hidden and refused.
 export interface PlatformCapabilities { remoteSystems: boolean; fuseUnion: boolean; voice: boolean }
 
+// The bound on one Platform.processStartTime read that runs a helper process
+// (`ps`, PowerShell); a `/proc` read is immediate.
+export const START_TIME_TIMEOUT_MS = 5000;
+
 export interface Platform {
   capabilities: PlatformCapabilities;
   // True when SIGTERM lets the target run its shutdown handler; false where it

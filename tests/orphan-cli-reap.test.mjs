@@ -140,3 +140,26 @@ test('an unverifiable pid is not signalled, a warning names it, and the restore 
   assert.deepEqual(await l.restored, { restored: 1 });
   assert.ok(ctx.instances.liveForSession(sessionId));
 });
+
+// Invariant: the reap reads every recorded start time at once, so its wait is
+// about one start-time read timeout, not one per row.
+test('the reap reads every recorded start time concurrently', async (t) => {
+  const home = await makeTmpHome();
+  const restoreEnv = useHome(home);
+  t.after(async () => { restoreEnv(); await rmrf(home); });
+  writeRunningRecord({ instances: [], clis: ['a', 'b', 'c'].map((sessionId) => ({ sessionId, pid: process.pid, start: 'recorded', group: false })) });
+  let calls = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const platform = {
+    ...hostPlatform,
+    processStartTime: async () => { calls++; await gate; return null; },
+    killProcess: () => { throw new Error('nothing may be signalled'); },
+    killGroup: () => { throw new Error('nothing may be signalled'); },
+  };
+  const reaping = reapOrphanedClis({ platform, log: QUIET, termGraceMs: 100 });
+  await waitFor(() => calls === 3, { timeout: 2000 });
+  release();
+  const r = await reaping;
+  assert.deepEqual(r.unverifiable, [process.pid, process.pid, process.pid]);
+});

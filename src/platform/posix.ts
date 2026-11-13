@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { posixLoginShell } from '../systems/ptyHost.ts';
 import { procStartSync } from '../systems/fuse/driver.ts';
-import type { Platform } from './platform.ts';
+import { START_TIME_TIMEOUT_MS, type Platform } from './platform.ts';
 import { lockDirHash, NO_RELEASE, SOCK_PATH_MAX } from './rootLockAddress.ts';
 
 // The host facts the root-lock addressing reads, injectable so a test can take
@@ -24,11 +24,9 @@ export interface PosixDeps {
   psLstart: (pid: number) => Promise<string | null>;
 }
 
-const PS_TIMEOUT_MS = 5000;
-
 function psLstart(pid: number): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: PS_TIMEOUT_MS }, (err, stdout) => resolve(err ? null : String(stdout)));
+    const child = execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: START_TIME_TIMEOUT_MS }, (err, stdout) => resolve(err ? null : String(stdout)));
     child.on('error', () => resolve(null));
   });
 }

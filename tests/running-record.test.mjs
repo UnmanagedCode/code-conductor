@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, waitFor, freshProjectsRoot, rmrf, api } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
-import { createRunningRecorder, cliRows } from '../src/runningRecord.ts';
+import { createRunningRecorder, cliRows, START_TIME_ATTEMPTS } from '../src/runningRecord.ts';
 import { hostPlatform } from '../src/platform/index.ts';
 import { captureResumeFacts, buildResumeEntries, finishDrain } from '../src/resumeRestart.ts';
 import { readRunningRecord, readResumeManifest, runningRecordPath, clearResumeManifest, writeRunningRecord } from '../src/resumeManifest.ts';
@@ -138,6 +138,33 @@ test('debounced, change-only, pausable, atomic writes', async () => {
   assert.equal(writes.length, 3, 'stopped: no write');
   const residue = fs.readdirSync(orchStoreRoot()).filter((n) => n.startsWith('running-sessions.json.tmp-'));
   assert.deepEqual(residue, [], 'the atomic write leaves no tmp file');
+});
+
+// Invariant: a start time that could not be read is retried — never cached as
+// unknown on one failure, never guessed — until it resolves or the bounded
+// attempts run out, after which the row stays null.
+test('a failed start-time read is retried with backoff, a bounded number of times', async () => {
+  fs.mkdirSync(orchStoreRoot(), { recursive: true });
+  const run = async (answers) => {
+    const mgr = fakeManager();
+    mgr.byId.set('i1', { ...fakeInst(1), pid: 4242, _fuse: null });
+    let calls = 0;
+    const platform = { ...hostPlatform, processStartTime: async () => answers[calls++] ?? null };
+    const recorder = createRunningRecorder({ instances: mgr, platform, log: QUIET, debounceMs: 5, startRetryMs: 5 });
+    recorder.start();
+    return { recorder, calls: () => calls, start: () => readRunningRecord({ log: QUIET })?.clis[0]?.start };
+  };
+  const flaky = await run([null, null, 'T']);
+  await waitFor(() => flaky.start() === 'T', { timeout: 2000, interval: 5 });
+  assert.equal(flaky.calls(), 3);
+  flaky.recorder.stop();
+
+  const never = await run([]);
+  await waitFor(() => never.calls() === START_TIME_ATTEMPTS, { timeout: 2000, interval: 5 });
+  await sleep(150);
+  assert.equal(never.calls(), START_TIME_ATTEMPTS, 'no read past the bound');
+  assert.equal(never.start(), null);
+  never.recorder.stop();
 });
 
 // Invariant: every live CLI the launcher spawned gets one row — top-level,
