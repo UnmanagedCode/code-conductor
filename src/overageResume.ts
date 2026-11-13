@@ -403,7 +403,7 @@ export class OverageResumeController {
   }
 
   // Cancel a pending overage auto-resume deadline and clear the instance flags.
-  // Idempotent. Called on user takeover, manual respawn/kill/remove, temp-session
+  // Idempotent. Called on user takeover, manual respawn/kill/remove, normal-session
   // exit, shutdown, and once the deadline itself fires. The flag-clear is skipped
   // when the instance is already gone from byId (e.g. remove() deletes it before
   // cancelling) — there is nothing left to update, and the deadline delete by
@@ -428,7 +428,7 @@ export class OverageResumeController {
       inst._overageHandled = false;
       // Drop any queued messages — the session is being torn down or resumed
       // (run() already snapshot-emptied the queue before this call, so this is
-      // the kill/remove/temp-exit/shutdown cleanup path).
+      // the kill/remove/normal-exit/shutdown cleanup path).
       inst._overageQueue = [];
       if (had) this.manager.emit('status', inst.summary()); // clear the badge + queuedCount
     }

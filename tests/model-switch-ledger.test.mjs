@@ -94,7 +94,7 @@ async function snapshotOf(id) {
 // A substitution session on A with one persisted turn (u0/a0), switched to B —
 // confirmed (`ok`) or crashed in the grace window and re-resumed on A.
 async function switched(ok) {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');

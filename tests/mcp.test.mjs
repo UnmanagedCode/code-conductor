@@ -490,16 +490,15 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   // Conducted session: spawned via the MCP spawn_instance tool. MCP spawns
-  // default to temp:true with no MCP knob to override it, so this test is
-  // about list annotation (MCP conducted:true vs HTTP false), not temp
-  // durability — promote in-process afterward. A non-temp session is the
-  // simplest fixture for that: it survives kill_instance without its jsonl
-  // being wiped.
+  // are normal with no MCP knob to override it, so this test is about list
+  // annotation (MCP conducted:true vs HTTP false), not persistence — make it
+  // persistent in-process afterward. A persistent session is the simplest
+  // fixture for that: it survives kill_instance without being archived.
   const cond = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
   assert.equal(cond.conducted, true, 'MCP-spawned summary carries conducted:true');
   const condInst = instForSession(instances, cond.sessionId);
   await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
-  await condInst.promoteToNormal();
+  await condInst.makePersistent();
   // BOTH ids are needed here, and keeping them apart is the point: a LIVE row is
   // rendered from the instance (public id) and the durable marker sits on the
   // public-id record, while an inactive row comes off its transcript (backing id).
@@ -507,7 +506,7 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   const condBacking = condInst.backingSessionId;
 
   // Non-conducted session: spawned via the browser / HTTP path.
-  const httpRes = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const httpRes = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions', persistent: true });
   assert.equal(httpRes.body.conducted, false, 'HTTP-spawned summary carries conducted:false');
   const httpInst = instances.get(httpRes.body.id);
   await waitFor(() => httpInst.status === 'idle' && httpInst.sessionId);
@@ -562,47 +561,46 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
     'conducted marker persists after the instance exits');
 });
 
-test('temp conducted session persists the conducted marker and recovers it on resume', async () => {
-  // A default MCP-spawned worker is BOTH temp:true and conducted:true. The
-  // durable conducted marker must be written DESPITE temp (at spawn, and
-  // re-asserted in _writeSessionMetadata before its `if (this.temp) return;`)
-  // — otherwise an orchestrator SIGKILL (where the on-exit _archiveTempSession
-  // never runs, so the jsonl + store facts survive) leaves nothing for
-  // create() to recover and the session resumes with conducted falsy. This
-  // exercises both halves: the durable WRITE (a live temp+conducted turn) and
-  // the RECOVERY (create({resume}) reading the store).
-  const { isConducted, markConducted, isTemp, setSegmentTemp } = await import('../src/sessionStore.ts');
+test('a normal conducted session persists the conducted marker and recovers it on resume', async () => {
+  // A default MCP-spawned worker is normal and conducted:true. The durable
+  // conducted marker must be written DESPITE it being normal (at spawn, and
+  // re-asserted in _writeSessionMetadata before its normal-session early
+  // return) — otherwise an orchestrator SIGKILL (where the on-exit
+  // _archiveSession never runs, so the jsonl + store facts survive) leaves
+  // nothing for create() to recover and the session resumes with conducted
+  // falsy. This exercises both halves: the durable WRITE (a live normal
+  // conducted turn) and the RECOVERY (create({resume}) reading the store).
+  const { isConducted, markConducted, isPersistent } = await import('../src/sessionStore.ts');
   const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   // --- WRITE side (the fix) ---
-  // Spawn with MCP defaults: temp:true + conducted:true (the buggy combo).
+  // Spawn with MCP defaults: normal + conducted:true.
   const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
   assert.equal(spawn.conducted, true, 'MCP spawn defaults to conducted:true');
-  assert.equal(spawn.temp, true, 'MCP spawn defaults to temp:true');
+  assert.equal(spawn.persistent, false, 'MCP spawn is a normal session');
   const inst = instForSession(instances, spawn.sessionId);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
   const sid = inst.sessionId;               // conducted is a session fact
-  const backing = inst.backingSessionId;   // temp is a transcript (segment) fact
+  const backing = inst.backingSessionId;   // persistent is a transcript (segment) fact
 
-  // Drive a turn so _writeSessionMetadata() runs. Both durable markers must
-  // be in place even though the session is temp. Each is its own store write,
-  // kicked at spawn (awaited by launch()) and re-asserted at turn end; the poll
-  // below reads both back, as a guard that costs nothing once they have landed.
+  // Drive a turn so _writeSessionMetadata() runs. The conducted marker must
+  // be in place even though the session is normal. It is kicked at spawn
+  // (awaited by launch()) and re-asserted at turn end; the poll below reads it
+  // back, as a guard that costs nothing once it has landed.
   await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go' }));
-  await waitFor(async () => (await isConducted(sid)) && (await isTemp(backing)));
-  assert.equal(await isConducted(sid), true, 'conducted marker persisted for a temp session');
-  assert.equal(await isTemp(backing), true, 'temp marker persisted on the live segment');
+  await waitFor(async () => isConducted(sid));
+  assert.equal(await isConducted(sid), true, 'conducted marker persisted for a normal session');
+  assert.equal(await isPersistent(backing), false, 'no persistent marker on a normal session\'s segment');
 
   // --- RECOVERY side ---
   // Simulate the post-orchestrator-SIGKILL state directly: the jsonl and
   // both store markers survived because _handleExit never ran. (We can't
   // reproduce that by killing the live child here — _handleExit WOULD fire
-  // and retire the segment.) Resuming by id, with NO temp/conducted passed,
-  // must re-acquire BOTH flags from the store.
+  // and retire the segment.) Resuming by id, with NO persistent/conducted
+  // passed, must re-acquire conducted from the store and stay normal.
   const survivedSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   assert.equal(await markConducted(survivedSid), true, 'precondition: conducted recorded');
-  assert.equal(await setSegmentTemp(survivedSid, true), true, 'precondition: temp recorded');
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${survivedSid}.jsonl`),
@@ -610,7 +608,7 @@ test('temp conducted session persists the conducted marker and recovers it on re
 
   const recovered = await instances.create({ project: 'a', resume: survivedSid });
   assert.equal(recovered.conducted, true, 'conducted recovered on resume from the store');
-  assert.equal(recovered.temp, true, 'temp recovered on resume from the store');
+  assert.equal(recovered.persistent, false, 'a normal session resumes normal');
 });
 
 test('argument validation rejects a missing required field via isError', async () => {
@@ -688,12 +686,12 @@ test('describe_session renders a LIVE worker as the same block list_sessions pri
 });
 
 test('describe_session describes a RETIRED session and carries no runtime fields', async () => {
-  // A non-temp worker: killing it leaves a dead instance in byId (never
+  // A persistent worker: killing it leaves a dead instance in byId (never
   // archived), so this covers the retired branch WITHOUT the archived flag —
   // and proves the isDeadStatus split, since a dead byId row must not render as
   // a live worker.
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
-  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions', persistent: true });
   assert.equal(created.status, 201);
   const inst = instances.get(created.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -701,7 +699,7 @@ test('describe_session describes a RETIRED session and carries no runtime fields
   await seedSessionJsonl(localPlace(path.join(projectsRoot, 'a')), inst.backingSessionId);
   // Kill the SUBPROCESS, not the registration: both `kill_instance` and
   // DELETE /api/instances/:id call instances.remove(), and what this test needs
-  // is the dead row a non-temp exit RETAINS in byId.
+  // is the dead row a persistent exit RETAINS in byId.
   await inst.kill({ graceMs: 200 });
   await waitFor(() => isDeadStatus(inst.status));
   assert.ok(instances.idsForSession(sid).length > 0, 'precondition: the dead instance is still in byId');
@@ -715,17 +713,17 @@ test('describe_session describes a RETIRED session and carries no runtime fields
   for (const f of ['mode ', 'effort ', 'model ', 'status ', 'display ']) {
     assert.ok(!out.includes(f), `a retired session has no process to read '${f.trim()}' off`);
   }
-  assert.ok(!out.includes('archived'), 'a non-temp kill archives nothing');
+  assert.ok(!out.includes('archived'), 'a persistent kill archives nothing');
 });
 
 test('describe_session never calls a session the orchestrator still holds UNKNOWN', async () => {
-  // A non-temp worker is RETAINED in byId after it exits. If its transcript
+  // A persistent worker is RETAINED in byId after it exits. If its transcript
   // never landed, steps 3 and 4 of the ladder both come up empty — and
   // SESSION_UNKNOWN there would deny a session the orchestrator is looking at.
   // Same fixture as the retired test, minus the seeded jsonl, which is the one
   // variable.
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
-  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions', persistent: true });
   const inst = instances.get(created.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
   const sid = inst.sessionId;
@@ -744,7 +742,7 @@ test('describe_session never calls a session the orchestrator still holds UNKNOW
 });
 
 test('describe_session still describes an ARCHIVED session', async () => {
-  // A killed TEMP worker is archived on exit and dropped from byId, so this is
+  // A killed NORMAL worker is archived on exit and dropped from byId, so this is
   // the includeArchived:true at ladder step 3: without it the row is invisible
   // and the tool would refuse a session it can see.
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
@@ -755,7 +753,7 @@ test('describe_session still describes an ARCHIVED session', async () => {
   const backingId = instForSession(instances, sid).backingSessionId;
   unwrap(await callTool(baseUrl, 'kill_instance', { sessionId: sid }));
   await waitFor(() => instances.idsForSession(sid).length === 0);
-  // _archiveTempSession is fire-and-forget off the exit path.
+  // _archiveSession is fire-and-forget off the exit path.
   const { isArchived } = await import('../src/sessionStore.ts');
   await waitFor(() => isArchived(backingId));
 
@@ -825,7 +823,7 @@ test('an orphaned transcript outranks the retained-in-byId refusal', async () =>
   // pure reorder that no test can see.
   const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
-  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: 'a', mode: 'bypassPermissions' });
   const inst = instances.get(created.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
   const sid = inst.sessionId;
@@ -1487,13 +1485,12 @@ test('project_read scoped to a worktree reads from the worktree root, not the pa
   assert.equal(fromParent.content, 'parent\n');
 });
 
-// ---------- spawn_instance temp/mode defaults ----------
+// ---------- spawn_instance persistence/mode defaults ----------
 //
-// The MCP spawn path defaults temp:true (archived-on-exit conducted worker,
-// transcript retained and resumable) and gets mode plan automatically —
-// create() is policy-light and never couples temp to mode. The
-// temp⇒bypassPermissions shortcut lives only at the REST route
-// POST /api/instances (covered by instances.test.mjs).
+// The MCP spawn path spawns a normal session (archived-on-exit conducted
+// worker, transcript retained and resumable) and gets mode plan
+// automatically — create() is policy-light and never couples persistence to
+// mode.
 
 async function spawnIdle(args) {
   const summary = unwrap(await callTool(baseUrl, 'spawn_instance', args));
@@ -1501,14 +1498,14 @@ async function spawnIdle(args) {
   return summary;
 }
 
-test('spawn_instance defaults to temp:true with mode still plan (coupling broken)', async () => {
+test('spawn_instance spawns a normal session with mode still plan', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle({ project: 'demo' });
-    assert.equal(summary.temp, true, 'temp defaults to true for MCP spawns');
-    assert.equal(summary.mode, 'plan', 'mode stays plan despite temp:true');
+    assert.equal(summary.persistent, false, 'an MCP spawn is a normal session');
+    assert.equal(summary.mode, 'plan', 'mode stays plan');
     assert.equal(summary.conducted, true);
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
@@ -1516,13 +1513,13 @@ test('spawn_instance defaults to temp:true with mode still plan (coupling broken
   }
 });
 
-test('spawn_instance explicit mode wins over the temp default', async () => {
+test('spawn_instance explicit mode wins, and the session is still normal', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
-    assert.equal(summary.temp, true, 'temp still defaults to true');
+    assert.equal(summary.persistent, false, 'still a normal session');
     assert.equal(summary.mode, 'bypassPermissions', 'explicit mode wins');
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
@@ -1838,18 +1835,18 @@ test('send_prompt on an unknown sessionId soft-refuses SESSION_UNKNOWN', async (
   assert.equal(res.code, 'SESSION_UNKNOWN');
 });
 
-test('send_prompt on an exited non-temp session soft-refuses SESSION_NOT_LIVE and never auto-respawns', async () => {
+test('send_prompt on an exited persistent session soft-refuses SESSION_NOT_LIVE and never auto-respawns', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
     await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
-    // Promote so the instance is retained in byId after its subprocess exits.
-    await instForSession(instances, spawn.sessionId).promoteToNormal();
+    // Make it persistent so the instance is retained in byId after its subprocess exits.
+    await instForSession(instances, spawn.sessionId).makePersistent();
     const countBefore = instances.idsForSession(spawn.sessionId).length;
 
-    // Kill the subprocess directly (NOT instances.remove) so the non-temp
+    // Kill the subprocess directly (NOT instances.remove) so the persistent
     // instance stays in byId but loses its proc → strict-live should refuse.
     await instForSession(instances, spawn.sessionId).kill({ graceMs: 200 });
     await waitFor(() => !instForSession(instances, spawn.sessionId)?.proc);
@@ -1878,12 +1875,12 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
     const { encodeCwd } = await import('../src/projects.ts');
     await makeRealRepo(projectsRoot, 'demo');
 
-    // Spawn into a fresh worktree, then promote to a persistent (non-temp) session.
+    // Spawn into a fresh worktree, then make it a persistent session.
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'demo', mode: 'bypassPermissions', createWorktree: true,
     }));
     await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
-    await instForSession(instances, spawn.sessionId).promoteToNormal();
+    await instForSession(instances, spawn.sessionId).makePersistent();
     const sessionId = spawn.sessionId;
     const worktreeName = spawn.worktree.worktreeName;
     const branch = spawn.worktree.branch;
@@ -1924,7 +1921,7 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
     assert.ok(resumeSpawn.worktree, 'resumed instance must carry worktree metadata');
     assert.equal(resumeSpawn.worktree.worktreeName, worktreeName);
     assert.equal(resumeSpawn.worktree.branch, branch);
-    assert.equal(resumeSpawn.temp, false, 'resume must not silently force a persistent session to temp:true');
+    assert.equal(resumeSpawn.persistent, true, 'a persistent session resumes persistent, archived by its kill or not');
 
     // The whole point: prior history must actually be found and replayed —
     // not merely that the cwd/worktree fields look right. history_replayed
@@ -1945,29 +1942,55 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
   }
 });
 
-test('spawn_instance({resume}) recovers temp:true from the durable store after a SIGKILL-survived exit', async () => {
-  // A graceful kill_instance runs _handleExit → _archiveTempSession(), which
-  // retires the segment (the session becomes an archived-but-resumable
-  // regular session) — that's correct behavior, not this scenario. The
-  // scenario this test guards is the *other* one the segment's temp flag
-  // exists for: an orchestrator SIGKILL where _handleExit never runs, so the
-  // jsonl and the durable temp flag both survive with no in-memory record.
-  // Resuming that session must recover temp:true from the store — not get
-  // silently forced true by a blanket default, and not silently dropped to
-  // false either.
-  const { setSegmentTemp } = await import('../src/sessionStore.ts');
+test('spawn_instance({resume}) recovers persistent from the durable store after a SIGKILL-survived exit', async () => {
+  // The segment's persistent flag is what a resume reads the session's kind
+  // from: an orchestrator SIGKILL leaves the jsonl and the durable flag with
+  // no in-memory record. Resuming that session must recover persistent from
+  // the store — spawn_instance has no persistence argument to pass.
+  const { setSegmentPersistent } = await import('../src/sessionStore.ts');
   const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   const survivedSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-  assert.equal(await setSegmentTemp(survivedSid, true), true, 'precondition: temp recorded');
+  assert.equal(await setSegmentPersistent(survivedSid, true), true, 'precondition: persistent recorded');
   const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'a')));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${survivedSid}.jsonl`),
     '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
 
   const resumeSpawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', resume: survivedSid }));
-  assert.equal(resumeSpawn.temp, true, 'temp recovered from the durable store on resume, not forced or dropped');
+  assert.equal(resumeSpawn.persistent, true, 'persistent recovered from the durable store on resume');
+});
+
+test('spawn_instance({resume}) of an id with no store record comes up normal', async () => {
+  // A `claude` session run by hand outside cc has a transcript and no record.
+  const { encodeCwd } = await import('../src/projects.ts');
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const handSid = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+  const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'a')));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${handSid}.jsonl`),
+    '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
+
+  const resumeSpawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', resume: handSid }));
+  assert.equal(resumeSpawn.persistent, false, 'an unrecorded session resumes as a normal session');
+});
+
+test('spawn_instance({resume}) of an exited worker brings it back normal', async () => {
+  // The worker's exit archives it, and archiving leaves the session's kind
+  // alone: a normal worker comes back normal.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+  const sid = spawn.sessionId;
+  await waitFor(() => instForSession(instances, sid)?.status === 'idle');
+  const backingId = instForSession(instances, sid).backingSessionId;
+  await seedSessionJsonl(localPlace(path.join(projectsRoot, 'a')), backingId);
+  unwrap(await callTool(baseUrl, 'kill_instance', { sessionId: sid }));
+  const { isArchived } = await import('../src/sessionStore.ts');
+  await waitFor(() => isArchived(backingId));
+
+  const resumeSpawn = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: sid }));
+  assert.equal(resumeSpawn.persistent, false, 'an exited normal worker resumes normal');
 });
 
 

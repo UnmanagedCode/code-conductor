@@ -25,8 +25,8 @@
 // boolean that can disagree with it.
 //
 // ROTATION, one path for all three mechanisms: recordRotation appends the new
-// segment — which inherits its predecessor's `temp` in the same write — and
-// retireSegment then archives the old segment (temp off, archived on). Session
+// segment — which inherits its predecessor's `persistent` in the same write —
+// and retireSegment then archives the old segment (`persistent` untouched). Session
 // facts are keyed by the public id, so a rotation never touches them. Two
 // writers take segments back off the end: revertRotation (a prune's rollback)
 // and undoRenewal (a rewind across the latest renewal).
@@ -112,8 +112,8 @@ export function mintPublicId(firstBackingId: string): Promise<string> {
 }
 
 // Append `backingId` as the newest segment and advance `current`. The new
-// segment inherits its predecessor's `temp` flag in the same write, so a temp
-// session never has a window where its live transcript reads as persistent.
+// segment inherits its predecessor's `persistent` flag in the same write, so a
+// persistent session never has a window where its live transcript reads as normal.
 //
 // Creates the record LAZILY for a previously record-less session: for such a
 // session the public id IS its first backing id (the base case), so promoting it
@@ -131,7 +131,7 @@ export function recordRotation(publicId: string, backingId: string, reason: Rota
     const rec = doc.get(publicId) ?? { current: publicId, segments: [{ id: publicId, reason: 'initial' as RotationReason, at }] };
     if (done(rec)) return unchanged;
     const predecessor = rec.segments.find(s => s.id === rec.current && !s.dropped);
-    rec.segments.push({ id: backingId, reason, at, ...(predecessor?.temp ? { temp: true as const } : {}) });
+    rec.segments.push({ id: backingId, reason, at, ...(predecessor?.persistent ? { persistent: true as const } : {}) });
     rec.current = backingId;
     doc.set(publicId, rec);
     return wrote;
@@ -139,11 +139,12 @@ export function recordRotation(publicId: string, backingId: string, reason: Rota
 }
 
 function retired(seg: Segment): boolean {
-  return seg.archived === true && seg.temp !== true;
+  return seg.archived === true;
 }
 
-// Retire transcripts no process will write again: temp off, archived on, in ONE
-// mutation however many ids. A dropped segment is left alone, and a segment
+// Retire transcripts no process will write again: archived on, in ONE mutation
+// however many ids. `persistent` is the session's kind, not a state, so it is
+// left alone: a restored session resumes as what it was. A dropped segment is left alone, and a segment
 // write naming an `owner` that lacks the segment is refused (sessionStore's
 // ensureSegment). Reachable from kicked writes, so it never awaits the barrier.
 export function retireSegments(backingIds: string[], { owner }: { owner?: string | null } = {}): Promise<void> {
@@ -162,7 +163,6 @@ export function retireSegments(backingIds: string[], { owner }: { owner?: string
         continue;
       }
       if (retired(hit.segment)) continue;
-      delete hit.segment.temp;
       hit.segment.archived = true;
       changed = true;
     }
@@ -203,14 +203,14 @@ export const RENEWAL_MOVED = 'RENEWAL_MOVED';
 // Undo a renewal: SPLICE the post run (`post`, the chain entries after `pre`,
 // tombstones included) out of the record — not tombstoned, since a tombstone
 // would make the lineage walk draw a seam and a gap for a segment that is no
-// longer in this lineage — un-archive `pre`, give it `temp` back when `temp`,
+// longer in this lineage — un-archive `pre`, set its `persistent` to `persistent`,
 // and point `current` at it. Refuses RENEWAL_MOVED (409) unless the chain ends
 // exactly in `pre` (live) followed by `post`, with `current` the post run's last
 // entry and the newest live segment. A no-op once applied: `current` is `pre`
 // and no `post` id is present.
 //
 // Only caller: Instance.rewindAcrossRenewal, which deletes the post run's files.
-export function undoRenewal(publicId: string, { pre, post, temp }: { pre: string; post: string[]; temp: boolean }): Promise<void> {
+export function undoRenewal(publicId: string, { pre, post, persistent }: { pre: string; post: string[]; persistent: boolean }): Promise<void> {
   const applied = (rec: SessionRecord | undefined): boolean =>
     rec?.current === pre && !rec.segments.some(s => post.includes(s.id));
   return mutateSessions('undoRenewal', pre, (doc) => {
@@ -227,7 +227,7 @@ export function undoRenewal(publicId: string, { pre, post, temp }: { pre: string
     const preSeg = rec.segments[at];
     rec.segments = rec.segments.slice(0, at + 1);
     delete preSeg.archived;
-    if (temp) preSeg.temp = true; else delete preSeg.temp;
+    if (persistent) preSeg.persistent = true; else delete preSeg.persistent;
     rec.current = pre;
     return wrote;
   }, (doc) => (applied(doc.get(publicId)) ? { value: undefined } : null));
@@ -268,7 +268,7 @@ export async function chainFor(publicId: string): Promise<LineageSegment[]> {
   return (await loadLineage()).byPublic.get(publicId)?.segments ?? [];
 }
 
-// Tombstone `backingId` in whichever record owns it, clearing its temp/archived
+// Tombstone `backingId` in whichever record owns it, clearing its persistent/archived
 // flags. If it was `current`, `current` falls back to the newest live segment;
 // the record — and every session fact on it — is deleted once none is left. An
 // already-tombstoned id is a no-op with no write.
@@ -276,7 +276,7 @@ export async function chainFor(publicId: string): Promise<LineageSegment[]> {
 // `unlessLast`: do nothing when this is the record's LAST live segment. Every
 // caller but the explicit session delete passes it — a respawn of a session
 // killed before its first turn finds no transcript, and must not take the
-// session's temp/title/mode with it.
+// session's kind, title and mode with it.
 export function dropSegment(backingId: string, { unlessLast = false }: { unlessLast?: boolean } = {}): Promise<void> {
   if (!backingId) return Promise.resolve();
   return mutateSessions('dropSegment', backingId, (doc) => {
@@ -295,7 +295,7 @@ export function dropSegment(backingId: string, { unlessLast = false }: { unlessL
       return wrote;
     }
     entry.dropped = true;
-    delete entry.temp;
+    delete entry.persistent;
     delete entry.archived;
     if (rec.current === backingId) rec.current = (rest.at(-1) as Segment).id;
     return wrote;

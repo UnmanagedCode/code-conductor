@@ -702,7 +702,7 @@ describe('T1: two remotes at one absolute path', () => {
   });
 
   // PINS THE EXCLUSION-SET KEYING. `liveBackingIdsForPlace` /
-  // `tempSessionIdsForPlace` feed the on-disk session walk its exclusion set,
+  // `normalSessionIdsForPlace` feed the on-disk session walk its exclusion set,
   // and they used to match on a bare `i.cwd === cwd`. That no longer keys a
   // directory: a live worker on remote B at the shared path would be excluded
   // from remote A's listing — dropping a real row — while the walk itself read

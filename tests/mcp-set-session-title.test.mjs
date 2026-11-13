@@ -43,7 +43,7 @@ async function callTool(baseUrl, name, args, opts) {
 }
 
 async function spawnIdle(srv, project) {
-  const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+  const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions' });
   assert.equal(spawn.status, 201);
   const sid = spawn.body.sessionId;
   await waitFor(() => instForSession(srv.instances, sid)?.status === 'idle');

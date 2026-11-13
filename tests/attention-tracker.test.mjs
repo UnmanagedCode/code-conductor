@@ -71,13 +71,13 @@ test('a conducted worker never notifies, whatever its counters do', () => {
   assert.deepEqual(out, []);
 });
 
-test('a hand-spawned session notifies, temp and worktree ones included, and a running one is tracked', () => {
+test('a hand-spawned session notifies, normal and worktree ones included, and a running one is tracked', () => {
   const t = seen([
-    hand('T', { status: 'turn', temp: true }),
+    hand('T', { status: 'turn' }),
     hand('G', { status: 'turn', worktree: { worktreeName: 'wt' } }),
   ]);
   const out = t.observe([
-    hand('T', { temp: true, liveTurnEnds: 1 }),
+    hand('T', { liveTurnEnds: 1 }),
     hand('G', { worktree: { worktreeName: 'wt' }, liveTurnEnds: 1 }),
   ]);
   assert.deepEqual(kinds(out).sort(), ['finished:G', 'finished:T']);

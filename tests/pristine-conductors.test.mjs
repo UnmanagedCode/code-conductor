@@ -97,7 +97,7 @@ describe('pristine conductors', () => {
   /** A conductor from New conductor's POST (`pristine: true`), idle, with its store record written. */
   async function conductor({ pristine = true } = {}) {
     const res = await api(baseUrl, 'POST', '/api/instances',
-      { project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', ...(pristine ? { pristine: true } : {}) });
+      { project: '.conduct', role: 'conductor', mode: 'bypassPermissions', ...(pristine ? { pristine: true } : {}) });
     assert.equal(res.status, 201, JSON.stringify(res.body));
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -141,12 +141,15 @@ describe('pristine conductors', () => {
       'describe_session does not render P as live');
   });
 
-  test('N2: the route refuses `pristine` off a fresh .conduct temp spawn', async () => {
+  test('N2: the route refuses `pristine` off a fresh normal .conduct spawn', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const other = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true, pristine: true });
+    const other = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', pristine: true });
     assert.equal(other.status, 400, JSON.stringify(other.body));
     assert.equal(other.body.code, 'PRISTINE_NOT_FRESH_CONDUCTOR');
-    const resumed = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, resume: 'deadbeef', pristine: true });
+    const persistent = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', persistent: true, pristine: true });
+    assert.equal(persistent.status, 400, JSON.stringify(persistent.body));
+    assert.equal(persistent.body.code, 'PRISTINE_NOT_FRESH_CONDUCTOR');
+    const resumed = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', resume: 'deadbeef', pristine: true });
     assert.equal(resumed.status, 400, JSON.stringify(resumed.body));
     assert.equal(resumed.body.code, 'PRISTINE_NOT_FRESH_CONDUCTOR');
   });
@@ -164,11 +167,11 @@ describe('pristine conductors', () => {
 
   test('N3b: a dead pristine conductor outside any relaunch window does not resolve', async () => {
     const P = await conductor();
-    const promoted = await api(baseUrl, 'POST', `/api/instances/${P.id}/promote`);
-    assert.equal(promoted.status, 200, JSON.stringify(promoted.body));
+    const persisted = await api(baseUrl, 'POST', `/api/instances/${P.id}/persist`);
+    assert.equal(persisted.status, 200, JSON.stringify(persisted.body));
     await P.inst.kill();
     await waitFor(() => P.inst.status === 'exited' || P.inst.status === 'crashed');
-    assert.equal(instances.get(P.id), P.inst, 'fixture check: the promoted instance stays in the manager');
+    assert.equal(instances.get(P.id), P.inst, 'fixture check: the persisted instance stays in the manager');
     assert.equal(P.inst.pristine, true, 'fixture check: still pristine');
     assert.equal(P.inst.relaunching, false, 'fixture check: not relaunching');
     const p = await api(baseUrl, 'GET', `/api/sessions/${P.sid}/pristine`);
@@ -473,7 +476,7 @@ describe('N14: orchestrator teardown of a hidden pristine conductor', () => {
     const ctx = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
     try {
       const res = await api(ctx.baseUrl, 'POST', '/api/instances',
-        { project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true });
+        { project: '.conduct', role: 'conductor', mode: 'bypassPermissions', pristine: true });
       assert.equal(res.status, 201, JSON.stringify(res.body));
       const inst = ctx.instances.get(res.body.id);
       await waitFor(() => inst.status === 'idle' && inst.sessionId && inst.pid);

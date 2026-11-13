@@ -79,7 +79,7 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
-  isConducted, markConducted, setSessionPlace, isTemp, setSegmentTemp, getTurnMarks, recordTurnEnd, errCode,
+  isConducted, markConducted, setSessionPlace, isPersistent, setSegmentPersistent, getTurnMarks, recordTurnEnd, errCode,
   appendModelSwitch, reanchorModelSwitches, getModelSwitchesForSegment,
   type SessionBackendRecord, type TurnMarks, type ModelSwitchEntry,
 } from './sessionStore.ts';
@@ -237,7 +237,7 @@ interface InstanceConstructorInput {
   mcpServerUrl?: string | null;
   conductorUrl?: string | null;
   worktree?: WorktreeMeta | null;
-  temp?: boolean;
+  persistent?: boolean;
   pristine?: boolean;
   conducted?: boolean;
   callerInstanceId?: string | null;
@@ -391,7 +391,7 @@ export function softInterruptDeadlineMs(): number {
 // on two MCP surfaces that MUST agree — list_projects' `live N`
 // (liveCountForProject) and whether a worker lands in list_sessions' live rows
 // (src/mcp/handlers.ts) — and a second spelling of the rule is how they would
-// drift apart. A dead instance retained in byId (non-temp exits are kept
+// drift apart. A dead instance retained in byId (persistent exits are kept
 // indefinitely, so respawn can resume them) is NOT a live worker.
 // The default event-log actor: nothing a person or a conductor asked for.
 const SYSTEM_ACTOR: Actor = Object.freeze({ type: 'system' });
@@ -757,7 +757,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // local one. Compared on every relaunch; see attachRedirect and launch().
   _mirrorScope: MirrorScope | null;
   worktree: (WorktreeMeta & { postWorktreeCreate?: unknown }) | null;
-  temp: boolean;
+  persistent: boolean;
   // A conductor from New conductor that has had no prompt yet (src/pristine.ts).
   // In memory only: a restart never carries one.
   pristine: boolean;
@@ -929,7 +929,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   pendingPrefill: string | null;
   _drainTimer: NodeJS.Timeout | null;
   _drainListener: ((ev: UiEvent) => void) | null;
-  _suppressTempDelete: boolean;
+  _exitSuppressed: boolean;
   _killing: boolean;
   // Set when a commanded stop interrupted a busy turn: that turn's turn_end is
   // not a turn finishing. Reset on every spawn().
@@ -990,7 +990,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, conductorUrl = null, worktree = null, temp = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootSessionId = null, debug = false, claudePluginDirs = [], conventionSkillsDir = null, launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, transcriptPlace, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, conductorUrl = null, worktree = null, persistent = false, pristine = false, conducted = false, callerInstanceId = null, parentSessionId = null, rootSessionId = null, debug = false, claudePluginDirs = [], conventionSkillsDir = null, launcher = defaultClaudeLauncher, platform = hostPlatform }: InstanceConstructorInput) {
     super();
     this.id = id;
     this._platform = platform;
@@ -1046,17 +1046,17 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (parentProject, worktreeName, worktreePath, branch, baseBranch,
     // baseSha) so the UI can show a chip and the rebase/ff buttons.
     this.worktree = worktree;
-    // When true, the session jsonl + sibling subagents/ directory are
-    // deleted from ~/.claude/projects/<encoded-cwd>/ on subprocess exit,
-    // and the orchestrator skips its last-prompt / permission-mode
-    // metadata appends during the run.
-    this.temp = !!temp;
+    // When false (a normal session), the session is archived on subprocess
+    // exit — the jsonl is kept, the sibling subagents/ directory deleted —
+    // and the orchestrator skips its last-prompt / permission-mode metadata
+    // appends during the run. When true it stays listed and resumable.
+    this.persistent = !!persistent;
     this.pristine = !!pristine;
     this.draftTitle = null;
     // When true, this session was spawned via the MCP `spawn_instance`
     // tool (orchestrator-driven) — a *conducted* worker, as opposed to a
     // session from the browser UI / HTTP spawn path. Orthogonal to
-    // `temp`. Persisted durably as the session's `conducted` fact in the
+    // `persistent`. Persisted durably as the session's `conducted` fact in the
     // session store at spawn (see spawn), so it survives exit / restart /
     // --resume; the sidebar groups these in its Conducted group.
     // A marker + display axis; its one behavioural divergence is
@@ -1186,8 +1186,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._planFiles = new PlanFileTracker(); // binds a ~/.claude/plans/*.md Write to an ExitPlanMode
     // Cached first user-prompt head (firstPromptHead, the same rule as
     // readFirstPrompt in projects.ts). Surfaced via summary() so the sidebar
-    // can label a live temp session's row — temp rows don't read the jsonl, so
-    // without this they'd stay as "(new session)" forever.
+    // can label a live normal session's row — those rows don't read the jsonl,
+    // so without this they'd stay as "(new session)" forever.
     this.firstPrompt = null;
     // Custom human-readable label set via the ⋮ menu's Rename session
     // action. When set, the sidebar + header render this in place of the
@@ -1253,9 +1253,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._drainTimer = null;
     this._drainListener = null;
     // Set true by the resume-restart path before SIGKILL so _handleExit
-    // skips _archiveTempSession() — the temp jsonl must survive to be
-    // resumed on the next boot. Never persisted.
-    this._suppressTempDelete = false;
+    // skips _archiveSession() — a normal session must stay unarchived to be
+    // resumed on the next boot — and by the relaunch window. Never persisted.
+    this._exitSuppressed = false;
     // Set true at the top of kill() so _handleExit can tell a COMMANDED
     // teardown (user kill, project delete, shutdown, rewind — all route
     // through kill()) from a spontaneous crash, and not mislabel the former
@@ -1507,7 +1507,7 @@ export class Instance extends EventEmitter implements InstanceLike {
             postWorktreeCreate: this.worktree.postWorktreeCreate ?? null,
           }
         : null,
-      temp: this.temp,
+      persistent: this.persistent,
       pristine: this.pristine,
       conducted: this.conducted,
       callerInstanceId: this.callerInstanceId,
@@ -1770,7 +1770,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         effort: this.effort,
         thinking: this.thinking,
         model: this.model,
-        temp: this.temp,
+        persistent: this.persistent,
         worktree: this.worktree,
         spawnedAt: new Date().toISOString(),
         cliArgs: args,
@@ -2299,7 +2299,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the sole caller of spawn(), so this covers every fresh-spawn entry point.
     //
     // The contract at the other end: launch() resolves only after the spawn-time
-    // facts (temp, backend, conducted, mode) are durable or have failed and been
+    // facts (persistent, backend, conducted, mode) are durable or have failed and been
     // logged by the store — never rejecting for them — so every awaited caller
     // (create, rewind, respawn, prune, restart-resume) can read them back. Each
     // write spawn() kicks (up to four) reaches the store lock independently and
@@ -2542,7 +2542,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // The durable half of a `/clear` rotation, typed or managed, as ONE kicked
-  // item: record the new segment (inheriting temp), then archive the old one.
+  // item: record the new segment (inheriting persistent), then archive the old one.
   _rotationWrite(publicId: string, newBacking: string, oldBacking: string | null): () => Promise<void> {
     return async () => {
       await recordRotation(publicId, newBacking, 'renew');
@@ -2551,7 +2551,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // The process starts synchronously. The returned promise settles once the
-  // spawn-time store facts (temp, backend, conducted, mode) are durable or have
+  // spawn-time store facts (persistent, backend, conducted, mode) are durable or have
   // failed — it never rejects, a failed write being logged by the store and
   // re-asserted at the next turn end. launch() awaits it.
   spawn({ resume }: { resume?: string } = {}): Promise<void> {
@@ -2649,7 +2649,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw new Error('spawn(): no backing session id — launch() must mint or resolve one first');
     }
     // Everything downstream of here — the `--resume`/`--session-id` argv below
-    // and the segment's temp flag — is a backing-id consumer. One
+    // and the segment's persistent flag — is a backing-id consumer. One
     // assertion at the capture point covers all of them.
     assertBackingId(backingId, 'Instance.spawn');
     // The fill seam. Every launch() caller runs on a ring with no seams (a new
@@ -2663,10 +2663,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // always present, enqueued last of the session-level writes — landing implies
     // the backend and conducted writes ahead of it have landed.
     const writes: Array<Promise<unknown>> = [];
-    // Persist the temp flag on this transcript's segment at spawn time so it
-    // survives a SIGKILL that happens before the first turn_end (where
+    // Persist the persistent flag on this transcript's segment at spawn time so
+    // it survives a SIGKILL that happens before the first turn_end (where
     // _writeSessionMetadata also sets it).
-    if (this.temp) writes.push(setSegmentTemp(backingId, true, { owner: this.sessionId }));
+    if (this.persistent) writes.push(setSegmentPersistent(backingId, true, { owner: this.sessionId }));
     // Persist the backend id + exact model durably (the things jsonl can't carry
     // — which backend ran it, and the full model id the inner CLI reports
     // lossily) so every resume path re-acquires them. The record mirrors the
@@ -2688,7 +2688,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.conducted) {
       writes.push(markConducted(this.sessionId, { parent: this.parentSessionId }));
     }
-    // Same reason as the temp flag: this is the first point a fresh spawn has
+    // Same reason as the persistent flag: this is the first point a fresh spawn has
     // a sessionId to key the mode record on (the constructor runs before the id
     // exists). Every later mode change goes through _recordMode, which stays
     // fire-and-forget; here the promise is collected.
@@ -3074,7 +3074,7 @@ export class Instance extends EventEmitter implements InstanceLike {
           // is the whole point of the public id.
           //
           // A typed `/clear` and a managed renew take this same path: the kicked
-          // item records the new segment (which inherits temp) and archives the
+          // item records the new segment (which inherits persistent) and archives the
           // pre-clear one. Session facts — title, mode, backend, conducted — are
           // keyed by the public id, so there is nothing to carry.
           const publicId = this.sessionId;
@@ -3438,21 +3438,21 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   async _writeSessionMetadata(): Promise<void> {
-    // Re-assert the durable temp + conducted flags BEFORE the temp early
-    // return, so a temp session that survives SIGKILL recovers BOTH on respawn
-    // (InstanceManager.create() OR-recovers them via isTemp/isConducted). In
-    // steady state both are no-ops that cost a stat each (the store's
-    // precheck); they self-heal a spawn-time write that failed. The
-    // last-prompt / permission-mode write below stays after the early return —
-    // it exists only to surface a session in the shell-side `claude --resume`
-    // picker, which temp sessions must not appear in.
-    if (this.temp && this.backingSessionId) {
-      try { await setSegmentTemp(this.backingSessionId, true, { owner: this.sessionId }); } catch { /* best effort */ }
+    // Re-assert the durable persistent + conducted flags BEFORE the normal
+    // session's early return, so a session that survives SIGKILL recovers BOTH
+    // on respawn (InstanceManager.create() OR-recovers them via
+    // isPersistent/isConducted). In steady state both are no-ops that cost a
+    // stat each (the store's precheck); they self-heal a spawn-time write that
+    // failed. The last-prompt / permission-mode write below stays after the
+    // early return — it exists only to surface a session in the shell-side
+    // `claude --resume` picker, which normal sessions must not appear in.
+    if (this.persistent && this.backingSessionId) {
+      try { await setSegmentPersistent(this.backingSessionId, true, { owner: this.sessionId }); } catch { /* best effort */ }
     }
     if (this.conducted && this.sessionId) {
       try { await markConducted(this.sessionId); } catch { /* best effort */ }
     }
-    if (this.temp) return;
+    if (!this.persistent) return;
     if (!this.backingSessionId || !this._lastLeafUuid) return;
     try {
       await writeSessionMetadata({
@@ -3480,7 +3480,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // carrying the captured stderr where there is any. Plain claude exits and
     // clean/commanded wrapper exits are untouched.
     if (crashed && this.backend !== CLAUDE_BACKEND_ID
-        && !this._killing && !this._suppressTempDelete) {
+        && !this._killing && !this._exitSuppressed) {
       this._emitUi({
         kind: 'system', subtype: 'launch_failed',
         data: { code, signal, stderr: this._stderr.trim() || null },
@@ -3492,11 +3492,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Emitted HERE, not on the status transition: a spawn that never started was
     // already marked crashed by the 'error' handler, so no transition follows. And
     // BEFORE _setStatus, so the manager records it and wakes the owners before a
-    // temp worker's drop takes its armed wakes with it.
+    // normal worker's drop takes its armed wakes with it.
     // The tail is provisional until this launch's stderr reaches EOF (bounded by
     // EXIT_STDERR_SETTLE_MS); it is then recut in place — the recorded entry is
     // this same object — and the server-log line written.
-    if (!this._killing && !this._suppressTempDelete) {
+    if (!this._killing && !this._exitSuppressed) {
       const cause: ExitCause = { code, signal, stderrTail: stderrTail(this._stderr) };
       this.lastExit = cause;
       const where = this.worktree ? `${this.project}/${this.worktree.worktreeName}` : this.project;
@@ -3530,19 +3530,19 @@ export class Instance extends EventEmitter implements InstanceLike {
     // daemon, which is not a child of cc and would outlive the session.
     void this._fuse?.teardown();
     this._closeDebugStreams();
-    // `_suppressTempDelete` is set by the resume-restart path
-    // (shutdownForResumeSync): there we SIGKILL temp subprocesses but must
+    // `_exitSuppressed` is set by the resume-restart path
+    // (shutdownForResumeSync): there we SIGKILL normal subprocesses but must
     // PRESERVE their jsonl so the next boot can `--resume` them. Without the
     // guard, this exit handler would archive the transcript we're carrying,
     // which is fine for the data but still wrong — it would not be resumable.
     // Announced as `exit_archive` (never rejects) so the manager can await it in
     // shutdown() even after this instance has left byId.
-    if (this.temp && !this._suppressTempDelete) this.emit('exit_archive', this._retireTempSession());
+    if (!this.persistent && !this._exitSuppressed) this.emit('exit_archive', this._retireOnExit());
   }
 
-  // A pristine conductor leaves nothing behind; any other temp session is archived.
-  _retireTempSession(): Promise<void> {
-    return (this.pristine ? this._removePristineSession() : this._archiveTempSession()).catch(() => {});
+  // A pristine conductor leaves nothing behind; any other normal session is archived.
+  _retireOnExit(): Promise<void> {
+    return (this.pristine ? this._removePristineSession() : this._archiveSession()).catch(() => {});
   }
 
   // The first prompt, from any sender, makes a pristine conductor an ordinary
@@ -3566,9 +3566,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     try { await dropSegment(this.backingSessionId); } catch { /* best-effort */ }
   }
 
-  // Archive a killed temp session: retain the .jsonl (stays resumable) but
-  // retire its segment (temp off, archived on) so it disappears from the
-  // normal session list and surfaces in the — archived — section instead. The
+  // Archive a killed normal session: retain the .jsonl (stays resumable) but
+  // retire its segment (archived on) so it disappears from the session list and surfaces in the — archived — section instead. The
   // sub-agent dir is still cleaned up (it is ephemeral; only the main .jsonl
   // matters for restore). The session's facts are untouched — they are still
   // meaningful on an archived session.
@@ -3581,7 +3580,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // Awaits this instance's own lineage chain first: a rotation kicked just
   // before the exit must have recorded the segment this retires.
-  async _archiveTempSession(): Promise<void> {
+  async _archiveSession(): Promise<void> {
     if (!this.backingSessionId) return;
     await fsp.rm(subAgentDirPath(this.transcriptPlace, this.backingSessionId), { recursive: true, force: true });
     await this._lineageWrite;
@@ -4210,7 +4209,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // (both gate on it). `_relaunching` is held to `finally` with `_mutating`:
       // until the switch settles, an exit must not wake the owner and a resume
       // must not reclaim this instance.
-      this._suppressTempDelete = false;
+      this._exitSuppressed = false;
       const ok = entry(true, afterUuid);
       const confirmedButFailed = (what: string, err: unknown): void => {
         console.warn(`instances: model switch ${fromName} → ${toName} on ${this.sessionId} is confirmed, but ${what} failed: `
@@ -4244,22 +4243,22 @@ export class Instance extends EventEmitter implements InstanceLike {
   // THE relaunch window, shared by rewind, prune and the restart model switch:
   // opened immediately before the kill, closed by _endRelaunch once the
   // relaunch is confirmed (_awaitRelaunchConfirmed) or abandoned. Inside it no
-  // exit archives a temp session and no status emit (the kill's exit, the
+  // exit archives a normal session and no status emit (the kill's exit, the
   // attempt's own crash, launch()'s _hydrateAwaitingUser) drops it from the
-  // manager — the manager's temp drop reads `_suppressTempDelete`.
+  // manager — the manager's exit drop reads `_exitSuppressed`.
   _beginRelaunch(): void {
-    this._suppressTempDelete = true;
+    this._exitSuppressed = true;
     this._relaunching = true;
   }
 
   // Still suppressed ⇒ the relaunch was never confirmed, so any exit it ended in
-  // was suppressed: archive a temp session left without a process here, as its
-  // exit would have (the status emit then lets the manager drop it).
+  // was suppressed: archive a normal session left without a process here, as
+  // its exit would have (the status emit then lets the manager drop it).
   _endRelaunch(): void {
-    const suppressed = this._suppressTempDelete;
-    this._suppressTempDelete = false;
+    const suppressed = this._exitSuppressed;
+    this._exitSuppressed = false;
     this._relaunching = false;
-    if (suppressed && !this.proc && this.temp) this.emit('exit_archive', this._retireTempSession());
+    if (suppressed && !this.proc && !this.persistent) this.emit('exit_archive', this._retireOnExit());
     this.emit('status', this.summary());
   }
 
@@ -4376,15 +4375,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     return this.effort;
   }
 
-  // Promote a temp session to a normal one: stop suppressing the
-  // resume-picker metadata appends and stop the on-exit cleanup of
-  // the jsonl. The jsonl itself was already being written by the CLI
-  // — only the orchestrator's bookkeeping was opting out.
-  async promoteToNormal(): Promise<InstanceSummary> {
-    if (!this.temp) throw httpError(400, 'instance is not temp');
-    this.temp = false;
+  // Make a normal session persistent: stop suppressing the resume-picker
+  // metadata appends and stop the on-exit archive. The jsonl itself was
+  // already being written by the CLI — only the orchestrator's bookkeeping
+  // was opting out.
+  async makePersistent(): Promise<InstanceSummary> {
+    if (this.persistent) throw httpError(400, 'instance is already persistent');
+    this.persistent = true;
     try {
-      if (this.backingSessionId) await setSegmentTemp(this.backingSessionId, false, { owner: this.sessionId });
+      if (this.backingSessionId) await setSegmentPersistent(this.backingSessionId, true, { owner: this.sessionId });
     } catch { /* best-effort */ }
     // Persist last-prompt + permission-mode now, so the standalone
     // `claude --resume` picker sees this session immediately — without
@@ -4798,7 +4797,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // A relaunch that is never confirmed rejects with nothing left running, and
   // gets no fail-safe: the truncation is the state the user asked for, and the
   // failure (a missing backend, a CLI dying at startup) would recur on a retry.
-  // The relaunch window then archives and drops a temp session; a persistent
+  // The relaunch window then archives and drops a normal session; a persistent
   // one stays registered, dead and resumable.
   //
   // Returns { droppedText }: the prompt text of the dropped user message,
@@ -4882,7 +4881,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Undo the renewal at the divider labelled `label` (a `segment_seam`'s
   // segmentId), as if it had failed: the pre-renewal segment, cut before the
   // turn that requested the renewal (renewalCut; a typed `/clear` is restored
-  // whole), becomes the live backing segment again — un-archived, `temp`
+  // whole), becomes the live backing segment again — un-archived, `persistent`
   // restored — and the post-renewal run leaves the chain with its files. Only
   // the divider directly above the current segment can be undone. The same
   // kill → rewrite → wipe → relaunch sequence as rewindToUserMessage, logged
@@ -4946,7 +4945,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       } else {
         resumable = await hasResumableConversation({ place, sessionId: pre });
       }
-      await undoRenewal(publicId, { pre, post: b.post.map(s => s.id), temp: this.temp });
+      await undoRenewal(publicId, { pre, post: b.post.map(s => s.id), persistent: this.persistent });
       committed = true;
 
       // In memory first, so no reader sees the deleted post segment as live.
@@ -5198,13 +5197,13 @@ export class Instance extends EventEmitter implements InstanceLike {
       model: this.model,
       contextWindowTokens: this.contextWindowTokens,
       worktree: this.worktree?.worktreeName ?? null,
-      // EXPLICIT, not inferable: the fork writes no temp
-      // flag for the new id, and create()'s store recovery only ORs temp
+      // EXPLICIT, not inferable: the fork writes no persistent
+      // flag for the new id, and create()'s store recovery only ORs persistent
       // in when the flag is already falsy AND the resumed id is marked — so
-      // without this the fork of a temp session comes out silently
-      // persistent. Set, spawn() marks the new backing id and the child runs
-      // the whole temp lifecycle, archiving on its own exit.
-      // Fork deliberately takes no `_suppressTempDelete` the way rewind and
+      // without this the fork of a persistent session comes out silently
+      // normal. Set, spawn() marks the new backing id and the child stays
+      // listed when it exits; unset, it archives on its own exit.
+      // Fork deliberately takes no `_exitSuppressed` the way rewind and
       // prune do: those kill their source and respawn it, so the archive
       // would fire on a session about to come back. Fork never kills
       // anything, so a source exiting mid-fork is a REAL exit and must
@@ -5212,7 +5211,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // transcript's segment flags) are disjoint
       // from this fork's (source jsonl read-only, new id's jsonl + metadata
       // written).
-      temp: this.temp,
+      persistent: this.persistent,
       ...(prefill !== undefined ? { prefill } : {}),
     };
   }
@@ -5346,7 +5345,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     this._mutating = 'prune';
     this.beginRotation('prune');
-    // The relaunch window (see _beginRelaunch): a temp session relaunches right
+    // The relaunch window (see _beginRelaunch): a normal session relaunches right
     // after the kill and must not be archived or dropped out from under it.
     this._beginRelaunch();
     let rotationOk = false;
@@ -5388,7 +5387,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       await this.launch({ resume: newSid, cause: 'prune' });
       await this._awaitRelaunchConfirmed();
       // Archive the pre-prune transcript now that the pruned one is running (the
-      // new segment already inherited temp in recordRotation). Awaited so the
+      // new segment already inherited persistent in recordRotation). Awaited so the
       // REST response can't beat the archive into the sidebar refresh.
       await retireSegment(oldSid).catch(() => {});
 
@@ -5425,7 +5424,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         await this._awaitRelaunchConfirmed();
       } catch {
         // Both relaunches failed: nothing left running, and the window's close
-        // settles the session as dead (a temp one archived and dropped).
+        // settles the session as dead (a normal one archived and dropped).
         await this.kill({ graceMs: 300 }).catch(() => {});
       }
       throw e;
@@ -5540,7 +5539,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // resumes exactly one proceeds and the other refuses.
   _resumingPublicIds: Set<string>;
   // publicSessionId → its last spontaneous exit (Instance.lastExit), so an MCP
-  // call addressing a session that is no longer in byId — a temp worker drops
+  // call addressing a session that is no longer in byId — a normal worker drops
   // out on exit — still learns why it died. Insertion-ordered and capped at
   // EXIT_CAUSE_CAP; in memory only.
   _exitCauses: Map<string, ExitCause>;
@@ -5556,7 +5555,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _overageResetsAt: number | null;
   _overageClearTimer: NodeJS.Timeout | null;
   _overageResumeMode: boolean;
-  // Every temp instance's exit archive still in flight, including those of
+  // Every normal instance's exit archive still in flight, including those of
   // instances already removed from byId. shutdown() awaits them: the archive's
   // retireSegment is issued only after an fs.rm and the instance's lineage
   // chain, so neither the store's serialize chain nor its read barrier sees it
@@ -5828,7 +5827,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // The tree is every conducted session carrying the root's durable attribution
   // (rootSessionId, fixed at create) plus everything those and the root own
   // transitively (ownedTreeOf). The ownership walk alone is not enough: a section
-  // lead that leaves byId (a temp one's exit, a remove) takes its ownership edges
+  // lead that leaves byId (a normal one's exit, a remove) takes its ownership edges
   // with it, while its workers may still be mid-turn.
   isTreeQuiescent(rootId: string): boolean {
     const root = this.byId.get(rootId);
@@ -6047,7 +6046,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //
   // 1. A WIDER CANDIDATE SET. `resume` names a session that is usually not
   //    running, and the ORDINARY one is not in `byId` at all: a conductor worker
-  //    is temp, so it is evicted the moment its subprocess exits (below), and an
+  //    is normal, so it is evicted the moment its subprocess exits (below), and an
   //    orchestrator restart never re-enters a conducted worker
   //    (src/resumeRestart.ts) — it comes back looking like an ordinary,
   //    non-archived, resumable row no in-memory resolver can see. So the lineage
@@ -6101,9 +6100,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (lineage) for (const [seg, publicId] of lineage.byBacking) if (!owner.has(seg)) owner.set(seg, publicId);
     return owner;
   }
-  // SessionIds of live (proc-attached) temp instances whose cwd matches.
-  // Routes use this to strip running temp jsonls from the regular Sessions
-  // list — otherwise clicking the row would 409 against the live instance.
   // BACKING ids of every non-dead instance at this PLACE — the exclusion set the
   // on-disk session walk needs. It MUST be backing ids: listSessionsForCwdWithCounts
   // / summarizeSessions match against transcript FILENAMES, so a set of public ids
@@ -6124,10 +6120,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     return out;
   }
-  tempSessionIdsForPlace(place: TranscriptPlacement): Set<string> {
+  // Backing ids of live (proc-attached) normal instances at this place.
+  // Routes use this to strip running normal sessions' jsonls from the
+  // Sessions list — otherwise clicking the row would 409 against the live
+  // instance.
+  normalSessionIdsForPlace(place: TranscriptPlacement): Set<string> {
     const out = new Set<string>();
     for (const i of this.byId.values()) {
-      if (i.temp && i.proc && samePlace(i.transcriptPlace, place) && i.backingSessionId) {
+      if (!i.persistent && i.proc && samePlace(i.transcriptPlace, place) && i.backingSessionId) {
         out.add(i.backingSessionId);
       }
     }
@@ -6187,7 +6187,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // manifest), as ANY segment id (a wiki page, an old kanban card, an archived
   // sidebar row), or — for a session with no lineage row — as both at once.
   // Everything downstream consumes the BACKING id (cwd probe, resume pre-flight,
-  // the segment's temp flag, the `--resume` argv), so `resume` is rebound here and every
+  // the segment's persistent flag, the `--resume` argv), so `resume` is rebound here and every
   // one of those consumers is correct with no further edit. Naming a SEGMENT
   // resolves to that segment, not to the newest one, so clicking an archived row
   // opens the transcript it names.
@@ -6234,7 +6234,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, pristine, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill, actor, launchCause }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
+  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, persistent, pristine, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill, actor, launchCause }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -6274,9 +6274,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         + `which cc cannot run a command on, so a worker there would have no Bash.`,
       );
     }
-    // create() is policy-light: mode never depends on temp here. The UI's
-    // temp⇒bypassPermissions shortcut is applied at the REST route
-    // (POST /api/instances), not in this shared path.
+    // create() is policy-light: mode never depends on persistent.
     //
     // A resume inherits the mode the session was recorded in, so bringing a
     // planning session back doesn't silently hand it full tool access. An
@@ -6647,10 +6645,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (!conductedFlag && resume) {
       try { conductedFlag = await isConducted(publicId ?? resume); } catch { /* best-effort */ }
     }
-    // Recover temp flag from the resumed segment on resume so a session that
-    // survived SIGKILL comes back temp rather than silently going persistent.
-    if (!temp && resume) {
-      try { if (await isTemp(resume)) temp = true; } catch { /* best-effort */ }
+    // Recover the persistent flag from the resumed segment on resume so a
+    // persistent session that survived SIGKILL, or was archived and restored,
+    // comes back persistent rather than silently going normal.
+    if (!persistent && resume) {
+      try { if (await isPersistent(resume)) persistent = true; } catch { /* best-effort */ }
     }
     // Recover firstPrompt from the on-disk jsonl on resume. A resumed session
     // gets a BRAND NEW Instance object (firstPrompt starts null) — unlike the
@@ -6690,7 +6689,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       mcpServerUrl: this.mcpServerUrl(),
       conductorUrl: this.conductorUrl(),
       worktree: worktreeMeta,
-      temp: !!temp,
+      persistent: !!persistent,
       pristine: !!pristine,
       conducted: conductedFlag,
       callerInstanceId: callerInstanceId ?? null,
@@ -6952,19 +6951,18 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
           !this._autoResumeTimers.has(inst.id)) {
         this._armAutoResume(inst);
       }
-      // Temp sessions are disposable: once the subprocess is gone the
-      // session is archived by _archiveTempSession() (the jsonl is retained
+      // Normal sessions are disposable: once the subprocess is gone the
+      // session is archived by _archiveSession() (the jsonl is retained
       // and stays resumable, just moved into the — archived — section), so
       // there's nothing live left to track here. Drop them from byId on
-      // exit/crash so the sidebar's Temp Sessions subnode collapses instead
-      // of piling up dim ghost rows the user would have to delete by hand.
-      // `inst.temp` is read at event time, so a session promoted via
-      // /promote (which flips temp=false) survives this path. `_suppressTempDelete`
-      // is also checked here (not just in _handleExit's archive call) — a rewind's
+      // exit/crash so the sidebar doesn't pile up dim ghost rows the user
+      // would have to delete by hand. `inst.persistent` is read at event
+      // time, so a session made persistent via /persist survives this path.
+      // `_exitSuppressed` is also checked here (not just in _handleExit's archive call) — a rewind's
       // kill-then-respawn passes through this same exited/crashed transition, and
       // without the guard the instance would vanish from byId before the respawn
       // lands, even though it was never archived on disk.
-      if (inst.temp && !inst.proc && !inst._suppressTempDelete &&
+      if (!inst.persistent && !inst.proc && !inst._exitSuppressed &&
           (summary.status === 'exited' || summary.status === 'crashed') &&
           this.byId.has(id)) {
         // Cancel any pending overage auto-resume before dropping the instance:
@@ -6986,7 +6984,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       void archive.then(() => { this._exitArchives.delete(archive); });
     });
     // Every exit of this instance's process, from Instance._handleExit BEFORE its
-    // status transition — and so before the temp drop above, which is the point:
+    // status transition — and so before the exit drop above, which is the point:
     // the cause has to outlive the instance, and the purge would clear the armed
     // wakes without waking anyone. A null cause (a commanded exit) clears the
     // entry, so an earlier crash's cause can never describe a later death. No
@@ -7046,7 +7044,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         try { await this.remove(staleId); }
         catch (e) {
           // 404 = something else DELETED it from byId while we awaited (the
-          // temp-exit status listener, or a concurrent remove). That reaches the
+          // exit-drop status listener, or a concurrent remove). That reaches the
           // same post-condition, so a lost race is a success. Anything else is real.
           // The other actor that can land in this gap — one REVIVING the husk — is
           // not absorbed here and must not be: a revived husk is still present, so
@@ -7754,10 +7752,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 
   // The drain's end (finishDrain, src/resumeRestart.ts): gracefully close every
-  // live subprocess (temp AND non-temp) via stdin EOF — all turns are already
+  // live subprocess (normal AND persistent) via stdin EOF — all turns are already
   // done before this is called, so no orphan can still be writing the jsonl we
-  // are about to carry over. DO NOT delete any jsonl. Set `_suppressTempDelete`
-  // first so each temp instance's _handleExit skips _archiveTempSession(),
+  // are about to carry over. DO NOT delete any jsonl. Set `_exitSuppressed`
+  // first so each normal instance's _handleExit skips _archiveSession(),
   // preserving the transcript for `--resume` on boot.
   shutdownForResumeSync(): void {
     this._usageMonitor.stop();
@@ -7765,7 +7763,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const live: Instance[] = [];
     for (const inst of this.byId.values()) {
       if (!inst.proc) continue;
-      inst._suppressTempDelete = true;
+      inst._exitSuppressed = true;
       live.push(inst);
       // Graceful close: end stdin so the CLI exits normally when idle.
       // All turns are already complete before this is called (the drain

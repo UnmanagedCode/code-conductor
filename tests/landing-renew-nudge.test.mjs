@@ -85,7 +85,7 @@ const recorded = async (name) => {
 };
 
 async function spawnIdle(project) {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, temp: true, mode: 'bypassPermissions' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');

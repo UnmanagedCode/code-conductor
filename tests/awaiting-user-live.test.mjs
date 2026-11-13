@@ -39,7 +39,7 @@ async function spawnHand(scenario, extra = {}) {
   const project = `au-live-${++n}`;
   process.env.FAKE_CLAUDE_SCENARIO = scenario;
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: project });
-  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', temp: false, ...extra });
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', persistent: true, ...extra });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);

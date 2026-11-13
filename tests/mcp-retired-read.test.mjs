@@ -1,7 +1,7 @@
 // Read-only retrieval for a RETIRED session: get_recent_messages and
 // get_transcript resolve through getInstOrDisk (live-instance → disk-location →
-// soft refusal), so a killed temp worker's output stays readable from the
-// transcript _archiveTempSession retained. Every tool that ADDRESSES a worker
+// soft refusal), so a killed normal worker's output stays readable from the
+// transcript _archiveSession retained. Every tool that ADDRESSES a worker
 // stays strict-live; tests/mcp-forward.test.mjs covers the third read call
 // site, send_prompt's forward source.
 //
@@ -44,11 +44,11 @@ function unwrapMsgs(result) {
   return { meta, bodies, messages: meta.messages.map((m, i) => ({ ...m, text: bodies[i] ?? '' })) };
 }
 
-// Spawn a TEMP worker, seed the transcript the CLI would have persisted for it,
+// Spawn a NORMAL worker, seed the transcript the CLI would have persisted for it,
 // then kill it and wait for the byId drop. What comes back is a sessionId with
 // no instance anywhere in memory and a jsonl still on disk — the retired state
 // this whole card is about.
-async function retiredTempWorker(ctx, projectName, lines) {
+async function retiredNormalWorker(ctx, projectName, lines) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: projectName });
   const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
     project: projectName, mode: 'bypassPermissions',
@@ -107,11 +107,11 @@ const PLAN_THEN_PLAINTURN = [
   { type: 'assistant', uuid: 'aB2', message: { id: 'm_b_p2', role: 'assistant', content: [{ type: 'text', text: 'prose two' }] } },
 ];
 
-// 1 — the core case: a killed temp worker's messages come back from disk.
-test('get_recent_messages: a retired temp worker is served from disk, not refused', async () => {
+// 1 — the core case: a killed normal worker's messages come back from disk.
+test('get_recent_messages: a retired normal worker is served from disk, not refused', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'retired', ONE_TURN);
+    const sid = await retiredNormalWorker(ctx, 'retired', ONE_TURN);
 
     const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }));
     assert.equal(res.meta.ok, undefined, `expected a result, got a refusal: ${JSON.stringify(res.meta)}`);
@@ -130,7 +130,7 @@ test('get_recent_messages: a retired temp worker is served from disk, not refuse
 test('get_recent_messages: disk-side bonding surfaces the retired planner\'s plan body, scoped to its own turn', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'retiredplan', TWO_PLANNED_TURNS);
+    const sid = await retiredNormalWorker(ctx, 'retiredplan', TWO_PLANNED_TURNS);
 
     const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }));
     assert.equal(res.meta.source, 'disk');
@@ -149,7 +149,7 @@ test('get_recent_messages: disk-side bonding surfaces the retired planner\'s pla
 
     // Same walk, opposite direction: this turn carries no plan of its own, so
     // the boundary must stop the walk instead of reaching back into turn A.
-    const plainSid = await retiredTempWorker(ctx, 'retiredplain', PLAN_THEN_PLAINTURN);
+    const plainSid = await retiredNormalWorker(ctx, 'retiredplain', PLAN_THEN_PLAINTURN);
     const plain = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: plainSid }));
     assert.equal(plain.meta.source, 'disk');
     assert.equal(plain.meta.messages.length, 1,
@@ -161,10 +161,10 @@ test('get_recent_messages: disk-side bonding surfaces the retired planner\'s pla
 });
 
 // 3 — the other read-only call site.
-test('get_transcript: a retired temp worker\'s events page from disk', async () => {
+test('get_transcript: a retired normal worker\'s events page from disk', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'retiredtx', TWO_PLANNED_TURNS);
+    const sid = await retiredNormalWorker(ctx, 'retiredtx', TWO_PLANNED_TURNS);
 
     const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 50 }));
     assert.equal(page.source, 'disk');
@@ -230,7 +230,7 @@ test('an orphaned transcript refuses SESSION_NOT_LIVE naming its unregistered ow
 test('the worker-addressing tools still refuse a retired worker SESSION_NOT_LIVE', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'retiredaddr', ONE_TURN);
+    const sid = await retiredNormalWorker(ctx, 'retiredaddr', ONE_TURN);
 
     const cases = [
       ['send_prompt', { sessionId: sid, text: 'go' }],
@@ -270,7 +270,7 @@ test('a stage that denies get_recent_messages still denies it for a retired work
     }));
 
     const conductor = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'enforce',
+      project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: 'enforce',
     });
     assert.equal(conductor.status, 201, `conductor spawn failed: ${JSON.stringify(conductor.body)}`);
     const conductorId = conductor.body.id;
@@ -301,32 +301,32 @@ test('a stage that denies get_recent_messages still denies it for a retired work
   } finally { await ctx.close(); }
 });
 
-// 8 — the OTHER disk branch. Every test above retires a TEMP worker, which is
+// 8 — the OTHER disk branch. Every test above retires a NORMAL worker, which is
 // dropped from byId on exit and so resolves through findSessionLocation. A
-// NON-temp worker survives in byId with no proc, so getInstOrDisk takes its
+// PERSISTENT worker survives in byId with no proc, so getInstOrDisk takes its
 // anyForSession branch instead — a completely different source for the
 // cwd/backingSessionId pair (the instance's own record, not a disk probe).
 // The content assertion below is load-bearing — an empty-but-successful result
 // would prove nothing, since an unseeded read returns null at any cwd.
-test('get_recent_messages / get_transcript: a dead-but-retained non-temp worker is served from disk, from its own transcript', async () => {
+test('get_recent_messages / get_transcript: a dead-but-retained persistent worker is served from disk, from its own transcript', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'retainednontemp' });
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'retainedpersistent' });
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
-      project: 'retainednontemp', mode: 'bypassPermissions',
+      project: 'retainedpersistent', mode: 'bypassPermissions',
     }));
     const sid = spawn.sessionId;
     await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
-    await instForSession(ctx.instances, sid).promoteToNormal();
+    await instForSession(ctx.instances, sid).makePersistent();
 
-    await seedSessionJsonl(localPlace(path.join(ctx.projectsRoot, 'retainednontemp')), instForSession(ctx.instances, sid).backingSessionId, [
+    await seedSessionJsonl(localPlace(path.join(ctx.projectsRoot, 'retainedpersistent')), instForSession(ctx.instances, sid).backingSessionId, [
         { type: 'user', uuid: 'u0', message: { role: 'user', content: 'audit it' } },
         { type: 'assistant', uuid: 'a0', message: { id: 'm_nt', role: 'assistant', content: [
-          { type: 'text', text: 'retained non-temp findings' },
+          { type: 'text', text: 'retained persistent findings' },
         ] } },
       ]);
 
-    // Kill the subprocess directly (NOT instances.remove): a non-temp instance
+    // Kill the subprocess directly (NOT instances.remove): a persistent instance
     // stays known but loses its proc — the SESSION_NOT_LIVE recipe.
     await instForSession(ctx.instances, sid).kill({ graceMs: 200 });
     await waitFor(() => !instForSession(ctx.instances, sid)?.proc);
@@ -336,13 +336,13 @@ test('get_recent_messages / get_transcript: a dead-but-retained non-temp worker 
     const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }));
     assert.equal(res.meta.ok, undefined, `expected a result, got a refusal: ${JSON.stringify(res.meta)}`);
     assert.equal(res.meta.source, 'disk');
-    assert.match(res.messages[0].text, /retained non-temp findings/,
+    assert.match(res.messages[0].text, /retained persistent findings/,
       'the cwd/backingSessionId pair taken off the retained instance names THIS session\'s transcript');
 
     const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 50 }));
     assert.equal(page.source, 'disk');
     assert.equal(page.status, 'exited');
-    assert.ok(page.events.some(e => e.kind === 'text_delta' && /retained non-temp findings/.test(e.text ?? '')),
+    assert.ok(page.events.some(e => e.kind === 'text_delta' && /retained persistent findings/.test(e.text ?? '')),
       'get_transcript pages the same session\'s events, not an empty page');
   } finally { await ctx.close(); }
 });
@@ -372,7 +372,7 @@ const TASK_TURN = [
 test('get_transcript: a page ENDING on a synthetic task_completion still returns a usable nextFrom', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'retiredtasks', TASK_TURN);
+    const sid = await retiredNormalWorker(ctx, 'retiredtasks', TASK_TURN);
 
     // Locate the synthetic event and the real event it was spliced in after.
     const whole = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 200 }));
@@ -410,7 +410,7 @@ test('a retired session is never described as active or waitable', async () => {
   try {
     // A transcript whose only assistant message is tool-call-only, so
     // omittedToolOnly > 0 and messages[] comes back empty.
-    const sid = await retiredTempWorker(ctx, 'retiredtoolonly', [
+    const sid = await retiredNormalWorker(ctx, 'retiredtoolonly', [
       { type: 'user', uuid: 'u0', message: { role: 'user', content: 'go' } },
       { type: 'assistant', uuid: 'a0', message: { id: 'm_t', role: 'assistant', content: [
         { type: 'tool_use', id: 'tu_x', name: 'Read', input: { file_path: '/tmp/x' } },
@@ -462,7 +462,7 @@ test('get_transcript pages under the result budget and loses nothing', async () 
   lines.push(proseLine('aTail', 'm_tail', 'tail'));
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'budgettx', lines);
+    const sid = await retiredNormalWorker(ctx, 'budgettx', lines);
     const seqs = [];
     let omitted = null;
     let fromSeq = 0;
@@ -499,7 +499,7 @@ test('get_recent_messages: count:3 of 30 KB prose fits the budget, each textTrun
   const lines = [userLine('u0', 'go'), ...[0, 1, 2].map(i => proseLine(`a${i}`, `m_${i}`, big(i)))];
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'budgetmsgs', lines);
+    const sid = await retiredNormalWorker(ctx, 'budgetmsgs', lines);
     const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 3 });
     assertInBudget(r, 'count:3');
     const { meta } = unwrapMsgs(r);
@@ -522,7 +522,7 @@ test('get_recent_messages: count:50 with includeToolCalls over tool-heavy messag
   }
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'budgettools', lines);
+    const sid = await retiredNormalWorker(ctx, 'budgettools', lines);
     const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 50, includeToolCalls: true });
     assertInBudget(r, 'count:50');
     const { meta } = unwrapMsgs(r);
@@ -545,7 +545,7 @@ test('get_recent_messages: a default call on a 60 KB plan plus trailing prose ke
   ];
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'budgetplan', lines);
+    const sid = await retiredNormalWorker(ctx, 'budgetplan', lines);
     const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid });
     assertInBudget(r, 'default call');
     const { meta, bodies } = unwrapMsgs(r);
@@ -571,7 +571,7 @@ test('get_recent_messages: a questions body over the budget is cut, flagged ques
   ];
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
-    const sid = await retiredTempWorker(ctx, 'budgetquestions', lines);
+    const sid = await retiredNormalWorker(ctx, 'budgetquestions', lines);
     const r = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 1 });
     assertInBudget(r, 'count:1');
     const { meta, bodies } = unwrapMsgs(r);

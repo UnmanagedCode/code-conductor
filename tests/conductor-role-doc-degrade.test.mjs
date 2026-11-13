@@ -172,7 +172,7 @@ describe('the conductor role doc composed over a degraded convention catalog', (
   async function spawnConductor() {
     await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: '.conduct', model: 'claude-haiku-4-5', temp: true, mode: 'bypassPermissions',
+      project: '.conduct', model: 'claude-haiku-4-5', mode: 'bypassPermissions',
     });
     assert.equal(r.status, 201, 'the spawn is not refused');
     await waitForHelper(() => instances.get(r.body.id)?.status === 'idle');

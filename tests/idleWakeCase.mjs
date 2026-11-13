@@ -277,7 +277,7 @@ export function findTimeoutStubFor(inst, targetId) {
   );
 }
 
-// A NON-temp worker (the REST spawn path): an MCP-spawned worker is temp, so its
+// A persistent worker (a REST spawn): an MCP-spawned worker is normal, so its
 // exit drops it from byId and purge() clears the graph before any beat can land —
 // which is exactly the case these tests are NOT about. Shared by
 // idle-wake-heartbeat (the retirement) and idle-wake-retire-gaps (the three
@@ -286,7 +286,7 @@ export async function restWorker(project, scenarioPath) {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
   try {
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', persistent: true });
     assert.equal(r.status, 201);
     const inst = ctx.instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);

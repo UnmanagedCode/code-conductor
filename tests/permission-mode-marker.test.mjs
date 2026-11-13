@@ -53,7 +53,7 @@ async function spawnAndRunTurn(mode) {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   await api(baseUrl, 'POST', '/api/projects', { name: 'r' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'r', mode });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: 'r', mode });
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
   inst.prompt('hi');
@@ -84,7 +84,7 @@ async function resumeSeeded(project, sid, mode) {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${sid}.jsonl`),
     SEEDED_LINES.map(l => JSON.stringify(l)).join('\n') + '\n');
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode, resume: sid });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project, mode, resume: sid });
   const id = r.body.id;
   await waitFor(() => instances.get(id).status === 'idle');
   return { id, dir, restore: () => { process.env.FAKE_CLAUDE_SCENARIO = prev; } };

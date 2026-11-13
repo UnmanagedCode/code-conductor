@@ -159,9 +159,9 @@ async function orphaned() {
 
 test('no armed wake: a human turn its CLI dies in keeps no human prompts', async () => {
   const { w, wInst } = await orphaned();
-  // Non-temp, as a promoted conducted worker is: its exit leaves it listed, so
-  // no purge clears the hub for it.
-  wInst.temp = false;
+  // Persistent, as a conducted worker made persistent is: its exit leaves it
+  // listed, so no purge clears the hub for it.
+  wInst.persistent = true;
   await wsPrompt(w, 'OPENTURN nobody is watching');
   await waitFor(() => wInst.status === 'turn' && !wInst._quiescence.empty);
   assert.equal(instances.hasArmedWake(wInst.id), false, 'precondition: nothing armed');
@@ -187,7 +187,7 @@ test('no armed wake: a human turn a commanded stop interrupts keeps no human pro
 
 test('no armed wake: a human turn that completes normally keeps no human prompts', async () => {
   const { w, wInst } = await orphaned();
-  wInst.temp = false; // promoted, as in the crash case
+  wInst.persistent = true; // made persistent, as in the crash case
   assert.deepEqual(instances._idleHub.ownersOf(wInst.id), [], 'precondition: no owner to arm');
   await driveTurn(instances, w, () => wsPrompt(w, 'nobody is watching this one'));
   const echo = wInst.ringSnapshot().filter(e => e.kind === 'user_echo').at(-1);

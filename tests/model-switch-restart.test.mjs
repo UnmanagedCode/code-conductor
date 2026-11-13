@@ -4,7 +4,7 @@
 // _runRestartSwitch), confirmed by the relaunch outliving a grace window. Covers
 // the WS frame's dispatch and refusals, the relaunch argv/env/record, the
 // failure path (re-resumed on the old pair), prompt refusal across the whole
-// switch, temp/conducted survival, the no-turn `--session-id` relaunch, the
+// switch, persistent/conducted survival, the no-turn `--session-id` relaunch, the
 // graceful-restart drain, and the session record a cold resume reads.
 //
 // The fake CLI writes no transcript, so a "session with a turn" is seeded with a
@@ -20,7 +20,7 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { SwitchLauncher } from './switchLauncher.mjs';
 import { addCustomModel, setTierBackend, setTierEffort, addBackend, setConductorCompactWindow } from '../src/appSettings.ts';
-import { getSessionBackend, getModelSwitchesForSegment, isTemp, isArchived, isConducted, settleSessionWrites, sessionsFile, loadSessions } from '../src/sessionStore.ts';
+import { getSessionBackend, getModelSwitchesForSegment, isPersistent, isArchived, isConducted, settleSessionWrites, sessionsFile, loadSessions } from '../src/sessionStore.ts';
 import { withLock } from '../src/storeLock.ts';
 import { loadPersistedTranscript, readLastSessionModel } from '../src/transcript.ts';
 import { costsPath } from '../src/costTracking.ts';
@@ -73,8 +73,10 @@ function wsClient(url) {
 }
 
 // A substitution session on A, idle, with a short confirmation window.
+// Persistent unless `extra` says otherwise, so a switch that ends with no
+// process leaves a dead row rather than archiving the session.
 async function spawnSub(extra = {}) {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama', effort: 'high', ...extra });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama', effort: 'high', persistent: true, ...extra });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
@@ -567,10 +569,9 @@ test('a prompt during the switch is refused on every surface and never delivered
   } finally { inst.off('status', onStatus); await c.close(); }
 });
 
-test('a temp conducted worker survives a switch as itself', async () => {
+test('a normal conducted worker survives a switch as itself', async () => {
   const conductor = await spawnSub();
-  const worker = await instances.create({ project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama',
-    temp: true, conducted: true, callerInstanceId: conductor.id });
+  const worker = await instances.create({ project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama', conducted: true, callerInstanceId: conductor.id });
   await waitFor(() => worker.status === 'idle');
   worker._relaunchGraceMs = 30;
   await seedTurn(worker);
@@ -583,8 +584,8 @@ test('a temp conducted worker survives a switch as itself', async () => {
     await settled(worker);
     assert.equal(worker.model, B);
     assert.equal(instances.get(worker.id), worker, 'not dropped from the live list');
-    assert.equal(worker.temp, true);
-    assert.equal(await isTemp(worker.backingSessionId), true);
+    assert.equal(worker.persistent, false);
+    assert.equal(await isPersistent(worker.backingSessionId), false);
     assert.equal(await isArchived(worker.backingSessionId), false, 'not archived by the kill');
     assert.equal(worker.conducted, true);
     assert.equal(await isConducted(worker.sessionId), true);
@@ -595,7 +596,7 @@ test('a temp conducted worker survives a switch as itself', async () => {
 
 test('a pristine conductor survives a restart switch as itself: same instance and session, still pristine and hidden, resolvable throughout', async () => {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-  const inst = await spawnSub({ project: '.conduct', temp: true, pristine: true });
+  const inst = await spawnSub({ project: '.conduct', persistent: false, pristine: true });
   assert.equal(inst.pristine, true, 'fixture check: a pristine conductor');
   const { sessionId: sid, backingSessionId: backing } = inst;
   const firstProc = inst.proc;
@@ -759,7 +760,7 @@ test('a crash after confirmation, before the switch settles, is an ordinary cras
   // Holding the store lock parks the confirmation's ledger write, so the window
   // between "confirmed" and "settled" stays open until the crash has landed.
   await withLock(sessionsFile(), async () => {
-    await waitFor(() => inst._suppressTempDelete === false);
+    await waitFor(() => inst._exitSuppressed === false);
     assert.ok(inst.modelSwitch, 'fixture check: confirmed but not yet settled');
     launcher.ctl.last.crash('late boom');
     await waitFor(() => inst.status === 'crashed');
@@ -844,7 +845,7 @@ test('Change effort during the grace window is refused and leaves the effort alo
 
 test('a crash after confirmation but before the switch settles does not wake the owner, and the session stays live', async () => {
   const conductor = await spawnSub();
-  const worker = await instances.create({ project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama',
+  const worker = await instances.create({ persistent: true, project: 'p', mode: 'bypassPermissions', model: A, backend: 'ollama',
     conducted: true, callerInstanceId: conductor.id });
   await waitFor(() => worker.status === 'idle');
   worker._relaunchGraceMs = 30;
@@ -858,7 +859,7 @@ test('a crash after confirmation but before the switch settles does not wake the
     await worker.switchModel({ model: B, backend: 'ollama', effort: 'low' });
     await inGrace(worker);
     await withLock(sessionsFile(), async () => {
-      await waitFor(() => worker._suppressTempDelete === false);
+      await waitFor(() => worker._exitSuppressed === false);
       launcher.ctl.last.crash('late boom');
       await waitFor(() => worker.status === 'crashed');
       assert.ok(worker.modelSwitch, 'fixture check: still inside the switch');
@@ -941,8 +942,8 @@ for (const [name, plan, act] of [
   ['a Terminate (cancelled)', [], async (inst) => { await inGrace(inst); await inst.kill(); }],
   ['a double failure', [{ crash: 'boom on beta' }, { crash: 'boom on alpha' }], async () => {}],
 ]) {
-  test(`a temp session whose switch ends with no process — ${name} — is archived and dropped`, async () => {
-    const inst = await spawnSub({ temp: true });
+  test(`a normal session whose switch ends with no process — ${name} — is archived and dropped`, async () => {
+    const inst = await spawnSub({ persistent: false });
     await seedTurn(inst);
     inst._relaunchGraceMs = name.startsWith('a Terminate') ? 5000 : 30;
     launcher.plan.push(...plan);
@@ -951,7 +952,7 @@ for (const [name, plan, act] of [
     await settled(inst);
     assert.equal(inst.proc, null, 'fixture check: no process left');
     await waitFor(async () => await isArchived(inst.backingSessionId));
-    assert.equal(instances.get(inst.id), undefined, 'dropped from the live list, as any temp exit');
+    assert.equal(instances.get(inst.id), undefined, 'dropped from the live list, as any normal exit');
   });
 }
 

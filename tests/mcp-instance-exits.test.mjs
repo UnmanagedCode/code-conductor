@@ -6,8 +6,8 @@
 // code (InstanceManager.liveCountForProject vs the isDeadStatus filter in
 // listSessions) over different collections, so nothing but the shared predicate
 // keeps them equal. The case that actually exercises the predicate is a
-// NON-TEMP exited instance: byId retains those indefinitely (respawn resumes
-// them), so it is the only state where "in byId" and "live" differ. A temp
+// PERSISTENT exited instance: byId retains those indefinitely (respawn resumes
+// them), so it is the only state where "in byId" and "live" differ. A normal
 // worker leaves byId on exit and so proves nothing about the filter.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
@@ -86,8 +86,8 @@ async function materializeJsonl(inst) {
   return file;
 }
 
-async function spawn(project, { temp = true } = {}) {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, temp, mode: 'bypassPermissions' });
+async function spawn(project, { persistent = false } = {}) {
+  const r = await api(baseUrl, 'POST', '/api/instances', { project, persistent, mode: 'bypassPermissions' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -98,20 +98,20 @@ const killAndWait = async (inst) => {
   await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
 };
 
-test('a non-temp instance retained in byId after exit is not counted live', async () => {
-  // THE dead-status test. A non-temp instance survives its own exit in byId
+test('a persistent instance retained in byId after exit is not counted live', async () => {
+  // THE dead-status test. A persistent instance survives its own exit in byId
   // (tests/instances.test.mjs pins that, because Resume/respawn needs it), so
   // `live N` can only be right if it filters on status. Drop the
   // `!isDeadStatus(i.status)` clause in liveCountForProject and this reads 1.
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-  const inst = await spawn('demo', { temp: false });
+  const inst = await spawn('demo', { persistent: true });
   const sid = inst.sessionId;          // an inactive row reports the session's PUBLIC id
   const backing = inst.backingSessionId; // …while its transcript is named by the backing id
   await materializeJsonl(inst);
   assert.equal(liveCountOf(await call('list_projects'), 'demo'), 1, 'live while running');
 
   await killAndWait(inst);
-  assert.ok(instances.get(inst.id), 'precondition: a non-temp instance stays in byId after exit');
+  assert.ok(instances.get(inst.id), 'precondition: a persistent instance stays in byId after exit');
 
   assert.equal(liveCountOf(await call('list_projects'), 'demo'), 0,
     'an exited instance still sitting in byId is not a live worker');
@@ -154,12 +154,12 @@ test('a live worker appears once — its own transcript does not double it into 
   assert.deepEqual(inactive, [], 'and NOT also as a stopped session');
 });
 
-test('an archived session is never listed, and a killed temp session is archived', async () => {
-  // Killing a temp instance archives it (tests/archive-sessions.test.mjs), and
+test('an archived session is never listed, and a killed normal session is archived', async () => {
+  // Killing a normal instance archives it (tests/archive-sessions.test.mjs), and
   // archiving is the deliberate act of taking a session off the list — so the
   // worker must disappear from BOTH sections, not migrate into the inactive rows.
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-  const inst = await spawn('demo', { temp: true });
+  const inst = await spawn('demo');
   const sid = inst.sessionId;          // an inactive row reports the session's PUBLIC id
   const backing = inst.backingSessionId; // …while its transcript is named by the backing id
   await materializeJsonl(inst);

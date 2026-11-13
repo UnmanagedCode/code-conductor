@@ -259,7 +259,7 @@ test('unknown prefix stays SESSION_UNKNOWN (unchanged behavior)', async () => {
 // C. `resume` (spawn_instance) — the same chokepoint, over a WIDER universe
 //
 // `resume` names a session that is usually NOT running, and the ordinary one is
-// not in `byId` at all: a conductor worker is temp, so it is evicted on exit
+// not in `byId` at all: a conductor worker is normal, so it is evicted on exit
 // (src/instances.ts), and after an orchestrator restart a conducted worker is
 // never re-entered (src/resumeRestart.ts). So the resume site resolves over
 // `byId` UNION the lineage store, as one candidate set — see
@@ -293,16 +293,16 @@ test('resume is prefix-resolved at the same chokepoint as sessionId', async () =
   // INVARIANT: `resume` is an ordinary worker handle — any unambiguous prefix of
   // it addresses the session, exactly as for a top-level `sessionId`.
   const cwd = await project();
-  // temp:false, so the instance survives its own exit and this case is the
+  // persistent: true, so the instance survives its own exit and this case is the
   // in-`byId` one; the evicted case is its own test below.
-  const spawned = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions', temp: false });
+  const spawned = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions', persistent: true });
   assert.equal(spawned.status, 201, JSON.stringify(spawned.body));
   const full = spawned.body.sessionId;
   await waitFor(() => instForSession(instances, full)?.status === 'idle');
   await seedTranscript(full, cwd);
   await instForSession(instances, full).kill();
   await waitFor(() => !instForSession(instances, full)?.proc);
-  assert.ok(instForSession(instances, full), 'premise: a non-temp instance stays in byId after its exit');
+  assert.ok(instForSession(instances, full), 'premise: a persistent instance stays in byId after its exit');
 
   const back = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: full.slice(0, 5) }));
   assert.notEqual(back.ok, false, `a resume by prefix must not be refused: ${JSON.stringify(back)}`);
@@ -343,7 +343,7 @@ test('a backing id passed as resume is normalised to the handle before the gate 
 });
 
 test('a resume prefix resolves for a session that is NOT in byId', async () => {
-  // THE LOAD-BEARING CASE. A conductor worker is temp, so its exit evicts it —
+  // THE LOAD-BEARING CASE. A conductor worker is normal, so its exit evicts it —
   // an in-memory-only or exact-only resolver misses the ordinary killed-worker
   // resume entirely.
   const cwd = await project();

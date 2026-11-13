@@ -25,7 +25,7 @@ async function withHostValue(value, fn) {
 
 async function spawnIdle(ctx, body = {}) {
   const r = await api(ctx.baseUrl, 'POST', '/api/instances',
-    { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5', temp: true, ...body });
+    { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5', ...body });
   assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst._spawnArgv);
@@ -78,7 +78,7 @@ test('a resume after the setting flips carries the var, with no restart', async 
   const ctx = await boot();
   try {
     await withHostValue(undefined, async () => {
-      const first = await spawnIdle(ctx, { temp: false });
+      const first = await spawnIdle(ctx, { persistent: true });
       assert.equal(VAR in first._spawnEnv, false, 'premise: launched with the setting off');
       const sid = first.sessionId;
       await seedSessionJsonl(first.transcriptPlace, first.backingSessionId);

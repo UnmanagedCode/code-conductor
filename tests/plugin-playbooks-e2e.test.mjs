@@ -95,7 +95,7 @@ async function setup() {
   }
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
-    project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'enforce',
+    project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: 'enforce',
   });
   assert.equal(spawned.status, 201, `conductor spawn failed: ${JSON.stringify(spawned.body)}`);
   const conductorId = spawned.body.id;

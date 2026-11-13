@@ -68,7 +68,7 @@ async function setup({ enforcement } = {}) {
   await fs.mkdir(pbDir, { recursive: true });
   await fs.writeFile(path.join(pbDir, 'gatelab.json'), JSON.stringify(GATELAB));
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
-    project: '.conduct', mode: 'bypassPermissions', temp: true,
+    project: '.conduct', mode: 'bypassPermissions',
     ...(enforcement ? { playbookEnforcement: enforcement } : {}),
   });
   assert.equal(spawned.status, 201, `conductor spawn failed: ${JSON.stringify(spawned.body)}`);
@@ -690,7 +690,7 @@ test('list_sessions reports playbook/stage for a tracked worker that has gone IN
     await t.call('kill_instance', { sessionId: w.sessionId });
     await waitFor(() => !t.instances.isSessionLive(w.sessionId));
 
-    // spawn_instance workers are always temp, so kill_instance's exit archives
+    // spawn_instance workers are always normal, so kill_instance's exit archives
     // this one — includeArchived:true keeps the assertion independent of
     // exactly when that fire-and-forget archive write lands.
     const rendered = await waitFor(async () => {

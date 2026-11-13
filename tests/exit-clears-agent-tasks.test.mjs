@@ -24,7 +24,7 @@ async function idleWithRunningMcpTask() {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   const p = await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
   assert.equal(p.status, 201, JSON.stringify(p.body));
-  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { persistent: true, project: 'p', mode: 'bypassPermissions', model: 'claude-haiku-4-5' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.proc);

@@ -316,14 +316,14 @@ test('stop-resume: the wall-clock sweep (not a setTimeout) fires the resume when
   assert.equal(inst.proc != null, true, 'never killed/respawned');
 });
 
-// FIX #3: a temp session whose subprocess exits before its resume is due must
-// not leave an orphaned deadline (nor a badge that outlives the timer). Killing
-// the proc directly hits the temp-exit branch (NOT remove(), which cancels on
-// its own); the branch now cancels the pending resume.
-test('stop-resume: temp-session exit cancels the pending resume (no orphan deadline)', async () => {
+// A normal session whose subprocess exits before its resume is due must not
+// leave an orphaned deadline (nor a badge that outlives the timer). Killing
+// the proc directly hits the exit-drop branch (NOT remove(), which cancels on
+// its own); the branch cancels the pending resume.
+test('stop-resume: normal-session exit cancels the pending resume (no orphan deadline)', async () => {
   // Far-future deadline so it can't fire on its own before we kill the proc.
   await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
-  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', temp: true });
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
   assert.equal(r.status, 201);
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
@@ -331,14 +331,14 @@ test('stop-resume: temp-session exit cancels the pending resume (no orphan deadl
 
   inst.prompt('go');
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(id), true, 'deadline armed for the temp session');
+  assert.equal(ctx.instances._autoResumeTimers.has(id), true, 'deadline armed for the normal session');
 
-  // Subprocess exits → temp-exit branch fires (instance dropped from byId).
+  // Subprocess exits → exit-drop branch fires (instance dropped from byId).
   await inst.kill({ graceMs: 100 });
-  await waitFor(() => !ctx.instances.get(r.body.id)); // temp row collapsed
+  await waitFor(() => !ctx.instances.get(r.body.id)); // normal row collapsed
 
   // No orphaned deadline survives; sweep has nothing left to fire.
-  assert.equal(ctx.instances._autoResumeTimers.has(id), false, 'no orphan deadline after temp exit');
+  assert.equal(ctx.instances._autoResumeTimers.has(id), false, 'no orphan deadline after a normal exit');
   assert.equal(ctx.instances._autoResumeTimers.size, 0);
 });
 
@@ -2112,7 +2112,7 @@ function setJobs(inst, ids) {
 
 // An idle conductor C owning (by spawn) an idle worker W, neither holding a wake.
 async function idleTree() {
-  const conductor = await createInst({});
+  const conductor = await createInst({ persistent: true });
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   return { conductor, worker };
 }
@@ -2581,7 +2581,7 @@ test('ARM-T12 an armed owner reached through a worker\'s sever keeps its resume 
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected), { timeout: 10000 });
 });
 
-// PIN — Invariant: only a LIVE owner is a driver. A non-temp conductor whose process
+// PIN — Invariant: only a LIVE owner is a driver. A persistent conductor whose process
 // exited stays registered in byId with no proc while its worker lives on; when that
 // worker loses a wake, the worker — now with no live owner — is armed itself, and the
 // dead conductor is untouched.

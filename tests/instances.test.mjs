@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import * as projects from '../src/projects.ts';
-import { isArchived } from '../src/sessionStore.ts';
+import { isArchived, isPersistent } from '../src/sessionStore.ts';
 import { setDebugByDefault } from '../src/appSettings.ts';
 import { CC_MCP_SERVER_TIMEOUT_MS } from '../src/codeMode/limits.ts';
 
@@ -360,7 +360,7 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
   try {
     await api(rp.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const r = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const r = await api(rp.baseUrl, 'POST', '/api/instances', { persistent: true, project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = rp.instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -550,7 +550,7 @@ test('respawn wipes the ring so loadHistory does not pile on top of the prior ru
     );
 
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'respawnproj', mode: 'bypassPermissions', resume: sid,
+      persistent: true, project: 'respawnproj', mode: 'bypassPermissions', resume: sid,
     });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
@@ -609,22 +609,17 @@ test('rejects invalid mode and unknown project', async () => {
   assert.equal(r3.status, 400);
 });
 
-test('spawn with a non-boolean temp never forces bypassPermissions (fail-closed)', async () => {
-  await setupWithProject('tempguard');
-  // Control: the UI shortcut — temp:true with no mode ⇒ bypassPermissions.
-  const ctl = await api(baseUrl, 'POST', '/api/instances', { project: 'tempguard', temp: true });
-  assert.equal(ctl.status, 201);
-  assert.equal(ctl.body.mode, 'bypassPermissions');
-  await waitFor(() => instances.get(ctl.body.id).status === 'idle');
-
-  // Regression: the JSON string "false" is truthy in JS, so the old
-  // `(mode == null && temp)` truthiness test forced bypassPermissions here.
-  // `temp === true` is the ONLY bypass trigger — a malformed non-boolean temp
-  // fails closed (no bypass) instead of silently escalating permissions.
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'tempguard', temp: 'false' });
-  assert.equal(r.status, 201);
-  assert.notEqual(r.body.mode, 'bypassPermissions');
-  await waitFor(() => instances.get(r.body.id).status === 'idle');
+test('spawn with a non-boolean persistent is refused 400 and creates no instance', async () => {
+  await setupWithProject('persistguard');
+  // The JSON string "false" is truthy in JS: read by truthiness it would make
+  // the session persistent. Anything but a boolean is refused instead.
+  for (const persistent of ['false', 1]) {
+    const before = instances.list().length;
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'persistguard', persistent });
+    assert.equal(r.status, 400, `persistent: ${JSON.stringify(persistent)}`);
+    assert.match(r.body.error, /persistent must be a boolean/);
+    assert.equal(instances.list().length, before, 'no instance was created');
+  }
 });
 
 test('default spawn passes --permission-mode plan, --effort high, --thinking adaptive', async () => {
@@ -773,7 +768,7 @@ test('a conductor\'s env never carries an inherited CONDUCTOR_MCP_URL', async ()
   process.env.CONDUCTOR_MCP_URL = 'http://outer.invalid/mcp/planted';
   try {
     await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
@@ -1531,7 +1526,7 @@ test('writes last-prompt + permission-mode jsonl markers after each turn (so cla
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'r' });
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'r', mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: 'r', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
@@ -1646,30 +1641,31 @@ test('resume defaults to bypassPermissions (code) mode; fresh spawn still defaul
   }
 });
 
-test('temp: spawn defaults mode to bypassPermissions but explicit mode wins', async () => {
+test('a spawn that omits persistent is normal, and a mode-less spawn is plan either way', async () => {
   await setupWithProject();
-  const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+  const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
   assert.equal(r1.status, 201);
   const inst1 = instances.get(r1.body.id);
-  assert.equal(inst1.mode, 'bypassPermissions', 'temp default is code mode');
-  assert.equal(inst1.temp, true);
-  assert.equal(r1.body.temp, true, 'summary.temp round-trips through REST');
+  assert.equal(inst1.persistent, false, 'an omitted persistent is a normal session');
+  assert.equal(r1.body.persistent, false, 'summary.persistent round-trips through REST');
+  assert.equal(inst1.mode, 'plan');
 
-  const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true, mode: 'plan' });
+  const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', persistent: true });
   assert.equal(r2.status, 201);
   const inst2 = instances.get(r2.body.id);
-  assert.equal(inst2.mode, 'plan', 'explicit mode overrides the temp default');
-  assert.equal(inst2.temp, true);
+  assert.equal(inst2.persistent, true);
+  assert.equal(r2.body.persistent, true);
+  assert.equal(inst2.mode, 'plan', 'persistence never picks the mode');
 });
 
-test('temp: skips last-prompt / permission-mode metadata writes after a turn', async () => {
+test('normal: skips last-prompt / permission-mode metadata writes after a turn', async () => {
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'tmp' });
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'tmp', temp: true });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'tmp' });
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
@@ -1684,18 +1680,18 @@ test('temp: skips last-prompt / permission-mode metadata writes after a turn', a
     try { await fsp.access(file); } catch { exists = false; }
     if (exists) {
       const txt = await fsp.readFile(file, 'utf8');
-      assert.equal(txt.includes('"type":"last-prompt"'), false, 'no last-prompt for temp');
-      assert.equal(txt.includes('"type":"permission-mode"'), false, 'no permission-mode for temp');
+      assert.equal(txt.includes('"type":"last-prompt"'), false, 'no last-prompt for a normal session');
+      assert.equal(txt.includes('"type":"permission-mode"'), false, 'no permission-mode for a normal session');
     }
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
 });
 
-test('temp: archives session jsonl + removes subagents dir on subprocess exit', async () => {
+test('normal: archives session jsonl + removes subagents dir on subprocess exit', async () => {
   await setupWithProject();
   const fsp = (await import('node:fs')).promises;
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
   const id = r.body.id;
   const inst = instances.get(id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -1710,7 +1706,7 @@ test('temp: archives session jsonl + removes subagents dir on subprocess exit', 
 
   const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
   assert.equal(del.status, 200);
-  // Wait for _archiveTempSession to complete — retireSegment is the last write.
+  // Wait for _archiveSession to complete — retireSegment is the last write.
   await waitFor(() => isArchived(inst.backingSessionId));
   // .jsonl is retained for resumability — must still be on disk.
   await fsp.access(file);
@@ -1720,13 +1716,13 @@ test('temp: archives session jsonl + removes subagents dir on subprocess exit', 
   assert.equal(subStillThere, false, 'sub-agent dir for the session was removed');
 });
 
-test('temp: instance is auto-removed from byId on subprocess exit (no ghost row)', async () => {
+test('normal: instance is auto-removed from byId on subprocess exit (no ghost row)', async () => {
   // The composer's Kill button takes the WS-`kill` path (`inst.kill()`), not
-  // DELETE /api/instances/:id. Without auto-removal the temp Instance would
-  // sit in byId with status='exited' forever — the sidebar's Temp Sessions
-  // subnode would keep a dim ghost row that the user had to delete by hand.
+  // DELETE /api/instances/:id. Without auto-removal a normal Instance would
+  // sit in byId with status='exited' forever — the sidebar would keep a dim
+  // ghost row that the user had to delete by hand.
   await setupWithProject();
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
   const id = r.body.id;
   const inst = instances.get(id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -1739,17 +1735,17 @@ test('temp: instance is auto-removed from byId on subprocess exit (no ghost row)
   await inst.kill({ graceMs: 50 });
   await waitFor(() => instances.get(id) === undefined);
 
-  assert.equal(instances.get(id), undefined, 'temp instance removed from byId after exit');
-  assert.ok(!instances.list().some(s => s.id === id), 'temp instance no longer in list()');
+  assert.equal(instances.get(id), undefined, 'normal instance removed from byId after exit');
+  assert.ok(!instances.list().some(s => s.id === id), 'normal instance no longer in list()');
   assert.ok(listChangedSeen >= 1, 'list_changed fired so wsHub can broadcast {t:"instances"}');
 });
 
-test('non-temp: instance survives in byId after kill (Resume from the sidebar still works)', async () => {
-  // Guard the temp-only gate. Normal sessions need to stay in byId after their
-  // subprocess dies so the sidebar's Resume button has something to call
+test('persistent: instance survives in byId after kill (Resume from the sidebar still works)', async () => {
+  // Guard the normal-only gate. Persistent sessions need to stay in byId after
+  // their subprocess dies so the sidebar's Resume button has something to call
   // `/api/instances/:id/respawn` against.
   await setupWithProject();
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', persistent: true });
   const id = r.body.id;
   const inst = instances.get(id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -1757,68 +1753,69 @@ test('non-temp: instance survives in byId after kill (Resume from the sidebar st
   await inst.kill({ graceMs: 50 });
   await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
 
-  assert.ok(instances.get(id), 'non-temp instance stays in byId after exit');
-  assert.equal(instances.get(id).temp, false);
+  assert.ok(instances.get(id), 'persistent instance stays in byId after exit');
+  assert.equal(instances.get(id).persistent, true);
 });
 
-test('promoted temp: instance survives in byId after kill (promote disables the auto-removal)', async () => {
-  // After `/api/instances/:id/promote` flips temp=false the row migrates out
-  // of the Temp Sessions subnode into the regular Sessions list. Killing
-  // it should now behave like any other session — stays in byId so Resume
-  // is offered.
+test('persisted normal: instance survives in byId after kill (/persist disables the auto-removal)', async () => {
+  // After `/api/instances/:id/persist` sets persistent the row moves into the
+  // sidebar's Persistent group. Killing it should now behave like any other
+  // persistent session — stays in byId so Resume is offered.
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'promo-kill' });
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'promo-kill', temp: true });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'promo-kill' });
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.prompt('hi');
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
 
-    const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
-    assert.equal(promote.status, 200);
-    assert.equal(inst.temp, false);
+    const persist = await api(baseUrl, 'POST', `/api/instances/${id}/persist`);
+    assert.equal(persist.status, 200);
+    assert.equal(inst.persistent, true);
 
     await inst.kill({ graceMs: 50 });
     await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
 
-    assert.ok(instances.get(id), 'promoted-then-killed instance stays in byId');
+    assert.ok(instances.get(id), 'persisted-then-killed instance stays in byId');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
 });
 
-test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cleanup', async () => {
+test('persist: sets the persistent flag, writes resume-picker metadata, skips the on-exit archive', async () => {
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'promo' });
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'promo', temp: true });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'promo' });
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     // Run one turn so the CLI flushes its jsonl to disk — that's the file
-    // promote should keep off the temp on-exit archive path (jsonl kept but
-    // marked archived) by flipping temp to false first.
+    // /persist should keep off the on-exit archive path (jsonl kept but
+    // marked archived) by setting persistent first.
     inst.prompt('hi');
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
 
     const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
     const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
 
-    const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
-    assert.equal(promote.status, 200);
-    assert.equal(promote.body.ok, true);
-    assert.equal(promote.body.instance.temp, false, 'summary reflects the flag flip');
-    assert.equal(inst.temp, false, 'in-memory flag is flipped too');
+    const persist = await api(baseUrl, 'POST', `/api/instances/${id}/persist`);
+    assert.equal(persist.status, 200);
+    assert.equal(persist.body.ok, true);
+    assert.equal(persist.body.instance.persistent, true, 'summary reflects the flag');
+    assert.equal(inst.persistent, true, 'in-memory flag is set too');
+    const sid = inst.backingSessionId;
+    assert.equal(await isPersistent(sid), true, 'the segment carries persistent in the store');
 
     // Wait for the metadata append (writeSessionMetadata is fired-and-forgotten
-    // inside promoteToNormal — we awaited it via the request, but the disk
+    // inside makePersistent — we awaited it via the request, but the disk
     // write itself is also a microtask away).
     await waitFor(async () => {
       try {
@@ -1827,39 +1824,50 @@ test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cle
       } catch { return false; }
     });
     const txt = await fsp.readFile(file, 'utf8');
-    assert.ok(txt.includes('"type":"permission-mode"'), 'permission-mode metadata appended after promote');
+    assert.ok(txt.includes('"type":"permission-mode"'), 'permission-mode metadata appended after /persist');
 
-    // Kill the instance and assert the jsonl SURVIVES — promote should have
-    // disabled the temp on-exit cleanup.
-    const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
-    assert.equal(del.status, 200);
-    await new Promise(r => setTimeout(r, 50));
+    // Kill the instance and assert the session is NOT archived — /persist
+    // disabled the on-exit archive.
+    await inst.kill({ graceMs: 50 });
+    await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
+    await instances.shutdown();
     await fsp.access(file); // throws if missing — must not throw
+    assert.equal(await isArchived(sid), false, 'a persisted session is not archived on exit');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
 });
 
-test('promote: 400 when the instance is not temp', async () => {
+test('persist: 400 when the instance is already persistent', async () => {
   await setupWithProject();
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', persistent: true });
+  const id = r.body.id;
+  await waitFor(() => instances.get(id).status === 'idle');
+  const persist = await api(baseUrl, 'POST', `/api/instances/${id}/persist`);
+  assert.equal(persist.status, 400);
+  assert.match(persist.body.error, /already persistent/);
+});
+
+test('persist: 404 when the instance id is unknown', async () => {
+  await setupWithProject();
+  const persist = await api(baseUrl, 'POST', '/api/instances/no-such-id/persist');
+  assert.equal(persist.status, 404);
+});
+
+test('there is no /promote route: it 404s on a live normal session and leaves it normal', async () => {
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
   const id = r.body.id;
   await waitFor(() => instances.get(id).status === 'idle');
   const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
-  assert.equal(promote.status, 400);
-  assert.match(promote.body.error, /not temp/);
-});
-
-test('promote: 404 when the instance id is unknown', async () => {
-  await setupWithProject();
-  const promote = await api(baseUrl, 'POST', '/api/instances/no-such-id/promote');
   assert.equal(promote.status, 404);
+  assert.equal(instances.get(id).persistent, false);
 });
 
-test('non-temp: jsonl is left in place on exit', async () => {
+test('persistent: jsonl is left in place on exit', async () => {
   await setupWithProject();
   const fsp = (await import('node:fs')).promises;
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', persistent: true });
   const id = r.body.id;
   const inst = instances.get(id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);

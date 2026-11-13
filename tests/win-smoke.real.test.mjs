@@ -84,7 +84,7 @@ d('Windows smoke (real claude, Git for Windows)', () => {
   }
 
   async function spawnWorker(extra = {}) {
-    const r = await api(base, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', temp: false, ...extra });
+    const r = await api(base, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', persistent: true, ...extra });
     assert.ok(r.body?.id, fail(`spawn refused: ${r.status} ${JSON.stringify(r.body)}`));
     await until(`instance ${r.body.id} idle`, async () => (await row(r.body.id))?.status === 'idle', 90_000);
     // The spawn response predates the session id.
@@ -308,7 +308,7 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     const mergeMarker = path.join(os.tmpdir(), mergeMarkerName);
     fs.writeFileSync(path.join(storeDir, 'post-worktree-merge.sh'), `echo "$CC_POST_MERGE_SHA" > "$TEMP/${mergeMarkerName}"\n`);
     try {
-      const r = await api(base, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', worktree: true, temp: false });
+      const r = await api(base, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', worktree: true, persistent: true });
       assert.ok(r.body?.id, fail(`worktree spawn refused: ${JSON.stringify(r.body)}`));
       await until('worktree instance idle', async () => (await row(r.body.id))?.status === 'idle', 90_000);
       const wt = (await api(base, 'GET', '/api/projects/demo/worktrees')).body[0];

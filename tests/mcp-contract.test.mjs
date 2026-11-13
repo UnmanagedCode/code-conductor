@@ -147,12 +147,14 @@ test('dropped legacy aliases (instanceId / worktreeName) are rejected as unknown
   assert.match(w.body.result.content[0].text, /unexpected argument 'worktreeName'/);
 });
 
-test('spawn_instance rejects a temp argument as unknown (no MCP knob for it)', async () => {
-  const { body } = await rpc('tools/call', {
-    name: 'spawn_instance', arguments: { project: 'a', temp: true },
-  });
-  assert.equal(body.result.isError, true);
-  assert.match(body.result.content[0].text, /unexpected argument 'temp'/);
+test('spawn_instance rejects a persistent or temp argument as unknown (no MCP knob for persistence)', async () => {
+  for (const key of ['persistent', 'temp']) {
+    const { body } = await rpc('tools/call', {
+      name: 'spawn_instance', arguments: { project: 'a', [key]: true },
+    });
+    assert.equal(body.result.isError, true, key);
+    assert.match(body.result.content[0].text, new RegExp(`unexpected argument '${key}'`));
+  }
 });
 
 test('send_prompt no longer accepts wait — refused as an unknown argument, and no turn starts', async () => {
@@ -177,11 +179,13 @@ test('send_prompt no longer accepts wait — refused as an unknown argument, and
     'nothing was sent to the worker');
 });
 
-test('spawn_instance schema does not advertise a temp property', async () => {
+test('spawn_instance schema advertises neither a persistent nor a temp property', async () => {
   const { body } = await rpc('tools/list');
   const tool = body.result.tools.find(t => t.name === 'spawn_instance');
   assert.ok(tool, 'tools/list missing spawn_instance');
-  assert.ok(!('temp' in tool.inputSchema.properties), 'spawn_instance schema must not advertise temp');
+  for (const key of ['persistent', 'temp']) {
+    assert.ok(!(key in tool.inputSchema.properties), `spawn_instance schema must not advertise ${key}`);
+  }
 });
 
 test('legacy {id} worker handle is rejected (clean break — sessionId only)', async () => {

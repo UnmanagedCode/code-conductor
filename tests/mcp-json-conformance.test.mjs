@@ -152,8 +152,8 @@ before(async () => {
   await api(srv.baseUrl, 'POST', '/api/projects/.conduct/ensure');
   // The driving caller is a `.conduct` conductor: the spawn/drive tools are
   // offered to no other session. `warn` keeps its ungoverned calls proceeding.
-  callerSid = await spawnRest('.conduct', { temp: true, playbookEnforcement: 'warn' });
-  conductorSid = await spawnRest('.conduct', { temp: true, playbookEnforcement: 'enforce' });
+  callerSid = await spawnRest('.conduct', { playbookEnforcement: 'warn' });
+  conductorSid = await spawnRest('.conduct', { playbookEnforcement: 'enforce' });
 });
 after(async () => {
   await srv?.close();
@@ -293,7 +293,7 @@ test('renewal, prune and kill', async () => {
   const dir = path.join(srv.claudeProjectsRoot, encodeCwd(path.join(srv.projectsRoot, 'prunee')));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${sid}.jsonl`), seededTurns().map(l => JSON.stringify(l)).join('\n') + '\n');
-  const r = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'prunee', mode: 'bypassPermissions', resume: sid });
+  const r = await api(srv.baseUrl, 'POST', '/api/instances', { persistent: true, project: 'prunee', mode: 'bypassPermissions', resume: sid });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   await idle(sid);
   const pruned = await ok('prune_session', { sessionId: sid });

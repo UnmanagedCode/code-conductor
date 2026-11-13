@@ -17,7 +17,7 @@ process.env.ORCH_STORE_LOCK_RETRY_BASE_MS = '5';
 const store = await import('../src/sessionStore.ts');
 const {
   loadSessions, mutateSessions,
-  getTitle, setTitle, getSessionMode, setSessionMode, setSegmentTemp, isTemp, setSummary, getSummaries,
+  getTitle, setTitle, getSessionMode, setSessionMode, setSegmentPersistent, isPersistent, setSummary, getSummaries,
   setSessionBackend, getSessionBackend, markConducted, setSessionPlace, isConducted, setSegmentArchived, isArchived,
   getTurnMarks, recordTurnEnd, markViewed,
 } = store;
@@ -142,11 +142,13 @@ test('a missing primary recovers from .bak; missing both is legitimately empty',
   assert.equal((await listCorrupt(root)).length, 0);
 });
 
-test('an emptied store is written as {"sessions":{}}, never unlinked', async () => {
+test('an emptied store is written as {"version":2,"sessions":{}}, never unlinked', async () => {
   const root = await freshRoot();
   await setTitle(A, 'a');
   await mutateSessions('drop', A, (d) => { d.delete(A); return { changed: true, value: null }; });
-  assert.deepEqual(await readJson(storeFile(root)), { sessions: {} });
+  const raw = await fs.readFile(storeFile(root), 'utf8');
+  assert.deepEqual(JSON.parse(raw), { version: 2, sessions: {} });
+  assert.ok(raw.trimStart().startsWith('{\n  "version": 2,'), 'version is written first');
 });
 
 test('the .bak refresh survives a single delete and refuses a two-record drop', async () => {
@@ -245,11 +247,11 @@ test('a session-level write for an unknown minted-shaped id is refused', async (
 
 test('a segment write on an unknown non-minted id creates its base-case record', async () => {
   await freshRoot();
-  assert.equal(await setSegmentTemp(A, true), true);
+  assert.equal(await setSegmentPersistent(A, true), true);
   const rec = (await loadSessions()).byPublic.get(A);
   assert.equal(rec.current, A);
-  assert.deepEqual(rec.segments.map(s => [s.id, s.reason, s.temp]), [[A, 'initial', true]]);
-  assert.equal(await isTemp(A), true);
+  assert.deepEqual(rec.segments.map(s => [s.id, s.reason, s.persistent]), [[A, 'initial', true]]);
+  assert.equal(await isPersistent(A), true);
   // A session-level write naming the same id lands on that record, not a second one.
   await setTitle(A, 't');
   assert.deepEqual([...(await loadSessions()).byPublic.keys()], [A]);
@@ -258,9 +260,9 @@ test('a segment write on an unknown non-minted id creates its base-case record',
 test('a segment write naming an owner that lacks the segment is refused', async () => {
   const root = await freshRoot();
   await setTitle(A, 'owner');
-  const { value, lines } = await captureWarn(() => setSegmentTemp(B, true, { owner: A }));
+  const { value, lines } = await captureWarn(() => setSegmentPersistent(B, true, { owner: A }));
   assert.equal(value, false);
-  assert.ok(lines.some(l => l.includes(`setSegmentTemp ${B} refused`)), JSON.stringify(lines));
+  assert.ok(lines.some(l => l.includes(`setSegmentPersistent ${B} refused`)), JSON.stringify(lines));
   assert.deepEqual(Object.keys((await readJson(storeFile(root))).sessions), [A], 'no stray record for B');
 });
 
@@ -273,12 +275,12 @@ test('a segment write after a kicked rotation lands on the new segment', async (
   let release;
   const gate = new Promise((r) => { release = r; });
   trackLineageWrite(gate.then(() => recordRotation(A, B, 'renew')));
-  const write = setSegmentTemp(B, true, { owner: A });
+  const write = setSegmentPersistent(B, true, { owner: A });
   release();
   assert.equal(await write, true);
   const sessions = (await readJson(storeFile(root))).sessions;
   assert.deepEqual(Object.keys(sessions), [A], 'no stray base-case record for the new id');
-  assert.equal(sessions[A].segments.find(s => s.id === B)?.temp, true, 'the flag is on the recorded segment');
+  assert.equal(sessions[A].segments.find(s => s.id === B)?.persistent, true, 'the flag is on the recorded segment');
 });
 
 test('session facts and segment flags round-trip in the documented shape', async () => {
@@ -289,14 +291,14 @@ test('session facts and segment flags round-trip in the documented shape', async
   await markConducted(A, { parent: 'cafe0123' });
   await setSessionPlace(A, { project: 'p', worktree: 'wt' });
   await setSummary(A, 'short', { summary: 'sum', generatedAt: 7, messageCount: 3 });
-  await setSegmentTemp(A, true);
+  await setSegmentPersistent(A, true);
   await setSegmentArchived(A, true);
   const rec = (await readJson(storeFile(root))).sessions[A];
   assert.equal(typeof rec.segments[0].at, 'string');
   delete rec.segments[0].at;
   assert.deepEqual(rec, {
     current: A,
-    segments: [{ id: A, reason: 'initial', temp: true, archived: true }],
+    segments: [{ id: A, reason: 'initial', persistent: true, archived: true }],
     title: 'A title',
     mode: 'plan',
     backend: { backend: 'ollama', model: null, contextWindowTokens: null },
@@ -307,9 +309,9 @@ test('session facts and segment flags round-trip in the documented shape', async
   assert.equal(await getSessionMode(A), 'plan');
   assert.deepEqual(await getSessionBackend(A), { backend: 'ollama', model: null, contextWindowTokens: null });
   assert.equal(await isConducted(A), true);
-  assert.equal(await isTemp(A), true);
+  assert.equal(await isPersistent(A), true);
   assert.equal(await isArchived(A), true);
-  assert.equal(await isTemp(B), false, 'an unknown id carries no flag');
+  assert.equal(await isPersistent(B), false, 'an unknown id carries no flag');
   assert.equal(await getSessionBackend(B), null, 'never recorded — a missing record reads as the claude backend');
   // A `claude` record is a record like any other: it replaces, never clears.
   await setSessionBackend(A, 'claude', 'claude-opus-4-8', 200_000);
@@ -368,7 +370,7 @@ test('guards: an empty id, empty backend, or unknown mode refuse and store nothi
   assert.equal(await setSessionMode(A, 'default'), false);
   assert.equal(await setSessionMode('', 'plan'), false);
   assert.equal(await setTitle('', 't'), null);
-  assert.equal(await setSegmentTemp('', true), false);
+  assert.equal(await setSegmentPersistent('', true), false);
   assert.equal(await setSummary(A, 'huge', { summary: 's' }), null);
   await assert.rejects(fs.stat(storeFile(root)), { code: 'ENOENT' }, 'nothing was written');
 });
@@ -376,7 +378,7 @@ test('guards: an empty id, empty backend, or unknown mode refuse and store nothi
 test('an on-disk value outside the schema is dropped, not trusted', async () => {
   const root = await freshRoot();
   await fs.writeFile(storeFile(root), JSON.stringify({ sessions: {
-    [A]: { current: A, segments: [{ id: A, reason: 'initial', at: '', temp: 'yes' }],
+    [A]: { current: A, segments: [{ id: A, reason: 'initial', at: '', persistent: 'yes' }],
       mode: 'default', backend: { backend: '' }, title: '   ', conducted: 'true' },
     [B]: { current: B, segments: [{ id: B, reason: 'bogus', at: '' }] },
   } }));
@@ -384,6 +386,15 @@ test('an on-disk value outside the schema is dropped, not trusted', async () => 
   assert.deepEqual([...idx.byPublic.keys()], [A], 'a record with no valid segment is dropped');
   assert.deepEqual(idx.byPublic.get(A), { current: A, segments: [{ id: A, reason: 'initial', at: '' }] },
     'every malformed fact is dropped');
+});
+
+test('a temp key on a segment is not a store fact: it is dropped on read', async () => {
+  const root = await freshRoot();
+  await fs.writeFile(storeFile(root), JSON.stringify({ sessions: {
+    [A]: { current: A, segments: [{ id: A, reason: 'initial', at: '', temp: true }] },
+  } }));
+  assert.deepEqual((await loadSessions()).byPublic.get(A), { current: A, segments: [{ id: A, reason: 'initial', at: '' }] });
+  assert.equal(await isPersistent(A), false);
 });
 
 // Invariant: a record that predates the turn marks (neither counter on disk)

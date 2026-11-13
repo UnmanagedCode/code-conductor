@@ -59,7 +59,7 @@ async function bootMidTurn() {
   await fs.mkdir(sessionDir, { recursive: true });
   const file = path.join(sessionDir, `${sid}.jsonl`);
   await fs.writeFile(file, jsonl(SEED));
-  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', resume: sid });
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions', resume: sid });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.backingSessionId === sid);

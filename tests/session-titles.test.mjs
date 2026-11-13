@@ -225,11 +225,11 @@ test('rename pushes updated title onto a live instance summary', async () => {
   }
 });
 
-test('temp session exit preserves its custom title on the session', async () => {
+test('a normal session\'s exit preserves its custom title on the session', async () => {
   {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'temp-titled' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'normal-titled' });
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'temp-titled', temp: true, mode: 'bypassPermissions',
+      project: 'normal-titled', mode: 'bypassPermissions',
     });
     const id = r.body.id;
     const inst = instances.get(id);
@@ -240,7 +240,7 @@ test('temp session exit preserves its custom title on the session', async () => 
     assert.equal(await getTitle(sid), 'ephemeral');
 
     await api(baseUrl, 'DELETE', `/api/instances/${id}`);
-    // _archiveTempSession runs on subprocess exit; wait for archive to complete.
+    // _archiveSession runs on subprocess exit; wait for archive to complete.
     await waitFor(() => isArchived(sid));
     // Title is retained — still meaningful on an archived session.
     assert.equal(await getTitle(sid), 'ephemeral');
@@ -257,7 +257,7 @@ test('temp session exit preserves its custom title on the session', async () => 
 
 test('a title PUT by PUBLIC id survives a resume and reaches the sidebar row', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'title-public' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'title-public', mode: 'bypassPermissions' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: 'title-public', mode: 'bypassPermissions' });
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
   const publicId = inst.sessionId;

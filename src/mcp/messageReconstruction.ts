@@ -157,7 +157,7 @@ function humanPromptedIds(events: ReconEvent[]): Set<string> {
 // merge its reconstructed messages with the ring's, keyed by msgId. The ring
 // entry wins on collision (freshest / in-flight); disk fills evicted and
 // completed-but-evicted current-turn messages. Bounded by DISK_REPLAY_TAIL_CAP.
-// Returns null when no transcript exists (e.g. exited temp session) so the
+// Returns null when no transcript exists (e.g. exited normal session) so the
 // caller degrades gracefully to ring-only.
 export async function mergeRecentWithDisk(inst: InstanceLike, ringMessages: ReconMessage[], includeThinking: boolean): Promise<ReconMessage[] | null> {
   const result = await loadPersistedTranscript({

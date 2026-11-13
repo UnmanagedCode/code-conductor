@@ -160,7 +160,7 @@ test('TL3 Settings → Archived → Delete and loadHistory\'s missing-transcript
   assert.equal(await deleteSessionForCwd(place, B1), true);
 
   // Path 2: a relaunch onto a transcript that has gone missing.
-  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', resume: P2 });
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions', resume: P2 });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');

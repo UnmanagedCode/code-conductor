@@ -454,7 +454,7 @@ test('DELETE session refuses (409) when a running instance is attached; force=1 
 
 test('DELETE session also drops the stale Instance record when the proc was already killed', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'sess', mode: 'bypassPermissions' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project: 'sess', mode: 'bypassPermissions' });
   const id = r.body.id;
   const sid = r.body.sessionId;
   await waitFor(() => instances.get(id)?.proc);

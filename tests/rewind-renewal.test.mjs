@@ -64,16 +64,16 @@ const switchIn = (segment, afterUuid) => ({
 });
 const undo = (inst, body) => api(baseUrl, 'POST', `/api/instances/${inst.id}/rewind`, body);
 
-// Seed `segments` (segmentChain shape: {id, reason, records, archived?, temp?})
+// Seed `segments` (segmentChain shape: {id, reason, records, archived?, persistent?})
 // as one chain and resume it by public id.
-async function resumeChain(segments, { temp = false, scenario = null } = {}) {
+async function resumeChain(segments, { persistent = false, scenario = null } = {}) {
   const publicId = segments[0].id.slice(0, 8);
   await seedSegmentChain({ place: place(), publicId, segments });
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   if (scenario) process.env.FAKE_CLAUDE_SCENARIO = scenario;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'p', mode: 'bypassPermissions', resume: publicId, ...(temp ? { temp: true } : {}),
+      project: 'p', mode: 'bypassPermissions', resume: publicId, ...(persistent ? { persistent: true } : {}),
     });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
@@ -87,13 +87,13 @@ async function resumeChain(segments, { temp = false, scenario = null } = {}) {
 }
 
 // A managed renewal: P (archived, as a rotation leaves it) → N (current).
-function managedChain(tag, { temp = false } = {}) {
+function managedChain(tag, { persistent = false } = {}) {
   const P = sid(), N = sid();
   return {
     P, N,
     segments: [
       { id: P, reason: 'initial', archived: true, records: preRenewalRecords(tag) },
-      { id: N, reason: 'renew', ...(temp ? { temp: true } : {}), records: postRenewalRecords(tag) },
+      { id: N, reason: 'renew', ...(persistent ? { persistent: true } : {}), records: postRenewalRecords(tag) },
     ],
   };
 }
@@ -112,8 +112,8 @@ async function lifecycleOf(inst, fn) {
 }
 
 test('undoing the latest managed renewal relaunches the pre-renewal segment cut before the request', async () => {
-  const { P, N, segments } = managedChain('m', { temp: true });
-  const { inst, publicId } = await resumeChain(segments, { temp: true });
+  const { P, N, segments } = managedChain('m', { persistent: true });
+  const { inst, publicId } = await resumeChain(segments, { persistent: true });
   await appendModelSwitch(publicId, switchIn(P, 'm-close'));
   const agents = subAgentDirPath(place(), N);
   await fs.mkdir(agents, { recursive: true });
@@ -124,8 +124,8 @@ test('undoing the latest managed renewal relaunches the pre-renewal segment cut 
   assert.equal(r.body.droppedText, null, 'nothing to prefill');
 
   const chain = await chainFor(publicId);
-  assert.deepEqual(chain.map(s => [s.id, !!s.archived, !!s.temp]), [[P, false, true]],
-    'segments [P], P un-archived and temp again');
+  assert.deepEqual(chain.map(s => [s.id, !!s.archived, !!s.persistent]), [[P, false, true]],
+    'segments [P], P un-archived and persistent like the session');
   assert.equal(await resolveBacking(publicId), P, 'current is P');
   assert.deepEqual(await promptsOf(P), ['m brief', declinedRequest('m')], 'P keeps only the prompts before the request');
   assert.equal(existsSync(sessionFilePath(place(), N)), false, 'N\'s jsonl is deleted');
@@ -137,7 +137,7 @@ test('undoing the latest managed renewal relaunches the pre-renewal segment cut 
   assert.equal(inst.backingSessionId, P);
   assert.equal(inst.sessionId, publicId, 'the public id is unchanged');
   assert.equal(inst.summary().segmentCount, 1);
-  assert.equal(inst.temp, true);
+  assert.equal(inst.persistent, true);
   assert.deepEqual(echoes(inst), ['m brief', declinedRequest('m')], 'the ring is P\'s surviving conversation');
 
   await inst.prompt('carry on');
@@ -177,7 +177,7 @@ test('undoing a typed /clear restores the pre-clear segment whole', async () => 
   const r = await undo(inst, { boundary: N });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(await fileBytes(P), before, 'P is byte-identical');
-  assert.deepEqual((await chainFor(publicId)).map(s => [s.id, !!s.archived, !!s.temp]), [[P, false, false]]);
+  assert.deepEqual((await chainFor(publicId)).map(s => [s.id, !!s.archived, !!s.persistent]), [[P, false, false]]);
   assert.equal(existsSync(sessionFilePath(place(), N)), false);
   await waitFor(() => inst.status === 'idle' && inst.proc);
   assert.deepEqual(echoes(inst), ['t prompt 0', 't prompt 1']);

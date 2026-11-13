@@ -23,7 +23,7 @@ import { checkClaudeReadiness, formatReadiness } from './src/health.ts';
 import { createClaudeLoginFlow } from './src/claudeLogin.ts';
 import { createClaudeAuthStatusReader } from './src/claudeAuthStatus.ts';
 import { invalidateAccountUsage } from './src/accountUsage.ts';
-import { sweepPendingTempCleanup } from './src/tempCleanup.ts';
+import { sweepPendingArchive } from './src/pendingArchive.ts';
 import { cleanupSessionsWithoutTranscripts } from './src/sessionCleanup.ts';
 import { ensureConductProject } from './src/conduct.ts';
 import { regenerateAllProjectConventions } from './src/projectClaudeMd.ts';
@@ -314,11 +314,11 @@ async function startHolding(rootLock: RootLock, {
     const src = process.env.PROJECTS_ROOT ? 'PROJECTS_ROOT env' : 'default (repo parent)';
     console.log(`store: ${orchStoreRoot()} [${src}] — ${n} archived session(s)`);
   } catch { /* diagnostic only */ }
-  // Archive the temp sessions a pending-temp-cleanup.json lists, then remove
+  // Archive the normal sessions a pending-archive.json lists, then remove
   // the file. No current path writes one; the sweep consumes a file a build
   // whose restart wrote it leaves behind on the restart into this one.
-  try { sweepPendingTempCleanup({ log: console }); }
-  catch (e) { console.warn('temp-cleanup sweep failed:', e); }
+  try { sweepPendingArchive({ log: console }); }
+  catch (e) { console.warn('pending-archive sweep failed:', e); }
   // Reclaim session-tmp directories a previous process left behind. They hold
   // redirected sessions' backgrounded-command output, and a KILLED orchestrator
   // runs none of the teardown paths that normally reap them. No session is live
@@ -343,7 +343,7 @@ async function startHolding(rootLock: RootLock, {
   await prepareResumeBoot({ platform, log: console });
   // Drop session records with no transcript left anywhere in their lineage
   // (pre-image: <store>/sessions.json.startup.bak). ORDER IS LOAD-BEARING: after
-  // migrations and the temp sweep (whose store write it queues behind), before
+  // migrations and the pending-archive sweep (whose store write it queues behind), before
   // createServer() so no instance is live, and before startResumeLifecycle
   // unlinks pending-resume.json and running-sessions.json, which name the
   // sessions it must keep (as does pending-continue.json).

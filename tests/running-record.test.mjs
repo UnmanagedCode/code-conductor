@@ -51,7 +51,7 @@ const roundTrip = (v) => JSON.parse(JSON.stringify(v));
 test('the record holds the manifest\'s facts for the same live state', async () => {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'rec' });
   const busy = await createWithScenario(DRAIN, { project: 'rec' });
-  const idle = await createWithScenario(BASIC, { project: 'rec', temp: true });
+  const idle = await createWithScenario(BASIC, { project: 'rec' });
   void busy.prompt('stay busy');
   await waitFor(() => busy.status === 'turn');
   const recorder = createRunningRecorder({ instances, platform: hostPlatform, log: QUIET, debounceMs: 10 });

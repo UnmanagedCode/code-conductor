@@ -20,7 +20,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBacken
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend, setTaskToolsEnabled, setAutoBackground,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier, setTierEffort,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
-import { getSessionBackend, setSessionBackend, sessionsFile, isTemp, isConducted, getSessionMode } from '../src/sessionStore.ts';
+import { getSessionBackend, setSessionBackend, sessionsFile, isPersistent, isConducted, getSessionMode } from '../src/sessionStore.ts';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 import { ControllableLauncher } from './controllableLauncher.mjs';
@@ -48,7 +48,7 @@ async function spawnOnBackend({ model = 'gemma4:cloud', backend = 'ollama' } = {
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backend });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backend, persistent: true });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const id = r.body.id;
     await waitFor(() => instances.get(id)?.status === 'idle');
@@ -336,7 +336,7 @@ describe('substitution-backend spawn command/args', () => {
   });
 });
 
-// launch() awaits the spawn-time store facts (temp, backend, conducted, mode), so
+// launch() awaits the spawn-time store facts (persistent, backend, conducted, mode), so
 // an awaited create() resolves only once they are durable. Forced
 // deterministically by holding the store's own advisory lock across the spawn:
 // storeLock.ts reclaims a held lock ONLY when the owner PID is dead, so while
@@ -387,10 +387,10 @@ describe('the spawn response waits for the spawn-time store facts', () => {
   test('every spawn-time fact is durable when create resolves', async () => {
     const sid = 'abababab-0000-0000-0000-000000000000';
     await createUnderHeldLock(sid, {
-      mode: 'plan', temp: true, conducted: true, backend: 'ollama', model: 'gemma4:cloud',
+      mode: 'plan', persistent: true, conducted: true, backend: 'ollama', model: 'gemma4:cloud',
     });
-    // Each fact read ONCE, no waitFor. temp first: it is the last-enqueued write.
-    assert.equal(await isTemp(sid), true, 'temp is durable');
+    // Each fact read ONCE, no waitFor. persistent first: it is the last-enqueued write.
+    assert.equal(await isPersistent(sid), true, 'persistent is durable');
     assert.equal(await isConducted(sid), true, 'conducted is durable');
     const rec = JSON.parse(await fs.readFile(sessionsFile(), 'utf8')).sessions[sid];
     assert.equal(rec.project, 'p', 'the conducted spawn-time project is durable');
@@ -904,7 +904,7 @@ describe('an unknown or removed backend never falls through to real claude', () 
       (e) => {
         assert.equal(e.statusCode, 409);
         assert.match(e.message, /open session/);
-        // The remedy must NOT be "kill them" — the kill button leaves a non-temp
+        // The remedy must NOT be "kill them" — the kill button leaves a persistent
         // instance tracked, so the 409 just repeats (asserted below).
         assert.match(e.message, /archive or delete/);
         assert.doesNotMatch(e.message, /kill (it|them) first/);
@@ -941,7 +941,7 @@ describe('launch_failed crash signal', () => {
 
   async function spawnAndWaitIdle(model, backend) {
     await api(cbase, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(cbase, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backend });
+    const r = await api(cbase, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backend, persistent: true });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const id = r.body.id;
     await waitFor(() => cinst.get(id)?.status === 'idle');

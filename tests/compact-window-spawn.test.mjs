@@ -30,7 +30,7 @@ async function spawnAndGetEnv({ ctx, project, conductedWorker = false, model = '
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
-    const spawnBody = { project, mode: 'bypassPermissions', model, temp: true };
+    const spawnBody = { project, mode: 'bypassPermissions', model };
     if (backend) spawnBody.backend = backend;
     if (conductedWorker) spawnBody.conducted = true;
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', spawnBody);

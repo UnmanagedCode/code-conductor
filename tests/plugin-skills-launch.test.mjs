@@ -76,7 +76,7 @@ async function addSkillPlugin(projectsRoot, { rel = 'claude', withCcRoot = true,
 }
 
 async function spawnIn(project, body = {}) {
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', ...body });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions', ...body });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const id = r.body.id;
   await waitFor(() => instances.get(id)?.status === 'idle');

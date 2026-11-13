@@ -127,7 +127,7 @@ test('resume recovers the bare model and re-derives the window (Sonnet → [1m])
 
     // Spawn with a Sonnet family model — canonicalised to [1m] at spawn.
     const r1 = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'demo',
+      persistent: true, project: 'demo',
       mode: 'bypassPermissions',
       model: 'claude-sonnet-4-6',
     });
@@ -212,7 +212,7 @@ test('mid-session system/init model flip emits model_changed once, updates inst.
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
 
     const r1 = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'demo',
+      persistent: true, project: 'demo',
       mode: 'bypassPermissions',
       model: 'claude-sonnet-4-6',
     });
@@ -347,7 +347,7 @@ for (const c of BARE_REPORT_CASES) {
       await c.register();
 
       const r1 = await api(ctx.baseUrl, 'POST', '/api/instances', {
-        project: 'demo',
+        persistent: true, project: 'demo',
         mode: 'bypassPermissions',
         model: 'qwen2.5-coder:32b',
         backend: c.backend,

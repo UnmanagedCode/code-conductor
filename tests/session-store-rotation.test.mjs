@@ -2,7 +2,8 @@
 // nothing but the production `system/init` rotation branch runs for it. These
 // tests pin what that rotation must leave behind: session-level facts (title,
 // backend) stay on the session, the pre-clear transcript is archived, and the
-// new transcript inherits the temp flag — the same outcome a managed renew has.
+// new transcript inherits the persistent flag — the same outcome a managed
+// renew has.
 //
 // `rotate` (tests/segmentChain.mjs) drives the real rotation branch; the fake
 // engine writes no jsonl, so each test seeds the transcripts a resume needs.
@@ -17,7 +18,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } f
 import { rotate } from './segmentChain.mjs';
 import { localPlace, listSessionsForCwdWithCounts, orchStoreRoot } from '../src/projects.ts';
 import { recordRotation, revertRotation, resolveBacking, dropSegment } from '../src/sessionLineage.ts';
-import { getTitle, setTitle, isTemp, loadSessions, getTurnMarks } from '../src/sessionStore.ts';
+import { getTitle, setTitle, isPersistent, loadSessions, getTurnMarks } from '../src/sessionStore.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -135,8 +136,8 @@ test('a typed /clear keeps a substitution backend and exact model on resume', as
   }
 });
 
-test('a typed /clear archives the pre-clear segment and carries temp to the new one', async () => {
-  const inst = await spawn({ temp: true });
+test('a typed /clear archives the pre-clear segment and carries persistent to the new one', async () => {
+  const inst = await spawn({ persistent: true });
   const { place, oldBacking, newBacking } = await typedClear(inst);
 
   const { rows } = await listSessionsForCwdWithCounts(place);
@@ -144,9 +145,9 @@ test('a typed /clear archives the pre-clear segment and carries temp to the new 
   const newRow = rows.find(r => r.sessionId === inst.sessionId);
   assert.ok(oldRow && newRow, `both transcripts list: ${JSON.stringify(rows)}`);
   assert.equal(oldRow.archived, true, 'the pre-clear transcript is archived by the rotation');
-  assert.equal(oldRow.temp, false, 'the pre-clear transcript drops its temp flag');
+  assert.equal(oldRow.persistent, true, 'archiving leaves the pre-clear transcript\'s persistent flag');
   assert.equal(newRow.archived, false, 'the post-clear transcript stays live');
-  assert.equal(newRow.temp, true, 'the post-clear transcript inherits the temp flag');
+  assert.equal(newRow.persistent, true, 'the post-clear transcript inherits the persistent flag');
   assert.notEqual(oldBacking, newBacking);
 });
 
@@ -163,10 +164,10 @@ test('prune rollback keeps a pre-lineage session\'s facts', async () => {
 });
 
 test('loadHistory ENOENT never deletes the last live segment\'s record', async () => {
-  const inst = await spawn({ temp: true });
+  const inst = await spawn({ persistent: true });
   const TITLE = 'killed before its first turn';
   await api(baseUrl, 'PUT', `/api/sessions/${inst.sessionId}/title`, { title: TITLE });
-  await waitFor(() => isTemp(inst.backingSessionId));
+  await waitFor(() => isPersistent(inst.backingSessionId));
   // The fake engine wrote no transcript: the replay finds none.
   await inst.loadHistory(inst.backingSessionId);
   await inst.flushLineage();
@@ -175,7 +176,7 @@ test('loadHistory ENOENT never deletes the last live segment\'s record', async (
   assert.equal(rec.title, TITLE);
   assert.equal(rec.segments.length, 1);
   assert.notEqual(rec.segments[0].dropped, true, 'its only segment is not tombstoned');
-  assert.equal(await isTemp(inst.backingSessionId), true, 'the temp flag survives');
+  assert.equal(await isPersistent(inst.backingSessionId), true, 'the persistent flag survives');
 
   // Not the last: a missing older segment IS tombstoned.
   const newer = randomUUID();

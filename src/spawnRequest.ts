@@ -1,7 +1,6 @@
 // The one spawn implementation behind POST /api/instances and the headless
-// runner (src/headless/runner.ts): the request body's validation, the temp →
-// bypassPermissions mapping and the Settings → Models row a model-less spawn
-// runs on, then create(). Throws a statusCode-bearing error on a refusal, which
+// runner (src/headless/runner.ts): the request body's validation and the
+// Settings → Models row a model-less spawn runs on, then create(). Throws a statusCode-bearing error on a refusal, which
 // the route's error middleware renders.
 
 import { CONDUCT_PROJECT_NAME } from './conduct.ts';
@@ -17,24 +16,21 @@ export async function spawnFromBody(instances: InstanceManagerLike, body: Record
   // No context-window input: capacity is resolved server-side from
   // {backend, model} (see resolveContextWindowTokens), never accepted
   // from the client.
-  const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan, playbookEnforcement, pristine } = body;
+  const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, persistent, debug, autoApprovePlan, playbookEnforcement, pristine } = body;
+  // Omitted ⇒ a normal session. Anything but a boolean is refused rather than
+  // read by truthiness, so `"false"` cannot make a session persistent.
+  if (persistent !== undefined && typeof persistent !== 'boolean') {
+    throw httpError(400, 'persistent must be a boolean');
+  }
   // Pristine (src/pristine.ts) is New conductor's state and nothing else's.
-  if (pristine === true && !(project === CONDUCT_PROJECT_NAME && temp === true && resume == null)) {
-    throw httpError(400, `pristine applies only to a fresh temp spawn in ${CONDUCT_PROJECT_NAME}`, { code: 'PRISTINE_NOT_FRESH_CONDUCTOR' });
+  if (pristine === true && !(project === CONDUCT_PROJECT_NAME && persistent !== true && resume == null)) {
+    throw httpError(400, `pristine applies only to a fresh normal spawn in ${CONDUCT_PROJECT_NAME}`, { code: 'PRISTINE_NOT_FRESH_CONDUCTOR' });
   }
   // Ingress validation for the enforcement level — instances.ts stores it
   // as an already-narrowed type, so the allow-list is checked here.
   if (playbookEnforcement !== undefined && !isPlaybookEnforcement(playbookEnforcement)) {
     throw httpError(400, `playbookEnforcement must be one of ${PLAYBOOK_ENFORCEMENT_MODES.join(' | ')}`);
   }
-  // UI shortcut: the temp checkbox implies bypassPermissions when no
-  // mode is picked (a disposable session is almost always for *doing*,
-  // not planning). create() is policy-light and no longer couples
-  // these, so the mapping lives here. An explicit mode still wins.
-  // `temp === true` (NOT truthiness): a malformed non-boolean temp (e.g.
-  // the string "false") must not force bypassPermissions — pinned by
-  // tests/instances.test.mjs.
-  const effectiveMode = (mode == null && temp === true) ? 'bypassPermissions' : mode;
   // `tier`/`role` name the Settings → Models row this spawn resolves both
   // `model`+`backend` AND (when `effort` is omitted) the default effort from
   // (resolveSpawnEffort) — one resolution point, server-side. The web UI
@@ -118,7 +114,7 @@ export async function spawnFromBody(instances: InstanceManagerLike, body: Record
     actor: { type: 'human' },
     project: project as string,
     resume: resume as string | undefined,
-    mode: effectiveMode as string | null | undefined,
+    mode: mode as string | null | undefined,
     effort: effort as string | null | undefined,
     tier: spawnTier,
     role: spawnRole,
@@ -126,7 +122,7 @@ export async function spawnFromBody(instances: InstanceManagerLike, body: Record
     model: spawnModel,
     backend: spawnBackend,
     worktree: worktree as string | boolean | null | undefined,
-    temp: temp as boolean | undefined,
+    persistent: persistent === true,
     pristine: pristine === true,
     debug: debug as boolean | undefined,
     autoApprovePlan: autoApprovePlan as boolean | undefined,

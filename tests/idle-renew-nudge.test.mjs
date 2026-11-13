@@ -331,11 +331,11 @@ test('end to end: a saved setting nudges an idle conductor, never a non-conducto
     instances.idleNudgeTimers = fakeTimers();
 
     await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-    const c = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', temp: true, mode: 'bypassPermissions' });
+    const c = await api(baseUrl, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions' });
     assert.equal(c.status, 201, JSON.stringify(c.body));
     const conductor = instances.get(c.body.id);
     await api(baseUrl, 'POST', '/api/projects', { name: 'nudge-worker' });
-    const w = await api(baseUrl, 'POST', '/api/instances', { project: 'nudge-worker', temp: true, mode: 'bypassPermissions' });
+    const w = await api(baseUrl, 'POST', '/api/instances', { project: 'nudge-worker', mode: 'bypassPermissions' });
     assert.equal(w.status, 201, JSON.stringify(w.body));
     const worker = instances.get(w.body.id);
     await waitFor(() => conductor.status === 'idle' && worker.status === 'idle');

@@ -72,7 +72,7 @@ const exitLines = (lines, sid) => lines.filter(l => l.includes(sid) && l.include
 
 const EIO_LINE = "Error: EIO: i/o error, open '/proj/.claude/settings.json'";
 
-// An MCP-spawned (temp) worker whose CLI exits 1 with EIO_LINE before it is sent
+// An MCP-spawned (normal) worker whose CLI exits 1 with EIO_LINE before it is sent
 // anything. Returns the spawn result once the instance has left byId.
 async function startupCrashedWorker(project = 'p') {
   await api(baseUrl, 'POST', '/api/projects', { name: project });
@@ -203,10 +203,10 @@ test('a successful resume clears the cause: a later commanded kill refuses with 
   assert.equal('exit' in r, false);
 });
 
-// A non-temp worker stays in byId after it dies, so the same Instance is respawned.
+// A persistent worker stays in byId after it dies, so the same Instance is respawned.
 async function restWorker(project = 'p') {
   await api(baseUrl, 'POST', '/api/projects', { name: project });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { persistent: true, project, mode: 'bypassPermissions' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);

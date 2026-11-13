@@ -667,14 +667,14 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
         // its "Sessions (N)" subnode without an extra fetch.
         const worktreesWithSessions = await Promise.all(gitFacts.worktrees.map(async (w) => {
           const wtPlace = placeOf(p, w.worktreePath);
-          const wtTempSids = instances ? instances.tempSessionIdsForPlace(wtPlace) : null;
+          const wtNormalSids = instances ? instances.normalSessionIdsForPlace(wtPlace) : null;
           return {
             ...w,
-            sessions: await summarizeSessions(wtPlace, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
+            sessions: await summarizeSessions(wtPlace, wtNormalSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
           };
         }));
         const projPlace = placeOf(p, p.path);
-        const projTempSids = instances ? instances.tempSessionIdsForPlace(projPlace) : null;
+        const projNormalSids = instances ? instances.normalSessionIdsForPlace(projPlace) : null;
         return {
           ...p,
           sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
@@ -688,7 +688,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
           isGitRepo: gitFacts.isGitRepo,
           unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,
-          sessions: await summarizeSessions(projPlace, projTempSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
+          sessions: await summarizeSessions(projPlace, projNormalSids).catch(() => ({ count: 0, archivedCount: 0, handCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
           // The selection ({mode, slugs?}) plus `unresolved`, its slugs the
           // catalog lacks, in marker order; {error} when the file could not be
@@ -962,8 +962,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const proj = await getProject(req.params.name);
       const place = await projectRootPlace(req.params.name, proj.path);
-      const tempSids = instances ? instances.tempSessionIdsForPlace(place) : null;
-      const sessions = await listSessionsForCwd(place, tempSids, { includeArchived: !!req.query.includeArchived });
+      const normalSids = instances ? instances.normalSessionIdsForPlace(place) : null;
+      const sessions = await listSessionsForCwd(place, normalSids, { includeArchived: !!req.query.includeArchived });
       res.json(sessions);
     } catch (e) { next(e); }
   });
@@ -1121,8 +1121,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     try {
       const wt = await requireWorktree(req.params.name, req.params.wt);
       const wtPlace = await projectRootPlace(req.params.name, wt.worktreePath);
-      const tempSids = instances ? instances.tempSessionIdsForPlace(wtPlace) : null;
-      const wtSessions = await listSessionsForCwd(wtPlace, tempSids, { includeArchived: !!req.query.includeArchived });
+      const normalSids = instances ? instances.normalSessionIdsForPlace(wtPlace) : null;
+      const wtSessions = await listSessionsForCwd(wtPlace, normalSids, { includeArchived: !!req.query.includeArchived });
       res.json(wtSessions);
     } catch (e) { next(e); }
   });
@@ -1591,7 +1591,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     // { id, events, hasMore, nextBefore, trimmedBefore, lastSeq }.
     //
     // Both this and lineage-events serve an instance that has left the list
-    // (killed, or an exited temp worker) from its frozen pager while the
+    // (killed, or an exited normal worker) from its frozen pager while the
     // manager still holds one (src/retiredPagers.ts) — the pane that was
     // watching it keeps its cursor space. 404 once that is forgotten.
     r.get('/instances/:id/events', async (req, res, next) => {
@@ -1768,16 +1768,15 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       } catch (e) { next(e); }
     });
 
-    // Promote a temp session to a regular one. 404 on unknown id, 400
-    // when the instance is not temp (no-op would be confusing — better
-    // to surface the misuse). The summary broadcast that follows the
-    // status emit lets the sidebar migrate the row from the Temp
-    // Sessions subnode into the regular Sessions list.
-    r.post('/instances/:id/promote', async (req, res, next) => {
+    // Make a live normal session persistent. 404 on unknown id, 400 when
+    // the instance is already persistent (a no-op would be confusing —
+    // better to surface the misuse). The summary broadcast that follows the
+    // status emit lets the sidebar move the row into its Persistent group.
+    r.post('/instances/:id/persist', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
-        const summary = await inst.promoteToNormal();
+        const summary = await inst.makePersistent();
         res.json({ ok: true, instance: summary });
       } catch (e) { next(e); }
     });

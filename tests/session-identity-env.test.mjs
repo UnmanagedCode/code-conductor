@@ -185,7 +185,7 @@ test('I5 stable across a relaunching rotation (prune): the relaunched child gets
 test('I6 stable across resume: a resumed session\'s child gets the same CC_SESSION_ID and kind', async () => {
   await bootWith(SCENARIO, async (ctx) => {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const first = await spawnIdle(ctx, { project: 'p', temp: false });
+    const first = await spawnIdle(ctx, { project: 'p', persistent: true });
     const sid = first.sessionId;
     await seedSessionJsonl(first.transcriptPlace, first.backingSessionId);
     await first.kill({ graceMs: 50 });

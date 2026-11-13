@@ -143,7 +143,7 @@ test('POST /api/instances with autoApprovePlan:true arms the flag before spawn',
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'p', mode: 'plan', temp: true, autoApprovePlan: true,
+      project: 'p', mode: 'plan', autoApprovePlan: true,
     });
     const id = r.body.id;
     assert.equal(r.body.autoApprovePlan, true, 'summary reflects the flag');
@@ -169,7 +169,7 @@ test('POST /api/instances with autoApprovePlan:true arms the flag before spawn',
 test('POST /api/instances without autoApprovePlan leaves the flag false', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'p', mode: 'plan', temp: true,
+    project: 'p', mode: 'plan',
   });
   assert.equal(r.body.autoApprovePlan, false);
   assert.equal(instances.get(r.body.id).autoApprovePlan, false);

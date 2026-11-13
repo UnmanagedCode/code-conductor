@@ -184,14 +184,15 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.doesNotThrow(() => process.kill(grandchildPid, 0));
 });
 
-test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives the session)', async (t) => {
-  // A pending-temp-cleanup manifest left for the next boot is swept on
-  // restart: the manifest + ephemeral subagent dir are removed, and the
-  // session is **archived** (transcript jsonl kept — always-archive policy,
-  // so a temp that exited during restart is recoverable from Settings →
-  // Archived). We plant a (legacy, no-action) manifest + a fake jsonl
-  // before triggering restart, then assert the sweep outcome after the
-  // grandchild comes up.
+test('restart sweeps a pending-archive manifest on the next boot (archives the session)', async (t) => {
+  // A pending-archive manifest left for the next boot is swept on restart:
+  // the manifest + ephemeral subagent dir are removed, and the session is
+  // **archived** (transcript jsonl kept — always-archive policy, so a normal
+  // session that exited during restart is recoverable from Settings →
+  // Archived). We plant a manifest + a fake jsonl before triggering restart,
+  // then assert the sweep outcome after the grandchild comes up. The first
+  // plant uses the manifest's pre-0043 name, so the first boot also proves
+  // migration 0043's rename feeds the sweep.
   const port = await getFreePort();
   const tmpHome = await mkdtemp('orch-restart-sweep-');
   const projectsRoot = path.join(tmpHome, 'project');
@@ -213,8 +214,9 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
 
   const storeDir = path.join(projectsRoot, '.code-conductor');
   await fs.mkdir(storeDir, { recursive: true });
-  const manifest = path.join(storeDir, 'pending-temp-cleanup.json');
-  await fs.writeFile(manifest, JSON.stringify({
+  const oldManifest = path.join(storeDir, 'pending-temp-cleanup.json');
+  const manifest = path.join(storeDir, 'pending-archive.json');
+  await fs.writeFile(oldManifest, JSON.stringify({
     writtenAt: new Date().toISOString(),
     entries: [{ place: { system: 'local', remoteId: null, cwd: fakeCwd }, sessionId: sid }],
   }));
@@ -236,6 +238,9 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   });
 
   await waitForBanner(captured, port);
+  await assert.rejects(() => fs.access(subagents), 'the first boot swept the renamed manifest');
+  await assert.rejects(() => fs.access(oldManifest), 'the old manifest name is gone');
+  await assert.rejects(() => fs.access(manifest), 'and the renamed one was consumed');
 
   // The initial boot already swept the planted manifest. Re-plant before
   // restart so the restarted process is the one we're asserting against.
@@ -273,8 +278,8 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   // blaming the replacement, instead of failing here at 8 s with the captured
   // output. Seeing it die to the same mutant as test 1 is expected; that is
   // not grounds to delete it as redundant. (Test 2's genuinely unique coverage
-  // is the GRANDCHILD's sweepPendingTempCleanup on boot — the assertions below
-  // this one, not this one: the parent reads pending-temp-cleanup.json only at
+  // is the GRANDCHILD's sweepPendingArchive on boot — the assertions below
+  // this one, not this one: the parent reads pending-archive.json only at
   // its own boot, so the re-planted manifest is invisible to the parent.)
   const exited = await new Promise((resolve) => {
     if (child.exitCode != null || child.signalCode != null) return resolve('exited');
@@ -293,7 +298,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   // Grandchild boot should have swept the manifest + subagent dir, but
   // KEPT the transcript jsonl (always-archive: never delete from disk).
   await fs.access(jsonl); // jsonl preserved (archived, not deleted)
-  await assert.rejects(() => fs.access(subagents), 'temp subagents dir must be swept');
+  await assert.rejects(() => fs.access(subagents), 'the subagents dir must be swept');
   await assert.rejects(() => fs.access(manifest), 'manifest must be unlinked');
 
   // The grandchild's sweep must have flagged the session's segment archived.

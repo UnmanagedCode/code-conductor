@@ -334,7 +334,7 @@ export class SessionRenewController {
     this._clear(id, { ok: true });
     // Nothing to carry: session facts are keyed by the public id, and the
     // rotation write kicked in system/init already archived the pre-clear
-    // segment and passed temp to the new one.
+    // segment and passed persistent to the new one.
     // Wait for the rotation to be DURABLE before the reseed opens a turn against
     // the new backing id. The write was kicked in the system/init handler (the
     // earliest possible moment), so this normally resolves instantly. On failure

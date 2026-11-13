@@ -86,7 +86,7 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLog } = {}) {
   await fs.writeFile(path.join(pbDir, 'gatelab.json'), JSON.stringify(GATELAB));
   if (seedLog) await seedLog(ctx);
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
-    project: '.conduct', mode: 'bypassPermissions', temp: true,
+    project: '.conduct', mode: 'bypassPermissions',
     ...(enforcement ? { playbookEnforcement: enforcement } : {}),
   });
   assert.equal(spawned.status, 201, `conductor spawn failed: ${JSON.stringify(spawned.body)}`);
@@ -839,7 +839,7 @@ test('a worker bound by a previous run still records its exit', async () => {
 
     // A worker created directly, so no governed call is involved in its birth.
     const worker = await api(ctx.baseUrl, 'POST', '/api/instances',
-      { project: 'demo', mode: 'plan', temp: true });
+      { project: 'demo', mode: 'plan' });
     assert.equal(worker.status, 201, `worker spawn failed: ${JSON.stringify(worker.body)}`);
     await waitFor(() => ctx.instances.get(worker.body.id)?.sessionId);
     const sessionId = ctx.instances.get(worker.body.id).sessionId;
@@ -852,7 +852,7 @@ test('a worker bound by a previous run still records its exit', async () => {
 
     // Only now does a conductor exist, and it makes no tools/call at all.
     const spawned = await api(ctx.baseUrl, 'POST', '/api/instances',
-      { project: '.conduct', mode: 'bypassPermissions', temp: true });
+      { project: '.conduct', mode: 'bypassPermissions' });
     assert.equal(spawned.status, 201);
     await waitFor(() => ctx.instances.get(spawned.body.id)?.status === 'idle');
 
@@ -1107,7 +1107,7 @@ test('policy applies only to the conductor: a worker is refused by audience befo
     // project, so a permissive level cannot be what makes this caller ungoverned
     // — only the conductor check can.
     const rogue = await api(t.baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'enforce',
+      project: 'demo', mode: 'bypassPermissions', playbookEnforcement: 'enforce',
     });
     assert.equal(rogue.status, 201);
     await waitFor(() => t.instances.get(rogue.body.id)?.status === 'idle');
@@ -1227,8 +1227,8 @@ test('a conductor spawned with no playbookEnforcement and nothing persisted defa
 //
 // The fake engine writes no transcript, so the sequence is: spawn a real
 // playbook-bound worker, seed the jsonl the CLI would have left, kill it, resume.
-// A temp session's jsonl is archived (not deleted) on exit and stays just as
-// resumable, so the default MCP temp:true spawn works fine here.
+// A normal session's jsonl is archived (not deleted) on exit and stays just as
+// resumable, so the default MCP normal spawn works fine here.
 async function killedBoundWorker(t) {
   const w = await t.spawnWorker({
     project: 'demo', playbook: 'gatelab', stage: 'loose', mode: 'bypassPermissions',
@@ -1238,7 +1238,7 @@ async function killedBoundWorker(t) {
   // — which is also the cwd the resume's `project`/`worktree` recovery resolves to.
   // The transcript is named by the BACKING id; the resume below deliberately uses
   // the public id, which is the only handle a conductor ever had. The backing id
-  // is captured here because the kill evicts the (temp) instance from byId, so it
+  // is captured here because the kill evicts the (normal) instance from byId, so it
   // is unreadable afterwards — which is itself why the ordinary resume target is
   // a session the in-memory prefix universe no longer holds.
   const backingSessionId = instForSession(t.instances, w.sessionId).backingSessionId;
@@ -1448,7 +1448,7 @@ test('the spawn route validates playbookEnforcement and rejects an unknown mode'
   const t = await setup();
   try {
     const bad = await api(t.baseUrl, 'POST', '/api/instances', {
-      project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'always',
+      project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: 'always',
     });
     assert.equal(bad.status, 400);
     assert.match(bad.body.error, /warn \| enforce/);
@@ -1466,7 +1466,7 @@ test('the retired `off` level is refused at both ingress boundaries', async () =
     // silently coerced — a caller asking for inert behaviour that no longer
     // exists deserves to hear that, not to get `warn` without being told.
     const bad = await api(t.baseUrl, 'POST', '/api/instances', {
-      project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'off',
+      project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: 'off',
     });
     assert.equal(bad.status, 400);
 
@@ -1684,7 +1684,7 @@ test('enforce: a retired forward SOURCE is still governed — policy, not livene
     const target = await spawn('reader');
 
     // Retire both sources identically: seed the transcript the CLI would have
-    // written, then kill the subprocess. Non-temp, so each stays in byId and in
+    // written, then kill the subprocess. Persistent, so each stays in byId and in
     // the playbook projection — exactly the shape §A9 flagged.
     for (const w of [denied, allowed]) {
       const inst = instForSession(t.instances, w.sessionId);

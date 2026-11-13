@@ -198,17 +198,17 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
   afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
   let n = 0;
-  // A NON-TEMP instance that has exited but is still in byId — the only state
+  // A PERSISTENT instance that has exited but is still in byId — the only state
   // in which a resume can find a superseded husk to reclaim. Built over REST
   // because no MCP-spawned session can ever reach it: a conducted spawn is
-  // always temp, and a temp worker is dropped from byId the moment its process
+  // always normal, and a normal worker is dropped from byId the moment its process
   // exits.
   // The subprocess is killed on the Instance directly: DELETE /api/instances/:id
   // would remove it from byId and there would be nothing left to supersede.
   async function settledHusk({ mode = 'bypassPermissions' } = {}) {
     const project = `reclaim-${++n}`;
     await api(baseUrl, 'POST', '/api/projects', { name: project });
-    const created = await api(baseUrl, 'POST', '/api/instances', { project, temp: false, mode });
+    const created = await api(baseUrl, 'POST', '/api/instances', { project, persistent: true, mode });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const inst = instances.get(created.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -218,7 +218,7 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
     await seedSessionJsonl(localPlace(path.join(projectsRoot, project)), inst.backingSessionId);
     await inst.kill({ graceMs: 50 });
     await waitFor(() => !inst.proc && (inst.status === 'exited' || inst.status === 'crashed'));
-    assert.equal(instances.get(inst.id), inst, 'premise: a non-temp exit is RETAINED in byId');
+    assert.equal(instances.get(inst.id), inst, 'premise: a persistent exit is RETAINED in byId');
     return { project, sessionId, inst, oldId: inst.id };
   }
 
@@ -268,7 +268,7 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
     const project = 'reclaim-live';
     await api(baseUrl, 'POST', '/api/projects', { name: project });
     const created = await api(baseUrl, 'POST', '/api/instances',
-      { project, temp: false, mode: 'bypassPermissions' });
+      { project, persistent: true, mode: 'bypassPermissions' });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const inst = instances.get(created.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -318,7 +318,7 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
     // A live conductor to be the caller.
     await api(baseUrl, 'POST', '/api/projects', { name: 'reclaim-conductor' });
     const c = await api(baseUrl, 'POST', '/api/instances',
-      { project: 'reclaim-conductor', temp: false, mode: 'bypassPermissions' });
+      { project: 'reclaim-conductor', persistent: true, mode: 'bypassPermissions' });
     assert.equal(c.status, 201, JSON.stringify(c.body));
     const conductor = instances.get(c.body.id);
     await waitFor(() => conductor.status === 'idle' && conductor.sessionId);
@@ -470,7 +470,7 @@ describe('resuming a session retires the in-memory instances it supersedes', () 
   // ───────────────────── R-RACE: a lost race is a success ─────────────────
 
   test('P3 the reclaim treats a concurrently-removed instance as success', async () => {
-    // A deterministic model of the temp-exit status listener landing in the
+    // A deterministic model of the exit-drop status listener landing in the
     // await gap inside the reclaim loop: it also does byId.delete, and it fires
     // from the subprocess exit handler, i.e. on the event loop. The listener
     // winning must not turn a legitimate resume into an error.

@@ -162,7 +162,7 @@ describe('rewind/respawn relaunch windows read live end to end', () => {
       lines.map(l => JSON.stringify(l)).join('\n') + '\n',
     );
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project, mode: 'bypassPermissions', resume: sid,
+      persistent: true, project, mode: 'bypassPermissions', resume: sid,
     });
     assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
     const id = r.body.id;
@@ -198,7 +198,7 @@ describe('rewind/respawn relaunch windows read live end to end', () => {
     );
 
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'rewind-liveness', mode: 'bypassPermissions', resume: sid,
+      persistent: true, project: 'rewind-liveness', mode: 'bypassPermissions', resume: sid,
     });
     assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
     const id = r.body.id;
@@ -238,7 +238,7 @@ describe('rewind/respawn relaunch windows read live end to end', () => {
     );
 
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'respawn-liveness', mode: 'bypassPermissions', resume: sid,
+      persistent: true, project: 'respawn-liveness', mode: 'bypassPermissions', resume: sid,
     });
     assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
     const id = r.body.id;

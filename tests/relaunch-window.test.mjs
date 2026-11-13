@@ -1,13 +1,13 @@
 // The relaunch window rewind and prune share with the restart model switch
 // (Instance._beginRelaunch → _awaitRelaunchConfirmed → _endRelaunch): from the
-// kill until the relaunched CLI is confirmed, an exit neither archives a temp
+// kill until the relaunched CLI is confirmed, an exit neither archives a normal
 // session nor drops it from the manager, and a relaunch that is never confirmed
 // reaches the caller as an error with nothing left running. Also pins the route
 // error handler's logging.
 //
-// Every session is a temp or persistent NON-conducted REST session, so its
-// launch() runs _hydrateAwaitingUser — the status emit that dropped a temp
-// session mid-relaunch.
+// Every session is a normal or persistent NON-conducted REST session, so its
+// launch() runs _hydrateAwaitingUser — a status emit that, outside the window,
+// would drop a normal session mid-relaunch.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, seedSessionJsonl } from './helpers.mjs';
 import { SwitchLauncher } from './switchLauncher.mjs';
-import { isTemp, isArchived, settleSessionWrites } from '../src/sessionStore.ts';
+import { isPersistent, isArchived, settleSessionWrites } from '../src/sessionStore.ts';
 import { localPlace } from '../src/projects.ts';
 import { RELAUNCH_FAILED } from '../src/instances.ts';
 import { ROUTE_ERROR_LOG_MAX } from '../src/routes.ts';
@@ -56,15 +56,15 @@ let n = 0;
 const newSid = () => `ee11ff22-0000-4000-8000-${String(++n).padStart(12, '0')}`;
 
 // Seed `records` and resume them as a REST (non-conducted) session.
-async function resumeSeeded(records, { temp = false } = {}) {
+async function resumeSeeded(records, { persistent = false } = {}) {
   const sid = newSid();
   await seedSessionJsonl(localPlace(path.join(projectsRoot, 'p')), sid, records);
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', resume: sid, ...(temp ? { temp: true } : {}) });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', resume: sid, ...(persistent ? { persistent: true } : {}) });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle' && inst.proc);
   assert.equal(inst.conducted, false, 'a non-conducted session, so launch() hydrates awaitingUser');
-  assert.equal(inst.temp, temp);
+  assert.equal(inst.persistent, persistent);
   inst._relaunchGraceMs = 50;
   return { inst, sid };
 }
@@ -90,13 +90,13 @@ async function capture(method, fn) {
   return lines;
 }
 
-test('a temp rewind whose awaiting-user state flips stays registered across the relaunch', async () => {
+test('a normal rewind whose awaiting-user state flips stays registered across the relaunch', async () => {
   // Live state null (the newest turn answered); the rewound transcript ends on
   // an AskUserQuestion, so the relaunch's hydrate flips it and emits status.
   const { inst, sid } = await resumeSeeded([
     ...HEAD, prompt('u1', 'p1'), reply('a1', [askTool('tq')], 'tool_use'),
     prompt('u2', 'p2'), reply('a2', [text('done')], 'end_turn'),
-  ], { temp: true });
+  ]);
   assert.equal(inst.summary().awaitingUser, null, 'live state before the rewind');
   const watch = watchRegistration(inst);
   const launches = launcher.count;
@@ -110,15 +110,15 @@ test('a temp rewind whose awaiting-user state flips stays registered across the 
   assert.ok(inst.proc, 'the relaunched CLI is up');
   assert.equal(launcher.count, launches + 1, 'exactly one relaunch');
   assert.equal(inst.summary().awaitingUser, 'question', 'the hydrate did flip the state');
-  assert.equal(await isTemp(sid), true);
+  assert.equal(await isPersistent(sid), false);
   assert.equal(await isArchived(sid), false);
 });
 
-test('a temp prune whose awaiting-user state flips stays registered across the relaunch', async () => {
+test('a normal prune whose awaiting-user state flips stays registered across the relaunch', async () => {
   const { inst, sid } = await resumeSeeded([
     ...HEAD, prompt('u1', 'p1'), reply('a1', [text('one')], 'end_turn'),
     prompt('u2', 'p2'), reply('a2', [askTool('tq')], 'tool_use'),
-  ], { temp: true });
+  ]);
   // Disk says "question"; make the live state differ so the relaunch flips it.
   inst._setAwaitingUser(null);
   const watch = watchRegistration(inst);
@@ -133,13 +133,13 @@ test('a temp prune whose awaiting-user state flips stays registered across the r
   assert.ok(inst.proc, 'the relaunched CLI is up');
   assert.equal(launcher.count, launches + 1, 'exactly one relaunch');
   assert.equal(inst.summary().awaitingUser, 'question', 'the hydrate did flip the state');
-  assert.equal(await isTemp(inst.backingSessionId), true);
+  assert.equal(await isPersistent(inst.backingSessionId), false);
   assert.equal(await isArchived(inst.backingSessionId), false);
   assert.notEqual(inst.backingSessionId, sid, 'running on the pruned copy');
 });
 
-test('a rewind refused before the window opens leaves a live temp session untouched', async () => {
-  const { inst, sid } = await resumeSeeded(TWO_TURNS, { temp: true });
+test('a rewind refused before the window opens leaves a live normal session untouched', async () => {
+  const { inst, sid } = await resumeSeeded(TWO_TURNS);
   const proc = inst.proc;
   const launches = launcher.count;
   const rew = await rewind(inst, 1, 'not the second prompt');
@@ -150,12 +150,12 @@ test('a rewind refused before the window opens leaves a live temp session untouc
   assert.equal(inst.status, 'idle');
   assert.equal(instances.get(inst.id), inst, 'still registered');
   assert.equal(launcher.count, launches, 'no relaunch');
-  assert.equal(await isTemp(sid), true);
+  assert.equal(await isPersistent(sid), false);
   assert.equal(await isArchived(sid), false);
 });
 
-test('a temp rewind whose relaunch dies at startup errors and drops the session', async () => {
-  const { inst, sid } = await resumeSeeded(TWO_TURNS, { temp: true });
+test('a normal rewind whose relaunch dies at startup errors and drops the session', async () => {
+  const { inst, sid } = await resumeSeeded(TWO_TURNS);
   launcher.plan.push({ crash: 'No conversation found with session ID: x' });
   const rew = await rewind(inst, 1, 'p2');
   assert.ok(rew.status >= 400, `non-2xx: ${rew.status}`);
@@ -169,7 +169,7 @@ test('a temp rewind whose relaunch dies at startup errors and drops the session'
 });
 
 test('a persistent rewind whose relaunch dies at startup errors and leaves a resumable dead row', async () => {
-  const { inst, sid } = await resumeSeeded(TWO_TURNS);
+  const { inst, sid } = await resumeSeeded(TWO_TURNS, { persistent: true });
   launcher.plan.push({ crash: 'No conversation found with session ID: x' });
   const rew = await rewind(inst, 1, 'p2');
   assert.ok(rew.status >= 400, `non-2xx: ${rew.status}`);
@@ -185,7 +185,7 @@ test('a persistent rewind whose relaunch dies at startup errors and leaves a res
 });
 
 test('a rewind whose relaunch never comes up idle is killed', async () => {
-  const { inst } = await resumeSeeded(TWO_TURNS);
+  const { inst } = await resumeSeeded(TWO_TURNS, { persistent: true });
   inst._relaunchIdleDeadlineMs = 150;
   launcher.plan.push({ deaf: true });
   const rew = await rewind(inst, 1, 'p2');
@@ -196,8 +196,8 @@ test('a rewind whose relaunch never comes up idle is killed', async () => {
   assert.equal(launcher.ctl.last._exited, true, 'and has exited');
 });
 
-test('a temp rewind whose relaunch fails to spawn errors and drops the session', async () => {
-  const { inst, sid } = await resumeSeeded(TWO_TURNS, { temp: true });
+test('a normal rewind whose relaunch fails to spawn errors and drops the session', async () => {
+  const { inst, sid } = await resumeSeeded(TWO_TURNS);
   launcher.plan.push({ failSpawn: 'boom' });
   const rew = await rewind(inst, 1, 'p2');
   assert.ok(rew.status >= 400, `non-2xx: ${rew.status}`);
@@ -208,7 +208,7 @@ test('a temp rewind whose relaunch fails to spawn errors and drops the session',
 });
 
 test('a prune whose relaunch dies falls back to the original session', async () => {
-  const { inst, sid } = await resumeSeeded(TWO_TURNS, { temp: true });
+  const { inst, sid } = await resumeSeeded(TWO_TURNS);
   launcher.plan.push({ crash: 'boom at startup' });
   const launches = launcher.count;
   const pr = await api(baseUrl, 'POST', `/api/instances/${inst.id}/prune`, { cutTurnIndex: 1 });
@@ -219,12 +219,12 @@ test('a prune whose relaunch dies falls back to the original session', async () 
   assert.ok(inst.proc);
   assert.equal(inst.backingSessionId, sid, 'running on the unpruned original');
   assert.equal(launcher.count, launches + 2, 'the attempt and the fail-safe');
-  assert.equal(await isTemp(sid), true);
+  assert.equal(await isPersistent(sid), false);
   assert.equal(await isArchived(sid), false);
 });
 
-test('a prune whose relaunch and fail-safe both die errors and drops the temp session', async () => {
-  const { inst, sid } = await resumeSeeded(TWO_TURNS, { temp: true });
+test('a prune whose relaunch and fail-safe both die errors and drops the normal session', async () => {
+  const { inst, sid } = await resumeSeeded(TWO_TURNS);
   launcher.plan.push({ crash: 'boom at startup' }, { crash: 'boom again' });
   const pr = await api(baseUrl, 'POST', `/api/instances/${inst.id}/prune`, { cutTurnIndex: 1 });
   assert.ok(pr.status >= 400, `non-2xx: ${pr.status}`);
@@ -235,7 +235,7 @@ test('a prune whose relaunch and fail-safe both die errors and drops the temp se
 });
 
 test('a failing rewind is logged by the route error handler', async () => {
-  const { inst } = await resumeSeeded(TWO_TURNS);
+  const { inst } = await resumeSeeded(TWO_TURNS, { persistent: true });
   launcher.plan.push({ crash: 'No conversation found with session ID: x' });
   let rew;
   const lines = await capture('error', async () => { rew = await rewind(inst, 1, 'p2'); });
@@ -268,7 +268,7 @@ test('a route error with a multi-MB message logs at most ROUTE_ERROR_LOG_MAX, 5x
   for (const [name, method, status, make] of rows) {
     // The file's beforeEach/afterEach hooks run around each subtest too.
     await t.test(name, async () => {
-      const { inst } = await resumeSeeded(TWO_TURNS);
+      const { inst } = await resumeSeeded(TWO_TURNS, { persistent: true });
       inst.rewindToUserMessage = async () => { throw make(); };
       let res;
       const lines = await capture(method, async () => { res = await rewind(inst, 0, 'x'); });
@@ -300,7 +300,7 @@ async function lifecycleOf(inst, fn) {
 }
 
 test('a rewind is recorded as an exit then a resume with cause rewind', async () => {
-  const { inst } = await resumeSeeded(TWO_TURNS);
+  const { inst } = await resumeSeeded(TWO_TURNS, { persistent: true });
   const seen = await lifecycleOf(inst, async () => {
     const rew = await rewind(inst, 1, 'p2');
     assert.equal(rew.status, 200, JSON.stringify(rew.body));
@@ -310,7 +310,7 @@ test('a rewind is recorded as an exit then a resume with cause rewind', async ()
 });
 
 test('a prune is recorded as an exit then a resume with cause prune', async () => {
-  const { inst } = await resumeSeeded(TWO_TURNS);
+  const { inst } = await resumeSeeded(TWO_TURNS, { persistent: true });
   const seen = await lifecycleOf(inst, async () => {
     const pr = await api(baseUrl, 'POST', `/api/instances/${inst.id}/prune`, { cutTurnIndex: 1 });
     assert.equal(pr.status, 200, JSON.stringify(pr.body));

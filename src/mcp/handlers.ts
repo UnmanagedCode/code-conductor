@@ -193,7 +193,7 @@ export const CONDUCTOR_VIEW_KEYS = [
   'contextWindowTokens',
   'pid',
   'worktree',
-  'temp',
+  'persistent',
   'conducted',
   'debug',
   // Together with `title`, how a conductor tells its own worker from another
@@ -294,7 +294,7 @@ async function getInst(instances: InstanceManagerLike | null | undefined, sessio
   // Not live — pay for the disk probe only here so the hot path is in-memory.
   // A session whose worktree was deleted is still located (through its recorded
   // place) and so is SESSION_NOT_LIVE, but it cannot be resumed: say so.
-  // A recorded exit cause makes the session known on its own (a temp worker that
+  // A recorded exit cause makes the session known on its own (a normal worker that
   // died at startup is in neither byId nor on disk), and makes the transcript
   // probe worth paying for even when byId holds it: the advice depends on it.
   const exit = instances.exitCauseFor(sessionId);
@@ -329,8 +329,8 @@ interface DiskRef { sessionId: string; backingSessionId: string; cwd: string; pl
 //        work happens above the liveForSession hit.
 //   4.   a dead-but-retained instance still in byId: its own cwd +
 //        backingSessionId are in memory, so no probe is needed.
-//   5.   findSessionLocation: a session with no instance at all (a killed temp
-//        worker, dropped from byId, whose jsonl _archiveTempSession retained) —
+//   5.   findSessionLocation: a session with no instance at all (a killed normal
+//        worker, dropped from byId, whose jsonl _archiveSession retained) —
 //        a deleted worktree's session included, through its recorded place.
 //   6.   findOrphanedTranscript: the transcript exists but neither a registered
 //        project or worktree nor the session's record places it.
@@ -600,7 +600,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   }
   // Read-only, and folds nothing into being: absent event log ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
-  // A dead instance retained in byId (non-temp exits are never dropped) is not a
+  // A dead instance retained in byId (persistent exits are never dropped) is not a
   // live worker: it fails isDeadStatus, so it is excluded here AND left out of
   // the exclusion set below, which is what lets it reappear as an inactive row
   // off its own transcript. Live and inactive are disjoint by construction.
@@ -932,14 +932,14 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
       reason: `session ${sessionId} has a transcript under ${path.dirname(orphan)} but no registered project or worktree owns that directory, so there is no location to report — re-register that worktree and retry.` };
   }
   // Step 5 — nothing on disk, but the orchestrator may still be HOLDING this
-  // session: a non-temp worker is retained in byId after it exits, and if its
+  // session: a persistent worker is retained in byId after it exits, and if its
   // transcript never landed (or has since gone) steps 3 and 4 both come up
   // empty. Answering SESSION_UNKNOWN there would deny a session the
   // orchestrator is looking at. SESSION_NOT_LIVE is the existing code for
   // "known, nothing running", shared with getInst/getInstOrDisk through
   // notLiveRefusal so the wording a conductor acts on cannot drift.
   // A recorded exit cause is the same "known" — a worker whose CLI died before
-  // writing a transcript, dropped from byId because it was temp.
+  // writing a transcript, dropped from byId because it was normal.
   const exit = instances?.exitCauseFor(sessionId) ?? null;
   if (instances?.anyForSession(sessionId) || exit) return notLiveRefusal(sessionId, { exit, hasTranscript: false });
   return { ok: false, code: 'SESSION_UNKNOWN', sessionId,
@@ -1243,16 +1243,13 @@ export async function spawnInstance(args: SpawnArgs, ctx: McpCtx) {
       // otherwise rather than ignoring them.
       baseWorktree: args.baseWorktree,
       name: args.name,
-      // Conductor workers are always temp: archived on subprocess exit — the
-      // transcript is retained and stays resumable, it just leaves the default
-      // session list (only the sub-agent dir is dropped). Unlike the UI's temp
-      // checkbox (which the REST route maps to bypassPermissions), temp here
-      // does NOT affect the mode default — create() leaves it at plan, so
-      // workers plan before acting. On resume, leave it undefined rather than
-      // forcing true — create()'s store recovery (isTemp(resume)) decides the
-      // session's actual persisted state; forcing true would silently re-temp a
-      // session the human promoted, on every MCP resume.
-      temp: args.resume ? undefined : true,
+      // No `persistent`: a fresh conductor worker is a normal session,
+      // archived on subprocess exit — the transcript is retained and stays
+      // resumable, it just leaves the default session list (only the sub-agent
+      // dir is dropped) — and its mode still defaults to plan, so workers plan
+      // before acting. On resume, create()'s store recovery
+      // (isPersistent(resume)) decides the session's kind, so a session the
+      // human made persistent stays persistent.
       debug: args.debug,
       // Sessions spawned through the MCP tool are "conducted" sessions
       // (the worker agents an orchestrator conducts). This is the ONLY
@@ -1730,7 +1727,7 @@ export async function killInstance({ sessionId }: { sessionId: string }, { insta
   if ('soft' in r) return r.soft;
   const inst = r.inst;
   // LIVE-only: getInst resolves only running instances, so kill_instance can no
-  // longer reap an already-exited non-temp instance by sessionId (it is already
+  // longer reap an already-exited persistent instance by sessionId (it is already
   // gone from the process table; resume it first if you need to act on it).
   // Accepted under the strict-live contract.
   await instances!.remove(inst.id, { actor: callerId ? { type: 'conductor', sessionId: callerId } : { type: 'system' } });

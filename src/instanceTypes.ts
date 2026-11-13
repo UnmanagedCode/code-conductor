@@ -125,8 +125,8 @@ export interface CreateInstanceInput {
   // the new worktree's branch + directory name.
   baseWorktree?: string;
   name?: string;
-  temp?: boolean;
-  // Only a fresh `.conduct` temp spawn from New conductor (src/pristine.ts).
+  persistent?: boolean;
+  // Only a fresh `.conduct` normal spawn from New conductor (src/pristine.ts).
   pristine?: boolean;
   conducted?: boolean;
   debug?: boolean;
@@ -278,17 +278,17 @@ export interface InstanceLike {
   setAutoApprovePlan(enabled: boolean): void;
   setPlaybookEnforcement(mode: PlaybookEnforcement, opts?: { actor?: Actor }): void;
   // Orchestrator surfaces beyond the core lifecycle: the worktree the session
-  // is attached to (MCP handlers, src/mcp/handlers.ts), temp→normal promotion
-  // (REST POST /api/instances/:id/promote, src/routes.ts), and the
+  // is attached to (MCP handlers, src/mcp/handlers.ts), making a session persistent
+  // (REST POST /api/instances/:id/persist, src/routes.ts), and the
   // EventEmitter 'event' channel (UI events) alongside 'status'.
   readonly worktree: WorktreeMeta | null;
-  promoteToNormal(): Promise<InstanceSummary>;
+  makePersistent(): Promise<InstanceSummary>;
   on(event: 'event', cb: (ev: UiEvent | null, replayed?: boolean, pullOnly?: boolean) => void): void;
   off(event: 'event', cb: (ev: UiEvent | null, replayed?: boolean, pullOnly?: boolean) => void): void;
   // Resume-restart reads/writes (src/resumeRestart.ts). `firstPrompt` is the
   // session's first-prompt line, read + written on the restored instance.
   readonly conducted: boolean;
-  readonly temp: boolean;
+  readonly persistent: boolean;
   // A New-conductor session with no prompt yet, and the draft it was listed under.
   readonly pristine: boolean;
   readonly draftTitle: string | null;
@@ -489,7 +489,7 @@ export interface InstanceManagerLike {
   dropSessionRenewRequest(instanceId: string): void;
   idsForWorktree(project: string, worktreeName: string): string[];
   // Route surface (src/routes.ts).
-  tempSessionIdsForPlace(place: TranscriptPlacement): Set<string>;
+  normalSessionIdsForPlace(place: TranscriptPlacement): Set<string>;
   liveBackingIdsForPlace(place: TranscriptPlacement): Set<string>;
   idsForSession(sessionId: string): string[];
   sessionIdsForWorktree(project: string, worktreeName: string): string[];

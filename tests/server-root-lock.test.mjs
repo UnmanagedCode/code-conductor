@@ -136,7 +136,7 @@ test("a refused server leaves the holder's restart manifests and session-tmp dir
   const store = path.join(rootOf(home), '.code-conductor');
   const planted = {
     resume: path.join(store, 'pending-resume.json'),
-    cleanup: path.join(store, 'pending-temp-cleanup.json'),
+    cleanup: path.join(store, 'pending-archive.json'),
     tmp: path.join(store, 'session-tmp', 'live-instance', 'out.txt'),
   };
   fs.writeFileSync(planted.resume, JSON.stringify({ sessions: [] }));

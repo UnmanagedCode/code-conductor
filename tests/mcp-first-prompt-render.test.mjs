@@ -52,7 +52,7 @@ async function storedFirstPrompt(name, records) {
 
 const liveRow = firstPrompt => ({ sessionId: SID, title: null, firstPrompt });
 const stoppedRow = firstPrompt => ({
-  sessionId: SID, title: null, firstPrompt, conducted: false, temp: false, archived: false,
+  sessionId: SID, title: null, firstPrompt, conducted: false, persistent: false, archived: false,
   lastActivity: 1786001000000, playbook: null, stage: null, resumeMode: 'plan',
 });
 const group = over => ({

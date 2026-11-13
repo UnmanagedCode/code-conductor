@@ -67,7 +67,7 @@ async function entry(project, sessionId, extra = {}) {
   await seedSessionJsonl(localPlace(cwd), sessionId);
   return {
     project, sessionId, cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null,
-    worktreeName: null, temp: false, conducted: false, debug: false, title: null,
+    worktreeName: null, persistent: true, conducted: false, debug: false, title: null,
     autoApprovePlan: false, group: 'other', wasBusy: true, ...extra,
   };
 }

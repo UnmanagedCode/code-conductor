@@ -198,7 +198,7 @@ test('ownedTreeOf terminates on mutual ownership and never lists the root', asyn
   await r.teardown();
 });
 
-// A temp section lead leaves byId the moment its CLI exits (and remove() drops
+// A normal section lead leaves byId the moment its CLI exits (and remove() drops
 // any lead), taking its ownership edges with it; its workers still carry the
 // root's durable attribution (rootSessionId, set at create), and a busy one
 // must still block.

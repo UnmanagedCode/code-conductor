@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { isTemp, isArchived } from '../src/sessionStore.ts';
+import { isPersistent, isArchived } from '../src/sessionStore.ts';
 import { RENEW_HEAD } from './segmentChain.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -224,10 +224,10 @@ test('rewind to the first prompt of a renewed segment relaunches fresh', async (
   assert.ok(launchedWith(inst, '--session-id', sid), 'relaunched fresh under the same id');
 });
 
-test('rewind to the first prompt on a temp session relaunches fresh and stays temp', async () => {
+test('rewind to the first prompt on a persistent session relaunches fresh and stays persistent', async () => {
   const sid = 'tttttttt-2222-3333-4444-777777777777';
   await seedSession({
-    projectName: 'tempfresh', sid,
+    projectName: 'persistentfresh', sid,
     lines: [
       { type: 'ai-title', aiTitle: 'A title', sessionId: sid },
       { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
@@ -237,7 +237,7 @@ test('rewind to the first prompt on a temp session relaunches fresh and stays te
     ],
   });
   const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'tempfresh', temp: true, resume: sid,
+    project: 'persistentfresh', persistent: true, resume: sid,
   });
   assert.equal(r.status, 201);
   const id = r.body.id;
@@ -250,7 +250,7 @@ test('rewind to the first prompt on a temp session relaunches fresh and stays te
   assert.equal(instances.get(id), inst, 'the same instance stays registered');
   assert.ok(inst.proc, 'the relaunched CLI is up');
   assert.ok(launchedWith(inst, '--session-id', sid), 'relaunched fresh under the same id');
-  assert.equal(await isTemp(sid), true, 'session remains temp after rewind');
+  assert.equal(await isPersistent(sid), true, 'session remains persistent after rewind');
   assert.equal(await isArchived(sid), false, 'session is not archived after rewind');
 });
 
