@@ -542,15 +542,15 @@ describe('Projects tree', () => {
 
   it('a just-persisted live session overrides its stale on-disk flag', async () => {
     // Invariant: the live persistent flag wins over the disk row's.
-    loadSessions.mockResolvedValue([disk('sid-promoted', 'promoted', {})]);
+    loadSessions.mockResolvedValue([disk('sid-persisted', 'persisted', {})]);
     seed({
       projects: [proj('demo', { sessions: { count: 1, archivedCount: 0, handCount: 1, lastActivity: 1 } })],
-      instances: [inst({ sessionId: 'sid-promoted', project: 'demo', persistent: true })],
+      instances: [inst({ sessionId: 'sid-persisted', project: 'demo', persistent: true })],
     });
     renderSidebar();
-    await screen.findByText('promoted');
-    expect(items('demo')).toEqual(['sid-promoted']);
-    expect(within(rowOf('sid-promoted')).queryByRole('button', { name: 'Make persistent' })).toBeNull();
+    await screen.findByText('persisted');
+    expect(items('demo')).toEqual(['sid-persisted']);
+    expect(within(rowOf('sid-persisted')).queryByRole('button', { name: 'Make persistent' })).toBeNull();
   });
 
   it('the 15s tick re-renders the ago labels without new data: the row and the Sessions summary line', async () => {
