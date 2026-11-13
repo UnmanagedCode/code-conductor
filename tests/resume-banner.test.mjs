@@ -284,19 +284,20 @@ test('a manifest with no deliver field auto-continues', async () => {
   assert.deepEqual(pending.list(), []);
 });
 
-// Invariant: a notice outlives further stops until it is clicked — a second
-// gated restart and then a crash each respawn the session silently with the
-// notice intact, and Continue then delivers it.
-// Invariant: a Continue that arrives while the boot restore is still bringing a
-// session up never drops that session's notice — it is kept (the banner stays),
-// and once the restore has settled a Continue delivers it, exactly once. A
-// notice whose session the restore never had is still dropped at once.
-test('Continue before the restore has reached a session keeps its notice, and delivers it once the restore settles', async () => {
+// Invariant (mid-restore Continue): a Continue that arrives while the boot
+// restore is still bringing a session up never drops that session's notice — it
+// is kept (the banner stays), and once the restore has settled a Continue
+// delivers it, exactly once. A session the restore has already brought up leaves
+// `restoring` at once, so its notice is sent by that same mid-restore Continue,
+// not kept. A notice whose session the restore never had is dropped at once.
+test('Continue before the restore has reached a session keeps its notice, sends an already-restored one, and delivers the kept one once the restore settles', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'early' });
   const [b, a, gone] = [sid(91), sid(92), sid(93)];
   writeResumeManifest([await entry('early', b, { wasBusy: false }), await entry('early', a, { wasBusy: false })], { deliver: 'gated' });
   const notice = { sessionId: a, kind: 'restart', text: RESUME_TEXT, workers: [], at: 'earlier' };
+  const upNotice = { ...notice, sessionId: b, text: `${RESUME_TEXT} (b)` };
   ctx.pendingContinue.add(notice);
+  ctx.pendingContinue.add(upNotice);
   ctx.pendingContinue.add({ ...notice, sessionId: gone });
   // Hold the restore in its stagger, after the first session and before the second.
   let release;
@@ -308,8 +309,10 @@ test('Continue before the restore has reached a session keeps its notice, and de
   assert.ok(instances.liveForSession(b), 'premise: the first session is up');
   assert.equal(instances.liveForSession(a), null, 'premise: the restore has not reached the second');
 
-  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [gone], kept: [a] });
+  assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [b], dropped: [gone], kept: [a] });
   assert.deepEqual(ctx.pendingContinue.list(), [notice], 'the notice is kept, so the banner stays');
+  await waitFor(() => noticeEchoes(b).length === 1);
+  assert.deepEqual(noticeEchoes(b), [upNotice.text], 'the session already up got its notice');
   assert.deepEqual((await api(baseUrl, 'GET', '/api/resume-notices')).body.notices.map((n) => n.sessionId), [a]);
 
   release();
@@ -320,8 +323,9 @@ test('Continue before the restore has reached a session keeps its notice, and de
   assert.deepEqual(noticeEchoes(a), [RESUME_TEXT]);
 });
 
-// Invariant: a session the restore failed to bring up is no longer restoring, so
-// Continue then drops its notice rather than keeping it forever.
+// Invariant (settled failure): a session the restore failed to bring up is no
+// longer restoring, so Continue then drops its notice rather than keeping it
+// forever.
 test('once the restore has settled, a notice whose session did not come up is dropped', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'nocome' });
   const a = sid(95);
@@ -333,6 +337,9 @@ test('once the restore has settled, a notice whose session did not come up is dr
   assert.deepEqual((await api(baseUrl, 'POST', '/api/resume-notices/continue')).body, { sent: [], dropped: [a], kept: [] });
 });
 
+// Invariant: a notice outlives further stops until it is clicked — a second
+// gated restart and then a crash each respawn the session silently with the
+// notice intact, and Continue then delivers it.
 test('a notice survives a second restart and a crash, then Continue delivers it', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'keep' });
   const a = sid(71);
