@@ -62,8 +62,12 @@ export function cliRows(
 }
 
 export function createRunningRecorder({
-  instances, platform = hostPlatform, log = console, debounceMs = RUNNING_RECORD_DEBOUNCE_MS,
-}: { instances: InstanceManagerLike; platform?: Platform; log?: Log; debounceMs?: number }): RunningRecorder {
+  instances, platform = hostPlatform, log = console, debounceMs = RUNNING_RECORD_DEBOUNCE_MS, write = writeRunningRecord,
+}: {
+  instances: InstanceManagerLike; platform?: Platform; log?: Log; debounceMs?: number;
+  // The file write; a test counts calls through it.
+  write?: typeof writeRunningRecord;
+}): RunningRecorder {
   let state: 'new' | 'running' | 'paused' | 'stopped' = 'new';
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastJson: string | null = null;
@@ -95,7 +99,7 @@ export function createRunningRecorder({
       };
       const json = JSON.stringify(payload);
       if (json === lastJson) return;
-      writeRunningRecord(payload);
+      write(payload);
       lastJson = json;
     } catch (e) {
       log.warn?.('running-record: write failed', e instanceof Error ? e.message : String(e));

@@ -44,13 +44,16 @@ export async function makeTmpHome() {
 // `eventLogLease` / `relaunch` pass through to createServer: with neither, the
 // server holds no projects-root lock and its event log writes nothing (a test
 // that reads rows passes OPEN_LEASE from playbook-fixtures.mjs).
-export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform, webDistDir, eventLogLease, relaunch, codeModeTiming } = {}) {
+// `home` boots on an existing tmp home (one makeTmpHome made) instead of a fresh
+// one, and `keepHome` (here or as `close({keepHome})`) leaves the home on disk
+// at close — so two boots in a row can share one store, as a restart does.
+export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform, webDistDir, eventLogLease, relaunch, codeModeTiming, home, keepHome = false } = {}) {
   // Reset the projects git-facts cache so stale entries from a previous test
   // can't bleed into this one. TTL=0 gives pure-coalescing semantics:
   // concurrent requests coalesce but sequential requests always recompute,
   // so integration tests always see exact live data.
   resetProjectsCache(0);
-  const tmpHome = await makeTmpHome();
+  const tmpHome = home ?? await makeTmpHome();
   const projectsRoot = path.join(tmpHome, 'project');
   const claudeProjectsRoot = path.join(tmpHome, '.claude', 'projects');
 
@@ -84,7 +87,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   // subprocess is spawned, but swaps the launcher itself).
   if (claudeLauncherOverride) claudeLauncher = claudeLauncherOverride;
 
-  const { server, wss, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher, platform, webDistDir, eventLogLease, relaunch, codeModeTiming });
+  const { server, wss, instances, pluginHost, pluginLibrary, runningRecorder, pendingContinue } = createServer({ claudeLauncher, platform, webDistDir, eventLogLease, relaunch, codeModeTiming });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -103,7 +106,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   const baseUrl = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
 
-  async function close() {
+  async function close({ keepHome: keep = keepHome } = {}) {
     if (instances && typeof instances.shutdown === 'function') await instances.shutdown();
     if (pluginHost) await pluginHost.stopAll();
     // server.close() waits for existing connections to END, so any still-open
@@ -130,10 +133,10 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
       else if (k === 'CLAUDE_PROJECTS_ROOT') process.env[k] = SAFE.claudeProjectsRoot;
       else delete process.env[k];
     }
-    await rmrf(tmpHome);
+    if (!keep) await rmrf(tmpHome);
   }
 
-  return { baseUrl, wsUrl, server, wss, instances, pluginHost, pluginLibrary, tmpHome, projectsRoot, claudeProjectsRoot, close };
+  return { baseUrl, wsUrl, server, wss, instances, pluginHost, pluginLibrary, runningRecorder, pendingContinue, tmpHome, projectsRoot, claudeProjectsRoot, close };
 }
 
 // MCP returns no longer carry the instanceId — resolve a live instance from
