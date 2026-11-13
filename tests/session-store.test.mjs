@@ -16,7 +16,7 @@ process.env.ORCH_STORE_LOCK_RETRY_BASE_MS = '5';
 
 const store = await import('../src/sessionStore.ts');
 const {
-  loadSessions, loadSessionsSync, mutateSessions, orphanedTempIdsSync,
+  loadSessions, mutateSessions,
   getTitle, setTitle, getSessionMode, setSessionMode, setSegmentTemp, isTemp, setSummary, getSummaries,
   setSessionBackend, getSessionBackend, markConducted, setSessionPlace, isConducted, setSegmentArchived, isArchived,
   getTurnMarks, recordTurnEnd, markViewed,
@@ -109,36 +109,6 @@ test('an external rewrite invalidates the cache', async () => {
   const after = await fs.stat(storeFile(root), { bigint: true });
   assert.notEqual(after.ino, before.ino, 'guard: the rename produced a new inode');
   assert.equal(await getTitle(A), 'other', 'the next read sees the external write');
-});
-
-test('loadSessionsSync reads the same doc, and falls back to .bak', async () => {
-  const root = await freshRoot();
-  await setTitle(A, 'alpha');
-  await setSegmentTemp(B, true);
-  const asyncIdx = await loadSessions();
-  const syncIdx = loadSessionsSync();
-  assert.deepEqual([...syncIdx.byPublic.entries()], [...asyncIdx.byPublic.entries()]);
-  assert.deepEqual([...syncIdx.byBacking.entries()], [...asyncIdx.byBacking.entries()]);
-
-  await fs.writeFile(storeFile(root), '{ "sessions": { '); // corrupt
-  assert.equal(loadSessionsSync().byPublic.get(A)?.title, 'alpha', 'a corrupt primary serves .bak');
-  await fs.rm(storeFile(root));
-  assert.equal(loadSessionsSync().byPublic.get(A)?.title, 'alpha', 'a missing primary serves .bak');
-});
-
-test('orphanedTempIdsSync lists live temp segments with no live instance', async () => {
-  const root = await freshRoot();
-  const LIVE = 'dddddddd-0000-4000-8000-000000000004';
-  await fs.writeFile(storeFile(root), JSON.stringify({ sessions: {
-    [A]: { current: A, segments: [{ id: A, reason: 'initial', at: '', temp: true }] },
-    [B]: { current: C, segments: [
-      { id: B, reason: 'initial', at: '', temp: true, dropped: true },
-      { id: C, reason: 'renew', at: '' },
-    ] },
-    [LIVE]: { current: LIVE, segments: [{ id: LIVE, reason: 'initial', at: '', temp: true }] },
-  } }));
-  assert.deepEqual(orphanedTempIdsSync([LIVE]), [A],
-    'a dropped temp segment and a live instance\'s segment are not orphans');
 });
 
 test('corrupt primary is quarantined and recovered from .bak on mutation', async () => {
@@ -426,14 +396,12 @@ test('a record with neither turn counter reads {0, 0}', async () => {
 });
 
 // Invariant: recordTurnEnd increments turnEndSeq by one per call, returns both
-// counters, and the value is on disk (a cache-free sync read sees it).
+// counters, and the value is on disk.
 test('recordTurnEnd increments and persists turnEndSeq', async () => {
   const root = await freshRoot();
   assert.deepEqual(await recordTurnEnd(A), { turnEndSeq: 1, viewedSeq: 0 });
   assert.deepEqual(await recordTurnEnd(A), { turnEndSeq: 2, viewedSeq: 0 });
   assert.equal((await readJson(storeFile(root))).sessions[A].turnEndSeq, 2);
-  const rec = loadSessionsSync().byPublic.get(A);
-  assert.equal(rec.turnEndSeq, 2, 'a read that never consults the cache sees the counter');
   assert.deepEqual(await getTurnMarks(A), { turnEndSeq: 2, viewedSeq: 0 });
 });
 

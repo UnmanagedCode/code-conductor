@@ -2,8 +2,11 @@
 // docker entrypoint runs docker/supervise.mjs). A supervised server restarts by
 // releasing its projects-root lock and exiting SUPERVISED_RESTART_EXIT; the
 // supervisor relaunches it in place, so the process tree above it (the
-// container's init, its services, the plugin backends) never changes. Any other
-// exit ends the supervisor with the same status.
+// container's init, its services, the plugin backends) never changes. A
+// supervised server shuts down by exiting SUPERVISED_SHUTDOWN_EXIT; the
+// supervisor then parks — it stays up with no server until a forwarded signal
+// ends it — so a container's restart policy does not bring cc straight back.
+// Any other exit ends the supervisor with the same status.
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import os from 'node:os';
 import { hostPlatform } from './platform/index.ts';
@@ -11,10 +14,12 @@ import { hostPlatform } from './platform/index.ts';
 // Env key the supervisor sets on the server it launches: the supervisor's pid.
 export const RESTART_SUPERVISOR_ENV = 'CC_RESTART_SUPERVISOR';
 
-// Must stay out of every code the server or a headless run exits with
+// Both must stay out of every code the server or a headless run exits with
 // (EXIT_CODES in src/headless/result.ts, ROOT_LOCK_HELD_EXIT in src/rootLock.ts,
-// 128+n for a signal): only a restart request may relaunch the server.
+// 128+n for a signal) and apart from each other: only a restart request may
+// relaunch the server, and only a shutdown request may park the supervisor.
 export const SUPERVISED_RESTART_EXIT = 75;
+export const SUPERVISED_SHUTDOWN_EXIT = 76;
 
 /**
  * Whether this server was launched by a restart supervisor. Reads
@@ -57,17 +62,30 @@ export interface SuperviseOptions {
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   exit?: (code: number) => void;
   log?: (message: string) => void;
+  // Holds the event loop open while parked (signal listeners alone do not);
+  // returns its release.
+  keepAlive?: () => () => void;
 }
 
-/** Run `command` and relaunch it whenever it exits SUPERVISED_RESTART_EXIT; mirror any other end. */
+const holdEventLoop = (): (() => void) => {
+  const t = setInterval(() => {}, 2 ** 30);
+  return () => clearInterval(t);
+};
+
+/**
+ * Run `command` and relaunch it whenever it exits SUPERVISED_RESTART_EXIT; park
+ * on SUPERVISED_SHUTDOWN_EXIT until a forwarded signal ends the supervisor with
+ * 0; mirror any other end.
+ */
 export function superviseServer({
   command, args, cwd = process.cwd(), env = process.env, spawn = nodeSpawn,
   spawnOptions = hostPlatform.spawnOptions('daemon'), signals = process,
   kill = (pid, signal) => process.kill(pid, signal), exit = (code) => process.exit(code),
-  log = (m) => console.error(m),
+  log = (m) => console.error(m), keepAlive = holdEventLoop,
 }: SuperviseOptions): void {
   let current: ChildProcess | null = null;
   let stopping = false;
+  let release: (() => void) | null = null;
 
   const launch = () => {
     let child: ChildProcess;
@@ -93,6 +111,12 @@ export function superviseServer({
         launch();
         return;
       }
+      if (code === SUPERVISED_SHUTDOWN_EXIT && !stopping) {
+        log(`cc-supervisor: server pid=${child.pid} exited ${code} (shut down); parked until stopped`);
+        current = null;
+        release = keepAlive();
+        return;
+      }
       log(signal
         ? `cc-supervisor: server pid=${child.pid} ended by ${signal}`
         : `cc-supervisor: server pid=${child.pid} exited ${code}`);
@@ -103,7 +127,12 @@ export function superviseServer({
   for (const sig of FORWARDED) {
     signals.on(sig, () => {
       stopping = true;
-      if (current?.pid === undefined) return;
+      if (current === null) {
+        // Parked: no server to forward to, so the signal ends the supervisor.
+        if (release) { release(); release = null; exit(0); }
+        return;
+      }
+      if (current.pid === undefined) return;
       try { kill(current.pid, sig); } catch { /* already gone */ }
     });
   }

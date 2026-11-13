@@ -1,8 +1,10 @@
 import { closeSync, existsSync, openSync, realpathSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { posixLoginShell } from '../systems/ptyHost.ts';
-import type { Platform } from './platform.ts';
+import { procStartSync } from '../systems/fuse/driver.ts';
+import { START_TIME_TIMEOUT_MS, type Platform } from './platform.ts';
 import { lockDirHash, NO_RELEASE, SOCK_PATH_MAX } from './rootLockAddress.ts';
 
 // The host facts the root-lock addressing reads, injectable so a test can take
@@ -15,6 +17,11 @@ export interface PosixDeps {
   realpath: (p: string) => string;
   openDir: (p: string) => number;
   closeFd: (fd: number) => void;
+  // `/proc/<pid>/stat` is readable (Linux, Android): a start time is its field 22.
+  hasProcStat: () => boolean;
+  procStart: (pid: number) => string | null;
+  // Runs a helper process (`ps`) and calls back with its stdout.
+  execFile: (file: string, args: string[], opts: { timeout: number }, cb: (err: Error | null, stdout: string) => void) => { on(event: 'error', fn: () => void): unknown };
 }
 
 export function createPosixPlatform(overrides: Partial<PosixDeps> = {}): Platform {
@@ -24,6 +31,9 @@ export function createPosixPlatform(overrides: Partial<PosixDeps> = {}): Platfor
     realpath: realpathSync,
     openDir: (p) => openSync(p, 'r'),
     closeFd: closeSync,
+    hasProcStat: () => existsSync('/proc/self/stat'),
+    procStart: procStartSync,
+    execFile: (file, args, opts, cb) => execFile(file, args, opts, (err, stdout) => cb(err, String(stdout))),
     ...overrides,
   };
   const fits = (p: string): boolean => Buffer.byteLength(p) <= SOCK_PATH_MAX;
@@ -50,6 +60,18 @@ export function createPosixPlatform(overrides: Partial<PosixDeps> = {}): Platfor
     },
     killGroup(pid, signal) {
       process.kill(-pid, signal);
+    },
+    // Field 22 of /proc/<pid>/stat (clock ticks since boot) where /proc exists;
+    // `ps`'s lstart (macOS) otherwise.
+    async processStartTime(pid) {
+      if (d.hasProcStat()) return d.procStart(pid);
+      const stdout = await new Promise<string | null>((resolve) => {
+        // Capped, so a hung ps cannot hold the boot's orphan reap.
+        const child = d.execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: START_TIME_TIMEOUT_MS }, (err, out) => resolve(err ? null : out));
+        child.on('error', () => resolve(null));
+      });
+      const out = stdout?.trim();
+      return out ? out : null;
     },
     splitCommand(line) {
       return line.split(/\s+/).filter(Boolean);

@@ -104,14 +104,11 @@
 // the barrier set, looping until neither moves. Only once the writers have
 // stopped; it is the barrier's one exception to the one-snapshot rule.
 //
-// SYNC READ: loadSessionsSync, for the restart path, which stays synchronous up
-// to process.exit(). It never consults the cache or the barrier.
-//
 // Growth is bounded only by the two deleters: every session ever recorded keeps
 // its record until it is explicitly deleted or the boot cleanup finds no
 // transcript left anywhere in its lineage.
 
-import { promises as fs, readFileSync, type BigIntStats } from 'node:fs';
+import { promises as fs, type BigIntStats } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic, isMintedPublicId } from './projects.ts';
 import { withLock } from './storeLock.ts';
@@ -477,18 +474,6 @@ async function loadLenient(): Promise<SessionsDoc> {
 export async function loadSessions(): Promise<SessionIndex> {
   await awaitKickedWrites();
   return indexSessions(await loadLenient());
-}
-
-// Sync twin for the restart path. Falls back to `.bak` on a missing or corrupt
-// primary; never consults the barrier or the cache.
-export function loadSessionsSync(): SessionIndex {
-  const read = (file: string): SessionsDoc => parseSessionsDoc(JSON.parse(readFileSync(file, 'utf8')));
-  try { return indexSessions(read(sessionsFile())); }
-  catch (e) {
-    if (errCode(e) !== 'ENOENT') console.warn(`sessionStore: failed to read ${sessionsFile()}: ${errMsg(e)}; serving the backup`);
-  }
-  try { return indexSessions(read(backupFile())); }
-  catch { return indexSessions(new Map()); }
 }
 
 // ── writes ───────────────────────────────────────────────────────────────────
@@ -930,18 +915,6 @@ export function setSegmentTemp(backingId: string | null | undefined, on: boolean
 export function setSegmentArchived(backingId: string | null | undefined, on: boolean, { owner }: { owner?: string | null } = {}): Promise<boolean> {
   if (typeof backingId !== 'string' || !backingId) return Promise.resolve(false);
   return segmentWrite('setSegmentArchived', backingId, 'archived', on, owner);
-}
-
-// Live temp segments with no live instance: sessions that crashed before this
-// process could retire them. `liveBackingIds` is every backing id this process
-// tracks as a live temp instance.
-export function orphanedTempIdsSync(liveBackingIds: Iterable<string>): string[] {
-  const live = new Set(liveBackingIds);
-  const out: string[] = [];
-  for (const rec of loadSessionsSync().byPublic.values()) {
-    for (const s of liveSegments(rec)) if (s.temp && !live.has(s.id)) out.push(s.id);
-  }
-  return out;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

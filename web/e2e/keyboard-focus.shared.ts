@@ -307,15 +307,6 @@ export const RETURNS: { name: string; open: (c: ReturnCtx, act: Act) => Promise<
   { name: 'New project', open: ({ page }, act) => projectMenuItem(page, act, 'New project', page.locator('[role="dialog"][data-dialog="new-project"]')) },
   { name: 'Add existing directory', open: ({ page }, act) => projectMenuItem(page, act, 'Add existing directory', page.locator('[role="dialog"][data-dialog="adopt-project"]')) },
   { name: 'New workspace', open: ({ page }, act) => projectMenuItem(page, act, 'New workspace', page.locator('[role="dialog"][data-dialog="workspace"]')) },
-  {
-    name: 'Restart',
-    open: async ({ page }, act) => {
-      const sb = await sidebarBy(page, act);
-      const button = sb.locator('[data-restart]');
-      await act(page, button);
-      return { dialog: page.locator('[role="dialog"][data-restart-dialog]'), returnsTo: button };
-    },
-  },
 ];
 
 /** Past every closing menu and drawer, and a frame more: where a person's next key lands. */

@@ -1,17 +1,16 @@
-// The relaunch behind POST /api/admin/restart. Spawns a detached child node
-// process with the same argv/env/cwd and exits this one (under a restart
-// supervisor it exits with the supervisor's relaunch code instead), so editing server code
-// + clicking the sidebar's "Restart server" button reloads everything without
-// the user having to ctrl+C in their shell.
+// The relaunch behind POST /api/admin/restart and the stop behind
+// POST /api/admin/shutdown — the sidebar power menu's Restart and Shut down.
 //
-// runRestart drives it, in two modes:
-//   - plain: archive temps and stop the instances (teardownInstances), close the
-//     WS + HTTP servers (teardownNetworking), spawn the replacement, exit;
-//   - resume: drain every live turn to idle and write the resume manifest
-//     (src/resumeRestart.ts) instead of stopping the instances outright.
-// Before either, the relaunch is prepared in THIS process (src/relaunchPrep.ts):
-// node_modules is installed when it does not satisfy package.json and the web
-// build is staged. A failed step refuses the relaunch, so cc keeps serving.
+// runRestart drives both. Each drains every live turn to idle and writes the
+// resume manifest (src/resumeRestart.ts), so the next boot restores the same
+// sessions; then a restart spawns a replacement node process with the same
+// argv/env/cwd and exits (under a restart supervisor it exits with the
+// supervisor's relaunch code instead), and a shutdown exits with nothing to
+// replace it (under a supervisor, with the code that parks it).
+// Before a restart drains, the relaunch is prepared in THIS process
+// (src/relaunchPrep.ts): node_modules is installed when it does not satisfy
+// package.json and the web build is staged. A failed step refuses the
+// relaunch, so cc keeps serving.
 //
 // The replacement polls EADDRINUSE while binding (listenWithRetry in
 // server.ts), which handles the race where our listening socket hasn't fully
@@ -20,95 +19,19 @@ import { spawn } from 'node:child_process';
 import { hostPlatform } from './platform/index.ts';
 import type { Server } from 'node:http';
 import type { WebSocketServer } from 'ws';
-import { writePendingTempCleanup } from './tempCleanup.ts';
-import { orphanedTempIdsSync } from './sessionStore.ts';
-import { retireSegments } from './sessionLineage.ts';
 import { drainToIdle, finishDrain, abortDrain } from './resumeRestart.ts';
 import { relaunchPrep, type RelaunchPrep } from './relaunchPrep.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
-import { SUPERVISED_RESTART_EXIT } from './restartSupervisor.ts';
+import type { Deliver } from './resumeManifest.ts';
+import type { RunningRecorder } from './runningRecord.ts';
+import { SUPERVISED_RESTART_EXIT, SUPERVISED_SHUTDOWN_EXIT } from './restartSupervisor.ts';
 import { ROOT_LOCK_HANDOVER_ENV, ROOT_LOCK_HANDOVER_WAIT_MS, type RootLock } from './rootLock.ts';
 import { mintLockToken } from './storeLock.ts';
-
-// The InstanceManager surface the plain restart path reads. Every method is
-// optional because runTempCleanup/teardownInstances guard each call (the
-// routes inject the real manager; tests pass stubs). `tempCleanupSnapshot`
-// returns {cwd, sessionId} rows — only sessionId is consumed here.
-interface RestartManagerLike {
-  shutdownTempSync?(): void;
-  tempCleanupSnapshot?(): Array<{ sessionId: string }>;
-  shutdown?(): Promise<unknown> | void;
-  stopLiveSync?(): void;
-}
 
 interface RestartLog {
   warn?: (...args: unknown[]) => void;
   log?: (...args: unknown[]) => void;
   error?: (...args: unknown[]) => void;
-}
-
-// Archive every temp session on a plain restart: live-attached ones (via
-// instances.shutdownTempSync()) AND crash-orphaned ones: a temp segment in the
-// session store with no live instance (e.g. a prior hard crash).
-// Kept separate from teardownInstances so it's
-// directly unit-testable, mirroring how shutdownTempSync/writePendingTempCleanup
-// /sweepPendingTempCleanup are already tested standalone.
-export function runTempCleanup({ instances, log = console }: { instances?: RestartManagerLike | null; log?: RestartLog } = {}): void {
-  if (!instances || typeof instances.shutdownTempSync !== 'function') return;
-
-  // Capture the temp session set *before* shutdownTempSync runs, then
-  // write a manifest that the next boot will replay. This is defence
-  // in depth: orphaned subagent processes (claude forks them for Task
-  // calls, we don't track them) can keep writing to the jsonl after
-  // our parent has exited, so the in-process cleanup alone isn't
-  // enough — the post-restart sweep wipes anything that reappeared.
-  let snapshot: Array<{ sessionId: string }> = [];
-  try {
-    if (typeof instances.tempCleanupSnapshot === 'function') {
-      snapshot = instances.tempCleanupSnapshot();
-    }
-  } catch (e) { log.warn?.('restart: temp snapshot error', e); }
-
-  // Synchronously delete temp session jsonls + subagents dirs before
-  // we exit — `_handleExit()`'s async cleanup races process.exit(),
-  // so without this the temp jsonls survive the restart and reappear
-  // in the sidebar as ordinary persistent sessions.
-  try { instances.shutdownTempSync(); }
-  catch (e) { log.warn?.('restart: temp cleanup error', e); }
-
-  // Crash-orphaned temp sessions: a temp segment in the session store with no
-  // live instance, so the kill/wipe loop above never sees them. There's no
-  // placement on record for a segment, so there's no subagents dir to
-  // locate/clean — just the store bookkeeping, in one write.
-  let orphanedIds: string[] = [];
-  try {
-    orphanedIds = orphanedTempIdsSync(snapshot.map((e) => e.sessionId));
-  } catch (e) { log.warn?.('restart: orphaned temp lookup error', e); }
-  retireSegments(orphanedIds).catch(() => {});
-
-  try {
-    writePendingTempCleanup([...snapshot, ...orphanedIds.map((sessionId) => ({ sessionId }))]);
-  } catch (e) { log.warn?.('restart: pending-cleanup manifest write failed', e); }
-}
-
-// A plain restart's end for the instances: archive temps (runTempCleanup), stop
-// live CLIs, and fire the manager's shutdown. Synchronous up to the shutdown,
-// which is fire-and-forget: the replacement must not wait on it.
-export function teardownInstances({ instances, log = console }: { instances?: RestartManagerLike | null; log?: RestartLog } = {}): void {
-  try {
-    runTempCleanup({ instances, log });
-    // Where SIGTERM is not soft, the CLI's children would outlive the exit.
-    try { instances?.stopLiveSync?.(); }
-    catch (e) { log.warn?.('restart: live stop error', e); }
-    if (instances && typeof instances.shutdown === 'function') {
-      // Captured before the closure so the narrowed function isn't lost (TS
-      // re-widens property accesses inside closures).
-      const shutdown = instances.shutdown;
-      Promise.resolve().then(() => shutdown()).catch(() => {});
-    }
-  } catch (e) {
-    log.warn?.('restart: instance teardown error', e);
-  }
 }
 
 // Close the WebSocket server (terminating held-open sockets) and stop accepting
@@ -132,40 +55,69 @@ export interface RestartCtx {
   graceMs?: number;
 }
 
+export type ExitForShutdown = (opts: { log?: RestartLog; rootLock?: RootLock | null; supervised?: boolean }) => void | Promise<void>;
+
 /**
- * One relaunch, prepared first. In resume mode the shared node_modules changes
- * only once every turn has ended; in plain mode the sessions are being torn
- * down (and never resumed) when it changes. When it needs no change every
- * failure is found before any session is touched:
+ * One Restart or Shut down. Both drain every live turn to idle and finish the
+ * drain into the resume manifest (`deliver` says how the next boot delivers
+ * the continue notices; a shutdown's is always `gated`). The running recorder
+ * is paused for the drain, so the closing CLIs' status events cannot rewrite
+ * the record finishDrain removes after stopping them.
  *
- * - in sync: stage the web build, then tear down and relaunch;
- * - plain + drift: stop the instances (the user chose to drop them), install,
- *   stage, then close networking and relaunch;
- * - resume + drift: drain to idle, install, stage, then close networking,
- *   finish the drain and relaunch — a failure there hands the sessions back
- *   (abortDrain) with networking still up.
+ * A restart is prepared first. When node_modules needs no change every failure
+ * is found before any session is touched:
  *
- * A failure throws and nothing is relaunched. `onCommit` fires once the
- * relaunch can no longer be refused, before networking goes down, so the caller
- * can still answer its client. `flags` turn steps off: `buildWeb` the stage,
+ * - in sync: stage the web build, then drain, close networking, finish the
+ *   drain and relaunch;
+ * - drift: drain to idle, install, stage, then close networking, finish the
+ *   drain and relaunch — a failure there hands the sessions back (abortDrain)
+ *   with networking still up, and the recorder resumes.
+ *
+ * A shutdown prepares nothing: it drains, closes networking, finishes the
+ * drain and exits through `exitForShutdown`.
+ *
+ * A failure throws and nothing is relaunched. `onCommit` fires once the step
+ * can no longer be refused, before networking goes down, so the caller can
+ * still answer its client. `flags` turn steps off: `buildWeb` the stage,
  * `syncDeps` the dependency check.
  */
 export async function runRestart({
-  mode, ctx, flags, prep = relaunchPrep, onChunk = () => {}, onCommit, spawnAndExit = spawnReplacementAndExit, rootLock = null, supervised = false,
+  action, deliver = 'gated', ctx, flags, prep = relaunchPrep, onChunk = () => {}, onCommit,
+  spawnAndExit = spawnReplacementAndExit, exitForShutdown = exitAfterShutdown, rootLock = null, supervised = false, recorder = null,
 }: {
-  mode: 'plain' | 'resume';
+  action: 'restart' | 'shutdown';
+  // How the next boot delivers the continue notices of a restart.
+  deliver?: Deliver;
   ctx: RestartCtx;
   flags: { buildWeb: boolean; syncDeps: boolean };
   prep?: RelaunchPrep;
   onChunk?: (phase: RestartPhase, text: string) => void;
   onCommit?: () => void;
   spawnAndExit?: (opts: { log?: RestartLog; rootLock?: RootLock | null; supervised?: boolean }) => void | Promise<void>;
+  exitForShutdown?: ExitForShutdown;
   // The projects-root lock this server holds, handed over to the replacement.
   rootLock?: RootLock | null;
   // A restart supervisor relaunches this server: exit for it instead of spawning.
   supervised?: boolean;
+  recorder?: Pick<RunningRecorder, 'pause' | 'resume' | 'clis'> | null;
 }): Promise<void> {
   const log = ctx.log ?? console;
+  const { instances } = ctx;
+  const drain = async () => {
+    recorder?.pause();
+    onChunk('drain', 'Winding live sessions down to idle\n');
+    return drainToIdle({ instances: instances!, log, graceMs: ctx.graceMs });
+  };
+
+  if (action === 'shutdown') {
+    const idle = instances ? await drain() : null;
+    onCommit?.();
+    teardownNetworking(ctx);
+    if (instances && idle) finishDrain({ instances, log }, idle, { deliver: 'gated', clis: recorder?.clis() ?? [] });
+    await exitForShutdown({ log, rootLock, supervised });
+    return;
+  }
+
   const drift = flags.syncDeps ? prep.drift() : null;
   const stage = async () => {
     if (!flags.buildWeb) return;
@@ -178,24 +130,34 @@ export async function runRestart({
   };
   if (!drift) await stage();
 
-  const { instances } = ctx;
-  if (mode === 'resume' && instances) {
-    onChunk('drain', 'Winding live sessions down to idle\n');
-    const idle = await drainToIdle({ instances, log, graceMs: ctx.graceMs });
+  if (instances) {
+    const idle = await drain();
     if (drift) {
       try { await install(); await stage(); }
-      catch (e) { abortDrain({ instances, log }, idle); throw e; }
+      catch (e) { abortDrain({ instances, log }, idle); recorder?.resume(); throw e; }
     }
     onCommit?.();
     teardownNetworking(ctx);
-    finishDrain({ instances, log }, idle);
+    finishDrain({ instances, log }, idle, { deliver, clis: recorder?.clis() ?? [] });
   } else {
-    if (mode === 'plain') teardownInstances({ instances, log });
     if (drift) { await install(); await stage(); }
     onCommit?.();
     teardownNetworking(ctx);
   }
   await spawnAndExit({ log, rootLock, supervised });
+}
+
+// The end of a shutdown: release the projects-root lock and exit — 0, or
+// SUPERVISED_SHUTDOWN_EXIT under a restart supervisor, which parks rather than
+// relaunching or exiting (src/restartSupervisor.ts).
+export async function exitAfterShutdown({
+  log = console, rootLock = null, supervised = false, exit = (code: number) => process.exit(code),
+}: { log?: RestartLog; rootLock?: RootLock | null; supervised?: boolean; exit?: (code: number) => void } = {}): Promise<void> {
+  rootLock?.releaseSync();
+  const code = supervised ? SUPERVISED_SHUTDOWN_EXIT : 0;
+  log.log?.(`shutdown: exiting pid=${process.pid} with ${code}`);
+  await new Promise<void>(r => setTimeout(r, 50));
+  exit(code);
 }
 
 // The supervised relaunch: release the projects-root lock and exit with the

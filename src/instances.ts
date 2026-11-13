@@ -59,7 +59,7 @@ export async function sweepSessionTmpDirs(liveIds: Iterable<string>): Promise<vo
 }
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
-  retireSegment, retireSegments, trackLineageWrite, loadLineage, chainFor, undoRenewal, type Lineage, type LineageSegment,
+  retireSegment, trackLineageWrite, loadLineage, chainFor, undoRenewal, type Lineage, type LineageSegment,
 } from './sessionLineage.ts';
 import { renewalBoundaryAt, renewalCut } from './renewalBoundary.ts';
 import { createWorktree, requireWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
@@ -3577,12 +3577,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // there is no jsonl, so this marks a sessionId no file
   // backs. Inert only because every reader stat-gates the file first (see
   // src/projects.ts's session-row build); a reader that enumerates segments
-  // without that stat would surface a phantom row. Not a NEW state: the temp
-  // flag is set at spawn time, so before the terminal latch a stranded failure
-  // kept it until the next graceful restart, whose orphan sweep
-  // (runTempCleanup → orphanedTempIdsSync, plus shutdownTempSync) does this
-  // same retirement. The latch changes WHEN the archived flag appears, not
-  // WHETHER.
+  // without that stat would surface a phantom row.
   //
   // Awaits this instance's own lineage chain first: a rotation kicked just
   // before the exit must have recorded the segment this retires.
@@ -5515,7 +5510,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   retired = new RetiredPagers();
   _claudeLauncher: LauncherLike;
   _platform: Platform;
-  // How the synchronous stops (shutdownForResumeSync, stopLiveSync) treat live CLIs.
+  // How the synchronous stop (shutdownForResumeSync) treats live CLIs.
   _syncStop: { graceMs: number; killSurvivors: boolean };
   // RELAUNCH_GRACE_MS, copied onto every Instance this manager constructs, so a
   // test can shrink every relaunch's confirmation at once.
@@ -7758,90 +7753,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
-  // Snapshot of live temp sessions keyed by what's needed to find their
-  // on-disk jsonl: {cwd, sessionId}. Used by the restart path to write a
-  // pending-cleanup manifest that the next boot can replay (defence in
-  // depth against orphaned post-exit writes).
-  tempCleanupSnapshot(): Array<{ place: TranscriptPlacement; sessionId: string }> {
-    const out: Array<{ place: TranscriptPlacement; sessionId: string }> = [];
-    for (const inst of this.byId.values()) {
-      if (!inst.temp || !inst.backingSessionId) continue;
-      out.push({ place: inst.transcriptPlace, sessionId: inst.backingSessionId });
-    }
-    return out;
-  }
-
-  // Synchronously kill every live temp subprocess and archive it: keep its
-  // persisted jsonl, delete its sub-agent dir. The async `shutdown()` above
-  // archives through each subprocess's exit (`_archiveTempSession()`) and
-  // resolves only once those archives land, but the restart path calls it
-  // fire-and-forget and exits ~50 ms later without awaiting it — so the
-  // restart path calls this first to guarantee on-disk cleanup before we exit.
-  //
-  // SIGKILL (not SIGTERM) because claude's SIGTERM handler can flush one
-  // last line to the jsonl, and the CLI opens it `O_APPEND|O_CREAT`, so a
-  // post-`rmSync` write re-creates the file at the same path. SIGKILL is
-  // unmaskable — once the kernel delivers it, the process can't write again.
-  // We then block briefly until every targeted pid is reaped before deleting,
-  // and wipe a second time as belt-and-braces.
-  shutdownTempSync(): void {
-    const temps: Instance[] = [];
-    for (const inst of this.byId.values()) {
-      if (!inst.temp) continue;
-      temps.push(inst);
-      // `inst.pid` is SUDO's under the FUSE wrap, and sudo cannot forward
-      // SIGKILL — so the recorded inner pid is the one to signal, re-verified
-      // by starttime immediately before signalling. NEITHER sync shutdown path
-      // can run the mount teardown (it is async and this is called immediately
-      // before process.exit); the boot sweep — sweepFuseSessions() in
-      // server.ts — is what covers both.
-      const victim = killablePid(inst);
-      if (inst.proc && victim) {
-        try { this._platform.killProcess(victim, 'SIGKILL'); } catch { /* gone */ }
-      }
-    }
-
-    // Bounded sync wait for the SIGKILLed processes to actually be reaped.
-    // Atomics.wait is Node's only non-spinning sync sleep primitive.
-    const sab = new Int32Array(new SharedArrayBuffer(4));
-    const deadline = Date.now() + 300;
-    while (Date.now() < deadline) {
-      let allDead = true;
-      for (const inst of temps) {
-        const victim = killablePid(inst);
-        if (!victim) continue;
-        // ONLY ESRCH is death — see pidIsAlive. EPERM is reachable here,
-        // because a FUSE-wrapped worker is root until the bootstrap's setpriv
-        // runs, and reading it as death stops the wait on a live process.
-        if (pidIsAlive(victim)) { allDead = false; break; }
-      }
-      if (allDead) break;
-      Atomics.wait(sab, 0, 0, 20);
-    }
-
-    // Remove subagent dirs (ephemeral; not needed for restore). The main
-    // .jsonl is KEPT — we archive rather than delete. A double-wipe for
-    // belt-and-braces against orphaned subagent writes is still correct here.
-    const wipe = (): void => {
-      for (const inst of temps) {
-        if (!inst.backingSessionId) continue;
-        try { rmSync(subAgentDirPath(inst.transcriptPlace, inst.backingSessionId), { recursive: true, force: true }); } catch { /* ignore */ }
-      }
-    };
-    wipe();
-    Atomics.wait(sab, 0, 0, 30);
-    wipe();
-    // Retire every temp segment in ONE store write. Fire-and-forget — the
-    // write is async and the restart path is about to exit; if it doesn't land
-    // in time the next boot's sweepPendingTempCleanup will pick up the slack
-    // via the manifest (which now carries action:"archive").
-    retireSegments(temps.map(inst => inst.backingSessionId).filter((id): id is string => !!id)).catch(() => {});
-  }
-
-  // Resume-restart counterpart of shutdownTempSync: gracefully close every live
-  // subprocess (temp AND non-temp) via stdin EOF — all turns are already done
-  // before this is called, so no orphan can still be writing the jsonl we are
-  // about to carry over. DO NOT delete any jsonl. Set `_suppressTempDelete`
+  // The drain's end (finishDrain, src/resumeRestart.ts): gracefully close every
+  // live subprocess (temp AND non-temp) via stdin EOF — all turns are already
+  // done before this is called, so no orphan can still be writing the jsonl we
+  // are about to carry over. DO NOT delete any jsonl. Set `_suppressTempDelete`
   // first so each temp instance's _handleExit skips _archiveTempSession(),
   // preserving the transcript for `--resume` on boot.
   shutdownForResumeSync(): void {
@@ -7857,28 +7772,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // waits for all-idle), so the session JSONL is fully flushed.
       try { inst.proc.stdin?.end(); } catch { /* gone */ }
     }
-    // As in shutdownTempSync, the pid polled is the recorded inner one under the
-    // FUSE wrap, and this path CANNOT run the mount teardown — it is async and
-    // process.exit follows immediately. sweepFuseSessions() at the next boot is
-    // what unmounts and reaps the daemon.
-    this._stopAllSync(live, this._syncStop);
-  }
-
-  // Plain-restart counterpart for a sync-stop policy that kills survivors: the
-  // CLI's children (bash, conhost) do not die with it, and the plain restart
-  // (`teardownInstances`, src/restart.ts) exits right after. Interrupt every busy turn and EOF every live non-temp
-  // instance, wait, then tree-kill any survivor. A no-op under a policy that
-  // leaves survivors: the children exit on EOF once cc is gone. (Temps are
-  // handled by shutdownTempSync.)
-  stopLiveSync(): void {
-    if (!this._syncStop.killSurvivors) return;
-    const live: Instance[] = [];
-    for (const inst of this.byId.values()) {
-      if (!inst.proc || inst.temp) continue;
-      live.push(inst);
-      inst.interruptTurnForStop();
-      try { inst.proc.stdin?.end(); } catch { /* gone */ }
-    }
+    // The pid polled is the recorded inner one under the FUSE wrap (killablePid),
+    // and this path CANNOT run the mount teardown — it is async and process.exit
+    // follows immediately. sweepFuseSessions() at the next boot is what unmounts
+    // and reaps the daemon.
     this._stopAllSync(live, this._syncStop);
   }
 

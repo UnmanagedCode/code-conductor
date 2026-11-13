@@ -13,6 +13,7 @@ import { startVoice } from '@/features/voice';
 import { startPluginSessionBridge } from '@/features/views/pluginSession';
 import { startPluginSessionWidth } from '@/features/views/pluginSessionWidth';
 import { startPluginLinkHost } from '@/features/views/pluginLinkHost';
+import { startResumeNotices } from '@/features/resume';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -30,3 +31,4 @@ startVoice();
 startPluginSessionBridge();
 startPluginSessionWidth();
 startPluginLinkHost();
+startResumeNotices();

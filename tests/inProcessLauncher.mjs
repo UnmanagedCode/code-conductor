@@ -7,8 +7,8 @@ import { runFakeClaude } from './fake-claude-engine.mjs';
 //   .pid (null), .stdin/.stdout/.stderr (streams), .kill(signal),
 //   EventEmitter 'exit'(code,signal) / 'close'(code,signal) / 'error'(err).
 //
-// pid is deliberately null: the manager's sync-shutdown paths
-// (shutdownTempSync / shutdownForResumeSync) guard on `inst.pid` before issuing
+// pid is deliberately null: the manager's sync-shutdown path
+// (shutdownForResumeSync) and the running record's `clis` rows guard on `inst.pid` before issuing
 // OS-level process.kill, so null makes those a safe skip rather than risking a
 // process.kill against a synthetic pid that could collide with a real process.
 class FakeChildProcess extends EventEmitter {

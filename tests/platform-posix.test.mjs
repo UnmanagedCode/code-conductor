@@ -3,7 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { posixPlatform } from '../src/platform/posix.ts';
+import { posixPlatform, createPosixPlatform } from '../src/platform/posix.ts';
+import { START_TIME_TIMEOUT_MS } from '../src/platform/platform.ts';
 import { selectPlatform, hostPlatform, samePath, win32Platform } from '../src/platform/index.ts';
 import { resolveClaudeBin, resolveBackendLaunch } from '../src/claudeLauncher.ts';
 
@@ -79,4 +80,35 @@ test('softSigterm, cliEnv and canonicalPath are the identity / no-op on posix', 
   assert.equal(posixPlatform.softSigterm, true);
   assert.deepEqual(posixPlatform.cliEnv(), {});
   assert.equal(posixPlatform.canonicalPath('/a/B/c'), '/a/B/c');
+});
+
+// Invariant: a live process has one stable, non-null start time; a pid nothing
+// runs as has none.
+test('processStartTime: a live pid reads one stable token, a dead pid reads null', async () => {
+  const a = await posixPlatform.processStartTime(process.pid);
+  assert.equal(typeof a, 'string');
+  assert.ok(a.length > 0);
+  assert.equal(await posixPlatform.processStartTime(process.pid), a);
+  const child = spawn('sleep', ['600'], { stdio: 'ignore' });
+  const pid = child.pid;
+  child.kill('SIGKILL');
+  await new Promise(r => child.once('exit', r));
+  assert.equal(await posixPlatform.processStartTime(pid), null);
+});
+
+// Invariant: without /proc the start time is ps's lstart for exactly that pid,
+// trimmed, read with START_TIME_TIMEOUT_MS as its timeout (a hung ps must not
+// hold boot); a failed or empty ps is unknown (null), and /proc is never read.
+test('processStartTime without /proc runs ps lstart under the start-time timeout; an empty or failed ps is null', async () => {
+  const runs = [];
+  const mk = (err, out) => createPosixPlatform({
+    hasProcStat: () => false,
+    procStart: () => { throw new Error('/proc must not be read'); },
+    execFile: (file, args, opts, cb) => { runs.push([file, args, opts]); setImmediate(() => cb(err, out)); return { on() {} }; },
+  });
+  assert.equal(await mk(null, 'Tue Nov 10 09:00:00 2026\n').processStartTime(41), 'Tue Nov 10 09:00:00 2026');
+  assert.deepEqual(runs[0], ['ps', ['-o', 'lstart=', '-p', '41'], { timeout: START_TIME_TIMEOUT_MS }]);
+  assert.equal(await mk(null, '  \n').processStartTime(42), null);
+  assert.equal(await mk(new Error('exit 1'), '').processStartTime(43), null);
+  assert.deepEqual(runs.map((r) => r[1][3]), ['41', '42', '43']);
 });

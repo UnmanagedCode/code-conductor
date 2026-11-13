@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   BarChart3Icon, FolderInputIcon, FolderPlusIcon, LayersIcon, LoaderCircleIcon, MenuIcon, MoonIcon,
-  SettingsIcon, SparklesIcon, SunIcon, WifiOffIcon, XIcon,
+  PowerOffIcon, SettingsIcon, SparklesIcon, SunIcon, WifiOffIcon, XIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -30,7 +30,8 @@ import { FilterBar, useSlashToFocus } from './FilterBar';
 import { Strip } from './Strip';
 import { ProjectsList } from './ProjectsList';
 import { ConductorsList } from './ConductorsList';
-import { RestartButton } from './RestartButton';
+import { PowerMenu } from './PowerMenu';
+import { powerStore } from './restart';
 import { SessionWidthControl } from './SessionWidthControl';
 import { scrollActiveIntoView } from './reveal';
 // Side-effect import: loading reveal installs its selection subscriptions, whether or not a binding above stays used.
@@ -189,6 +190,7 @@ function Footer({ mobile }: { mobile: boolean }) {
   const status = useStore(appStore, (s) => s.sidebarStatus);
   const connection = useStore(appStore, (s) => s.connection);
   const everDropped = useStore(appStore, (s) => s.everDropped);
+  const stopped = useStore(powerStore, (s) => s.stopped);
   const reconnecting = connection === 'reconnecting' && everDropped;
   const text = status?.text ?? (reconnecting ? 'Reconnecting…' : null);
   return (
@@ -196,7 +198,8 @@ function Footer({ mobile }: { mobile: boolean }) {
       <div className={cn('flex min-w-0 flex-1 items-center gap-1.5 text-xs', text ? 'text-warning' : 'text-muted-foreground')} aria-live="polite" data-sidebar-status>
         {text ? (
           <>
-            {reconnecting && !status ? <WifiOffIcon className="size-3.5 shrink-0" /> : <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />}
+            {stopped ? <PowerOffIcon className="size-3.5 shrink-0" />
+              : reconnecting && !status ? <WifiOffIcon className="size-3.5 shrink-0" /> : <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />}
             <span className="truncate">{text}</span>
           </>
         ) : connection === 'open' ? (
@@ -207,7 +210,7 @@ function Footer({ mobile }: { mobile: boolean }) {
       </div>
       {!mobile && <SessionWidthControl />}
       <ThemeButton />
-      <RestartButton />
+      <PowerMenu />
     </div>
   );
 }

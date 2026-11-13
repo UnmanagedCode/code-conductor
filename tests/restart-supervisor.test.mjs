@@ -11,8 +11,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync } from './tmpRegistry.mjs';
 import {
-  takeRestartSupervisor, superviseServer, RESTART_SUPERVISOR_ENV, SUPERVISED_RESTART_EXIT,
+  takeRestartSupervisor, superviseServer, RESTART_SUPERVISOR_ENV, SUPERVISED_RESTART_EXIT, SUPERVISED_SHUTDOWN_EXIT,
 } from '../src/restartSupervisor.ts';
+import { EXIT_CODES } from '../src/headless/result.ts';
+import { ROOT_LOCK_HELD_EXIT } from '../src/rootLock.ts';
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUPERVISE = path.join(REPO, 'docker', 'supervise.mjs');
@@ -40,6 +42,7 @@ test('takeRestartSupervisor: an absent key is not supervised and does not warn',
 
 // superviseServer over fakes: every spawn yields an emitter we end by hand.
 function rig({ spawnThrows = false } = {}) {
+  const holds = [];
   const spawns = [];
   const kills = [];
   const exits = [];
@@ -59,8 +62,9 @@ function rig({ spawnThrows = false } = {}) {
     kill: (p, sig) => kills.push([p, sig]),
     exit: (code) => exits.push(code),
     log: (m) => logs.push(m),
+    keepAlive: () => { const h = { released: false }; holds.push(h); return () => { h.released = true; }; },
   });
-  return { spawns, kills, exits, logs, signals };
+  return { spawns, kills, exits, logs, signals, holds };
 }
 
 test('superviseServer: exit 75 relaunches with the same command, args, cwd and env, marking this pid as supervisor', () => {
@@ -123,6 +127,48 @@ test('superviseServer: a signal after a relaunch goes to the new server pid', ()
   r.spawns[0].child.emit('exit', SUPERVISED_RESTART_EXIT, null);
   r.signals.emit('SIGTERM');
   assert.deepEqual(r.kills, [[1002, 'SIGTERM']]);
+});
+
+// Invariant: a shutdown (exit 76) is never relaunched and never ends the
+// supervisor on its own; it parks, holding the event loop open.
+test('superviseServer: exit 76 parks — no relaunch, no exit, the keep-alive held', () => {
+  const r = rig();
+  r.spawns[0].child.emit('exit', SUPERVISED_SHUTDOWN_EXIT, null);
+  assert.equal(r.spawns.length, 1);
+  assert.deepEqual(r.exits, []);
+  assert.equal(r.holds.length, 1);
+  assert.equal(r.holds[0].released, false);
+  assert.ok(r.logs.some((l) => /parked/.test(l)));
+});
+
+// Invariant: a parked supervisor still stops — a forwarded signal with no server
+// releases the keep-alive and exits 0, signalling nothing.
+test('superviseServer: SIGTERM while parked releases the keep-alive, exits 0 and kills nothing', () => {
+  const r = rig();
+  r.spawns[0].child.emit('exit', SUPERVISED_SHUTDOWN_EXIT, null);
+  r.signals.emit('SIGTERM');
+  assert.equal(r.holds[0].released, true);
+  assert.deepEqual(r.exits, [0]);
+  assert.deepEqual(r.kills, []);
+  assert.equal(r.spawns.length, 1);
+});
+
+// Invariant: after a stop signal an exit 76 is mirrored like any other exit.
+test('superviseServer: after a stop signal an exit 76 ends the supervisor with 76 and holds nothing', () => {
+  const r = rig();
+  r.signals.emit('SIGTERM');
+  r.spawns[0].child.emit('exit', SUPERVISED_SHUTDOWN_EXIT, null);
+  assert.deepEqual(r.exits, [SUPERVISED_SHUTDOWN_EXIT]);
+  assert.deepEqual(r.holds, []);
+});
+
+// Invariant: the shutdown code collides with no other exit the server or a
+// headless run produces, nor with a signal death.
+test('SUPERVISED_SHUTDOWN_EXIT is distinct from every other exit code', () => {
+  assert.equal(Object.values(EXIT_CODES).includes(SUPERVISED_SHUTDOWN_EXIT), false);
+  assert.notEqual(SUPERVISED_SHUTDOWN_EXIT, ROOT_LOCK_HELD_EXIT);
+  assert.notEqual(SUPERVISED_SHUTDOWN_EXIT, SUPERVISED_RESTART_EXIT);
+  assert.ok(SUPERVISED_SHUTDOWN_EXIT < 128);
 });
 
 test('superviseServer: a spawn that throws logs the error and exits 1', () => {

@@ -7,9 +7,9 @@
 // factory runs under a test on Linux.
 
 import path from 'node:path';
-import { execFileSync as nodeExecFileSync } from 'node:child_process';
+import { execFileSync as nodeExecFileSync, execFile as nodeExecFile } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import type { ChildHandle, KillSignal, Platform } from './platform.ts';
+import { START_TIME_TIMEOUT_MS, type ChildHandle, type KillSignal, type Platform } from './platform.ts';
 import { lockDirHash, NO_RELEASE } from './rootLockAddress.ts';
 
 const w = path.win32;
@@ -22,6 +22,15 @@ export interface Win32Deps {
   execFileSync: (file: string, args: string[], opts: { windowsHide: boolean; timeout: number; stdio: 'ignore' }) => unknown;
   realpathNative: (p: string) => string;
   realpathJs: (p: string) => string;
+  // Runs `file args` and resolves its stdout, or null on any failure.
+  execFile: (file: string, args: string[], opts: { windowsHide: boolean; timeout: number }) => Promise<string | null>;
+}
+
+function execFileStdout(file: string, args: string[], opts: { windowsHide: boolean; timeout: number }): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = nodeExecFile(file, args, opts, (err, stdout) => resolve(err ? null : String(stdout)));
+    child.on('error', () => resolve(null));
+  });
 }
 
 function bashCandidates(env: Win32Env, exists: (p: string) => boolean): string[] {
@@ -57,6 +66,16 @@ export function taskkillArgv(pid: number, env: Win32Env = process.env): [string,
   return [w.join(root, 'System32', 'taskkill.exe'), ['/T', '/F', '/PID', String(pid)]];
 }
 
+// The PowerShell query whose stdout is `pid`'s start time in UTC ticks; it
+// exits non-zero when no such process exists.
+export function startTimeArgv(pid: number, env: Win32Env = process.env): [string, string[]] {
+  const root = env.SystemRoot || 'C:\\Windows';
+  return [w.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+    '-NoProfile', '-NonInteractive', '-Command',
+    `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+  ]];
+}
+
 export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platform {
   const d: Win32Deps = {
     env: process.env,
@@ -64,6 +83,7 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
     execFileSync: nodeExecFileSync as Win32Deps['execFileSync'],
     realpathNative: realpathSync.native,
     realpathJs: realpathSync,
+    execFile: execFileStdout,
     ...overrides,
   };
 
@@ -144,6 +164,12 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
 
     killGroup(pid) {
       taskkill(pid);
+    },
+
+    async processStartTime(pid) {
+      const [file, args] = startTimeArgv(pid, d.env);
+      const out = (await d.execFile(file, args, { windowsHide: true, timeout: START_TIME_TIMEOUT_MS }))?.trim();
+      return out && /^\d+$/.test(out) ? out : null;
     },
 
     // Whitespace-separated; `"…"` groups (quotes removed); backslashes literal.

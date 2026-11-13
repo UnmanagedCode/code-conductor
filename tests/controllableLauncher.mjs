@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { spawn } from 'node:child_process';
 
 // A controllable launcher whose child stays alive until the test triggers a
 // spontaneous crash() (nonzero exit + stderr) or Instance.kill() (signalled
@@ -15,15 +16,37 @@ import { PassThrough } from 'node:stream';
 // child emits 'exit' BEFORE its last stderr line is written, then 'close' once
 // stdio ends — the order a real child process may deliver them in.
 //
+// `realProcess: true` backs each child with a real idle node process, so
+// `child.pid` is a real pid (the running record names it) and `kill()` signals
+// it. `orphanAll()` detaches every such process from its fake child: the fake
+// still exits on kill(), the real process keeps running — what a crash of cc
+// leaves behind. `orphans` lists those pids for the test's own cleanup.
+// `onLaunch(spec)` runs at the start of every launch.
+//
 // This module is NOT named `*.test.mjs`, so run.mjs's discover() ignores it.
 export class ControllableLauncher {
-  constructor() { this.children = []; this.failNext = null; this._crashNext = null; }
+  constructor({ realProcess = false, onLaunch = null } = {}) {
+    this.children = []; this.failNext = null; this._crashNext = null;
+    this.realProcess = realProcess; this.onLaunch = onLaunch; this.orphans = [];
+  }
+  orphanAll() {
+    for (const child of this.children) {
+      if (!child._real) continue;
+      this.orphans.push(child._real.pid);
+      child._real = null;
+    }
+  }
   crashNext(stderr, code = 1, { exitFirst = false } = {}) { this._crashNext = { stderr, code, exitFirst }; }
   // Whether the next launch is one of this launcher's armed failures.
   get armed() { return this._crashNext !== null || this.failNext !== null; }
-  launch() {
+  launch(spec) {
+    this.onLaunch?.(spec);
     const child = new EventEmitter();
     child.pid = null;
+    if (this.realProcess) {
+      child._real = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)'], { stdio: 'ignore' });
+      child.pid = child._real.pid;
+    }
     child.stdin = new PassThrough();
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
@@ -53,7 +76,11 @@ export class ControllableLauncher {
         child.stderr.end();
       });
     };
-    child.kill = () => { finish(null, 'SIGTERM'); return true; };
+    child.kill = (signal = 'SIGTERM') => {
+      if (child._real) { try { child._real.kill(signal); } catch { /* gone */ } child._real = null; }
+      finish(null, 'SIGTERM');
+      return true;
+    };
     // A spawn that NEVER STARTED, matching real child_process.spawn against a
     // missing binary: 'error' then 'close(-2, null)', never 'exit', and no
     // stderr — the process never ran, so the reason rides on the spawn_error

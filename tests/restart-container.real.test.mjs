@@ -185,7 +185,7 @@ test('an in-app restart keeps the container, its service and the plugin backend,
   let prev = await health(ctr);
   const supPid = await supervisor(prev.pid);
   const seenSupervisor = [supPid];
-  for (const body of [{}, { resume: true }]) {
+  for (const body of [{}, { autoContinue: true }]) {
     const out = await http(ctr, 'POST', '/api/admin/restart', body);
     const resultLine = out.split('\n').filter(Boolean).map((l) => JSON.parse(l)).at(-1);
     assert.deepEqual(resultLine, { type: 'result', ok: true }, out);

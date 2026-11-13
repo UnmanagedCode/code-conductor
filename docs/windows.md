@@ -27,7 +27,7 @@ cc on Windows 11: what differs at runtime, the Start-menu launcher, and the cont
 
 ## Update
 
-The in-app self-update runs `git pull --ff-only` in `<install>\app`, then `npm install` only when `node_modules` no longer satisfies `package.json`, and restarts. The restart — the sidebar **Restart** as well — installs on that same drift and builds the web UI in the running server before relaunching; a failure refuses the restart and the running server keeps serving. Every package the build needs is a `dependencies` entry, so the installer's `npm install` already carries them. It never updates the bundled `<install>\node`; a newer installer release does.
+The in-app self-update runs `git pull --ff-only` in `<install>\app`, then `npm install` only when `node_modules` no longer satisfies `package.json`, and restarts. The restart — the power menu's **Restart** as well — installs on that same drift and builds the web UI in the running server before relaunching; a failure refuses the restart and the running server keeps serving. Every package the build needs is a `dependencies` entry, so the installer's `npm install` already carries them. It never updates the bundled `<install>\node`; a newer installer release does.
 
 ## Installer contract
 

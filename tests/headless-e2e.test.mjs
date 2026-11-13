@@ -87,8 +87,19 @@ test('a completed run: exit 0, the one result object on stdout, every log line o
   assert.ok(sent.includes(JSON.stringify(`${HEADLESS_FRAGMENT}\n\nsay hi and finish`).slice(1, -1)), 'the root got the fragment then the prompt');
 });
 
-test('mid-run, the restart route refuses 409; SIGINT then exits 130 with a signal object', async (t) => {
+// Invariant (the restart and shutdown refusals): a headless run refuses both
+// before any step. Invariant (the lifecycle skip): a headless boot neither
+// consumes nor rewrites the interactive server's resume manifest or running
+// record — both are byte-identical after the run.
+test('mid-run, the restart and shutdown routes refuse 409; the resume files are left alone; SIGINT then exits 130 with a signal object', async (t) => {
   const home = await freshHome(t);
+  const store = path.join(home, 'project', '.code-conductor');
+  fs.mkdirSync(store, { recursive: true });
+  const planted = {
+    'pending-resume.json': JSON.stringify({ writtenAt: 'x', deliver: 'gated', instances: [{ project: 'gone', sessionId: 'aaaa', group: 'other' }] }),
+    'running-sessions.json': JSON.stringify({ writtenAt: 'x', instances: [{ project: 'gone', sessionId: 'bbbb', group: 'other' }], clis: [] }),
+  };
+  for (const [name, body] of Object.entries(planted)) fs.writeFileSync(path.join(store, name), body);
   const run = headless(t, home, fx('scenario-headless-root-gated.json'), ['--prompt', 'stay busy']);
   const port = Number((await until(() => BANNER.exec(run.out.stderr), 'the listening banner'))[1]);
   const base = `http://127.0.0.1:${port}`;
@@ -99,9 +110,13 @@ test('mid-run, the restart route refuses 409; SIGINT then exits 130 with a signa
   const restart = await fetch(`${base}/api/admin/restart`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(restart.status, 409);
   assert.equal((await restart.json()).code, 'RESTART_DISABLED_HEADLESS');
+  const shutdown = await fetch(`${base}/api/admin/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(shutdown.status, 409);
+  assert.equal((await shutdown.json()).code, 'SHUTDOWN_DISABLED_HEADLESS');
   run.child.kill('SIGINT');
   const { code } = await run.closed;
   assert.equal(code, 130, run.out.stderr);
+  for (const [name, body] of Object.entries(planted)) assert.equal(fs.readFileSync(path.join(store, name), 'utf8'), body, name);
   const res = onlyJson(run.out.stdout);
   assert.equal(res.reason, 'signal');
   assert.equal(res.exitCode, 130);

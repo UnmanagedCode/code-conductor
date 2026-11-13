@@ -123,5 +123,7 @@ if ! node docker/deps-complete.mjs; then
 fi
 
 # The supervisor relaunches only the server when an in-app restart asks for it
-# (exit 75); any other server exit ends the supervisor, hence the container.
+# (exit 75), and parks — the container stays up with no server — when an in-app
+# shutdown asks for it (exit 76), until a stop signal ends it with 0; any other
+# server exit ends the supervisor, hence the container.
 exec node docker/supervise.mjs ./conductor.sh "$@"

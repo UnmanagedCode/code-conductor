@@ -123,7 +123,7 @@ describe('About', () => {
     act(() => { stream.push({ type: 'result', ok: true, result: {} }); stream.end(); });
     await waitFor(() => expect(line()).toMatch(/Restarting/));
     expect(performRestart).toHaveBeenCalledTimes(1);
-    expect(performRestart).toHaveBeenCalledWith({ resume: true });
+    expect(performRestart).toHaveBeenCalledWith({ autoContinue: true });
     // After a successful update nothing re-arms Update while the restart is in flight.
     expect(buttons().map((b) => [b.textContent?.trim(), b.disabled])).toEqual([['Updating…', true]]);
   });
@@ -139,7 +139,7 @@ describe('About', () => {
     await waitFor(() => expect(line()).toBe('Updated, but the restart was refused: vite build failed (exit 1). cc is still running the previous version; fix it and restart.'));
     expect(within(versionCard()).getByRole('status').dataset.tone).toBe('error');
     expect(log()).toBe('error: Unexpected token');
-    expect(performRestart).toHaveBeenCalledWith({ resume: true });
+    expect(performRestart).toHaveBeenCalledWith({ autoContinue: true });
     expect(buttons()).toEqual([]);
   });
 

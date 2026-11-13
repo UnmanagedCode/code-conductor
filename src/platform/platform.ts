@@ -27,6 +27,10 @@ export interface SocketAddress { path: string; release(): void }
 // A flag marks a feature this host can run; when off, the feature is hidden and refused.
 export interface PlatformCapabilities { remoteSystems: boolean; fuseUnion: boolean; voice: boolean }
 
+// The bound on one Platform.processStartTime read that runs a helper process
+// (`ps`, PowerShell); a `/proc` read is immediate.
+export const START_TIME_TIMEOUT_MS = 5000;
+
 export interface Platform {
   capabilities: PlatformCapabilities;
   // True when SIGTERM lets the target run its shutdown handler; false where it
@@ -46,6 +50,11 @@ export interface Platform {
   killProcess(target: number | ChildHandle, signal: KillSignal): void;
   // The group a `group`/`daemon` child leads. Throws if there is none.
   killGroup(pid: number, signal: KillSignal): void;
+  // An opaque token naming WHEN `pid` started, equal across reads for one
+  // process and different for a later process reusing the number; null when
+  // unknown (the process is gone, or the host offers no reader). Compared, never
+  // parsed.
+  processStartTime(pid: number): Promise<string | null>;
   // A `CLAUDE_BIN` / backend launch template → argv.
   splitCommand(line: string): string[];
   // Equality key for two host paths.

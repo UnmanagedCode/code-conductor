@@ -64,7 +64,7 @@ export function AboutSection() {
         return;
       }
       selfUpdateStore.set({ line: { text: 'Update applied. Restarting…', tone: 'ok' } });
-      const restart = await performRestart({ resume: true });
+      const restart = await performRestart({ autoContinue: true });
       if (!restart.ok) {
         // The pull landed but this process keeps serving the version it booted.
         selfUpdateStore.set({

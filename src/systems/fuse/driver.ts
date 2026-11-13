@@ -109,10 +109,9 @@ function capture(cmd: string, args: string[], timeoutMs: number): Promise<string
   });
 }
 
-// The starttime of a live pid, or null. SYNCHRONOUS, because the two
-// shutdown-before-exit paths (shutdownTempSync, shutdownForResumeSync) are and
-// cannot be otherwise, and they still may not signal a pid they have not
-// re-verified.
+// The starttime of a live pid, or null. SYNCHRONOUS, because the
+// shutdown-before-exit path (shutdownForResumeSync) is and cannot be otherwise,
+// and it still may not signal a pid it has not re-verified.
 export function procStartSync(pid: number): string | null {
   try { return parseProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8'))?.starttime ?? null; }
   catch { return null; }

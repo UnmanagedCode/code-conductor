@@ -16,7 +16,7 @@ export type SpawnSelect = 'effort' | 'thinking';
 export type SessionDialog = 'summary' | 'stats' | 'prune';
 export type SummaryTier = 'title' | 'short' | 'medium' | 'long';
 export type PruneField = 'cut' | 'cutLabel' | 'thinking' | 'minimal';
-export type RestartChoice = 'resume' | 'only';
+export type PowerAction = 'Restart' | 'Shut down';
 // Settings part 3 (card 2026-0637)
 export type ConventionScope = 'workspace' | 'conductor' | 'project';
 // Settings part 2b
@@ -224,12 +224,9 @@ export interface Ui {
   saveWorkspace(dialog: Locator): Promise<void>;
   /** Clicks Delete workspace and answers the confirm. */
   deleteWorkspace(page: Page, dialog: Locator, confirm: boolean): Promise<void>;
-  /** Clicks the sidebar's restart button once. */
-  clickRestart(page: Page): Promise<void>;
-  restartDialog(page: Page): Locator;
-  restartChoice(dialog: Locator, which: RestartChoice): Locator;
-  /** Leaves the restart dialog without choosing and waits until it is hidden. */
-  dismissRestart(page: Page, dialog: Locator): Promise<void>;
+  /** Opens the sidebar footer's power menu and returns it. */
+  openPowerMenu(page: Page): Promise<Locator>;
+  powerItem(menu: Locator, which: PowerAction): Locator;
 
   // Sidebar C (card 2026-0629)
   /** Selects the Conductors lens and returns the clickable header row of `sessionId`'s conductor block. */
@@ -898,16 +895,14 @@ export const next: Ui = {
     await ask.getByRole('button', { name: confirm ? 'Delete workspace' : 'Cancel', exact: true }).click();
     await expect(ask).toBeHidden();
   },
-  async clickRestart(page) {
+  async openPowerMenu(page) {
     await next.openSidebar(page);
-    await sidebar(page).locator('[data-restart]').click();
+    await sidebar(page).locator('[data-power-menu]').click();
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    return menu;
   },
-  restartDialog: (page) => page.locator('[role="dialog"][data-restart-dialog]'),
-  restartChoice: (dialog, which) => dialog.getByRole('button', { name: which === 'resume' ? 'Restart & resume' : 'Restart only', exact: true }),
-  async dismissRestart(_page, dialog) {
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect(dialog).toBeHidden();
-  },
+  powerItem: (menu, which) => menu.getByRole('menuitem', { name: which, exact: true }),
 
   // Sidebar C (card 2026-0629)
   async conductorRow(page, sessionId) {
