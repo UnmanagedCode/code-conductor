@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 
 vi.mock('@/app/controller', () => ({ selectInstance: vi.fn(), refreshProjects: vi.fn() }));
 vi.mock('@/app/sessionActions', () => ({
-  closeSession: vi.fn(), promoteSession: vi.fn(), removeWorktree: vi.fn(), resumeSession: vi.fn(),
+  closeSession: vi.fn(), persistSession: vi.fn(), removeWorktree: vi.fn(), resumeSession: vi.fn(),
 }));
 
 import { TooltipProvider } from '@/components/ui/tooltip';

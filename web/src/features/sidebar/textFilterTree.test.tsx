@@ -235,7 +235,7 @@ describe('a narrowed place\'s Sessions summary', () => {
     seed({
       projects: [proj('api', { sessions: { count: 2, archivedCount: 0, handCount: 2, lastActivity: recent } })],
       workspaces: [],
-      instances: [hand('d-docs', 'api', null, { firstPrompt: 'docs pass' })],
+      instances: [hand('d-docs', 'api', null, { firstPrompt: 'docs pass', persistent: false })],
     });
     sidebarStore.set({ collapsedSessions: ['api'], expandedWorktrees: [], expandedWorkspaces: [], filter: '' });
     routeFetch({ 'GET /api/projects/api/sessions': rowsRoute([disk('d-fix', 'fix login bug', old), disk('d-docs', 'docs pass', recent)]) });

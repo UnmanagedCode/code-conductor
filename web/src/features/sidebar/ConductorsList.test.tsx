@@ -21,12 +21,12 @@ const loadSessions = vi.fn((..._a: any[]): Promise<any[]> => Promise.resolve([])
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
 const removeWorktree = vi.fn();
-const promoteSession = vi.fn();
+const persistSession = vi.fn();
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: (...a: unknown[]) => loadSessions(...a),
   closeSession: (...a: unknown[]) => closeSession(...a),
   resumeSession: (...a: unknown[]) => resumeSession(...a),
-  promoteSession: (...a: unknown[]) => promoteSession(...a),
+  persistSession: (...a: unknown[]) => persistSession(...a),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -45,7 +45,7 @@ beforeEach(() => {
   closeSession.mockReset();
   resumeSession.mockReset();
   removeWorktree.mockReset();
-  promoteSession.mockReset();
+  persistSession.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   invalidateSessions();
   sidebarStore.set({ collapsedSessions: [], expandedConductors: [], inactiveOpen: false, filter: '', ...FLEET_UI });
@@ -85,7 +85,7 @@ describe('Conductors-lens conductor rows', () => {
     // Invariant: each block, active or inactive, is coloured by its own sid, so the three colours are pairwise distinct.
     sidebarStore.set({ inactiveOpen: true });
     seed({
-      instances: [conductor(A, { title: ALPHA }), conductor(B, { temp: false, firstPrompt: BRAVO })],
+      instances: [conductor(A, { title: ALPHA }), conductor(B, { persistent: true, firstPrompt: BRAVO })],
       conductSessions: [{ sessionId: 'cd', title: 'Disk D', lastActivity: 1 }],
     });
     renderSidebar();
@@ -187,7 +187,7 @@ describe('Conductors-lens conductor rows', () => {
 
   it("a conductor row is labelled by its title, and an untitled one by its first prompt", async () => {
     // Invariant: a titled conductor row shows its title; an untitled one falls back to its first prompt, and neither shows the other's label.
-    seed({ instances: [conductor(A, { title: ALPHA }), conductor(B, { temp: false, firstPrompt: BRAVO })] });
+    seed({ instances: [conductor(A, { title: ALPHA }), conductor(B, { persistent: true, firstPrompt: BRAVO })] });
     renderSidebar();
     await settle();
     expect(conductorRowOf(A).textContent).toContain(ALPHA);
@@ -243,7 +243,7 @@ describe('selected conductor row', () => {
   it('a selected conductor row is marked data-active whether titled or untitled and keeps its unread pill, and the mark follows a selection change', async () => {
     // Invariant: selection marks exactly one conductor row, titled or untitled, and never swallows its unread pill, so selected stays distinct from unread.
     seed({
-      instances: [conductor(A, { title: ALPHA, turnEndSeq: 2, viewedSeq: 1 }), conductor(B, { temp: false, firstPrompt: BRAVO })],
+      instances: [conductor(A, { title: ALPHA, turnEndSeq: 2, viewedSeq: 1 }), conductor(B, { persistent: true, firstPrompt: BRAVO })],
       activeId: `i-${A}`,
     });
     renderSidebar();

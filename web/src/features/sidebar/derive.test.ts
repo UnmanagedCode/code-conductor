@@ -12,13 +12,13 @@ const inst = (o: Record<string, any>) => ({ id: o.id ?? `i-${o.sessionId}`, stat
 describe('mergeLive', () => {
   it('overlays a live instance onto its disk row and adds a synthetic row for one not on disk yet, newest first', () => {
     const rows = mergeLive(
-      [{ sessionId: 'a', lastActivity: 10, title: 'old' }, { sessionId: 'b', lastActivity: 30, temp: true }],
-      [inst({ sessionId: 'a', id: 'ia', title: 'renamed', status: 'turn' }), inst({ sessionId: 'c', id: 'ic', createdAt: 20, temp: true })],
+      [{ sessionId: 'a', lastActivity: 10, title: 'old', persistent: true }, { sessionId: 'b', lastActivity: 30, persistent: true }],
+      [inst({ sessionId: 'a', id: 'ia', title: 'renamed', status: 'turn' }), inst({ sessionId: 'c', id: 'ic', createdAt: 20, persistent: true })],
     );
     expect(rows.map((r) => r.sessionId)).toEqual(['b', 'c', 'a']);
-    expect(rows[2]).toMatchObject({ instanceId: 'ia', instanceStatus: 'turn', title: 'renamed' });
-    expect(rows[1]).toMatchObject({ synthetic: true, instanceTemp: true });
-    expect(rows[0]).toMatchObject({ instanceTemp: true });
+    expect(rows[2]).toMatchObject({ instanceId: 'ia', instanceStatus: 'turn', title: 'renamed', instancePersistent: false });
+    expect(rows[1]).toMatchObject({ synthetic: true, instancePersistent: true });
+    expect(rows[0]).toMatchObject({ instancePersistent: true });
   });
 
   it('skips an instance with no session yet: it adds no row and overlays none', () => {
@@ -41,11 +41,12 @@ describe('mergeLive', () => {
 });
 
 describe('sessionSections', () => {
-  it('orders normal, then temp, then conducted, and drops archived rows', () => {
+  it('orders normal, then persistent, then conducted, and drops archived rows', () => {
     const s = sessionSections([
-      { sessionId: 'c', conducted: true }, { sessionId: 't', instanceTemp: true }, { sessionId: 'n' }, { sessionId: 'x', archived: true },
+      { sessionId: 'c', conducted: true, instancePersistent: true }, { sessionId: 'p', instancePersistent: true }, { sessionId: 'n' },
+      { sessionId: 'x', archived: true },
     ]);
-    expect([s.normal, s.temp, s.conducted].map((l) => l.map((r) => r.sessionId))).toEqual([['n'], ['t'], ['c']]);
+    expect([s.normal, s.persistent, s.conducted].map((l) => l.map((r) => r.sessionId))).toEqual([['n'], ['p'], ['c']]);
   });
 });
 

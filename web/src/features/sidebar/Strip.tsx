@@ -89,7 +89,7 @@ export function Strip({ m }: { m: SidebarModel }) {
                     <span className="absolute top-1/2 right-1 -translate-y-1/2">
                       <CloseButton args={{
                         projectName: e.projectName, worktreeName: e.worktreeName, sessionId: e.sessionId, instanceId: e.instanceId,
-                        status: e.status, temp: e.temp, preview: e.label, synthetic: e.synthetic,
+                        status: e.status, persistent: e.persistent, preview: e.label, synthetic: e.synthetic,
                       }} />
                     </span>
                   </li>

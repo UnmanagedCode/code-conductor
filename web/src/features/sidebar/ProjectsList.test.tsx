@@ -16,12 +16,12 @@ const loadSessions = vi.fn((..._a: any[]): Promise<any[]> => Promise.resolve([])
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
 const removeWorktree = vi.fn();
-const promoteSession = vi.fn();
+const persistSession = vi.fn();
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: (...a: unknown[]) => loadSessions(...a),
   closeSession: (...a: unknown[]) => closeSession(...a),
   resumeSession: (...a: unknown[]) => resumeSession(...a),
-  promoteSession: (...a: unknown[]) => promoteSession(...a),
+  persistSession: (...a: unknown[]) => persistSession(...a),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -72,7 +72,7 @@ beforeEach(() => {
   closeSession.mockReset();
   resumeSession.mockReset();
   removeWorktree.mockReset();
-  promoteSession.mockReset();
+  persistSession.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   invalidateSessions();
   sidebarStore.set({ collapsedSessions: [], expandedWorktrees: [], expandedWorkspaces: [], expandedConductors: [], inactiveOpen: false, filter: '' });
@@ -331,12 +331,12 @@ describe('Projects tree', () => {
     expect(el('[data-project-sessions="p"] > button').getAttribute('aria-label')).toBe('Sessions (2)');
   });
 
-  it('a temp-only group reads Temp sessions open and Sessions collapsed', async () => {
+  it('a persistent-only group reads Persistent sessions open and Sessions collapsed', async () => {
     // Invariant: the open header names its only group; the collapsed header, with nothing loaded to name, reads Sessions.
-    seed({ projects: [proj('p')], instances: [inst({ sessionId: 't1', project: 'p', temp: true })] });
+    seed({ projects: [proj('p')], instances: [inst({ sessionId: 't1', project: 'p', persistent: true })] });
     renderSidebar();
     await settle();
-    expect(summaryOf('p').textContent).toBe('Temp sessions (1) · 1 live');
+    expect(summaryOf('p').textContent).toBe('Persistent sessions (1) · 1 live');
     fireEvent.click(el('[data-project-sessions="p"] > button'));
     expect(summaryOf('p').textContent).toBe('Sessions (1) · 1 live');
   });
@@ -390,45 +390,45 @@ describe('Projects tree', () => {
     expect(wsHeader('Hidden').getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('temp and conducted sessions sit under their own counted labels after the unlabelled normal rows; a conducted temp session groups as conducted and keeps its Make persistent button', async () => {
-    // Invariant: with two or more groups the order is normal (unlabelled), then a `Temp · n` label and its rows, then a `Conducted · n` label and its rows, n counting that group's rows, and the summary keeps the noun Sessions; conducted wins the grouping while a temp row, conducted or not, keeps its Make persistent button and a non-temp row never has one.
+  it('persistent and conducted sessions sit under their own counted labels after the unlabelled normal rows; a normal conducted session groups as conducted and keeps its Make persistent button', async () => {
+    // Invariant: with two or more groups the order is normal (unlabelled), then a `Persistent · n` label and its rows, then a `Conducted · n` label and its rows, n counting that group's rows, and the summary keeps the noun Sessions; conducted wins the grouping while a live normal row, conducted or not, keeps its Make persistent button and a persistent row never has one.
     seed({
       projects: [proj('demo')],
       instances: [
         inst({ sessionId: 'sid-normal', project: 'demo', firstPrompt: 'Normal', lastResponseAt: 4000 }),
-        inst({ sessionId: 'sid-temp', project: 'demo', temp: true, firstPrompt: 'Temp one', lastResponseAt: 3000 }),
-        inst({ sessionId: 'sid-cond', project: 'demo', conducted: true, firstPrompt: 'Cond one', lastResponseAt: 2000 }),
-        inst({ sessionId: 'sid-ct', project: 'demo', temp: true, conducted: true, firstPrompt: 'Cond temp', lastResponseAt: 1000 }),
+        inst({ sessionId: 'sid-pers', project: 'demo', persistent: true, firstPrompt: 'Kept one', lastResponseAt: 3000 }),
+        inst({ sessionId: 'sid-cond', project: 'demo', conducted: true, persistent: true, firstPrompt: 'Cond one', lastResponseAt: 2000 }),
+        inst({ sessionId: 'sid-cn', project: 'demo', conducted: true, firstPrompt: 'Cond normal', lastResponseAt: 1000 }),
       ],
     });
     renderSidebar();
     await settle();
-    expect(items('demo')).toEqual(['sid-normal', 'Temp · 1', 'sid-temp', 'Conducted · 2', 'sid-cond', 'sid-ct']);
-    expect([...list('demo').querySelectorAll('[data-session-group]')].map((li) => li.getAttribute('data-session-group'))).toEqual(['temp', 'conducted']);
+    expect(items('demo')).toEqual(['sid-normal', 'Persistent · 1', 'sid-pers', 'Conducted · 2', 'sid-cond', 'sid-cn']);
+    expect([...list('demo').querySelectorAll('[data-session-group]')].map((li) => li.getAttribute('data-session-group'))).toEqual(['persistent', 'conducted']);
     expect(summaryOf('demo').textContent).toBe('Sessions (4) · 4 live');
-    const promote = (sid: string) => within(rowOf(sid)).queryByRole('button', { name: 'Make persistent' });
-    for (const sid of ['sid-temp', 'sid-ct']) expect(promote(sid)).not.toBeNull();
-    for (const sid of ['sid-cond', 'sid-normal']) expect(promote(sid)).toBeNull();
+    const persist = (sid: string) => within(rowOf(sid)).queryByRole('button', { name: 'Make persistent' });
+    for (const sid of ['sid-normal', 'sid-cn']) expect(persist(sid)).not.toBeNull();
+    for (const sid of ['sid-cond', 'sid-pers']) expect(persist(sid)).toBeNull();
   });
 
-  it('a place whose visible sessions are all temp has no group label and its summary reads Temp sessions', async () => {
-    // Invariant: one visible group, temp, draws no label in the main checkout or a worktree, and its summary names it Temp sessions.
+  it('a place whose visible sessions are all persistent has no group label and its summary reads Persistent sessions', async () => {
+    // Invariant: one visible group, persistent, draws no label in the main checkout or a worktree, and its summary names it Persistent sessions.
     sidebarStore.set({ expandedWorktrees: ['demo'] });
     seed({
       projects: [proj('demo', { worktrees: [wt('wt')] })],
       instances: [
-        inst({ sessionId: 'sid-temp', project: 'demo', temp: true }),
-        inst({ sessionId: 'wt-temp', project: 'demo', temp: true, worktree: { worktreeName: 'wt' } }),
+        inst({ sessionId: 'sid-pers', project: 'demo', persistent: true }),
+        inst({ sessionId: 'wt-pers', project: 'demo', persistent: true, worktree: { worktreeName: 'wt' } }),
       ],
     });
     renderSidebar();
     await settle();
-    expect(items('demo')).toEqual(['sid-temp']);
-    expect(items('demo:wt')).toEqual(['wt-temp']);
+    expect(items('demo')).toEqual(['sid-pers']);
+    expect(items('demo:wt')).toEqual(['wt-pers']);
     expect(list('demo').querySelector('[data-session-group]')).toBeNull();
     expect(list('demo:wt').querySelector('[data-session-group]')).toBeNull();
-    expect(summaryOf('demo').textContent).toBe('Temp sessions (1) · 1 live');
-    expect(summaryOf('demo:wt').textContent).toBe('Temp sessions (1) · 1 live');
+    expect(summaryOf('demo').textContent).toBe('Persistent sessions (1) · 1 live');
+    expect(summaryOf('demo:wt').textContent).toBe('Persistent sessions (1) · 1 live');
   });
 
   it('a place whose visible sessions are all conducted has no group label and its summary reads Conducted sessions', async () => {
@@ -447,29 +447,29 @@ describe('Projects tree', () => {
     expect(summaryOf('demo').textContent).toBe('Conducted sessions (2) · 2 live');
   });
 
-  it("the project row's count badge tooltip reads Sessions (N) even where the open list names its only group Temp sessions", async () => {
+  it("the project row's count badge tooltip reads Sessions (N) even where the open list names its only group Persistent sessions", async () => {
     // Invariant: the count badge's tooltip always uses the noun Sessions, whatever group the place's visible rows fall in.
-    seed({ projects: [proj('demo')], instances: [inst({ sessionId: 'sid-temp', project: 'demo', temp: true })] });
+    seed({ projects: [proj('demo')], instances: [inst({ sessionId: 'sid-pers', project: 'demo', persistent: true })] });
     renderSidebar();
     await settle();
-    expect(summaryOf('demo').textContent, 'fixture check: the list names its only group').toBe('Temp sessions (1) · 1 live');
+    expect(summaryOf('demo').textContent, 'fixture check: the list names its only group').toBe('Persistent sessions (1) · 1 live');
     const badge = el('[data-project-row="demo"] [data-sessions-count]');
     await act(async () => { fireEvent.focus(badge); });
     expect((await screen.findByRole('tooltip')).textContent).toBe('Sessions (1) · 1 live');
   });
 
-  it('temp and conducted without normal rows both keep their counted labels and the summary reads Sessions', async () => {
+  it('persistent and conducted without normal rows both keep their counted labels and the summary reads Sessions', async () => {
     // Invariant: two visible groups label each one, even with no normal rows, and the summary keeps the noun Sessions.
     seed({
       projects: [proj('demo')],
       instances: [
-        inst({ sessionId: 'sid-temp', project: 'demo', temp: true, lastResponseAt: 2000 }),
+        inst({ sessionId: 'sid-pers', project: 'demo', persistent: true, lastResponseAt: 2000 }),
         inst({ sessionId: 'sid-cond', project: 'demo', conducted: true, lastResponseAt: 1000 }),
       ],
     });
     renderSidebar();
     await settle();
-    expect(items('demo')).toEqual(['Temp · 1', 'sid-temp', 'Conducted · 1', 'sid-cond']);
+    expect(items('demo')).toEqual(['Persistent · 1', 'sid-pers', 'Conducted · 1', 'sid-cond']);
     expect(summaryOf('demo').textContent).toBe('Sessions (2) · 2 live');
   });
 
@@ -481,24 +481,24 @@ describe('Projects tree', () => {
     expect(items('demo')).toEqual(['sid-x']);
   });
 
-  it('only a live temp session offers Make persistent, just left of its ×, and it promotes that instance', async () => {
-    // Invariant: the promote button appears exactly on live, not-exited temp rows, sits immediately before ×, and promotes that instance.
-    loadSessions.mockResolvedValue([disk('sid-disktemp', 'Disk temp', { temp: true })]);
+  it('only a live normal session offers Make persistent, just left of its ×, and it persists that instance', async () => {
+    // Invariant: the persist button appears exactly on live, not-exited normal rows, sits immediately before ×, and persists that instance.
+    loadSessions.mockResolvedValue([disk('sid-disknormal', 'Disk normal', {})]);
     seed({
       projects: [proj('demo', { sessions: { count: 1, archivedCount: 0, handCount: 1, lastActivity: 1 } })],
       instances: [
-        inst({ sessionId: 'sid-temp', project: 'demo', temp: true, firstPrompt: 'Temp one' }),
-        inst({ sessionId: 'sid-dead', project: 'demo', temp: true, status: 'exited' }),
-        inst({ sessionId: 'sid-normal', project: 'demo' }),
+        inst({ sessionId: 'sid-normal', project: 'demo', firstPrompt: 'Normal one' }),
+        inst({ sessionId: 'sid-dead', project: 'demo', status: 'exited' }),
+        inst({ sessionId: 'sid-pers', project: 'demo', persistent: true }),
       ],
     });
     renderSidebar();
-    await screen.findByText('Disk temp');
-    const promote = within(rowOf('sid-temp')).getByRole('button', { name: 'Make persistent' });
-    expect(promote.nextElementSibling?.getAttribute('aria-label')).toBe('Archive session (keeps history)');
-    fireEvent.click(promote);
-    expect(promoteSession).toHaveBeenCalledWith({ projectName: 'demo', instanceId: 'i-sid-temp', preview: 'Temp one' });
-    for (const sid of ['sid-dead', 'sid-normal', 'sid-disktemp']) {
+    await screen.findByText('Disk normal');
+    const persist = within(rowOf('sid-normal')).getByRole('button', { name: 'Make persistent' });
+    expect(persist.nextElementSibling?.getAttribute('aria-label')).toBe('Archive session (keeps history)');
+    fireEvent.click(persist);
+    expect(persistSession).toHaveBeenCalledWith({ projectName: 'demo', instanceId: 'i-sid-normal', preview: 'Normal one' });
+    for (const sid of ['sid-dead', 'sid-pers', 'sid-disknormal']) {
       expect(within(rowOf(sid)).queryByRole('button', { name: 'Make persistent' })).toBeNull();
     }
   });
@@ -509,8 +509,8 @@ describe('Projects tree', () => {
     seed({
       projects: [proj('demo', { sessions: { count: 1, archivedCount: 0, handCount: 1, lastActivity: 1 } })],
       instances: [
-        inst({ sessionId: 'sid-p', project: 'demo' }),
-        inst({ sessionId: 'sid-t', project: 'demo', temp: true }),
+        inst({ sessionId: 'sid-p', project: 'demo', persistent: true }),
+        inst({ sessionId: 'sid-t', project: 'demo' }),
         inst({ sessionId: 'sid-x', project: 'demo', status: 'exited' }),
       ],
     });
@@ -529,23 +529,23 @@ describe('Projects tree', () => {
     fireEvent.click(within(rowOf('sid-p')).getByRole('button', { name: STOP }));
     expect(closeSession).toHaveBeenCalledTimes(1);
     expect(closeSession).toHaveBeenLastCalledWith(expect.objectContaining({
-      projectName: 'demo', worktreeName: null, sessionId: 'sid-p', instanceId: 'i-sid-p', status: 'idle', temp: false,
+      projectName: 'demo', worktreeName: null, sessionId: 'sid-p', instanceId: 'i-sid-p', status: 'idle', persistent: true,
     }));
     expect(selectInstance).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();
     fireEvent.click(within(rowOf('sid-disk')).getByRole('button', { name: ARCHIVE }));
     expect(closeSession).toHaveBeenCalledTimes(2);
-    expect(closeSession).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'sid-disk', instanceId: null, status: null, temp: false }));
+    expect(closeSession).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'sid-disk', instanceId: null, status: null, persistent: false }));
     expect(selectInstance).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();
   });
 
-  it('a just-promoted live session overrides its stale on-disk temp flag', async () => {
-    // Invariant: the live temp flag wins over the disk row's.
-    loadSessions.mockResolvedValue([disk('sid-promoted', 'promoted', { temp: true })]);
+  it('a just-persisted live session overrides its stale on-disk flag', async () => {
+    // Invariant: the live persistent flag wins over the disk row's.
+    loadSessions.mockResolvedValue([disk('sid-promoted', 'promoted', {})]);
     seed({
       projects: [proj('demo', { sessions: { count: 1, archivedCount: 0, handCount: 1, lastActivity: 1 } })],
-      instances: [inst({ sessionId: 'sid-promoted', project: 'demo', temp: false })],
+      instances: [inst({ sessionId: 'sid-promoted', project: 'demo', persistent: true })],
     });
     renderSidebar();
     await screen.findByText('promoted');
@@ -579,7 +579,7 @@ describe('Projects tree', () => {
 
   it('a live session whose disk row carries its public id renders one merged row, titled by that id', async () => {
     // Invariant: a live instance merges onto the disk row with the same public id, never adding a synthetic second row.
-    loadSessions.mockResolvedValue([{ sessionId: 'a1b2c3d4', firstPrompt: 'do the thing', title: null, conducted: false, temp: false, archived: false, lastActivity: 1_000 }]);
+    loadSessions.mockResolvedValue([{ sessionId: 'a1b2c3d4', firstPrompt: 'do the thing', title: null, conducted: false, persistent: true, archived: false, lastActivity: 1_000 }]);
     seed({
       projects: [proj('demo', { sessions: { count: 1, archivedCount: 0, handCount: 1, lastActivity: 1 } })],
       instances: [inst({ sessionId: 'a1b2c3d4', project: 'demo', lastResponseAt: 2_000 })],
@@ -598,10 +598,10 @@ describe('Projects tree', () => {
     const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {
       const instances = [
-        inst({ sessionId: 'sid-r', project: 'demo', temp: true, lastResponseAt: now - 5_000 }),
-        inst({ sessionId: 'sid-a', project: 'demo', temp: true, lastResponseAt: null, createdAt: now - 10_000 }),
-        inst({ sessionId: 'sid-b', project: 'demo', temp: true, lastResponseAt: null, createdAt: now - 300_000 }),
-        inst({ sessionId: 'sid-both', project: 'demo', temp: true, lastResponseAt: now - 7_000, createdAt: now - 600_000 }),
+        inst({ sessionId: 'sid-r', project: 'demo', lastResponseAt: now - 5_000 }),
+        inst({ sessionId: 'sid-a', project: 'demo', lastResponseAt: null, createdAt: now - 10_000 }),
+        inst({ sessionId: 'sid-b', project: 'demo', lastResponseAt: null, createdAt: now - 300_000 }),
+        inst({ sessionId: 'sid-both', project: 'demo', lastResponseAt: now - 7_000, createdAt: now - 600_000 }),
       ];
       seed({ projects: [proj('demo')], instances });
       renderSidebar();

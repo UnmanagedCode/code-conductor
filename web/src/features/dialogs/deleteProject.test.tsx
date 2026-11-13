@@ -11,7 +11,7 @@ vi.mock('@/app/sessionActions', () => ({
   loadSessions: vi.fn(async () => []),
   closeSession: vi.fn(),
   resumeSession: vi.fn(),
-  promoteSession: vi.fn(),
+  persistSession: vi.fn(),
   removeWorktree: vi.fn(),
   performProjectDelete: vi.fn(async () => {}),
   applySessionTitle: vi.fn(async () => 't'),

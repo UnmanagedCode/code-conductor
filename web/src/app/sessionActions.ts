@@ -25,19 +25,19 @@ function clearActive() {
   }
 }
 
-export async function promoteSession({ projectName, instanceId, preview }: { projectName: string; instanceId: string; preview?: string | null }) {
+export async function persistSession({ projectName, instanceId, preview }: { projectName: string; instanceId: string; preview?: string | null }) {
   if (!instanceId) return;
   const isConductor = projectName === '.conduct';
   const ok = await confirmDialog({
     title: isConductor ? 'Make this conductor persistent?' : `Keep this session in ${projectName}?`,
     description: `${preview || '(no preview yet)'}\n\n${isConductor
       ? 'It will move to Inactive instead of being archived when it stops.'
-      : 'The transcript will be kept when the session stops.'}`,
+      : 'It will stay listed in Sessions instead of being archived when it stops.'}`,
     confirmLabel: 'Make persistent',
   });
   if (!ok) return;
   try {
-    await apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/promote`, { method: 'POST', headers: { 'content-type': 'application/json' } });
+    await apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/persist`, { method: 'POST', headers: { 'content-type': 'application/json' } });
     await refreshInstances();
   } catch (e: any) {
     toast.error('Could not make the session persistent', e.message);
@@ -229,12 +229,12 @@ export type CloseArgs = {
   preview?: string | null;
   status?: string | null;
   synthetic?: boolean;
-  temp?: boolean;
+  persistent?: boolean;
 };
 
 /** A session's ×: one step down from where it is (closeAction.ts decides stop vs archive). */
 export function closeSession(args: CloseArgs) {
-  return closeActionOf({ instanceId: args.instanceId ?? null, status: args.status ?? null, temp: !!args.temp }) === 'stop' ? stopSession(args) : archiveSession(args);
+  return closeActionOf({ instanceId: args.instanceId ?? null, status: args.status ?? null, persistent: !!args.persistent }) === 'stop' ? stopSession(args) : archiveSession(args);
 }
 
 export async function stopSession({ projectName, worktreeName, instanceId, preview, sessionId, status }: CloseArgs) {

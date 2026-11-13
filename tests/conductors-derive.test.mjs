@@ -345,20 +345,20 @@ test('onDisk says whether the .conduct list carries the conductor\'s transcript'
   assert.equal(all.get('only').onDisk, false, 'instance-only');
 });
 
-test('instanceTemp comes from a live instance; a disk-only row is false', () => {
+test('instancePersistent comes from a live instance; a disk-only row is false', () => {
   const { live, inactive } = M.deriveConductors({
     conductRows: [
-      { sessionId: 'disk', lastActivity: 1, temp: true },
+      { sessionId: 'disk', lastActivity: 1, persistent: true },
       { sessionId: 'both', lastActivity: 2 },
     ],
     instances: [
-      inst({ id: 'b', project: '.conduct', sessionId: 'both', temp: true }),
-      inst({ id: 'o', project: '.conduct', sessionId: 'only', temp: true }),
-      inst({ id: 'n', project: '.conduct', sessionId: 'normal', temp: false }),
+      inst({ id: 'b', project: '.conduct', sessionId: 'both', persistent: true }),
+      inst({ id: 'o', project: '.conduct', sessionId: 'only', persistent: true }),
+      inst({ id: 'n', project: '.conduct', sessionId: 'normal', persistent: false }),
     ],
   });
-  const temp = Object.fromEntries([...live, ...inactive].map(c => [c.sessionId, c.instanceTemp]));
-  assert.deepEqual(temp, { disk: false, both: true, only: true, normal: false });
+  const persistent = Object.fromEntries([...live, ...inactive].map(c => [c.sessionId, c.instancePersistent]));
+  assert.deepEqual(persistent, { disk: false, both: true, only: true, normal: false });
 });
 
 test('hasSessionId is true exactly for an instance that has a session', () => {
@@ -370,8 +370,8 @@ test('isLiveConductor reads the row\'s live flag: a live conductor is, an exited
   const { live, inactive } = M.deriveConductors({
     conductRows: [{ sessionId: 'D', lastActivity: 1 }],
     instances: [
-      { id: 'i-L', sessionId: 'L', project: '.conduct', status: 'idle', temp: true },
-      { id: 'i-E', sessionId: 'E', project: '.conduct', status: 'exited', temp: true },
+      { id: 'i-L', sessionId: 'L', project: '.conduct', status: 'idle' },
+      { id: 'i-E', sessionId: 'E', project: '.conduct', status: 'exited' },
     ],
   });
   assert.deepEqual(live.map(c => [c.sessionId, M.isLiveConductor(c)]), [['L', true]]);
@@ -420,7 +420,7 @@ test('sectionLeadRow overlays the instance on the section lead\'s conducted disk
   const sl = inst({
     id: 'i-SL', sessionId: 'SL', project: '.conduct', conducted: true, rootSessionId: 'L', title: 'Live title', firstPrompt: 'inst prompt',
     displayStatus: 'busy', awaitingUser: 'plan', awaitingUserSource: 'tool', awaitingWake: true, waitingOnJob: true,
-    temp: true, autoResumeAt: 77, queuedCount: 2, lastResponseAt: 500,
+    persistent: true, autoResumeAt: 77, queuedCount: 2, lastResponseAt: 500,
   });
   const disk = [
     { sessionId: 'other', conducted: true, title: 'nope', lastActivity: 9 },
@@ -430,7 +430,7 @@ test('sectionLeadRow overlays the instance on the section lead\'s conducted disk
   assert.deepEqual(row, {
     sessionId: 'SL', title: 'Live title', firstPrompt: 'disk prompt', lastActivity: 900, onDisk: true,
     instanceId: 'i-SL', instanceStatus: 'idle', instanceDisplayStatus: 'busy', instanceAwaitingWake: true, instanceWaitingOnJob: true,
-    awaitingUser: 'plan', awaitingUserSource: 'tool', instanceTemp: true, autoResumeAt: 77, queuedCount: 2, live: true,
+    awaitingUser: 'plan', awaitingUserSource: 'tool', instancePersistent: true, autoResumeAt: 77, queuedCount: 2, live: true,
   });
   const bare = M.sectionLeadRow({ ...sl, title: null }, []);
   assert.equal(bare.onDisk, false);

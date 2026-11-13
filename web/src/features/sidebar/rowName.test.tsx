@@ -14,7 +14,7 @@ vi.mock('@/app/sessionActions', () => ({
   loadSessions: vi.fn(async () => []),
   closeSession: vi.fn(),
   resumeSession: vi.fn(),
-  promoteSession: vi.fn(),
+  persistSession: vi.fn(),
   removeWorktree: vi.fn(),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -60,7 +60,7 @@ describe("a sidebar row's open button", () => {
     seed({
       projects: [proj('names')],
       instances: [
-        conductor('cond-n', { title: 'Alpha', temp: false, status: 'turn' }),
+        conductor('cond-n', { title: 'Alpha', persistent: true, status: 'turn' }),
         worker('w-staged', 'cond-n', 'names', null, { playbook: 'pb', stage: 'build' }),
       ],
     });
@@ -72,7 +72,7 @@ describe("a sidebar row's open button", () => {
 
   it('names a conductor row with its unread count', async () => {
     uiStore.set({ lens: 'conductors' });
-    seed({ instances: [conductor('cond-u', { title: 'Bravo', temp: false, turnEndSeq: 2, viewedSeq: 0 })] });
+    seed({ instances: [conductor('cond-u', { title: 'Bravo', persistent: true, turnEndSeq: 2, viewedSeq: 0 })] });
     renderSidebar();
     await settle();
     expect(named('Bravo, idle, 2 unread')).toEqual([conductorOpenOf('cond-u')]);

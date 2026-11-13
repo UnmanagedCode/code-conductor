@@ -122,7 +122,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
       </div>
 
       <div className="px-3">
-        <Hint label="Start a conductor: a temp session that orchestrates other sessions for you (uses the Conductor role's model)">
+        <Hint label="Start a conductor: a session that orchestrates other sessions for you (uses the Conductor role's model)">
           <Button className="w-full justify-start gap-2 shadow-sm" disabled={starting} onClick={() => void startConducting()} data-conduct>
             {starting ? <LoaderCircleIcon className="animate-spin" /> : <SparklesIcon />}
             Conduct

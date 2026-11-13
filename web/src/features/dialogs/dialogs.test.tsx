@@ -57,9 +57,10 @@ describe('spawn dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /Start session/ }));
     await waitFor(() => expect(posts('/api/instances')).toHaveLength(1));
     const body = posts('/api/instances')[0].body;
-    expect(body).toMatchObject({ project: 'p', tier: 'fast', mode: 'bypassPermissions', thinking: 'adaptive', temp: true });
+    expect(body).toMatchObject({ project: 'p', tier: 'fast', mode: 'bypassPermissions', thinking: 'adaptive' });
     expect(body).not.toHaveProperty('model');
     expect(body).not.toHaveProperty('backend');
+    expect(body).not.toHaveProperty('persistent');
     expect(body.effort).toBeUndefined();
     await waitFor(() => expect(selectInstance).toHaveBeenCalledWith('i1', { userGesture: true, gesture: expect.any(Number) }));
     await waitFor(() => expect(dialogStore.get().spawn).toBeNull());
@@ -74,13 +75,24 @@ describe('spawn dialog', () => {
     await waitFor(() => expect(posts('/api/instances')[0]?.body).toMatchObject({ mode: 'plan', autoApprovePlan: true }));
   });
 
-  it('spawning into an existing worktree names it and is not a temp session', async () => {
+  it('spawning into an existing worktree names it and is a persistent session', async () => {
     routes['POST /api/instances'] = () => ({ json: { id: 'i1' } });
     render(<DialogsHost />);
     act(() => openSpawnDialog('p', { worktree: 'wt1' }));
     fireEvent.click(await screen.findByRole('button', { name: /Start session/ }));
-    await waitFor(() => expect(posts('/api/instances')[0]?.body).toMatchObject({ worktree: 'wt1' }));
-    expect(posts('/api/instances')[0].body.temp).toBeUndefined();
+    await waitFor(() => expect(posts('/api/instances')[0]?.body).toMatchObject({ worktree: 'wt1', persistent: true }));
+  });
+
+  it('the Persistent session checkbox is unticked by default and ticking it sends persistent: true', async () => {
+    routes['POST /api/instances'] = () => ({ json: { id: 'i1' } });
+    render(<DialogsHost />);
+    act(() => openSpawnDialog('p'));
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced/ }));
+    const box = await screen.findByRole('checkbox', { name: /Persistent session/ });
+    expect(box.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole('button', { name: /Start session/ }));
+    await waitFor(() => expect(posts('/api/instances')[0]?.body).toMatchObject({ persistent: true }));
   });
 
   it('a refusal shows inline and keeps the dialog open', async () => {

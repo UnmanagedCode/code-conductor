@@ -161,7 +161,7 @@ const instanceReads = coalescedReads(
     const s = appStore.get();
     // A list that carries the pristine conductor takes over from the slot.
     const slot = s.pristine;
-    // The shown instance left every list (killed, or a temp worker that exited): its pane stays, read-only.
+    // The shown instance left every list (killed, or a normal worker that exited): its pane stays, read-only.
     const shown = s.activeId ? s.instances.find((i) => i.id === s.activeId) : undefined;
     const ended = shown && !instances.some((i) => i.id === shown.id) ? endedFrom(shown) : null;
     appStore.set({

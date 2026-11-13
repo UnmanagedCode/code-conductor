@@ -8,7 +8,7 @@ import { selectInstance } from '@/app/controller';
 import { CONDUCT_PROJECT } from '@shared/conductors';
 import { chipsOf, wtName } from './derive';
 import { setConductorOpen, sidebarStore, useSidebarUi } from './state';
-import { Ago, CloseButton, Dot, dotTitle, ProjectRow, PromoteButton, rowName, SessionRow, UnreadPill, WorktreeHead } from './rows';
+import { Ago, CloseButton, Dot, dotTitle, ProjectRow, PersistButton, rowName, SessionRow, UnreadPill, WorktreeHead } from './rows';
 import { ProjectMenu } from './ProjectMenu';
 import { WorktreeMenu } from './WorktreeMenu';
 import type { SidebarModel } from './useSidebarModel';
@@ -157,13 +157,13 @@ function ConductorBlock({ m, c, open, nested = false, stage = null }: { m: Sideb
           <Ago ms={c.lastActivity} />
           <UnreadPill n={unread} />
         </button>
-        {isLiveConductor(c) && c.instanceTemp && (
-          <PromoteButton getArgs={() => ({ projectName: CONDUCT_PROJECT, instanceId: c.instanceId, preview: text })} />
+        {isLiveConductor(c) && !c.instancePersistent && (
+          <PersistButton getArgs={() => ({ projectName: CONDUCT_PROJECT, instanceId: c.instanceId, preview: text })} />
         )}
         {!c.live && (
           <CloseButton args={{
             projectName: CONDUCT_PROJECT, worktreeName: null, sessionId: sid, instanceId: c.instanceId,
-            status: c.instanceDisplayStatus ?? c.instanceStatus, temp: c.instanceTemp, preview: text, synthetic: !c.onDisk,
+            status: c.instanceDisplayStatus ?? c.instanceStatus, persistent: c.instancePersistent, preview: text, synthetic: !c.onDisk,
           }} />
         )}
       </div>

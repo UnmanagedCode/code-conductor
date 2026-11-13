@@ -13,7 +13,7 @@ vi.mock('@/app/sessionActions', () => ({
   loadSessions: vi.fn(async () => []),
   closeSession: vi.fn(),
   resumeSession: vi.fn(async () => {}),
-  promoteSession: vi.fn(),
+  persistSession: vi.fn(),
   removeWorktree: vi.fn(),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -28,7 +28,7 @@ const { AppSidebar } = await import('./AppSidebar');
 const { startConducting } = await import('@/features/dialogs/conduct');
 
 const conductor = (id: string, sessionId: string, extra: Record<string, unknown> = {}) => ({
-  id, sessionId, project: '.conduct', status: 'idle', mode: 'bypassPermissions', temp: true, ...extra,
+  id, sessionId, project: '.conduct', status: 'idle', mode: 'bypassPermissions', ...extra,
 });
 const Q = conductor('iQ', 's-q', { firstPrompt: 'plan the release' });
 const P = conductor('iP', 's-p', { pristine: true });

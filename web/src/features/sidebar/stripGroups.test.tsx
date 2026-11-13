@@ -21,12 +21,12 @@ const loadSessions = vi.fn((..._a: any[]): Promise<any[]> => Promise.resolve([])
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
 const removeWorktree = vi.fn();
-const promoteSession = vi.fn();
+const persistSession = vi.fn();
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: (...a: unknown[]) => loadSessions(...a),
   closeSession: (...a: unknown[]) => closeSession(...a),
   resumeSession: (...a: unknown[]) => resumeSession(...a),
-  promoteSession: (...a: unknown[]) => promoteSession(...a),
+  persistSession: (...a: unknown[]) => persistSession(...a),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -52,7 +52,7 @@ beforeEach(() => {
   closeSession.mockReset();
   resumeSession.mockReset();
   removeWorktree.mockReset();
-  promoteSession.mockReset();
+  persistSession.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   invalidateSessions();
   sidebarStore.set({ collapsedSessions: [], expandedWorktrees: [], expandedWorkspaces: [], expandedConductors: [], inactiveOpen: false, filter: '' });

@@ -157,18 +157,18 @@ function useSessionRows({ ctx, project, worktreeName, liveInstances, load }: {
   const narrowIds = narrowTo ? new Set(narrowTo.map((r) => r.sessionId)) : null;
   const rows = scopeSessionRows(mergeLive(sessionsCache.get(key) ?? (ctx.tf.active ? heldRowsOf(key) : null) ?? [], liveInstances), ctx.ui.filter)
     .filter((s) => !narrowIds || narrowIds.has(s.sessionId));
-  const { normal, temp, conducted } = sessionSections(rows);
-  // One visible group goes unlabelled and the summary names it; two or more label Temp and Conducted.
-  const shown = [normal, temp, conducted].filter((g) => g.length > 0).length;
-  const noun = !load || shown !== 1 || normal.length > 0 ? 'Sessions' : temp.length > 0 ? 'Temp sessions' : 'Conducted sessions';
-  return { key, status, rows, normal, temp, conducted, shown, noun };
+  const { normal, persistent, conducted } = sessionSections(rows);
+  // One visible group goes unlabelled and the summary names it; two or more label Persistent and Conducted.
+  const shown = [normal, persistent, conducted].filter((g) => g.length > 0).length;
+  const noun = !load || shown !== 1 || normal.length > 0 ? 'Sessions' : persistent.length > 0 ? 'Persistent sessions' : 'Conducted sessions';
+  return { key, status, rows, normal, persistent, conducted, shown, noun };
 }
 type SessionRowsData = ReturnType<typeof useSessionRows>;
 
 function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
   ctx: Ctx; project: string; worktreeName: string | null; data: SessionRowsData; showOwner: boolean;
 }) {
-  const { key, status, rows, normal, temp, conducted, shown } = data;
+  const { key, status, rows, normal, persistent, conducted, shown } = data;
   const row = (s: SessionItem) => (
     <SessionRow
       key={s.sessionId}
@@ -182,7 +182,7 @@ function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
       highlight={ctx.tf.active ? ctx.tf.tokens : undefined}
     />
   );
-  const label = (kind: 'temp' | 'conducted', name: string, n: number) => (
+  const label = (kind: 'persistent' | 'conducted', name: string, n: number) => (
     <li className="flex items-center gap-2 px-2 pt-1.5 pb-0.5 text-[11px] font-normal text-muted-foreground/70" data-session-group={kind}>
       <span className="shrink-0">{name} · {n}</span>
       <span className="h-px flex-1 bg-sidebar-border" />
@@ -198,7 +198,7 @@ function SessionRowsList({ ctx, project, worktreeName, data, showOwner }: {
         </li>
       )}
       {normal.map(row)}
-      {temp.length > 0 && <>{shown > 1 && label('temp', 'Temp', temp.length)}{temp.map(row)}</>}
+      {persistent.length > 0 && <>{shown > 1 && label('persistent', 'Persistent', persistent.length)}{persistent.map(row)}</>}
       {conducted.length > 0 && <>{shown > 1 && label('conducted', 'Conducted', conducted.length)}{conducted.map(row)}</>}
     </ul>
   );

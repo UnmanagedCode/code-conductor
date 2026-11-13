@@ -20,7 +20,7 @@ vi.mock('@/app/sessionActions', () => ({
   loadSessions: vi.fn(async () => []),
   closeSession: vi.fn(),
   resumeSession: vi.fn(),
-  promoteSession: vi.fn(),
+  persistSession: vi.fn(),
   removeWorktree: vi.fn(),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -83,7 +83,7 @@ describe('a machine-written first prompt in a sidebar label', () => {
     // Invariant: the Conductors-lens row's text and accessible name carry the wake summary, never the marker.
     uiStore.set({ lens: 'conductors' });
     seed({
-      instances: [conductor('cond-wake', { temp: false, firstPrompt: WAKE })],
+      instances: [conductor('cond-wake', { persistent: true, firstPrompt: WAKE })],
       conductSessions: [{ sessionId: 'cond-wake', firstPrompt: WAKE, lastActivity: 1 }],
     });
     renderSidebar();
@@ -174,7 +174,7 @@ describe('a machine-written first prompt in a sidebar label', () => {
     // Invariant (negative control): a person's prompt keeps the label it always had, whitespace collapsed and nothing renamed.
     seed({
       projects: [proj('labels')],
-      instances: [hand('h-human', 'labels', null, { firstPrompt: HUMAN }), conductor('cond-human', { temp: false, firstPrompt: HUMAN })],
+      instances: [hand('h-human', 'labels', null, { firstPrompt: HUMAN }), conductor('cond-human', { persistent: true, firstPrompt: HUMAN })],
       conductSessions: [{ sessionId: 'cond-human', firstPrompt: HUMAN, lastActivity: 1 }],
     });
     const { unmount } = renderSidebar();

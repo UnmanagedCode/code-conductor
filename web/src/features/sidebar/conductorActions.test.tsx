@@ -17,12 +17,12 @@ const loadSessions = vi.fn((..._a: any[]): Promise<any[]> => Promise.resolve([])
 const closeSession = vi.fn();
 const resumeSession = vi.fn();
 const removeWorktree = vi.fn();
-const promoteSession = vi.fn();
+const persistSession = vi.fn();
 vi.mock('@/app/sessionActions', () => ({
   loadSessions: (...a: unknown[]) => loadSessions(...a),
   closeSession: (...a: unknown[]) => closeSession(...a),
   resumeSession: (...a: unknown[]) => resumeSession(...a),
-  promoteSession: (...a: unknown[]) => promoteSession(...a),
+  persistSession: (...a: unknown[]) => persistSession(...a),
   removeWorktree: (...a: unknown[]) => removeWorktree(...a),
 }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -41,8 +41,8 @@ const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)
 const inactiveToggle = () => inactiveGroup()?.querySelector(':scope > button[aria-expanded]') as HTMLElement | null;
 /** The sids of the conductor blocks under the Inactive group, in order. */
 const inactiveSids = () => [...inactiveGroup()!.querySelectorAll('[data-conductor]')].map((b) => b.getAttribute('data-conductor'));
-const PROMOTE = 'Make persistent';
-const promoteOf = (row: HTMLElement) => within(row).queryAllByRole('button', { name: PROMOTE });
+const PERSIST = 'Make persistent';
+const persistOf = (row: HTMLElement) => within(row).queryAllByRole('button', { name: PERSIST });
 const closeOf = (row: HTMLElement) => [CLOSE_TITLES.stop, CLOSE_TITLES.archive].flatMap((name) => within(row).queryAllByRole('button', { name }));
 const archiveOf = (row: HTMLElement) => within(row).queryAllByRole('button', { name: CLOSE_TITLES.archive });
 const unreadOf = (row: HTMLElement) => row.querySelector('[data-unread]');
@@ -55,7 +55,7 @@ beforeEach(() => {
   closeSession.mockReset();
   resumeSession.mockReset();
   removeWorktree.mockReset();
-  promoteSession.mockReset();
+  persistSession.mockReset();
   loadSessions.mockReset().mockResolvedValue([]);
   invalidateSessions();
   sidebarStore.set({ collapsedSessions: [], expandedWorktrees: [], expandedWorkspaces: [], expandedConductors: [], inactiveOpen: false, filter: '' });
@@ -88,7 +88,7 @@ describe('Inactive group', () => {
     // Invariant: archived .conduct rows never render; with nothing else, the lens shows its empty state.
     sidebarStore.set({ inactiveOpen: true });
     seed({
-      conductSessions: [{ sessionId: 'T', title: 'Temp one', archived: true, lastActivity: 5 }, { sessionId: 'D', title: 'Kept', lastActivity: 1 }],
+      conductSessions: [{ sessionId: 'T', title: 'Archived one', archived: true, lastActivity: 5 }, { sessionId: 'D', title: 'Kept', lastActivity: 1 }],
       instances: [conductor('L', { title: 'Live' })],
     });
     renderSidebar();
@@ -144,7 +144,7 @@ describe('archive × on an inactive conductor', () => {
     seed({
       projects: [proj('proj')],
       conductSessions: [{ sessionId: 'D', lastActivity: 1, turnEndSeq: 2 }],
-      instances: [conductor('A', { turnEndSeq: 2 }), worker('w', 'A', 'proj', null, { temp: false }), conductor('X', { status: 'exited' })],
+      instances: [conductor('A', { turnEndSeq: 2 }), worker('w', 'A', 'proj', null, { persistent: true }), conductor('X', { status: 'exited' })],
     });
     renderSidebar();
     await settle();
@@ -161,22 +161,22 @@ describe('archive × on an inactive conductor', () => {
   });
 
   it("× on an inactive conductor closes it through closeSession with the conductor's facts, and never selects or resumes", async () => {
-    // Invariant: each × hands closeSession its own conductor's place, instance, status, temp flag, shown label and whether a transcript is listed.
+    // Invariant: each × hands closeSession its own conductor's place, instance, status, persistent flag, shown label and whether a transcript is listed.
     sidebarStore.set({ inactiveOpen: true });
     seed({
       conductSessions: [{ sessionId: 'D', title: 'Disk', lastActivity: 3 }, { sessionId: 'B', lastActivity: 1 }],
       instances: [
         conductor('A', { title: 'Alpha', status: 'exited', lastResponseAt: 2 }),
-        conductor('B', { firstPrompt: 'plan the work', status: 'crashed', temp: false }),
+        conductor('B', { firstPrompt: 'plan the work', status: 'crashed', persistent: true }),
       ],
     });
     renderSidebar();
     await settle();
     for (const sid of ['D', 'A', 'B']) fireEvent.click(archiveOf(conductorRowOf(sid))[0]);
     expect(closeSession.mock.calls).toEqual([
-      [{ projectName: '.conduct', worktreeName: null, sessionId: 'D', instanceId: null, status: null, temp: false, preview: 'Disk', synthetic: false }],
-      [{ projectName: '.conduct', worktreeName: null, sessionId: 'A', instanceId: 'i-A', status: 'exited', temp: true, preview: 'Alpha', synthetic: true }],
-      [{ projectName: '.conduct', worktreeName: null, sessionId: 'B', instanceId: 'i-B', status: 'crashed', temp: false, preview: 'plan the work', synthetic: false }],
+      [{ projectName: '.conduct', worktreeName: null, sessionId: 'D', instanceId: null, status: null, persistent: false, preview: 'Disk', synthetic: false }],
+      [{ projectName: '.conduct', worktreeName: null, sessionId: 'A', instanceId: 'i-A', status: 'exited', persistent: false, preview: 'Alpha', synthetic: true }],
+      [{ projectName: '.conduct', worktreeName: null, sessionId: 'B', instanceId: 'i-B', status: 'crashed', persistent: true, preview: 'plan the work', synthetic: false }],
     ]);
     expect(selectInstance).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();
@@ -214,61 +214,61 @@ describe('archive × on an inactive conductor', () => {
 });
 
 describe('↑ Make persistent on a worker row', () => {
-  /** A's tree: live temp workers in the main checkout and a worktree, and a non-temp one. */
+  /** A's tree: live normal workers in the main checkout and a worktree, and a persistent one. */
   const workers = () => ({
     projects: [proj('proj', { worktrees: [wt('wt1')] })],
     instances: [
-      conductor('A', { temp: false }),
-      worker('t', 'A', 'proj', null, { temp: true, firstPrompt: 'do the work', createdAt: 3 }),
-      worker('tw', 'A', 'proj', 'wt1', { temp: true, firstPrompt: 'do more', createdAt: 2 }),
-      worker('n', 'A', 'proj', null, { temp: false, createdAt: 1 }),
+      conductor('A', { persistent: true }),
+      worker('t', 'A', 'proj', null, { firstPrompt: 'do the work', createdAt: 3 }),
+      worker('tw', 'A', 'proj', 'wt1', { firstPrompt: 'do more', createdAt: 2 }),
+      worker('n', 'A', 'proj', null, { persistent: true, createdAt: 1 }),
     ],
   });
 
-  it('a live temp worker row has one ↑ and no close action, and a non-temp worker has neither', async () => {
-    // Invariant: ↑ appears once on each live temp worker row, wherever it runs, and on no other; the tree has no close.
+  it('a live normal worker row has one ↑ and no close action, and a persistent worker has neither', async () => {
+    // Invariant: ↑ appears once on each live normal worker row, wherever it runs, and on no other; the tree has no close.
     seed(workers());
     renderSidebar();
     await settle();
     const tree = expand('A');
     for (const sid of ['t', 'tw']) {
-      expect(promoteOf(treeRowOf(tree, sid)!).length, sid).toBe(1);
+      expect(persistOf(treeRowOf(tree, sid)!).length, sid).toBe(1);
       expect(closeOf(treeRowOf(tree, sid)!), sid).toEqual([]);
     }
-    expect(promoteOf(treeRowOf(tree, 'n')!)).toEqual([]);
+    expect(persistOf(treeRowOf(tree, 'n')!)).toEqual([]);
     expect(closeOf(treeRowOf(tree, 'n')!)).toEqual([]);
   });
 
-  it('an exited or crashed temp worker keeps its tree row without the ↑', async () => {
-    // Invariant: only a live temp worker is promotable; a dead one still lists.
+  it('an exited or crashed normal worker keeps its tree row without the ↑', async () => {
+    // Invariant: only a live normal worker can be made persistent; a dead one still lists.
     seed({
       projects: [proj('proj')],
       instances: [
-        conductor('A', { temp: false }),
-        worker('t', 'A', 'proj', null, { temp: true }),
-        worker('xe', 'A', 'proj', null, { temp: true, status: 'exited' }),
-        worker('xc', 'A', 'proj', null, { temp: true, status: 'crashed' }),
+        conductor('A', { persistent: true }),
+        worker('t', 'A', 'proj', null, {}),
+        worker('xe', 'A', 'proj', null, { status: 'exited' }),
+        worker('xc', 'A', 'proj', null, { status: 'crashed' }),
       ],
     });
     renderSidebar();
     await settle();
     const tree = expand('A');
-    expect(promoteOf(treeRowOf(tree, 't')!).length).toBe(1);
+    expect(persistOf(treeRowOf(tree, 't')!).length).toBe(1);
     for (const sid of ['xe', 'xc']) {
       expect(treeRowOf(tree, sid), sid).not.toBeNull();
-      expect(promoteOf(treeRowOf(tree, sid)!), sid).toEqual([]);
+      expect(persistOf(treeRowOf(tree, sid)!), sid).toEqual([]);
     }
   });
 
-  it("a worker's ↑ promotes it through promoteSession with its project, instance id and label, in the main checkout and in a worktree, and never selects or resumes", async () => {
+  it("a worker's ↑ persists it through persistSession with its project, instance id and label, in the main checkout and in a worktree, and never selects or resumes", async () => {
     // Invariant: each ↑ sends its own worker's project, instance and shown label, and the click stops at the button.
     seed(workers());
     renderSidebar();
     await settle();
     const tree = expand('A');
-    fireEvent.click(promoteOf(treeRowOf(tree, 'tw')!)[0]);
-    fireEvent.click(promoteOf(treeRowOf(tree, 't')!)[0]);
-    expect(promoteSession.mock.calls).toEqual([
+    fireEvent.click(persistOf(treeRowOf(tree, 'tw')!)[0]);
+    fireEvent.click(persistOf(treeRowOf(tree, 't')!)[0]);
+    expect(persistSession.mock.calls).toEqual([
       [{ projectName: 'proj', instanceId: 'i-tw', preview: 'do more' }],
       [{ projectName: 'proj', instanceId: 'i-t', preview: 'do the work' }],
     ]);
@@ -277,93 +277,93 @@ describe('↑ Make persistent on a worker row', () => {
   });
 
   it("a worker's ↑ reads the freshest instance after a re-render, on the same button", async () => {
-    // Invariant: the ↑ survives a re-render and promotes the instance the worker has at click time.
-    seed({ projects: [proj('proj')], instances: [conductor('A', { temp: false }), worker('t', 'A', 'proj')] });
+    // Invariant: the ↑ survives a re-render and persists the instance the worker has at click time.
+    seed({ projects: [proj('proj')], instances: [conductor('A', { persistent: true }), worker('t', 'A', 'proj')] });
     renderSidebar();
     await settle();
     const tree = expand('A');
-    const before = promoteOf(treeRowOf(tree, 't')!)[0];
-    act(() => appStore.set({ instances: [conductor('A', { temp: false }), worker('t', 'A', 'proj', null, { id: 'i-t2' })] }));
-    const after = promoteOf(treeRowOf(treeOf('A')!, 't')!)[0];
+    const before = persistOf(treeRowOf(tree, 't')!)[0];
+    act(() => appStore.set({ instances: [conductor('A', { persistent: true }), worker('t', 'A', 'proj', null, { id: 'i-t2' })] }));
+    const after = persistOf(treeRowOf(treeOf('A')!, 't')!)[0];
     expect(after === before).toBe(true);
     fireEvent.click(after);
-    expect(promoteSession.mock.calls.map(([a]) => a.instanceId)).toEqual(['i-t2']);
+    expect(persistSession.mock.calls.map(([a]) => a.instanceId)).toEqual(['i-t2']);
   });
 
-  it('promoting a worker drops its ↑ in place, and the worker stays in the tree', async () => {
-    // Invariant: the live temp flag alone decides the ↑; the row survives the flip.
-    seed({ projects: [proj('proj')], instances: [conductor('A', { temp: false }), worker('t', 'A', 'proj')] });
+  it('making a worker persistent drops its ↑ in place, and the worker stays in the tree', async () => {
+    // Invariant: the live persistent flag alone decides the ↑; the row survives the flip.
+    seed({ projects: [proj('proj')], instances: [conductor('A', { persistent: true }), worker('t', 'A', 'proj')] });
     renderSidebar();
     await settle();
     const row = treeRowOf(expand('A'), 't')!;
-    expect(promoteOf(row).length).toBe(1);
-    act(() => appStore.set({ instances: [conductor('A', { temp: false }), worker('t', 'A', 'proj', null, { temp: false })] }));
+    expect(persistOf(row).length).toBe(1);
+    act(() => appStore.set({ instances: [conductor('A', { persistent: true }), worker('t', 'A', 'proj', null, { persistent: true })] }));
     expect(treeRowOf(treeOf('A')!, 't') === row).toBe(true);
-    expect(promoteOf(row)).toEqual([]);
+    expect(persistOf(row)).toEqual([]);
   });
 
   it('a worker dying drops its ↑ in place', async () => {
     // Invariant: the row survives its worker's exit and loses the ↑.
-    seed({ projects: [proj('proj')], instances: [conductor('A', { temp: false }), worker('t', 'A', 'proj')] });
+    seed({ projects: [proj('proj')], instances: [conductor('A', { persistent: true }), worker('t', 'A', 'proj')] });
     renderSidebar();
     await settle();
     const row = treeRowOf(expand('A'), 't')!;
-    expect(promoteOf(row).length).toBe(1);
-    act(() => appStore.set({ instances: [conductor('A', { temp: false }), worker('t', 'A', 'proj', null, { status: 'exited' })] }));
+    expect(persistOf(row).length).toBe(1);
+    act(() => appStore.set({ instances: [conductor('A', { persistent: true }), worker('t', 'A', 'proj', null, { status: 'exited' })] }));
     expect(treeRowOf(treeOf('A')!, 't') === row).toBe(true);
-    expect(promoteOf(row)).toEqual([]);
+    expect(persistOf(row)).toEqual([]);
   });
 });
 
 describe('↑ Make persistent on a conductor row', () => {
-  it('a live temp conductor row has one ↑ and no close action, and keeps its unread pill beside it', async () => {
-    // Invariant: a live temp conductor row offers exactly one ↑ and no close, with or without unread turns.
+  it('a live normal conductor row has one ↑ and no close action, and keeps its unread pill beside it', async () => {
+    // Invariant: a live normal conductor row offers exactly one ↑ and no close, with or without unread turns.
     seed({ instances: [conductor('A'), conductor('U', { turnEndSeq: 3 })] });
     renderSidebar();
     await settle();
     for (const sid of ['A', 'U']) {
-      expect(promoteOf(conductorRowOf(sid)).length, sid).toBe(1);
+      expect(persistOf(conductorRowOf(sid)).length, sid).toBe(1);
       expect(closeOf(conductorRowOf(sid)), sid).toEqual([]);
     }
     expect(unreadOf(conductorRowOf('A'))).toBeNull();
     expect(unreadOf(conductorRowOf('U'))?.textContent).toBe('3');
   });
 
-  it('no ↑ on a live non-temp, exited, crashed or disk-only conductor row, and only the not-live ones carry the archive action', async () => {
-    // Invariant: ↑ needs live and temp together; a close appears exactly on the rows that are not live.
+  it('no ↑ on a live persistent, exited, crashed or disk-only conductor row, and only the not-live ones carry the archive action', async () => {
+    // Invariant: ↑ needs live and normal together; a close appears exactly on the rows that are not live.
     sidebarStore.set({ inactiveOpen: true });
     seed({
       conductSessions: [{ sessionId: 'D', lastActivity: 1 }],
-      instances: [conductor('T'), conductor('P', { temp: false }), conductor('E', { status: 'exited' }), conductor('C', { status: 'crashed' })],
+      instances: [conductor('T'), conductor('P', { persistent: true }), conductor('E', { status: 'exited' }), conductor('C', { status: 'crashed' })],
     });
     renderSidebar();
     await settle();
-    expect(promoteOf(conductorRowOf('T')).length).toBe(1);
-    for (const sid of ['P', 'E', 'C', 'D']) expect(promoteOf(conductorRowOf(sid)), sid).toEqual([]);
+    expect(persistOf(conductorRowOf('T')).length).toBe(1);
+    for (const sid of ['P', 'E', 'C', 'D']) expect(persistOf(conductorRowOf(sid)), sid).toEqual([]);
     expect(closeOf(conductorRowOf('P'))).toEqual([]);
     for (const sid of ['E', 'C', 'D']) expect(archiveOf(conductorRowOf(sid)).length, sid).toBe(1);
   });
 
-  it('the ↑ follows liveness, not temp: of two temp conductors only the live one has it, and the dead one archives instead', async () => {
-    // Invariant: ↑ is offered on a live temp conductor; a temp conductor whose instance exited is not live, so it gets no ↑ and its row's close is the archive.
+  it('the ↑ follows liveness, not kind: of two normal conductors only the live one has it, and the dead one archives instead', async () => {
+    // Invariant: ↑ is offered on a live normal conductor; a normal conductor whose instance exited is not live, so it gets no ↑ and its row's close is the archive.
     sidebarStore.set({ inactiveOpen: true });
-    seed({ instances: [conductor('L', { temp: true }), conductor('X', { temp: true, status: 'exited' })] });
+    seed({ instances: [conductor('L', {}), conductor('X', { status: 'exited' })] });
     renderSidebar();
     await settle();
-    expect(promoteOf(conductorRowOf('L')).length).toBe(1);
-    expect(promoteOf(conductorRowOf('X'))).toEqual([]);
+    expect(persistOf(conductorRowOf('L')).length).toBe(1);
+    expect(persistOf(conductorRowOf('X'))).toEqual([]);
     expect(archiveOf(conductorRowOf('X')).length).toBe(1);
   });
 
-  it("a conductor's ↑ promotes it through promoteSession with its instance id and shown label, titled or untitled, and never selects or resumes", async () => {
+  it("a conductor's ↑ persists it through persistSession with its instance id and shown label, titled or untitled, and never selects or resumes", async () => {
     // Invariant: the ↑ sends .conduct, the conductor's instance and the label the row renders: its title, else its normalised first prompt.
     seed({ instances: [conductor('A', { title: 'Alpha' }), conductor('B', { firstPrompt: 'plan   the\nwork' })] });
     renderSidebar();
     await settle();
     expect(conductorRowOf('B').textContent).toContain('plan the work');
-    fireEvent.click(promoteOf(conductorRowOf('B'))[0]);
-    fireEvent.click(promoteOf(conductorRowOf('A'))[0]);
-    expect(promoteSession.mock.calls).toEqual([
+    fireEvent.click(persistOf(conductorRowOf('B'))[0]);
+    fireEvent.click(persistOf(conductorRowOf('A'))[0]);
+    expect(persistSession.mock.calls).toEqual([
       [{ projectName: '.conduct', instanceId: 'i-B', preview: 'plan the work' }],
       [{ projectName: '.conduct', instanceId: 'i-A', preview: 'Alpha' }],
     ]);
@@ -372,28 +372,28 @@ describe('↑ Make persistent on a conductor row', () => {
   });
 
   it("a conductor's ↑ reads the freshest instance after a re-render, on the same button", async () => {
-    // Invariant: the ↑ survives a re-render and promotes the conductor's instance and label at click time.
+    // Invariant: the ↑ survives a re-render and persists the conductor's instance and label at click time.
     seed({ instances: [conductor('A')] });
     renderSidebar();
     await settle();
-    const before = promoteOf(conductorRowOf('A'))[0];
+    const before = persistOf(conductorRowOf('A'))[0];
     act(() => appStore.set({ instances: [conductor('A', { id: 'i-A2', title: 'Renamed' })] }));
-    const after = promoteOf(conductorRowOf('A'))[0];
+    const after = persistOf(conductorRowOf('A'))[0];
     expect(after === before).toBe(true);
     fireEvent.click(after);
-    expect(promoteSession.mock.calls).toEqual([[{ projectName: '.conduct', instanceId: 'i-A2', preview: 'Renamed' }]]);
+    expect(persistSession.mock.calls).toEqual([[{ projectName: '.conduct', instanceId: 'i-A2', preview: 'Renamed' }]]);
   });
 
-  it('promoting a conductor drops its ↑ in place, and a later disk row for it adds no second row', async () => {
-    // Invariant: the conductor row survives the promote and the disk row's arrival, stays live, and never gains a close.
+  it('making a conductor persistent drops its ↑ in place, and a later disk row for it adds no second row', async () => {
+    // Invariant: the conductor row survives the persist and the disk row's arrival, stays live, and never gains a close.
     seed({ instances: [conductor('A', { title: 'Alpha' })] });
     renderSidebar();
     await settle();
     const row = conductorRowOf('A');
-    expect(promoteOf(row).length).toBe(1);
-    act(() => appStore.set({ instances: [conductor('A', { title: 'Alpha', temp: false })] }));
+    expect(persistOf(row).length).toBe(1);
+    act(() => appStore.set({ instances: [conductor('A', { title: 'Alpha', persistent: true })] }));
     expect(conductorRowOf('A') === row).toBe(true);
-    expect(promoteOf(row)).toEqual([]);
+    expect(persistOf(row)).toEqual([]);
     act(() => appStore.set({ conductSessions: [{ sessionId: 'A', lastActivity: 1 }] }));
     expect(document.querySelectorAll('[data-conductor="A"]').length).toBe(1);
     expect(conductorRowOf('A') === row).toBe(true);
@@ -401,16 +401,16 @@ describe('↑ Make persistent on a conductor row', () => {
     expect(closeOf(row)).toEqual([]);
   });
 
-  it('a temp conductor dying loses its ↑ as it moves to Inactive', async () => {
-    // Invariant: an exited temp conductor sits under Inactive with the archive and no ↑.
+  it('a normal conductor dying loses its ↑ as it moves to Inactive', async () => {
+    // Invariant: an exited normal conductor sits under Inactive with the archive and no ↑.
     sidebarStore.set({ inactiveOpen: true });
     seed({ instances: [conductor('A')] });
     renderSidebar();
     await settle();
-    expect(promoteOf(conductorRowOf('A')).length).toBe(1);
+    expect(persistOf(conductorRowOf('A')).length).toBe(1);
     act(() => appStore.set({ instances: [conductor('A', { status: 'exited' })] }));
     expect(inactiveSids()).toEqual(['A']);
-    expect(promoteOf(conductorRowOf('A'))).toEqual([]);
+    expect(persistOf(conductorRowOf('A'))).toEqual([]);
     expect(archiveOf(conductorRowOf('A')).length).toBe(1);
   });
 });

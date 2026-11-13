@@ -19,7 +19,7 @@ export type StripEntry = {
   label: string;
   projectName: string;
   worktreeName: string | null;
-  temp: boolean;
+  persistent: boolean;
   synthetic: boolean;
   conductor: boolean;
   live: boolean;
@@ -106,7 +106,7 @@ function conductorEntry(c: LiveConductorRow): StripEntry {
     label: conductorTitle(c).text,
     projectName: '.conduct',
     worktreeName: null,
-    temp: !!c.instanceTemp,
+    persistent: !!c.instancePersistent,
     synthetic: !c.onDisk,
     conductor: true,
     live: isLiveStatus(c.instanceStatus),
@@ -127,10 +127,10 @@ function handEntry(inst: InstanceFields & { sessionId: string }): StripEntry & {
     label: conductorTitle(inst).text,
     projectName: inst.project,
     worktreeName: inst.worktree?.worktreeName ?? null,
-    temp: !!inst.temp,
-    // A live temp session's transcript is never listed while it is alive, so
+    persistent: !!inst.persistent,
+    // A live normal session's transcript is never listed while it is alive, so
     // its sidebar row is synthetic too — this matches what that row's × sends.
-    synthetic: !!inst.temp,
+    synthetic: !inst.persistent,
     conductor: false,
     live: isLiveStatus(inst.status),
     status: inst.displayStatus ?? inst.status,

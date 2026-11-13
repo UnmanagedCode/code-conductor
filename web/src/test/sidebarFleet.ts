@@ -22,15 +22,15 @@ export const BRAVO = 'bravo: sweep the docs';
 
 export const inst = (o: Record<string, any>): any => ({ id: `i-${o.sessionId}`, status: 'idle', mode: 'plan', ...o });
 export const conductor = (sid: string, over: Record<string, any> = {}): any =>
-  inst({ sessionId: sid, project: '.conduct', temp: true, ...over });
+  inst({ sessionId: sid, project: '.conduct', ...over });
 export const worker = (sid: string, owner: string, project: string, wt: string | null = null, over: Record<string, any> = {}): any =>
   inst({
-    sessionId: sid, project, conducted: true, temp: true, rootSessionId: owner,
+    sessionId: sid, project, conducted: true, rootSessionId: owner,
     worktree: wt ? { worktreeName: wt } : null, firstPrompt: `${sid} prompt`, ...over,
   });
 export const hand = (sid: string, project: string, wt: string | null = null, over: Record<string, any> = {}): any =>
   inst({
-    sessionId: sid, project, conducted: false, temp: false, rootSessionId: null,
+    sessionId: sid, project, conducted: false, persistent: true, rootSessionId: null,
     worktree: wt ? { worktreeName: wt } : null, firstPrompt: `${sid} prompt`, ...over,
   });
 export const proj = (name: string, over: Record<string, any> = {}): any => ({
@@ -55,7 +55,7 @@ export function fleet(): Fleet {
   // Distinct, descending response times fix the row order.
   const instances = [
     conductor(A, { title: ALPHA }),
-    conductor(B, { temp: false, firstPrompt: BRAVO }),
+    conductor(B, { persistent: true, firstPrompt: BRAVO }),
     worker('wa-solo1', A, 'solo', 'solo-a'),
     worker('wa-solo2', A, 'solo', 'solo-a'),
     worker('wa-mix', A, 'mixed', 'mix'),
@@ -150,7 +150,7 @@ export const sectionLead = (sid: string, owner: string, over: Record<string, any
 export function sectionLeadFleet(): Fleet {
   const instances = [
     conductor('L', { title: 'Lead' }),
-    conductor('H', { temp: false, firstPrompt: 'hand conductor' }),
+    conductor('H', { persistent: true, firstPrompt: 'hand conductor' }),
     sectionLead('SL', 'L', { title: 'Section' }),
     worker('LW', 'L', 'alpha'),
     worker('SW', 'L', 'beta', null, { callerInstanceId: 'i-SL' }),

@@ -10,11 +10,11 @@ import { isLiveStatus } from './conductors.ts';
 
 export type CloseAction = 'stop' | 'archive';
 
-// A live persistent session stops (transcript kept, resumable); a live temp
+// A live persistent session stops (transcript kept, resumable); a live normal
 // session or one that is not live is archived.
-export function closeActionOf({ instanceId, status, temp }: { instanceId?: string | null; status?: string | null; temp?: boolean }): CloseAction {
+export function closeActionOf({ instanceId, status, persistent }: { instanceId?: string | null; status?: string | null; persistent?: boolean }): CloseAction {
   const live = !!instanceId && !!status && isLiveStatus(status);
-  return live && !temp ? 'stop' : 'archive';
+  return live && persistent ? 'stop' : 'archive';
 }
 
 export const CLOSE_TITLES: Record<CloseAction, string> = { stop: 'Stop session', archive: 'Archive session (keeps history)' };
