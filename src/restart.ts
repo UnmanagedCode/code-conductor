@@ -99,7 +99,7 @@ export async function runRestart({
   rootLock?: RootLock | null;
   // A restart supervisor relaunches this server: exit for it instead of spawning.
   supervised?: boolean;
-  recorder?: Pick<RunningRecorder, 'pause' | 'resume'> | null;
+  recorder?: Pick<RunningRecorder, 'pause' | 'resume' | 'clis'> | null;
 }): Promise<void> {
   const log = ctx.log ?? console;
   const { instances } = ctx;
@@ -113,7 +113,7 @@ export async function runRestart({
     const idle = instances ? await drain() : null;
     onCommit?.();
     teardownNetworking(ctx);
-    if (instances && idle) finishDrain({ instances, log }, idle, { deliver: 'gated' });
+    if (instances && idle) finishDrain({ instances, log }, idle, { deliver: 'gated', clis: recorder?.clis() ?? [] });
     await exitForShutdown({ log, rootLock, supervised });
     return;
   }
@@ -138,7 +138,7 @@ export async function runRestart({
     }
     onCommit?.();
     teardownNetworking(ctx);
-    finishDrain({ instances, log }, idle, { deliver });
+    finishDrain({ instances, log }, idle, { deliver, clis: recorder?.clis() ?? [] });
   } else {
     if (drift) { await install(); await stage(); }
     onCommit?.();

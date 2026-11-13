@@ -34,6 +34,7 @@ import {
   type Deliver,
   type RestoreKind,
   type RestoreSource,
+  type RunningCli,
 } from './resumeManifest.ts';
 import type { PendingContinue } from './pendingContinue.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from './conduct.ts';
@@ -377,15 +378,17 @@ export function buildResumeEntries(instances: InstanceManagerLike, { subtreeOf, 
 // Steps 4–6 of the drain, after the caller has torn networking down: write the
 // manifest (temps are carried over, not archived), gracefully close subprocesses
 // without deleting temp jsonl, then remove the running record — the manifest is
-// now the clean-stop fact. Returns the manifest entries written.
+// now the clean-stop fact. `clis` (the running recorder's rows) ride in the
+// manifest, so a CLI that ignores EOF past the stop's grace is still reaped at
+// the next boot. Returns the manifest entries written.
 export function finishDrain(
   { instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog },
   facts: DrainState,
-  { deliver = 'auto' }: { deliver?: Deliver } = {},
+  { deliver = 'auto', clis = [] }: { deliver?: Deliver; clis?: RunningCli[] } = {},
 ): ResumeEntry[] {
   // (4) Build + write the manifest.
   const entries = buildResumeEntries(instances, facts);
-  try { writeResumeManifest(entries, { deliver }); }
+  try { writeResumeManifest(entries, { deliver, clis }); }
   catch (e) { log.warn?.('resume-restart: manifest write failed', errMsg(e)); }
 
   // (5) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.

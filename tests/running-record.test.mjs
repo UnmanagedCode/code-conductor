@@ -142,17 +142,20 @@ test('debounced, change-only, pausable, atomic writes', async () => {
 
 // Invariant: a start time that could not be read is retried — never cached as
 // unknown on one failure, never guessed — until it resolves or the bounded
-// attempts run out, after which the row stays null.
+// attempts run out, after which the row stays null; the delay before each retry
+// doubles from startRetryMs.
 test('a failed start-time read is retried with backoff, a bounded number of times', async () => {
   fs.mkdirSync(orchStoreRoot(), { recursive: true });
   const run = async (answers) => {
     const mgr = fakeManager();
     mgr.byId.set('i1', { ...fakeInst(1), pid: 4242, _fuse: null });
     let calls = 0;
+    const delays = [];
     const platform = { ...hostPlatform, processStartTime: async () => answers[calls++] ?? null };
-    const recorder = createRunningRecorder({ instances: mgr, platform, log: QUIET, debounceMs: 5, startRetryMs: 5 });
+    const setTimer = (fn, ms) => { delays.push(ms); return setTimeout(fn, 1); };
+    const recorder = createRunningRecorder({ instances: mgr, platform, log: QUIET, debounceMs: 5, startRetryMs: 5, setTimer });
     recorder.start();
-    return { recorder, calls: () => calls, start: () => readRunningRecord({ log: QUIET })?.clis[0]?.start };
+    return { recorder, delays, calls: () => calls, start: () => readRunningRecord({ log: QUIET })?.clis[0]?.start };
   };
   const flaky = await run([null, null, 'T']);
   await waitFor(() => flaky.start() === 'T', { timeout: 2000, interval: 5 });
@@ -164,6 +167,7 @@ test('a failed start-time read is retried with backoff, a bounded number of time
   await sleep(150);
   assert.equal(never.calls(), START_TIME_ATTEMPTS, 'no read past the bound');
   assert.equal(never.start(), null);
+  assert.deepEqual(never.delays, Array.from({ length: START_TIME_ATTEMPTS - 1 }, (_, i) => 5 * 2 ** i), 'each retry waits twice the last');
   never.recorder.stop();
 });
 

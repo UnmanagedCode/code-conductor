@@ -30,7 +30,7 @@ export type Deliver = 'auto' | 'gated';
 // Why the sessions are being restored: a drained stop, or a stop with no drain.
 export type RestoreKind = 'restart' | 'unclean';
 
-// One CLI process the running record names, for the boot-time orphan reap
+// One CLI process the running record (and a manifest) names, for the boot-time orphan reap
 // (reapOrphanedClis, src/runningRecord.ts). `start` is the platform's start-time
 // token (Platform.processStartTime), null until it resolved; `group` is whether
 // the CLI leads its own process group.
@@ -76,21 +76,36 @@ function readObject(file: string, label: string, log: ManifestLogger): Record<st
   }
 }
 
-// Synchronously write the manifest. No-op for an empty/invalid list.
-export function writeResumeManifest(entries: unknown[], { deliver = 'auto' }: { deliver?: Deliver } = {}): void {
-  if (!Array.isArray(entries) || entries.length === 0) return;
-  writeAtomic(resumeManifestPath(), { writtenAt: new Date().toISOString(), deliver, instances: entries });
+// The well-formed `clis` rows of a parsed file; malformed rows are dropped.
+function parseClis(raw: unknown): RunningCli[] {
+  const clis: RunningCli[] = [];
+  for (const c of Array.isArray(raw) ? raw : []) {
+    if (typeof c !== 'object' || c === null) continue;
+    const r = c as { sessionId?: unknown; pid?: unknown; start?: unknown; group?: unknown };
+    if (typeof r.sessionId !== 'string' || !Number.isInteger(r.pid) || (r.pid as number) <= 0) continue;
+    clis.push({ sessionId: r.sessionId, pid: r.pid as number, start: typeof r.start === 'string' ? r.start : null, group: r.group === true });
+  }
+  return clis;
+}
+
+// Synchronously write the manifest. `clis` are the CLIs live at the stop (the
+// running record's rows), so the boot's orphan reap sees one that outlived it.
+// No-op when there is neither an entry nor a CLI.
+export function writeResumeManifest(entries: unknown[], { deliver = 'auto', clis = [] }: { deliver?: Deliver; clis?: RunningCli[] } = {}): void {
+  if (!Array.isArray(entries) || (entries.length === 0 && clis.length === 0)) return;
+  writeAtomic(resumeManifestPath(), { writtenAt: new Date().toISOString(), deliver, instances: entries, clis });
 }
 
 // Read the manifest without unlinking it. `present` is false when the file is
 // absent or corrupt. An absent `deliver` reads `auto`.
-export function readResumeManifest({ log = console }: { log?: ManifestLogger } = {}): { present: boolean; deliver: Deliver; instances: unknown[] } {
+export function readResumeManifest({ log = console }: { log?: ManifestLogger } = {}): { present: boolean; deliver: Deliver; instances: unknown[]; clis: RunningCli[] } {
   const parsed = readObject(resumeManifestPath(), 'resume-manifest', log);
-  if (!parsed) return { present: false, deliver: 'auto', instances: [] };
+  if (!parsed) return { present: false, deliver: 'auto', instances: [], clis: [] };
   return {
     present: true,
     deliver: parsed.deliver === 'gated' ? 'gated' : 'auto',
     instances: Array.isArray(parsed.instances) ? parsed.instances : [],
+    clis: parseClis(parsed.clis),
   };
 }
 
@@ -109,14 +124,7 @@ export function writeRunningRecord({ instances, clis }: { instances: unknown[]; 
 export function readRunningRecord({ log = console }: { log?: ManifestLogger } = {}): { instances: unknown[]; clis: RunningCli[] } | null {
   const parsed = readObject(runningRecordPath(), 'running-record', log);
   if (!parsed) return null;
-  const clis: RunningCli[] = [];
-  for (const c of Array.isArray(parsed.clis) ? parsed.clis : []) {
-    if (typeof c !== 'object' || c === null) continue;
-    const r = c as { sessionId?: unknown; pid?: unknown; start?: unknown; group?: unknown };
-    if (typeof r.sessionId !== 'string' || !Number.isInteger(r.pid) || (r.pid as number) <= 0) continue;
-    clis.push({ sessionId: r.sessionId, pid: r.pid as number, start: typeof r.start === 'string' ? r.start : null, group: r.group === true });
-  }
-  return { instances: Array.isArray(parsed.instances) ? parsed.instances : [], clis };
+  return { instances: Array.isArray(parsed.instances) ? parsed.instances : [], clis: parseClis(parsed.clis) };
 }
 
 export function clearRunningRecord(): void {

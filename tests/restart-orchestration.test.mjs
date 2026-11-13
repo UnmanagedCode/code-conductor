@@ -18,8 +18,10 @@ import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
 await freshProjectsRoot();
 const QUIET = { log() {}, warn() {}, error() {} };
+// What the stub recorder reports as the live CLIs.
+const RECORDED_CLIS = [{ sessionId: 'a-session', pid: 4321, start: 't0', group: false }];
 
-function rig({ drift = null, installFails = false, stageFails = false } = {}) {
+function rig({ drift = null, installFails = false, stageFails = false, clis = RECORDED_CLIS } = {}) {
   const order = [];
   const chunks = [];
   const prep = {
@@ -37,7 +39,7 @@ function rig({ drift = null, installFails = false, stageFails = false } = {}) {
   };
   const server = { close() { order.push('server.close'); } };
   const wss = { clients: new Set([{ terminate() { order.push('ws.terminate'); } }]), close() { order.push('wss.close'); } };
-  const recorder = { pause() { order.push('recorder.pause'); }, resume() { order.push('recorder.resume'); } };
+  const recorder = { pause() { order.push('recorder.pause'); }, resume() { order.push('recorder.resume'); }, clis: () => clis };
   const exits = [];
   const run = (action, ctx, flags = { buildWeb: true, syncDeps: true }, extra = {}) => runRestart({
     action, flags, prep, recorder,
@@ -152,6 +154,8 @@ test('restart', async (t) => {
       const r = rig();
       await r.run('restart', { instances: resumeInstances(r.order, [{ id: 'a', status: 'turn' }]) }, undefined, { deliver });
       assert.equal(readResumeManifest().deliver, deliver);
+      // Invariant: the manifest carries the recorder's live CLIs, so a CLI outliving the stop is still reaped.
+      assert.deepEqual(readResumeManifest().clis, RECORDED_CLIS);
       assert.equal(fs.existsSync(runningRecordPath()), false);
     });
   }
@@ -167,9 +171,16 @@ test('restart', async (t) => {
     assert.deepEqual(seen, [{ record: true, manifest: true }]);
     assert.equal(fs.existsSync(runningRecordPath()), false, 'removed once the stop returned');
   });
+  // Invariant: a manifest is written when the stop has an entry or a live CLI to carry, and only then.
+  await t.test('with live CLIs but no entry (pristine only) the manifest still carries the CLIs', async () => {
+    const r = rig();
+    await r.run('restart', { instances: resumeInstances(r.order, []) });
+    assert.deepEqual(readResumeManifest().instances, []);
+    assert.deepEqual(readResumeManifest().clis, RECORDED_CLIS);
+  });
   await t.test('with no live session the record is still removed and no manifest is written', async () => {
     writeRunningRecord({ instances: [], clis: [] });
-    const r = rig();
+    const r = rig({ clis: [] });
     await r.run('restart', { instances: resumeInstances(r.order, []) });
     assert.equal(fs.existsSync(runningRecordPath()), false);
     assert.equal(fs.existsSync(resumeManifestPath()), false);
@@ -192,6 +203,7 @@ test('shutdown', async (t) => {
     assert.equal(r.exits[0].rootLock, rootLock);
     assert.equal(r.exits[0].supervised, true);
     assert.equal(readResumeManifest().deliver, 'gated', 'a shutdown\'s notices are always gated');
+    assert.deepEqual(readResumeManifest().clis, RECORDED_CLIS, 'a shutdown\'s manifest carries the live CLIs too');
   });
 
   await t.test('without instances it commits, takes networking down and exits', async () => {

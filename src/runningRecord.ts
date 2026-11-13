@@ -22,7 +22,7 @@
 import type { Platform } from './platform/index.ts';
 import { pidIsAlive } from './systems/fuse/driver.ts';
 import { captureResumeFacts, buildResumeEntries } from './resumeRestart.ts';
-import { readRunningRecord, writeRunningRecord, type RunningCli } from './resumeManifest.ts';
+import { readRunningRecord, readResumeManifest, writeRunningRecord, type RunningCli } from './resumeManifest.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 
 export const RUNNING_RECORD_DEBOUNCE_MS = 250;
@@ -48,6 +48,9 @@ export interface RunningRecorder {
   resume(): void;
   // Unsubscribe for good.
   stop(): void;
+  // The `clis` rows for the live set now, with the start times already read
+  // (no new read): what finishDrain writes into the manifest.
+  clis(): RunningCli[];
 }
 
 // The record's `clis` rows: every instance with a live CLI process the local
@@ -68,9 +71,11 @@ export function cliRows(
 
 export function createRunningRecorder({
   instances, platform, log = console, debounceMs = RUNNING_RECORD_DEBOUNCE_MS, write = writeRunningRecord,
-  startRetryMs = START_TIME_RETRY_MS,
+  startRetryMs = START_TIME_RETRY_MS, setTimer = (fn, ms) => setTimeout(fn, ms),
 }: {
   instances: InstanceManagerLike; platform: Platform; log?: Log; debounceMs?: number; startRetryMs?: number;
+  // Schedules a start-time retry; a test observes the delays through it.
+  setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   // The file write; a test counts calls through it.
   write?: typeof writeRunningRecord;
 }): RunningRecorder {
@@ -101,7 +106,7 @@ export function createRunningRecorder({
         const failed = (failures.get(proc) ?? 0) + 1;
         failures.set(proc, failed);
         if (failed >= START_TIME_ATTEMPTS || state === 'stopped') return;
-        const timer = setTimeout(() => { retries.delete(timer); read(inst, proc, pid); }, startRetryMs * 2 ** (failed - 1));
+        const timer = setTimer(() => { retries.delete(timer); read(inst, proc, pid); }, startRetryMs * 2 ** (failed - 1));
         retries.add(timer);
       });
   };
@@ -169,6 +174,9 @@ export function createRunningRecorder({
       for (const t of retries) clearTimeout(t);
       retries.clear();
     },
+    clis() {
+      return cliRows(instances.byId.values(), { group, startOf: (inst) => starts.get(inst.proc as object) ?? null });
+    },
   };
 }
 
@@ -184,30 +192,35 @@ export interface ReapResult {
 const isEsrch = (e: unknown): boolean => (e as NodeJS.ErrnoException)?.code === 'ESRCH';
 
 /**
- * Terminate every CLI the running record names that is still the process the
- * record saw. Reads the record without consuming it. SIGTERM first, through the
- * platform's kill helpers; then up to `termGraceMs` for the pids to go, and a
- * SIGKILL for any survivor whose start time still matches. The start times are
- * read concurrently, so the whole reap takes at most about two reads
- * (START_TIME_TIMEOUT_MS each, where a read runs a helper process) plus
- * `termGraceMs`. Never throws.
+ * Terminate every CLI the running record or the resume manifest names that is
+ * still the process the file saw. Reads both without consuming either; a row
+ * in both (same pid and start) is reaped once. The manifest's rows cover a CLI
+ * that outlived a clean stop (finishDrain removes the record); the record's, a
+ * stop with no drain. Every row is read concurrently, and each row is signalled
+ * in its own continuation, right after its own read matched, so no check is
+ * older than its signal by more than that one read: SIGTERM through the
+ * platform's kill helpers, then up to `termGraceMs` for the pids to go, then a
+ * concurrent re-read of each survivor and a SIGKILL right after a match. The
+ * whole reap takes at most about two reads (START_TIME_TIMEOUT_MS each, where a
+ * read runs a helper process) plus `termGraceMs`. Never throws.
  */
 export async function reapOrphanedClis({
   platform, log = console, termGraceMs = ORPHAN_CLI_TERM_GRACE_MS,
 }: { platform: Platform; log?: Log; termGraceMs?: number }): Promise<ReapResult> {
   const result: ReapResult = { terminated: [], unverifiable: [], reused: [] };
-  const record = readRunningRecord({ log });
-  if (!record) return result;
+  const rows = new Map<string, RunningCli>();
+  for (const c of [...(readRunningRecord({ log })?.clis ?? []), ...readResumeManifest({ log }).clis]) {
+    rows.set(`${c.pid}:${c.start}`, c);
+  }
+  if (rows.size === 0) return result;
   const signal = (c: RunningCli, sig: 'SIGTERM' | 'SIGKILL'): void => {
     if (c.group) platform.killGroup(c.pid, sig);
     else platform.killProcess(c.pid, sig);
   };
-  // Every identity read at once, so the reap waits about one read, not one per row.
-  const startsNow = await Promise.all(record.clis.map((c) =>
-    c.start === null ? null : platform.processStartTime(c.pid).catch(() => null)));
+  const readStart = (pid: number): Promise<string | null> => platform.processStartTime(pid).catch(() => null);
   const signalled: RunningCli[] = [];
-  record.clis.forEach((c, i) => {
-    const now = startsNow[i];
+  await Promise.all([...rows.values()].map(async (c) => {
+    const now = c.start === null ? null : await readStart(c.pid);
     if (now === null) {
       if (pidIsAlive(c.pid)) {
         result.unverifiable.push(c.pid);
@@ -228,18 +241,17 @@ export async function reapOrphanedClis({
     } catch (e) {
       if (!isEsrch(e)) log.warn?.(`orphan-reap: signalling pid ${c.pid} failed`, e instanceof Error ? e.message : String(e));
     }
-  });
+  }));
   const deadline = Date.now() + termGraceMs;
   let survivors = signalled.filter((c) => pidIsAlive(c.pid));
   while (survivors.length && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, ORPHAN_POLL_MS));
     survivors = survivors.filter((c) => pidIsAlive(c.pid));
   }
-  const startsLater = await Promise.all(survivors.map((c) => platform.processStartTime(c.pid).catch(() => null)));
-  survivors.forEach((c, i) => {
-    if (startsLater[i] !== c.start) return;
+  await Promise.all(survivors.map(async (c) => {
+    if (await readStart(c.pid) !== c.start) return;
     try { signal(c, 'SIGKILL'); }
     catch (e) { if (!isEsrch(e)) log.warn?.(`orphan-reap: SIGKILL of pid ${c.pid} failed`, e instanceof Error ? e.message : String(e)); }
-  });
+  }));
   return result;
 }
