@@ -1,20 +1,27 @@
-// Graceful "Resume after restart".
+// Carrying live sessions across a stop of cc.
 //
-// Two halves:
-//   Phase 1+2 — run in the OLD process when the user picks "Resume after
-//   restart", driven by runRestart (src/restart.ts): drainToIdle winds every
-//   live turn down to idle (networking stays UP so in-flight hook round-trips
-//   finish and the UI shows progress); then either finishDrain writes the resume
-//   manifest (NO temp wipe — temps are carried over) and closes subprocesses
-//   without deleting their jsonl, after runRestart has torn networking down, or,
-//   when the relaunch's preparation fails after the drain, abortDrain hands the
-//   sessions back.
-//   Phase 3 (restoreFromResumeManifest) — run in the NEW process on boot:
+// Three parts:
+//   The facts — captureResumeFacts + buildResumeEntries turn the live instance
+//   set into resume entries. finishDrain writes them as the resume manifest at
+//   a clean stop; the running recorder (src/runningRecord.ts) writes the same
+//   entries as the running record while cc runs, so a stop with no drain (a
+//   crash, a kill, a reboot) restores the same sessions.
+//   The drain — run in the OLD process by runRestart (src/restart.ts) for a
+//   Restart or a Shut down: drainToIdle winds every live turn down to idle
+//   (networking stays UP so in-flight hook round-trips finish and the UI shows
+//   progress); then either finishDrain writes the manifest (temps are carried
+//   over), removes the running record, and closes subprocesses without deleting
+//   their jsonl, after runRestart has torn networking down, or, when the
+//   relaunch's preparation fails after the drain, abortDrain hands the sessions
+//   back.
+//   The restore (restoreFromResumeManifest) — run in the NEW process on boot:
 //   re-spawn (`--resume`) the carried-over sessions, staggered, splitting them
-//   into conductors / conducted workers / others, and notify each so work
-//   resumes. Conducted workers are NOT resumed here — the conductor they
-//   were spawned under is told about its whole subtree and re-spawns them (their
-//   jsonl was preserved for exactly that).
+//   into conductors / conducted workers / others, and give each busy one its
+//   continue notice — prompted at once when the source delivers `auto`, held for
+//   the resume banner (src/pendingContinue.ts) when it is `gated`. Conducted
+//   workers are NOT resumed here — the conductor they were spawned under is told
+//   about its whole subtree and re-spawns them (their jsonl was preserved for
+//   exactly that).
 
 import { waitFor } from './waitFor.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
@@ -22,11 +29,15 @@ import { getOnOverageAction } from './appSettings.ts';
 import { softInterruptDeadlineMs } from './instances.ts';
 import {
   writeResumeManifest,
-  readResumeManifest,
-  clearResumeManifest,
+  clearRunningRecord,
+  takeRestoreSource,
+  type Deliver,
+  type RestoreKind,
+  type RestoreSource,
 } from './resumeManifest.ts';
+import type { PendingContinue } from './pendingContinue.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from './conduct.ts';
-import { RESTART_NOTICE_TRUNK, RESTART_ABORTED_LEAD } from '../shared/injectedTurns.ts';
+import { RESTART_NOTICE_TRUNK, UNCLEAN_STOP_NOTICE_TRUNK, RESTART_ABORTED_LEAD } from '../shared/injectedTurns.ts';
 import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary, SubtreeRow } from './instanceTypes.ts';
 
@@ -49,6 +60,14 @@ export const RESUME_TEXT =
   `${RESTART_NOTICE_TRUNK} — ` +
   'pick up wherever you left off before the restart.';
 
+// What an unclean stop adds over a restart: no drain wound the turn down.
+const MID_FLIGHT =
+  ' — your turn was cut off mid-flight without being wound down, so your last tool call ' +
+  'may not have finished: check its effect before you carry on.';
+
+// The continue notice of a busy session restored after an unclean stop.
+export const UNCLEAN_RESUME_TEXT = `${UNCLEAN_STOP_NOTICE_TRUNK}${MID_FLIGHT}`;
+
 // Sent by abortDrain to every session the drain found with resumable work: its
 // turn was wound down and the wakes it waited on were dropped while suspended.
 export const RESTART_ABORTED_TEXT =
@@ -65,12 +84,12 @@ interface WorkerRow {
   parentSessionId?: string | null;
 }
 
-// The restart notice for a conductor that had spawned workers: every session in
-// its spawn subtree, each naming the session that spawned it. The conductor
-// resumes the rows spawned by it and tells each section lead (a listed row in the
-// conduct project) which rows that lead spawned. A row spawned by a listed
-// non-conduct session is the conductor's to resume: a worker cannot spawn.
-export function buildWorkersResumeText(rootSessionId: string, workers: WorkerRow[]): string {
+// A conductor's spawn subtree and what to do with it: every session in it, each
+// naming the session that spawned it. The conductor resumes the rows spawned by
+// it and tells each section lead (a listed row in the conduct project) which
+// rows that lead spawned. A row spawned by a listed non-conduct session is the
+// conductor's to resume: a worker cannot spawn. `before` names the stop.
+function subtreeBlock(rootSessionId: string, workers: WorkerRow[], before: string): string {
   const projectOf = new Map(workers.map((w) => [w.sessionId, w.project] as const));
   const lines = workers.map((w) => {
     const wt = w.worktreeName ? `worktree \`${w.worktreeName}\`` : '(no worktree)';
@@ -81,9 +100,7 @@ export function buildWorkersResumeText(rootSessionId: string, workers: WorkerRow
     return `- project \`${w.project}\`, sessionId \`${w.sessionId}\`, ${wt}, spawned by ${parent}`;
   });
   return (
-    `${RESTART_NOTICE_TRUNK}, ` +
-    'and you should resume the workers you had spawned.\n\n' +
-    'Every session spawned under you before the restart is listed below. Each has ' +
+    `Every session spawned under you before ${before} is listed below. Each has ` +
     'been preserved but is NOT running. Resume the ones spawned by you with ' +
     '`mcp__code-conductor__spawn_instance` using the matching `resume` sessionId, ' +
     'then tell each section lead (a listed session in project `' + CONDUCT_PROJECT_NAME + '`) which of ' +
@@ -92,17 +109,32 @@ export function buildWorkersResumeText(rootSessionId: string, workers: WorkerRow
   );
 }
 
-// Appended to a restart notice when background work died with the restart.
-export function backgroundWorkLostNote(rootSessionId: string, sessionIds: string[]): string {
-  const who = sessionIds.map((s) => s === rootSessionId ? 'you' : `\`${s}\``).join(', ');
-  return `Background work — background Bash runs, Monitors or background subagents — was still running in ${who}. ` +
-    'The restart killed it, and no completion notice or wake will come for it: re-check what it was doing and re-dispatch what is still needed.';
+// The restart notice for a session that had spawned workers.
+export function buildWorkersResumeText(rootSessionId: string, workers: WorkerRow[]): string {
+  return `${RESTART_NOTICE_TRUNK}, and you should resume the workers you had spawned.\n\n` +
+    subtreeBlock(rootSessionId, workers, 'the restart');
 }
 
-// The restart notice a busy top-level session is prompted with.
-function restartNoticeFor(e: ResumeEntry): string {
-  const text = e.workers?.length ? buildWorkersResumeText(e.sessionId, e.workers) : RESUME_TEXT;
-  return e.backgroundWorkLost?.length ? `${text}\n\n${backgroundWorkLostNote(e.sessionId, e.backgroundWorkLost)}` : text;
+// The unclean-stop notice for a session that had spawned workers.
+export function buildWorkersUncleanResumeText(rootSessionId: string, workers: WorkerRow[]): string {
+  return `${UNCLEAN_STOP_NOTICE_TRUNK}${MID_FLIGHT} Your workers were killed mid-turn too, and you should resume them.\n\n` +
+    subtreeBlock(rootSessionId, workers, 'the stop');
+}
+
+// Appended to a notice when background work died with the stop.
+export function backgroundWorkLostNote(rootSessionId: string, sessionIds: string[], cause: RestoreKind = 'restart'): string {
+  const who = sessionIds.map((s) => s === rootSessionId ? 'you' : `\`${s}\``).join(', ');
+  return `Background work — background Bash runs, Monitors or background subagents — was still running in ${who}. ` +
+    `${cause === 'unclean' ? 'The unexpected stop' : 'The restart'} killed it, and no completion notice or wake will come for it: re-check what it was doing and re-dispatch what is still needed.`;
+}
+
+// The continue notice a busy top-level session gets after a stop of `kind`.
+export function noticeFor(e: ResumeEntry, kind: RestoreKind): string {
+  const unclean = kind === 'unclean';
+  const text = e.workers?.length
+    ? (unclean ? buildWorkersUncleanResumeText : buildWorkersResumeText)(e.sessionId, e.workers)
+    : (unclean ? UNCLEAN_RESUME_TEXT : RESUME_TEXT);
+  return e.backgroundWorkLost?.length ? `${text}\n\n${backgroundWorkLostNote(e.sessionId, e.backgroundWorkLost, kind)}` : text;
 }
 
 // --- Phase 1+2: drain + restart (old process) ----------------------------
@@ -153,12 +185,43 @@ function waitAllIdle(instances: InstanceManagerLike, graceMs: number): Promise<{
   });
 }
 
-// What drainToIdle captured before the stop, for finishDrain or abortDrain.
-export interface DrainState {
-  // Each top-level session's spawn subtree, by instance id.
+// The live-set facts the resume entries are built from: what drainToIdle
+// captures before the stop for finishDrain or abortDrain, and what the running
+// recorder captures at each flush.
+export interface ResumeFacts {
+  // Each top-level conductor's spawn subtree, by instance id.
   subtreeOf: Map<string, SubtreeRow[]>;
-  // Instance ids that had resumable work when the drain began.
-  busyAtDrain: Set<string>;
+  // Instance ids with resumable work.
+  busy: Set<string>;
+}
+export type DrainState = ResumeFacts;
+
+// Capture the facts from the live instances. A hand-spawned session gets no
+// subtree (it cannot spawn), so it gets the plain notice.
+export function captureResumeFacts(instances: InstanceManagerLike): ResumeFacts {
+  const live = [...instances.byId.values()].filter((i) => i.proc);
+  const subtreeOf = new Map<string, SubtreeRow[]>();
+  for (const inst of live) {
+    if (groupOf(inst) === 'conductor') subtreeOf.set(inst.id, instances.conductedSubtreeOf(inst.id));
+  }
+  // "Resumable work" distinguishes sessions that need a continue notice from
+  // ones that were idle with nothing pending (resurrected silently): mid-turn OR
+  // idle-but-parked on an armed OUTGOING idle wake, i.e. a conductor
+  // that ended its turn and is waiting on a worker (isIdleCaller — the caller
+  // side — the same fact list()/the sidebar surface as `awaitingWake`: true while
+  // an armed wake is PENDING, which is wider than "its worker is mid-turn" and
+  // deliberately covers the held states, a deferred turn_end and a dropped
+  // idle-drain settle, where the target is already idle), and a wake already
+  // consumed but not yet taken in by the CLI, or held for a mid-turn recipient
+  // (`_inFlight` / `_parked` / `_deferredWakes` in the idle hub). Such a conductor has
+  // durable re-conduct work (re-spawn workers, re-drive them) even
+  // though it's idle, so it must still receive its notice. A stop widens this
+  // for top-level sessions whose background work it kills — in
+  // buildResumeEntries, since an aborted restart kills none.
+  const busy = new Set(
+    live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.id)).map((i) => i.id),
+  );
+  return { subtreeOf, busy };
 }
 
 // Steps 1–3 of the drain: snapshot, suspend wakes, soft-stop, wait for all-idle
@@ -169,32 +232,9 @@ export async function drainToIdle({ instances, log = console, graceMs = RESUME_D
 }): Promise<DrainState> {
   const live = [...instances.byId.values()].filter((i) => i.proc);
 
-  // (1) Snapshot each top-level conductor's spawn subtree BEFORE draining —
-  // instance ids become meaningless across the restart, so capture it now. A
-  // hand-spawned session gets no subtree (it cannot spawn), so it gets RESUME_TEXT.
-  const subtreeOf = new Map<string, SubtreeRow[]>();
-  for (const inst of live) {
-    if (groupOf(inst) === 'conductor') subtreeOf.set(inst.id, instances.conductedSubtreeOf(inst.id));
-  }
-
-  // Snapshot which instances had resumable work BEFORE the stop so the manifest
-  // can distinguish sessions that need a resume prompt from ones that were idle
-  // with nothing pending (resurrected silently). "Resumable work" = mid-turn OR
-  // idle-but-parked on an armed OUTGOING idle wake, i.e. a conductor
-  // that ended its turn and is waiting on a worker (isIdleCaller — the caller
-  // side — the same fact list()/the sidebar surface as `awaitingWake`: true while
-  // an armed wake is PENDING, which is wider than "its worker is mid-turn" and
-  // deliberately covers the held states, a deferred turn_end and a dropped
-  // idle-drain settle, where the target is already idle), and a wake already
-  // consumed but not yet taken in by the CLI, or held for a mid-turn recipient
-  // (`_inFlight` / `_parked` / `_deferredWakes` in the idle hub). Such a conductor has
-  // durable re-conduct work (re-spawn workers, re-drive them) even
-  // though it's idle, so it must still receive its restart prompt. A restart
-  // widens this for top-level sessions whose background work it kills — in
-  // finishDrain, since an aborted restart kills none.
-  const busyAtDrain = new Set(
-    live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.id)).map((i) => i.id),
-  );
+  // (1) Snapshot the facts BEFORE draining — instance ids become meaningless
+  // across the restart, and a drained session is no longer mid-turn.
+  const facts = captureResumeFacts(instances);
 
   // From here on no wake is delivered: a session the drain winds down must not
   // wake its owner into a turn this process would only kill in finishDrain. Every
@@ -238,15 +278,11 @@ export async function drainToIdle({ instances, log = console, graceMs = RESUME_D
     }
   }
 
-  return { subtreeOf, busyAtDrain };
+  return facts;
 }
 
-// Steps 4–5 of the drain, after the caller has torn networking down: write the
-// manifest (NO temp wipe), then gracefully close subprocesses without deleting
-// temp jsonl. Returns the manifest entries written.
-export function finishDrain({ instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog }, { subtreeOf, busyAtDrain }: DrainState): ResumeEntry[] {
-  // (4) Build + write the manifest. NO writePendingTempCleanup / shutdownTempSync
-  // — carrying temps over is scoped to this path only.
+// One resume entry per live, prompted session.
+export function buildResumeEntries(instances: InstanceManagerLike, { subtreeOf, busy }: ResumeFacts): ResumeEntry[] {
   const entries: ResumeEntry[] = [];
   for (const inst of instances.byId.values()) {
     // LIVE instances only — byId retains recently exited/crashed instances
@@ -258,8 +294,8 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
     const s = inst.summary();
     const group = groupOf(inst);
     const workers = subtreeOf.get(inst.id) ?? [];
-    // Background work about to die in step 5, held by a top-level session itself
-    // or anywhere in its spawn subtree. Conducted sessions are left to their chain.
+    // Background work a stop kills, held by a top-level session itself or
+    // anywhere in its spawn subtree. Conducted sessions are left to their chain.
     const lost = group === 'worker' ? [] : [
       ...(holdsBackgroundWork(inst) ? [inst.sessionId] : []),
       ...workers.filter((w) => holdsBackgroundWork(instances.liveForSession(w.sessionId))).map((w) => w.sessionId),
@@ -296,7 +332,7 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
       // exactly the invisible drift playbooks exist to catch.
       playbookEnforcement: normalizePlaybookEnforcement(s.playbookEnforcement),
       group,
-      wasBusy: busyAtDrain.has(inst.id) || lost.length > 0,
+      wasBusy: busy.has(inst.id) || lost.length > 0,
       // Pending overage auto-resume (in-memory-only until now). `autoResumeAt`
       // is the already-computed fire DEADLINE (epoch secs = resetsAt+buffer),
       // present iff a resume was armed; `overageStopped` is the stop-resume
@@ -335,8 +371,24 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
     if (lost.length) entry.backgroundWorkLost = lost;
     entries.push(entry);
   }
-  try { writeResumeManifest(entries); }
+  return entries;
+}
+
+// Steps 4–5 of the drain, after the caller has torn networking down: write the
+// manifest (temps are carried over, not archived), remove the running record —
+// the manifest is now the clean-stop fact — then gracefully close subprocesses
+// without deleting temp jsonl. Returns the manifest entries written.
+export function finishDrain(
+  { instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog },
+  facts: DrainState,
+  { deliver = 'auto' }: { deliver?: Deliver } = {},
+): ResumeEntry[] {
+  // (4) Build + write the manifest, then drop the record. In this order, so a
+  // crash between the two leaves both, and the manifest wins at boot.
+  const entries = buildResumeEntries(instances, facts);
+  try { writeResumeManifest(entries, { deliver }); }
   catch (e) { log.warn?.('resume-restart: manifest write failed', errMsg(e)); }
+  clearRunningRecord();
 
   // (5) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.
   try { instances.shutdownForResumeSync(); }
@@ -346,20 +398,20 @@ export function finishDrain({ instances, log = console }: { instances: InstanceM
 }
 
 // The drain without networking or a relaunch: drainToIdle, then finishDrain.
-export async function drainToManifest({ instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS }: {
-  instances?: InstanceManagerLike | null; log?: RestartLog; graceMs?: number;
+export async function drainToManifest({ instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS, deliver = 'auto' }: {
+  instances?: InstanceManagerLike | null; log?: RestartLog; graceMs?: number; deliver?: Deliver;
 } = {}): Promise<ResumeEntry[]> {
   if (!instances) return [];
-  return finishDrain({ instances, log }, await drainToIdle({ instances, log, graceMs }));
+  return finishDrain({ instances, log }, await drainToIdle({ instances, log, graceMs }), { deliver });
 }
 
 // The restart was refused after drainToIdle: deliver wakes again, and tell every
 // live non-worker session that had resumable work — the set a restore would have
 // prompted — to carry on. Workers are left to their conductor, as on a restore.
 // No manifest is written and nothing is spawned.
-export function abortDrain({ instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog }, { busyAtDrain }: DrainState): void {
+export function abortDrain({ instances, log = console }: { instances: InstanceManagerLike; log?: RestartLog }, { busy }: DrainState): void {
   instances.resumeWakes();
-  for (const id of busyAtDrain) {
+  for (const id of busy) {
     const inst = instances.byId.get(id);
     if (!inst?.proc || groupOf(inst) === 'worker') continue;
     inst.prompt(RESTART_ABORTED_TEXT)
@@ -390,17 +442,20 @@ function waitForIdleOnce(inst: InstanceLike, { timeoutMs = 60000 }: { timeoutMs?
   });
 }
 
-export async function restoreFromResumeManifest({ instances, log = console, staggerMs = RESUME_STAGGER_MS }: {
+// `source` is what takeRestoreSource read (startResumeLifecycle, src/resumeBoot.ts,
+// takes it before the recorder starts); omitted, this takes it itself. A gated
+// source stores each busy session's notice in `pending` instead of prompting it.
+export async function restoreFromResumeManifest({ instances, log = console, staggerMs = RESUME_STAGGER_MS, source, pending = null }: {
   instances?: InstanceManagerLike | null; log?: RestartLog; staggerMs?: number;
+  source?: RestoreSource | null; pending?: PendingContinue | null;
 } = {}): Promise<{ restored: number }> {
   if (!instances) return { restored: 0 };
   // Read + unlink first: at-most-once, so a crash mid-restore can't loop.
-  const { instances: entriesRaw } = readResumeManifest({ log });
-  clearResumeManifest();
-  if (!entriesRaw.length) return { restored: 0 };
-  // The manifest is app-authored (drainToManifest writes exactly ResumeEntry),
+  const src = source === undefined ? takeRestoreSource({ log }) : source;
+  if (!src || !src.entries.length) return { restored: 0 };
+  // Both files are app-authored (buildResumeEntries writes exactly ResumeEntry),
   // so a single boundary cast narrows the unknown[] read.
-  const entries = entriesRaw as ResumeEntry[];
+  const entries = src.entries as ResumeEntry[];
 
   if (entries.some((e) => e.group === 'conductor')) {
     try { await ensureConductProject(); } catch (e) { log.warn?.('resume-restart: ensureConductProject failed', errMsg(e)); }
@@ -494,16 +549,23 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         try { instances._armRestoredAutoResume(inst, (e.overageResumeAt ?? 0) * 1000); }
         catch (err) { log.warn?.('resume-restart: overage re-arm failed', errMsg(err)); }
       }
-      // Only re-prompt sessions that had work in flight at the drain (wasBusy).
+      // Only notify sessions that had work in flight at the stop (wasBusy).
       // Idle sessions are resurrected silently — they have nothing to resume.
       // Skip overage-stopped sessions: the sweep delivers the resume preamble their
       // restored selectors resolve to (overageResumeKind — an idle-parked entry gets
       // IDLE_PARKED_RESUME_TEXT, not AUTO_RESUME_TEXT) once the window resets, so a
-      // RESUME_TEXT here would double-prompt. A mark DECLINED by the policy gate above
-      // is not skipped: it falls back to the ordinary restart path, which is exactly
-      // what a plain-`stop` session gets.
+      // notice here would double-prompt. A mark DECLINED by the policy gate above
+      // is not skipped: it falls back to the ordinary path, which is exactly what a
+      // plain-`stop` session gets.
       if (e.wasBusy !== false && !honourMark) {
-        try { await inst.prompt(restartNoticeFor(e)); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
+        const text = noticeFor(e, src.kind);
+        if (src.deliver === 'auto') {
+          try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
+        } else if (pending) {
+          pending.add({ sessionId: e.sessionId, kind: src.kind, text, workers: e.workers?.map((w) => w.sessionId) ?? [], at: new Date().toISOString() });
+        } else {
+          log.warn?.(`resume-restart: ${e.sessionId}: a gated notice with no pending store; dropped`);
+        }
       }
       restored++;
     } catch (err) {
@@ -514,9 +576,9 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
   return { restored };
 }
 
-// A resume-manifest entry (drained from summary()/instance fields, restored on
-// boot). Fields are typed to the exact shapes drainToManifest writes.
-interface ResumeEntry {
+// A resume entry (built from summary()/instance fields by buildResumeEntries,
+// restored on boot). Fields are typed to the exact shapes it writes.
+export interface ResumeEntry {
   project: string;
   sessionId: string;
   cwd: string;

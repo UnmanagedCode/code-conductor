@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { createWin32Platform, resolveGitBash, taskkillArgv, gitRootOfBash } from '../src/platform/win32.ts';
+import { createWin32Platform, resolveGitBash, taskkillArgv, gitRootOfBash, startTimeArgv } from '../src/platform/win32.ts';
 import { win32Platform } from '../src/platform/index.ts';
 
 const GIT = 'C:\\Program Files\\Git';
@@ -137,4 +137,20 @@ test('canonicalPath: native, then native(js) for a junction, then null', () => {
     realpathJs: () => 'c:\\target',
   }).canonicalPath('C:\\junction'), 'C:\\TARGET');
   assert.equal(plat({ realpathNative: boom, realpathJs: boom }).canonicalPath('c:\\gone'), null);
+});
+
+// Invariant: the start time is PowerShell's UTC-ticks query for exactly that
+// pid, run hidden with a bounded timeout; non-numeric output or a failed run
+// (no such process) is unknown (null).
+test('processStartTime: PowerShell argv under SystemRoot, digits only, failure is null', async () => {
+  const [file, args] = startTimeArgv(42, { SystemRoot: 'D:\\Win' });
+  assert.equal(file, 'D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.deepEqual(args, ['-NoProfile', '-NonInteractive', '-Command', '(Get-Process -Id 42 -ErrorAction Stop).StartTime.ToUniversalTime().Ticks']);
+  assert.equal(startTimeArgv(42, {})[0], 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  const seen = [];
+  const mk = (out) => createWin32Platform({ env: { SystemRoot: 'D:\\Win' }, execFile: async (f, a, o) => { seen.push([f, a, o]); return out; } });
+  assert.equal(await mk('638975616000000000\r\n').processStartTime(42), '638975616000000000');
+  assert.deepEqual(seen[0], [file, args, { windowsHide: true, timeout: 5000 }]);
+  assert.equal(await mk(null).processStartTime(42), null);
+  assert.equal(await mk('Get-Process : Cannot find a process\r\n').processStartTime(42), null);
 });

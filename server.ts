@@ -27,7 +27,9 @@ import { sweepPendingTempCleanup } from './src/tempCleanup.ts';
 import { cleanupSessionsWithoutTranscripts } from './src/sessionCleanup.ts';
 import { ensureConductProject } from './src/conduct.ts';
 import { regenerateAllProjectConventions } from './src/projectClaudeMd.ts';
-import { restoreFromResumeManifest } from './src/resumeRestart.ts';
+import { createRunningRecorder } from './src/runningRecord.ts';
+import { createPendingContinue } from './src/pendingContinue.ts';
+import { prepareResumeBoot, startResumeLifecycle } from './src/resumeBoot.ts';
 import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.ts';
 import { createPluginLibrary } from './src/plugins/library.ts';
 import { buildPluginProxy } from './src/plugins/proxy.ts';
@@ -129,6 +131,18 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   // /admin/restart) can reach the http server + wss without those
   // existing at route-build time. Populated below once they do.
   const serverCtx: ServerCtx = {};
+  // The running record's writer, started by startResumeLifecycle once the port
+  // is bound (src/resumeBoot.ts), and the resume banner's notices, whose every
+  // change nudges each client to re-fetch /api/resume-notices.
+  const runningRecorder = instances ? createRunningRecorder({ instances, platform }) : null;
+  const pendingContinue = instances ? createPendingContinue({
+    onChange: () => {
+      const msg = JSON.stringify({ t: 'resume_notices' });
+      for (const ws of serverCtx.wss?.clients ?? []) {
+        if (ws.readyState === ws.OPEN) { try { ws.send(msg); } catch { /* ignore */ } }
+      }
+    },
+  }) : null;
   // ONE gate, shared by the MCP and REST routers: it holds the folded playbook
   // projection and records the manager's session stream into the event log, so
   // a second instance would double-append those and read a projection the
@@ -148,7 +162,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
     onSuccess: () => { claudeAuthStatus.invalidate(); invalidateAccountUsage(); },
   });
   app.use('/api', buildRoutes({
-    instances, serverCtx, relaunch, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
+    instances, serverCtx, relaunch, recorder: runningRecorder, pending: pendingContinue, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
     claudeLogin, claudeAuthStatus: claudeAuthStatus.get,
   }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities, codeModeTiming }));
@@ -193,8 +207,9 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   serverCtx.server = server;
   serverCtx.wss = wss;
   server.on('close', () => claudeLogin.dispose());
+  server.on('close', () => runningRecorder?.stop());
 
-  return { app, server, instances, wss, pluginHost, pluginLibrary };
+  return { app, server, instances, wss, pluginHost, pluginLibrary, runningRecorder, pendingContinue };
 }
 
 // `listen` with retry-on-EADDRINUSE — the self-respawn restart path
@@ -299,9 +314,9 @@ async function startHolding(rootLock: RootLock, {
     const src = process.env.PROJECTS_ROOT ? 'PROJECTS_ROOT env' : 'default (repo parent)';
     console.log(`store: ${orchStoreRoot()} [${src}] — ${n} archived session(s)`);
   } catch { /* diagnostic only */ }
-  // Belt-and-braces cleanup for temp sessions whose jsonl re-appeared after
-  // the previous process exited (orphaned subagent writes etc.). The manifest
-  // is written by runTempCleanup in src/restart.ts.
+  // Archive the temp sessions a pending-temp-cleanup.json lists, then remove
+  // the file. No current path writes one; the sweep consumes a file a build
+  // whose restart wrote it leaves behind on the restart into this one.
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
   // Reclaim session-tmp directories a previous process left behind. They hold
@@ -316,19 +331,25 @@ async function startHolding(rootLock: RootLock, {
   // And every FUSE-union mount a previous process left behind, for the same
   // reason and by the same argument: an instance id is a fresh uuid per
   // process, so every record under systems/fuse/run/ is dead by construction.
-  // This one is LOAD-BEARING rather than belt-and-braces — the restart path
-  // exits ~50 ms after firing shutdown(), and neither synchronous shutdown path
-  // can run the (async) mount teardown at all, so a mount and a root-owned
-  // daemon would otherwise survive the orchestrator that created them.
+  // This one is LOAD-BEARING rather than belt-and-braces — the synchronous
+  // shutdown path every restart and shutdown ends with cannot run the (async)
+  // mount teardown at all, so a mount and a root-owned daemon would otherwise
+  // survive the orchestrator that created them.
   await sweepFuseLeftovers(platform);
+  // Terminate every CLI the previous process left running (an unclean stop:
+  // a CLI is not tied to cc's lifetime), before any instance exists, so no
+  // session is respawned — and no conductor can resume a worker — while its
+  // old CLI may still be writing the transcript. Every mode, headless included.
+  await prepareResumeBoot({ platform, log: console });
   // Drop session records with no transcript left anywhere in their lineage
   // (pre-image: <store>/sessions.json.startup.bak). ORDER IS LOAD-BEARING: after
   // migrations and the temp sweep (whose store write it queues behind), before
-  // createServer() so no instance is live, and before restoreFromResumeManifest
-  // unlinks pending-resume.json, which names the sessions it must keep.
+  // createServer() so no instance is live, and before startResumeLifecycle
+  // unlinks pending-resume.json and running-sessions.json, which name the
+  // sessions it must keep (as does pending-continue.json).
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
+  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)
@@ -384,6 +405,15 @@ async function startHolding(rootLock: RootLock, {
   // PreToolUse http hook URL — feed it back into the manager now that
   // listen has resolved (port may have been auto-assigned via 0).
   if (instances) instances.setServerPort(addr.port);
+  // Restore the sessions the previous process carried over (a drained stop's
+  // manifest, or an unclean stop's running record) and start recording this
+  // one's. Synchronous up to the fire-and-forget restore, with no await since
+  // setServerPort: create() builds the per-instance hook/MCP URLs from the
+  // port. A headless run skips it, leaving both files for the next
+  // interactive boot.
+  if (instances && runningRecorder && pendingContinue && !headless) {
+    startResumeLifecycle({ instances, recorder: runningRecorder, pending: pendingContinue, log: console });
+  }
   // Plugin children get CONDUCTOR_URL from the bound port; init() runs the
   // adopt-don't-drain reconciliation of children that survived a restart.
   // Auto-start runs after it, so an adopted child is already `ready` and is
@@ -407,15 +437,6 @@ async function startHolding(rootLock: RootLock, {
   // and its guard hash one `inputs` value, so they cannot judge different trees.
   const bootWebInputs = webInputs(checkoutRoot);
   if (buildWeb) void (webBuild ?? (() => ensureWebBuild({ inputs: bootWebInputs, guard: bootCommit && bootSwapGuard(checkoutRoot, bootCommit, bootWebInputs) })))();
-  // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
-  // (like the readiness check) so boot returns fast and the reloaded UI can
-  // connect while sessions re-spawn + get their resume notifications, staggered.
-  // No-op when no resume manifest is present. Needs the bound port (create()
-  // builds the per-instance hook/MCP URLs from it), so it runs after setServerPort.
-  if (instances) {
-    restoreFromResumeManifest({ instances, log: console })
-      .catch((e) => console.warn('resume-restart restore failed:', errText(e)));
-  }
   // Readiness is informational only (a stderr warning banner). Run it AFTER
   // we're listening — never gate port availability on a `claude --version`
   // spawn that can be slow or CPU-starved under concurrent startup. (Awaiting

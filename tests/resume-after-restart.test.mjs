@@ -116,7 +116,7 @@ test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal js
   // real signal instead of a fixed sleep.
   await waitFor(() => tempInst.proc === null && normalInst.proc === null, { timeout: 20000 });
 
-  await fs.access(tempJsonl);   // temp jsonl PRESERVED (contrast shutdownTempSync)
+  await fs.access(tempJsonl);   // temp jsonl PRESERVED
   await fs.access(normalJsonl);
 });
 

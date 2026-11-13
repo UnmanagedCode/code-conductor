@@ -30,7 +30,9 @@ import {
 import { buildPluginApi } from './plugins/api.ts';
 import type { PluginHostApiLike, PluginLibraryApiLike } from './plugins/api.ts';
 import { buildPlaybookApi } from './playbookApi.ts';
-import { runRestart, type RestartPhase } from './restart.ts';
+import { runRestart, type RestartPhase, type ExitForShutdown } from './restart.ts';
+import { continuePendingNotices, type PendingContinue } from './pendingContinue.ts';
+import type { RunningRecorder } from './runningRecord.ts';
 import { spawnFromBody } from './spawnRequest.ts';
 import type { RootLock } from './rootLock.ts';
 import { withMaintenanceLock, type RelaunchPrep } from './relaunchPrep.ts';
@@ -351,13 +353,15 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-// What POST /admin/restart runs beyond the server handles: which preparation
-// steps are on (server.ts maps CC_SKIP_WEB_BUILD / CC_SKIP_DEPS_SYNC onto
-// `flags`), and — for tests — the steps themselves and the respawn.
+// What POST /admin/restart and /admin/shutdown run beyond the server handles:
+// which preparation steps are on (server.ts maps CC_SKIP_WEB_BUILD /
+// CC_SKIP_DEPS_SYNC onto `flags`), and — for tests — the steps themselves, the
+// respawn and the shutdown's exit.
 export interface RelaunchOptions {
   flags: { buildWeb: boolean; syncDeps: boolean };
   prep?: RelaunchPrep;
   spawnAndExit?: () => void | Promise<void>;
+  exitForShutdown?: ExitForShutdown;
   // The projects-root lock this server holds; a restart hands it to the replacement.
   rootLock?: RootLock | null;
   // A headless run (src/headless/): nothing may replace this process.
@@ -376,11 +380,15 @@ interface RoleBackendPatch { role: string; backend?: unknown }
 interface TierEffortPatch { tier: TierName; effort?: unknown }
 interface RoleEffortPatch { role: string; effort?: unknown }
 
-export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus }:
+export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, recorder = null, pending = null, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus }:
   {
     instances?: InstanceManagerLike | null;
     serverCtx?: ServerCtx | null;
     relaunch?: RelaunchOptions;
+    // The running recorder, paused for a restart's or shutdown's drain.
+    recorder?: RunningRecorder | null;
+    // The resume banner's notices (/resume-notices).
+    pending?: PendingContinue | null;
     pluginHost?: PluginHostApiLike | null;
     pluginLibrary?: PluginLibraryApiLike | null;
     playbookGate?: PlaybookGate | null;
@@ -441,47 +449,74 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     res.json({ ok: true, app: 'code-conductor', pid: process.pid, bootId: BOOT_ID, capabilities });
   });
 
-  // Self-respawn the orchestrator (runRestart, src/restart.ts): prepare, tear
-  // down, spawn a detached replacement, exit — or, under a restart supervisor,
-  // release the root lock and exit for the supervisor to relaunch. `resume:true` drains live turns
-  // and resurrects them after (carrying temps over); otherwise a plain restart
-  // (temps archived). Streams NDJSON like the self-update below: chunks per
-  // phase, then one result line — `ok:true` once the relaunch is committed and
-  // before networking goes down, `ok:false` when a step refused it and cc keeps
-  // running. A restart or update already in progress answers 409 as plain JSON,
-  // and so does every restart of a headless run, before any step.
+  // The power menu's Restart and Shut down (runRestart, src/restart.ts). Both
+  // drain every live turn to idle and write the resume manifest; a restart is
+  // prepared first and then spawns a detached replacement and exits — or, under
+  // a restart supervisor, releases the root lock and exits for the supervisor
+  // to relaunch — and a shutdown exits with nothing to replace it. The restart
+  // body's `autoContinue:true` (self-update) has the next boot prompt each busy
+  // session at once; otherwise its notices wait for the resume banner. Streams
+  // NDJSON like the self-update below: chunks per phase, then one result line —
+  // `ok:true` once the step is committed and before networking goes down,
+  // `ok:false` when a step refused it and cc keeps running. A restart, shutdown
+  // or update already in progress answers 409 as plain JSON, and so does every
+  // restart or shutdown of a headless run, before any step.
   // No-op 202 if the server context wasn't wired (in-process test boot).
-  r.post('/admin/restart', (req, res, next) => {
+  const maintenanceRoute = (action: 'restart' | 'shutdown') => (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (relaunch.headless) {
-      res.status(409).json({ error: 'restart is disabled in headless mode', code: 'RESTART_DISABLED_HEADLESS' });
+      res.status(409).json(action === 'restart'
+        ? { error: 'restart is disabled in headless mode', code: 'RESTART_DISABLED_HEADLESS' }
+        : { error: 'shutdown is disabled in headless mode', code: 'SHUTDOWN_DISABLED_HEADLESS' });
       return;
     }
     if (!serverCtx) { res.status(202).json({ ok: true }); return; }
-    const mode = jsonBody(req).resume ? 'resume' : 'plain';
+    const deliver = action === 'restart' && jsonBody(req).autoContinue === true ? 'auto' : 'gated';
     let streaming = false;
     const write = (obj: unknown) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
-    withMaintenanceLock('restart', () => {
+    withMaintenanceLock(action, () => {
       streaming = true;
       res.setHeader('Content-Type', 'application/x-ndjson');
       res.setHeader('Cache-Control', 'no-store');
       res.flushHeaders();
       return runRestart({
-        mode,
+        action,
+        deliver,
         ctx: { server: serverCtx.server, wss: serverCtx.wss, instances },
         flags: relaunch.flags,
         prep: relaunch.prep,
         spawnAndExit: relaunch.spawnAndExit,
+        exitForShutdown: relaunch.exitForShutdown,
         rootLock: relaunch.rootLock,
         supervised: relaunch.supervised,
+        recorder,
         onChunk: (phase: RestartPhase, text: string) => write({ type: 'chunk', phase, text }),
         onCommit: () => { write({ type: 'result', ok: true }); res.end(); },
       });
     }).catch((e: unknown) => {
       if (!streaming) { next(e); return; }
-      if (res.writableEnded) { console.error('restart: failed after it was committed:', errMessage(e)); return; }
+      if (res.writableEnded) { console.error(`${action}: failed after it was committed:`, errMessage(e)); return; }
       write({ type: 'result', ok: false, ...errorBody(e), tail: (e as { tail?: unknown }).tail });
       res.end();
     });
+  };
+  r.post('/admin/restart', maintenanceRoute('restart'));
+  r.post('/admin/shutdown', maintenanceRoute('shutdown'));
+
+  // The resume banner: the continue notices a gated restore held back
+  // (src/pendingContinue.ts). GET lists them with each live session's project
+  // and title; Continue sends each to its session, Dismiss drops them all.
+  r.get('/resume-notices', (_req, res) => {
+    const notices = (pending?.list() ?? []).map((n) => {
+      const s = instances?.liveForSession(n.sessionId)?.summary();
+      return { sessionId: n.sessionId, kind: n.kind, project: s?.project ?? null, title: (s?.title ?? null) as string | null };
+    });
+    res.json({ notices });
+  });
+  r.post('/resume-notices/continue', (_req, res) => {
+    res.json(pending && instances ? continuePendingNotices({ pending, instances }) : { sent: [], dropped: [] });
+  });
+  r.post('/resume-notices/dismiss', (_req, res) => {
+    res.json({ dismissed: pending?.take().length ?? 0 });
   });
 
   // Conductor self-update — the app's own git-pull update path, surfaced on
@@ -1485,9 +1520,9 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       const { sid, backing } = await sidParam(req.params.sessionId);
       const hit = await findSessionLocation(sid);
       if (!hit) throw httpError(404, 'session not found');
-      // Report archived-ness so the client's anchor auto-resume can skip a
-      // session that was archived on a plain restart (its jsonl is retained,
-      // so locate still 200s) instead of silently resurrecting it. Deliberate
+      // Report archived-ness so the client's anchor auto-resume can skip an
+      // archived session (its jsonl is retained, so locate still 200s) instead
+      // of silently resurrecting it. Deliberate
       // resume-from-archived stays allowed — this only feeds the automatic path.
       //
       // PROJECTED EXPLICITLY, not spread: findSessionLocation also returns the

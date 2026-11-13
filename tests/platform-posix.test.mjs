@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { posixPlatform } from '../src/platform/posix.ts';
+import { posixPlatform, createPosixPlatform } from '../src/platform/posix.ts';
 import { selectPlatform, hostPlatform, samePath, win32Platform } from '../src/platform/index.ts';
 import { resolveClaudeBin, resolveBackendLaunch } from '../src/claudeLauncher.ts';
 
@@ -79,4 +79,33 @@ test('softSigterm, cliEnv and canonicalPath are the identity / no-op on posix', 
   assert.equal(posixPlatform.softSigterm, true);
   assert.deepEqual(posixPlatform.cliEnv(), {});
   assert.equal(posixPlatform.canonicalPath('/a/B/c'), '/a/B/c');
+});
+
+// Invariant: a live process has one stable, non-null start time; a pid nothing
+// runs as has none.
+test('processStartTime: a live pid reads one stable token, a dead pid reads null', async () => {
+  const a = await posixPlatform.processStartTime(process.pid);
+  assert.equal(typeof a, 'string');
+  assert.ok(a.length > 0);
+  assert.equal(await posixPlatform.processStartTime(process.pid), a);
+  const child = spawn('sleep', ['600'], { stdio: 'ignore' });
+  const pid = child.pid;
+  child.kill('SIGKILL');
+  await new Promise(r => child.once('exit', r));
+  assert.equal(await posixPlatform.processStartTime(pid), null);
+});
+
+// Invariant: without /proc the start time is ps's lstart, trimmed; ps failing
+// or printing nothing is unknown (null), and /proc is never consulted.
+test('processStartTime without /proc reads ps lstart, and an empty or failed ps is null', async () => {
+  const asked = [];
+  const mk = (out) => createPosixPlatform({
+    hasProcStat: () => false,
+    procStart: () => { throw new Error('/proc must not be read'); },
+    psLstart: async (pid) => { asked.push(pid); return out; },
+  });
+  assert.equal(await mk('Tue Nov 10 09:00:00 2026\n').processStartTime(41), 'Tue Nov 10 09:00:00 2026');
+  assert.equal(await mk('  \n').processStartTime(42), null);
+  assert.equal(await mk(null).processStartTime(43), null);
+  assert.deepEqual(asked, [41, 42, 43]);
 });

@@ -3,11 +3,10 @@
 // under `systems/fuse/run/` at boot is dead by construction.
 //
 // This is LOAD-BEARING, not defence in depth. Nothing about a running process
-// is persisted anywhere else in cc, and a plain restart (`teardownInstances`) fires
-// `instances.shutdown()` and then exits without awaiting it — so the
-// in-process teardown provably does not finish, and the two synchronous
-// shutdown paths (shutdownTempSync, shutdownForResumeSync) cannot run it at all
-// because it is async. This is what covers all three.
+// is persisted anywhere else in cc, the synchronous shutdown path
+// (shutdownForResumeSync, at the end of every restart and shutdown) cannot run
+// the async teardown at all, and a killed or crashed cc runs none. This is what
+// covers both.
 //
 // Best-effort throughout: a directory cc cannot reclaim must never stop a boot.
 

@@ -604,7 +604,7 @@ test('GET /api/sessions/:sid/locate returns the owning project (project-root)', 
 test('GET /api/sessions/:sid/locate reports archived:true for an archived session', async () => {
   // Archiving retains the .jsonl (so locate still 200s), so the response must
   // carry archived:true — that's the signal the anchor auto-resume uses to
-  // skip a session cleaned up on a plain restart instead of resurrecting it.
+  // skip an archived session instead of resurrecting it.
   await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
   const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'host')));
   await fs.mkdir(dir, { recursive: true });

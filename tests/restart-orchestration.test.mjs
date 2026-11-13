@@ -1,17 +1,18 @@
-// runRestart (src/restart.ts): the order a relaunch prepares, tears down and
-// respawns in, and what a failed step leaves running. Every collaborator is a
-// stub recording into one ordered log; spawnAndExit is a stub, so nothing here
-// spawns or exits.
+// runRestart (src/restart.ts): the order a restart prepares, drains, tears down
+// and respawns in, the order a shutdown drains and exits in, and what a failed
+// step leaves running. Every collaborator is a stub recording into one ordered
+// log; spawnAndExit and exitForShutdown are stubs, so nothing here spawns or
+// exits.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { freshProjectsRoot } from './helpers.mjs';
-import { runRestart, spawnReplacementAndExit } from '../src/restart.ts';
-import { SUPERVISED_RESTART_EXIT } from '../src/restartSupervisor.ts';
+import { runRestart, spawnReplacementAndExit, exitAfterShutdown } from '../src/restart.ts';
+import { SUPERVISED_RESTART_EXIT, SUPERVISED_SHUTDOWN_EXIT } from '../src/restartSupervisor.ts';
 import { ROOT_LOCK_HANDOVER_ENV } from '../src/rootLock.ts';
 import { EventEmitter } from 'node:events';
-import { resumeManifestPath, clearResumeManifest } from '../src/resumeManifest.ts';
+import { resumeManifestPath, clearResumeManifest, readResumeManifest, runningRecordPath, writeRunningRecord } from '../src/resumeManifest.ts';
 import { RESTART_ABORTED_LEAD } from '../shared/injectedTurns.ts';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
@@ -36,18 +37,19 @@ function rig({ drift = null, installFails = false, stageFails = false } = {}) {
   };
   const server = { close() { order.push('server.close'); } };
   const wss = { clients: new Set([{ terminate() { order.push('ws.terminate'); } }]), close() { order.push('wss.close'); } };
-  const run = (mode, ctx, flags = { buildWeb: true, syncDeps: true }) => runRestart({
-    mode, flags, prep,
+  const recorder = { pause() { order.push('recorder.pause'); }, resume() { order.push('recorder.resume'); } };
+  const exits = [];
+  const run = (action, ctx, flags = { buildWeb: true, syncDeps: true }, extra = {}) => runRestart({
+    action, flags, prep, recorder,
     ctx: { server, wss, log: QUIET, graceMs: 2000, ...ctx },
     onChunk: (phase, text) => chunks.push([phase, text]),
     onCommit: () => order.push('commit'),
     spawnAndExit: () => order.push('spawn'),
+    exitForShutdown: (opts) => { order.push('exit'); exits.push(opts); },
+    ...extra,
   });
-  return { order, chunks, run };
+  return { order, chunks, run, exits };
 }
-
-// The plain path's instance surface: stopLiveSync marks teardownInstances.
-const plainInstances = (order) => ({ stopLiveSync() { order.push('teardownInstances'); }, shutdown() {} });
 
 // A live instance the drain can wind down: interrupt() leaves the turn on the
 // next tick, logging `idle:<id>` as the status event fires.
@@ -82,50 +84,14 @@ function resumeInstances(order, specs, { idleCallers = [] } = {}) {
 
 const NETWORK_DOWN = ['ws.terminate', 'wss.close', 'server.close'];
 
-test('plain restart', async (t) => {
-  await t.test('in sync: the web build is staged before anything is torn down, then networking, then the spawn', async () => {
-    const r = rig();
-    await r.run('plain', { instances: plainInstances(r.order) });
-    assert.deepEqual(r.order, ['drift', 'stageWeb', 'teardownInstances', 'commit', ...NETWORK_DOWN, 'spawn']);
-    assert.deepEqual(r.chunks.map(([p]) => p), ['build', 'build']);
-    assert.deepEqual(r.chunks[1], ['build', 'vite output\n']);
-  });
-
-  await t.test('in sync, the stage fails: nothing is torn down, nothing spawned, the error propagates', async () => {
-    const r = rig({ stageFails: true });
-    await assert.rejects(r.run('plain', { instances: plainInstances(r.order) }), /vite build failed/);
-    assert.deepEqual(r.order, ['drift', 'stageWeb']);
-  });
-
-  await t.test('drift: the instances go first, then install, stage, networking, spawn', async () => {
-    const r = rig({ drift: { reason: 'node_modules/vite missing' } });
-    await r.run('plain', { instances: plainInstances(r.order) });
-    assert.deepEqual(r.order, ['drift', 'teardownInstances', 'installDeps', 'stageWeb', 'commit', ...NETWORK_DOWN, 'spawn']);
-    assert.match(r.chunks[0][1], /node_modules\/vite missing/);
-    assert.deepEqual(r.chunks.slice(0, 2), [['deps', r.chunks[0][1]], ['npm', 'added 1 package\n']]);
-  });
-
-  await t.test('drift, the install fails: instances are down, networking stays up, nothing spawns', async () => {
-    const r = rig({ drift: { reason: 'x' }, installFails: true });
-    await assert.rejects(r.run('plain', { instances: plainInstances(r.order) }), (e) => e.tail === 'npm ERR!');
-    assert.deepEqual(r.order, ['drift', 'teardownInstances', 'installDeps']);
-  });
-
-  await t.test('drift, the stage after the install fails: networking stays up, nothing spawns', async () => {
-    const r = rig({ drift: { reason: 'x' }, stageFails: true });
-    await assert.rejects(r.run('plain', { instances: plainInstances(r.order) }), /vite build failed/);
-    assert.deepEqual(r.order, ['drift', 'teardownInstances', 'installDeps', 'stageWeb']);
-  });
-});
-
-test('resume restart', async (t) => {
+test('restart', async (t) => {
   t.beforeEach(() => clearResumeManifest());
 
   await t.test('in sync: stage, then the drain, then networking, the manifest and the spawn', async () => {
     const r = rig();
     const instances = resumeInstances(r.order, [{ id: 'a', status: 'turn' }]);
-    await r.run('resume', { instances });
-    assert.deepEqual(r.order, ['drift', 'stageWeb', 'suspendWakes', 'interrupt:a', 'idle:a', 'commit', ...NETWORK_DOWN, 'shutdownForResumeSync', 'spawn']);
+    await r.run('restart', { instances });
+    assert.deepEqual(r.order, ['drift', 'stageWeb', 'recorder.pause', 'suspendWakes', 'interrupt:a', 'idle:a', 'commit', ...NETWORK_DOWN, 'shutdownForResumeSync', 'spawn']);
     assert.ok(fs.existsSync(resumeManifestPath()), 'the resume manifest is written');
     assert.deepEqual(instances.byId.get('a').prompts, []);
   });
@@ -133,7 +99,7 @@ test('resume restart', async (t) => {
   await t.test('in sync, the stage fails: wakes are never suspended, no session is touched', async () => {
     const r = rig({ stageFails: true });
     const instances = resumeInstances(r.order, [{ id: 'a', status: 'turn' }]);
-    await assert.rejects(r.run('resume', { instances }), /vite build failed/);
+    await assert.rejects(r.run('restart', { instances }), /vite build failed/);
     assert.deepEqual(r.order, ['drift', 'stageWeb']);
     assert.equal(fs.existsSync(resumeManifestPath()), false);
   });
@@ -141,7 +107,7 @@ test('resume restart', async (t) => {
   await t.test('drift: the install runs after every turn has ended and before networking goes down', async () => {
     const r = rig({ drift: { reason: 'x' } });
     const instances = resumeInstances(r.order, [{ id: 'a', status: 'turn' }, { id: 'b', status: 'turn' }]);
-    await r.run('resume', { instances });
+    await r.run('restart', { instances });
     const at = (step) => r.order.indexOf(step);
     assert.ok(at('idle:a') < at('installDeps') && at('idle:b') < at('installDeps'), r.order.join(' '));
     assert.deepEqual(r.order.slice(at('installDeps')), ['installDeps', 'stageWeb', 'commit', ...NETWORK_DOWN, 'shutdownForResumeSync', 'spawn']);
@@ -157,8 +123,9 @@ test('resume restart', async (t) => {
         { id: 'idle', status: 'idle' },
         { id: 'worker', status: 'turn', conducted: true },
       ], { idleCallers: ['parked'] });
-      await assert.rejects(r.run('resume', { instances }));
-      assert.equal(r.order.at(-1), 'resumeWakes');
+      await assert.rejects(r.run('restart', { instances }));
+      // Invariant: an aborted restart hands the sessions back and the recorder resumes after it.
+      assert.deepEqual(r.order.slice(-2), ['resumeWakes', 'recorder.resume']);
       for (const step of [...NETWORK_DOWN, 'commit', 'shutdownForResumeSync', 'spawn']) assert.ok(!r.order.includes(step), step);
       assert.equal(fs.existsSync(resumeManifestPath()), false);
       const prompted = (id) => instances.byId.get(id).prompts;
@@ -173,24 +140,68 @@ test('resume restart', async (t) => {
 
   await t.test('the drain is announced as its own phase', async () => {
     const r = rig();
-    await r.run('resume', { instances: resumeInstances(r.order, []) });
+    await r.run('restart', { instances: resumeInstances(r.order, []) });
     assert.deepEqual(r.chunks.map(([p]) => p), ['build', 'build', 'drain']);
+  });
+
+  // Invariant: the manifest carries the delivery the caller chose, and finishDrain
+  // removes the running record whatever the entry count.
+  for (const deliver of ['auto', 'gated']) {
+    await t.test(`deliver:${deliver} reaches the manifest and the running record is removed`, async () => {
+      writeRunningRecord({ instances: [], clis: [] });
+      const r = rig();
+      await r.run('restart', { instances: resumeInstances(r.order, [{ id: 'a', status: 'turn' }]) }, undefined, { deliver });
+      assert.equal(readResumeManifest().deliver, deliver);
+      assert.equal(fs.existsSync(runningRecordPath()), false);
+    });
+  }
+  await t.test('with no live session the record is still removed and no manifest is written', async () => {
+    writeRunningRecord({ instances: [], clis: [] });
+    const r = rig();
+    await r.run('restart', { instances: resumeInstances(r.order, []) });
+    assert.equal(fs.existsSync(runningRecordPath()), false);
+    assert.equal(fs.existsSync(resumeManifestPath()), false);
+  });
+});
+
+// Invariant: a shutdown prepares nothing and never relaunches; it pauses the
+// recorder, drains, commits, takes networking down, finishes the drain gated, then
+// exits through exitForShutdown with the lock and supervision it was handed.
+test('shutdown', async (t) => {
+  t.beforeEach(() => clearResumeManifest());
+
+  await t.test('no preparation; pause, drain, commit, networking down, finish, exit — never a spawn', async () => {
+    const r = rig({ drift: { reason: 'x' } });
+    const rootLock = { marker: 'lock' };
+    await r.run('shutdown', { instances: resumeInstances(r.order, [{ id: 'a', status: 'turn' }]) }, undefined, { rootLock, supervised: true, deliver: 'auto' });
+    assert.deepEqual(r.order, ['recorder.pause', 'suspendWakes', 'interrupt:a', 'idle:a', 'commit', ...NETWORK_DOWN, 'shutdownForResumeSync', 'exit']);
+    assert.deepEqual(r.chunks.map(([p]) => p), ['drain']);
+    assert.equal(r.exits.length, 1);
+    assert.equal(r.exits[0].rootLock, rootLock);
+    assert.equal(r.exits[0].supervised, true);
+    assert.equal(readResumeManifest().deliver, 'gated', 'a shutdown\'s notices are always gated');
+  });
+
+  await t.test('without instances it commits, takes networking down and exits', async () => {
+    const r = rig();
+    await r.run('shutdown', {});
+    assert.deepEqual(r.order, ['commit', ...NETWORK_DOWN, 'exit']);
   });
 });
 
 test('flags turn steps off', async (t) => {
   await t.test('syncDeps:false never checks or installs dependencies', async () => {
     const r = rig({ drift: { reason: 'x' } });
-    await r.run('plain', { instances: plainInstances(r.order) }, { buildWeb: true, syncDeps: false });
-    assert.deepEqual(r.order, ['stageWeb', 'teardownInstances', 'commit', ...NETWORK_DOWN, 'spawn']);
+    await r.run('restart', {}, { buildWeb: true, syncDeps: false });
+    assert.deepEqual(r.order, ['stageWeb', 'commit', ...NETWORK_DOWN, 'spawn']);
   });
   await t.test('buildWeb:false never stages, with or without drift', async () => {
     const inSync = rig();
-    await inSync.run('plain', { instances: plainInstances(inSync.order) }, { buildWeb: false, syncDeps: true });
-    assert.deepEqual(inSync.order, ['drift', 'teardownInstances', 'commit', ...NETWORK_DOWN, 'spawn']);
+    await inSync.run('restart', {}, { buildWeb: false, syncDeps: true });
+    assert.deepEqual(inSync.order, ['drift', 'commit', ...NETWORK_DOWN, 'spawn']);
     const drifted = rig({ drift: { reason: 'x' } });
-    await drifted.run('plain', { instances: plainInstances(drifted.order) }, { buildWeb: false, syncDeps: true });
-    assert.deepEqual(drifted.order, ['drift', 'teardownInstances', 'installDeps', 'commit', ...NETWORK_DOWN, 'spawn']);
+    await drifted.run('restart', {}, { buildWeb: false, syncDeps: true });
+    assert.deepEqual(drifted.order, ['drift', 'installDeps', 'commit', ...NETWORK_DOWN, 'spawn']);
   });
 });
 
@@ -200,7 +211,7 @@ test('runRestart hands its root lock to spawnAndExit', async () => {
   const rootLock = { marker: 'the lock' };
   let seen;
   await runRestart({
-    mode: 'plain', flags: { buildWeb: false, syncDeps: false },
+    action: 'restart', flags: { buildWeb: false, syncDeps: false },
     prep: { drift: () => null, installDeps: async () => {}, stageWeb: async () => {} },
     ctx: { log: QUIET },
     rootLock,
@@ -314,12 +325,26 @@ for (const [label, extra, want] of [['hands supervised:true on', { supervised: t
   test(`runRestart ${label} to spawnAndExit`, async () => {
     let seen;
     await runRestart({
-      mode: 'plain', flags: { buildWeb: false, syncDeps: false },
+      action: 'restart', flags: { buildWeb: false, syncDeps: false },
       prep: { drift: () => null, installDeps: async () => {}, stageWeb: async () => {} },
       ctx: { log: QUIET },
       spawnAndExit: (opts) => { seen = opts.supervised; },
       ...extra,
     });
     assert.equal(seen, want);
+  });
+}
+
+// Invariant: a shutdown releases the root lock before it exits, with 0 unsupervised
+// and SUPERVISED_SHUTDOWN_EXIT under a supervisor — never the relaunch code.
+for (const [supervised, want] of [[false, 0], [true, SUPERVISED_SHUTDOWN_EXIT]]) {
+  test(`exitAfterShutdown (supervised:${supervised}) releases the lock, then exits ${want}`, async () => {
+    const order = [];
+    await exitAfterShutdown({
+      log: QUIET, supervised,
+      rootLock: { releaseSync() { order.push('release'); } },
+      exit: (code) => order.push(['exit', code]),
+    });
+    assert.deepEqual(order, ['release', ['exit', want]]);
   });
 }

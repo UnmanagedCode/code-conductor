@@ -9,6 +9,7 @@ import http from 'node:http';
 import express from 'express';
 import { buildRoutes } from '../src/routes.ts';
 import { httpError } from '../src/httpError.ts';
+import { readResumeManifest, clearResumeManifest } from '../src/resumeManifest.ts';
 
 async function serve(routeOpts) {
   const app = express();
@@ -100,20 +101,33 @@ test('a second restart while one is in progress is refused 409 MAINTENANCE_IN_PR
   assert.deepEqual(w.spawned, ['spawn'], 'only the first relaunches');
 });
 
-test('the body\'s resume flag picks the drain; its absence the plain teardown', async (t) => {
-  for (const [label, body, want] of [['resume:true', { resume: true }, 'suspendWakes'], ['no flag', {}, 'stopLiveSync']]) {
+// A live session the drain winds down at once, so the manifest has an entry.
+function oneIdleSession(calls) {
+  const inst = {
+    id: 'i1', sessionId: 's1', project: 'p', proc: {}, status: 'idle', conducted: false,
+    backgroundJobs: [], activeAgentTaskCount: 0, on() {}, off() {},
+    summary: () => ({ project: 'p', sessionId: 's1', cwd: '/w', mode: 'default', status: 'idle' }),
+  };
+  return {
+    byId: new Map([['i1', inst]]), conductedSubtreeOf: () => [], isIdleCaller: () => false, liveForSession: () => null,
+    suspendWakes() { calls.push('suspendWakes'); }, resumeWakes() {}, shutdownForResumeSync() { calls.push('shutdownForResumeSync'); },
+  };
+}
+
+// Invariant: every restart drains; only autoContinue:true (self-update) writes an
+// auto-delivered manifest, and any other body writes a gated one.
+test('a restart always drains, and only autoContinue:true delivers automatically', async (t) => {
+  for (const [label, body, want] of [['autoContinue:true', { autoContinue: true }, 'auto'], ['no flag', {}, 'gated'], ['autoContinue:false', { autoContinue: false }, 'gated']]) {
     await t.test(label, async (t) => {
+      clearResumeManifest();
       const calls = [];
-      const instances = {
-        byId: new Map(), conductedSubtreeOf: () => [], isIdleCaller: () => false,
-        suspendWakes() { calls.push('suspendWakes'); }, resumeWakes() {}, shutdownForResumeSync() { calls.push('shutdownForResumeSync'); },
-        stopLiveSync() { calls.push('stopLiveSync'); }, shutdown() {},
-      };
-      const w = wired(inSync(), { instances });
+      const w = wired(inSync(), { instances: oneIdleSession(calls) });
       const s = await serve(w.opts);
       t.after(s.close);
       assert.deepEqual((await lines(await restart(s.base, body))).at(-1), { type: 'result', ok: true });
-      assert.equal(calls[0], want);
+      assert.deepEqual(calls, ['suspendWakes', 'shutdownForResumeSync']);
+      assert.equal(readResumeManifest().deliver, want);
+      clearResumeManifest();
     });
   }
 });
@@ -166,7 +180,7 @@ test('a headless server refuses a restart 409 RESTART_DISABLED_HEADLESS and runs
   const w = wired(prep);
   const s = await serve({ ...w.opts, relaunch: { ...w.opts.relaunch, headless: true } });
   t.after(s.close);
-  for (const body of [{}, { resume: true }]) {
+  for (const body of [{}, { autoContinue: true }]) {
     const res = await restart(s.base, body);
     assert.equal(res.status, 409);
     assert.deepEqual(await res.json(), { error: 'restart is disabled in headless mode', code: 'RESTART_DISABLED_HEADLESS' });

@@ -46,6 +46,11 @@ export interface Platform {
   killProcess(target: number | ChildHandle, signal: KillSignal): void;
   // The group a `group`/`daemon` child leads. Throws if there is none.
   killGroup(pid: number, signal: KillSignal): void;
+  // An opaque token naming WHEN `pid` started, equal across reads for one
+  // process and different for a later process reusing the number; null when
+  // unknown (the process is gone, or the host offers no reader). Compared, never
+  // parsed.
+  processStartTime(pid: number): Promise<string | null>;
   // A `CLAUDE_BIN` / backend launch template → argv.
   splitCommand(line: string): string[];
   // Equality key for two host paths.

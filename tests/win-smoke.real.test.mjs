@@ -367,13 +367,13 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     assert.match(tail, /last-prompt/, `no last-prompt in the jsonl tail:\n${tail}`);
   });
 
-  test('resume restart resurrects the session and pages history', { timeout: 2 * TURN + 60_000 }, async () => {
+  test('an auto-continue restart resurrects the session and pages history', { timeout: 2 * TURN + 60_000 }, async () => {
     assert.ok(state.project, 'needs the create-project step');
     const w = await spawnWorker();
     await wsPrompt(wsUrl, w.id, 'Reply with the single word ready.');
     await reply(w.id, -1, /ready/i, 'ready');
     const oldPid = await healthPid(base);
-    await api(base, 'POST', '/api/admin/restart', { resume: true });
+    await api(base, 'POST', '/api/admin/restart', { autoContinue: true });
     await newServerPid(oldPid);
     const listed = async () => (await api(base, 'GET', '/api/projects/demo/sessions')).body.some(s => s.sessionId === w.sessionId);
     await until(`session ${w.sessionId} listed after the restart`, listed, 30_000);
@@ -383,7 +383,7 @@ d('Windows smoke (real claude, Git for Windows)', () => {
     state.sid = w.sessionId;
   });
 
-  test('plain restart (stop-live) leaves no orphaned shells', { timeout: TURN + 60_000 }, async () => {
+  test('a gated restart leaves no orphaned shells', { timeout: TURN + 60_000 }, async () => {
     assert.ok(state.sid, 'needs the resume-restart step');
     const oldPid = await healthPid(base);
     const snapshot = treeOf(await processTable(), oldPid);

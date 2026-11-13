@@ -257,10 +257,9 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' }).catch(() => {});
 
   // Assert the wait actually saw the exit, as test 1 does. What this and test
-  // 1's matching assertion pin (measured, not assumed): a SYNCHRONOUS HANG in
-  // the pre-exit path — a `while (true) {}` in runTempCleanup is killed by
-  // both, since teardownInstances (src/restart.ts, via runRestart) calls it
-  // unconditionally on every plain restart.
+  // 1's matching assertion pin: a SYNCHRONOUS HANG in the pre-exit path — a
+  // `while (true) {}` in finishDrain is caught by both, since runRestart
+  // (src/restart.ts) calls it on every restart of a server with instances.
   // They do NOT pin `setTimeout(() => process.exit(0), 50)` in src/restart.ts:
   // commenting it out SURVIVES both tests, because after server.close() +
   // wss.close() + the detached spawn the parent's loop drains and it exits 0
@@ -275,8 +274,8 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   // output. Seeing it die to the same mutant as test 1 is expected; that is
   // not grounds to delete it as redundant. (Test 2's genuinely unique coverage
   // is the GRANDCHILD's sweepPendingTempCleanup on boot — the assertions below
-  // this one, not this one: the parent writes pending-temp-cleanup.json and
-  // never reads it, so the planted manifest is invisible to the parent.)
+  // this one, not this one: the parent reads pending-temp-cleanup.json only at
+  // its own boot, so the re-planted manifest is invisible to the parent.)
   const exited = await new Promise((resolve) => {
     if (child.exitCode != null || child.signalCode != null) return resolve('exited');
     child.once('exit', () => resolve('exited'));

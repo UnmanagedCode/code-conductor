@@ -16,6 +16,12 @@ export const RENEW_REQUEST_LEAD: string =
 export const RESTART_NOTICE_TRUNK: string =
   '✅ CodeConductor has restarted successfully. You may resume activity now';
 
+// The shared trunk of both unclean-stop notices (UNCLEAN_RESUME_TEXT and
+// buildWorkersUncleanResumeText): cc stopped without a drain — a crash, a kill
+// or a reboot — and a boot restored the session from the running record.
+export const UNCLEAN_STOP_NOTICE_TRUNK: string =
+  '⚠️ CodeConductor stopped unexpectedly and has started again. You may resume activity now';
+
 // The opening of RESTART_ABORTED_TEXT: a resume restart whose preparation failed
 // after the drain wound turns down, so nothing was restarted.
 export const RESTART_ABORTED_LEAD: string =

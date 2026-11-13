@@ -7,9 +7,13 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import { encodeCwd, orchStoreRoot, localPlace} from '../src/projects.ts';
 import {
   pendingTempCleanupPath,
-  writePendingTempCleanup,
   sweepPendingTempCleanup,
 } from '../src/tempCleanup.ts';
+
+// A pending-temp-cleanup.json in the shape the boot sweep reads.
+async function plantPendingTempCleanup(entries) {
+  await fs.writeFile(pendingTempCleanupPath(), JSON.stringify({ writtenAt: new Date().toISOString(), entries }));
+}
 import { isArchived, isTemp, setSegmentArchived } from '../src/sessionStore.ts';
 import { archivedIds as loadAllArchived } from './sessionFacts.mjs';
 
@@ -252,41 +256,6 @@ test('MCP kill_instance archives temp session', async () => {
   }
 });
 
-test('shutdownTempSync archives temp sessions — .jsonl kept, subagents dir removed', async () => {
-  // REAL OS PROCESS required: shutdownTempSync SIGKILLs live temp subprocesses
-  // via OS process.kill(pid). The in-process launcher has pid=null so that
-  // SIGKILL would be a silent skip — the archival would still run and the
-  // assertions would pass without exercising the kill. Boot a dedicated
-  // realProcess server so the SIGKILL+reap path is genuinely tested.
-  const rp = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
-  try {
-    await api(rp.baseUrl, 'POST', '/api/projects', { name: 'archivesync' });
-
-    const res = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'archivesync', temp: true });
-    const inst = rp.instances.get(res.body.id);
-    await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;   // filenames + the archived/temp segment flags
-    const publicId = inst.sessionId;     // what a listed row and a REST path carry
-
-    const dir = path.join(rp.claudeProjectsRoot, encodeCwd(inst.cwd));
-    await fs.mkdir(dir, { recursive: true });
-    const jsonlFile = path.join(dir, `${sid}.jsonl`);
-    const subagentsDir = path.join(dir, sid);
-    await fs.writeFile(jsonlFile, '{"type":"user","uuid":"u1"}\n');
-    await fs.mkdir(subagentsDir, { recursive: true });
-    await fs.writeFile(path.join(subagentsDir, 'agent.jsonl'), '{}\n');
-
-    rp.instances.shutdownTempSync();
-
-    // .jsonl must survive (we archive, not delete).
-    await fs.access(jsonlFile);
-    // Subagent dir is still cleaned up.
-    await assert.rejects(() => fs.access(subagentsDir), 'subagent dir must be removed');
-  } finally {
-    await rp.close();
-  }
-});
-
 test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
   {
     const cwd = '/tmp/cc-archive-sweep-' + Math.random().toString(36).slice(2);
@@ -300,13 +269,8 @@ test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
     await fs.writeFile(path.join(subagentsDir, 'a.jsonl'), '{}\n');
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    writePendingTempCleanup([{ place: localPlace(cwd), sessionId: sid }]);
+    await plantPendingTempCleanup([{ place: localPlace(cwd), sessionId: sid }]);
     const manifest = pendingTempCleanupPath();
-    await fs.access(manifest);
-    // Atomic write: valid JSON, and no orphan tmp file left in the store dir.
-    JSON.parse(await fs.readFile(manifest, 'utf8'));
-    const residue = (await fs.readdir(orchStoreRoot())).filter(n => n.startsWith(path.basename(manifest) + '.tmp-'));
-    assert.equal(residue.length, 0, 'no orphan .tmp- manifest file after atomic write');
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
@@ -329,7 +293,7 @@ test('sweepPendingTempCleanup archives a PLACELESS entry but leaves its subagent
     await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
     await fs.writeFile(path.join(dir, sid, 'a.jsonl'), '{}\n');
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    writePendingTempCleanup([{ place: null, sessionId: sid }]);
+    await plantPendingTempCleanup([{ place: null, sessionId: sid }]);
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);

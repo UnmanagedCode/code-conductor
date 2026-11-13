@@ -1,30 +1,18 @@
-// Boot-time fallback for temp-session cleanup.
+// The boot sweep of `<orchStoreRoot>/pending-temp-cleanup.json`: a list of temp
+// sessions to archive (jsonl kept, subagents dir deleted, segment retired), then
+// the file is unlinked. Idempotent and crash-safe. cc itself writes no such
+// file; a build whose restart archives temps writes one on its restart, and
+// this sweep consumes it on the boot that follows.
 //
-// `shutdownTempSync()` in src/instances.ts synchronously archives every live
-// temp session (jsonl kept, subagents dir deleted) on the restart path. But
-// the claude CLI forks subagent processes (for Task tool calls) that aren't
-// tracked by the orchestrator and aren't killed alongside the parent — those
-// orphans can keep writing to `<sid>/<subagent-sid>.jsonl` after our parent
-// process has already exited, undoing the in-process cleanup.
-//
-// To cover that, `runTempCleanup` (src/restart.ts) writes a manifest to
-// `<orchStoreRoot>/pending-temp-cleanup.json` listing every temp session
-// that needs cleanup. On boot, `sweepPendingTempCleanup` reads the manifest,
-// archives each entry (jsonl kept, subagents dir deleted), then unlinks the
-// manifest. Idempotent and crash-safe.
-//
-// Entries may omit `place` — crash-orphaned temps (a temp segment in the
-// session store with no live instance when the restart ran) have no placement
-// on record, and migration 0036 clears the placement of any entry written
-// before the manifest carried one. Those entries skip the dir cleanup and only
-// get the segment retirement (a backup for the fire-and-forget write
-// runTempCleanup already attempted in src/restart.ts).
+// Entries may omit `place` — migration 0036 clears the placement of any entry
+// written before the file carried one. Those entries skip the dir cleanup and
+// only get the segment retirement.
 //
 // THE PLACEMENT, NOT A BARE CWD: `subAgentDirPath` needs the machine coordinate
 // as well, because `/root/app3` names a different directory on each remote.
 
 import path from 'node:path';
-import { writeFileSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs';
+import { readFileSync, rmSync, existsSync } from 'node:fs';
 import { orchStoreRoot, subAgentDirPath, type TranscriptPlacement } from './projects.ts';
 import { retireSegments } from './sessionLineage.ts';
 
@@ -42,23 +30,6 @@ interface PendingTempCleanupEntry {
 interface ManifestLogger {
   log?: (...args: unknown[]) => void;
   warn?: (...args: unknown[]) => void;
-}
-
-// Synchronously write the manifest. Must be sync — the restart path calls
-// this immediately before `process.exit(0)`. Sweeping always archives: keeps
-// the .jsonl, marks the session archived.
-export function writePendingTempCleanup(entries: PendingTempCleanupEntry[]): void {
-  if (!Array.isArray(entries) || entries.length === 0) return;
-  const file = pendingTempCleanupPath();
-  const payload = {
-    writtenAt: new Date().toISOString(),
-    entries: entries.map(({ place, sessionId }) => ({ place, sessionId })),
-  };
-  // Atomic tmp-write + rename so an OOM/crash mid-write can't leave a torn
-  // manifest (writeFileSync truncates in place). Sync — see header.
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(payload));
-  renameSync(tmp, file);
 }
 
 export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogger } = {}): { swept: number } {
@@ -89,10 +60,8 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
   for (const { place, sessionId } of entries) {
     if (!sessionId) continue;
     // Always archive — never delete the .jsonl. Only the ephemeral subagent
-    // dir is cleaned up, so a temp session that exited during a restart is
-    // recoverable from Settings → Archived. place-less entries (crash-orphaned
-    // temps with no known placement, and every entry migration 0036 cleared)
-    // have no dir to locate — bookkeeping only.
+    // dir is cleaned up, so the session is recoverable from Settings → Archived.
+    // place-less entries have no dir to locate — bookkeeping only.
     if (place) {
       try { rmSync(subAgentDirPath(place, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
     }

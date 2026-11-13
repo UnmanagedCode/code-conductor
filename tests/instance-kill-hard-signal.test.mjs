@@ -168,7 +168,9 @@ function fakeLive({ ignoresEof, temp = false, pid }) {
   };
 }
 
-test('stopLiveSync and shutdownForResumeSync tree-kill survivors; posix stopLiveSync is a no-op', () => {
+// Invariant: where SIGTERM is not soft, the drain's sync stop ends every live
+// CLI's stdin and tree-kills each one still alive at its deadline.
+test('shutdownForResumeSync EOFs every live instance and tree-kills survivors where SIGTERM is not soft', () => {
   const kills = [];
   const mgr = new InstanceManager({ platform: { ...posixPlatform, softSigterm: false, killProcess: (t, s) => kills.push([t, s]) } });
   mgr._usageMonitor.stop();
@@ -179,26 +181,8 @@ test('stopLiveSync and shutdownForResumeSync tree-kill survivors; posix stopLive
   let now = 1_000_000;
   const realNow = Date.now;
   Date.now = () => (now += 1000);
-  try { mgr.stopLiveSync(); } finally { Date.now = realNow; }
-  assert.deepEqual(stuck.log, ['interrupt', 'eof'], 'a busy turn is interrupted before EOF');
-  assert.deepEqual(temp.log, [], 'temps are shutdownTempSync\'s');
-  assert.deepEqual(kills, [[process.pid, 'SIGKILL']]);
-
-  kills.length = 0;
-  Date.now = () => (now += 1000);
   try { mgr.shutdownForResumeSync(); } finally { Date.now = realNow; }
+  assert.deepEqual(stuck.log, ['eof']);
+  assert.deepEqual(temp.log, ['eof']);
   assert.equal(kills.length, 2, 'every instance still alive at the deadline is killed');
-
-  const posixMgr = new InstanceManager({ platform: posixPlatform });
-  const s2 = fakeLive({ pid: process.pid });
-  posixMgr.byId.set('a', s2);
-  posixMgr.stopLiveSync();
-  assert.deepEqual(s2.log, []);
-});
-
-test('stopLiveSync interrupts a busy turn before EOF', async () => {
-  await busyInstance();
-  ctx.instances.stopLiveSync(); // the in-process pid is null, so the wait returns at once
-  await waitFor(async () => interrupts(await stdinLines()).length === 1);
-  assert.equal(interrupts(await stdinLines()).length, 1);
 });

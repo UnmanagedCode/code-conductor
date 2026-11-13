@@ -165,6 +165,11 @@ export interface InstanceLike {
   readonly transcriptPlace: TranscriptPlacement;
   readonly _userEchoCount: number;
   readonly proc: unknown;
+  // The pid of the CLI process the launcher spawned (sudo's under the FUSE
+  // wrap), or null where there is none (an in-process test launcher).
+  readonly pid?: number | null;
+  // The FUSE-union session of a worker on a non-local project; null otherwise.
+  readonly _fuse?: unknown;
   // Overage auto-resume state — mutated by OverageResumeController (and the
   // status handler in instances.ts), so these are deliberately non-readonly.
   autoResumeAt: number | null;
@@ -439,7 +444,8 @@ export interface InstanceManagerLike {
   on(event: 'turn_ended', cb: (arg: TurnEnded) => void): void;
   on(event: 'enforcement_changed', cb: (arg: EnforcementChanged) => void): void;
   off(event: 'status', cb: (summary: InstanceSummary) => void): void;
-  off(event: 'subscription_changed', cb: () => void): void;
+  off(event: 'list_changed' | 'subscription_changed', cb: () => void): void;
+  off(event: 'turn_started', cb: (arg: TurnStarted) => void): void;
   // Resume-restart surface (src/resumeRestart.ts).
   conductedSubtreeOf(rootId: string): SubtreeRow[];
   isIdleCaller(instanceId: string): boolean;
@@ -492,10 +498,4 @@ export interface InstanceManagerLike {
   syncOveragePolicy(): void;
   syncIdleRenewNudge(): void;
   forceUsageTick(): Promise<unknown>;
-  // Restart surface (src/restart.ts / resumeRestart.ts) — the restart route
-  // passes the manager to runRestart, whose plain path reads the
-  // RestartManagerLike subset.
-  shutdownTempSync(): void;
-  tempCleanupSnapshot(): Array<{ place: TranscriptPlacement; sessionId: string }>;
-  shutdown(): Promise<unknown>;
 }

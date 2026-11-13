@@ -262,6 +262,42 @@ test('sessions named by the resume manifest are kept, and the manifest is left f
   await t.test('the manifest is untouched', async () => assert.equal(await fs.readFile(f.manifest, 'utf8'), manifest));
 });
 
+test('sessions named by the running record and by pending resume notices are kept, and both files are left as they were', async (t) => {
+  // Invariant: a session an unclean-stop restore will spawn (a running-record entry or its workers[]) or that a
+  // pending notice will reach (its sessionId or workers) is never removed, and the pass consumes neither file.
+  const f = await fresh();
+  const [p1, p2, p3, p4, p5] = [uuid(91), uuid(92), uuid(93), uuid(94), uuid(95)];
+  await writeStore(f, {
+    ...(await liveCompanion()),
+    '11111111': { current: p1, segments: [seg(p1)] },
+    '22222222': { current: p2, segments: [seg(p2)] },
+    '33333333': { current: p3, segments: [seg(p3)] },
+    '44444444': { current: p4, segments: [seg(p4)] },
+    '55555555': { current: p5, segments: [seg(p5)] },
+  });
+  const record = JSON.stringify({
+    writtenAt: OLD,
+    instances: [{ sessionId: '11111111', group: 'conductor', workers: [{ project: 'p', sessionId: '22222222', worktreeName: null }] }],
+    clis: [],
+  });
+  const notices = JSON.stringify({ notices: [{ sessionId: '33333333', kind: 'unclean', text: 't', workers: [p4], at: OLD }] });
+  const recordFile = path.join(f.store, 'running-sessions.json');
+  const noticesFile = path.join(f.store, 'pending-continue.json');
+  await fs.writeFile(recordFile, record);
+  await fs.writeFile(noticesFile, notices);
+  const r = await run(captureLog());
+  const after = await readSessions(f);
+  await t.test('a running-record entry', () => assert.ok(after['11111111']));
+  await t.test('a running-record entry\'s worker', () => assert.ok(after['22222222']));
+  await t.test('a pending notice\'s session', () => assert.ok(after['33333333']));
+  await t.test('a pending notice\'s worker, by segment id', () => assert.ok(after['44444444']));
+  await t.test('an unnamed record in the same run is removed', () => assert.deepEqual(r.removed, ['55555555']));
+  await t.test('both files are untouched', async () => {
+    assert.equal(await fs.readFile(recordFile, 'utf8'), record);
+    assert.equal(await fs.readFile(noticesFile, 'utf8'), notices);
+  });
+});
+
 test('a record whose newest segment is within the grace window is kept', async (t) => {
   // Invariant: removal needs the NEWEST segment's `at` to be at least CLEANUP_GRACE_MS old; an unparseable `at` is old.
   const T = Date.parse('2026-05-01T00:00:00.000Z');

@@ -7,8 +7,10 @@
 // pre-image to `<store>/sessions.json.startup.bak`, overwritten every boot.
 //
 // Keeps a record whenever it cannot be sure:
-//   - named by the resume manifest (an entry's sessionId or a conductor's
-//     workers[]), by public id or by any segment id — restore spawns it next;
+//   - named by the resume manifest or the running record (an entry's sessionId
+//     or a conductor's workers[]), or by a pending resume notice (its sessionId
+//     or workers[]), by public id or by any segment id — restore spawns it next,
+//     or Continue sends to it;
 //   - any segment id failing isSessionId (no filename it could be checked as);
 //   - its newest segment is younger than CLEANUP_GRACE_MS — mintPublicId writes
 //     the record before the CLI writes its jsonl, and during a hot restart the
@@ -23,7 +25,8 @@
 // event log) hold history where a dead id is inert, as after the explicit
 // session delete.
 
-import { readResumeManifest } from './resumeManifest.ts';
+import { readResumeManifest, readRunningRecord } from './resumeManifest.ts';
+import { readPendingNotices } from './pendingContinue.ts';
 import { transcriptIdsOnDisk } from './projects.ts';
 import { removeSessionRecords, sessionsFile, errMsg, type SessionsDoc } from './sessionStore.ts';
 import { isSessionId } from './identifiers.ts';
@@ -39,18 +42,25 @@ export function startupSnapshotFile(): string {
   return sessionsFile() + '.startup.bak';
 }
 
-// Every id the resume manifest will hand to restore: entry sessionIds plus each
-// conductor entry's workers[].sessionId. Read only — restore owns the unlink.
+// Every id a restore or a Continue will reach: the manifest's and the running
+// record's entry sessionIds plus each entry's workers[].sessionId, and every
+// pending notice's sessionId and workers. Read only — restore and Continue own
+// the unlinks.
 function protectedIds(log: CleanupLog): Set<string> {
   const ids = new Set<string>();
   const add = (v: unknown) => { if (typeof v === 'string' && v) ids.add(v); };
-  for (const entry of readResumeManifest({ log }).instances) {
+  const entries = [...readResumeManifest({ log }).instances, ...(readRunningRecord({ log })?.instances ?? [])];
+  for (const entry of entries) {
     if (typeof entry !== 'object' || entry === null) continue;
     const e = entry as { sessionId?: unknown; workers?: unknown };
     add(e.sessionId);
     if (Array.isArray(e.workers)) {
       for (const w of e.workers) if (typeof w === 'object' && w !== null) add((w as { sessionId?: unknown }).sessionId);
     }
+  }
+  for (const n of readPendingNotices({ log })) {
+    add(n.sessionId);
+    for (const w of n.workers) add(w);
   }
   return ids;
 }
