@@ -233,7 +233,9 @@ test('I8 CONDUCTOR_URL is absent (an outer value deleted) when the manager has n
   await bootWith(SCENARIO, async (ctx) => {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
     ctx.instances.serverPort = null;
+    assert.equal(ctx.instances.conductorUrl(), null);
     const inst = await spawnIdle(ctx, { project: 'p' });
+    // Double-guarded: cliEnvBase's STRIPPED also removes the planted outer value.
     assert.equal('CONDUCTOR_URL' in inst._spawnEnv, false);
     assert.equal(inst._spawnEnv.CC_SESSION_ID, inst.sessionId);
   });

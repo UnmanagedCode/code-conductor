@@ -147,7 +147,7 @@ content-type: application/json
 
 - A live session answers `{sessionId, live: {project, cwd, worktree, playbook, stage, conducted, parentSessionId, rootSessionId, …}}`, the `describe_session` live arm in `src/mcp/outputSchemas.ts`. `worktree` is `{worktreeName, branch, baseBranch, baseSha, …}`, or `null` on the main checkout.
 - A dead session answers the `retired` arm (`project`, `worktree` and `path` at the top level).
-- **Call anonymously, not as `/mcp/$CC_SESSION_ID/…`.** `describe_session` declares `sessionId`, so a *conductor* caller is governed: every call would pass through the playbook gate and append a `call` row to the event log. The anonymous alias is read-only, ungoverned and unattributed.
+- **Call anonymously, not as `/mcp/$CC_SESSION_ID/…`.** `describe_session` declares `sessionId`, so a *conductor* caller is governed: every call would pass through the playbook gate and append a `call` row to the event log. An anonymous call is ungoverned and unattributed, and `describe_session` itself only reads.
 - `project` and `worktree` are fixed for a session's life, so cache them by `CC_SESSION_ID`. `stage` moves with the playbook: re-read it when it matters. `playbook_state` takes the same `sessionId` for the full run picture.
 
 ## JSON-format ceilings

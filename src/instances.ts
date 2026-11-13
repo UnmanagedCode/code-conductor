@@ -2825,9 +2825,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.sessionId) spawnEnv.CC_SESSION_ID = this.sessionId; else delete spawnEnv.CC_SESSION_ID;
     spawnEnv.CC_SESSION_KIND = sessionKindOf(this);
     if (this.conductorUrl) spawnEnv.CONDUCTOR_URL = this.conductorUrl; else delete spawnEnv.CONDUCTOR_URL;
-    // No session gets a ready-made MCP endpoint: it chains cc calls through
-    // `run_code` (docs/code-mode.md). CONDUCTOR_MCP_URL names a plugin backend's
-    // server, so an outer cc's value is deleted and never leaks into a session.
+    // No session gets CONDUCTOR_MCP_URL: its own MCP endpoint comes through
+    // --mcp-config, and a worker chains cc calls through `run_code`
+    // (docs/code-mode.md). The variable names a plugin backend's server, so an
+    // outer cc's value is deleted and never leaks into a session.
     delete spawnEnv.CONDUCTOR_MCP_URL;
     // Settings → Models → Task tools. The CLI offers TaskCreate/Get/List/Update
     // only on its own model allowlist (Claude ≤4.x) unless this is truthy; the env

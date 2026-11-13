@@ -1056,7 +1056,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
   test('no name the plan owns reaches the worker file, however stale the inherited value', () => {
     const junk = Object.fromEntries(PLAN_KEYS.map(k => [k, `/stale/${k}`]));
     const w = wrapLaunch(
-      { command: 'claude', args: [], cwd: '/x', env: { ...junk, HOME: '/home/wk', PATH: '/opt/bin', CC_SESSION_ID: 'abcd1234', CC_SESSION_KIND: 'worker' } },
+      { command: 'claude', args: [], cwd: '/x', env: { ...junk, HOME: '/home/wk', PATH: '/opt/bin', CC_SESSION_ID: 'abcd1234', CC_SESSION_KIND: 'worker', CONDUCTOR_URL: 'http://127.0.0.1:8787' } },
       { plan, unionBinary: '/store/bin/union-abc', ccBootId: 'boot-9', spawnedAt: 5 },
     );
     const workerText = fileText(w, plan.workerEnvPath);
@@ -1064,6 +1064,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     // plan name, so it reaches the worker's hooks and MCP servers unchanged.
     assert.match(workerText, /^export CC_SESSION_ID='abcd1234'$/m);
     assert.match(workerText, /^export CC_SESSION_KIND='worker'$/m);
+    assert.match(workerText, /^export CONDUCTOR_URL='http:\/\/127\.0\.0\.1:8787'$/m);
     for (const k of PLAN_KEYS) {
       assert.equal(has(workerText, k), false,
         `${k} rode into the worker env file, which bootstrap.sh sources AFTER the plan file, so it `
