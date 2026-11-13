@@ -28,6 +28,7 @@ import {
 } from '../src/resumeRestart.ts';
 import { RESTART_NOTICE_TRUNK, UNCLEAN_STOP_NOTICE_TRUNK } from '../shared/injectedTurns.ts';
 import { createRunningRecorder } from '../src/runningRecord.ts';
+import { hostPlatform } from '../src/platform/index.ts';
 import { createPendingContinue, pendingContinuePath } from '../src/pendingContinue.ts';
 import { startResumeLifecycle } from '../src/resumeBoot.ts';
 
@@ -54,7 +55,7 @@ afterEach(async () => {
 
 // One boot's lifecycle with a fresh recorder and pending store.
 function boot({ pending = createPendingContinue({ log: QUIET }) } = {}) {
-  const recorder = createRunningRecorder({ instances, log: QUIET, debounceMs: 20 });
+  const recorder = createRunningRecorder({ instances, platform: hostPlatform, log: QUIET, debounceMs: 20 });
   const l = startResumeLifecycle({ instances, recorder, pending, log: QUIET, staggerMs: 0 });
   lifecycles.push(l);
   return { ...l, pending };

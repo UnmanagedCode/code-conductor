@@ -19,7 +19,7 @@
 // running — only after its start time (Platform.processStartTime) proves the
 // pid still names the same process.
 
-import { hostPlatform, type Platform } from './platform/index.ts';
+import type { Platform } from './platform/index.ts';
 import { pidIsAlive } from './systems/fuse/driver.ts';
 import { captureResumeFacts, buildResumeEntries } from './resumeRestart.ts';
 import { readRunningRecord, writeRunningRecord, type RunningCli } from './resumeManifest.ts';
@@ -62,9 +62,9 @@ export function cliRows(
 }
 
 export function createRunningRecorder({
-  instances, platform = hostPlatform, log = console, debounceMs = RUNNING_RECORD_DEBOUNCE_MS, write = writeRunningRecord,
+  instances, platform, log = console, debounceMs = RUNNING_RECORD_DEBOUNCE_MS, write = writeRunningRecord,
 }: {
-  instances: InstanceManagerLike; platform?: Platform; log?: Log; debounceMs?: number;
+  instances: InstanceManagerLike; platform: Platform; log?: Log; debounceMs?: number;
   // The file write; a test counts calls through it.
   write?: typeof writeRunningRecord;
 }): RunningRecorder {
@@ -164,8 +164,8 @@ const isEsrch = (e: unknown): boolean => (e as NodeJS.ErrnoException)?.code === 
  * SIGKILL for any survivor whose start time still matches. Never throws.
  */
 export async function reapOrphanedClis({
-  platform = hostPlatform, log = console, termGraceMs = ORPHAN_CLI_TERM_GRACE_MS,
-}: { platform?: Platform; log?: Log; termGraceMs?: number } = {}): Promise<ReapResult> {
+  platform, log = console, termGraceMs = ORPHAN_CLI_TERM_GRACE_MS,
+}: { platform: Platform; log?: Log; termGraceMs?: number }): Promise<ReapResult> {
   const result: ReapResult = { terminated: [], unverifiable: [], reused: [] };
   const record = readRunningRecord({ log });
   if (!record) return result;

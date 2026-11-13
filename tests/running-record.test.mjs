@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, waitFor, freshProjectsRoot, rmrf, api } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
 import { createRunningRecorder, cliRows } from '../src/runningRecord.ts';
+import { hostPlatform } from '../src/platform/index.ts';
 import { captureResumeFacts, buildResumeEntries, finishDrain } from '../src/resumeRestart.ts';
 import { readRunningRecord, readResumeManifest, runningRecordPath, clearResumeManifest, writeRunningRecord } from '../src/resumeManifest.ts';
 
@@ -53,7 +54,7 @@ test('the record holds the manifest\'s facts for the same live state', async () 
   const idle = await createWithScenario(BASIC, { project: 'rec', temp: true });
   void busy.prompt('stay busy');
   await waitFor(() => busy.status === 'turn');
-  const recorder = createRunningRecorder({ instances, log: QUIET, debounceMs: 10 });
+  const recorder = createRunningRecorder({ instances, platform: hostPlatform, log: QUIET, debounceMs: 10 });
   recorder.start();
   try {
     const want = roundTrip(buildResumeEntries(instances, captureResumeFacts(instances)));
@@ -104,7 +105,7 @@ test('debounced, change-only, pausable, atomic writes', async () => {
   const mgr = fakeManager();
   const writes = [];
   const write = (payload) => { writes.push(payload.instances.map((e) => e.sessionId)); writeRunningRecord(payload); };
-  const recorder = createRunningRecorder({ instances: mgr, log: QUIET, debounceMs: 30, write });
+  const recorder = createRunningRecorder({ instances: mgr, platform: hostPlatform, log: QUIET, debounceMs: 30, write });
   recorder.start();
   assert.deepEqual(writes, [[]], 'start writes at once, an empty live set included');
   assert.deepEqual(readRunningRecord({ log: QUIET }), { instances: [], clis: [] });
