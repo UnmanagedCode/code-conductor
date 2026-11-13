@@ -16,7 +16,7 @@ const LONG_TITLE = 'WWWWWWW '.repeat(25).trim();
 async function seed(cc: Cc, name: string, title: string) {
   const project = `${name}-${test.info().project.name}`;
   await createProject(cc, project);
-  const { id, sessionId } = await spawnSession(cc, project, { worktree: true, temp: false });
+  const { id, sessionId } = await spawnSession(cc, project, { worktree: true, persistent: true });
   await expect.poll(async () => {
     const row = ((await api(cc, 'GET', '/api/instances')).body as { id: string; status: string; sessionId: string | null }[]).find((r) => r.id === id);
     return row?.status === 'idle' && !!row.sessionId;
@@ -139,7 +139,7 @@ test('the subline\'s project and worktree names, and the model badge on desktop,
   expect(listed).toHaveLength(1);
   const worktreeName = listed[0].worktreeName;
   expect(worktreeName.length, 'the slugged worktree name is long').toBeGreaterThan(30);
-  const { id, sessionId } = await spawnSession(cc, project, { worktree: worktreeName, model, temp: false });
+  const { id, sessionId } = await spawnSession(cc, project, { worktree: worktreeName, model, persistent: true });
   let row: { status: string; model: string | null; worktree: { worktreeName: string } | null } | undefined;
   await expect.poll(async () => {
     row = ((await api(cc, 'GET', '/api/instances')).body as ({ id: string } & NonNullable<typeof row>)[]).find((r) => r.id === id);
@@ -266,7 +266,7 @@ test("a conducted worker's owner chip fits line 2: the header keeps its height, 
   const project = `hdr-own-${test.info().project.name}`;
   await createProject(cc, project);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const conductor = await spawnConductor(cc, true);
+  const conductor = await spawnConductor(cc, false);
   const title = (await api(cc, 'PUT', `/api/sessions/${conductor.sessionId}/title`, { title: LONG_TITLE })).body.title as string;
   const created = await mcpCall(cc, 'create_worktree', { project, name: 'wwww-'.repeat(40) });
   expect(created.isError, JSON.stringify(created.content)).toBeFalsy();

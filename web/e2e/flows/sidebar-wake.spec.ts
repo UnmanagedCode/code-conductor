@@ -30,7 +30,7 @@ test("a session's dot lights while its worker is mid-turn, stays lit across a he
   await createProject(cc, P);
   // The caller is a `.conduct` conductor: only it is offered spawn_instance.
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const caller = await spawnConductor(cc, true);
+  const caller = await spawnConductor(cc, false);
   // Spawned THROUGH the caller, so the worker's wakes go to it.
   const r = await mcpCall(cc, 'spawn_instance', { project: P, mode: 'bypassPermissions', ...liveModel(cc) }, caller.sessionId);
   if (r.isError) throw new Error(`spawn_instance refused: ${r.content?.[0]?.text}`);

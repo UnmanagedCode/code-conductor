@@ -225,7 +225,7 @@ test('a mid-turn answer replayed from disk past an interleaved wake stub locks t
   // Invariant: the server's disk replay strips the mid-turn note, stamps the answer past an interleaved wake stub, and the card renders locked on the answered option.
   const project = uniq('qa-replay');
   await createProject(cc, project);
-  expect((await api(cc, 'POST', '/api/instances', { project, mode: 'bypassPermissions', temp: false })).status).toBeLessThan(300);
+  expect((await api(cc, 'POST', '/api/instances', { project, mode: 'bypassPermissions', persistent: true })).status).toBeLessThan(300);
   const inst = await instanceIn(cc, project);
   const Q = [{ question: 'Pick a QA replay fruit', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple' }, { label: 'Banana' }] }];
   const user = (content: unknown) => ({ type: 'user', message: { role: 'user', content } });

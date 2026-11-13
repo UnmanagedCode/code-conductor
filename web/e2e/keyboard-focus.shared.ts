@@ -17,8 +17,8 @@ const KEYS: Key[] = ['Enter', ' '];
 const keyName = (k: Key) => (k === ' ' ? 'Space' : k);
 const hash = (page: Page) => page.evaluate(() => location.hash);
 
-async function idleSession(cc: Cc, project: string, temp: boolean) {
-  const { id } = await spawnSession(cc, project, { temp });
+async function idleSession(cc: Cc, project: string, persistent: boolean) {
+  const { id } = await spawnSession(cc, project, { persistent });
   return idleInst(cc, (i) => i.id === id, `session ${id} idle`);
 }
 
@@ -53,11 +53,11 @@ export async function rowKeysFlow({ page, cc }: Ctx): Promise<void> {
   test.setTimeout(180_000);
   const P = label('rows');
   await createProject(cc, P);
-  const temp = await idleSession(cc, P, true);
-  const stops = [await idleSession(cc, P, false), await idleSession(cc, P, false)];
+  const normal = await idleSession(cc, P, false);
+  const stops = [await idleSession(cc, P, true), await idleSession(cc, P, true)];
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const conductor = await spawnConductor(cc, true);
-  const inactive = await spawnConductor(cc, false);
+  const conductor = await spawnConductor(cc, false);
+  const inactive = await spawnConductor(cc, true);
   await seedTranscript(cc, inactive.id, label('inactive'));
   await expect.poll(async () => ((await api<{ sessionId: string }[]>(cc, 'GET', '/api/projects/.conduct/sessions')).body).some((r) => r.sessionId === inactive.sessionId),
     { message: 'fixture: the inactive conductor is listed on disk' }).toBe(true);
@@ -67,20 +67,20 @@ export async function rowKeysFlow({ page, cc }: Ctx): Promise<void> {
   await next.open(page);
   const sb = nextSidebar(page);
 
-  await test.step('Projects lens: ↑ and × on a live temp row confirm, Stop on a live row stops it, and none opens its session', async () => {
-    const row = await next.sessionRow(page, P, temp.sessionId);
-    await expect.poll(async () => next.sessionRowLive(row), { message: 'fixture: the temp row is live' }).toBe(true);
+  await test.step('Projects lens: ↑ and × on a live normal row confirm, Stop on a live row stops it, and none opens its session', async () => {
+    const row = await next.sessionRow(page, P, normal.sessionId);
+    await expect.poll(async () => next.sessionRowLive(row), { message: 'fixture: the normal row is live' }).toBe(true);
     for (const key of KEYS) {
       const what = `${keyName(key)} on Make persistent`;
       await press(page, row.getByRole('button', { name: 'Make persistent' }), key);
       await confirmShown(page, /^Keep this session in /, what);
-      await notOpened(page, row, temp.sessionId, what);
+      await notOpened(page, row, normal.sessionId, what);
     }
     for (const key of KEYS) {
       const what = `${keyName(key)} on Archive`;
       await press(page, row.getByRole('button', { name: 'Archive session (keeps history)' }), key);
       await confirmShown(page, /^Archive session /, what);
-      await notOpened(page, row, temp.sessionId, what);
+      await notOpened(page, row, normal.sessionId, what);
     }
     for (const [i, key] of KEYS.entries()) {
       const s = stops[i];
@@ -123,14 +123,14 @@ export async function rowKeysFlow({ page, cc }: Ctx): Promise<void> {
     await expect(sb.locator('[data-conductor]').first()).toBeVisible();
     await expect(sb.locator('button button, [role="button"] button, button [role="button"], [role="button"] [role="button"]')).toHaveCount(0);
     await next.lens(page, 'projects');
-    await expect(sb.locator(`[data-session-row="${temp.sessionId}"]`)).toBeVisible();
+    await expect(sb.locator(`[data-session-row="${normal.sessionId}"]`)).toBeVisible();
     await expect(sb.locator('button button, [role="button"] button, button [role="button"], [role="button"] [role="button"]')).toHaveCount(0);
   });
 
   await test.step("Enter on a session row's own button opens it, and Space on a conductor row's", async () => {
-    const row = await next.sessionRow(page, P, temp.sessionId);
+    const row = await next.sessionRow(page, P, normal.sessionId);
     await press(page, row.locator('[data-row-open]'), 'Enter');
-    await expect.poll(() => hash(page), { message: 'Enter on the row opens the session' }).toContain(temp.sessionId);
+    await expect.poll(() => hash(page), { message: 'Enter on the row opens the session' }).toContain(normal.sessionId);
     const crow = await next.conductorRow(page, conductor.sessionId);
     await press(page, crow.locator('[data-row-open]'), ' ');
     await expect.poll(() => hash(page), { message: 'Space on the conductor row opens it' }).toContain(conductor.sessionId);
@@ -196,7 +196,7 @@ export const sessionDialogsFlow = (act: Act, slug = 'dialogs') => async ({ page,
   test.setTimeout(120_000);
   const P = label(slug);
   await createProject(cc, P);
-  const s = await idleSession(cc, P, false);
+  const s = await idleSession(cc, P, true);
   await seedTranscript(cc, s.id, label(slug));
   await next.open(page);
   const row = await next.sessionRow(page, P, s.sessionId);
@@ -316,12 +316,12 @@ export async function settled(page: Page) {
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50))));
 }
 
-/** A project with a live temp session, and `row`'s dialog opened in it by `act` (see `opens`). */
+/** A project with a live normal session, and `row`'s dialog opened in it by `act` (see `opens`). */
 export async function openedBy(page: Page, cc: Cc, row: (typeof RETURNS)[number], act: Act, slug: string): Promise<Opened> {
   const project = label(`${slug}-${row.name.replace(/\W+/g, '-').toLowerCase()}`);
   await createProject(cc, project);
-  // A live temp session: the row confirm's Archive, Rename's session, and the Restart dialog (asked only with live sessions).
-  const session = await idleSession(cc, project, true);
+  // A live normal session: the row confirm's Archive, Rename's session, and the Restart dialog (asked only with live sessions).
+  const session = await idleSession(cc, project, false);
   await next.open(page);
   await expect.poll(async () => next.sessionRowLive(await next.sessionRow(page, project, session.sessionId))).toBe(true);
   if (drawerViewport(page)) {

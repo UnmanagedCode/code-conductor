@@ -760,7 +760,7 @@ export async function phoneFlow({ page, cc }: Args): Promise<void> {
 export async function toastClearsToggleFlow({ page, cc }: Args): Promise<void> {
   // Invariant (F1): a toast sits below the column's strip, so Collapse at its end stays hit-testable, and keeps TOAST_EDGE_GAP from the window's edge.
   desktopOnly();
-  const { id, sessionId } = await spawnSession(cc, label('toast'), { worktree: true, temp: false });
+  const { id, sessionId } = await spawnSession(cc, label('toast'), { worktree: true, persistent: true });
   await expect.poll(async () => {
     const row = ((await api(cc, 'GET', '/api/instances')).body as { id: string; status: string; sessionId: string | null }[]).find((r) => r.id === id);
     return row?.status === 'idle' && !!row.sessionId;

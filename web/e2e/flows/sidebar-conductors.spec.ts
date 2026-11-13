@@ -8,7 +8,7 @@ test.use({ ccOptions: { server: 'sidebar-conductors' } });
 const desktop = () => test.info().project.name === 'desktop';
 
 /**
- * Two live conductors — A temp and titled, B persistent and untitled — with A
+ * Two live conductors — A normal and titled, B persistent and untitled — with A
  * holding a live worker in P and a killed one in Q, so A shows a live chip P
  * and an idle chip Q. Seeded before `ui.open`, so the first sidebar fetch
  * already carries the spawn history the chips read.
@@ -19,10 +19,10 @@ async function seedPair(cc: Cc, uniq: (s: string) => string) {
   await createProject(cc, P);
   await createProject(cc, Q);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const a = await spawnConductor(cc, true);
+  const a = await spawnConductor(cc, false);
   const aLabel = uniq('Alpha');
   await api(cc, 'PUT', `/api/sessions/${a.sessionId}/title`, { title: aLabel });
-  const b = await spawnConductor(cc, false);
+  const b = await spawnConductor(cc, true);
   await spawnWorker(cc, a.sessionId, { project: P });
   const aq = await spawnWorker(cc, a.sessionId, { project: Q });
   await api(cc, 'DELETE', `/api/instances/${aq.id}`);
@@ -87,14 +87,14 @@ test("a conductor row's × shows on hover, and each row label stays readable and
   await createProject(cc, P);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
   const long = ' — a label long enough to overflow the sidebar row and truncate'.repeat(2);
-  const a = await spawnConductor(cc, true);
+  const a = await spawnConductor(cc, false);
   await api(cc, 'PUT', `/api/sessions/${a.sessionId}/title`, { title: uniq('Alpha') + long });
   const aw = await spawnWorker(cc, a.sessionId, { project: P });
-  const handRes = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', temp: true, ...liveModel(cc) });
+  const handRes = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', ...liveModel(cc) });
   expect(handRes.status, `POST /api/instances (hand): ${JSON.stringify(handRes.body)}`).toBeLessThan(300);
   const hand = await idleInst(cc, (i) => i.id === handRes.body.id, 'hand-spawned session idle');
   await api(cc, 'PUT', `/api/sessions/${hand.sessionId}/title`, { title: uniq('hand') + long });
-  const d = await spawnConductor(cc, false);
+  const d = await spawnConductor(cc, true);
   await seedTranscript(cc, d.id, uniq('delta'));
   await expect.poll(async () => ((await api(cc, 'GET', '/api/projects/.conduct/sessions')).body as { sessionId: string }[]).some((r) => r.sessionId === d.sessionId)).toBe(true);
   await api(cc, 'DELETE', `/api/instances/${d.id}`);
@@ -131,12 +131,12 @@ test("a conductor row's × shows on hover, and each row label stays readable and
     expect(cL.label.truncated, 'fixture: the conductor title overflows').toBe(true);
     expect(hL.label.truncated, 'fixture: the session label overflows').toBe(true);
     const byPart = (l: typeof cL) => l.fixed.map((f) => ({ part: f.part, inside: f.inside })).sort((x, y) => x.part.localeCompare(y.part));
-    expect(byPart(cL)).toEqual([{ part: 'ago', inside: true }, { part: 'promote', inside: true }]);
-    expect(byPart(wL)).toEqual([{ part: 'ago', inside: true }, { part: 'promote', inside: true }]);
+    expect(byPart(cL)).toEqual([{ part: 'ago', inside: true }, { part: 'persist', inside: true }]);
+    expect(byPart(wL)).toEqual([{ part: 'ago', inside: true }, { part: 'persist', inside: true }]);
     expect(byPart(hL)).toEqual([
       { part: 'ago', inside: true },
       { part: 'close', inside: true },
-      { part: 'promote', inside: true },
+      { part: 'persist', inside: true },
     ]);
   });
 });

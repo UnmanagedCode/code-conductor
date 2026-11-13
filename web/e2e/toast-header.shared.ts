@@ -109,7 +109,7 @@ export async function commitsHeaderFlow({ page, cc }: Args): Promise<void> {
 export async function sessionHeaderFlow({ page, cc }: Args): Promise<void> {
   test.setTimeout(120_000);
   const project = `toast-session-${test.info().project.name}`;
-  const { id, sessionId } = await spawnSession(cc, project, { worktree: true, temp: false });
+  const { id, sessionId } = await spawnSession(cc, project, { worktree: true, persistent: true });
   await expect.poll(async () => {
     const row = ((await api(cc, 'GET', '/api/instances')).body as { id: string; status: string; sessionId: string | null }[]).find((r) => r.id === id);
     return row?.status === 'idle' && !!row.sessionId;

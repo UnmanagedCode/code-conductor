@@ -106,7 +106,7 @@ test('a Conductors-lens tree project row offers the same Commit history button a
   await createProject(cc, project);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
   // `warn`, so the conductor may spawn an unbound worker.
-  const spawned = await api(cc, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'warn' });
+  const spawned = await api(cc, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: 'warn' });
   expect(spawned.status, JSON.stringify(spawned.body)).toBeLessThan(300);
   const id: string = spawned.body.id;
   type Row = { id: string; status: string; sessionId: string | null; callerInstanceId?: string | null };

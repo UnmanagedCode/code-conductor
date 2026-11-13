@@ -43,7 +43,7 @@ test('opening a plugin view clears the session from the main bar, and leaving re
 test('opening a conductor from its sidebar row shows its title and its workers', async ({ page, cc, ui, uniq }) => {
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
   // `warn`, so the conductor may spawn an unbound worker.
-  const spawned = await api(cc, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'warn' });
+  const spawned = await api(cc, 'POST', '/api/instances', { project: '.conduct', mode: 'bypassPermissions', playbookEnforcement: 'warn' });
   expect(spawned.status, JSON.stringify(spawned.body)).toBeLessThan(300);
   const id: string = spawned.body.id;
   let sessionId: string | null = null;
@@ -71,7 +71,7 @@ test('with no turn running, Terminate asks first: declining keeps the session, c
   const project = uniq('term');
   await createProject(cc, project);
   await ui.open(page);
-  await ui.startSessionIn(page, project, { temp: false });
+  await ui.startSessionIn(page, project, { persistent: true });
   await expect(ui.sessionHeader(page)).toContainText(project);
   await expect(ui.composer(page)).toBeEnabled();
   await ui.terminate(page, false);
@@ -85,7 +85,7 @@ test('a stopped session offers Resume, which brings it back', async ({ page, cc,
   const project = uniq('resume');
   await createProject(cc, project);
   await ui.open(page);
-  await ui.startSessionIn(page, project, { temp: false });
+  await ui.startSessionIn(page, project, { persistent: true });
   await expect(ui.sessionHeader(page)).toContainText(project);
   await expect(ui.composer(page)).toBeEnabled();
   await ui.terminate(page, true);

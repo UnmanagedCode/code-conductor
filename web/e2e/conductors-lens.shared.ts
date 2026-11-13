@@ -8,7 +8,7 @@ import { archived, gone, insts, spawnConductor, spawnWorker } from './flows/flee
 import { next, nextSidebar } from './flows/ui.ts';
 
 type Ctx = { page: Page; cc: Cc };
-type Inst = { id: string; sessionId: string; status: string; temp?: boolean; playbook?: string | null; stage?: string | null; worktree?: { worktreeName: string } | null };
+type Inst = { id: string; sessionId: string; status: string; persistent?: boolean; playbook?: string | null; stage?: string | null; worktree?: { worktreeName: string } | null };
 
 const label = (s: string) => `e2e-cl-${s}-${test.info().project.name}`;
 /** The row review, a loose spawn/remove button and the close actions: none may appear in a conductor tree. */
@@ -16,14 +16,14 @@ const NEVER_IN_TREE = ['Review changes', 'New session in this worktree', 'Remove
 
 // Invariant: the expanded tree carries commit history and the project and worktree ⋮ menus, whose worktree menu holds New session
 // in this worktree then Remove worktree…, and no row review, loose spawn/remove or close action; ↑ sits on exactly
-// the live temp conductor and worker rows of the lens, once each; a stage line shows exactly on a bound worker, matching /api/instances.
+// the live normal conductor and worker rows of the lens, once each; a stage line shows exactly on a bound worker, matching /api/instances.
 export async function treeFlow({ page, cc }: Ctx): Promise<void> {
   test.setTimeout(180_000);
   const P = label('tree');
   await createProject(cc, P);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const a = await spawnConductor(cc, true);
-  const b = await spawnConductor(cc, false);
+  const a = await spawnConductor(cc, false);
+  const b = await spawnConductor(cc, true);
   const main = await spawnWorker(cc, a.sessionId, { project: P });
   const inWt = await spawnWorker(cc, a.sessionId, { project: P, createWorktree: true, name: label('wt') });
   const listed = JSON.parse((await mcpCall(cc, 'list_playbooks', {}, a.sessionId)).content[0].text);
@@ -68,9 +68,9 @@ export async function treeFlow({ page, cc }: Ctx): Promise<void> {
     await expect(await next.treeWorkerRow(page, a.sessionId, main.sessionId)).toHaveCount(1);
   });
 
-  await test.step('↑ on exactly the live temp rows', async () => {
+  await test.step('↑ on exactly the live normal rows', async () => {
     const all = (await insts(cc)) as Inst[];
-    const liveTemp = new Set(all.filter((i) => i.temp === true && i.status !== 'exited' && i.status !== 'crashed').map((i) => i.sessionId));
+    const liveNormal = new Set(all.filter((i) => i.persistent !== true && i.status !== 'exited' && i.status !== 'crashed').map((i) => i.sessionId));
     const seen = await sb.locator('[data-conductor-list]').evaluate((list) => {
       const up = 'button[aria-label="Make persistent"]';
       const rows = [
@@ -81,10 +81,10 @@ export async function treeFlow({ page, cc }: Ctx): Promise<void> {
       ];
       return { rows, total: list.querySelectorAll(up).length };
     });
-    const ctx = JSON.stringify({ seen, liveTemp: [...liveTemp] });
-    expect(seen.rows.some((r) => r.kind === 'worker' && liveTemp.has(r.sid)), `fixture: a live temp worker row: ${ctx}`).toBe(true);
-    expect(seen.rows.some((r) => r.kind === 'conductor' && r.sid === b.sessionId), `fixture: a non-temp conductor row: ${ctx}`).toBe(true);
-    for (const r of seen.rows) expect(r.n, `${r.kind} ${r.sid}: ${ctx}`).toBe(liveTemp.has(r.sid) ? 1 : 0);
+    const ctx = JSON.stringify({ seen, liveNormal: [...liveNormal] });
+    expect(seen.rows.some((r) => r.kind === 'worker' && liveNormal.has(r.sid)), `fixture: a live normal worker row: ${ctx}`).toBe(true);
+    expect(seen.rows.some((r) => r.kind === 'conductor' && r.sid === b.sessionId), `fixture: a persistent conductor row: ${ctx}`).toBe(true);
+    for (const r of seen.rows) expect(r.n, `${r.kind} ${r.sid}: ${ctx}`).toBe(liveNormal.has(r.sid) ? 1 : 0);
     expect(seen.total, `no ↑ outside a conductor or worker row: ${ctx}`).toBe(seen.rows.reduce((n, r) => n + r.n, 0));
   });
 
@@ -96,17 +96,17 @@ export async function treeFlow({ page, cc }: Ctx): Promise<void> {
   });
 }
 
-// Invariant: a killed persistent conductor moves under a collapsed Inactive (1); a killed temp conductor is archived and is
-// in no group, before and after a reload; ↑ makes a live temp conductor persistent on the same row; × archives an inactive
+// Invariant: a killed persistent conductor moves under a collapsed Inactive (1); a killed normal conductor is archived and is
+// in no group, before and after a reload; ↑ makes a live normal conductor persistent on the same row; × archives an inactive
 // conductor, and the group goes with its last member.
 export async function inactiveFlow({ page, cc }: Ctx): Promise<void> {
   test.setTimeout(180_000);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const a = await spawnConductor(cc, true);
+  const a = await spawnConductor(cc, false);
   await api(cc, 'PUT', `/api/sessions/${a.sessionId}/title`, { title: label('alpha') });
-  const b = await spawnConductor(cc, false);
+  const b = await spawnConductor(cc, true);
   await seedTranscript(cc, b.id, label('bravo'));
-  const c = await spawnConductor(cc, true);
+  const c = await spawnConductor(cc, false);
   await seedTranscript(cc, c.id, label('charlie'));
   await expect.poll(async () => ((await api<{ sessionId: string }[]>(cc, 'GET', '/api/projects/.conduct/sessions')).body).some((r) => r.sessionId === b.sessionId),
     { message: 'fixture: B is listed on disk' }).toBe(true);
@@ -130,7 +130,7 @@ export async function inactiveFlow({ page, cc }: Ctx): Promise<void> {
     await expect(sb.locator(`[data-conductors-inactive] [data-conductor="${b.sessionId}"]`)).toHaveCount(1);
   });
 
-  await test.step('an archived temp conductor is in no group', async () => {
+  await test.step('an archived normal conductor is in no group', async () => {
     await api(cc, 'DELETE', `/api/instances/${c.id}`);
     await gone(cc, c.id);
     await archived(cc, '.conduct', c.sessionId);
@@ -146,14 +146,14 @@ export async function inactiveFlow({ page, cc }: Ctx): Promise<void> {
     await expect(block(c.sessionId)).toHaveCount(0);
   });
 
-  await test.step('↑ makes a live temp conductor persistent on the same row', async () => {
+  await test.step('↑ makes a live normal conductor persistent on the same row', async () => {
     const row = await next.conductorRow(page, a.sessionId);
     await row.evaluate((e) => { (e as HTMLElement & { __kept?: boolean }).__kept = true; });
     await row.getByRole('button', { name: 'Make persistent' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Make persistent' }).click();
     await expect(row.getByRole('button', { name: 'Make persistent' })).toHaveCount(0);
     expect(await row.evaluate((e) => (e as HTMLElement & { __kept?: boolean }).__kept === true), 'the same row node').toBe(true);
-    await expect.poll(async () => ((await insts(cc)) as Inst[]).find((i) => i.id === a.id)?.temp).toBe(false);
+    await expect.poll(async () => ((await insts(cc)) as Inst[]).find((i) => i.id === a.id)?.persistent).toBe(true);
     await expect(sb.locator(`[data-conductors-inactive] [data-conductor="${a.sessionId}"]`)).toHaveCount(0);
   });
 

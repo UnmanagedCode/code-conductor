@@ -15,7 +15,7 @@ type Args = { page: Page; cc: Cc };
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export async function overtakenListReadFlow({ page, cc }: Args): Promise<void> {
-  const { sessionId } = await spawnSession(cc, `restore-${test.info().project.name}`);
+  const { sessionId } = await spawnSession(cc, `restore-${test.info().project.name}`, { persistent: true });
   // The hint goes into the page's own socket while its first list read is held, so a second read starts behind it.
   const socket: { route: WebSocketRoute | null } = { route: null };
   await page.routeWebSocket(/\/ws$/, (ws) => { ws.connectToServer(); socket.route = ws; });
@@ -51,8 +51,8 @@ export async function overtakenListReadFlow({ page, cc }: Args): Promise<void> {
 
 export async function closeThenReloadFlow({ page, cc }: Args): Promise<void> {
   const project = `close-${test.info().project.name}`;
-  const closed = await spawnSession(cc, project);
-  const marker = await spawnSession(cc, project);
+  const closed = await spawnSession(cc, project, { persistent: true });
+  const marker = await spawnSession(cc, project, { persistent: true });
   // fake-claude writes no transcript: with one on disk the stopped session stays resumable, so a reload would resume it.
   await seedTranscript(cc, closed.id, 'close me');
   const anchored = new RegExp(`/#session=${closed.sessionId}$`);

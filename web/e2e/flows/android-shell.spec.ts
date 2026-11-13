@@ -14,7 +14,7 @@ test.use({ ccOptions: { server: 'android-shell' } });
 /** A live conductor, titled, with one worker titled `title`. */
 async function conductorWithWorker(cc: Cc, project: string, title: string): Promise<{ conductor: FleetInst; worker: FleetInst }> {
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const conductor = await spawnConductor(cc, true);
+  const conductor = await spawnConductor(cc, false);
   await createProject(cc, project);
   const worker = await spawnWorker(cc, conductor.sessionId, { project });
   await api(cc, 'PUT', `/api/sessions/${worker.sessionId}/title`, { title });

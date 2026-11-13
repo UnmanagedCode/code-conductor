@@ -71,7 +71,7 @@ export async function askFlow({ page, cc }: Ctx): Promise<void> {
   };
   const only = (s: Strip | null, sid: string, group: string) => groupsOf(s, sid).join() === group;
 
-  const D = await spawnConductor(cc, false);
+  const D = await spawnConductor(cc, true);
   const hr = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', ...liveModel(cc) });
   expect(hr.status, `POST /api/instances (hand): ${JSON.stringify(hr.body)}`).toBeLessThan(300);
   const H = await idleInst(cc, (i) => i.id === hr.body.id, 'hand-spawned session idle');
@@ -111,7 +111,7 @@ export async function askFlow({ page, cc }: Ctx): Promise<void> {
     expect(groupsOf(s, Wd.sessionId)).toEqual([]);
   });
 
-  const A = await spawnConductor(cc, false);
+  const A = await spawnConductor(cc, true);
   const alpha = label('alpha');
   await api(cc, 'PUT', `/api/sessions/${A.sessionId}/title`, { title: alpha });
   const asks: string[] = [];
@@ -169,7 +169,7 @@ export async function askFlow({ page, cc }: Ctx): Promise<void> {
   });
 
   const resumeWithAsk = async (tool: string, input: unknown) => {
-    const X = await spawnConductor(cc, false);
+    const X = await spawnConductor(cc, true);
     await appendTranscriptRecord(cc, X.id, { type: 'user', message: { role: 'user', content: label('resume') } });
     await appendTranscriptRecord(cc, X.id, {
       type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 'ta', name: tool, input }], stop_reason: 'tool_use' },
@@ -232,19 +232,19 @@ export async function fitFlow({ page, cc }: Ctx): Promise<void> {
   const P = label('fit');
   await createProject(cc, P);
   await api(cc, 'POST', '/api/projects/.conduct/ensure');
-  const c = await spawnConductor(cc, true);
+  const c = await spawnConductor(cc, false);
   await api(cc, 'PUT', `/api/sessions/${c.sessionId}/title`, { title: label('a conductor title long enough to overflow the drawer row') });
-  const spawnHand = async (temp: boolean) => {
-    const r = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', temp, ...liveModel(cc) });
+  const spawnHand = async (persistent: boolean) => {
+    const r = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', persistent, ...liveModel(cc) });
     expect(r.status, `POST /api/instances (hand): ${JSON.stringify(r.body)}`).toBeLessThan(300);
     return idleInst(cc, (i) => i.id === r.body.id, 'hand-spawned session idle');
   };
-  // Idle and persistent: its × stops it at once. Temp: its × asks before archiving.
-  const stop = await spawnHand(false);
-  const archive = await spawnHand(true);
-  const enter = await spawnHand(false);
-  const space = await spawnHand(false);
-  const open = await spawnHand(false);
+  // Idle and persistent: its × stops it at once. Normal: its × asks before archiving.
+  const stop = await spawnHand(true);
+  const archive = await spawnHand(false);
+  const enter = await spawnHand(true);
+  const space = await spawnHand(true);
+  const open = await spawnHand(true);
   await next.open(page);
   await next.openSidebar(page);
   const sb = nextSidebar(page);
@@ -334,7 +334,7 @@ export async function badgeFlow({ page, cc }: Ctx): Promise<void> {
   test.setTimeout(120_000);
   const P = label('badge');
   await createProject(cc, P);
-  const r = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', temp: false, ...liveModel(cc) });
+  const r = await api(cc, 'POST', '/api/instances', { project: P, mode: 'bypassPermissions', persistent: true, ...liveModel(cc) });
   expect(r.status, `POST /api/instances (hand): ${JSON.stringify(r.body)}`).toBeLessThan(300);
   const h = await idleInst(cc, (i) => i.id === r.body.id, 'hand-spawned session idle');
   const title = label('a strip label long enough to overflow its entry and need truncation');

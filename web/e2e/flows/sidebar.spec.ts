@@ -12,12 +12,12 @@ test('a fresh profile opens on the Conductors lens, and the chosen lens survives
   await expect.poll(() => ui.selectedLens(page)).toBe('projects');
 });
 
-test('Conduct POSTs exactly {project, role, temp, mode, pristine} and opens the new conductor', async ({ page, ui }) => {
+test('Conduct POSTs exactly {project, role, mode, pristine} and opens the new conductor', async ({ page, ui }) => {
   await ui.open(page);
   const spawn = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/instances');
   await ui.conduct(page);
   const req = await spawn;
-  expect(req.postDataJSON()).toEqual({ project: '.conduct', role: 'conductor', temp: true, mode: 'bypassPermissions', pristine: true });
+  expect(req.postDataJSON()).toEqual({ project: '.conduct', role: 'conductor', mode: 'bypassPermissions', pristine: true });
   // A pristine conductor is in no list, so its session id is read off the create's answer.
   const { sessionId: sid } = await (await req.response())!.json() as { sessionId: string };
   expect(sid).toBeTruthy();
@@ -48,7 +48,7 @@ const fitsOneLine = (summary: Locator) => summary.evaluate((e) => {
 type LiveInst = { id: string; status: string; sessionId: string | null; worktree?: { worktreeName: string } | null };
 /** Spawns a persistent session in `project`, waits for it to idle, seeds its transcript; returns the instance. */
 async function persistentSession(cc: Cc, project: string, text: string, extra: Record<string, unknown> = {}): Promise<LiveInst> {
-  const { id } = await spawnSession(cc, project, { temp: false, ...extra });
+  const { id } = await spawnSession(cc, project, { persistent: true, ...extra });
   let row: LiveInst | undefined;
   await expect.poll(async () => {
     row = ((await api(cc, 'GET', '/api/instances')).body as LiveInst[]).find((i) => i.id === id);
@@ -94,8 +94,9 @@ test('the main checkout and a worktree each head their Sessions list with Sessio
   const stopped = await persistentSession(cc, project, 'main prompt');
   const w = await persistentSession(cc, project, 'worktree prompt', { worktree: true });
   const worktree = w.worktree!.worktreeName;
-  const { id: liveMain } = await spawnSession(cc, project, { temp: false });
-  const { id: liveWt } = await spawnSession(cc, project, { temp: false, worktree });
+  // The live ones are normal, so each place shows two groups and its summary keeps the noun Sessions.
+  const { id: liveMain } = await spawnSession(cc, project);
+  const { id: liveWt } = await spawnSession(cc, project, { worktree });
   for (const id of [stopped.id, w.id]) await api(cc, 'DELETE', `/api/instances/${id}`);
   const place = (i: LiveInst) => i.worktree?.worktreeName ?? null;
   await expect.poll(async () => ((await api(cc, 'GET', '/api/instances')).body as (LiveInst & { project: string })[])

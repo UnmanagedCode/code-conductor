@@ -10,7 +10,7 @@ type Args = { page: Page; cc: Cc };
 export async function dotCentringFlow({ page, cc }: Args): Promise<void> {
   const project = `hdr-dot-${test.info().project.name}`;
   await createProject(cc, project);
-  const { id, sessionId } = await spawnSession(cc, project, { temp: false });
+  const { id, sessionId } = await spawnSession(cc, project, { persistent: true });
   await expect.poll(async () => {
     const row = ((await api(cc, 'GET', '/api/instances')).body as { id: string; status: string; sessionId: string | null }[]).find((r) => r.id === id);
     return row?.status === 'idle' && !!row.sessionId;

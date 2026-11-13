@@ -19,7 +19,7 @@ test('a reveal from the needs-you strip opens the sidebar onto the revealed row 
   const fillers = Array.from({ length: FILLERS }, (_, n) => `rv-fill-${String(n).padStart(2, '0')}-${p}`);
   try {
     for (const name of fillers) await createProject(cc, name);
-    const s = await spawnSession(cc, P, { temp: false });
+    const s = await spawnSession(cc, P, { persistent: true });
     await expect.poll(async () => (await insts(cc)).find((i) => i.id === s.id)?.status, { message: 'the session is idle' }).toBe('idle');
     await page.goto('/');
     await next.lens(page, 'projects');
