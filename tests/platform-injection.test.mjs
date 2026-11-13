@@ -173,6 +173,21 @@ test('cliEnvBase merges the platform cliEnv under the host env, which wins', () 
   }
 });
 
+// cliEnvBase feeds the one-shot CLIs (summariser, shell-env probe, auth, update)
+// and is the base Instance.spawn sets its own identity on: an OUTER cc session's
+// identity (this server running inside one) never survives it.
+test('cliEnvBase drops an outer session\'s CC_SESSION_ID, CC_SESSION_KIND and CONDUCTOR_URL', () => {
+  const planted = { CC_SESSION_ID: 'outer-planted', CC_SESSION_KIND: 'planted', CONDUCTOR_URL: 'http://outer.invalid' };
+  const saved = Object.fromEntries(Object.keys(planted).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, planted);
+  try {
+    const env = cliEnvBase(fakePlatform());
+    for (const k of Object.keys(planted)) assert.equal(k in env, false, k);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
 test('canonicalRootMemo returns the platform spelling and asks once per root', () => {
   const fake = fakePlatform({ canonicalPath: (p) => `${p}/CANON` });
   const root = canonicalRootMemo(fake);
