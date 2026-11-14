@@ -122,7 +122,7 @@ the `projects` hint's source for cc's own records. The write primitives (`writeP
 
 ## `src/health.ts`
 
-boot readiness probe (`checkClaudeReadiness`/`formatReadiness`): `claude --version` (exported as `probeClaudeBin`, which Settings → About's Claude Code card also reads; timeout `DEFAULT_TIMEOUT_MS` in `src/health.ts`) + credential check; returns the framed warning banner server.ts prints to stderr. Non-fatal.
+boot readiness probe (`checkClaudeReadiness`/`formatReadiness`): `claude --version` (exported as `probeClaudeBin`, which Settings → About's Claude Code card also reads; timeout `DEFAULT_TIMEOUT_MS` in `src/health.ts`) + credential check; returns the framed warning banner server.ts prints to stderr. Non-fatal. Ready, it prints one line, `claude OK — v<version>, authenticated via credentials.json|ANTHROPIC_API_KEY`; otherwise one framed `WARNING` block listing each issue as `[code] title` plus a hint.
 
 ## `src/claudeAuthStatus.ts`
 
