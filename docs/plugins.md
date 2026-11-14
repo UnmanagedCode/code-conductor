@@ -84,7 +84,7 @@ Each entry carries a CLAUDE.md **`file`** fragment (applied inline to a project'
 A scaffold-bearing entry surfaces `hasScaffold:true` in `list_project_conventions`.
 Bodies for `file` refs (fragment and scaffold) are resolved against the active checkout; a **missing/stale `file` at manifest load makes the plugin `invalid`** (fail loud).
 Only **enabled + `ok`** plugins contribute — a disabled/crashed plugin never surfaces its conventions.
-**A fragment `file` may carry a skill part:** a `<!-- cc:skill <description> -->` line splits it into the inline fragment (above) and a Claude Code skill body (below) — the grammar of the built-in fragments ([architecture.md → Convention skill parts](architecture.md#convention-skill-parts)), with no explicit name (the skill is named by the plugin-local slug).
+**A fragment `file` may carry a skill part:** a `<!-- cc:skill <description> -->` line splits it into the inline fragment (above) and a Claude Code skill body (below) — the grammar of the built-in fragments ([architecture.md → Convention skill parts](components/playbooks.md#convention-skill-parts)), with no explicit name (the skill is named by the plugin-local slug).
 It is delivered as `cc-<scope>-<plugin-id>:<slug>` wherever the inline part is in force, and only there.
 The marker is **validated at manifest load** (a malformed one, a second one, an empty description or body, or an explicit name makes the plugin `invalid`).
 Unlike `claudePlugin`, it is **delivered even when the plugin's project is on a remote system**: `PLUGIN_DIR_LOCAL_ONLY` exists because a remote directory cannot be a `--plugin-dir`, whereas a skill part is text cc already reads through the project's System and writes to a local generated root.
