@@ -44,6 +44,7 @@ export const ANDROID_SPECS = [
   'sw-upgrade.spec.ts',
   'toast-focus.spec.ts',
   'toast-header.spec.ts',
+  'touch-fields.spec.ts',
   'transcript-layout.spec.ts',
   'user-bubble-width-nested.spec.ts',
   'user-bubble-width.spec.ts',

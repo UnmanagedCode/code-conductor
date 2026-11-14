@@ -55,7 +55,7 @@ export function App() {
   return (
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
-      <div className="relative flex h-dvh overflow-hidden bg-background">
+      <div className="relative flex h-(--app-height) overflow-hidden bg-background">
         <div className="hidden shrink-0 md:flex">
           <AppSidebar />
         </div>

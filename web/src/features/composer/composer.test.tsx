@@ -72,6 +72,18 @@ describe('placeholder', () => {
   });
 });
 
+describe('iOS field traits', () => {
+  it('the message box is a prose field with the touch font', () => {
+    // Invariant: the composer opts out of contact AutoFill with correction on (iOS reads an unhinted field as a contact), and takes 16px on a coarse pointer so iOS does not zoom on focus.
+    const box = mount(inst('s1', { project: 'p', title: 't' })).box();
+    expect(box.getAttribute('autocomplete')).toBe('off');
+    expect(box.getAttribute('autocorrect')).toBe('on');
+    expect(box.getAttribute('autocapitalize')).toBe('sentences');
+    expect(box.getAttribute('spellcheck')).toBe('true');
+    expect(box.classList.contains('pointer-coarse:text-base')).toBe(true);
+  });
+});
+
 describe('send and mic modes', () => {
   it('an empty box is a mic (disabled without whisper); typing flips to Send; clearing flips back', () => {
     voiceStore.set({ micAvailable: false });

@@ -11,6 +11,7 @@ import { on } from '@/app/events';
 import { reportPristineDraft, setPristineDraftSource } from '@/app/pristine';
 import { voiceStore } from '@/features/voice/store';
 import { cn } from '@/lib/utils';
+import { PROSE_FIELD_PROPS, TOUCH_FIELD_TEXT } from '@/lib/textEntry';
 import { NO_ATTACHMENTS, attachmentStore, type Pending } from './attachments';
 import { DRAFT_SAVE_DEBOUNCE_MS, EMPTY_DRAFT, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { openOwner, ownerSendBlock, useWorkerOwner, type WorkerOwner } from '@/features/session/workerOwner';
@@ -486,7 +487,8 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
             e.preventDefault();
             void addFiles(files);
           }}
-          className="block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          className={cn('block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed', TOUCH_FIELD_TEXT)}
+          {...PROSE_FIELD_PROPS}
           aria-label="Message"
           aria-keyshortcuts={dictateKeys && canType ? DICTATE_SHORTCUT : undefined}
         />
