@@ -53,6 +53,7 @@ function stageApp(t) {
   return stage;
 }
 
+// Own poller: its timeout carries the container log read at the deadline.
 async function waitForLog(ctr, re) {
   const deadline = Date.now() + 60_000;
   for (;;) {

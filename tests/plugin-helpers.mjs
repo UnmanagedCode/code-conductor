@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { rmrf } from './rmrf.mjs';
+import { waitFor as sharedWaitFor } from './poll.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const FAKE_PLUGIN_DIR = path.join(__dirname, 'fixtures', 'fake-plugin');
@@ -58,16 +59,6 @@ export async function makePluginRoot() {
   return { root, addPluginProject, addProject, restore };
 }
 
-export function waitFor(predicate, { timeout = 15000, interval = 50 } = {}) {
-  const deadline = Date.now() + timeout;
-  return new Promise((resolve, reject) => {
-    const tick = async () => {
-      let val;
-      try { val = await predicate(); } catch { val = false; }
-      if (val) return resolve(val);
-      if (Date.now() >= deadline) return reject(new Error('waitFor timed out'));
-      setTimeout(tick, interval);
-    };
-    tick();
-  });
+export function waitFor(predicate, { timeout = 15000, interval = 50, ...rest } = {}) {
+  return sharedWaitFor(predicate, { timeout, interval, ...rest });
 }

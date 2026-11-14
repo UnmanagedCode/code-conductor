@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
-import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, sleep } from './helpers.mjs';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ReplayLauncher } from './replayLauncher.mjs';
 
@@ -39,7 +39,7 @@ async function callTool(baseUrl, name, args, caller) {
 export const firstPrompt = (cell) => fs.readFileSync(fixture(cell), 'utf8').split('\n').filter(Boolean)
   .map((l) => JSON.parse(l)).find((o) => o.stdin_sent !== undefined).stdin_sent;
 
-export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+export const pause = sleep;
 export const turnEnded = (c) => waitFor(() => c.log.some((e) => e.what.startsWith('turn_end')), { timeout: 20000 });
 
 // Runs one cell; `script(ctx)` drives the cc side. Returns

@@ -21,8 +21,8 @@ import { readFileSync } from 'node:fs';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../src/groupedCommand.ts';
 import { posixPlatform } from '../src/platform/index.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { sleep } from './poll.mjs';
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }

@@ -23,13 +23,13 @@ import { fileURLToPath } from 'node:url';
 import { ROOT_LOCK_DIRNAME, ROOT_LOCK_HELD_EXIT } from '../src/rootLock.ts';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { mkdtempSync } from './tmpRegistry.mjs';
+import { waitFor as poll } from './poll.mjs';
 
 const ENABLED = process.env.RUN_DOCKER_RESTART === '1';
 const DOCKER = (process.env.CC_DOCKER ?? 'docker').split(/\s+/);
 const IMAGE = process.env.CC_DOCKER_IMAGE ?? 'code-conductor:local';
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PREFIX = `cc-restart-proof-${process.pid}`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function guard(args) {
   for (const a of args) {
@@ -151,14 +151,8 @@ const http = (ctr, method, urlPath, body) => docker('exec', ctr, 'node', '--inpu
 const health = async (ctr) => {
   try { return JSON.parse(await http(ctr, 'GET', '/api/health')); } catch { return null; }
 };
-async function waitFor(what, fn, ms = 120_000) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    const v = await fn();
-    if (v) return v;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await sleep(500);
-  }
+function waitFor(what, fn, ms = 120_000) {
+  return poll(fn, { timeout: ms, interval: 500, label: what });
 }
 const waitHealthy = (ctr) => waitFor(`${ctr} health`, () => health(ctr));
 const ppidOf = async (ctr, pid) => Number((await docker('exec', ctr, 'sh', '-c', `awk '/^PPid:/{print $2}' /proc/${pid}/status`)).trim());
