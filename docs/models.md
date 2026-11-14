@@ -3,7 +3,7 @@
 How a spawn caller's `tier` / `role` becomes a concrete `{backend, model}` pair, and
 how the **backend registry** turns "which command runs `claude`" into user-managed
 data. Wire contracts live in [protocol.md](protocol.md#rest-endpoints); component
-internals in [architecture.md](architecture.md#component-layout).
+internals in [components.md](components.md).
 
 ## Backends
 
@@ -284,7 +284,7 @@ The consequences of being a substitution backend:
   after the line whose `uuid` is `afterUuid` (`null` = first; always `null` when
   the segment had no conversation to resume, since its file is deleted before the
   `--session-id` relaunch) — see
-  [architecture.md](architecture.md) → `src/transcript.ts`. A rewind that truncates
+  [components/sessions.md](components/sessions.md#srctranscriptts) → `src/transcript.ts`. A rewind that truncates
   an entry's anchor moves it to the last surviving line (`reanchorModelSwitches`). A
   fork does not inherit the ledger.
 

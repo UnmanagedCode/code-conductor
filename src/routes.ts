@@ -2437,7 +2437,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // a since-deleted slug becomes unresolvable: the project's other, resolvable
   // conventions still refresh, and the missing one is named in the file (see
   // `src/projectClaudeMd.ts`); `{ log: console }` also surfaces every declined-
-  // write case in the server log (docs/architecture.md).
+  // write case in the server log (docs/components/web.md).
   //
   // This route deliberately does NOT carry the catalog's `degraded` flag — the
   // MCP `list_project_conventions` / `list_conductor_conventions` tools do

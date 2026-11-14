@@ -1,6 +1,6 @@
 // The projects-root lock: at most one cc server runs on a projects root at a
 // time, across the host and every container that mounts the root on the same
-// kernel. Layout, record and handover: docs/architecture.md → "The
+// kernel. Layout, record and handover: docs/components/headless.md → "The
 // projects-root lock".
 //
 // A holder is judged ONLY by whether the socket its record names accepts a

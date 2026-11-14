@@ -1,5 +1,5 @@
 // The cache-read estimate for a non-Claude backend whose calls report no cache
-// read (docs/architecture.md → src/cacheEstimate.ts).
+// read (docs/components/web.md → src/cacheEstimate.ts).
 //
 // Such a backend counts every call's whole context as input, so a turn's
 // `result.usage` reads cache_read 0 however much the provider actually served

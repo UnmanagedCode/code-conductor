@@ -22,7 +22,7 @@ unchanged. Install the plugin from Settings → Plugin Library if the wrapper re
 `candidates` included), taking it before the runner starts so a queue wait never counts against
 `timeoutMs` or the hang deadlines; the route commands inherit `CC_TEST_SLOT_HELD` and take none.
 Always go through the wrapper: calling `mutate.mjs` directly skips the lease, and the node and Vitest
-route commands (Playwright takes none) then each queue inside their own deadline. Slot rules: `docs/architecture.md` → Box-wide test slots.
+route commands (Playwright takes none) then each queue inside their own deadline. Slot rules: `docs/testing.md` → Box-wide test slots.
 
 **Never pass `--copy`: this project runs `in-place`, and a copy cannot be trusted here.**
 
@@ -203,8 +203,8 @@ Running the gate once before merge is the only thing that reads those arms:
 part of the invocation**: uncapped, the four files starve each other into the runner's 60 s per-test
 timeout and a file is SIGKILLed at `FILE_KILL_MS`, measured 3 runs in 18. Setting the flag on a
 WHOLE-SUITE run is the same hazard; `TEST_CONCURRENCY=4` is what has been tried there, but it has
-measured green once and red once (`R14L`, the same starvation shape), so it carries no rate. `docs/architecture.md` →
-"The FUSE-union chroot" carries every measurement.
+measured green once and red once (`R14L`, the same starvation shape), so it carries no rate. `docs/testing-systems.md` →
+"The FUSE-union chroot's two suites" carries every measurement.
 
 ## What to expect
 

@@ -446,7 +446,7 @@ export const MID_TURN_NOTE =
 // the 'mid-turn' token, trailing '</system-reminder>' — true by construction. If
 // this ever becomes a second, separate block instead, replay renders it as a real
 // user bubble and shifts the rewind/fork user-message index
-// (docs/architecture.md → prefix-safety invariant).
+// (docs/components/platform.md → shared/userQuestionAnswers.ts, prefix-safety invariant).
 export const POST_STOP_STEER_NOTE = MID_TURN_NOTE.replace(
   '\n</system-reminder>',
   '\n\nYour turn was STOPPED at a block boundary so this message could be delivered — ' +
@@ -3736,7 +3736,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // still a mid-turn one from the sender's point of view (see
     // POST_STOP_STEER_NOTE). Either way the note rides as its OWN content block,
     // never concatenated into the text — see the prefix-safety invariant in
-    // docs/architecture.md.
+    // docs/components/platform.md.
     const note = midTurnNote ?? ((annotateIfMidTurn && this.status === 'turn') ? MID_TURN_NOTE : null);
     if (note) content.unshift({ type: 'text', text: note });
     // A reseed continues a nudge chain only under the latch; anything else

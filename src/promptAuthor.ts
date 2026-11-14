@@ -6,7 +6,7 @@
 // The record is a separate trailing text block holding exactly one AUTHOR_MARKER
 // literal, appended by Instance.prompt only when the instance is conducted. Its
 // own block for the reason MID_TURN_NOTE is (the prefix-safety invariant,
-// docs/architecture.md); LAST so a reader taking a line's first text block as
+// docs/components/platform.md); LAST so a reader taking a line's first text block as
 // "the prompt" keeps reading the prompt. consolidateUserContent (src/parser.ts)
 // turns it into `user_echo.author` and drops it from the text. A line without
 // one is author unknown: nothing falls back to text shape.

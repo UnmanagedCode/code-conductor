@@ -54,7 +54,7 @@ export interface StartedChild {
 // determinism: `_spawn` lets a test stand in a child that settles on
 // `process.nextTick`, so the settle-window branch under test is decided by
 // ORDERING rather than by racing a real `bash -lc node` boot against a wall
-// clock (see docs/architecture.md → "Testing" on the 400 ms window).
+// clock (see docs/testing.md on the 400 ms window).
 export function createSupervisor({
   onExit,
   _allocatePort = allocatePort,

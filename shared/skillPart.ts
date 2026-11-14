@@ -6,7 +6,7 @@
 // A fragment FILE may hand part of its text to a Claude Code skill: one marker
 // line splits it into an inline part (above, composed into the system-prompt
 // doc as before) and a skill body (below, delivered as a generated SKILL.md —
-// src/conventionSkills.ts). Grammar and read sites: docs/architecture.md →
+// src/conventionSkills.ts). Grammar and read sites: docs/components/playbooks.md →
 // "Convention skill parts".
 //
 //   <!-- cc:skill <description> -->          seed / plugin fragment (name = slug)

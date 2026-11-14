@@ -171,7 +171,7 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
     // strictly INSIDE the project is legal and stays active — it withholds that
     // subtree from the union's remote tier. What ENFORCES that per path is the
     // tier table — the hook consumer arrives with it
-    // (docs/architecture.md → what `fileBridge` carried).
+    // (docs/components/fuse.md → what `fileBridge` carried).
     if (withinPosix(systemPath, e) !== null) {
       throw httpError(501,
         `project '${project}' is at '${systemPath}' on system '${systemId}', but that system advertises `
