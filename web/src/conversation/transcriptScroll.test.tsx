@@ -17,6 +17,7 @@ import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
 import { ConversationView } from './ConversationView';
 import { flush } from './renderModel';
+import { settle } from '@/test/settle';
 
 const ITEM_PX = 100;
 const VIEW_PX = 800;
@@ -232,10 +233,6 @@ describe('a full-page view round trip', () => {
 });
 
 describe('an older page spliced above', () => {
-  /** Lets in-flight page fetches land and their splices settle. */
-  async function settle() {
-    await act(async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 5)); });
-  }
   /**
    * Mounts on a 20-prompt tail whose ring holds more below seq 900. The snapshot's own eager page
    * (it runs before the tail has rendered) is served empty with history still open, so the next

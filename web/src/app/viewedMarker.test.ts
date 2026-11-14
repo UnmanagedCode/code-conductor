@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { settle } from '@/test/settle';
 
 let visibility: DocumentVisibilityState = 'visible';
 Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
@@ -19,7 +20,6 @@ async function boot(instances: any[], activeId: string | null, { failFirst = fal
   const { startViewedMarker } = await import('./viewedMarker');
   appStore.set({ instances, activeId });
   startViewedMarker();
-  const settle = async () => { for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0)); };
   return { posts, appStore, events, route, settle };
 }
 

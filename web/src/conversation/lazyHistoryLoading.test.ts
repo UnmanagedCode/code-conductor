@@ -15,6 +15,7 @@ function gatedFetch(pages: any[], calls: string[]) {
   });
   return { fetch, release: () => gates.shift()!() };
 }
+// Local: this file runs in the node environment, which has no DOM for the shared settle().
 const settle = async (n = 6) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 5)); };
 
 afterEach(() => vi.unstubAllGlobals());

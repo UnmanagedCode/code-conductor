@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeStashedAnchor } from '@shared/anchor';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { settle } from '@/test/settle';
 
 type Link = { socket: number; open: boolean; answer: ((id: string) => object) | null };
 
@@ -58,17 +59,16 @@ async function boot({ holdProjects = false } = {}) {
   const s = await import('./sessionActions');
   c.startController();
   stop = c.stopController;
-  const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
-  const frame = async (t: string) => { ws.bus.dispatchEvent(new CustomEvent(t)); await flush(); };
+  const frame = async (t: string) => { ws.bus.dispatchEvent(new CustomEvent(t)); await settle(); };
   return {
-    c, s, ws, reads, flush,
+    c, s, ws, reads, settle,
     open: () => frame('open'),
     close: () => frame('close'),
     hint: () => frame('instances'),
     /** Answers the n-th instance read (1-based) with `list`, then lets everything it unblocks run. */
-    land: async (n: number, list: unknown[]) => { reads[n - 1].release({ json: list }); await flush(); },
+    land: async (n: number, list: unknown[]) => { reads[n - 1].release({ json: list }); await settle(); },
     /** Answers the n-th held projects read (1-based), then lets everything it unblocks run. */
-    landProjects: async (n: number) => { projectReads[n - 1].release({ json: [] }); await flush(); },
+    landProjects: async (n: number) => { projectReads[n - 1].release({ json: [] }); await settle(); },
     /** Each subscribe sent, as `[instance id, socket]`. */
     subscribes: () => ws.sent.filter(([t]) => t === 'subscribe').map(([, p, s]) => [(p as { id: string }).id, s]),
     historyReads: () => calls.filter((x) => x.url.includes('/lineage-events')).length,
@@ -97,7 +97,7 @@ describe('subscribing the active session when the socket opens', () => {
     await b.open();
     await b.land(1, [A, B]);
     b.c.selectInstance('iB', { userGesture: true });
-    await b.flush();
+    await b.settle();
     expect(b.historyReads(), 'fixture check: the pick\'s snapshot started at the ring head, so its history was probed').toBe(1);
     await b.land(2, [A, B]);
     expect(b.historyReads()).toBe(1);
@@ -156,7 +156,7 @@ describe('subscribing the active session when the socket opens', () => {
     b.c.selectInstance('iB', { userGesture: true });
     await b.open();
     const respawned = b.s.respawnActive();
-    await b.flush();
+    await b.settle();
     expect(b.reads, 'fixture check: the respawn\'s read waits behind the first connect\'s').toHaveLength(2);
     await b.land(2, [A, B]);
     expect(b.subscribes(), 'the open added one subscribe').toEqual([['iB', 1]]);
@@ -264,7 +264,7 @@ describe('subscribing the active session when the socket opens', () => {
   });
 });
 
-/** Dispatches the socket's `open` without the real-timer flush `b.open()` ends with. */
+/** Dispatches the socket's `open` without the real-timer settle `b.open()` ends with. */
 function ws_open(b: { ws: { bus: EventTarget } }) {
   b.ws.bus.dispatchEvent(new CustomEvent('open'));
 }

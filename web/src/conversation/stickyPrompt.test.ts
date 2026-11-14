@@ -8,6 +8,7 @@ import { cleanup } from '@testing-library/react';
 import { promptOrigin } from '@shared/promptOrigin';
 import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { buildWakeStub } from '@shared/wakeCallback';
+import { settle } from '@/test/settle';
 
 describe('pickPinned', () => {
   const tops = (arr: number[]) => (i: number) => arr[i];
@@ -115,7 +116,6 @@ function makeRig({ conducted = false, historyVisible = false, ready = true, list
   return rig;
 }
 const pin = () => pinStore.get().pin;
-const frame = () => new Promise((r) => setTimeout(r, 40));
 
 /** A bubble at document offset `docTop`: its rect follows the scroll root's scrollTop. */
 function addAt(r: Rig, text: string, docTop: number) {
@@ -252,7 +252,7 @@ describe('sticky prompt', () => {
     rig.add('a', -500);
     const b = rig.add('b', 300);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     rig.tops.set(b, 25);
     rig.sticky.refresh();
     expect(pin()).toMatchObject({ kind: 'pinned', shift: -15 });
@@ -286,7 +286,7 @@ describe('sticky prompt', () => {
     rig.sticky.reveal();
     expect(pin().kind).toBe('status');
     rig.add('late', -10);
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>late</p>' });
   });
 
@@ -312,7 +312,7 @@ describe('sticky prompt', () => {
       return found() ? 'found' : 'exhausted';
     });
     rig.sticky.reveal();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>from history</p>' });
   });
 
@@ -320,7 +320,7 @@ describe('sticky prompt', () => {
     rig = makeRig({ historyVisible: true });
     rig.loadUntil.mockResolvedValue('stalled');
     rig.sticky.reveal();
-    await frame();
+    await settle();
     expect(pin()).toEqual({ kind: 'status', text: STATUS_FAILED });
     rig.sticky.refresh();
     expect(rig.loadUntil).toHaveBeenCalledTimes(1);
@@ -328,7 +328,7 @@ describe('sticky prompt', () => {
     expect(rig.loadUntil).toHaveBeenCalledTimes(2);
     rig.status.visible = false;
     rig.loadUntil.mockResolvedValue('stalled');
-    await frame();
+    await settle();
     rig.sticky.refresh();
     expect(pin()).toEqual({ kind: 'status', text: STATUS_NONE });
   });
@@ -342,7 +342,7 @@ describe('sticky prompt', () => {
     rig.sticky.conceal();
     expect(keepGoing()).toBe(false);
     resolve('found');
-    await frame();
+    await settle();
     expect(pin().kind).toBe('hidden');
   });
 
@@ -404,7 +404,7 @@ describe('sticky prompt', () => {
     addAt(rig, 'second', 900);
     scrollTo(rig, 400);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>first</p>' });
     rig.sticky.jumpToPinned();
     expect(rig.scroll.scrollTop).toBe(100);
@@ -418,7 +418,7 @@ describe('sticky prompt', () => {
     addAt(rig, 'second', 500);
     scrollTo(rig, 430);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>first</p>', shift: 0 });
     const before = pinStore.get();
     const w = writes();
@@ -436,12 +436,12 @@ describe('sticky prompt', () => {
     addAt(rig, 'P3', 1200);
     scrollTo(rig, 600);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P2</p>' });
     rig.sticky.jumpToPinned();
     expect(rig.scroll.scrollTop).toBe(400);
     rig.sticky.refresh();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: true });
   });
 
@@ -452,10 +452,10 @@ describe('sticky prompt', () => {
     addAt(rig, 'P3', 1200);
     scrollTo(rig, 600);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     rig.sticky.jumpToPinned();
     rig.sticky.refresh();
-    await frame();
+    await settle();
     const w = writes();
     scrollTo(rig, 380);
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', shift: -20, pushedOff: false });
@@ -470,7 +470,7 @@ describe('sticky prompt', () => {
     addAt(rig, 'P2', 400);
     scrollTo(rig, 300);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>' });
     scrollTo(rig, 400);
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: true });
@@ -484,7 +484,7 @@ describe('sticky prompt', () => {
     addAt(rig, 'P2', 400.3);
     scrollTo(rig, 300);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: false });
     // P2 sits 0.3px below the top: 0.3px of the 40px pin is left showing.
     scrollTo(rig, 400);
@@ -503,10 +503,10 @@ describe('sticky prompt', () => {
     addAt(rig, 'P3', 1200);
     scrollTo(rig, 600);
     rig.sticky.reveal();
-    await frame();
+    await settle();
     rig.sticky.jumpToPinned();
     rig.sticky.refresh();
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>' });
     scrollTo(rig, 0);
     expect(pin()).toEqual({ kind: 'status', text: STATUS_NONE });
@@ -526,7 +526,7 @@ describe('sticky prompt', () => {
     let before = pinStore.get();
     let w = writes();
     for (let y = 0; y <= 4; y++) scrollTo(rig, y);
-    await frame();
+    await settle();
     expect(w.list).toHaveLength(0);
     expect(pinStore.get() === before).toBe(true);
     w.off();
@@ -541,7 +541,7 @@ describe('sticky prompt', () => {
     before = pinStore.get();
     w = writes();
     for (let i = 0; i < 5; i++) rig.sticky.refresh();
-    await frame();
+    await settle();
     expect(w.list).toHaveLength(0);
     expect(pinStore.get() === before).toBe(true);
     w.off();
@@ -560,7 +560,7 @@ describe('sticky prompt', () => {
       withBody(rig, scrollH, clientH);
       addAt(rig, 'long', -300);
       rig.sticky.reveal();
-      await frame();
+      await settle();
       expect(pin(), `${scrollH}/${clientH}`).toMatchObject({ kind: 'pinned', overflowing });
     }
   });
@@ -571,7 +571,7 @@ describe('sticky prompt', () => {
     rig.sticky.reveal();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>first</p>' });
     rig.list.replaceChildren();
-    await frame();
+    await settle();
     expect(pin()).toEqual({ kind: 'status', text: STATUS_NONE });
   });
 
@@ -597,7 +597,7 @@ describe('sticky prompt', () => {
     expect(runs).toHaveLength(1);
     rig.status.visible = false;
     runs[0].resolve('exhausted');
-    await frame();
+    await settle();
     expect(pin()).toEqual({ kind: 'status', text: STATUS_NONE });
   });
 
@@ -610,7 +610,7 @@ describe('sticky prompt', () => {
     expect(runs).toHaveLength(1);
     rig.scroll.scrollTop = 400;
     expect(runs[0].found()).toBe(true);
-    await frame();
+    await settle();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>P1</p>', pushedOff: true });
   });
   it('a view opening mid-run stops the run at its next check, as does unmounting the transcript', () => {
@@ -637,11 +637,11 @@ describe('sticky prompt', () => {
       let lazy = createLazyHistory({ model: new ConversationModel(), getActiveId: () => rig.activeId });
       rig = makeRig({ lazy });
       lazy.init({ tailStartSeq: 0 });
-      await frame();
+      await settle();
       lazy.reset();
       const n = calls.length;
       rig.sticky.reveal();
-      await frame();
+      await settle();
       expect(pin()).toEqual({ kind: 'status', text: STATUS_NONE });
       expect(calls.length).toBe(n);
 
@@ -651,7 +651,7 @@ describe('sticky prompt', () => {
       lazy = createLazyHistory({ model: new ConversationModel(), getActiveId: () => rig.activeId });
       rig = makeRig({ lazy });
       lazy.init({ tailStartSeq: 0 });
-      await frame();
+      await settle();
       rig.activeId = 'b';
       lazy.reset();
       rig.sticky.reveal();
@@ -670,7 +670,7 @@ describe('sticky prompt', () => {
       rig.activeId = id;
       rig.list.replaceChildren();
       lazy.reset();
-      await frame();
+      await settle();
     }
     rig.sticky.reveal();
     expect(pin()).toEqual({ kind: 'status', text: STATUS_LOADING });
@@ -684,7 +684,7 @@ describe('sticky prompt', () => {
     rig.sticky.reveal();
     expect(runs).toHaveLength(2);
     runs[0].resolve('stalled');
-    await frame();
+    await settle();
     expect(pin()).toEqual({ kind: 'status', text: STATUS_LOADING });
     for (let i = 0; i < 3; i++) rig.sticky.refresh();
     expect(runs).toHaveLength(2);
@@ -701,11 +701,11 @@ describe('sticky prompt', () => {
     expect(runs).toHaveLength(1);
     rig.activeId = 'b';
     rig.list.replaceChildren();
-    await frame();
+    await settle();
     expect(pin().kind).toBe('hidden');
     expect(runs[0].keepGoing()).toBe(false);
     rig.add('other', -300);
-    await frame();
+    await settle();
     expect(pin().kind).toBe('hidden');
     rig.sticky.reveal();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>other</p>' });
@@ -718,7 +718,7 @@ describe('sticky prompt', () => {
     rig.sticky.reveal();
     expect(pin()).toMatchObject({ kind: 'pinned', html: '<p>first</p>' });
     rig.list.replaceChildren();
-    await frame();
+    await settle();
     expect(pin()).toEqual({ kind: 'status', text: STATUS_NONE });
   });
 });

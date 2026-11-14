@@ -6,6 +6,7 @@
 // costs two reads, not one per hint.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -37,10 +38,9 @@ async function boot() {
     p.then(() => { s.done = true; }, (e) => { s.done = true; s.error = e; });
     return s;
   };
-  const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
   const signalsOf = (url: string) => calls.filter((x) => x.method === 'GET' && x.url === url).map((x) => x.signal);
   const signalOf = (url: string) => signalsOf(url)[0];
-  return { c, appStore, bus: ws.bus, projectReads, instanceReads, count, settled, flush, signalOf, signalsOf };
+  return { c, appStore, bus: ws.bus, projectReads, instanceReads, count, settled, settle, signalOf, signalsOf };
 }
 
 afterEach(() => { stop?.(); stop = null; vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -50,11 +50,11 @@ describe('coalesced list reads', () => {
     const b = await boot();
     const first = b.settled(b.c.refreshProjects());
     const rest = [b.c.refreshProjects(), b.c.refreshProjects(), b.c.refreshProjects()].map(b.settled);
-    await b.flush();
+    await b.settle();
     expect(b.count('/api/projects'), 'three more calls while A is in flight start no read').toBe(1);
     b.projectReads[0].release({ json: [] });
     await vi.waitFor(() => expect(b.count('/api/projects'), 'one trailing read for all three').toBe(2));
-    await b.flush();
+    await b.settle();
     expect(first.done).toBe(true);
     expect(rest.map((s) => s.done), 'the trailing callers wait for the trailing read').toEqual([false, false, false]);
     b.projectReads[1].release({ json: [] });
@@ -70,7 +70,7 @@ describe('coalesced list reads', () => {
     b.projectReads[0].release({ json: [{ name: 'one' }] });
     await vi.waitFor(() => expect(b.appStore.get().projects.map((p: { name: string }) => p.name)).toEqual(['one']));
     await vi.waitFor(() => expect(b.projectReads).toHaveLength(2));
-    await b.flush();
+    await b.settle();
     expect(second.done, 'handed the in-flight read\'s promise, it would be done here').toBe(false);
     b.projectReads[1].release({ json: [{ name: 'two' }] });
     await vi.waitFor(() => expect(second.done).toBe(true));
@@ -80,12 +80,12 @@ describe('coalesced list reads', () => {
   it('a burst of `instances` hints is one read in flight plus one trailing read', async () => {
     const b = await boot();
     for (let i = 0; i < 4; i++) b.bus.dispatchEvent(new CustomEvent('instances'));
-    await b.flush();
+    await b.settle();
     expect(b.count('/api/instances')).toBe(1);
     b.instanceReads[0].release({ json: [] });
     await vi.waitFor(() => expect(b.count('/api/instances')).toBe(2));
     b.instanceReads[1].release({ json: [] });
-    await b.flush();
+    await b.settle();
     expect(b.count('/api/instances')).toBe(2);
   });
 

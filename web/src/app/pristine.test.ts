@@ -6,6 +6,7 @@
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -50,10 +51,9 @@ async function boot() {
   const views = await import('@/features/views/api');
   c.startController();
   stop = c.stopController;
-  const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
-  const frame = async (t: string, detail: Record<string, unknown> = {}) => { ws.bus.dispatchEvent(new CustomEvent(t, { detail })); await flush(); };
+  const frame = async (t: string, detail: Record<string, unknown> = {}) => { ws.bus.dispatchEvent(new CustomEvent(t, { detail })); await settle(); };
   return {
-    c, appStore, views, calls, flush,
+    c, appStore, views, calls, settle,
     open: () => frame('open'),
     close: () => frame('close'),
     hint: () => frame('instances'),
@@ -178,7 +178,7 @@ describe('the pristine slot', () => {
     await b.open();
     expect(b.appStore.get().pristine, 'fixture check: the newer open applied its answer').toMatchObject({ model: 'm-new', status: 'idle' });
     first.release({ json: { ...P, status: 'crashed', model: 'm-stale', backend: 'claude', modelSwitch: MS } });
-    await b.flush();
+    await b.settle();
     expect(b.appStore.get().pristine).toMatchObject({ id: 'iP', status: 'idle', model: 'm-new', backend: 'ollama', modelSwitch: null });
     expect(b.active()).toBe('iP');
   });
@@ -192,7 +192,7 @@ describe('the pristine slot', () => {
     expect(b.appStore.get().pristine, 'fixture check: its exit cleared the slot').toBeNull();
     expect(b.active(), 'fixture check: and the active session').toBeNull();
     pending.release({ json: { ...P, status: 'idle', model: 'm-old', backend: 'claude', modelSwitch: null } });
-    await b.flush();
+    await b.settle();
     expect(b.appStore.get().pristine).toBeNull();
     expect(b.active()).toBeNull();
   });
@@ -260,7 +260,7 @@ describe('Back onto its URL', () => {
     expect(b.appStore.get().pristine?.id, 'control: P is still held in the slot, unlisted').toBe('iP');
     expect(b.listedIds()).not.toContain('iP');
     history.back();
-    await b.flush();
+    await b.settle();
     expect(b.active()).toBe('iP');
     expect(location.hash).toBe('#session=s-p');
     expect(b.calls.some((x) => x.url.endsWith('/locate')), 'no locate is requested').toBe(false);

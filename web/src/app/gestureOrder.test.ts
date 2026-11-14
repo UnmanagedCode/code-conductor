@@ -8,6 +8,7 @@
 // confirms it, so a click made while its confirmation is open is the older.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -67,28 +68,27 @@ async function boot(list: Inst[]) {
   const { appStore, activeInstance } = await import('@/state/app');
   c.startController();
   stop = c.stopController;
-  const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
   /** Answers every instance read not answered yet with `next`, oldest first. */
-  const land = async (next: Inst[]) => { for (const r of reads.splice(0)) { r.release({ json: next }); await flush(); } };
+  const land = async (next: Inst[]) => { for (const r of reads.splice(0)) { r.release({ json: next }); await settle(); } };
   const answer = async (m: Map<string, Held>, key: string, a: RouteAnswer) => {
     const h = m.get(key);
     if (!h) throw new Error(`fixture check: ${key} was requested`);
     m.delete(key);
     h.release(a);
-    await flush();
+    await settle();
   };
   /** Answers every resume POST still held with its session's instance, and every instance read with `next`, until none is left. */
   const drain = async (next: Inst[]) => {
     while (posts.size || reads.length) {
-      for (const [key, h] of [...posts]) { posts.delete(key); h.release({ json: resumed(key) }); await flush(); }
+      for (const [key, h] of [...posts]) { posts.delete(key); h.release({ json: resumed(key) }); await settle(); }
       await land(next);
     }
   };
   ws.bus.dispatchEvent(new CustomEvent('open'));
-  await flush();
+  await settle();
   await land(list);
   return {
-    c, actions, conduct, flush, land, drain,
+    c, actions, conduct, settle, land, drain,
     lookup: (sid: string, a: RouteAnswer) => answer(lookups, sid, a),
     post: (key: string, a: RouteAnswer) => answer(posts, key, a),
     pending: () => reads.length,
@@ -104,7 +104,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
   it('a session picked while a notification click looks its session up stands, with its anchor, and the clicked one is never resumed', async () => {
     const ctl = await boot([C]);
     const ctlClick = ctl.c.handleNotificationClick({ sessionId: 's-y' });
-    await ctl.flush();
+    await ctl.settle();
     await ctl.lookup('s-y', ON_DISK);
     await ctl.post('s-y', { json: Y });
     await ctl.land([C, Y]);
@@ -113,7 +113,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
 
     const b = await boot([C]);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     b.c.selectInstance('iC', { userGesture: true });
     await b.lookup('s-y', ON_DISK);
     await b.drain([C, Y]);
@@ -126,7 +126,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
   it('a session picked while a notification click\'s resume is being POSTed stands, with its anchor', async () => {
     const b = await boot([C]);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     expect(b.resumes(), 'fixture check: the click is resuming').toEqual(['s-y']);
     b.c.selectInstance('iC', { userGesture: true });
@@ -140,7 +140,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
   it('a session picked while a notification click\'s resumed session is being listed stands, with its anchor', async () => {
     const b = await boot([C]);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     await b.post('s-y', { json: Y });
     expect(b.pending(), 'fixture check: the post-resume list read is in flight').toBe(1);
@@ -155,7 +155,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
     const own = inst('iY', 's-y');
     const ctl = await boot([C]);
     const ctlClick = ctl.c.handleNotificationClick({ sessionId: 's-y' });
-    await ctl.flush();
+    await ctl.settle();
     await ctl.lookup('s-y', ON_DISK);
     await ctl.post('s-y', { status: 409, json: { error: 'already attached' } });
     await ctl.land([C, own]);
@@ -164,7 +164,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
 
     const b = await boot([C]);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     await b.post('s-y', { status: 409, json: { error: 'already attached' } });
     expect(b.pending(), 'fixture check: the owner\'s list read is in flight').toBe(1);
@@ -179,7 +179,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
     const b = await boot([A, C]);
     b.c.selectInstance('iC', { userGesture: true });
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     await b.post('s-y', { json: Y });
     await b.land([A, C, Y]);
@@ -192,7 +192,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
     const ctl = await boot([A, C]);
     ctl.c.selectInstance('iA', { userGesture: true });
     const ctlFork = ctl.actions.forkActiveSession(1, 'fork me');
-    await ctl.flush();
+    await ctl.settle();
     await ctl.post('fork', { json: { instance: FORKED } });
     await ctl.land([A, C, FORKED]);
     await ctlFork;
@@ -201,7 +201,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
     const b = await boot([A, C]);
     b.c.selectInstance('iA', { userGesture: true });
     const fork = b.actions.forkActiveSession(1, 'fork me');
-    await b.flush();
+    await b.settle();
     await b.post('fork', { json: { instance: FORKED } });
     expect(b.pending(), 'fixture check: the post-fork list read is in flight').toBe(1);
     b.c.selectInstance('iC', { userGesture: true });
@@ -214,7 +214,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
   it('a session picked while the Conduct button\'s conductor is starting stands, with its anchor, and the conductor is not opened', async () => {
     const ctl = await boot([C]);
     const ctlStart = ctl.conduct.startConducting();
-    await ctl.flush();
+    await ctl.settle();
     await ctl.post('conductor', { json: CONDUCTOR });
     await ctl.land([C, CONDUCTOR]);
     await ctlStart;
@@ -222,7 +222,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
 
     const b = await boot([C]);
     const start = b.conduct.startConducting();
-    await b.flush();
+    await b.settle();
     expect(b.resumes(), 'fixture check: the conductor is being started').toEqual(['conductor']);
     b.c.selectInstance('iC', { userGesture: true });
     await b.post('conductor', { json: CONDUCTOR });
@@ -236,7 +236,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
     const ctl = await boot([A, C]);
     ctl.c.selectInstance('iA', { userGesture: true });
     const ctlClick = ctl.c.handleNotificationClick({ sessionId: 's-y' });
-    await ctl.flush();
+    await ctl.settle();
     await ctl.lookup('s-y', ON_DISK);
     await ctl.post('s-y', { json: Y });
     await ctl.land([A, C, Y]);
@@ -246,7 +246,7 @@ describe('a gesture still in flight and a session the user picks meanwhile', () 
     const b = await boot([A, C]);
     b.c.selectInstance('iA', { userGesture: true });
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     expect(b.active(), 'fixture check: the session picked again is the active one').toBe('iA');
     b.c.selectInstance('iA', { userGesture: true });
     await b.lookup('s-y', ON_DISK);
@@ -263,7 +263,7 @@ describe('two gestures in flight at once', () => {
     const b = await boot([C]);
     const first = b.c.handleNotificationClick({ sessionId: 's-x' });
     const later = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     await b.post('s-y', { json: Y });
     await b.land([C, Y]);
@@ -281,7 +281,7 @@ describe('two gestures in flight at once', () => {
     const b = await boot([C]);
     const first = b.c.handleNotificationClick({ sessionId: 's-x' });
     const later = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-x', ON_DISK);
     await b.post('s-x', { json: X });
     await b.land([C, X]);
@@ -300,7 +300,7 @@ describe('two gestures in flight at once', () => {
     const b = await boot([C]);
     const first = b.c.handleNotificationClick({ sessionId: 's-x' });
     const later = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-x', ON_DISK);
     await b.post('s-x', { status: 409, json: { error: 'already attached' } });
     await b.land([C, own]);
@@ -317,7 +317,7 @@ describe('two gestures in flight at once', () => {
   it('a notification click on a session already in the list, made while an earlier click looks its session up, opens it, and the earlier click landing after it neither resumes nor selects over it', async () => {
     const ctl = await boot([C, L]);
     const ctlClick = ctl.c.handleNotificationClick({ sessionId: 's-x' });
-    await ctl.flush();
+    await ctl.settle();
     await ctl.lookup('s-x', ON_DISK);
     await ctl.post('s-x', { json: X });
     await ctl.land([C, L, X]);
@@ -326,7 +326,7 @@ describe('two gestures in flight at once', () => {
 
     const b = await boot([C, L]);
     const first = b.c.handleNotificationClick({ sessionId: 's-x' });
-    await b.flush();
+    await b.settle();
     await b.c.handleNotificationClick({ sessionId: 's-l' });
     expect(b.active(), 'fixture check: the later click opened the listed session').toBe('iL');
     await b.lookup('s-x', ON_DISK);
@@ -341,9 +341,9 @@ describe('two gestures in flight at once', () => {
     const b = await boot([A, C]);
     b.c.selectInstance('iA', { userGesture: true });
     const fork = b.actions.forkActiveSession(1, 'fork me');
-    await b.flush();
+    await b.settle();
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.post('fork', { json: { instance: FORKED } });
     await b.land([A, C, FORKED]);
     await fork;
@@ -363,17 +363,17 @@ describe('two gestures in flight at once', () => {
     vi.mocked(confirmDialog).mockImplementationOnce(() => confirm.answer);
     b.c.selectInstance('iA', { userGesture: true });
     const fork = b.actions.forkActiveSession(1, 'fork me');
-    await b.flush();
+    await b.settle();
     expect(vi.mocked(confirmDialog).mock.results.at(-1)?.value, 'fixture check: the fork is waiting on its confirmation').toBe(confirm.answer);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     await b.post('s-y', { json: Y });
     await b.land([A, C, Y]);
     await click;
     expect(b.active(), 'fixture check: the click opened its session').toBe(Y.id);
     confirm.release(true);
-    await b.flush();
+    await b.settle();
     await b.post('fork', { json: { instance: FORKED } });
     await b.land([A, C, Y, FORKED]);
     await fork;
@@ -385,7 +385,7 @@ describe('two gestures in flight at once', () => {
     const b = await boot([C]);
     const first = b.c.handleNotificationClick({ sessionId: 's-x' });
     const later = b.c.handleNotificationClick({ sessionId: 's-gone' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-gone', MISS);
     await later;
     expect(b.active(), 'fixture check: the later click selected nothing').toBeNull();
@@ -400,9 +400,9 @@ describe('two gestures in flight at once', () => {
   it('a notification click made while a sidebar resume runs opens its session, and the resume landing after it does not select over it', async () => {
     const b = await boot([C]);
     const row = b.actions.resumeSession({ projectName: 'p', sessionId: 's-z' });
-    await b.flush();
+    await b.settle();
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     await b.post('s-y', { json: Y });
     await b.land([C, Y]);
@@ -418,9 +418,9 @@ describe('two gestures in flight at once', () => {
   it('a sidebar resume started while a notification click looks its session up opens its session, and the click\'s resume landing after it does not select over it', async () => {
     const b = await boot([C]);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     const row = b.actions.resumeSession({ projectName: 'p', sessionId: 's-z' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     expect(b.resumes(), 'fixture check: the sidebar resume, then the click\'s, are both being POSTed').toEqual(['s-z', 's-y']);
     await b.post('s-z', { json: Z });
@@ -437,9 +437,9 @@ describe('two gestures in flight at once', () => {
   it('a notification click made while the Conduct button\'s conductor is starting opens its session, and the conductor landing after it is not opened', async () => {
     const b = await boot([C]);
     const start = b.conduct.startConducting();
-    await b.flush();
+    await b.settle();
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.lookup('s-y', ON_DISK);
     await b.post('s-y', { json: Y });
     await b.land([C, Y]);
@@ -455,9 +455,9 @@ describe('two gestures in flight at once', () => {
   it('a notification click made while the Conduct button\'s conductor is starting opens its session when the conductor lands first', async () => {
     const b = await boot([C]);
     const start = b.conduct.startConducting();
-    await b.flush();
+    await b.settle();
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     await b.post('conductor', { json: CONDUCTOR });
     await b.land([C, CONDUCTOR]);
     await start;
