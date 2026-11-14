@@ -129,8 +129,15 @@ export type InstanceSummary = {
   modelSwitchFailure: ModelSwitchFailure | null;
 };
 
-// A row of GET /instances: the summary plus the two wake facts the manager joins on.
+// InstanceManager.list()'s row: the summary plus the two wake facts the manager joins on.
 export type InstanceListRow = InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean };
+
+// The playbook binding GET /instances joins onto each InstanceListRow (playbookBinding,
+// src/playbookState.ts): null/null for an untracked worker or a failed projection read.
+export interface PlaybookBinding {
+  playbook: string | null;
+  stage: string | null;
+}
 
 export interface SessionRow {
   sessionId: string;

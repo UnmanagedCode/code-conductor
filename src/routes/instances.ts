@@ -10,6 +10,7 @@ import { httpError } from '../httpError.ts';
 import { isSessionId } from '../identifiers.ts';
 import type { PlaybookGate } from '../mcp/playbookGate.ts';
 import { intQueryParam, sendAttachment, jsonBody } from './shared.ts';
+import type { InstanceListRow, InstanceSummary, PlaybookBinding } from '../../shared/wireRows.ts';
 
 export function mountInstances(r: express.Router, { instances, playbookGate }: { instances: InstanceManagerLike; playbookGate?: PlaybookGate | null }): void {
   // An event-log read failure must not break the instance list this drives the
@@ -19,7 +20,7 @@ export function mountInstances(r: express.Router, { instances, playbookGate }: {
   // tests/event-log-chokepoint.test.mjs), which is the SAME gate
   // `createServer` hands the MCP router, so this list reflects whatever the
   // MCP side just wrote.
-  async function playbookBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>> {
+  async function playbookBindings(sessionIds: unknown[]): Promise<PlaybookBinding[]> {
     if (!playbookGate) return sessionIds.map(() => ({ playbook: null, stage: null }));
     try { return await playbookGate.readBindings(sessionIds); }
     catch (e) {
@@ -32,7 +33,7 @@ export function mountInstances(r: express.Router, { instances, playbookGate }: {
     try {
       const rows = instances.listVisible();
       const bindings = await playbookBindings(rows.map(row => row.sessionId));
-      res.json(rows.map((row, i) => ({ ...row, ...bindings[i] })));
+      res.json(rows.map((row, i) => ({ ...row, ...bindings[i] })) satisfies Array<InstanceListRow & PlaybookBinding>);
     } catch (e) { next(e); }
   });
 
@@ -42,19 +43,19 @@ export function mountInstances(r: express.Router, { instances, playbookGate }: {
     try {
       const inst = instances.pristineFor(req.params.sessionId);
       if (!inst) throw httpError(404, 'no live pristine conductor has that session id', { code: 'NOT_PRISTINE' });
-      res.json(inst.summary());
+      res.json(inst.summary() satisfies InstanceSummary);
     } catch (e) { next(e); }
   });
 
   r.post('/instances', async (req, res, next) => {
-    try { res.status(201).json((await spawnFromBody(instances, jsonBody(req))).summary()); }
+    try { res.status(201).json((await spawnFromBody(instances, jsonBody(req))).summary() satisfies InstanceSummary); }
     catch (e) { next(e); }
   });
 
   r.post('/instances/:id/respawn', async (req, res, next) => {
     try {
       const inst = await instances.respawn(req.params.id, { actor: { type: 'human' } });
-      res.json(inst.summary());
+      res.json(inst.summary() satisfies InstanceSummary);
     } catch (e) { next(e); }
   });
 

@@ -66,6 +66,7 @@ import { isConductorInstance } from '../conduct.ts';
 import { getDefaultPlaybookEnforcement } from '../conductorConventions.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { isRecord, asRecord } from '../../shared/basics.ts';
+import type { PlaybookBinding } from '../../shared/wireRows.ts';
 
 // The soft-refusal body, serialized exactly like the transport's own
 // SESSION_AMBIGUOUS result: a normal tool result, never `isError`, never a
@@ -111,7 +112,7 @@ export interface PlaybookGate {
   // list, in input order; null/null per id for an untracked worker. A load
   // failure (anything but ENOENT) propagates, so a caller that wants to degrade
   // rather than throw has to catch it.
-  readBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>>;
+  readBindings(sessionIds: unknown[]): Promise<PlaybookBinding[]>;
   // The live workers bound to `playbook`, for src/playbookApi.ts (same import
   // rule and load-failure contract as readBindings).
   readLiveWorkers(playbook: string): Promise<string[]>;
@@ -396,7 +397,7 @@ export function createPlaybookGate(
     return proj;
   }
 
-  async function readBindings(sessionIds: unknown[]): Promise<Array<{ playbook: string | null; stage: string | null }>> {
+  async function readBindings(sessionIds: unknown[]): Promise<PlaybookBinding[]> {
     const p = await readProjection();
     return sessionIds.map(sid => playbookBinding(p, sid));
   }

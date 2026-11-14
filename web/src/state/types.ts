@@ -4,14 +4,11 @@
 // and Worktree are declared here because their producer has no declared type;
 // they keep an index signature for what the UI does not name.
 
-import type { InstanceListRow, SessionRow as WireSessionRow } from '@shared/wireRows';
+import type { InstanceListRow, PlaybookBinding, SessionRow as WireSessionRow } from '@shared/wireRows';
 
 export type { WorktreeHookResult as PostWorktreeHook, InstanceWorktree } from '@shared/wireRows';
 
-export type Instance = Pick<InstanceListRow, 'id' | 'project' | 'status' | 'sessionId' | 'mode'> & Partial<InstanceListRow> & {
-  // Joined onto GET /instances rows from the playbook projection.
-  playbook?: string | null;
-  stage?: string | null;
+export type Instance = Pick<InstanceListRow, 'id' | 'project' | 'status' | 'sessionId' | 'mode'> & Partial<InstanceListRow & PlaybookBinding> & {
   /**
    * Set only on `AppState.ended`: the session this pane shows has no instance in
    * any list. `instance` — it left while shown, and its scroll-back still pages

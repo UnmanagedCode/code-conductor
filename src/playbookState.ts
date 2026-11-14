@@ -22,6 +22,7 @@
 // nothing. See docs/protocol.md → Playbooks for the wire contract.
 
 import type { EventRow } from './eventLog.ts';
+import type { PlaybookBinding } from '../shared/wireRows.ts';
 
 export interface WorkerState {
   sessionId: string;
@@ -194,7 +195,7 @@ export function hasEverBeen(p: Projection, sessionId: string, stage: string): bo
 // "this build does not report it".
 export function playbookBinding(
   p: Projection | null, sessionId: unknown,
-): { playbook: string | null; stage: string | null } {
+): PlaybookBinding {
   const tracked = p && typeof sessionId === 'string' ? p.bySession.get(sessionId) : undefined;
   return { playbook: tracked?.playbook ?? null, stage: tracked?.stage ?? null };
 }
