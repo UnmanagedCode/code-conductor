@@ -59,14 +59,40 @@ describe('a renewal\'s /clear command line on the load path', () => {
     expect(bubbleTexts(m).some((t) => t.startsWith('<command-name>/compact'))).toBe(true);
   });
 
-  it('a /clear echo away from a seam is untouched', () => {
+  it('a /clear echo not directly followed by the reseed is untouched', () => {
     const m = new ConversationModel();
-    apply(m, { kind: 'user_echo', text: 'earlier prompt', userIndex: 0 });
-    apply(m, { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'reply' });
-    apply(m, { kind: 'text_end', msgId: 'm1', blockIdx: 0 });
     apply(m, clearEcho());
+    apply(m, { kind: 'user_echo', text: 'a prompt in between', userIndex: 1 });
     apply(m, seedEcho());
     expect(bubbleTexts(m).some((t) => t.startsWith('<command-name>/clear'))).toBe(true);
+    const n = new ConversationModel();
+    apply(n, clearEcho());
+    apply(n, { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'reply' });
+    apply(n, { kind: 'text_end', msgId: 'm1', blockIdx: 0 });
+    apply(n, seedEcho());
+    expect(bubbleTexts(n).some((t) => t.startsWith('<command-name>/clear'))).toBe(true);
+  });
+
+  it('resume path: snapshot holds echo + seed with no seam, then a [seam]-only page is prepended', () => {
+    const m = new ConversationModel();
+    m.applyEvents([
+      clearEcho(),
+      seedEcho(),
+      { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'Resumed from the summary.' },
+      { kind: 'text_end', msgId: 'm1', blockIdx: 0 },
+    ] as UiEvent[]);
+    m.prependPage(m.renderPage([SEAM], 'post', 'post'), m.leadingAssistantWrap);
+    expect(shape(m)).toEqual(['divider', 'user', 'assistant']);
+    expect(users(m).map((u) => u.variant)).toEqual(['renew']);
+    expect(bubbleTexts(m).some((t) => t.includes('<command-name>'))).toBe(false);
+  });
+
+  it('fork: echo + seed with no seam at all', () => {
+    const m = new ConversationModel();
+    replayLines(m, S.replayPersistedLine, fixture());
+    expect(shape(m)).toEqual(['user', 'assistant']);
+    expect(users(m).map((u) => u.variant)).toEqual(['renew']);
+    expect(bubbleTexts(m).some((t) => t.includes('<command-name>'))).toBe(false);
   });
 
   it('paged: the echo ends the older page and the seed heads the newer one', () => {

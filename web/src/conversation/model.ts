@@ -194,11 +194,10 @@ export function shouldRenderSystem(ev: UiEventOf<'system'>): boolean {
 export const isCompactCommandText = (t: string) => /^<command-name>\/compact<\/command-name>/.test(t);
 export const isClearCommandText = (t: string) => /^<command-name>\/clear<\/command-name>/.test(t);
 
-// A renewal's `/clear` command line is replay-only: the live clear emits no echo, so the seam divider stands for it
-// once the reseed below it confirms a managed renewal (a typed `/clear` has no reseed and keeps its bubble).
-function isRenewalClearEcho(above: RootItem | undefined, echo: RootItem | undefined, below: RootItem | undefined): boolean {
-  return above?.type === 'divider' && above.kind === 'seam'
-    && echo?.type === 'user' && echo.variant === 'plain' && isClearCommandText(echo.rawText)
+// A renewal's `/clear` command line is replay-only: the live clear emits no echo. The reseed directly below it is
+// sent only by cc, so it proves a managed renewal and the line is dropped; a typed `/clear` has no reseed and keeps its bubble.
+function isRenewalClearEcho(echo: RootItem | undefined, below: RootItem | undefined): boolean {
+  return echo?.type === 'user' && echo.variant === 'plain' && isClearCommandText(echo.rawText)
     && below?.type === 'user' && below.variant === 'renew';
 }
 export const isLocalCommandStdoutText = (t: string) => /^<local-command-stdout>[\s\S]*<\/local-command-stdout>$/.test(t.trim());
@@ -1142,7 +1141,7 @@ export class ConversationModel {
       origin: this.isSub ? 'synthetic' : hasUserText ? promptOrigin(ev) : 'synthetic',
       reader: { view: 'rendered', foldOpen: false, foldView: 'rendered' },
     }, this);
-    if (isRenewalClearEcho(this.items.at(-2), this.items.at(-1), node)) this.items.pop();
+    if (isRenewalClearEcho(this.items.at(-1), node)) this.items.pop();
     this.pushRoot(node);
     if (compactionBelow) {
       this.items.splice(this.items.indexOf(compactionBelow), 1);
@@ -1267,8 +1266,8 @@ export class ConversationModel {
     if (pageTail?.type === 'divider' && pageTail.kind === 'gap' && liveHead?.type === 'divider' && liveHead.kind === 'gap') {
       pageItems = incoming.slice(0, -1);
     }
-    // The renewal's /clear echo ending this page, with the reseed heading what is below, is absorbed by the seam above it.
-    if (isRenewalClearEcho(pageItems.at(-2), pageItems.at(-1), this.items[0])) pageItems = pageItems.slice(0, -1);
+    // The renewal's /clear echo ending this page, with the reseed heading what is below, is dropped.
+    if (isRenewalClearEcho(pageItems.at(-1), this.items[0])) pageItems = pageItems.slice(0, -1);
     const trailing = page.activeWrap;
     if (trailing && oldestLeadingWrap && trailing !== oldestLeadingWrap) {
       const seamAdjacent = pageItems[pageItems.length - 1] === trailing && this.items[0] === oldestLeadingWrap;
