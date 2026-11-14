@@ -565,9 +565,3 @@ export function isBase64(v: string): boolean {
 function clip(s: string): string {
   return s.length <= 200 ? s : `${s.slice(0, 200)}…`;
 }
-
-// The `id` of a frame, or null when it carries none (a connection-level error,
-// or the handshake).
-export function frameId(f: AnyFrame): string | null {
-  return typeof f.id === 'string' ? f.id : null;
-}
