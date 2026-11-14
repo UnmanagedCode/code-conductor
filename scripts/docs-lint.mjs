@@ -36,11 +36,11 @@ export const NOT_IN_REPO = {
 
 export const LINE_CAP = 2000;
 export const DEFAULT_BYTE_CAP = 100000;
-// Docs over the default cap, each held at its current size rounded up to the next 10,000 bytes.
+// Docs over the default cap: each is held at its size plus at least 10,000 bytes of headroom, rounded up to the next 10,000 bytes.
 export const BYTE_CAPS = {
-  'docs/features.md': 420000,
-  'docs/protocol.md': 400000,
-  'docs/plugins.md': 130000,
+  'docs/features.md': 430000,
+  'docs/protocol.md': 410000,
+  'docs/plugins.md': 140000,
 };
 
 const PATH_RE = /^(?:server\.ts|(?:src|shared|web|tests|scripts|migrations|conventions|claude-plugin|bin|harness|docker|playbooks|docs)\/[\w.\/@-]*)$/;
