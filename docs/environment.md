@@ -67,6 +67,6 @@ The registry is `ENV_VARS` in `src/env.ts`. `tests/env-registry.test.mjs` fails 
 | `ORCH_DISABLE_STDIO_PERMISSIONS` | Kill switch for the stdio permission path in `src/instances.ts`. |
 | `ORCH_IDLE_DRAIN_SETTLE_MS` | Settle window before an idle subscription drains (`IDLE_DRAIN_SETTLE_MS` in `src/idleSubscriptions.ts`). |
 | `ORCH_RENEW_CLEAR_TIMEOUT_MS` | Timeout for the clear step of a session renew (`src/sessionRenew.ts`). |
-| `ORCH_SOFT_INTERRUPT_DEADLINE_MS` | Deadline for a soft interrupt before it escalates (`softInterruptDeadlineMs` in `src/instances.ts`). |
+| `ORCH_SOFT_INTERRUPT_DEADLINE_MS` | Deadline for a soft interrupt before it escalates (`softInterruptDeadlineMs` in `src/instances/overageRouting.ts`). |
 | `ORCH_STORE_LOCK_RETRY_MAX` / `ORCH_STORE_LOCK_RETRY_BASE_MS` | Retry count and base delay for the store lock (`src/storeLock.ts`). |
 | `SELF_UPDATE_REPO_ROOT` | The checkout self-update works on (default in `src/selfUpdate.ts`). |

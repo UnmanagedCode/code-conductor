@@ -65,6 +65,8 @@ Callers reach it through `promptOrQueueSteer(text, attachments?)` — which test
 Attachments ride along on `PendingSteer`.
 Routed-site inventory in [protocol.md](../protocol.md).
 
+**Seam modules:** `src/instances/overageRouting.ts` holds the bodies of `InstanceManager`'s overage trip, stop routing and lock release (`_handleOverageTrip` … `_clearOverage`) and `softInterruptDeadlineMs`, as `this: InstanceManager` functions; the class keeps a same-name one-line delegate for each.
+
 ## `src/idleSubscriptions.ts`
 
 `IdleSubscriptionHub`, the idle-wake graph extracted from `InstanceManager` as a composed collaborator.
@@ -222,7 +224,7 @@ A `.unref()`'d `ORCH_RENEW_CLEAR_TIMEOUT_MS` watchdog (default `CLEAR_ROTATE_TIM
 
 ## Overage trip detection + central routing
 
-(in `src/instances.ts`) — the *decision* of what to do on an overage trip moved off the per-Instance handler (which can't reach the idle-wake graph) up to `InstanceManager`.
+(in `src/instances/overageRouting.ts`, reached through `InstanceManager`'s same-name delegates) — the *decision* of what to do on an overage trip moved off the per-Instance handler (which can't reach the idle-wake graph) up to `InstanceManager`.
 Two sources reach `_handleOverageTrip`: the per-Instance stream path below, and the `UsageOverageMonitor` poll (above) — deduped by the global `_overageActive` one-shot so they never double-trip (whichever observes the crossing first wins).
 Flow: `Instance._isOverageTrip(data)` (hard `isUsingOverage` flag OR, when `getOverageThreshold().enabled`, `utilization >= pct/100` for any window) → `Instance` emits an `overage` signal (throttled per run by `_overageHandled`) → `InstanceManager._handleOverageTrip` holds a global one-shot `_overageActive`/`_overageResetsAt`/`_overageClearTimer`, returns early when `getOnOverageAction()==='none'`, else `_routeOverageStop` (**the stop SENDS NOTHING to anything** — the account is throttled, so a message into it is the burn the stop exists to prevent.
 Every session routing touches goes through the one `_directOverageStop`: mid-turn → soft-interrupt via `interrupt()`; already idle → the same notice + sever + arming, with `interrupt()` a no-op it returns from on `status !== 'turn'`.
