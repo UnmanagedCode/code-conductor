@@ -764,10 +764,11 @@ test('the closing stdout sentinel carries exactly one injected newline, which a 
 test(`cancelling the in-flight command actually stops it`, async () => {
   await withShell(async (sh, cwd) => {
     const witness = path.join(cwd, 'STILL_RUNNING');
+    const started = path.join(cwd, 'STARTED');
     const ac = new AbortController();
-    const running = sh.run(`sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
-    // Let it start, then interrupt it well before its own sleep elapses.
-    await new Promise(r => setTimeout(r, 120));
+    const running = sh.run(`touch ${JSON.stringify(started)}; sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+    // Wait until it has started, then interrupt it well before its own sleep elapses.
+    await waitFor(() => fs.stat(started), { timeout: 5000 });
     ac.abort();
     await assert.rejects(() => running, (e) => {
       assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);

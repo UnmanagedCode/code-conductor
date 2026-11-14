@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { capBlockInput, TOOL_ARG_VALUE_CAP, MSG_TEXT_CAP } from '../src/mcp/messageReconstruction.ts';
-import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn, settle } from './helpers.mjs';
 import { InstanceManager } from '../src/instances.ts';
 import { buildRecentMessages } from '../src/mcp/handlers.ts';
 import { localPlace } from '../src/projects.ts';
@@ -302,7 +302,6 @@ function makeFake({ id, sessionId }) {
 function emitTurnEnd(instances, id) {
   instances.emit('event', { id, ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
 }
-const tick = () => new Promise(r => setTimeout(r, 20));
 
 test('C1: the idle-wake fold inherits the slim default — a worker\'s big Write never reaches the conductor\'s prompt', async () => {
   const instances = new InstanceManager();
@@ -314,7 +313,7 @@ test('C1: the idle-wake fold inherits the slim default — a worker\'s big Write
     armWake(instances, 'cs1', 'ws1');
 
     emitTurnEnd(instances, 'w1');
-    await tick();
+    await waitFor(() => cond._promptCalls.length >= 1); await settle();
 
     assert.equal(cond._promptCalls.length, 1);
     const text = cond._promptCalls[0].text;
@@ -333,7 +332,7 @@ test('C2: the folded wake still carries the plan path and the omitted-marker', a
     armWake(instances, 'cs2', 'ws2');
 
     emitTurnEnd(instances, 'w2');
-    await tick();
+    await waitFor(() => cond._promptCalls.length >= 1);
 
     const text = cond._promptCalls[0].text;
     assert.ok(text.includes('/p/plan.md'), 'the plan path should survive in the fold');

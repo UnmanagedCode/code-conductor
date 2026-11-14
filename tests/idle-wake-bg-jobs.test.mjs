@@ -74,7 +74,7 @@ test('a turn end with a background job and no agents delivers exactly one wake a
   inject(c, w);
   armWake('cs1', 'ws1');
   emitTurnEnd('w1');
-  await tick();
+  await waitFor(() => c.prompts.length >= 1); await settle();
   assert.equal(c.prompts.length, 1, 'the job does not hold the wake');
   assert.equal(hub._idleHub.hasArmedWake('w1'), false, 'the wake was consumed');
   cleanup(c, w);
@@ -88,10 +88,10 @@ test('a job never holds a wake up the chain: P ← C ← W, C\'s turn end wakes 
   armWake('ps2', 'cs2');
   armWake('cs2', 'ws2');
   emitTurnEnd('w2');
-  await tick();
+  await waitFor(() => c.prompts.length >= 1); await settle();
   assert.equal(c.prompts.length, 1, 'C was woken by W');
   emitTurnEnd('c2');
-  await tick();
+  await waitFor(() => p.prompts.length >= 1); await settle();
   assert.equal(p.prompts.length, 1, 'C is not held by W\'s running job');
   assert.equal(w.backgroundJobs.length, 1, 'the job was still running throughout');
   cleanup(p, c, w);
@@ -103,7 +103,7 @@ test('folded stub: the job lines and the re-invoke line sit in the summary, befo
   inject(c, w);
   armWake('cs3', 'ws3');
   emitTurnEnd('w3');
-  await tick();
+  await waitFor(() => c.prompts.length >= 1);
   const { text } = c.prompts[0];
   assert.ok(text.includes(WAKE_BODY_SEP), 'an idle caller gets the folded stub');
   const { summary, body } = parseWakeCallback(text);
@@ -120,7 +120,7 @@ test('plain stub (mid-turn caller): carries the jobs block', async () => {
   inject(c, w);
   armWake('cs4', 'ws4');
   emitTurnEnd('w4');
-  await tick();
+  await waitFor(() => c.prompts.length >= 1);
   const { text } = c.prompts[0];
   assert.ok(!text.includes(WAKE_BODY_SEP), 'a mid-turn caller gets the plain stub');
   assert.match(text, /finished its turn\. .*\nBackground jobs still running:\n- "sleep probe" — running /s);
@@ -133,7 +133,7 @@ test('heartbeat (timedOut): no jobs block while the target has jobs', async () =
   const w = makeFake({ id: 'w5', sessionId: 'ws5', status: 'turn', backgroundJobs: [JOB] });
   inject(c, w);
   hub._idleHub.deliver('c5', 'w5', { timedOut: true, timeoutMs: 60_000 });
-  await tick();
+  await waitFor(() => c.prompts.length >= 1);
   const { text } = c.prompts[0];
   assert.match(text, /did NOT finish/);
   assert.ok(!text.includes('Background jobs'), text);
@@ -149,7 +149,7 @@ test('no jobs: the stub carries no jobs block', async () => {
   armWake('cs6', 'ws6');
   armWake('ms6', 'ws6');
   emitTurnEnd('w6');
-  await tick();
+  await waitFor(() => c.prompts.length >= 1 && m.prompts.length >= 1); await settle();
   for (const f of [c, m]) {
     assert.equal(f.prompts.length, 1);
     assert.ok(!f.prompts[0].text.includes('Background jobs'), f.prompts[0].text);
@@ -168,7 +168,7 @@ test('mixed: an agent still defers; once it drains, one wake lists the job', asy
   assert.equal(c.prompts.length, 0, 'the live agent defers the wake');
   w.activeAgentTaskCount = 0;
   emitTurnEnd('w7');
-  await tick();
+  await waitFor(() => c.prompts.length >= 1); await settle();
   assert.equal(c.prompts.length, 1);
   assert.match(c.prompts[0].text, /- "sleep probe" — running /);
   cleanup(c, w);
@@ -180,7 +180,7 @@ test('display separation: after the wake the owner is not awaitingWake but is wa
   inject(c, w);
   armWake('cs8', 'ws8');
   emitTurnEnd('w8');
-  await tick();
+  await waitFor(() => c.prompts.length >= 1); await settle();
   assert.equal(c.prompts.length, 1);
   assert.equal(hub.isIdleCaller('c8'), false, 'no held wake');
   assert.deepEqual([rowOf('c8').awaitingWake, rowOf('c8').waitingOnJob], [false, true]);
