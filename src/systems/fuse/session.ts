@@ -33,7 +33,7 @@ import { wrapLaunch, type LaunchWrap } from './wrap.ts';
 import { scanProcesses, membersOf, type ProcRow, type RawScan } from './procScan.ts';
 import { reclaimProcess, type OrphanReclaim } from './orphans.ts';
 import { ControlServer } from './control.ts';
-import { localDirSource, type RemoteSource } from './remoteSource.ts';
+import { type RemoteSource } from './remoteSource.ts';
 import type { UiEvent } from '../../../shared/uiEvent.ts';
 
 export interface Deadlines {
@@ -282,7 +282,7 @@ export function parsePolicyEvents(text: string): PolicyEventRow[] {
 // a LOCAL contract — this function's precondition is legible without reaching
 // across files for that invariant — and the REASON test is the one a fixture
 // kills.
-export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string; note: string } | null {
+function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string; note: string } | null {
   if (row.kind !== 'deny' || row.reason !== 'unpinned-fail-closed') return null;
   const s = suggestPin(row.path);
   // `note` RIDES THROUGH UNTOUCHED. `suggestPin` has two arms that answer

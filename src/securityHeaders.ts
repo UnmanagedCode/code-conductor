@@ -3,7 +3,7 @@ import type express from 'express';
 
 // The framing and MIME-sniffing policy on every response cc itself produces:
 // only cc's own origin may frame it. Contract: docs/protocol.md → Response headers.
-export const HOST_SECURITY_HEADERS = {
+const HOST_SECURITY_HEADERS = {
   'x-frame-options': 'SAMEORIGIN',
   'content-security-policy': "frame-ancestors 'self'",
   'x-content-type-options': 'nosniff',

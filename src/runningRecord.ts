@@ -25,13 +25,13 @@ import { captureResumeFacts, buildResumeEntries } from './resumeRestart.ts';
 import { readRunningRecord, readResumeManifest, writeRunningRecord, type RunningCli } from './resumeManifest.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 
-export const RUNNING_RECORD_DEBOUNCE_MS = 250;
-export const ORPHAN_CLI_TERM_GRACE_MS = 2000;
+const RUNNING_RECORD_DEBOUNCE_MS = 250;
+const ORPHAN_CLI_TERM_GRACE_MS = 2000;
 // A start-time read that answers null is retried, START_TIME_RETRY_MS after the
 // first failure and doubling, until START_TIME_ATTEMPTS reads in all; the row
 // stays null after that.
 export const START_TIME_ATTEMPTS = 4;
-export const START_TIME_RETRY_MS = 1000;
+const START_TIME_RETRY_MS = 1000;
 const ORPHAN_POLL_MS = 50;
 
 interface Log {

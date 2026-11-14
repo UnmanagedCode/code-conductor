@@ -12,8 +12,8 @@
 // (standard-tier) model is over-estimated, and only for an image above that
 // tier's smaller budget.
 
-export const IMAGE_PATCH_PX = 28;
-export const IMAGE_MAX_EDGE_PX = 2576;
+const IMAGE_PATCH_PX = 28;
+const IMAGE_MAX_EDGE_PX = 2576;
 export const IMAGE_MAX_TOKENS = 4784;
 
 const patches = (px: number): number => Math.ceil(px / IMAGE_PATCH_PX);

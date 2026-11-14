@@ -17,7 +17,7 @@ import { orchStoreRoot, subAgentDirPath, type TranscriptPlacement } from './proj
 import { retireSegments } from './sessionLineage.ts';
 import { errMsg } from '../shared/basics.ts';
 
-export const PENDING_ARCHIVE_FILENAME = 'pending-archive.json';
+const PENDING_ARCHIVE_FILENAME = 'pending-archive.json';
 
 export function pendingArchivePath(): string {
   return path.join(orchStoreRoot(), PENDING_ARCHIVE_FILENAME);

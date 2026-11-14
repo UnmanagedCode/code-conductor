@@ -30,7 +30,7 @@ export interface ScopeSkills {
 // `cc-<scope>-<plugin-id>` for a plugin's. A skill is invoked as
 // `<namespace>:<name>`. No scope is named `custom`, so the three forms are
 // disjoint.
-export function skillNamespace(scope: ConventionScope, src: { plugin?: string; custom?: boolean } = {}): string {
+function skillNamespace(scope: ConventionScope, src: { plugin?: string; custom?: boolean } = {}): string {
   if (src.plugin) return `cc-${scope}-${src.plugin}`;
   return src.custom ? `cc-custom-${scope}` : `cc-${scope}`;
 }
@@ -75,7 +75,7 @@ export async function writeConventionSkills(dir: string, groups: ScopeSkills[]):
 
 // The description is a JSON string, which is a valid YAML double-quoted scalar,
 // so no description text can break the frontmatter.
-export function renderSkill(s: ConventionSkill): string {
+function renderSkill(s: ConventionSkill): string {
   return `---\nname: ${s.name}\ndescription: ${JSON.stringify(s.description)}\n---\n\n${s.body}\n`;
 }
 

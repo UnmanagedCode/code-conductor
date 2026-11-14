@@ -45,13 +45,13 @@ import { errCode } from '../shared/basics.ts';
 // Most names returned; `entries` and `links` count together.
 export const DIR_LIST_MAX_ENTRIES = 1000;
 // Covers `systemById` (the connect) plus `readDir`.
-export const DIR_LIST_DEADLINE_MS = 10_000;
+const DIR_LIST_DEADLINE_MS = 10_000;
 // Symlinks resolved per listing, in name order.
 export const DIR_LIST_MAX_LINK_STATS = 64;
 // `stat`s in flight at once.
 export const DIR_LIST_LINK_STAT_BATCH = 16;
 // The whole link phase.
-export const DIR_LIST_LINK_DEADLINE_MS = 2_000;
+const DIR_LIST_LINK_DEADLINE_MS = 2_000;
 
 export interface DirListOk {
   ok: true;

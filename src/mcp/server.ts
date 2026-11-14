@@ -697,11 +697,11 @@ interface UrlFault { code: string; rpcCode: number; reason: string }
 const ACCEPTED_QUERY = new Set(['format']);
 
 // Every echoed URL fragment in a URL-level fault is cut to this.
-export const URL_ECHO_CAP = 256;
+const URL_ECHO_CAP = 256;
 
 // The largest request body /mcp parses (express.json's `limit`); a larger one
 // is refused PAYLOAD_TOO_LARGE.
-export const MCP_REQUEST_BODY_LIMIT = '8mb';
+const MCP_REQUEST_BODY_LIMIT = '8mb';
 
 // The request preamble every /mcp route shares: the output format, from the
 // query string only (never Accept or Content-Type), then the caller from the

@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
-  projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
+  projectsRoot, selfProjectDir, orchStoreRoot, listProjects, projectStoreDir,
   tryResolveProject, resolveProjectDir,
   readProjectRecord, writeProjectMeta, addWorkspace,
 } from '../projects.ts';

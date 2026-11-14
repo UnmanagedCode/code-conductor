@@ -122,7 +122,7 @@ import { errCode, errMsg } from '../shared/basics.ts';
 export type RotationReason = 'initial' | 'renew' | 'prune';
 // The doc's `version`, written first by every serialize. The parser does not
 // gate on it: migration 0043 is its only reader.
-export const SESSIONS_DOC_VERSION = 2;
+const SESSIONS_DOC_VERSION = 2;
 
 export const VALID_REASONS: ReadonlySet<RotationReason> = new Set<RotationReason>(['initial', 'renew', 'prune']);
 
@@ -333,7 +333,7 @@ export function serializeSessionsDoc(doc: SessionsDoc): string {
   return JSON.stringify({ version: SESSIONS_DOC_VERSION, sessions }, null, 2) + '\n';
 }
 
-export function indexSessions(doc: SessionsDoc): SessionIndex {
+function indexSessions(doc: SessionsDoc): SessionIndex {
   const byBacking = new Map<string, string>();
   for (const [publicId, rec] of doc) {
     for (const seg of liveSegments(rec)) byBacking.set(seg.id, publicId);
@@ -368,7 +368,7 @@ function baseCaseRecord(id: string): SessionRecord {
 
 // Session-level write target, or a refusal reason. `create:false` resolves
 // without creating (the precheck's pure lookup).
-export function ensureRecord(
+function ensureRecord(
   doc: SessionsDoc, id: string, { create = true }: { create?: boolean } = {},
 ): { publicId: string; record: SessionRecord } | { refused: string } | null {
   const direct = doc.get(id);
@@ -923,5 +923,3 @@ export function setSegmentArchived(backingId: string | null | undefined, on: boo
   if (typeof backingId !== 'string' || !backingId) return Promise.resolve(false);
   return segmentWrite('setSegmentArchived', backingId, 'archived', on, owner);
 }
-
-// ── helpers ──────────────────────────────────────────────────────────────────

@@ -71,7 +71,7 @@ export function beginFor(nonce: string): string {
 //     function — which is the whole of what could drift.
 // The settle-scan is the reader that made sharing necessary: a settle that
 // disagreed with a parse resolves a command and then fails it (card 2026-0318 §5.2).
-export const CLOSING_STDOUT_TAIL = /^ (\d+) (\S*)$/;
+const CLOSING_STDOUT_TAIL = /^ (\d+) (\S*)$/;
 
 export function closingTailMatches(kind: 'out' | 'err', tail: string): boolean {
   return kind === 'out' ? CLOSING_STDOUT_TAIL.test(tail) : tail === '';

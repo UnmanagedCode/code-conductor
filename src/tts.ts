@@ -33,7 +33,7 @@ export function piperRoot(): string {
   return path.join(process.env.INSTALL_ROOT || orchStoreRoot(), 'piper');
 }
 
-export function voicesDir(): string {
+function voicesDir(): string {
   return path.join(piperRoot(), 'voices');
 }
 

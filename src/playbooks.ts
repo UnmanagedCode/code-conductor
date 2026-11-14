@@ -66,7 +66,7 @@ export function normalizeToolName(name: string): string {
 // their value is meaningless or actively harmful.
 export const PIN_FORBIDDEN_KEYS = ['sessionId', 'stage', 'playbook', 'provenance'] as const;
 
-export const WILDCARD = '*';
+const WILDCARD = '*';
 
 // Per-conductor-session enforcement level. The single home for the allow-list:
 //   • 'warn'    — the refusal is logged and the call PROCEEDS anyway.
@@ -294,7 +294,7 @@ export const NEEDS_KEYS = new Set(['stage', 'position', 'liveness']);
 // A `workerTools` key: tool-name characters plus `*`, the only wildcard.
 // `|`, `(`, `.` and spaces are refused so a regex or a permission-rule spelling
 // (`Bash(git:*)`) fails at load instead of silently matching nothing.
-export const WORKER_TOOL_PATTERN_RE = /^[A-Za-z0-9_*-]+$/;
+const WORKER_TOOL_PATTERN_RE = /^[A-Za-z0-9_*-]+$/;
 const WORKERS_VALUES = new Set(['one', 'many']);
 const LIVENESS_VALUES = new Set(['live', 'retired', 'any']);
 
@@ -932,7 +932,7 @@ export async function loadPlaybooks(): Promise<LoadResult> {
 // The owning plugin of a namespaced playbook id, or null for a built-in or
 // user-overlay one. Read off the id alone (see the `/` invariant above), so it
 // answers for a playbook that is not currently loaded.
-export function pluginIdOfPlaybook(id: string): string | null {
+function pluginIdOfPlaybook(id: string): string | null {
   const i = id.indexOf('/');
   return i > 0 ? id.slice(0, i) : null;
 }

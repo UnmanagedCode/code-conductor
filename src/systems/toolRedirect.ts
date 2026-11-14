@@ -74,7 +74,6 @@
 // src/systems/providerShell.ts, and the deny surface below.
 
 import path from 'node:path';
-import { SystemError } from './protocol.ts';
 import { withinPosix } from './mirror.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
 import type { System } from './system.ts';
@@ -227,7 +226,6 @@ export class SessionRedirect {
   readonly #exclude: readonly string[];
   readonly #mirrorRoot: string;
   readonly #forwarderUrl: string;
-  readonly #emit: (ev: UiEvent) => void;
   readonly #shellCommandTimeoutMs: number | undefined;
   readonly #maxOutputBytes: number;
   readonly #faultAt: ((p: string) => Fault | null) | undefined;
@@ -265,7 +263,6 @@ export class SessionRedirect {
     this.#exclude = opts.exclude;
     this.#mirrorRoot = opts.mirrorRoot;
     this.#forwarderUrl = opts.forwarderUrl;
-    this.#emit = opts.emit;
     this.#shellCommandTimeoutMs = opts.shellCommandTimeoutMs;
     this.#maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.#faultAt = opts.faultAt;
@@ -606,5 +603,3 @@ export class SessionRedirect {
     this.#shell = null;
   }
 }
-
-

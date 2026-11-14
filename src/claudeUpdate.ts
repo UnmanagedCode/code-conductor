@@ -16,7 +16,7 @@ import { httpError } from './httpError.ts';
 import type { Platform } from './platform/index.ts';
 import { withMaintenanceLock } from './relaunchPrep.ts';
 
-export const CLAUDE_UPDATE_TIMEOUT_MS = 10 * 60_000;
+const CLAUDE_UPDATE_TIMEOUT_MS = 10 * 60_000;
 
 export async function applyClaudeUpdate({ platform, timeoutMs = CLAUDE_UPDATE_TIMEOUT_MS, onChunk, onValidated }: {
   platform: Platform; timeoutMs?: number; onChunk?: (text: string) => void; onValidated?: () => void;

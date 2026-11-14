@@ -180,7 +180,7 @@ export interface SerializedOutcome {
   error?: { name: string; message: string; code?: string; status?: number };
 }
 
-export function serializeError(e: unknown): NonNullable<SerializedOutcome['error']> {
+function serializeError(e: unknown): NonNullable<SerializedOutcome['error']> {
   const rec = isRecord(e) ? e : {};
   const err: NonNullable<SerializedOutcome['error']> = {
     name: cutChars(typeof rec.name === 'string' ? rec.name : 'Error', RUN_ERROR_FIELD_CAP),

@@ -107,7 +107,7 @@ const WORKTREE_PROPS = {
   branch: str, baseBranch: str, baseSha: str, baseWorktree: str, locked: lit(true), createdAt: str,
 };
 const WORKTREE_OPTIONAL = ['baseWorktree', 'locked'];
-export const WORKTREE_VIEW = obj(WORKTREE_PROPS, { optional: WORKTREE_OPTIONAL });
+const WORKTREE_VIEW = obj(WORKTREE_PROPS, { optional: WORKTREE_OPTIONAL });
 // The same metadata under its internal key, as list_projects carries it.
 const { worktree: _w, ...WORKTREE_META_REST } = WORKTREE_PROPS;
 const WORKTREE_META_PROPS = { ...WORKTREE_META_REST, worktreeName: str };

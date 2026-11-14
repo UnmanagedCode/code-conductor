@@ -150,7 +150,7 @@ export interface QueueOperationLine {
   content?: unknown;
 }
 
-export function isTaskNotificationEnqueue(line: QueueOperationLine): line is QueueOperationLine & { content: string } {
+function isTaskNotificationEnqueue(line: QueueOperationLine): line is QueueOperationLine & { content: string } {
   return line.type === 'queue-operation' && line.operation === 'enqueue'
     && typeof line.content === 'string' && line.content.startsWith('<task-notification>');
 }

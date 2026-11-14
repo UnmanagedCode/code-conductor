@@ -18,7 +18,7 @@ import { httpError } from './httpError.ts';
 // Maximum bytes of raw git diff output to keep for a single file's unified
 // diff. Shared by both diff surfaces (REST here + the MCP project_diff
 // handler) so they behave consistently.
-export const DIFF_BYTE_CAP = 200 * 1024;
+const DIFF_BYTE_CAP = 200 * 1024;
 
 // Per-file changed-line ceiling. Checked from --numstat BEFORE reading the
 // unified diff, so a pathological file can never reach runGit's 16 MB maxBuffer.
@@ -331,7 +331,7 @@ async function worktreeTarget(
 export async function getWorktreeDiff(
   projectName: string,
   worktreeName: string,
-  { baseRef, contextLines = 3 }: { baseRef?: string; contextLines?: number } = {},
+  { baseRef }: { baseRef?: string; contextLines?: number } = {},
 ): Promise<{ project: string; worktreeName: string; baseRef: string; files: DiffFileSummary[]; totalAdds: number; totalDels: number; totalFiles: number }> {
   const { target, ref, name } = await worktreeTarget(projectName, worktreeName, baseRef);
   const { files, totalAdds, totalDels } = await summarizeTarget(target);
@@ -404,7 +404,7 @@ function assertValidSha(sha: string): void {
 export async function getCommitDiff(
   projectName: string,
   sha: string,
-  { contextLines = 3, worktree }: { contextLines?: number; worktree?: string | null } = {},
+  { worktree }: { contextLines?: number; worktree?: string | null } = {},
 ): Promise<{ project: string; sha: string; commitMessage: string | null; files: DiffFileSummary[]; totalAdds: number; totalDels: number; totalFiles: number }> {
   const repo = await resolveRepo(projectName, worktree);
   assertValidSha(sha);
@@ -449,7 +449,7 @@ function uncommittedTarget(proj: { path: string; system: System }): DiffTarget {
 // throwing — the frontend treats this as "no diff to show".
 export async function getProjectUncommittedDiff(
   projectName: string,
-  { contextLines = 3, worktree }: { contextLines?: number; worktree?: string | null } = {},
+  { worktree }: { contextLines?: number; worktree?: string | null } = {},
 ): Promise<{ project: string; files: DiffFileSummary[]; totalAdds: number; totalDels: number; totalFiles: number }> {
   const repo = await resolveRepo(projectName, worktree);
   const target = uncommittedTarget(repo);

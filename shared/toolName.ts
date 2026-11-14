@@ -15,7 +15,7 @@
 
 // Mirrors the pinned server name in buildMcpConfigJSON (src/settings.ts); the
 // browser can't import src/.
-export const CC_MCP_SERVER = 'code-conductor';
+const CC_MCP_SERVER = 'code-conductor';
 
 function sentence(s: string): string | null {
   const t = s.replace(/[_-]+/g, ' ').trim();

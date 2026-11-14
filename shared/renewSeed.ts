@@ -16,8 +16,8 @@ export const RENEW_SEED_PREAMBLE: string =
   + 'The section below is the handoff summary you wrote for yourself before the clear — '
   + 'treat it as your working memory and continue from it.';
 
-export const HANDOFF_FENCE: string = '--- HANDOFF SUMMARY ---';
-export const FOLLOWUP_FENCE: string = '--- YOUR CONDUCTOR\'S FOLLOW-UP DIRECTIVE ---';
+const HANDOFF_FENCE: string = '--- HANDOFF SUMMARY ---';
+const FOLLOWUP_FENCE: string = '--- YOUR CONDUCTOR\'S FOLLOW-UP DIRECTIVE ---';
 
 // The exact first line buildStateBlock (src/sessionRenew.ts) writes.
 export const MECHANICAL_STATE_HEADER: string =

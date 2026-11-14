@@ -39,9 +39,9 @@ import { MAX_FILE_BYTES } from '../protocol.ts';
 // order nor struct padding.
 
 export const CCU_MAGIC = 0x43435531;   // 'C' 'C' 'U' '1'
-export const CCU_REQ_HDR = 8;
+const CCU_REQ_HDR = 8;
 export const CCU_REPLY_LEN = 14;
-export const CCU_MAX_PATH = 4096;
+const CCU_MAX_PATH = 4096;
 
 export const CCU_OP = { STAT: 1, LIST: 2, FETCH: 3, DIRTY: 4 } as const;
 export const CCU_STATUS = { READY: 0, ABSENT: 1, REFUSED: 2 } as const;

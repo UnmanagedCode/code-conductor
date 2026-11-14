@@ -16,7 +16,7 @@
 // attempt, so a malformed one is an error rather than inline text.
 const SKILL_MARKER_START_RE = /^<!-- cc:skill(?=[ :]|-->)/;
 const SKILL_MARKER_RE = /^<!-- cc:skill(?::(\S*))?(?: (.*?))? ?-->$/;
-export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 export interface SkillPart {
   description: string;

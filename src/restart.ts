@@ -37,7 +37,7 @@ interface RestartLog {
 // Close the WebSocket server (terminating held-open sockets) and stop accepting
 // HTTP connections. Not awaited: server.close() would wait on the very
 // connections being terminated.
-export function teardownNetworking({ server, wss }: { server?: Server | null; wss?: WebSocketServer | null } = {}): void {
+function teardownNetworking({ server, wss }: { server?: Server | null; wss?: WebSocketServer | null } = {}): void {
   if (wss) {
     for (const ws of wss.clients) { try { ws.terminate(); } catch { /* ignore */ } }
     try { wss.close(); } catch { /* ignore */ }
@@ -164,7 +164,7 @@ export async function exitAfterShutdown({
 // code the supervisor relaunches on (src/restartSupervisor.ts). No offer and no
 // adoption wait: this process is gone before the replacement starts, so two
 // servers never hold the root at once.
-export async function exitToSupervisor({
+async function exitToSupervisor({
   log = console, rootLock = null, exit = (code: number) => process.exit(code),
 }: { log?: RestartLog; rootLock?: RootLock | null; exit?: (code: number) => void } = {}): Promise<void> {
   rootLock?.releaseSync();

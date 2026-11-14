@@ -15,7 +15,7 @@ export function lineType(t: string): DiffLineType {
 const HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 /** The first old and new line numbers of a git hunk header; counts are ignored (a truncated diff's last hunk is short). */
-export function hunkStarts(header: string): { old: number; new: number } | null {
+function hunkStarts(header: string): { old: number; new: number } | null {
   const m = HEADER.exec(header);
   return m ? { old: Number(m[1]), new: Number(m[2]) } : null;
 }

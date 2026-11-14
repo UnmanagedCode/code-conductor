@@ -24,7 +24,7 @@ import { orchStoreRoot } from './projects.ts';
 import type { RestoreKind } from './resumeManifest.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
 
-export const PENDING_CONTINUE_FILENAME = 'pending-continue.json';
+const PENDING_CONTINUE_FILENAME = 'pending-continue.json';
 
 export interface PendingNotice {
   sessionId: string;

@@ -151,7 +151,7 @@ export function renewalDeferredBy(inst: Pick<InstanceLike, '_overageQueue' | 'ac
 // block disagree, this block wins for EXISTENCE (a worker it lists is really
 // still live) while the summary wins for INTENT (task, state, next action) —
 // so a worker the summary omitted is never silently orphaned.
-export function buildStateBlock(manager: InstanceManagerLike, callerInstanceId: string): string {
+function buildStateBlock(manager: InstanceManagerLike, callerInstanceId: string): string {
   const workers = manager.liveOwnedBy(callerInstanceId);
   const subs = manager.ownedWakeTargetsOf(callerInstanceId);
   const lines = [

@@ -23,7 +23,7 @@ const DEFAULT_PROJECTS_ROOT = path.resolve(
 //   <store>/projects/<name>/worktrees/<worktreeDir>/attachments/<file>
 //   <store>/projects/<name>/worktrees/<worktreeDir>/debug/<instance-id>/
 // Project + worktree directories themselves stay clean.
-export const ORCH_STORE_DIRNAME = '.code-conductor';
+const ORCH_STORE_DIRNAME = '.code-conductor';
 
 // Memoised per raw value: called per request, and tests swap PROJECTS_ROOT. A root
 // the platform cannot resolve yet is returned raw and NOT memoised, so its spelling

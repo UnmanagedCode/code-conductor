@@ -37,7 +37,7 @@ import { audienceAdmits, type CallerKind, type ToolAudience } from '../mcp/toolA
 import { isRecord } from '../../shared/basics.ts';
 
 // A plugin's own error code: an upper-snake identifier, cc's codes included.
-export const PLUGIN_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]*$/;
+const PLUGIN_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]*$/;
 
 // How many validate() errors a schema-mismatch reason quotes.
 const QUOTED_SCHEMA_ERRORS = 3;

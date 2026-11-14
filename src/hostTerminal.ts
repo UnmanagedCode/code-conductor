@@ -33,8 +33,8 @@ import { isRecord } from '../shared/basics.ts';
 // is paused; it is resumed when that reaches 0.
 export const TERMINAL_WS_HIGH_WATER_BYTES = 256 * 1024;
 // The largest message a client may send; `ws` closes 1009 past it.
-export const TERMINAL_WS_MAX_MESSAGE_BYTES = 64 * 1024;
-export const TERMINAL_DEFAULT_TERM = 'xterm-256color';
+const TERMINAL_WS_MAX_MESSAGE_BYTES = 64 * 1024;
+const TERMINAL_DEFAULT_TERM = 'xterm-256color';
 
 const OP = 'terminal';
 const SPEC_KEYS = new Set<string>([...HOST_TARGET_KEYS, 'argv', 'env', 'cols', 'rows', 'term']);

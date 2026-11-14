@@ -864,7 +864,7 @@ export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
 // signal to distinguish that from a real skill load — but that case is a
 // narrow race rather than the unbounded, anywhere-later-in-the-file risk this
 // closes. Replay, which has identity, is not exposed to any of it.
-export function expireSkillLoads(pendingSkillLoads: PendingSkillLoad[] | null | undefined): void {
+function expireSkillLoads(pendingSkillLoads: PendingSkillLoad[] | null | undefined): void {
   if (pendingSkillLoads) pendingSkillLoads.length = 0;
 }
 
@@ -897,7 +897,7 @@ function skillInjectionMarker(obj: WireEnvelope): { injected: boolean; sourceToo
 // caveat, a compaction continuation (its `isCompactSummary` lines also carry
 // `isVisibleInTranscriptOnly`, so that field adds nothing), hook feedback. The
 // same line-level mark skillInjectionMarker reads, on both surfaces.
-export function isCliInjectedLine(obj: WireEnvelope): boolean {
+function isCliInjectedLine(obj: WireEnvelope): boolean {
   return skillInjectionMarker(obj).injected;
 }
 

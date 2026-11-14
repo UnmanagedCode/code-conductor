@@ -17,7 +17,7 @@ import { FORWARD_FRAME_FOOTER, FORWARD_FRAME_HEADER, parseForwardFrame } from '.
 import { RENEW_SEED_PREAMBLE } from './renewSeed.ts';
 
 // The length of the head the server stores of a first prompt.
-export const FIRST_PROMPT_CAP = 200;
+const FIRST_PROMPT_CAP = 200;
 
 // The stored head ends inside the renew preamble, so the full-text parser never
 // matches it; the preamble's first sentence identifies it. A forward is stored

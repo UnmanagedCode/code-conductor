@@ -83,7 +83,7 @@ const MUTATING_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 //
 // EXPORTED so a test can assert that every FILE_TOOLS key is in it: a fifth
 // file tool must fail that assertion rather than silently escape the boundary.
-export const REDIRECT_PRE_TOOL_MATCHER = `${MUTATING_TOOL_MATCHER}|Glob|Grep|Read`;
+const REDIRECT_PRE_TOOL_MATCHER = `${MUTATING_TOOL_MATCHER}|Glob|Grep|Read`;
 
 // AND ITS CONSUMER IS `SessionRedirect.postToolUse`, which reports a reconcile
 // that refused AFTER the tool already returned success — the push cc issues

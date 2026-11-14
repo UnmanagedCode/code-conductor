@@ -27,14 +27,14 @@ export const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/
 export const READ_NUDGE_MATCHER = `^(${[...COUNTED_TOOLS, ...DELEGATION_TOOLS].map(escapeRegex).join('|')})$`;
 
 // A nudge fires when the run length equals one of these — never between or past.
-export const READ_NUDGE_THRESHOLDS: readonly number[] = [8, 16];
+const READ_NUDGE_THRESHOLDS: readonly number[] = [8, 16];
 
 // Quoted from conventions/conductor/core.md; a test fails if that text goes.
 export const READ_NUDGE_RULE = 'does this read change a gate decision I own?';
 
 const bare = (names: string[], sep: string): string => names.map(n => n.slice(TOOL_NAME_PREFIX.length)).join(sep);
 const COUNT_SLOT = '{count}';
-export const READ_NUDGE_TEMPLATE =
+const READ_NUDGE_TEMPLATE =
   `code-conductor: ${COUNT_SLOT} ${bare(COUNTED_TOOLS, '/')} calls in a row this turn with no `
   + `${bare(DELEGATION_TOOLS, ' or ')}. `
   + `Before the next read, apply "${READ_NUDGE_RULE}" from your Conductor role doc.`;

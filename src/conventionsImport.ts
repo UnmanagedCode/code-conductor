@@ -17,7 +17,7 @@ import { eolOf } from './lineEndings.ts';
 import type { System } from './systems/system.ts';
 import { errCode } from '../shared/basics.ts';
 
-export const CONVENTIONS_IMPORT_LINE = '@CONVENTIONS.md';
+const CONVENTIONS_IMPORT_LINE = '@CONVENTIONS.md';
 
 // Guarantee `<dir>/CLAUDE.md` carries a line whose trim() is exactly the
 // import. Three branches, and the third is what makes this safe to run on boot,

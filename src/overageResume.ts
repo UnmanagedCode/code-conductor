@@ -31,7 +31,7 @@ export { AUTO_RESUME_TEXT, IDLE_PARKED_RESUME_TEXT };
 // The ONE mapping from the persisted overage flags to which preamble a resume
 // carries. Three mutually exclusive states; `_overageWasStopped` wins if both
 // selectors are somehow set (a mid-turn stop is the stronger claim).
-export function overageResumeKind(inst: InstanceLike): ResumeKind {
+function overageResumeKind(inst: InstanceLike): ResumeKind {
   if (inst._overageWasStopped) return 'stopped';
   if (inst._overageWasIdleParked) return 'idle-parked';
   return 'queued-only';

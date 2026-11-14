@@ -98,11 +98,11 @@ let backendModels: Record<string, BackendModel[]> = {};
 
 export function getTierList(): string[] { return tierList; }
 export function getTierLabel(tier: string): string { return tierLabels[tier] || tier; }
-export function setBackends(list: Backend[] | null | undefined): Backend[] { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
+function setBackends(list: Backend[] | null | undefined): Backend[] { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
 export function getBackends(): Backend[] { return backends; }
 export function getBackendLabel(id: string): string { return backends.find(b => b.id === id)?.label || id; }
 export function getBackendModels(id: string): BackendModel[] { return backendModels[id] || []; }
-export function setBackendModels(map: Record<string, BackendModel[]> | null | undefined): void { backendModels = { ...(map || {}) }; }
+function setBackendModels(map: Record<string, BackendModel[]> | null | undefined): void { backendModels = { ...(map || {}) }; }
 
 // Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
 // src/modelVersions.ts. A naming heuristic for grouping the Settings picker —
@@ -139,12 +139,12 @@ export function setActiveTierBackend(map: Record<string, Binding> | null | undef
 // the models payload. Display-only.
 export function getActiveTierEffort(tier: string): string { return activeTierEffort[tier] || defaultEffort; }
 export function setActiveTierEffort(map: Record<string, string> | null | undefined): void { activeTierEffort = { ...activeTierEffort, ...(map || {}) }; }
-export function setDefaultEffort(level: string | null | undefined): string { if (level) defaultEffort = level; return defaultEffort; }
+function setDefaultEffort(level: string | null | undefined): string { if (level) defaultEffort = level; return defaultEffort; }
 
 // The level catalog, as shipped by the server. Ordered — the picker renders it
 // in array order.
 export function getEffortLevels(): string[] { return effortLevels; }
-export function setEffortLevels(list: string[] | null | undefined): string[] { if (Array.isArray(list) && list.length) effortLevels = [...list]; return effortLevels; }
+function setEffortLevels(list: string[] | null | undefined): string[] { if (Array.isArray(list) && list.length) effortLevels = [...list]; return effortLevels; }
 
 // Applies a models payload (`GET /api/settings/models`, or the refreshed state
 // every Settings → Models mutation returns) to this cache. The boot fetch and
