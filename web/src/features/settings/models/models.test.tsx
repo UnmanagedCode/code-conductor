@@ -705,4 +705,56 @@ describe('Models → spawn prefs failures', () => {
     expect(screen.queryByText('MCP auto-background')).toBeNull();
     expect(warn).toHaveBeenCalledTimes(0);
   });
+
+  // Invariant: a superseded auto-background save that succeeds late is ignored; the slider keeps the newer confirmed threshold.
+  it('a superseded auto-background save that succeeds late does not overwrite the newer threshold', async () => {
+    const warn = quietWarn();
+    const { held } = deferredPosts({ autoBackground: AB });
+    show(PICK);
+    const slider = (await screen.findByRole('slider', { name: 'Background after' })) as HTMLInputElement;
+    const drag = (v: string) => { fireEvent.change(slider, { target: { value: v } }); fireEvent.keyUp(slider); };
+    drag('300');
+    await waitFor(() => expect(held).toHaveLength(1));
+    drag('400');
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => { held[1]({ json: { autoBackground: { ...AB, thresholdMs: 400_000 } } }); });
+    await waitFor(() => expect(slider.value).toBe('400'));
+    await act(async () => { held[0]({ json: { autoBackground: { ...AB, thresholdMs: 300_000 } } }); });
+    await act(async () => {});
+    expect(slider.value).toBe('400');
+    expect(statusIn(cardOf(slider))).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(0);
+  });
+
+  // Invariants: a superseded flag save that succeeds late (1) does not clear the warning of a newer failure, and (2) does not overwrite the confirmed value, so the next refused save reverts to the value the newer success confirmed.
+  it('a superseded flag save that succeeds late neither clears a newer warning nor overwrites the confirmed value', async () => {
+    const warn = quietWarn();
+    const { held } = deferredPosts({ debugByDefault: false, taskTools: false });
+    show(PICK);
+    const sw = () => screen.getByRole('switch', { name: DEBUG });
+    await waitFor(() => expect((sw() as HTMLButtonElement).disabled).toBe(false));
+    // A (true) is held; B (false) succeeds and confirms false.
+    fireEvent.click(sw());
+    await waitFor(() => expect(held).toHaveLength(1));
+    fireEvent.click(sw());
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => { held[1]({ json: { debugByDefault: false } }); });
+    // C (true) is refused: a warning is up and the switch is back at false.
+    fireEvent.click(sw());
+    await waitFor(() => expect(held).toHaveLength(3));
+    await act(async () => { held[2](refusal('c refused')); });
+    await waitFor(() => expect(statusIn(cardOf(sw()))?.textContent).toContain('c refused'));
+    // A's late success lands: it must not clear the warning or touch the confirmed value.
+    await act(async () => { held[0]({ json: { debugByDefault: true } }); });
+    await act(async () => {});
+    expect(statusIn(cardOf(sw()))?.textContent).toContain('c refused');
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    // D (true) is refused: it reverts to B's confirmed false, not A's stale true.
+    fireEvent.click(sw());
+    await waitFor(() => expect(held).toHaveLength(4));
+    await act(async () => { held[3](refusal('d refused')); });
+    await waitFor(() => expect(statusIn(cardOf(sw()))?.textContent).toContain('d refused'));
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
 });
