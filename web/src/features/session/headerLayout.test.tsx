@@ -441,7 +441,7 @@ describe('Resume', () => {
     }
     for (const [name, inst] of [
       ['idle', base()],
-      ['exited mid-switch', stopped('exited', { modelSwitch: { from: 'a', to: 'b' } })],
+      ['exited mid-switch', stopped('exited', { modelSwitch: { from: 'a', to: 'b', fromBackend: 'claude', toBackend: 'claude' } })],
     ] as const) {
       const r = render(tree(inst));
       expect(screen.queryByRole('button', { name: 'Resume' }), name).toBeNull();

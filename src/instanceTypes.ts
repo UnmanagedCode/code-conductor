@@ -14,6 +14,8 @@
 // exactly ONE home — a member added here without a matching implementation, or
 // implemented with an incompatible type, is a compile error at the class, not
 // a silent drift across per-consumer copies.
+// The summary row itself (InstanceSummary) lives in shared/wireRows.ts and is
+// re-exported here.
 
 import type { UiEvent, PromptAuthor } from '../shared/uiEvent.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
@@ -28,8 +30,12 @@ import type { LineageSource } from './lineagePager.ts';
 import type { HumanPromptQuote } from './promptAuthor.ts';
 import type { PristineTracker } from './pristine.ts';
 import type { Actor, ResumeCause } from './eventLog.ts';
+import type { InstanceSummary, InstanceListRow, ModelSwitchState } from '../shared/wireRows.ts';
+import type { ResetSnapshotPayload } from '../shared/wsFrames.ts';
+import type { Usage } from '../shared/usage.ts';
 
 export type { Actor, ResumeCause };
+export type { InstanceSummary, ModelSwitchState };
 // Why a launch is announced the way it is: a ResumeCause on a relaunch, `fork`
 // on a fork's first launch (src/eventLog.ts → `session` rows).
 export type LaunchCause = ResumeCause | 'fork';
@@ -50,55 +56,6 @@ export interface ExitCause {
   code: number | null;
   signal: string | null;
   stderrTail: string | null;
-}
-
-// A restart model switch: both models and both backends, equal backends for a
-// same-backend switch. In memory only (the ledger entry carries the backends
-// only when they differ).
-export interface ModelSwitchState {
-  from: string;
-  to: string;
-  fromBackend: string;
-  toBackend: string;
-}
-
-export interface InstanceSummary {
-  id: string;
-  project: string;
-  status: string;
-  sessionId: string | null;
-  mode: string;
-  autoApprovePlan?: boolean;
-  interrupting?: boolean;
-  // A New-conductor session with no prompt yet (src/pristine.ts).
-  pristine?: boolean;
-  // The sidebar's label for the session, never empty (sessionLabel, shared/promptPreview.ts).
-  displayLabel: string;
-  // Spawn-tree links + the sticky ask (docs/architecture.md → "Ownership and
-  // awaitingUser"). Both links are non-null only on a live conducted row.
-  rootSessionId?: string | null;
-  parentSessionId?: string | null;
-  awaitingUser?: 'question' | 'plan' | null;
-  awaitingUserSource?: 'tool' | 'text' | null;
-  // The latest top-level API call's prompt (contextReading), or null until a
-  // call measures it.
-  contextTokens?: number | null;
-  // The session record's turn marks (src/sessionStore.ts getTurnMarks).
-  turnEndSeq?: number;
-  viewedSeq?: number;
-  // Live-only, per Instance object (never hydrated): outer turn ends seen, not
-  // counting a commanded-stop interrupted one; the latest counted one's is_error;
-  // live null→ask transitions of awaitingUser. Read by shared/attention.ts.
-  liveTurnEnds?: number;
-  lastTurnError?: boolean;
-  liveAsks?: number;
-  // Running background Bash jobs (src/backgroundJobs.ts).
-  backgroundJobs?: BackgroundJob[];
-  // A restart model switch in flight, and the last one's failure
-  // (Instance.switchModel).
-  modelSwitch?: ModelSwitchState | null;
-  modelSwitchFailure?: (ModelSwitchState & { error: string }) | null;
-  [key: string]: unknown;
 }
 
 // InstanceManager.create()/_doCreate() input — the REST/MCP spawn surface, and
@@ -217,7 +174,7 @@ export interface InstanceLike {
   // wake survived into, i.e. when the qualifier can no longer describe anything.
   consumeTurnForceAborted(): boolean;
   readonly liveThinkingTokens: number | null;
-  readonly lastContextUsage: unknown;
+  readonly lastContextUsage: Usage | null;
   readonly ring: { trimmedBefore: number; nextSeq: number; readonly seams: readonly RingSeam[] };
   snapshotTail(): UiEvent[];
   ringSnapshot(): Array<UiEvent & { _seq: number }>;
@@ -434,10 +391,10 @@ export interface InstanceManagerLike {
   pendingHumanPrompts(instanceId: string, callerInstanceId?: string | null, quote?: HumanPromptQuote | null): string[];
   // `replayed`: jsonl history (kept out of the wake hubs); `pullOnly`: kept off
   // every socket (wsHub) — see Instance._emitUi.
-  on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null; replayed?: boolean; pullOnly?: boolean }) => void): void;
+  on(event: 'event', cb: (arg: { id: string; ev: UiEvent; replayed?: boolean; pullOnly?: boolean }) => void): void;
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
-  on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
+  on(event: 'snapshot_reset', cb: (snap: ResetSnapshotPayload) => void): void;
   on(event: 'wake_delivered', cb: (arg: WakeDelivered) => void): void;
   on(event: 'session_launched', cb: (arg: SessionLaunched) => void): void;
   on(event: 'session_exited', cb: (arg: SessionExited) => void): void;
@@ -466,9 +423,9 @@ export interface InstanceManagerLike {
   // ids — see InstanceManager.resolveResumeRef for why one is not enough.
   resolveSessionRef(input: string): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
   resolveResumeRef(input: string): Promise<{ handle: string; resume: string } | { ambiguous: string[]; tooShort: boolean } | null>;
-  list(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }>;
+  list(): Array<InstanceListRow>;
   // list() minus the hidden pristine conductors: what a list payload serves.
-  listVisible(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }>;
+  listVisible(): Array<InstanceListRow>;
   // Presence frames (src/wsHub.ts) and the pristine lookup (src/routes/instances.ts).
   pristine: PristineTracker;
   pristineFor(sessionId: string): InstanceLike | null;

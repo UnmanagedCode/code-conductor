@@ -15,13 +15,9 @@
 import { trunc } from './mcp/textRender.ts';
 import { humanizeDuration } from './duration.ts';
 import { isDeadStatus } from './instanceStatus.ts';
+import type { BackgroundJob } from '../shared/wireRows.ts';
 
-export interface BackgroundJob {
-  title: string;
-  // cc's clock (epoch ms) when the job's id first appeared in a snapshot; the
-  // frame itself carries no timestamp.
-  startedAt: number;
-}
+export type { BackgroundJob } from '../shared/wireRows.ts';
 
 // The CLI substitutes the full command for a missing `description`, so one
 // truncation rule yields "description, else truncated command".

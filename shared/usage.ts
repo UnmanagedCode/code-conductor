@@ -264,7 +264,7 @@ export class RateLimitTracker {
     this.info = null; // latest merged rate_limit_info (null until first event)
   }
 
-  apply(ev: RateLimitEvent | null | undefined): void {
+  apply(ev: RateLimitEvent | UiEvent | null | undefined): void {
     if (ev?.kind !== 'system' || ev.subtype !== 'rate_limit_event') return;
     const raw = ev.data ?? {};
     // Accept both nested (rate_limit_info) and flat shapes defensively.

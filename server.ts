@@ -50,6 +50,7 @@ import { takeRestartSupervisor } from './src/restartSupervisor.ts';
 import { acquireRootLock, RootLockHeldError, RootLockUnreadableError, ROOT_LOCK_HELD_EXIT, type RootLock } from './src/rootLock.ts';
 import { parseHeadlessArgs } from './src/headless/args.ts';
 import { headlessMain } from './src/headless/entry.ts';
+import type { ResumeNoticesFrame } from './shared/wsFrames.ts';
 
 // The event-log lease of a server built without the projects-root lock.
 const NO_ROOT_LOCK_LEASE: WriteLease = { check: () => 'this server holds no projects-root lock' };
@@ -138,7 +139,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   const runningRecorder = instances ? createRunningRecorder({ instances, platform }) : null;
   const pendingContinue = instances ? createPendingContinue({
     onChange: () => {
-      const msg = JSON.stringify({ t: 'resume_notices' });
+      const msg = JSON.stringify({ t: 'resume_notices' } satisfies ResumeNoticesFrame);
       for (const ws of serverCtx.wss?.clients ?? []) {
         if (ws.readyState === ws.OPEN) { try { ws.send(msg); } catch { /* ignore */ } }
       }

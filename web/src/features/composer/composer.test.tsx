@@ -138,7 +138,7 @@ describe('send and mic modes', () => {
   it('a dead or switching session cannot send', () => {
     const c = mount(inst('s1', { status: 'exited' }));
     expect(c.box().disabled).toBe(true);
-    c.swap(inst('s1', { modelSwitch: { from: 'a', to: 'b' } }));
+    c.swap(inst('s1', { modelSwitch: { from: 'a', to: 'b', fromBackend: 'claude', toBackend: 'claude' } }));
     type(c.box(), 'x');
     expect(c.button().disabled).toBe(true);
   });

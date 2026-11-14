@@ -29,6 +29,7 @@ import type { System } from './systems/system.ts';
 import { createKeyedQueue } from './keyedQueue.ts';
 import { REBASE_PROMPT_LEAD } from '../shared/injectedTurns.ts';
 import { errCode } from '../shared/basics.ts';
+import type { WorktreeHookResult } from '../shared/wireRows.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
@@ -408,27 +409,6 @@ async function fileExists(p: string): Promise<boolean> {
 async function systemFileExists(system: System, p: string): Promise<boolean> {
   try { return (await system.stat(p)) !== null; }
   catch { return false; }
-}
-
-interface WorktreeHookResult {
-  ran: boolean;
-  // Why the hook did not run, when a hook was found: `'disabled'` for the
-  // event's kill-switch, `'STORE_HOOK_LOCAL_ONLY'` for a store-sourced script on
-  // a non-local system (see runWorktreeHook).
-  skipped?: 'disabled' | 'STORE_HOOK_LOCAL_ONLY';
-  source?: string | null;
-  exitCode?: number | null;
-  durationMs?: number;
-  output?: string;
-  truncated?: boolean;
-  timedOut?: boolean;
-  // The hook was killed on a system whose provider cannot signal a process
-  // GROUP, so only `bash` itself was reached and whatever it started may still
-  // be running. This hook is the exact case groupedCommand.ts's header
-  // documents — a timed-out `npm ci` in a fresh worktree — and the caller has
-  // to know the install may still be going before it uses the worktree.
-  descendantsMaySurvive?: true;
-  error?: boolean;
 }
 
 export type WorktreeHookEvent = 'create' | 'merge';

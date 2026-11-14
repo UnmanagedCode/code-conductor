@@ -13,12 +13,11 @@
 // two in sync when changing create-id binding, rollover, or the completion edge.
 
 import type { UiEvent, UiEventOf } from './uiEvent.ts';
+import type { TaskStatus, Task, ListedTask } from './wireRows.ts';
 
 const CREATE_ID_RE = /Task #(\d+) created/;
 
-export type TaskStatus = 'pending' | 'in_progress' | 'completed' | (string & {});
-export type Task = { subject: string; description: string; activeForm: string | null; status: TaskStatus };
-export type ListedTask = Task & { id: string };
+export type { TaskStatus, Task, ListedTask } from './wireRows.ts';
 type TaskInfo = { subject: string | null; description: string | null };
 type PendingCreate = { subject?: string; description?: string; activeForm?: string | null };
 type TextBlock = { text?: string } | null | undefined;
