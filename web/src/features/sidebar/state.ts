@@ -1,6 +1,7 @@
 // Sidebar-only UI state: which groups are open, the Projects-lens filter, the
 // per-place session-list cache, and the 15s tick that keeps "ago" labels fresh.
 import { createSignal, createStore, useSignal, useStore } from '@/state/createStore';
+import { agoTick } from '@/app/agoTick';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { on } from '@/app/events';
@@ -158,6 +159,5 @@ export function resetLensScroll() {
 
 // ── Ago ticker ───────────────────────────────────────────────────────────
 
-export const agoTick = createSignal();
-setInterval(() => agoTick.bump(), 15_000);
+export { agoTick };
 export const useAgoTick = () => useSignal(agoTick);

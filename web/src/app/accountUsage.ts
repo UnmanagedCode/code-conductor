@@ -42,7 +42,9 @@ export function accountChanged() {
   return refreshAccountUsage();
 }
 
-export function startAccountUsagePolling() {
+/** Reads the usage now and every POLL_MS until `signal` aborts. */
+export function startAccountUsagePolling(signal: AbortSignal) {
   void refreshAccountUsage();
-  setInterval(() => void refreshAccountUsage(), POLL_MS);
+  const timer = setInterval(() => void refreshAccountUsage(), POLL_MS);
+  signal.addEventListener('abort', () => clearInterval(timer), { once: true });
 }

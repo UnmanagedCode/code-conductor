@@ -22,6 +22,7 @@ import { ConversationView } from './ConversationView';
 import { userActionsForStatus } from './model';
 import { forkRenewal, rewindRenewal } from '@/app/sessionActions';
 import { flush } from './renderModel';
+import { routeFetch } from '@/test/routeFetch';
 
 /** [Rewind disabled, Fork disabled] of one bubble; null where the button is absent. */
 type Split = [boolean | null, boolean | null];
@@ -136,6 +137,7 @@ describe('bubble actions follow the active instance', () => {
 
   // A WS status frame drives the bubbles only when it names the active instance.
   it('a status frame for the active instance reaches its bubbles; a frame for another instance does not', async () => {
+    routeFetch({}); // the controller's usage poll reads at start
     act(() => { appStore.set({ instances: [inst('i1', 'idle'), inst('i2', 'idle')], activeId: 'i1' }); });
     startController();
     const { container } = mount();

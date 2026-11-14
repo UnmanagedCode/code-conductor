@@ -17,10 +17,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** The probe's stop; typed loosely until probeVoice returns one. */
+/** Starts a probe; returns its stop. */
 async function probe() {
   const { probeVoice } = await import('./store');
-  return probeVoice() as unknown as (() => void) | undefined;
+  return probeVoice();
 }
 function expectWarned() {
   expect(warn).toHaveBeenCalled();
@@ -37,18 +37,18 @@ describe('probeVoice', () => {
     expect(health(), 'control: the retry fires').toBe(2);
     expectWarned();
     expect(typeof stop, 'probeVoice hands back a stop').toBe('function');
-    stop!();
+    stop();
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(health(), 'no retry after stop').toBe(2);
-    expect(() => stop!()).not.toThrow();
+    expect(() => stop()).not.toThrow();
   });
 
   it('a stop while the probe is in flight arms no retry', async () => {
     // Invariant: the stopped flag suppresses the re-arm of a load that was already in flight.
     const stop = await probe();
     expect(typeof stop, 'probeVoice hands back a stop').toBe('function');
-    stop!();
+    stop();
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(vi.getTimerCount()).toBe(0);
@@ -60,17 +60,17 @@ describe('probeVoice', () => {
     // Invariant: a stop ends only its own chain; a later probe retries again.
     const stop = await probe();
     expect(typeof stop, 'the first probe hands back a stop').toBe('function');
-    stop!();
+    stop();
     await vi.advanceTimersByTimeAsync(0);
     const { probeVoice } = await import('./store');
-    const again = probeVoice() as unknown as (() => void) | undefined;
+    const again = probeVoice();
     expect(typeof again, 'the second probe hands back a stop').toBe('function');
     await vi.advanceTimersByTimeAsync(0);
     expect(health()).toBe(2);
     await vi.advanceTimersByTimeAsync(RETRY_MS);
     expect(health(), 'the fresh chain retries').toBe(3);
     expectWarned();
-    again!();
+    again();
     expect(vi.getTimerCount()).toBe(0);
   });
 });
