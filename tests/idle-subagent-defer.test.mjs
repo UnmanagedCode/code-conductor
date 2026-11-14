@@ -22,7 +22,7 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { sleep } from './poll.mjs';
+import { sleep, waitFor } from './poll.mjs';
 
 // The default heartbeat window is a module-load-time constant
 // (src/idleSubscriptions.ts DEFAULT_SUBSCRIBE_TIMEOUT_MS ←
@@ -68,6 +68,15 @@ function emitTurnEnd(id) {
 
 // Delivery is queueMicrotask + an async (folding) prompt() — give it a beat.
 const tick = () => new Promise(r => setTimeout(r, 20));
+// A delivered wake has LANDED: first its positive signal, then no wake to
+// `recipient` still in flight (deliver() sets _inFlight synchronously and
+// clears it after prompt() resolves or the wake is requeued). Never the drain
+// alone — before the wake is decided the drain is vacuously true. An exact
+// count after this reads "no duplicate by drain time", not "never" (card 2026-0872).
+async function landed(hub, positive, recipient) {
+  await waitFor(positive, { interval: 2 });
+  await waitFor(() => !hub._inFlight.has(recipient), { interval: 2 });
+}
 
 function inject(cond, work) {
   instances.byId.set(cond.id, cond);
@@ -104,7 +113,7 @@ test('(a)+(b) turn_end with an active subagent defers; delivery fires once after
   // (b) subagent finishes → follow-up turn_end at count 0 → deliver exactly once.
   work.activeAgentTaskCount = 0;
   emitTurnEnd('w1');
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c1');
   assert.equal(cond._promptCalls.length, 1, 'delivered exactly once after the count drained');
   assert.equal(instances._idleHub.hasArmedWake('w1'), false, 'subscription consumed on delivery');
 
@@ -125,7 +134,7 @@ test('(c) multiple background subagents — delivery waits for the LAST', async 
   assert.equal(cond._promptCalls.length, 0, 'count 1 → still defer (last subagent not done)');
 
   work.activeAgentTaskCount = 0;
-  emitTurnEnd('w2'); await tick();
+  emitTurnEnd('w2'); await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c2');
   assert.equal(cond._promptCalls.length, 1, 'count 0 → delivered exactly once');
   assert.equal(instances._idleHub.hasArmedWake('w2'), false);
 
@@ -152,7 +161,7 @@ test('(c2) queued notification: count 0 but taskNotificationPending defers until
   // The re-invocation turn runs; _setStatus clears the flag at its start.
   // Its turn_end (flag clear, count 0) delivers exactly once.
   work.taskNotificationPending = false;
-  emitTurnEnd('w7'); await tick();
+  emitTurnEnd('w7'); await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c7');
   assert.equal(cond._promptCalls.length, 1, 'delivered once at the re-invocation turn_end');
   assert.equal(instances._idleHub.hasArmedWake('w7'), false, 'subscription consumed on delivery');
 
@@ -165,7 +174,7 @@ test('(e) regression: a normal no-subagent turn_end delivers immediately', async
   inject(cond, work);
   armWake('cs3', 'ws3');
 
-  emitTurnEnd('w3'); await tick();
+  emitTurnEnd('w3'); await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c3');
   assert.equal(cond._promptCalls.length, 1, 'no subagents → immediate single delivery');
   assert.equal(instances._idleHub.hasArmedWake('w3'), false);
 
