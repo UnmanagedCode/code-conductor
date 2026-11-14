@@ -641,4 +641,57 @@ describe('Models → spawn prefs failures', () => {
     expect(slider.value).toBe('300');
     expect(statusIn(card())?.textContent).toContain('prefs gone');
   });
+
+  // A POST the test settles by hand, so a later save can overtake an earlier one.
+  function deferredPosts(get: unknown) {
+    const held: Array<(r: { status?: number; json: unknown }) => void> = [];
+    const calls: Call[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method || 'GET').toUpperCase();
+      calls.push({ method, url: String(input), body: typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body });
+      if (method === 'GET') return new Response(JSON.stringify(get), { status: 200, headers: { 'content-type': 'application/json' } });
+      const r = await new Promise<{ status?: number; json: unknown }>((resolve) => held.push(resolve));
+      return new Response(JSON.stringify(r.json), { status: r.status ?? 200, headers: { 'content-type': 'application/json' } });
+    }));
+    return { held, calls };
+  }
+
+  // Invariant: only the response to the latest auto-background save may revert the slider, warn or clear; a superseded refusal arriving after a newer success changes nothing.
+  it('a superseded refused auto-background save neither reverts the newer value nor warns', async () => {
+    const warn = quietWarn();
+    const { held } = deferredPosts({ autoBackground: AB });
+    show(PICK);
+    const slider = (await screen.findByRole('slider', { name: 'Background after' })) as HTMLInputElement;
+    const drag = (v: string) => { fireEvent.change(slider, { target: { value: v } }); fireEvent.keyUp(slider); };
+    drag('300');
+    await waitFor(() => expect(held).toHaveLength(1));
+    drag('400');
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => { held[1]({ json: { autoBackground: { ...AB, thresholdMs: 400_000 } } }); });
+    await waitFor(() => expect(slider.value).toBe('400'));
+    await act(async () => { held[0](refusal('stale refusal')); });
+    await act(async () => {});
+    expect(slider.value).toBe('400');
+    expect(statusIn(cardOf(slider))).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(0);
+  });
+
+  // Invariant: only the response to the latest flag save may revert, warn or clear; a superseded refusal arriving after a newer success changes nothing.
+  it('a superseded refused flag save neither reverts the newer value nor warns', async () => {
+    const warn = quietWarn();
+    const { held } = deferredPosts({ debugByDefault: false, taskTools: false });
+    show(PICK);
+    const sw = () => screen.getByRole('switch', { name: DEBUG });
+    await waitFor(() => expect((sw() as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(sw());
+    await waitFor(() => expect(held).toHaveLength(1));
+    fireEvent.click(sw());
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => { held[1]({ json: { debugByDefault: false } }); });
+    await act(async () => { held[0](refusal('stale refusal')); });
+    await act(async () => {});
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    expect(statusIn(cardOf(sw()))).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(0);
+  });
 });
