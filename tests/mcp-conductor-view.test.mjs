@@ -1,12 +1,12 @@
 // The conductor-facing instance projection is an EXPLICIT ALLOWLIST, and the
-// `list_sessions` tool description must document exactly what it emits.
+// `list_sessions` outputSchema must publish exactly what it emits.
 //
 // The defect this guards: toConductorView used to be
 // `({id, callerInstanceId, ...rest}) => rest`, so every field ever added to
 // Instance.summary() was published to conductors automatically. That is how the
 // misleading `sonnetWindow` reached every conductor-facing return while tools.ts
 // documented only 13 keys. The surface being UNDOCUMENTED was the bug — not its
-// width — so the allowlist is close to parity and the tool description is
+// width — so the allowlist is close to parity and the published row schema is
 // pinned against it here rather than by review.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
@@ -16,10 +16,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
+import { OUTPUT_SCHEMAS } from '../src/mcp/outputSchemas.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
-const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.ts');
+
 const HANDLERS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts');
 
 let ctx, baseUrl, instances, home;
@@ -67,35 +68,23 @@ const WITHHELD_KEYS = [
   'modelSwitch', 'modelSwitchFailure', 'pristine', 'displayLabel',
 ];
 
-// Pull the documented key names out of the single `{…}` block in the
-// list_sessions description. Exported so the vacuity guard below can reuse it.
-export function documentedKeys(toolsSource) {
-  const at = toolsSource.indexOf("name: 'list_sessions'");
-  assert.ok(at >= 0, 'list_sessions tool not found');
-  const desc = toolsSource
-    .slice(at, toolsSource.indexOf('inputSchema', at))
-    // The description is built by JS string concatenation, so a key list can be
-    // split across source lines as `…, ' +\n  'backend, …`. Rejoin before parsing.
-    .replace(/['"]\s*\+\s*['"]/g, '');
-  const brace = desc.match(/\{([^}]*)\}/);
-  assert.ok(brace, 'the list_sessions description must carry a {key, key, …} block');
-  return brace[1].split(',').map(k => k.trim()).filter(Boolean);
-}
+// The keys of a LIVE worker row in the published list_sessions result schema.
+const publishedKeys = () => Object.keys(
+  OUTPUT_SCHEMAS.list_sessions.properties.groups.items.properties.live.items.properties);
 
-test('the documented key list matches what toConductorView emits, one-for-one', async () => {
-  const src = await fs.readFile(TOOLS_SRC, 'utf8');
-  const documented = documentedKeys(src);
+test('the published list_sessions row schema matches what toConductorView emits, one-for-one', () => {
+  const documented = publishedKeys();
   // Three fields are appended downstream by listSessions, not by the
   // projection: `awaitingWake` (added by list()), and `playbook`/`stage`
   // (joined from the sessionId-keyed playbook projection). None of them exists on
   // InstanceSummary, so putting them in the allowlist would publish permanently-
   // undefined fields on the four other projections — hence list_sessions
-  // documents exactly the allowlist plus these three.
+  // publishes exactly the allowlist plus these three.
   const expected = [...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS];
 
-  // Non-vacuity: a regex that matched nothing would compare [] to [] under a
+  // Non-vacuity: a lookup that found nothing would compare [] to [] under a
   // sloppier assertion. Pin the count first, then the contents.
-  assert.ok(documented.length >= 20, `parsed only ${documented.length} keys — the description shape changed`);
+  assert.ok(documented.length >= 20, `found only ${documented.length} keys — the schema shape changed`);
   assert.equal(documented.length, 37);
   assert.equal(CONDUCTOR_VIEW_KEYS.length, 34);
   assert.deepEqual(sorted(documented), sorted(expected));
@@ -106,19 +95,6 @@ test('the documented key list matches what toConductorView emits, one-for-one', 
     'waitingOnJob is UI-only and never reaches an MCP row');
 });
 
-test('the doc-drift gate actually fails on a mangled description (vacuity guard)', () => {
-  // Proves the parser can't silently succeed: if the {…} block loses a key, the
-  // comparison above must notice. Run against a deliberately broken source.
-  const mangled = `
-    { name: 'list_sessions',
-      description: 'Each entry carries {project, sessionId}. blah',
-      inputSchema: {} }`;
-  const parsed = documentedKeys(mangled);
-  assert.deepEqual(parsed, ['project', 'sessionId']);
-  assert.notDeepEqual(sorted(parsed), sorted([...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS]));
-  // …and a description with no brace block is a hard error, not an empty pass.
-  assert.throws(() => documentedKeys(`{ name: 'list_sessions', description: 'no keys here', inputSchema: {} }`));
-});
 
 test('every conductor-facing projection emits exactly the allowlist', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
@@ -136,7 +112,7 @@ test('every conductor-facing projection emits exactly the allowlist', async () =
   // list_sessions is NOT checked here: it returns a plain-text rendering, not
   // JSON, so its emitted key set is not observable over the wire. Note this
   // file's gates — and the projection checks below — only bind the allowlist to
-  // the tool DESCRIPTION and to the four JSON projections. What binds it to the
+  // the published outputSchema and to the four JSON projections. What binds it to the
   // rendering a caller actually sees is
   // tests/mcp-text-render.test.mjs → "list_sessions renders every allowlisted
   // field". Both are required: a field can satisfy every check here and still

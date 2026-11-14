@@ -146,8 +146,8 @@ interface DiffFileRow {
 // field ever added to summary() — that is how `sonnetWindow` reached every
 // conductor-facing return (the toConductorView call sites below) without
 // ever being documented. Adding a key here is now a deliberate act, and
-// CONDUCTOR_VIEW_KEYS is asserted against the documented
-// list in src/mcp/tools.ts by tests/mcp-conductor-view.test.mjs, so the two
+// CONDUCTOR_VIEW_KEYS is asserted against the `list_sessions` outputSchema
+// (src/mcp/outputSchemas.ts) by tests/mcp-conductor-view.test.mjs, so the two
 // cannot drift.
 //
 // Excluded on purpose — the complement of this list over summary(), pinned as a
@@ -3153,7 +3153,7 @@ function bashPayload(place: Record<string, string | null>, r: ExecResult, output
 // restored shell environment (rg/find/grep shims + shell functions, via the
 // cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
 // shell (bash or zsh) that produced it — see bundleShellKind(). Read-only
-// inspection only (see the tool description in mcp/tools.ts). `description`
+// inspection only (see project_bash's description in mcp/tools.ts). `description`
 // is a display-layer field, rendered by the frontend
 // (web/src/conversation/format.ts) and never read here.
 export async function bashProject({ project, worktree, command, timeout }: {
@@ -3210,7 +3210,7 @@ async function addressedSystem(system: string, remoteId: string | null | undefin
 // play. `systemById` is the same resolution a project on that system goes
 // through, so its named refusals are identical; what differs is that the subject
 // is the system itself rather than a project on it. Read-only inspection only
-// (see the tool description in mcp/tools.ts). `description` is a display-layer
+// (see project_bash's description in mcp/tools.ts). `description` is a display-layer
 // field, rendered by the frontend (web/src/conversation/format.ts) and never
 // read here.
 export async function bashSystem({ system, remoteId, command, cwd, timeout }: {
