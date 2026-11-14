@@ -19,6 +19,7 @@ import { PlacementFields, usePlacement } from './placement';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import { chooseOption, selectOptions } from '@/test/radixSelect';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listedAnswer, system } from '@/test/placementDriver';
+import { settle } from '@/test/settle';
 
 const LAB = { id: 'lab', label: 'Lab', managed: false, launch: ['ssh', 'lab'] };
 
@@ -34,8 +35,6 @@ function Harness() {
 }
 
 const placement = () => JSON.parse(document.querySelector('[data-placement]')!.textContent!);
-/** Lets pending fetches and their state updates land. */
-const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 /** The note under the System row, or under the Target row. */
 const systemNote = async () => (await system()).closest('.grid')!.querySelector('p')?.textContent ?? null;
 const targetNote = () => screen.getByText('Target', { selector: 'label' }).closest('.grid')!.querySelector('p')?.textContent ?? null;
@@ -53,7 +52,7 @@ describe('placement', () => {
     routeFetch({ 'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }) });
     render(<Harness />);
     await system();
-    await flush();
+    await settle();
     expect(selectOptions(await system())).toEqual(['This machine', 'Prod box (prod-box)']);
     expect(placement().system).toBeNull();
   });
@@ -63,7 +62,7 @@ describe('placement', () => {
     routeFetch({ 'GET /api/settings/systems': () => ({ status: 500, json: {} }) });
     render(<Harness />);
     await system();
-    await flush();
+    await settle();
     expect(await systemNote()).toMatch(/^Could not read the systems registry \(HTTP 500\)/);
     expect(selectOptions(await system())).toEqual(['This machine']);
   });
@@ -73,7 +72,7 @@ describe('placement', () => {
     routeFetch({ 'GET /api/settings/systems': () => ({ status: 500, json: { error: 'systems.json is not valid JSON' } }) });
     render(<Harness />);
     await system();
-    await flush();
+    await settle();
     expect(await systemNote()).toMatch(/^Could not read the systems registry \(systems\.json is not valid JSON\)/);
     expect(selectOptions(await system())).toEqual(['This machine']);
   });
@@ -83,7 +82,7 @@ describe('placement', () => {
     routeFetch({ 'GET /api/settings/systems': () => new TypeError('Failed to fetch') });
     render(<Harness />);
     await system();
-    await flush();
+    await settle();
     expect(await systemNote()).toBe(`Could not read the systems registry (${SERVER_UNREACHABLE_MESSAGE}). Only this machine is offered.`);
     expect(selectOptions(await system())).toEqual(['This machine']);
   });
@@ -93,7 +92,7 @@ describe('placement', () => {
     const calls = routeFetch({ 'GET /api/settings/systems': () => ({ json: { systems: [SYSTEMS[0]] } }) });
     render(<Harness />);
     await system();
-    await flush();
+    await settle();
     expect(calls.some((c) => c.url === '/api/settings/systems')).toBe(true);
     expect(await systemNote()).toBeNull();
   });
@@ -105,7 +104,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => ({ json: { state: 'not-enumerable' } }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await waitFor(() => expect(targetNote()).toBeNull());
@@ -120,7 +119,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => listedAnswer('prod-box', ['ctr-a', 'ctr-b']),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetSelect();
     expect(targetNote()).toBeNull();
@@ -136,7 +135,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => ({ json: { state: 'failed', reason: 'the provider is down' } }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await waitFor(() => expect(targetNote()).toBe("Could not list the targets of system 'prod-box' (the provider is down). Type one."));
@@ -150,7 +149,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => ({ status: 503, json: {} }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await waitFor(() => expect(targetNote()).toContain('(HTTP 503)'));
@@ -164,7 +163,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => ({ status: 500, json: { error: 'provider crashed' } }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await waitFor(() => expect(targetNote()).toBe("Could not list the targets of system 'prod-box' (provider crashed). Type one."));
@@ -178,7 +177,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => listedAnswer('prod-box', []),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetSelect();
     expect(targetNote()).toMatch(/lists no configured targets right now/);
@@ -192,7 +191,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => listedAnswer('prod-box', ['ctr-a']),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetSelect();
     expect(screen.queryByRole('textbox', { name: 'Target' })).toBeNull();
@@ -208,7 +207,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => listedAnswer('prod-box', ['ctr-a']),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await findTargetSelect();
     expect(placement().error).toBe("Choose a target on 'prod-box'. It lists the targets it is configured for.");
@@ -223,7 +222,7 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => ({ json: { state: 'not-enumerable' } }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     fireEvent.change(await findTargetText(), { target: { value: '   ' } });
     expect(placement()).toEqual({ system: 'prod-box', remote: null, error: null });
@@ -239,13 +238,13 @@ describe('placement', () => {
       'GET /api/systems/lab/remotes': () => ({ json: { state: 'not-enumerable' } }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await chooseSystem('Lab (lab)');
     await chooseSystem('Prod box (prod-box)');
     await findTargetSelect();
     await act(async () => { first.release(listedAnswer('prod-box', ['stale-1'])); });
-    await flush();
+    await settle();
     expect(selectOptions(await findTargetSelect())).toEqual(['Choose a target…', 'fresh-1', 'Other…']);
   });
 
@@ -258,12 +257,12 @@ describe('placement', () => {
       'GET /api/systems/lab/remotes': () => ({ json: { state: 'not-enumerable' } }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     await chooseSystem('Prod box (prod-box)');
     await chooseSystem('Lab (lab)');
     await findTargetText();
     await act(async () => { first.release(listedAnswer('prod-box', ['x'])); });
-    await flush();
+    await settle();
     expect(screen.queryByRole('combobox', { name: 'Target' })).toBeNull();
     expect(placement()).toEqual({ system: 'lab', remote: null, error: null });
   });
@@ -275,12 +274,12 @@ describe('placement', () => {
       'GET /api/systems/prod-box/remotes': () => ({ json: { state: 'not-enumerable' } }),
     });
     render(<Harness />);
-    await flush();
+    await settle();
     expect(remotesAsks(calls)).toEqual([]);
     await chooseSystem('Prod box (prod-box)');
     await findTargetText();
     await chooseSystem('This machine');
-    await flush();
+    await settle();
     expect(remotesAsks(calls)).toEqual(['prod-box']);
     expect(screen.queryByText('Target', { selector: 'label' })).toBeNull();
     expect(placement().system).toBeNull();
@@ -292,10 +291,10 @@ describe('placement', () => {
     vi.mocked(loadCapabilities).mockReturnValueOnce(caps.answer as any);
     const calls = routeFetch({ 'GET /api/settings/systems': () => ({ json: { systems: SYSTEMS } }) });
     render(<Harness />);
-    await flush();
+    await settle();
     expect(screen.queryByRole('combobox', { name: 'System' })).toBeNull();
     await act(async () => { caps.release({ remoteSystems: false, voice: true, fuseUnion: true }); });
-    await flush();
+    await settle();
     expect(screen.queryByRole('combobox', { name: 'System' })).toBeNull();
     expect(calls.some((c) => c.url === '/api/settings/systems')).toBe(false);
   });

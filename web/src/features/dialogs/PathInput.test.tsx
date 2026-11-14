@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { PathInput, PATH_PICKER_DEBOUNCE_MS, type Placement } from './PathInput';
+import { settle } from '@/test/settle';
 
 type Answer = { ok: boolean; entries?: string[]; links?: string[]; truncated?: boolean; max?: number; reason?: string; code?: string } | Error | { status: number };
 
@@ -49,9 +50,10 @@ function ExternalHarness({ external }: { external: string }) {
 const input = () => screen.getByRole('combobox') as HTMLInputElement;
 const type = (value: string) => fireEvent.change(input(), { target: { value } });
 const options = () => screen.queryAllByRole('option').map((o) => o.textContent);
-async function settle() {
+/** Lets the debounce elapse, then whatever it started land. */
+async function afterDebounce() {
   await act(async () => { vi.advanceTimersByTime(PATH_PICKER_DEBOUNCE_MS); });
-  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+  await settle();
 }
 const note = () => document.querySelector('[data-path-note]')?.textContent ?? '';
 /** An answer the test releases later. */
@@ -73,7 +75,7 @@ describe('PathInput', () => {
     type('/srv/ap');
     type('/srv/app');
     expect(requests).toHaveLength(0);
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(1);
     expect(options()).toEqual(['app']);
   });
@@ -82,7 +84,7 @@ describe('PathInput', () => {
     answers['/srv'] = { ok: true, entries: ['app', 'api', 'data'] };
     render(<Harness />);
     type('/srv/');
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['api', 'app', 'data']);
     type('/srv/d');
     expect(options()).toEqual(['data']);
@@ -92,19 +94,19 @@ describe('PathInput', () => {
   it('sends only the path for a local placement, and system plus remote when chosen', async () => {
     const { unmount } = render(<Harness />);
     type('/x/');
-    await settle();
+    await afterDebounce();
     expect(requests[0]).toBe('/api/fs/dirs?path=%2Fx');
     unmount();
     render(<Harness placement={{ system: 'box', remoteId: 'c1' }} />);
     type('/x/');
-    await settle();
+    await afterDebounce();
     expect(requests[1]).toBe('/api/fs/dirs?path=%2Fx&system=box&remoteId=c1');
   });
 
   it('a relative value makes no request', async () => {
     render(<Harness />);
     type('srv/a');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(0);
   });
 
@@ -112,7 +114,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['.cache', 'code'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['code']);
     type('/h/.');
     expect(options()).toEqual(['.cache']);
@@ -122,7 +124,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['b'], links: ['a'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['a', 'b']);
     expect(screen.getAllByRole('option')[0].getAttribute('title')).toMatch(/Symlink/);
   });
@@ -131,7 +133,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a'], truncated: true, max: 500 };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(screen.getByText(/more than 500 directories/)).toBeTruthy();
   });
 
@@ -140,10 +142,10 @@ describe('PathInput', () => {
     answers['/h/cave'] = { ok: true, entries: ['x'] };
     render(<Harness />);
     type('/h/c');
-    await settle();
+    await afterDebounce();
     fireEvent.keyDown(input(), { key: 'Tab' });
     expect(input().value).toBe('/h/cave/');
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['x']);
   });
 
@@ -151,7 +153,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a', 'b', 'c'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     fireEvent.keyDown(input(), { key: 'ArrowUp' });
     expect(screen.getAllByRole('option')[2].getAttribute('aria-selected')).toBe('true');
     fireEvent.keyDown(input(), { key: 'ArrowDown' });
@@ -164,7 +166,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     fireEvent.keyDown(input(), { key: 'Escape' });
     expect(options()).toEqual([]);
   });
@@ -174,15 +176,15 @@ describe('PathInput', () => {
     answers['/slow'] = { ok: false, reason: 'timed out', code: 'LIST_TIMEOUT' };
     render(<Harness />);
     type('/no/');
-    await settle();
+    await afterDebounce();
     expect(screen.getByText('permission denied')).toBeTruthy();
     type('/no/x');
-    await settle();
+    await afterDebounce();
     expect(requests.filter((r) => r.includes('%2Fno'))).toHaveLength(1);
     type('/slow/');
-    await settle();
+    await afterDebounce();
     type('/slow/x');
-    await settle();
+    await afterDebounce();
     expect(requests.filter((r) => r.includes('%2Fslow'))).toHaveLength(2);
   });
 
@@ -190,10 +192,10 @@ describe('PathInput', () => {
     answers['/e'] = { status: 500 };
     render(<Harness />);
     type('/e/');
-    await settle();
+    await afterDebounce();
     expect(screen.getByText(/Could not list \/e \(HTTP 500\)/)).toBeTruthy();
     type('/e/a');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(2);
   });
 
@@ -201,10 +203,10 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a'] };
     const { rerender } = render(<Harness resetKey={1} />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     rerender(<Harness resetKey={2} />);
     type('/h/a');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(2);
   });
 
@@ -212,7 +214,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['<b>x</b>'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(screen.getByRole('option').innerHTML).toBe('&lt;b&gt;x&lt;/b&gt;');
   });
 
@@ -221,10 +223,10 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a'] };
     const { rerender } = render(<Harness placement={{ system: null, remoteId: null }} resetKey={1} />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     rerender(<Harness placement={{ system: 'box', remoteId: null }} resetKey={1} />);
     type('/h/a');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(2);
     expect(new URLSearchParams(requests[1].split('?')[1]).get('system')).toBe('box');
   });
@@ -234,14 +236,14 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a', 'b'] };
     const { rerender } = render(<Harness placement={{ system: 'box', remoteId: 'r1' }} resetKey={1} />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     rerender(<Harness placement={{ system: 'box', remoteId: 'r2' }} resetKey={1} />);
     type('/h/a');
-    await settle();
+    await afterDebounce();
     expect(requests.map((r) => new URLSearchParams(r.split('?')[1]).get('remoteId'))).toEqual(['r1', 'r2']);
     rerender(<Harness placement={{ system: 'box', remoteId: 'r1' }} resetKey={1} />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(2);
     expect(options()).toEqual(['a', 'b']);
   });
@@ -252,7 +254,7 @@ describe('PathInput', () => {
     answers['/h'] = h.answer;
     const { rerender } = render(<Harness resetKey={1} />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(signals[0]?.aborted).toBe(false);
     rerender(<Harness resetKey={2} />);
     expect(signals[0]?.aborted).toBe(true);
@@ -266,12 +268,12 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a'] };
     const { rerender } = render(<Harness resetKey={1} />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['a']);
     rerender(<Harness resetKey={2} />);
     expect(options()).toEqual([]);
     type('/h/a');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(2);
     expect(options()).toEqual(['a']);
   });
@@ -290,7 +292,7 @@ describe('PathInput', () => {
     answers['/srv'] = h.answer;
     render(<Harness />);
     type('/srv/');
-    await settle();
+    await afterDebounce();
     expect(note()).toBe('Listing /srv…');
     await land(() => h.release({ ok: true, entries: ['a'] }));
     expect(note()).toBe('');
@@ -303,7 +305,7 @@ describe('PathInput', () => {
     render(<Harness />);
     expect(input().getAttribute('aria-expanded')).toBe('false');
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(input().getAttribute('role')).toBe('combobox');
     expect(input().getAttribute('aria-controls')).toBe('p-completions');
     expect(input().getAttribute('aria-expanded')).toBe('true');
@@ -321,10 +323,10 @@ describe('PathInput', () => {
     answers['/b'] = { ok: true, entries: ['from-b'] };
     render(<Harness />);
     type('/a/f');
-    await settle();
+    await afterDebounce();
     type('/b/f');
     expect(signals[0]?.aborted).toBe(true);
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['from-b']);
     await land(() => h.release({ ok: true, entries: ['from-a'] }));
     expect(options()).toEqual(['from-b']);
@@ -336,12 +338,12 @@ describe('PathInput', () => {
     answers['/a'] = h.answer;
     render(<ExternalHarness external="/zzz/" />);
     type('/a/q');
-    await settle();
+    await afterDebounce();
     fireEvent.click(screen.getByRole('button', { name: 'set from outside' }));
     await land(() => h.release({ ok: true, entries: ['from-a'] }));
     expect(options()).toEqual([]);
     type('/a/f');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(1);
     expect(options()).toEqual(['from-a']);
   });
@@ -351,7 +353,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a', 'b', 'c'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     fireEvent.keyDown(input(), { key: 'ArrowDown' });
     fireEvent.keyDown(input(), { key: 'ArrowDown' });
     fireEvent.keyDown(input(), { key: 'Tab' });
@@ -363,13 +365,13 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a', 'b', 'c'] };
     const first = render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     fireEvent.keyDown(input(), { key: 'ArrowUp' });
     expect(screen.getAllByRole('option').map((o) => o.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true']);
     first.unmount();
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     fireEvent.keyDown(input(), { key: 'ArrowDown' });
     expect(screen.getAllByRole('option').map((o) => o.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false']);
   });
@@ -379,7 +381,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['a']);
     expect(fireEvent.keyDown(input(), { key: 'Tab', shiftKey: true })).toBe(true);
     expect(input().value).toBe('/h/');
@@ -390,7 +392,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     expect(options()).toEqual(['a']);
     expect(fireEvent.keyDown(input(), { key: 'Enter' })).toBe(true);
     expect(input().value).toBe('/h/');
@@ -404,7 +406,7 @@ describe('PathInput', () => {
     try {
       render(<Harness />);
       type('/h/');
-      await settle();
+      await afterDebounce();
       expect(options()).toEqual(['a']);
       expect(fireEvent.keyDown(input(), { key: 'Escape' })).toBe(false);
       expect(seen).not.toHaveBeenCalled();
@@ -421,7 +423,7 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a', 'b'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     const b = screen.getAllByRole('option')[1];
     expect(fireEvent.mouseDown(b)).toBe(false);
     fireEvent.click(b);
@@ -433,11 +435,11 @@ describe('PathInput', () => {
     answers['/h'] = { ok: true, entries: ['a', 'b'] };
     render(<Harness />);
     type('/h/');
-    await settle();
+    await afterDebounce();
     fireEvent.blur(input());
     expect(options()).toEqual([]);
     type('/h/a');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(1);
     expect(options()).toEqual(['a']);
   });
@@ -449,11 +451,11 @@ describe('PathInput', () => {
       answers['/t'] = { ok: false, reason: `refused: ${code}`, code };
       const r = render(<Harness />);
       type('/t/');
-      await settle();
+      await afterDebounce();
       expect(note(), code).toBe(`refused: ${code}`);
       answers['/t'] = { ok: true, entries: ['e1'] };
       type('/t/e');
-      await settle();
+      await afterDebounce();
       expect(requests, code).toHaveLength(2);
       expect(options(), code).toEqual(['e1']);
       r.unmount();
@@ -465,7 +467,7 @@ describe('PathInput', () => {
     answers['/nope'] = { ok: false, code: 'ENOENT' };
     render(<Harness />);
     type('/nope/');
-    await settle();
+    await afterDebounce();
     expect(note()).toBe('Could not list /nope.');
     expect(note()).not.toContain('ENOENT');
   });
@@ -476,7 +478,7 @@ describe('PathInput', () => {
     answers['/x'] = new DOMException('The operation was aborted.', 'AbortError');
     render(<Harness />);
     type('/x/');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(1);
     expect(note()).toBe('Listing /x…');
     expect(note()).not.toMatch(/Could not list/);
@@ -486,10 +488,10 @@ describe('PathInput', () => {
     answers['/n'] = new TypeError('Failed to fetch');
     render(<Harness />);
     type('/n/');
-    await settle();
+    await afterDebounce();
     expect(note()).toBe(`Could not list /n (${SERVER_UNREACHABLE_MESSAGE}).`);
     type('/n/a');
-    await settle();
+    await afterDebounce();
     expect(requests).toHaveLength(2);
   });
 });

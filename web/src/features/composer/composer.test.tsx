@@ -13,6 +13,7 @@ import { CONDUCTOR_LABEL } from '@shared/conductors';
 import { Composer } from './Composer';
 import { createDraftStore, DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { focusPromptAfterSelect } from '@/features/session/promptFocus';
+import { settle } from '@/test/settle';
 
 const inst = (sessionId: string | null, extra: Partial<Instance> = {}): Instance => ({ id: `i-${sessionId}`, project: 'demo', status: 'idle', sessionId, mode: 'x', ...extra });
 
@@ -54,7 +55,6 @@ function mount(i: Instance | null) {
   };
 }
 const type = (box: HTMLTextAreaElement, v: string) => fireEvent.change(box, { target: { value: v } });
-const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); });
 
 async function addFile(container: HTMLElement, name: string, type = 'image/png') {
   const input = container.querySelector('input[type="file"]') as HTMLInputElement;

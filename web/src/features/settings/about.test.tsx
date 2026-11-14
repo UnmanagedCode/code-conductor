@@ -15,6 +15,7 @@ import { LogoMark, Wordmark } from '@/components/logo/Logo';
 import { PluginsSection, pluginsStore } from './PluginsSection';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { LibraryEntry } from './pluginLogic';
+import { settle } from '@/test/settle';
 
 const INITIAL = selfUpdateStore.get();
 const PLUGINS0 = pluginsStore.get();
@@ -244,7 +245,6 @@ describe('About: Update plugins', () => {
   const behind = () => [entry('a'), entry('b')];
   const upToDate = () => library.map((e) => ({ ...e, updateAvailable: false }));
   const OK = { type: 'result', ok: true, result: { project: 'x' } };
-  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
   const startRun = async (streams: Record<string, ReturnType<typeof ndjsonStream>>) => {
     const calls = mockFetch({
       ...PLUGIN_ROUTES,

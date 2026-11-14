@@ -26,6 +26,7 @@ import { loadCapabilities } from '@shared/capabilities';
 import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { held, routeFetch, type Route, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listed, listedAnswer, pathNote, system, typePath } from '@/test/placementDriver';
+import { settle } from '@/test/settle';
 
 const SCAN = {
   root: '/root',
@@ -48,13 +49,11 @@ function stub(extra: Record<string, Route> = {}) {
   });
 }
 
-/** Lets pending fetches and their state updates land. */
-const flush = () => act(async () => { for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(0); });
 
 async function openAdopt() {
   act(() => openAdoptProjectDialog());
   await system();
-  await flush();
+  await settle();
 }
 async function renderAdopt() {
   const r = render(<DialogsHost />);
@@ -339,7 +338,7 @@ describe('Add project dialog', () => {
     await chooseSystem('Prod box (prod-box)');
     expect(pathField().value).toBe('');
     add();
-    await flush();
+    await settle();
     expect(posts(calls)).toHaveLength(0);
     setPath('/srv/api');
     await chooseSystem('This machine');
@@ -622,7 +621,7 @@ describe('Add project dialog', () => {
     render(<DialogsHost />);
     act(() => openAdoptProjectDialog());
     await screen.findByLabelText('Name');
-    await flush();
+    await settle();
     expect(loadCapabilities).toHaveBeenCalled();
     expect(screen.queryByRole('combobox', { name: 'System' })).toBeNull();
     expect(calls.some((c) => c.url === '/api/settings/systems')).toBe(false);

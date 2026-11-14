@@ -26,6 +26,7 @@ import { ModeToggle, RESTART_BUSY_TITLE, SessionHeader, modelEntryState, modelGr
 import { UsageChip } from './UsageChip';
 import * as usageFmt from '@shared/usage';
 import { Dot } from '@/features/sidebar/rows';
+import { settle } from '@/test/settle';
 
 const base = (extra: Partial<Instance> = {}): Instance => ({
   id: 'inst-1', project: 'demo', status: 'idle', displayStatus: 'idle', sessionId: 'sess-1', mode: 'bypassPermissions',
@@ -765,7 +766,6 @@ describe('session menu', () => {
     closeDialog('summary');
     wrap(<SessionHeader inst={base()} onMenu={() => {}} />);
     const trigger = screen.getByRole('button', { name: 'Session actions' });
-    const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     const open = () => screen.queryAllByRole('menu');
 
     let menu = await openMenu();

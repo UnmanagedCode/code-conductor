@@ -10,6 +10,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -64,12 +65,11 @@ async function boot(lineage: (url: string) => RouteAnswer | Promise<RouteAnswer>
   const { SessionView } = await import('./SessionView');
   c.startController();
   stop = c.stopController;
-  const flush = async () => { await act(async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); }); };
   const frame = async (t: string, detail: object = {}) => {
     await act(async () => { ws.bus.dispatchEvent(new CustomEvent(t, { detail })); });
-    await flush();
+    await settle();
   };
-  const land = async (n: number, list: Instance[]) => { await act(async () => { reads[n - 1].release({ json: list }); }); await flush(); };
+  const land = async (n: number, list: Instance[]) => { await act(async () => { reads[n - 1].release({ json: list }); }); await settle(); };
   const A = inst('iA', 's-a');
   const B = inst('iB', 's-b');
   await frame('open');
@@ -85,7 +85,7 @@ async function boot(lineage: (url: string) => RouteAnswer | Promise<RouteAnswer>
     await frame('instances');
     await land(reads.length, rest);
   };
-  return { c, actions, appStore, calls, reads, flush, frame, land, box, conv, killA, A, B };
+  return { c, actions, appStore, calls, reads, settle, frame, land, box, conv, killA, A, B };
 }
 
 beforeEach(() => { history.replaceState(null, '', '/'); });
@@ -142,17 +142,17 @@ describe('the ended pane', () => {
     expect(document.querySelector('[data-session-ended]'), 'fixture check: the pane ended').not.toBeNull();
 
     await act(async () => { b.c.selectInstance('iB', { userGesture: true }); });
-    await b.flush();
+    await b.settle();
     expect(document.querySelector('[data-session-ended]')).toBeNull();
     expect(b.appStore.get().ended).toBeNull();
     expect(b.box().disabled).toBe(false);
 
     const stopped = b.actions.stopSession({ projectName: 'p', instanceId: 'iB', sessionId: 's-b', status: 'idle' });
-    await b.flush();
+    await b.settle();
     // The stop's refresh reads the list without B (answering a read twice is a no-op).
     for (const r of b.reads) await act(async () => { r.release({ json: [] }); });
     await act(async () => { await stopped; });
-    await b.flush();
+    await b.settle();
     expect(b.appStore.get().activeId).toBeNull();
     expect(document.querySelector('[data-session-ended]')).toBeNull();
     expect(document.querySelector('[data-empty-state]')).not.toBeNull();
