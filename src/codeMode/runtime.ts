@@ -40,24 +40,29 @@ async function readStdin(): Promise<string> {
 
 const flush = (s: NodeJS.WriteStream) => new Promise<void>(r => { s.write('', () => r()); });
 
-let finished = false;
-async function finish(outcome: SerializedOutcome): Promise<never> {
-  if (!finished) {
-    finished = true;
-    try {
-      const res = await fetch(`${url}/run-result`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', [RUN_TOKEN_HEADER]: token as string },
-        body: JSON.stringify(outcome),
-      });
-      if (res.status !== 204) console.error(`run_code runtime: result delivery refused (HTTP ${res.status}): ${await res.text()}`);
-    } catch (e) {
-      console.error('run_code runtime: result delivery failed:', e);
-    }
-    await Promise.all([flush(process.stdout), flush(process.stderr)]);
+// The one delivery: the first outcome is the only one posted, and every later
+// finish waits for its send, so an exit cannot cut it off. A hung send is
+// bounded by the run's timeout, which kills the process.
+let delivery: Promise<number> | undefined;
+async function deliver(outcome: SerializedOutcome): Promise<number> {
+  try {
+    const res = await fetch(`${url}/run-result`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [RUN_TOKEN_HEADER]: token as string },
+      body: JSON.stringify(outcome),
+    });
+    if (res.status !== 204) console.error(`run_code runtime: result delivery refused (HTTP ${res.status}): ${await res.text()}`);
+  } catch (e) {
+    console.error('run_code runtime: result delivery failed:', e);
   }
+  await Promise.all([flush(process.stdout), flush(process.stderr)]);
+  return outcome.error ? 1 : 0;
+}
+
+async function finish(outcome: SerializedOutcome): Promise<never> {
+  delivery ??= deliver(outcome);
   // Exit explicitly so a program's leftover timers cannot print after the result.
-  process.exit(outcome.error ? 1 : 0);
+  process.exit(await delivery);
 }
 
 process.on('uncaughtException', (e) => { void finish(serializeOutcome({ thrown: e })); });
