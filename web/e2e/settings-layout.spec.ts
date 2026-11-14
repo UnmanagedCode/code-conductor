@@ -71,7 +71,7 @@ async function serveWorstCaseRows(page: Page): Promise<void> {
   await page.route('**/api/plugins/library', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: LIBRARY }) : r.fallback()));
   // cc's own Update too, so About's Version header measures both buttons.
   await page.route('**/api/settings/self-update', (r) => (r.request().method() === 'GET'
-    ? r.fulfill({ json: { version: '1.0', canCheck: true, updateAvailable: true, behind: 2, upstream: 'origin/main' } })
+    ? r.fulfill({ json: { version: '1.0', restart: { state: 'current', boot: 'c0ffee0000000000000000000000000000000000' }, canCheck: true, updateAvailable: true, behind: 2, upstream: 'origin/main' } })
     : r.abort()));
   await page.route('**/api/plugins', async (r) => {
     if (r.request().method() !== 'GET') return r.fallback();

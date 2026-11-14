@@ -13,6 +13,10 @@ import { AboutSection, selfUpdateStore } from './AboutSection';
 import { claudeUpdateStore } from './ClaudeUpdateCard';
 import { pluginsStore } from './PluginsSection';
 import { settle } from '@/test/settle';
+import type { ServerRestartState } from '@shared/wireRows';
+
+// Every self-update body carries `restart`; none of these tests is about it.
+const CURRENT: ServerRestartState = { state: 'current', boot: 'c0ffee0000000000000000000000000000000000' };
 
 const INITIAL_SELF = selfUpdateStore.get();
 const INITIAL_CLAUDE = claudeUpdateStore.get();
@@ -21,7 +25,7 @@ const INITIAL_PLUGINS = pluginsStore.get();
 const CLAUDE_URL = '/api/settings/claude-update';
 // cc itself is up to date, so its Version card offers no button of its own.
 const SELF_UP_TO_DATE = {
-  'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }),
+  'GET /api/settings/self-update': () => ({ version: '1.0', restart: CURRENT, canCheck: true }),
   // About loads the plugin list for its Update plugins button; none are behind.
   'GET /api/plugins': () => ({ rows: [], notices: [] }),
   'GET /api/projects': () => [],

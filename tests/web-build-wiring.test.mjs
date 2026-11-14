@@ -47,10 +47,10 @@ test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1
   }
 });
 
-test('start() hands its buildWeb and syncDeps, its root lock, its headless flag and whether a restart supervisor launched it, to createServer as the restart route\'s relaunch options', async () => {
+test('start() hands its buildWeb and syncDeps, its root lock, its headless flag and whether a restart supervisor launched it, to createServer as the restart route\'s relaunch options, and its restart-status reader', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const body = src.slice(src.indexOf('export async function start('));
-  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
+  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, restartStatus, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
 });
 
 test('start() takes its supervised flag from takeRestartSupervisor(), before it acquires the root lock', async () => {

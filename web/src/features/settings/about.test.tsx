@@ -16,6 +16,10 @@ import { PluginsSection, pluginsStore } from './PluginsSection';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { LibraryEntry } from './pluginLogic';
 import { settle } from '@/test/settle';
+import type { ServerRestartState } from '@shared/wireRows';
+
+// Every self-update body carries `restart`; none of these tests is about it.
+const CURRENT: ServerRestartState = { state: 'current', boot: 'c0ffee0000000000000000000000000000000000' };
 
 const INITIAL = selfUpdateStore.get();
 const PLUGINS0 = pluginsStore.get();
@@ -29,7 +33,7 @@ const PLUGIN_ROUTES = {
 };
 const entry = (id: string, over: Partial<LibraryEntry> = {}): LibraryEntry => ({ id, name: id, repo: `https://example.test/${id}`, installed: true, updateAvailable: true, ...over });
 
-const available = { version: '1.0', canCheck: true, updateAvailable: true, behind: 3, upstream: 'origin/main' };
+const available = { version: '1.0', restart: CURRENT, canCheck: true, updateAvailable: true, behind: 3, upstream: 'origin/main' };
 
 const versionCard = () => screen.getByText('Version', { selector: '[data-slot="card-title"]' }).closest('[data-slot="card"]') as HTMLElement;
 const line = () => within(versionCard()).queryByRole('status')?.textContent ?? '';
@@ -86,9 +90,9 @@ describe('About', () => {
   // Each self-update status maps to its own wording, and Update is offered for an available fast-forward alone; a failed check says why.
   it('the version line names each update state, and only an available fast-forward offers Update', async () => {
     const cases: [object, string[], boolean][] = [
-      [{ version: '1.0', canCheck: true }, ['v1.0', 'up to date'], false],
-      [{ version: '1.0', canCheck: true, diverged: true, ahead: 1, behind: 2, upstream: 'origin/main' }, ["1 ahead", '2 behind', 'origin/main'], false],
-      [{ version: '1.0', canCheck: false }, ['v1.0', 'upstream'], false],
+      [{ version: '1.0', restart: CURRENT, canCheck: true }, ['v1.0', 'up to date'], false],
+      [{ version: '1.0', restart: CURRENT, canCheck: true, diverged: true, ahead: 1, behind: 2, upstream: 'origin/main' }, ["1 ahead", '2 behind', 'origin/main'], false],
+      [{ version: '1.0', restart: CURRENT, canCheck: false }, ['v1.0', 'upstream'], false],
       [available, ['v1.0', '3 commits', 'origin/main'], true],
     ];
     // Invariant: each update state's line carries its own facts (version, counts, upstream), and Update is offered only for an available fast-forward.
@@ -248,7 +252,7 @@ describe('About: Update plugins', () => {
   const startRun = async (streams: Record<string, ReturnType<typeof ndjsonStream>>) => {
     const calls = mockFetch({
       ...PLUGIN_ROUTES,
-      'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }),
+      'GET /api/settings/self-update': () => ({ version: '1.0', restart: CURRENT, canCheck: true }),
       ...Object.fromEntries(Object.entries(streams).map(([id, st]) => [UPDATE(id), () => st.response])),
     });
     library = behind();
@@ -261,7 +265,7 @@ describe('About: Update plugins', () => {
   // Invariant: the button counts only installed entries that are behind, and sits in the Version card alone.
   it('shows Update plugins (N) for installed+behind entries only, in the Version card', async () => {
     library = [entry('a'), entry('b'), entry('c', { updateAvailable: false }), entry('d', { installed: false })];
-    mockFetch({ ...PLUGIN_ROUTES, 'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }), 'GET /api/settings/claude-update': () => ({ found: true, command: 'claude', version: '2.0.0' }) });
+    mockFetch({ ...PLUGIN_ROUTES, 'GET /api/settings/self-update': () => ({ version: '1.0', restart: CURRENT, canCheck: true }), 'GET /api/settings/claude-update': () => ({ found: true, command: 'claude', version: '2.0.0' }) });
     render(<AboutSection />);
     await waitFor(() => expect(pluginButtons()).toEqual([['Update plugins (2)', false]]));
     expect(screen.getAllByRole('button', { name: /Update plugins/ })).toHaveLength(1);
@@ -331,7 +335,7 @@ describe('About: Update plugins', () => {
     library = [entry('a')];
     mockFetch({
       ...PLUGIN_ROUTES,
-      'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }),
+      'GET /api/settings/self-update': () => ({ version: '1.0', restart: CURRENT, canCheck: true }),
       [UPDATE('a')]: () => held.response,
     });
     const plugins = render(<TooltipProvider><PluginsSection /></TooltipProvider>);
@@ -382,7 +386,7 @@ describe('About: Update plugins', () => {
     library = [entry('a')];
     mockFetch({
       ...PLUGIN_ROUTES,
-      'GET /api/settings/self-update': () => ({ version: '1.0', canCheck: true }),
+      'GET /api/settings/self-update': () => ({ version: '1.0', restart: CURRENT, canCheck: true }),
       [UPDATE('a')]: () => held.response,
     });
     render(<TooltipProvider><PluginsSection /></TooltipProvider>);
