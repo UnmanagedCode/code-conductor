@@ -94,9 +94,9 @@ describe('ensureWebBuild', () => {
     } finally { for (const d of [...swept, ...kept]) fs.rmSync(d, { recursive: true, force: true }); }
   });
 
-  it('builds the production bundle the server ships: no chunk over 800 kB, no size warning', () => {
-    // Pinned here, not read from the config this guards: raising chunkSizeWarningLimit must not disarm it.
-    const limitBytes = 800 * 1000;
+  it('builds the production bundle the server ships: no chunk over 500 kB, no size warning', () => {
+    // Pinned here, not read from the config this guards: setting chunkSizeWarningLimit must not disarm it.
+    const limitBytes = 500 * 1000;
     const assets = path.join(distDir, 'assets');
     const sizes = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).map((f) => fs.statSync(path.join(assets, f)).size);
     expect(sizes.length).toBeGreaterThan(0);
