@@ -15,11 +15,15 @@ const fake = (name, src) => ({ name, cmd: process.execPath, args: ['-e', src] })
 const REPO = path.resolve(import.meta.dirname, '..');
 const NPM = '/fake/npm-cli.js';
 const ENV = { npm_execpath: NPM };
+const diff = (...paths) => () => ({ ok: true, base: 'main', mergeBase: 'abc123', paths });
+const noDiff = () => assert.fail('this run takes no diff');
 
 test('npm test gate', async (t) => {
   await t.test('no arguments plan both typecheck halves, the node suite, then Vitest, and no Playwright', () => {
     assert.deepEqual(parseGateArgs([]), { mode: 'all' });
-    const steps = planGate(scopeOf({ mode: 'all' }), ENV);
+    const { scope, lines } = scopeOf({ mode: 'all' }, noDiff);
+    assert.deepEqual(lines, []);
+    const steps = planGate(scope, ENV);
     assert.deepEqual(steps.map((s) => s.name), ['typecheck:node', 'typecheck:web', 'node', 'web']);
     const [tcNode, tcWeb, node, web] = steps;
     for (const [step, half] of [[tcNode, 'node'], [tcWeb, 'web']]) {
@@ -44,20 +48,66 @@ test('npm test gate', async (t) => {
       { mode: 'files', node: ['tests/a.test.mjs'], web: ['web/src/b.test.ts'] });
   });
 
-  await t.test('a node-only file plan typechecks the node half and runs only those node files', () => {
-    const steps = planGate(scopeOf(parseGateArgs(['tests/a.test.mjs', 'tests/b.test.mjs'])), ENV);
+  await t.test('a node-only file plan with a src/ change typechecks the node half and runs only those node files', () => {
+    const { scope, lines } = scopeOf(parseGateArgs(['tests/a.test.mjs', 'tests/b.test.mjs']), diff('tests/fx/a.test.mjs', 'src/fx/a.ts'));
+    const steps = planGate(scope, ENV);
+    assert.deepEqual(lines, []);
     assert.deepEqual(steps.map((s) => s.name), ['typecheck:node', 'node']);
     assert.deepEqual(steps[1].args, ['tests/run.mjs', 'tests/a.test.mjs', 'tests/b.test.mjs']);
   });
 
+  await t.test('a node file-list run skips typecheck:node when every changed path is a tests/ or Markdown file and none is TypeScript or JSON, and says so', async (t) => {
+    const rows = [
+      [],
+      ['tests/fx/a.test.mjs'],
+      ['tests/fx/helpers.mjs', 'tests/fx/b.cjs', 'tests/fx/c.js', 'tests/fx/session.jsonl'],
+      ['docs/fx.md', 'fx.md', 'src/fx/notes.md'],
+      ['tests/fx/a.test.mjs', 'docs/fx.md'],
+    ];
+    for (const paths of rows) {
+      await t.test(JSON.stringify(paths), () => {
+        const { scope, lines } = scopeOf(parseGateArgs(['tests/a.test.mjs']), diff(...paths));
+        assert.deepEqual(planGate(scope, ENV).map((s) => s.name), ['node']);
+        assert.equal(lines.length, 1);
+        assert.match(lines[0], /typecheck:node/);
+        assert.match(lines[0], /abc123/);
+      });
+    }
+    await t.test('mixed with a web file', () => {
+      const { scope } = scopeOf(parseGateArgs(['web/src/b.test.ts', 'tests/a.test.mjs']), diff('tests/fx/a.test.mjs'));
+      assert.deepEqual(planGate(scope, ENV).map((s) => s.name), ['typecheck:web', 'node', 'web']);
+    });
+  });
+
+  await t.test('a node file-list run typechecks the node half when any changed path can reach it, or git gave no change set', async (t) => {
+    const rows = [
+      'src/fx/a.ts', 'shared/fx/a.ts', 'harness/fx/a.ts', 'fx.ts', 'migrations/fx/a.d.mts',
+      'tests/fx/a.ts', 'tests/fx/a.d.ts', 'tests/fx/a.d.mts', 'tests/fx/a.cts', 'tests/fx/a.tsx', 'tests/fx/a.json',
+      'tsconfig.fx.json', 'src/fx/a.mjs', 'web/src/fx/a.css', 'src/fx/.gitignore', 'src/fx/a.md.ts',
+      'tests-fx/a.mjs', 'web/tests/a.mjs',
+    ];
+    for (const row of rows) {
+      await t.test(row, () => {
+        const { scope, lines } = scopeOf(parseGateArgs(['tests/a.test.mjs']), diff('tests/fx/a.test.mjs', row));
+        assert.deepEqual(planGate(scope, ENV).map((s) => s.name), ['typecheck:node', 'node']);
+        assert.deepEqual(lines, []);
+      });
+    }
+    await t.test('git failure', () => {
+      const { scope, lines } = scopeOf(parseGateArgs(['tests/a.test.mjs']), () => ({ ok: false, reason: 'no main' }));
+      assert.deepEqual(planGate(scope, ENV).map((s) => s.name), ['typecheck:node', 'node']);
+      assert.deepEqual(lines, []);
+    });
+  });
+
   await t.test('a web-only file plan typechecks the web half and hands the file to Vitest', () => {
-    const steps = planGate(scopeOf(parseGateArgs(['web/src/b.test.ts'])), ENV);
+    const steps = planGate(scopeOf(parseGateArgs(['web/src/b.test.ts']), noDiff).scope, ENV);
     assert.deepEqual(steps.map((s) => s.name), ['typecheck:web', 'web']);
     assert.deepEqual(steps[1].args.slice(1), ['run', '--config', 'web/vitest.config.ts', 'web/src/b.test.ts']);
   });
 
   await t.test('a mixed file plan runs both halves and both suites on their own files', () => {
-    const steps = planGate(scopeOf(parseGateArgs(['web/src/b.test.ts', 'tests/a.test.mjs'])), ENV);
+    const steps = planGate(scopeOf(parseGateArgs(['web/src/b.test.ts', 'tests/a.test.mjs']), diff('src/fx/a.ts')).scope, ENV);
     assert.deepEqual(steps.map((s) => s.name), ['typecheck:node', 'typecheck:web', 'node', 'web']);
     assert.deepEqual(steps[2].args, ['tests/run.mjs', 'tests/a.test.mjs']);
     assert.deepEqual(steps[3].args.slice(-1), ['web/src/b.test.ts']);
@@ -75,7 +125,7 @@ test('npm test gate', async (t) => {
   });
 
   await t.test('the plan needs npm_execpath', () => {
-    assert.throws(() => planGate(scopeOf({ mode: 'all' }), {}), (e) => e instanceof UsageError && /npm test/.test(e.message));
+    assert.throws(() => planGate(scopeOf({ mode: 'all' }, noDiff).scope, {}), (e) => e instanceof UsageError && /npm test/.test(e.message));
   });
 
   await t.test('--changed with no changes or a git failure runs the full gate', () => {

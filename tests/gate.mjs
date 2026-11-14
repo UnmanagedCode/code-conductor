@@ -5,7 +5,9 @@
 //   npm test                          both halves, both suites
 //   npm test -- tests/x.test.mjs web/src/y.test.ts
 //                                     tests/ files to node, web/src/ files to
-//                                     Vitest; only those suites and their halves
+//                                     Vitest; only those suites and their halves,
+//                                     typecheck:node only when the diff against
+//                                     main can reach it (scopeOf)
 //   npm test -- --changed             the suites and halves the diff against
 //                                     main selects (tests/changedScope.mjs)
 //
@@ -67,13 +69,36 @@ export function parseGateArgs(argv, root = repoRoot) {
   return { mode: 'files', node, web };
 }
 
-// The scope of an 'all' or 'files' invocation: per suite true (whole suite),
-// its files, or false; and the typecheck halves.
-export function scopeOf(parsed) {
-  if (parsed.mode === 'all') return FULL;
+// typecheck:node reads TypeScript sources and declarations and JSON (its
+// tsconfigs, package.json's "type") from its programs — tsconfig.json's include
+// and shared/ — which reach nothing in tests/. So a changed tests/ or Markdown
+// file that is neither TypeScript nor JSON cannot alter its result; any other
+// path can (an imported .mjs's resolution, a side-effect import's target, a
+// .gitignore hiding a new source), and keeps it.
+const TS_OR_JSON = /\.(?:[cm]?tsx?|json)$/;
+const outsideNodeTypecheck = (p) => !TS_OR_JSON.test(p) && (p.startsWith('tests/') || p.endsWith('.md'));
+
+// The scope of an 'all' or 'files' invocation, and the lines that say what it
+// left out: per suite true (whole suite), its files, or false; and the typecheck
+// halves. A file-list run with node files drops typecheck:node when git produced
+// the change set against main and no path in it can reach the typecheck, which
+// then trusts main's merge-base; `getChanged` (changedPaths) is called only then.
+export function scopeOf(parsed, getChanged) {
+  if (parsed.mode === 'all') return { scope: FULL, lines: [] };
   const node = parsed.node.length > 0 && parsed.node;
   const web = parsed.web.length > 0 && parsed.web;
-  return { node, web, halves: HALVES.filter((h) => (h === 'node' ? node : web)) };
+  const halves = [];
+  const lines = [];
+  if (node) {
+    const changed = getChanged();
+    if (changed.ok && changed.paths.every(outsideNodeTypecheck)) {
+      lines.push(`npm test: typecheck:node skipped — every path changed against ${changed.base} (merge-base ${changed.mergeBase}) is a tests/ or Markdown file, none TypeScript or JSON`);
+    } else {
+      halves.push('node');
+    }
+  }
+  if (web) halves.push('web');
+  return { scope: { node, web, halves }, lines };
 }
 
 // The scope of `--changed`, and the lines that say why. No diff, or no diff
@@ -163,14 +188,10 @@ async function main() {
   let steps;
   try {
     const parsed = parseGateArgs(process.argv.slice(2));
-    let scope;
-    if (parsed.mode === 'changed') {
-      const changed = changedGateScope(changedPaths(repoRoot), () => buildReach(repoRoot));
-      for (const line of changed.lines) console.log(line);
-      scope = changed.scope;
-    } else {
-      scope = scopeOf(parsed);
-    }
+    const { scope, lines } = parsed.mode === 'changed'
+      ? changedGateScope(changedPaths(repoRoot), () => buildReach(repoRoot))
+      : scopeOf(parsed, () => changedPaths(repoRoot));
+    for (const line of lines) console.log(line);
     steps = planGate(scope);
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
