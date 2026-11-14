@@ -21,6 +21,7 @@ import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
 import { LOCAL_SYSTEM_ID, resolveSystem } from '../systems/registry.ts';
 import type { System } from '../systems/system.ts';
+import { errCode, errMsg } from '../../shared/basics.ts';
 
 // Plugin registry — the single service layer behind the REST api
 // (src/plugins/api.ts), the reverse proxy (src/plugins/proxy.ts) and MCP
@@ -942,18 +943,4 @@ export function createPluginHost(opts: {
     reportUpstreamFailure, setServerPort, stopAll,
     notices: store.notices,
   };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

@@ -34,6 +34,7 @@ import type { McpFormat } from '../mcp/limits.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { PluginMcp } from './manifest.ts';
 import { audienceAdmits, type CallerKind, type ToolAudience } from '../mcp/toolAudience.ts';
+import { isRecord } from '../../shared/basics.ts';
 
 // A plugin's own error code: an upper-snake identifier, cc's codes included.
 export const PLUGIN_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -42,10 +43,6 @@ export const PLUGIN_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]*$/;
 const QUOTED_SCHEMA_ERRORS = 3;
 
 type HandlerCtx = { callerId: string | null; format: McpFormat; callerKind: CallerKind };
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
 
 function kindOf(v: unknown): string {
   return v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;

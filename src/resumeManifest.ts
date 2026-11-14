@@ -21,6 +21,7 @@
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { orchStoreRoot } from './projects.ts';
+import { errMsg } from '../shared/basics.ts';
 
 export const PENDING_RESUME_FILENAME = 'pending-resume.json';
 export const RUNNING_RECORD_FILENAME = 'running-sessions.json';
@@ -143,8 +144,4 @@ export function takeRestoreSource({ log = console }: { log?: ManifestLogger } = 
   if (manifest.present) return { kind: 'restart', deliver: manifest.deliver, entries: manifest.instances };
   if (record) return { kind: 'unclean', deliver: 'gated', entries: record.instances };
   return null;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

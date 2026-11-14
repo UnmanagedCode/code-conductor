@@ -41,7 +41,6 @@ import {
 } from '../worktrees.ts';
 import { assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, systemById } from '../systems/registry.ts';
-import { shQuote } from '../systems/execWrap.ts';
 import { enumerateAllRemotes, enumerateSystemRemotes } from '../systems/remoteEnumeration.ts';
 import { withinPosix } from '../systems/mirror.ts';
 import { transferFile } from '../systems/transfer.ts';
@@ -89,6 +88,7 @@ import type { PlaybookGate } from './playbookGate.ts';
 import type { ExitCause, InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../../shared/uiEvent.ts';
 import { httpError } from '../httpError.ts';
+import { errCode, errMsg, shQuote } from '../../shared/basics.ts';
 
 // ---------- helpers ----------
 
@@ -3346,18 +3346,4 @@ export async function systemTransfer({ from, to, overwrite = false, move = false
     mode: r.mode,
     moved: r.moved,
   };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

@@ -15,6 +15,7 @@ import { ensureConventionsImport } from './conventionsImport.ts';
 // local system and must not import this module to do it (see the constant's
 // comment there). Re-exported so `.conduct`'s name still comes from here.
 import { CONDUCT_PROJECT_NAME, resolveSystem } from './systems/registry.ts';
+import { errCode } from '../shared/basics.ts';
 
 export { CONDUCT_PROJECT_NAME };
 
@@ -147,14 +148,4 @@ export async function materializeCurrentConduct(skillsDir: string | null = null)
     { scope: 'workspace', skills: workspace.skills },
     { scope: 'conductor', skills: role.skills },
   ]);
-}
-
-// The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }

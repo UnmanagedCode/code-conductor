@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 import type { Platform } from './platform/index.ts';
 import type { RootLockSock, SocketAddress } from './platform/platform.ts';
 import { LINK_PROBE_PREFIX, STAGED_SUFFIX_HEX, mintLockToken, prepareLockFileSync, releaseLockSync } from './storeLock.ts';
+import { errCode, sleep } from '../shared/basics.ts';
 
 export const ROOT_LOCK_DIRNAME = 'server-lock';
 // Internal, restart parent → child: the offer that lets the child take the
@@ -100,16 +101,6 @@ export class RootLockUnreadableError extends Error {
 }
 
 interface Log { warn: (...args: unknown[]) => void }
-
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
 
 // Test seams. `beforePublish` runs between preparing a generation's record and
 // publishing it — the window a starved or preempted creator sits in;

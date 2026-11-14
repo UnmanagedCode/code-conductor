@@ -25,14 +25,10 @@
 
 import type { ExecResult } from './system.ts';
 import { isSystemErrorCode } from './protocol.ts';
+import { shQuote } from '../../shared/basics.ts';
 
 // A POSIX shell variable name — the only names `export` and `env(1)` agree on.
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-// Single-quote a string for interpolation into a POSIX shell command.
-export function shQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
 
 // An overlay reaching a System is cc's own responsibility to have validated
 // (the REST route refuses a bad one first), so a violation here throws.

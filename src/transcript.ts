@@ -25,6 +25,7 @@ import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
 import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
 import { taskNotificationFromEnqueue, turnBoundaryFromDelivery } from './taskNotification.ts';
 import { getModelSwitchesForSegment, type ModelSwitchEntry } from './sessionStore.ts';
+import { errCode } from '../shared/basics.ts';
 
 // A persisted jsonl line is a WireEnvelope plus the fields the CLI writes to
 // disk that the live stream never carries (uuid, isSidechain, attachment,
@@ -694,14 +695,4 @@ export async function writeSessionMetadata(options: {
     JSON.stringify({ type: 'permission-mode', permissionMode: mode, sessionId }) + '\n';
   await fs.mkdir(dir, { recursive: true });
   await fs.appendFile(file, lines);
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }

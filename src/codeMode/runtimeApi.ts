@@ -6,6 +6,7 @@
 import { pathToFileURL } from 'node:url';
 import { validateArgs } from '../mcp/argValidation.ts';
 import { RUN_RESULT_CAP, RUN_ERROR_MESSAGE_CAP, RUN_ERROR_FIELD_CAP, cutChars, cutResult } from './limits.ts';
+import { isRecord } from '../../shared/basics.ts';
 
 // The run's token travels in this header on every call and on the result
 // delivery; the server revokes it when the run's process settles.
@@ -51,10 +52,6 @@ export interface CcOptions {
 }
 
 export type CallFn = (name: string, args?: unknown) => Promise<unknown>;
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
 
 const PLUGIN_SEP = '__';
 

@@ -34,6 +34,7 @@
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import { buildRenewSeed, RENEW_SUMMARY_SECTIONS, MECHANICAL_STATE_HEADER } from '../shared/renewSeed.ts';
 import { RENEW_REQUEST_LEAD } from '../shared/injectedTurns.ts';
+import { errMsg } from '../shared/basics.ts';
 
 // The tool's MCP name (src/mcp/tools.ts registers it under this).
 export const RENEW_SESSION_TOOL = 'renew_session';
@@ -448,8 +449,4 @@ export class SessionRenewController {
 
   // Drop a pending renewal (called on instance removal).
   purge(instanceId: string): void { this._clear(instanceId); }
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

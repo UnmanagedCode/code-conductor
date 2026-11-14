@@ -27,6 +27,7 @@ import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { hostPlatform } from './platform/index.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
 import { cliEnvBase } from './cliEnv.ts';
+import { errMsg, shQuote } from '../shared/basics.ts';
 
 const VERSION_TIMEOUT_MS = 5000;
 const MARKER = 'CLAUDE_CODE_EXECPATH';
@@ -61,12 +62,6 @@ function parseShellKind(contents: string): string {
 export function bundleShellKind(bundlePath: string): string {
   const m = path.basename(bundlePath).match(/-(bash|zsh)\.sh$/);
   return m ? m[1] : 'bash';
-}
-
-// Single-quote-escape for safe interpolation inside a single-quoted bash
-// string — orchStoreRoot() derives from user-configurable PROJECTS_ROOT.
-function shQuote(p: string): string {
-  return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
 async function getClaudeVersionKey(command: string, prefixArgs: string[]): Promise<string> {
@@ -247,8 +242,4 @@ export async function getShellEnvBundlePath(): Promise<string> {
 
 export function _resetForTest(): void {
   _singleton = null;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

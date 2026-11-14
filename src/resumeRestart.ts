@@ -41,6 +41,7 @@ import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from 
 import { RESTART_NOTICE_TRUNK, UNCLEAN_STOP_NOTICE_TRUNK, RESTART_ABORTED_LEAD } from '../shared/injectedTurns.ts';
 import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary, SubtreeRow } from './instanceTypes.ts';
+import { errMsg, sleep } from '../shared/basics.ts';
 
 // Wait-and-retry grace: after the drain's soft interrupts, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
 // instance to leave its turn on its own. If the grace elapses, log a warning,
@@ -52,8 +53,6 @@ export const RESUME_DRAIN_GRACE_MS = 60000;
 // Gap between staggered respawns on boot — N concurrent claude spawns is a
 // resource spike on Termux/Android.
 export const RESUME_STAGGER_MS = 1500;
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // --- Message texts -------------------------------------------------------
 
@@ -634,8 +633,4 @@ interface RestartLog {
   warn?: (...args: unknown[]) => void;
   error?: (...args: unknown[]) => void;
   log?: (...args: unknown[]) => void;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

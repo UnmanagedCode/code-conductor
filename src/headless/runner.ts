@@ -15,6 +15,7 @@ import { HEADLESS_FRAGMENT, HEADLESS_QUESTION_ANSWER } from './fragment.ts';
 import { EXIT_CODES, signalExitCode, type HeadlessReason, type HeadlessResult } from './result.ts';
 import type { HeadlessMode } from './args.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
+import { errMsg } from '../../shared/basics.ts';
 
 // How long a signal waits on the root's forced interrupt before the run ends anyway.
 const INTERRUPT_WAIT_MS = 5_000;
@@ -52,8 +53,6 @@ export interface RunHandle {
   detach(): void;
 }
 
-const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
 // The root's last top-level assistant text, or null.
 function lastText(root: InstanceLike): string | null {
   const msgs = reconstructMessages(root.ringSnapshot(), false).filter((m) => m.text.trim() !== '');
@@ -73,7 +72,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
       await flushCostWrites();
       return (await getSessionStats(sid)).rolled.cost_usd;
     } catch (e) {
-      if (!costWarned) console.warn(`headless: reading the run's cost failed, costUsd is null: ${errText(e)}`);
+      if (!costWarned) console.warn(`headless: reading the run's cost failed, costUsd is null: ${errMsg(e)}`);
       costWarned = true;
       return null;
     }
@@ -120,7 +119,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
   // signal if one was seen.
   const failRun = (e: unknown) => {
     ending = true;
-    const error = `the headless run failed: ${errText(e)}`;
+    const error = `the headless run failed: ${errMsg(e)}`;
     if (signalled) deliver(snapshot('signal', signalExitCode(signalled), `interrupted by ${signalled}; then ${error}`, firstSignalCost));
     else deliver(snapshot('conductor_error', EXIT_CODES.conductor_error, error, null));
   };
@@ -149,7 +148,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
   }
 
   const send = (text: string) => root!.promptOrQueueSteer(text, [], { author: 'human' })
-    .catch((e: unknown) => end('conductor_error', `answering the root conductor failed: ${errText(e)}`));
+    .catch((e: unknown) => end('conductor_error', `answering the root conductor failed: ${errMsg(e)}`));
 
   // A tool ask on the root, once per ask: there is no person to answer it.
   function answerAsk(s: InstanceSummary): void {
@@ -163,7 +162,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     const r = root!;
     void (async () => {
       try { if (r.mode === 'plan') await r.setMode('bypassPermissions'); }
-      catch (e) { await end('conductor_error', `approving the root conductor's plan failed: ${errText(e)}`); return; }
+      catch (e) { await end('conductor_error', `approving the root conductor's plan failed: ${errMsg(e)}`); return; }
       await send(buildApprovePrompt(undefined));
     })().catch(failRun);
   }
@@ -221,7 +220,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
         ...(mode === 'plan' ? { autoApprovePlan: true } : {}),
       });
     } catch (e) {
-      await end('conductor_error', `spawning the root conductor failed: ${errText(e)}`);
+      await end('conductor_error', `spawning the root conductor failed: ${errMsg(e)}`);
       return;
     }
     if (ending) return;
@@ -232,7 +231,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     try {
       await spawned.promptOrQueueSteer(`${HEADLESS_FRAGMENT}\n\n${prompt}`, [], { author: 'human' });
     } catch (e) {
-      await end('conductor_error', `prompting the root conductor failed: ${errText(e)}`);
+      await end('conductor_error', `prompting the root conductor failed: ${errMsg(e)}`);
       return;
     }
     evaluate();

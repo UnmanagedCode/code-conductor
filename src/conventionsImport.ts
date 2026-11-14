@@ -15,6 +15,7 @@
 import path from 'node:path';
 import { eolOf } from './lineEndings.ts';
 import type { System } from './systems/system.ts';
+import { errCode } from '../shared/basics.ts';
 
 export const CONVENTIONS_IMPORT_LINE = '@CONVENTIONS.md';
 
@@ -52,14 +53,4 @@ export function withConventionsImport(existing: string | null): string | null {
   if (existing === null) return `${CONVENTIONS_IMPORT_LINE}\n`;
   if (existing.split('\n').some(line => line.trim() === CONVENTIONS_IMPORT_LINE)) return null;
   return `${CONVENTIONS_IMPORT_LINE}${eolOf(existing)}${existing}`;
-}
-
-// The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }

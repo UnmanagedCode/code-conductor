@@ -11,6 +11,7 @@ import { runHeadless, type RunFacts, type RunHandle } from './runner.ts';
 import { EXIT_CODES, bareResult, formatResult, signalExitCode, type HeadlessResult } from './result.ts';
 import { RootLockHeldError, RootLockUnreadableError } from '../rootLock.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
+import { errMsg } from '../../shared/basics.ts';
 
 export interface HeadlessBoot {
   instances: InstanceManagerLike | null;
@@ -22,8 +23,6 @@ export interface HeadlessEntryDeps {
   // server.ts's start(), already given the entry's options plus `headless`.
   start: () => Promise<HeadlessBoot>;
 }
-
-const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 // The stderr lines naming where the run's web UI answers: the bound address, or
 // for a wildcard bind every non-internal IPv4 (in a container, its own IP).
@@ -69,7 +68,7 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
   // null: the read is async and the run is already failing).
   const fail = (e: unknown): void => {
     console.error('headless: unexpected failure:', e);
-    const why = errText(e);
+    const why = errMsg(e);
     let r: HeadlessResult;
     if (signalSeen) r = bareResult('signal', `interrupted by ${signalSeen}; then: ${why}`, signalExitCode(signalSeen));
     else if (running) r = bareResult('conductor_error', `the headless run failed: ${why}`, EXIT_CODES.conductor_error);
@@ -108,7 +107,7 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
         finish(bareResult('root_held', e.message, EXIT_CODES.root_held));
       } else {
         console.error('failed to start:', e);
-        finish(bareResult('boot_failed', `failed to start: ${errText(e)}`, EXIT_CODES.boot_failed));
+        finish(bareResult('boot_failed', `failed to start: ${errMsg(e)}`, EXIT_CODES.boot_failed));
       }
       return;
     }

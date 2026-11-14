@@ -65,6 +65,7 @@ import { attachSessionRecorder } from './sessionRecorder.ts';
 import { isConductorInstance } from '../conduct.ts';
 import { getDefaultPlaybookEnforcement } from '../conductorConventions.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
+import { isRecord, asRecord } from '../../shared/basics.ts';
 
 // The soft-refusal body, serialized exactly like the transport's own
 // SESSION_AMBIGUOUS result: a normal tool result, never `isError`, never a
@@ -478,12 +479,4 @@ function suppliedProvenance(v: unknown): Record<string, string> {
   if (!isRecord(v)) return out;
   for (const [stage, sid] of Object.entries(v)) if (typeof sid === 'string') out[stage] = sid;
   return out;
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-function asRecord(v: unknown): Record<string, unknown> {
-  return isRecord(v) ? v : {};
 }

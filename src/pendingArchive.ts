@@ -15,6 +15,7 @@ import path from 'node:path';
 import { readFileSync, rmSync, existsSync } from 'node:fs';
 import { orchStoreRoot, subAgentDirPath, type TranscriptPlacement } from './projects.ts';
 import { retireSegments } from './sessionLineage.ts';
+import { errMsg } from '../shared/basics.ts';
 
 export const PENDING_ARCHIVE_FILENAME = 'pending-archive.json';
 
@@ -87,8 +88,4 @@ function readPlace(v: unknown): TranscriptPlacement | null {
   if (typeof p.cwd !== 'string' || !p.cwd) return null;
   if (p.remoteId !== null && typeof p.remoteId !== 'string') return null;
   return { system: p.system, remoteId: p.remoteId ?? null, cwd: p.cwd };
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

@@ -16,6 +16,7 @@ import { resolveProjectCwd } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID, systemById } from './systems/registry.ts';
 import { ENV_NAME_RE } from './systems/execWrap.ts';
 import type { System } from './systems/system.ts';
+import { isRecord } from '../shared/basics.ts';
 
 // The request keys `parseHostTarget` reads.
 export const HOST_TARGET_KEYS = ['project', 'worktree', 'system', 'remoteId', 'cwd'] as const;
@@ -26,10 +27,6 @@ export type HostTarget =
 
 export function invalidArgument(op: string, message: string): Error {
   return httpError(400, `${op}: ${message}`, { code: 'INVALID_ARGUMENT' });
-}
-
-export function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 // Shape only: every refusal is a 400, raised before anything is resolved.
@@ -69,7 +66,7 @@ export function parseHostTarget(body: Record<string, unknown>, op: string): Host
 
 // An env overlay: an object of ENV_NAME_RE names to strings without NUL.
 export function parseEnvOverlay(v: unknown, op: string): Record<string, string> {
-  if (!isPlainObject(v)) throw invalidArgument(op, 'env must be an object of string values');
+  if (!isRecord(v)) throw invalidArgument(op, 'env must be an object of string values');
   for (const [k, val] of Object.entries(v)) {
     if (!ENV_NAME_RE.test(k)) throw invalidArgument(op, `env name ${JSON.stringify(k)} does not match ${ENV_NAME_RE}`);
     if (typeof val !== 'string' || val.includes('\0')) throw invalidArgument(op, `env value for ${k} must be a string without NUL`);

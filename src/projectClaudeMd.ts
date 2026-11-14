@@ -46,6 +46,7 @@ import type { ScopeSkills } from './conventionSkills.ts';
 import { httpError } from './httpError.ts';
 import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
 import { createKeyedQueue } from './keyedQueue.ts';
+import { errCode, errMsg } from '../shared/basics.ts';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 
@@ -465,18 +466,4 @@ export async function regenerateAllProjectConventions({ log }: { log?: Regenerat
     }
     return results;
   });
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

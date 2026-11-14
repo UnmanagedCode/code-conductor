@@ -31,6 +31,7 @@ import { isPureUserPromptLine, isResumableLine, replayPersistedLine, writeSessio
 import { extractAttachedMarkers, isLocalCommandCaveatLine, isOuterUserEcho, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
 import { parseAuthorMarker } from './promptAuthor.ts';
+import { errCode } from '../shared/basics.ts';
 
 // Parse one trimmed jsonl line, swallowing parse errors (mirrors the
 // tolerant behavior of loadPersistedTranscript).
@@ -343,15 +344,5 @@ async function writeForkCopy({ place, entries, lastSurvivingUuid, mode, newSessi
     await writeSessionMetadata({ place, sessionId: newSid, leafUuid: lastSurvivingUuid, mode });
   }
   return newSid;
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }
 

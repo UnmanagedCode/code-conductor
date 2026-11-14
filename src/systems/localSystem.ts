@@ -20,6 +20,7 @@ import {
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemLstat, SystemStat, WriteFileOptions,
 } from './system.ts';
+import { errCode } from '../../shared/basics.ts';
 
 export const LOCAL_SYSTEM_ID = 'local';
 
@@ -28,16 +29,6 @@ function kindOf(s: { isFile(): boolean; isDirectory(): boolean; isSymbolicLink()
   if (s.isFile()) return 'file';
   if (s.isSymbolicLink()) return 'symlink';
   return 'other';
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }
 
 // Shared mkdir-parent → write tmp(.pid.seq) → rename. Exported (and re-exported
