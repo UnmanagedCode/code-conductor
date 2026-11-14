@@ -694,4 +694,15 @@ describe('Models → spawn prefs failures', () => {
     expect(statusIn(cardOf(sw()))).toBeNull();
     expect(warn).toHaveBeenCalledTimes(0);
   });
+
+  // Invariant: a successful read without autoBackground renders no auto-background card at all, not even a warning-only one.
+  it('an OK spawn read without autoBackground leaves no auto-background card', async () => {
+    const warn = quietWarn();
+    const calls = mockFetch({ 'GET /api/settings/spawn': () => ({ debugByDefault: false, taskTools: false }) });
+    show(PICK);
+    await waitFor(() => expect(spawnGets(calls)).toHaveLength(3));
+    await waitFor(() => expect((screen.getByRole('switch', { name: TASKS }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText('MCP auto-background')).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(0);
+  });
 });
