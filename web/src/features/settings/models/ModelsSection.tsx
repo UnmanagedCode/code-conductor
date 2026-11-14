@@ -526,6 +526,7 @@ function SpawnFlagCard({ prefKey, title, description, switchLabel }: {
 }) {
   const [on, setOn] = React.useState<boolean | null>(null);
   const confirmed = React.useRef<boolean | null>(null);
+  const latestSave = React.useRef(0);
   const { warning, fail, ok } = useFailureStreak(title);
   React.useEffect(() => {
     json<Partial<Record<typeof prefKey, boolean>>>('/api/settings/spawn')
@@ -543,9 +544,10 @@ function SpawnFlagCard({ prefKey, title, description, switchLabel }: {
           aria-label={switchLabel}
           onCheckedChange={(v) => {
             setOn(v);
+            const mine = ++latestSave.current;
             post('/api/settings/spawn/prefs', { [prefKey]: v })
-              .then(() => { confirmed.current = v; ok(); })
-              .catch((e: unknown) => { setOn(confirmed.current); fail('save', e); });
+              .then(() => { if (mine === latestSave.current) { confirmed.current = v; ok(); } })
+              .catch((e: unknown) => { if (mine === latestSave.current) { setOn(confirmed.current); fail('save', e); } });
           }}
         />
       }
@@ -593,9 +595,12 @@ const AUTO_BACKGROUND_DESCRIPTION = "When on, a worker's MCP call or explicit-fo
 function AutoBackgroundCard() {
   const [ab, setAb] = React.useState<AutoBackground | null>(null);
   const [seconds, setSeconds] = React.useState(0);
+  const confirmed = React.useRef<AutoBackground | null>(null);
+  const latestSave = React.useRef(0);
   const { warning, fail, ok } = useFailureStreak(AUTO_BACKGROUND_TITLE);
   const apply = (d: { autoBackground?: AutoBackground }) => {
     if (!d.autoBackground) return;
+    confirmed.current = d.autoBackground;
     setAb(d.autoBackground);
     setSeconds(d.autoBackground.thresholdMs / 1000);
   };
@@ -604,10 +609,16 @@ function AutoBackgroundCard() {
   }, [fail]);
   const warningLine = warning ? <Status text={warning} tone="error" /> : undefined;
   if (!ab) return warning ? <SettingsCard title={AUTO_BACKGROUND_TITLE} description={AUTO_BACKGROUND_DESCRIPTION}>{warningLine}</SettingsCard> : null;
-  const save = (patch: { enabled?: boolean; thresholdMs?: number }) =>
-    post<{ autoBackground?: AutoBackground }>('/api/settings/spawn/prefs', { autoBackground: patch })
-      .then((d) => { apply(d); ok(); })
-      .catch((e: unknown) => { setSeconds(ab.thresholdMs / 1000); fail('save', e); });
+  const save = (patch: { enabled?: boolean; thresholdMs?: number }) => {
+    const mine = ++latestSave.current;
+    return post<{ autoBackground?: AutoBackground }>('/api/settings/spawn/prefs', { autoBackground: patch })
+      .then((d) => { if (mine === latestSave.current) { apply(d); ok(); } })
+      .catch((e: unknown) => {
+        if (mine !== latestSave.current) return;
+        if (confirmed.current) setSeconds(confirmed.current.thresholdMs / 1000);
+        fail('save', e);
+      });
+  };
   return (
     <SettingsCard
       title={AUTO_BACKGROUND_TITLE}
