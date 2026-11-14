@@ -156,6 +156,23 @@ test('G10: a read after a quote-bearing regex literal on the same line is found;
   assert.deepEqual(inside.unresolved, []);
   const division = scan('const z = a / b; const y = process.env.AFTER_DIVISION;');
   assert.deepEqual(division.reads.map((x) => x.name), ['AFTER_DIVISION']);
+  // a regex after a value-position keyword is a regex, not a division
+  for (const [label, src, name] of [
+    ['return', `function f(){ return /['"]/.test(s) && process.env.DEBUG_FLAG; }`, 'DEBUG_FLAG'],
+    ['case', `switch (x) { case /['"]/: y = process.env.CASE_AFTER; }`, 'CASE_AFTER'],
+    ['typeof', `typeof /['"]/; const y = process.env.TYPEOF_AFTER;`, 'TYPEOF_AFTER'],
+    ['throw', `throw /['"]/; process.env.THROW_AFTER;`, 'THROW_AFTER'],
+    ['else', `if (a) b(); else /['"]/.test(s) && process.env.ELSE_AFTER;`, 'ELSE_AFTER'],
+  ]) {
+    assert.deepEqual(scan(src).reads.map((x) => x.name), [name], label);
+  }
+  const keywordRegexBody = scan('function f(){ return /process.env.NOT_A_READ/; }');
+  assert.deepEqual(keywordRegexBody.reads, [], 'env text inside a regex after return');
+  assert.deepEqual(keywordRegexBody.unresolved, []);
+  // an identifier that merely ends in a keyword, or a member named like one, is still a division
+  for (const src of ['const a = redo / 2; const y = process.env.DIV_REDO;', "const a = xin / y; const b = '/'; const y = process.env.DIV_XIN;", 'const a = o.return / 2; const y = process.env.DIV_MEMBER;']) {
+    assert.deepEqual(scan(src).reads.map((x) => x.name).length, 1, src);
+  }
 });
 
 // G11: pins that a computed destructure key is reported, not read as a name.

@@ -16,6 +16,12 @@
 // destructure that only strips names are not reads. An access this grammar
 // cannot resolve is reported as unresolved, never skipped.
 //
+// Limitation: an injected env is followed only when bound directly to a name
+// (`x = env`). These alias shapes are NOT followed, so reads through them are
+// missed: the env as a call argument, as a return value, in a parenthesized
+// binding `(env)`, and a spread `{ ...env }` bound to a name without the env
+// suffix.
+//
 // The walking-test rule applies here too (this file is reached by a walking
 // test): no string literal below names a tracked path except the registry's
 // own segments. The scope is a regex, the docs path is an argument and the
@@ -83,18 +89,29 @@ export function deriveIndirect(entries, read) {
 // True when `pos` sits inside a quoted string or a regex literal (template
 // text and comments are already blanked). Scans the line up to `pos`.
 const REGEX_PRECEDERS = new Set([...'(,=:[!&|?{};+-*%<>~^']);
+// A regex literal can start after these words; after any other identifier `/` divides.
+const REGEX_KEYWORDS = new Set(['return', 'case', 'typeof', 'throw', 'yield', 'await', 'delete', 'void', 'in', 'of', 'instanceof', 'else', 'do']);
 function inNonCode(t, pos) {
-  let quote = ''; let regex = false; let cls = false; let last = '';
-  for (let i = t.lastIndexOf('\n', pos - 1) + 1; i < pos; i++) {
+  let quote = ''; let regex = false; let cls = false; let last = ''; let word = '';
+  const begin = t.lastIndexOf('\n', pos - 1) + 1;
+  for (let i = begin; i < pos; i++) {
     const c = t[i];
     if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue; }
     if (regex) {
-      if (c === '\\') i++; else if (c === '[') cls = true; else if (c === ']') cls = false; else if (c === '/' && !cls) { regex = false; last = 'r'; }
+      if (c === '\\') i++; else if (c === '[') cls = true; else if (c === ']') cls = false; else if (c === '/' && !cls) { regex = false; last = 'r'; word = ''; }
       continue;
     }
     if (c === '\'' || c === '"') { quote = c; continue; }
-    if (c === '/' && (last === '' || REGEX_PRECEDERS.has(last))) { regex = true; cls = false; continue; }
-    if (!/\s/.test(c)) last = c;
+    if (/[\w$]/.test(c)) {
+      let j = i;
+      while (j < pos && /[\w$]/.test(t[j])) j++;
+      const member = /\.\s*$/.test(t.slice(begin, i));
+      word = member ? '' : t.slice(i, j);
+      last = 'w'; i = j - 1;
+      continue;
+    }
+    if (c === '/' && (last === '' || REGEX_PRECEDERS.has(last) || (last === 'w' && REGEX_KEYWORDS.has(word)))) { regex = true; cls = false; continue; }
+    if (!/\s/.test(c)) { last = c; word = ''; }
   }
   return quote !== '' || regex;
 }
