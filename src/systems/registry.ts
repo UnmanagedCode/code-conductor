@@ -10,8 +10,8 @@
 // nothing can reach, and a project on it is REFUSED here BY NAME rather than
 // quietly resolved local (see resolveSystem).
 
-import { readProjectRecord } from '../projects.ts';
-import type { ProjectLocation } from '../projects.ts';
+import { readProjectRecord } from '../projectRecord.ts';
+import type { ProjectLocation } from '../projectRecord.ts';
 import { httpError } from '../httpError.ts';
 import { SystemError } from './protocol.ts';
 import { LocalSystem, LOCAL_SYSTEM_ID } from './localSystem.ts';

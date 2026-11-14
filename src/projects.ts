@@ -10,7 +10,12 @@ import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
 import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
 import { forgetWorktreeLandings } from './worktreeLandings.ts';
-import { isSessionId } from './identifiers.ts';
+import { isSessionId, isMintedPublicId, assertBackingId } from './identifiers.ts';
+import { projectsRoot, orchStoreRoot, projectStoreDir } from './storeRoot.ts';
+import {
+  NAME_RE, validateName, recordFile, malformed, readProjectRecord,
+  type ProjectLocation, type ProjectRecord,
+} from './projectRecord.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, localSystem, placementOf, projectPlacement,
@@ -19,7 +24,7 @@ import {
 import { writeFileAtomic } from './systems/localSystem.ts';
 import { REMOTE_ID_MAX, remoteIdDefect } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
-import { hostPlatform, samePath, type Platform } from './platform/index.ts';
+import { samePath } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
 import { firstPromptHead } from '../shared/promptPreview.ts';
 import { stripAuthorMarker } from './promptAuthor.ts';
@@ -28,16 +33,9 @@ import { errCode, errMsg } from '../shared/basics.ts';
 // Re-exported from its implementation on the local system: the store is always
 // local, so cc's own atomic writes and the local System's are one operation.
 export { writeFileAtomic };
+// Re-exported from the leaves they moved to: each has many importers.
+export { projectsRoot, orchStoreRoot, projectStoreDir, validateName, readProjectRecord, assertBackingId };
 
-// Default projects root = parent directory of the code-conductor repo,
-// resolved once at module load. Layout: <parent>/code-conductor/src/
-// projects.ts → <parent>/. Matches the convention that the orchestrator
-// + its sibling projects all live under a single workspace dir (the
-// user's ~/cc-projects/ by default). Override with PROJECTS_ROOT.
-const DEFAULT_PROJECTS_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..', '..',
-);
 
 // The conductor's own repo root — one level up from src/, unlike
 // DEFAULT_PROJECTS_ROOT above which goes two levels up to the *parent* of
@@ -47,7 +45,6 @@ const SELF_PROJECT_DIR = path.resolve(
   '..',
 );
 
-const NAME_RE = /^[a-zA-Z0-9._-]+$/;
 // Workspace names are becoming path segments (a directory-per-workspace
 // layout), so they're restricted to the project charset: no spaces, no `/`
 // or `\`, and `a/../b` can't traverse. This deliberately reverses the earlier
@@ -65,40 +62,7 @@ const NAME_RE = /^[a-zA-Z0-9._-]+$/;
 // workspaces, which have no `.conduct` case to accommodate.
 const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 
-// All orchestrator-owned state lives under a single dotfolder at the
-// workspace root (`<projectsRoot>/.code-conductor/`). Layout:
-//   <store>/projects/<name>/project.json
-//   <store>/projects/<name>/attachments/<file>
-//   <store>/projects/<name>/debug/<instance-id>/
-//   <store>/projects/<name>/worktrees/<worktreeDir>/worktree.json
-//   <store>/projects/<name>/worktrees/<worktreeDir>/attachments/<file>
-//   <store>/projects/<name>/worktrees/<worktreeDir>/debug/<instance-id>/
-// Project + worktree directories themselves stay clean.
-export const ORCH_STORE_DIRNAME = '.code-conductor';
 
-// Memoised per raw value: called per request, and tests swap PROJECTS_ROOT. A root
-// the platform cannot resolve yet is returned raw and NOT memoised, so its spelling
-// is fixed only once the directory exists.
-export function canonicalRootMemo(platform: Platform): (raw: string) => string {
-  const canonicalRoots = new Map<string, string>();
-  return (raw) => {
-    let canon = canonicalRoots.get(raw);
-    if (canon === undefined) {
-      const resolved = platform.canonicalPath(raw);
-      if (resolved === null) return raw;
-      canon = resolved;
-      canonicalRoots.set(raw, canon);
-    }
-    return canon;
-  };
-}
-const canonicalRoot = canonicalRootMemo(hostPlatform);
-
-// The root spelled as the claude CLI's `getcwd()` reports it, so every cwd
-// derived from it names the transcript dir the CLI will use.
-export function projectsRoot(): string {
-  return canonicalRoot(process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT);
-}
 
 // The conductor's own running checkout dir (the dir holding server.ts /
 // package.json). Exposed so the plugin supervisor can hand it to backends as
@@ -108,9 +72,6 @@ export function selfProjectDir(): string {
   return SELF_PROJECT_DIR;
 }
 
-export function orchStoreRoot(): string {
-  return path.join(projectsRoot(), ORCH_STORE_DIRNAME);
-}
 
 // Every local worktree checkout cc creates lives under one dotfolder at
 // `<projectsRoot>/.worktrees/<project>/<key>` — wherever the project itself
@@ -131,9 +92,6 @@ export function pluginsRoot(): string {
   return path.join(projectsRoot(), PLUGINS_DIRNAME);
 }
 
-export function projectStoreDir(name: string): string {
-  return path.join(orchStoreRoot(), 'projects', name);
-}
 
 // Where a project's worktree REGISTRATIONS live. This directory is the
 // authoritative list — listWorktrees enumerates it rather than asking git, so a
@@ -217,38 +175,6 @@ export function encodeCwd(abs: string): string {
   return abs.replace(/[^A-Za-z0-9-]/g, '-');
 }
 
-// The two forms mintPublicId (src/sessionLineage.ts) produces: 8 hex chars, or
-// its `xxxxxxxx-xxxx` extension. A full UUID, a base-case id and every existing
-// fixture are all longer, so they pass this test.
-const MINTED_PUBLIC_ID_RE = /^[0-9a-f]{8}(-[0-9a-f]{4})?$/;
-
-// True when `id` has one of the shapes mintPublicId produces — i.e. it can only
-// ever be a PUBLIC id, so it can never name a transcript file. A caller that has
-// already resolved through resolveBacking() and STILL sees this shape is holding
-// an id no session on disk answers to: that is an UNKNOWN SESSION, not an error,
-// and it must degrade to that caller's normal miss path (null / false / 404)
-// rather than trip assertBackingId and surface as a 500.
-export function isMintedPublicId(id: unknown): boolean {
-  return typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id);
-}
-
-// Loud runtime guard on the public/backing boundary. A session's PUBLIC id is
-// neither a filename nor a `--resume` argument — those need its CURRENT backing
-// id, obtained from `resolveBacking()` (src/sessionLineage.ts) or read off
-// `Instance.backingSessionId`. This throws, with the call site named, when it is
-// handed something that looks exactly like one of our minted public ids.
-//
-// It is an ASSERTION, not a behavioural branch: nothing RESOLVES differently by
-// id length. If a fixture ever collides with the pattern, rename the fixture —
-// do not weaken the guard.
-export function assertBackingId(id: string, where: string): void {
-  if (typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id)) {
-    throw new Error(
-      `${where}: '${id}' is a public session id, not a backing id — resolve it through `
-      + 'resolveBacking() (src/sessionLineage.ts) or read Instance.backingSessionId',
-    );
-  }
-}
 
 // WHERE A PLACE'S TRANSCRIPTS LIVE — the coordinate every transcript path is
 // built from.
@@ -361,22 +287,6 @@ function projectRowId(filename: string, index: SessionIndex): string {
   return index.byPublic.get(publicId)?.current === filename ? publicId : filename;
 }
 
-export function validateName(name: string): string {
-  if (typeof name !== 'string' || !NAME_RE.test(name)) {
-    throw httpError(400, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
-  }
-  // `.` and `..` pass NAME_RE (it has no positional rules) but they are PATH
-  // TRAVERSAL, not names: `path.join(projectsRoot(), '..')` escapes the root
-  // entirely, and every caller that follows treats what it gets back as a
-  // project directory it may write into or REMOVE — deleteProject would
-  // recursively delete the projects root's parent. Refused here, in the one
-  // function every name-taking entry point already funnels through, rather
-  // than at each of them. Dot-LEADING names stay legal: `.conduct` is one.
-  if (name === '.' || name === '..') {
-    throw httpError(400, `invalid project name '${name}' (a dot-only name is a path traversal, not a project)`);
-  }
-  return name;
-}
 
 // validateName for an argument that ADDRESSES an existing project (the MCP
 // tools' `project`): same rule, but a regex failure names the valid form — the
@@ -601,69 +511,9 @@ export function validateWorkspace(workspace: unknown): string | null {
   return trimmed;
 }
 
-// WHERE A PROJECT LIVES — the one stored answer, and the presence of it in
-// `<store>/projects/<name>/project.json` IS the registration. There is no
-// second artefact (no in-root directory, no symlink) for any kind of project.
-export type ProjectLocation =
-  | { kind: 'local'; path: string }
-  | { kind: 'remote'; system: string; remoteId: string | null; path: string };
 
-export interface ProjectRecord {
-  workspace: string | null;
-  location: ProjectLocation;
-}
 
-function recordFile(name: string): string {
-  return path.join(projectStoreDir(name), 'project.json');
-}
 
-function malformed(file: string, why: string): Error {
-  return httpError(500, `project record ${file} is malformed: ${why} — repair the file, or remove the project's store directory to unregister it.`);
-}
-
-// Read the project's record. `null` means NOT REGISTERED (no file).
-//
-// A file that exists and cannot be understood THROWS. Degrading it to an empty
-// record — which is what this did when an in-root directory registered a
-// project independently — would now silently unregister a live project, so the
-// refusal is loud and its status is 500, never 404.
-export async function readProjectRecord(name: string): Promise<ProjectRecord | null> {
-  validateName(name);
-  const file = recordFile(name);
-  let raw: string;
-  try { raw = await fs.readFile(file, 'utf8'); }
-  catch (e) {
-    if (errCode(e) === 'ENOENT') return null;
-    throw malformed(file, errMsg(e));
-  }
-  let obj: unknown;
-  try { obj = JSON.parse(raw); }
-  catch (e) { throw malformed(file, errMsg(e)); }
-  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
-    throw malformed(file, 'the record is not a JSON object');
-  }
-  const rec = obj as { workspace?: unknown; location?: unknown };
-  const str = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
-  const loc = rec.location;
-  if (typeof loc !== 'object' || loc === null || Array.isArray(loc)) {
-    throw malformed(file, 'it has no `location`');
-  }
-  const l = loc as { kind?: unknown; system?: unknown; remoteId?: unknown; path?: unknown };
-  const p = str(l.path);
-  if (!p) throw malformed(file, 'its `location` has no `path`');
-  if (l.kind === 'local') {
-    return { workspace: str(rec.workspace), location: { kind: 'local', path: p } };
-  }
-  if (l.kind === 'remote') {
-    const system = str(l.system);
-    if (!system) throw malformed(file, 'a remote `location` names no `system`');
-    return {
-      workspace: str(rec.workspace),
-      location: { kind: 'remote', system, remoteId: str(l.remoteId), path: p },
-    };
-  }
-  throw malformed(file, `unknown location kind ${JSON.stringify(l.kind)}`);
-}
 
 // Which projects name a NON-LOCAL system, grouped by system id — the
 // still-referenced check behind Settings → Systems' delete refusal.

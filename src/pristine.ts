@@ -12,7 +12,7 @@
 // "still pristine", so a conductor already listed under a draft is reaped the
 // same way when a later visit clears the draft.
 
-import { normalizeTitle } from './sessionTitles.ts';
+import { normalizeTitle } from './sessionTitleText.ts';
 
 // Long enough for a reload whose project read times out once and retries
 // (web/src/app/controller.ts READ_TIMEOUT_MS) plus a network blip; a hidden

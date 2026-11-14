@@ -15,7 +15,7 @@ import { RealClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from '../s
 import { fetchOriginBounded } from '../src/gitLive.ts';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { cliEnvBase } from '../src/cliEnv.ts';
-import { canonicalRootMemo } from '../src/projects.ts';
+import { canonicalRootMemo } from '../src/storeRoot.ts';
 import { checkClaudeReadiness } from '../src/health.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
