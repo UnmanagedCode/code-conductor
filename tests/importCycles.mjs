@@ -27,9 +27,7 @@ export const ROOTS = ['server.ts', 'src', 'shared', 'migrations'];
 const CODE = /\.(?:ts|mts|cts|tsx|mjs|js|cjs)$/;
 const DECL = /\.d\.m?ts$/;
 
-export const BASELINE = [
-  ['src/projects.ts', 'src/sessionStore.ts', 'src/sessionTitles.ts', 'src/systems/registry.ts'],
-];
+export const BASELINE = [];
 
 const REGEX_AFTER = new Set([...'(,=:[!&|?{};+-*%<>~^']);
 // blank comments and template-literal text (newlines kept); strings & regexes kept
