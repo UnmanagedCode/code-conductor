@@ -157,7 +157,7 @@ Between the child and cc; not an application API.
 | `CC_RUN_MEMBERS` | `{"<plugin id>": ["<name>", …]}` as JSON: the plugin-provided names this run's pre-check saw, so the child routes them synchronously. Names only; absent = none; malformed = child exits 2 |
 | `GET /mcp/<sid>/run-modules/<id>` | the child's lookup for a namespace, once per run on its first call into it; requires the token (`403` `RUN_TOKEN_INVALID` without a live one for this session). `200` `{id, path, baseUrl, caller: {sessionId, project}, members: [{name, inputSchema}]}`; `404` `TOOL_UNKNOWN` (plugin provides none now); `409` `TOOL_UNAVAILABLE`. `path` is absolute, in the plugin's active checkout |
 
-The result goes over this channel rather than stdout because the logs are head-capped: a result printed last would be lost behind long logs. After the result is posted the child drains its streams and exits (`1` when it carries an `error`), so leftover timers cannot print after it.
+The result goes over this channel rather than stdout because the logs are head-capped: a result printed last would be lost behind long logs. After the result is posted the child drains its streams and exits (`1` when the posted outcome carries an `error`), so leftover timers cannot print after it. Only the first outcome is posted. An uncaught throw or rejection that arrives while it is being sent, or a return while a rejection's send is in flight, waits for that send and does not replace it. The send has no bound of its own: the run's timeout bounds it. A send that fails is logged to the run's `logs`, and the run answers `NoResult`.
 
 ## Samples
 

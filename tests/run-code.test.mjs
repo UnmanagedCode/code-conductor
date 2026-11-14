@@ -83,6 +83,46 @@ test('an uncaught rejection after the function returned still reports one result
   assert.equal(body.error.name, 'Error', 'the rejection is the delivered outcome, not NoResult');
   assert.equal(body.error.message, 'late');
   assert.equal(body.result, null);
+  assert.equal(body.exitCode, 1, 'the exit code follows the delivered rejection');
+});
+
+test('a rejection whose result is still being sent when the function returns is the one result', async () => {
+  const { body } = await run(`
+    const realFetch = globalThis.fetch;
+    let sending;
+    const sendStarted = new Promise(r => { sending = r; });
+    globalThis.fetch = async (u, init) => {
+      if (String(u).endsWith('/run-result')) { console.log('held'); sending(); await new Promise(r => setTimeout(r, 200)); }
+      return realFetch(u, init);
+    };
+    Promise.reject(new Error('late'));
+    await sendStarted;
+    return 1;
+  `);
+  assert.equal(body.error?.name, 'Error', JSON.stringify(body));
+  assert.equal(body.error.message, 'late');
+  assert.equal(body.result, null);
+  assert.equal(body.exitCode, 1, 'the exit code follows the delivered rejection');
+  assert.equal((body.logs.match(/held/g) ?? []).length, 1, 'exactly one send, and it went through the hold');
+});
+
+test('a rejection while the returned value is being sent does not cut the send off', async () => {
+  const { body } = await run(`
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (u, init) => {
+      if (String(u).endsWith('/run-result')) {
+        console.log('held');
+        Promise.reject(new Error('after return'));
+        await new Promise(r => setTimeout(r, 200));
+      }
+      return realFetch(u, init);
+    };
+    return 'kept';
+  `);
+  assert.equal(body.error, undefined, JSON.stringify(body));
+  assert.equal(body.result, '"kept"');
+  assert.equal(body.exitCode, 0, 'the exit code follows the delivered value');
+  assert.equal((body.logs.match(/held/g) ?? []).length, 1, 'exactly one send, and it went through the hold');
 });
 
 test('an oversize return is cut with a marker, truncated, and its full length', async () => {
