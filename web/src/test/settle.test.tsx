@@ -39,13 +39,13 @@ describe('settle', () => {
   it('fails when the DOM never goes quiet', async () => {
     let stop = false;
     let flip = false;
-    const tick = (): void => {
+    const pulse = (): void => {
       if (stop) return;
       flip = !flip;
       document.body.setAttribute('data-flip', String(flip));
-      setTimeout(tick, 0);
+      setTimeout(pulse, 0);
     };
-    setTimeout(tick, 0);
+    setTimeout(pulse, 0);
     try {
       await expect(settle()).rejects.toThrow(/still changing/);
     } finally {
