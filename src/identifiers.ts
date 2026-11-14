@@ -28,3 +28,36 @@ export const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 export function isSessionId(value: unknown): value is string {
   return typeof value === 'string' && SESSION_ID_RE.test(value);
 }
+
+// The two forms mintPublicId (src/sessionLineage.ts) produces: 8 hex chars, or
+// its `xxxxxxxx-xxxx` extension. A full UUID, a base-case id and every existing
+// fixture are all longer, so they pass this test.
+const MINTED_PUBLIC_ID_RE = /^[0-9a-f]{8}(-[0-9a-f]{4})?$/;
+
+// True when `id` has one of the shapes mintPublicId produces — i.e. it can only
+// ever be a PUBLIC id, so it can never name a transcript file. A caller that has
+// already resolved through resolveBacking() and STILL sees this shape is holding
+// an id no session on disk answers to: that is an UNKNOWN SESSION, not an error,
+// and it must degrade to that caller's normal miss path (null / false / 404)
+// rather than trip assertBackingId and surface as a 500.
+export function isMintedPublicId(id: unknown): boolean {
+  return typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id);
+}
+
+// Loud runtime guard on the public/backing boundary. A session's PUBLIC id is
+// neither a filename nor a `--resume` argument — those need its CURRENT backing
+// id, obtained from `resolveBacking()` (src/sessionLineage.ts) or read off
+// `Instance.backingSessionId`. This throws, with the call site named, when it is
+// handed something that looks exactly like one of our minted public ids.
+//
+// It is an ASSERTION, not a behavioural branch: nothing RESOLVES differently by
+// id length. If a fixture ever collides with the pattern, rename the fixture —
+// do not weaken the guard.
+export function assertBackingId(id: string, where: string): void {
+  if (typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id)) {
+    throw new Error(
+      `${where}: '${id}' is a public session id, not a backing id — resolve it through `
+      + 'resolveBacking() (src/sessionLineage.ts) or read Instance.backingSessionId',
+    );
+  }
+}

@@ -140,6 +140,8 @@ import { capabilityRefusal } from './capabilities.ts';
 import { isKnownEffort } from './effortLevels.ts';
 import { PRISTINE_REAP_GRACE_MS, PristineTracker, draftTitleOf, isHiddenPristine, type PristineTimers } from './pristine.ts';
 import { errCode } from '../shared/basics.ts';
+import { isDeadStatus } from './instanceStatus.ts';
+import { parseResetEpochSecs } from './rateLimitReset.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.ts; re-export it here so existing importers (and tests) that
@@ -388,18 +390,8 @@ export function softInterruptDeadlineMs(): number {
   return Number.isFinite(env) ? env : SOFT_INTERRUPT_DEADLINE_MS;
 }
 
-// The two terminal statuses. Exported because "is this worker dead?" is asked
-// on two MCP surfaces that MUST agree — list_projects' `live N`
-// (liveCountForProject) and whether a worker lands in list_sessions' live rows
-// (src/mcp/handlers.ts) — and a second spelling of the rule is how they would
-// drift apart. A dead instance retained in byId (persistent exits are kept
-// indefinitely, so respawn can resume them) is NOT a live worker.
 // The default event-log actor: nothing a person or a conductor asked for.
 const SYSTEM_ACTOR: Actor = Object.freeze({ type: 'system' });
-
-export function isDeadStatus(status: unknown): boolean {
-  return status === 'exited' || status === 'crashed';
-}
 
 // The root a new instance inherits from its spawner: a conducted caller
 // passes on its own root, anything else IS the root. Resolved once at create so a
@@ -473,22 +465,6 @@ function isOverageEvent(data: unknown): boolean {
       || rec?.isUsingOverage === true;
 }
 
-// Normalise the rate-limit window reset time to epoch SECONDS, or null.
-// The live `rate_limit_event` field is the camelCase epoch-seconds `resetsAt`
-// (confirmed against a real CLI capture). The snake_case ISO `resets_at` (as in
-// the account-usage payload / web/src/app/accountUsage.ts's
-// `new Date(b.resets_at)`) and a
-// raw epoch number are accepted only as defensive fallbacks. The overage
-// auto-resume timer (overageResume.ts arm()) and the global clear timer both
-// expect epoch seconds, so this is the single place the shape is reconciled.
-export function parseResetEpochSecs(info: unknown): number | null {
-  const rec = (info ?? null) as { resetsAt?: unknown; resets_at?: unknown } | null;
-  const v = rec?.resetsAt ?? rec?.resets_at ?? null;
-  if (v == null) return null;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null; // already epoch secs
-  const ms = Date.parse(v as string);                              // ISO-8601 string
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
-}
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
 const DEFAULT_THINKING = 'adaptive';
 

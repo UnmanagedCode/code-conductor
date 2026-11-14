@@ -14,7 +14,7 @@
 
 import { trunc } from './mcp/textRender.ts';
 import { humanizeDuration } from './duration.ts';
-import { isDeadStatus } from './instances.ts';
+import { isDeadStatus } from './instanceStatus.ts';
 
 export interface BackgroundJob {
   title: string;

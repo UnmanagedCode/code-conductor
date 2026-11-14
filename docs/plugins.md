@@ -425,7 +425,7 @@ A plugin backend opens a terminal — a program under a pseudo-terminal, bytes b
 
 A plugin that lets users edit playbooks (rather than ship them) works against the **user overlay**, not its manifest. cc core serves read + validate only — [`/api/playbooks`](protocol.md#rest--apiplaybooks) at `$CONDUCTOR_URL/api/playbooks`; the plugin does the writing.
 
-- **Create / edit** = write `$PROJECTS_ROOT/.code-conductor/playbooks/<id>.json` (`orchStoreRoot()/playbooks`; the dotfolder is `ORCH_STORE_DIRNAME`, `src/projects.ts`), creating the directory if missing. The body's `id` must equal `<id>`.
+- **Create / edit** = write `$PROJECTS_ROOT/.code-conductor/playbooks/<id>.json` (`orchStoreRoot()/playbooks`; the dotfolder is `ORCH_STORE_DIRNAME`, `src/storeRoot.ts`), creating the directory if missing. The body's `id` must equal `<id>`.
 - **Delete** = remove that file.
 - **Validate first:** `POST /api/playbooks/validate` with the draft; write only on `{ok:true}`.
 - **Collisions:** check `GET /api/playbooks` → `takenIds` — a `builtin` id overrides the shipped definition (legal; warn), a `user` id overwrites that file, a `reserved` id is **silently ignored** by the loader (refuse it).

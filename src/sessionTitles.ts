@@ -5,8 +5,9 @@
 
 import { setTitle } from './sessionStore.ts';
 import type { InstanceManagerLike } from './instanceTypes.ts';
+import { MAX_TITLE_LEN } from './sessionTitleText.ts';
 
-export const MAX_TITLE_LEN = 100;
+export { MAX_TITLE_LEN };
 
 // The JSON schema of a title argument, shared by every MCP tool that takes one.
 export const TITLE_SCHEMA = { type: 'string', pattern: '\\S', maxLength: MAX_TITLE_LEN } as const;
@@ -19,11 +20,6 @@ export function forkTitle(source: string | null): string | null {
   return source ? `${FORK_TITLE_PREFIX}${source}` : null;
 }
 
-// Trimmed and capped; '' means "no title".
-export function normalizeTitle(title: unknown): string {
-  if (typeof title !== 'string') return '';
-  return title.trim().slice(0, MAX_TITLE_LEN);
-}
 
 // Store the title on the session `sid` names (a public id or any of its
 // segments) and push the stored value to every live instance attached to it, so

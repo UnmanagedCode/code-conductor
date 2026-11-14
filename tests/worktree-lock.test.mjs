@@ -27,7 +27,7 @@ import {
   createWorktree, getWorktree, listWorktrees, repairWorktreesAfterProjectMove,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir, getProject } from '../src/projects.ts';
-import { isDeadStatus } from '../src/instances.ts';
+import { isDeadStatus } from '../src/instanceStatus.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');

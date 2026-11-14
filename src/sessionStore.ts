@@ -110,10 +110,12 @@
 
 import { promises as fs, type BigIntStats } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot, writeFileAtomic, isMintedPublicId } from './projects.ts';
+import { orchStoreRoot } from './storeRoot.ts';
+import { writeFileAtomic } from './systems/localSystem.ts';
+import { isMintedPublicId } from './identifiers.ts';
 import { withLock } from './storeLock.ts';
 import { MODES } from './sessionModes.ts';
-import { normalizeTitle } from './sessionTitles.ts';
+import { normalizeTitle } from './sessionTitleText.ts';
 import { normalizeSummaryTiers, normalizeTierRecord, SUMMARY_LENGTHS, type SummaryTiers, type TierRecord } from './sessionSummaries.ts';
 import { errCode, errMsg } from '../shared/basics.ts';
 

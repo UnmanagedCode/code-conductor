@@ -16,7 +16,7 @@
 
 import { getAccountUsage } from './accountUsage.ts';
 import { getOverageThreshold, getOnOverageAction, usageOverThreshold } from './appSettings.ts';
-import { parseResetEpochSecs } from './instances.ts';
+import { parseResetEpochSecs } from './rateLimitReset.ts';
 import type { InstanceManager } from './instances.ts';
 
 // Default poll cadence. Aligned with accountUsage.ts's success-cache cadence so a
