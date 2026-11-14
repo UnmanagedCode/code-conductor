@@ -9,7 +9,7 @@ import { settle } from '@/test/settle';
 import { routeFetch } from '@/test/routeFetch';
 import { toast } from '@/ui/feedback';
 import { dialogStore, openNewProjectDialog } from '@/features/dialogs/api';
-import { openCosts } from '@/features/views/api';
+import { openCommits, openCosts } from '@/features/views/api';
 
 // A crash switch per region: each stand-in below throws its own Error while its flag is on.
 const boom = vi.hoisted(() => {
@@ -26,6 +26,17 @@ const boom = vi.hoisted(() => {
     sub: (l: () => void) => { ls.add(l); return () => { ls.delete(l); }; },
     set(k: keyof typeof s, v: boolean) { s[k] = v; ls.forEach((l) => l()); },
   };
+});
+
+// The Commits view's lazy chunk: it stays pending until `release`, then loads a view that throws.
+const chunk = vi.hoisted(() => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  return { gate, release: () => release(), error: new Error('commits view exploded after loading') };
+});
+vi.mock('@/features/views/CommitsView', async () => {
+  await chunk.gate;
+  return { CommitsView: () => { throw chunk.error; } };
 });
 
 vi.mock('@/app/controller', () => ({
@@ -219,6 +230,8 @@ describe('a render crash stays in its region', () => {
 
   it('a crash outside every region shows the app fallback, not a blank page', async () => {
     // Invariant: the root boundary replaces the blank-page failure with a fallback offering Reload page.
+    // The spy is up before mount, so a reload fired by the fallback mounting is seen.
+    const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
     await mountApp();
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const thrown = await crash('banner');
@@ -228,8 +241,50 @@ describe('a render crash stays in its region', () => {
     expect(within(root!).getByRole('button', { name: 'Reload page' })).not.toBeNull();
     expect(thrown, 'nothing escaped past the root boundary').toBeNull();
     expectLogged(logged, boom.errors.banner);
-    const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
+    expect(reload, 'the fallback does not reload by itself').not.toHaveBeenCalled();
     await act(async () => { within(root!).getByRole('button', { name: 'Reload page' }).click(); });
     expect(reload, 'Reload page reloads').toHaveBeenCalledTimes(1);
+  });
+
+  it("a sidebar crash with the phone drawer open shows the fallback in the drawer; the app and main pane stay", async () => {
+    // Invariant: the drawer's sidebar has its own isolating boundary — its fallback shows inside the sheet, nothing reaches the root, the main pane stays.
+    const { container } = await mountApp();
+    await act(async () => { uiStore.set({ sidebarOpen: true }); });
+    await settle();
+    const sheet = () => document.querySelector<HTMLElement>('[data-slot="sheet-content"]');
+    expect(sheet(), 'control: the drawer is open').not.toBeNull();
+    expect(sheet()!.querySelector('[data-sidebar]'), 'control: the drawer holds a sidebar').not.toBeNull();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const thrown = await crash('sidebar');
+    expect(container.childElementCount, 'the app is still mounted').toBeGreaterThan(0);
+    expect(sheet(), 'the drawer stays open').not.toBeNull();
+    const inDrawer = sheet()!.querySelector('[data-error-region="sidebar"]');
+    expect(inDrawer, 'the drawer shows the sidebar fallback').not.toBeNull();
+    expect(sheet()!.querySelector('[data-sidebar]'), 'the drawer sidebar is replaced').toBeNull();
+    expect(region('app'), 'no root fallback').toBeNull();
+    expect(sessionView(), 'the main pane stays').not.toBeNull();
+    expect(thrown, 'nothing escaped to the root').toBeNull();
+    expectLogged(logged, boom.errors.sidebar);
+  });
+
+  it('a lazy view that suspends and then throws lands in the main fallback, not the root', async () => {
+    // Invariant: a lazy view that throws after suspending is caught by the main-pane boundary — sidebar intact, no root fallback.
+    const { container } = await mountApp();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await act(async () => { openCommits('p'); });
+    await settle();
+    expect(location.hash, 'control: the route moved to Commits').toBe('#commits');
+    expect(region('main'), 'control: still loading, no fallback yet').toBeNull();
+    expect(region('app'), 'control: still loading, no root fallback').toBeNull();
+    const thrown = await actCatching(() => chunk.release());
+    expect(container.childElementCount, 'the app is still mounted').toBeGreaterThan(0);
+    const main = region('main');
+    expect(main, 'the main fallback').not.toBeNull();
+    expect(main!.textContent).toContain(chunk.error.message);
+    expect(desktopSidebar(), 'the sidebar stays').toHaveLength(1);
+    expect(region('app'), 'no root fallback').toBeNull();
+    expect(thrown, 'nothing escaped to the root').toBeNull();
+    expect(logged.mock.calls.some((c) => c.includes(chunk.error)), 'React logged the view error').toBe(true);
+    expect(logged.mock.calls.every((c) => c.includes(chunk.error)), 'every logged call carries it').toBe(true);
   });
 });
