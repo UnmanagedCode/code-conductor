@@ -30,13 +30,14 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 
 const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore } = await import('./state');
+const { STALE_LIST_LABELS } = await import('./staleLists');
 const { closeDialog, dialogStore } = await import('@/features/dialogs/api');
 
 const inst = (o: Record<string, any>) => ({ id: `i-${o.sessionId}`, status: 'idle', mode: 'plan', ...o });
 
 function seed(over: Partial<ReturnType<typeof appStore.get>> = {}) {
   appStore.set({
-    connection: 'open', everDropped: false, activeId: null, sidebarStatus: null,
+    connection: 'open', everDropped: false, activeId: null, sidebarStatus: null, staleLists: [],
     projects: [], workspaces: [], conductSessions: [], conductorSpawns: {}, instances: [],
     ...over,
   });
@@ -343,5 +344,27 @@ describe('AppSidebar', () => {
     seed({ connection: 'reconnecting', everDropped: true });
     renderSidebar();
     expect(screen.getByText('Reconnecting…')).toBeTruthy();
+  });
+
+  it('a stale side list shows a footer warning naming it, and Connected returns when it clears', () => {
+    seed({ staleLists: ['conductorSpawns'] });
+    renderSidebar();
+    const status = () => document.querySelector('[data-sidebar-status]')!.textContent ?? '';
+    expect(status()).toContain(STALE_LIST_LABELS.conductorSpawns);
+    expect(status()).not.toContain('Connected');
+    act(() => appStore.set({ staleLists: [] }));
+    expect(status()).toContain('Connected');
+  });
+
+  it('a progress status and Reconnecting… outrank the stale-list warning, which returns once they clear', () => {
+    seed({ staleLists: ['workspaces'], sidebarStatus: { text: 'Resuming…', warn: false }, connection: 'reconnecting', everDropped: true });
+    renderSidebar();
+    const status = () => document.querySelector('[data-sidebar-status]')!.textContent ?? '';
+    expect(status()).toContain('Resuming…');
+    act(() => appStore.set({ sidebarStatus: null }));
+    expect(status()).toContain('Reconnecting…');
+    expect(status()).not.toContain(STALE_LIST_LABELS.workspaces);
+    act(() => appStore.set({ connection: 'open' }));
+    expect(status()).toContain(STALE_LIST_LABELS.workspaces);
   });
 });

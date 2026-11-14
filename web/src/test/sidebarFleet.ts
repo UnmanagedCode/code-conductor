@@ -96,7 +96,7 @@ export const FLEET_UI: Pick<SidebarUi, 'expandedWorkspaces' | 'expandedWorktrees
 
 export function seed(over: Partial<ReturnType<typeof appStore.get>> = {}) {
   appStore.set({
-    connection: 'open', everDropped: false, activeId: null, sidebarStatus: null,
+    connection: 'open', everDropped: false, activeId: null, sidebarStatus: null, staleLists: [],
     projects: [], workspaces: [], conductSessions: [], conductorSpawns: {}, instances: [],
     ...over,
   });

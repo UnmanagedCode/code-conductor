@@ -5,7 +5,7 @@
 import { bus, connect, send } from '@shared/ws';
 import { ApiError, apiFetch } from '@shared/http';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
-import { appStore, activeInstance, findInstance, worktreeRemoved, type AppState } from '@/state/app';
+import { appStore, activeInstance, findInstance, worktreeRemoved, type AppState, type StaleList } from '@/state/app';
 import { syncRoute, routeStore } from '@/state/route';
 import type { Instance } from '@/state/types';
 import type { UiEvent } from '@shared/uiEvent';
@@ -138,18 +138,33 @@ function coalescedReads<T>(read: (signal: AbortSignal) => Promise<T>, apply: (da
   };
 }
 
+type SideRead = { ok: true; value: unknown } | { ok: false; error: unknown };
+const sideRead = (url: string, signal: AbortSignal): Promise<SideRead> =>
+  apiFetch(url, { signal }).then((value): SideRead => ({ ok: true, value }), (error: unknown): SideRead => ({ ok: false, error }));
+
 const projectReads = coalescedReads((signal) => Promise.all([
     apiFetch('/api/projects', { signal }),
-    apiFetch('/api/workspaces', { signal }).catch(() => []),
-    apiFetch('/api/projects/.conduct/sessions', { signal }).catch(() => []),
-    apiFetch('/api/conductors/projects', { signal }).catch(() => ({})),
+    sideRead('/api/workspaces', signal),
+    sideRead('/api/projects/.conduct/sessions', signal),
+    sideRead('/api/conductors/projects', signal),
   ]), ([projects, workspaces, conductSessions, conductorSpawns]) => {
-  appStore.set({
-    projects: Array.isArray(projects) ? projects : [],
-    workspaces: Array.isArray(workspaces) ? workspaces.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [],
-    conductSessions: Array.isArray(conductSessions) ? conductSessions : [],
-    conductorSpawns: conductorSpawns && typeof conductorSpawns === 'object' ? (conductorSpawns as AppState['conductorSpawns']) : {},
+  const prev = appStore.get().staleLists;
+  const failed: StaleList[] = [];
+  const patch: Partial<AppState> = { projects: Array.isArray(projects) ? projects : [] };
+  const settle = (list: StaleList, read: SideRead, write: (value: unknown) => void) => {
+    if (read.ok) { write(read.value); return; }
+    failed.push(list);
+    if (!prev.includes(list)) console.warn(`${list} read failed; keeping the last list:`, read.error);
+  };
+  settle('workspaces', workspaces, (v) => {
+    patch.workspaces = Array.isArray(v) ? v.map((w: { name?: string }) => w.name).filter(Boolean) as string[] : [];
   });
+  settle('conductSessions', conductSessions, (v) => { patch.conductSessions = Array.isArray(v) ? v : []; });
+  settle('conductorSpawns', conductorSpawns, (v) => {
+    patch.conductorSpawns = v && typeof v === 'object' ? (v as AppState['conductorSpawns']) : {};
+  });
+  const same = failed.length === prev.length && failed.every((l, i) => l === prev[i]);
+  appStore.set({ ...patch, staleLists: same ? prev : failed });
 });
 export const refreshProjects = projectReads.refresh;
 

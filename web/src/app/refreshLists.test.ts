@@ -8,8 +8,8 @@ vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: v
 
 import { bus } from '@shared/ws';
 import { refreshInstances, refreshProjects, startController, stopController } from './controller';
-import { appStore, type AppState } from '@/state/app';
-import type { Project, SessionRow } from '@/state/types';
+import { appStore } from '@/state/app';
+import type { Project } from '@/state/types';
 
 describe('refreshing the lists', () => {
   it('a JSON 5xx from /api/projects rejects with its reason and keeps the last project list', async () => {
@@ -36,32 +36,39 @@ describe('refreshing the lists', () => {
     expect(appStore.get().instances).toEqual([live]);
   });
 
-  it('a refused workspaces read degrades to no workspaces, silently, and the project list still applies', async () => {
-    appStore.set({ workspaces: ['stale-ws'] });
+  it('a workspaces read refused on the first load leaves workspaces empty, flags them stale, and still applies the project list', async () => {
+    appStore.set({ workspaces: [], staleLists: [] });
     routeFetch({
       'GET /api/projects/.conduct/sessions': () => ({ json: [] }),
       'GET /api/projects': () => ({ json: [{ name: 'gamma' }] }),
       'GET /api/workspaces': () => ({ status: 500, json: { error: 'workspaces read refused' } }),
       'GET /api/conductors/projects': () => ({ json: {} }),
     });
-    await expect(refreshProjects()).resolves.toBeUndefined();
-    expect(appStore.get().workspaces).toEqual([]);
-    expect(appStore.get().projects).toEqual([{ name: 'gamma' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(refreshProjects()).resolves.toBeUndefined();
+      expect(appStore.get()).toMatchObject({ workspaces: [], staleLists: ['workspaces'], projects: [{ name: 'gamma' }] });
+      expect(warn.mock.calls).toEqual([['workspaces read failed; keeping the last list:', expect.objectContaining({ message: 'workspaces read refused' })]]);
+    } finally { warn.mockRestore(); }
   });
 
-  it('refused conductor-session and conductor-spawn reads degrade to empty, silently, and the project list still applies', async () => {
-    appStore.set({ conductSessions: [{ sessionId: 'stale' }] as unknown as SessionRow[], conductorSpawns: { stale: [] } as AppState['conductorSpawns'] });
+  it('conductor-session and conductor-projects reads refused on the first load leave both empty and flagged, and the project list still applies', async () => {
+    appStore.set({ conductSessions: [], conductorSpawns: {}, staleLists: [] });
     routeFetch({
       'GET /api/projects/.conduct/sessions': () => ({ status: 500, json: { error: 'conduct sessions refused' } }),
       'GET /api/projects': () => ({ json: [{ name: 'delta' }] }),
       'GET /api/workspaces': () => ({ json: [{ name: 'ws1' }] }),
       'GET /api/conductors/projects': () => new TypeError('Failed to fetch'),
     });
-    await expect(refreshProjects()).resolves.toBeUndefined();
-    expect(appStore.get().conductSessions).toEqual([]);
-    expect(appStore.get().conductorSpawns).toEqual({});
-    expect(appStore.get().workspaces).toEqual(['ws1']);
-    expect(appStore.get().projects).toEqual([{ name: 'delta' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(refreshProjects()).resolves.toBeUndefined();
+      expect(appStore.get()).toMatchObject({
+        conductSessions: [], conductorSpawns: {}, staleLists: ['conductSessions', 'conductorSpawns'],
+        workspaces: ['ws1'], projects: [{ name: 'delta' }],
+      });
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
   });
 
   describe('a side read that fails after a good load', () => {
@@ -136,7 +143,7 @@ describe('refreshing the lists', () => {
         await refreshProjects();
         expect(appStore.get().conductorSpawns).toEqual(prevSpawn);
         expect(appStore.get()).toMatchObject({ staleLists: ['conductorSpawns'], projects: [{ name: 'gamma' }], workspaces: ['ws-gamma'] });
-        expect(warn.mock.calls).toEqual([['conductorSpawns read failed; keeping the last list:', expect.objectContaining({ message: 'Failed to fetch' })]]);
+        expect(warn.mock.calls).toEqual([['conductorSpawns read failed; keeping the last list:', expect.objectContaining({ message: 'cc server unreachable — it may be restarting' })]]);
       } finally { warn.mockRestore(); }
     });
 

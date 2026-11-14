@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   BarChart3Icon, FolderInputIcon, FolderPlusIcon, LayersIcon, LoaderCircleIcon, MenuIcon, MoonIcon,
-  PowerOffIcon, SettingsIcon, SparklesIcon, SunIcon, WifiOffIcon, XIcon,
+  PowerOffIcon, SettingsIcon, SparklesIcon, SunIcon, TriangleAlertIcon, WifiOffIcon, XIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -32,6 +32,7 @@ import { ProjectsList } from './ProjectsList';
 import { ConductorsList } from './ConductorsList';
 import { PowerMenu } from './PowerMenu';
 import { powerStore } from './restart';
+import { staleListsWarning } from './staleLists';
 import { SessionWidthControl } from './SessionWidthControl';
 import { scrollActiveIntoView } from './reveal';
 // Side-effect import: loading reveal installs its selection subscriptions, whether or not a binding above stays used.
@@ -190,15 +191,18 @@ function Footer({ mobile }: { mobile: boolean }) {
   const status = useStore(appStore, (s) => s.sidebarStatus);
   const connection = useStore(appStore, (s) => s.connection);
   const everDropped = useStore(appStore, (s) => s.everDropped);
+  const stale = useStore(appStore, (s) => s.staleLists);
   const stopped = useStore(powerStore, (s) => s.stopped);
   const reconnecting = connection === 'reconnecting' && everDropped;
-  const text = status?.text ?? (reconnecting ? 'Reconnecting…' : null);
+  const staleShown = !status && !reconnecting && stale.length > 0;
+  const text = status?.text ?? (reconnecting ? 'Reconnecting…' : staleShown ? staleListsWarning(stale) : null);
   return (
     <div className="flex items-center gap-2 border-t border-sidebar-border px-3 py-2 pb-[max(env(safe-area-inset-bottom,0px),0.5rem)]" data-sidebar-footer>
       <div className={cn('flex min-w-0 flex-1 items-center gap-1.5 text-xs', text ? 'text-warning' : 'text-muted-foreground')} aria-live="polite" data-sidebar-status>
         {text ? (
           <>
             {stopped ? <PowerOffIcon className="size-3.5 shrink-0" />
+              : staleShown ? <TriangleAlertIcon className="size-3.5 shrink-0" />
               : reconnecting && !status ? <WifiOffIcon className="size-3.5 shrink-0" /> : <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />}
             <span className="truncate">{text}</span>
           </>
