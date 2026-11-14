@@ -1,6 +1,6 @@
 # Environment variables
 
-The registry is `ENV_VARS` in `src/env.ts`. `tests/env-registry.test.mjs` fails when production code reads a name `ENV_VARS` lacks, or when this table's names and `ENV_VARS`'s keys differ. Measure with `node scripts/env-reads.mjs --docs docs/environment.md`.
+The registry is `ENV_VARS` in `src/env.ts`. `tests/env-registry.test.mjs` fails when code in the `PRODUCTION` scope of `scripts/env-reads.mjs` reads a name `ENV_VARS` lacks (`bin/` launchers are outside that scope), or when this table's names and `ENV_VARS`'s keys differ. Measure with `node scripts/env-reads.mjs --docs docs/environment.md`.
 
 | Var | Effect |
 |---|---|

@@ -133,6 +133,38 @@ test('G8: INDIRECT derives names from key literals; FLOWS silences one (file, de
   assert.deepEqual(deriveIndirect(indirect, (f) => sources.get(f))[0].names, ['N1', 'N2']);
 });
 
+// G9: pins that an injected env aliased to a non-env name cannot hide reads
+// (the same destination rule as a bare process.env), and that env-to-env flows stay quiet.
+test('G9: a bare injected env bound to a non-env name is unresolved; bound to an env name it is not', () => {
+  const alias = scan('const aliased = env; aliased.SOME_UNREGISTERED_VAR;');
+  assert.equal(alias.unresolved.length, 1);
+  assert.deepEqual(alias.reads, []);
+  const ok = scan('const baseEnv = env; const o = { env: spec.env }; function f(env = other.env) {}');
+  assert.deepEqual(ok.unresolved, []);
+  assert.deepEqual(ok.reads, []);
+  const named = scan("function g(v = LOCAL_ENV) {}", { consts: collectConsts(["const LOCAL_ENV = 'NAME';"]) });
+  assert.deepEqual(named.unresolved, [], 'a string constant naming a variable is not an env object');
+});
+
+// G10: pins that a regex literal holding a quote does not make the rest of its
+// line read as a string, and that its own contents are not code.
+test('G10: a read after a quote-bearing regex literal on the same line is found; env text inside a regex is not', () => {
+  const r = scan(`const q = /['"]/; const y = process.env.SILENT_MISS;`);
+  assert.deepEqual(r.reads.map((x) => x.name), ['SILENT_MISS']);
+  const inside = scan('const q = /process.env.NOT_A_READ/;');
+  assert.deepEqual(inside.reads, []);
+  assert.deepEqual(inside.unresolved, []);
+  const division = scan('const z = a / b; const y = process.env.AFTER_DIVISION;');
+  assert.deepEqual(division.reads.map((x) => x.name), ['AFTER_DIVISION']);
+});
+
+// G11: pins that a computed destructure key is reported, not read as a name.
+test('G11: const { [K]: v } = process.env is unresolved and emits no read', () => {
+  const r = scan('const { [K2]: v } = process.env;');
+  assert.deepEqual(r.reads, []);
+  assert.deepEqual(r.unresolved.map((u) => u.what), ['destructure computed key']);
+});
+
 const sitesOf = (name) => real.reads.filter((r) => r.name === name).map((r) => `${r.file}:${r.line}`).join(', ');
 
 // R1: the registry holds every name production code reads.

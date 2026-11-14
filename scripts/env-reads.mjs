@@ -80,14 +80,23 @@ export function deriveIndirect(entries, read) {
   });
 }
 
-// True when `pos` sits inside a quoted string (template text is already blanked).
-function inString(t, pos) {
-  let quote = '';
+// True when `pos` sits inside a quoted string or a regex literal (template
+// text and comments are already blanked). Scans the line up to `pos`.
+const REGEX_PRECEDERS = new Set([...'(,=:[!&|?{};+-*%<>~^']);
+function inNonCode(t, pos) {
+  let quote = ''; let regex = false; let cls = false; let last = '';
   for (let i = t.lastIndexOf('\n', pos - 1) + 1; i < pos; i++) {
     const c = t[i];
-    if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; } else if (c === '\'' || c === '"') quote = c;
+    if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue; }
+    if (regex) {
+      if (c === '\\') i++; else if (c === '[') cls = true; else if (c === ']') cls = false; else if (c === '/' && !cls) { regex = false; last = 'r'; }
+      continue;
+    }
+    if (c === '\'' || c === '"') { quote = c; continue; }
+    if (c === '/' && (last === '' || REGEX_PRECEDERS.has(last))) { regex = true; cls = false; continue; }
+    if (!/\s/.test(c)) last = c;
   }
-  return quote !== '';
+  return quote !== '' || regex;
 }
 
 function lineOf(text, index) {
@@ -157,6 +166,7 @@ function destructureBefore(t, pos) {
       if (--depth === 0) {
         return t.slice(i + 1, close).split(',').map((s) => s.trim()).filter(Boolean).map((part) => {
           if (part.startsWith('...')) return { rest: part.slice(3).trim() };
+          if (part.startsWith('[')) return { computed: true };
           const [key, ...aliasParts] = part.split(':');
           const alias = (aliasParts.length ? aliasParts.join(':') : key).split('=')[0].trim();
           return { key: key.split('=')[0].trim(), alias };
@@ -191,7 +201,7 @@ export function scanSource(file, text, { consts = new Map(), indirect = [], flow
   for (const m of t.matchAll(RECEIVER)) {
     const recvStart = m.index;
     const recvEnd = m.index + m[0].length;
-    if (inString(t, recvStart)) continue;
+    if (inNonCode(t, recvStart)) continue;
     if (/import\s*\.\s*meta\s*\.\s*$/.test(t.slice(Math.max(0, recvStart - 20), recvStart))) continue;
     const viaProcess = /\bprocess\s*\??\.\s*$/.exec(t.slice(Math.max(0, recvStart - 20), recvStart));
     const start = viaProcess ? recvStart - viaProcess[0].length : recvStart;
@@ -233,16 +243,21 @@ export function scanSource(file, text, { consts = new Map(), indirect = [], flow
     const parts = destructureBefore(t, start);
     if (parts) {
       for (const p of parts) {
-        if (p.rest !== undefined) {
+        if (p.computed) fail(start, 'destructure computed key');
+        else if (p.rest !== undefined) {
           if (!ENV_SUFFIX.test(p.rest)) flow(start, `rest:${p.rest}`, `destructure rest "${p.rest}" of an env`);
         } else if (!p.alias.startsWith('_')) note(start, recvEnd, p.key, viaProcess ? 'direct' : 'injected');
       }
       continue;
     }
-    if (!viaProcess) continue;
+    // A bare injected env is only followed when it is bound (`x = env`): any other
+    // use of an `...env` identifier is a type, a parameter or a field, not a value flow.
+    // A string constant (`const X_ENV = 'NAME'`) names a variable; it is not an env object.
+    if (!viaProcess && consts.get(m[1])) continue;
+    if (!viaProcess && !/(?<![=!<>])=\s*$/.test(t.slice(Math.max(0, start - 8), start))) continue;
     const dest = destination(t, start);
     if (dest !== null && !dest.startsWith('call:') && ENV_SUFFIX.test(dest)) continue;
-    flow(start, dest ?? '?', `process.env as a value (${dest ?? 'unknown destination'})`);
+    flow(start, dest ?? '?', `${viaProcess ? 'process.env' : t.slice(start, recvEnd)} as a value (${dest ?? 'unknown destination'})`);
   }
   return { reads, unresolved, used };
 }
