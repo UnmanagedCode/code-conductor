@@ -86,12 +86,14 @@ const desktopSidebar = () => [...document.querySelectorAll('[data-sidebar]')].fi
 const region = (name: string) => document.querySelector<HTMLElement>(`[data-error-region="${name}"]`);
 const sessionView = () => document.querySelector('[data-view="session"]');
 
-/** Turns a crash flag on; returns what `act` rethrew (React 19 rethrows an error no boundary caught). */
-async function crash(k: keyof typeof boom.s): Promise<unknown> {
-  const thrown = await act(async () => boom.set(k, true)).then(() => null, (e) => e);
+/** Runs `fn` in act; returns what act rethrew, or null (React 19 rethrows an error no boundary caught). */
+async function actCatching(fn: () => void): Promise<unknown> {
+  let thrown: unknown = null;
+  try { await act(async () => { fn(); }); } catch (e) { thrown = e; }
   await settle();
   return thrown;
 }
+const crash = (k: keyof typeof boom.s) => actCatching(() => boom.set(k, true));
 /** Every muted console.error call carries the thrown Error: React's caught-error log. */
 function expectLogged(spy: { mock: { calls: unknown[][] } }, error: Error) {
   const calls = spy.mock.calls;
@@ -199,8 +201,7 @@ describe('a render crash stays in its region', () => {
     const { container } = await mountApp();
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     boom.set('dialogs', true);
-    const thrown = await act(async () => openNewProjectDialog()).then(() => null, (e) => e);
-    await settle();
+    const thrown = await actCatching(openNewProjectDialog);
     expect(container.childElementCount, 'the app is still mounted').toBeGreaterThan(0);
     expect(desktopSidebar()).toHaveLength(1);
     expect(sessionView()).not.toBeNull();
@@ -227,6 +228,8 @@ describe('a render crash stays in its region', () => {
     expect(within(root!).getByRole('button', { name: 'Reload page' })).not.toBeNull();
     expect(thrown, 'nothing escaped past the root boundary').toBeNull();
     expectLogged(logged, boom.errors.banner);
-    // The Reload button's click is left unpinned unless location.reload can be spied on here.
+    const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
+    await act(async () => { within(root!).getByRole('button', { name: 'Reload page' }).click(); });
+    expect(reload, 'Reload page reloads').toHaveBeenCalledTimes(1);
   });
 });

@@ -3,10 +3,12 @@ import { LoaderCircleIcon } from 'lucide-react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useStore } from '@/state/createStore';
+import { appStore } from '@/state/app';
 import { useRoute } from '@/state/route';
 import { uiStore } from '@/app/ui';
 import { themeStore } from '@/app/theme';
 import { ConfirmHost, ToastHost } from '@/ui/feedback';
+import { ErrorBoundary, RegionFallback } from '@/ui/ErrorBoundary';
 import { TOAST_EDGE_GAP } from '@/ui/toastLayout';
 import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { keepFilterEscape } from '@/features/sidebar/FilterBar';
@@ -48,7 +50,33 @@ function MainView() {
   }
 }
 
+const sidebarFallback = (className?: string) => (error: Error, reset: () => void) => (
+  <RegionFallback region="sidebar" error={error} onRetry={reset} className={className} />
+);
+
+/** The routed view, behind its own boundary: a crash or a failed chunk load shows here, and another view or session clears it. */
+function MainPane() {
+  const view = useRoute().view;
+  const activeId = useStore(appStore, (s) => s.activeId);
+  return (
+    <ErrorBoundary resetKey={`${view} ${activeId ?? ''}`} fallback={(error, reset) => <RegionFallback region="main" error={error} onRetry={reset} />}>
+      <Suspense fallback={<ViewFallback />}>
+        <MainView />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+
+/** The last resort: a crash outside every region replaces the page, not blanks it. */
 export function App() {
+  return (
+    <ErrorBoundary fallback={(error) => <RegionFallback region="app" error={error} retryLabel="Reload page" onRetry={() => location.reload()} className="h-dvh" />}>
+      <AppShell />
+    </ErrorBoundary>
+  );
+}
+
+function AppShell() {
   const sidebarOpen = useStore(uiStore, (s) => s.sidebarOpen);
   const theme = useStore(themeStore, (s) => s.resolved);
   const columnFull = useStore(dockModeStore, (s) => s.mode === 'full');
@@ -57,12 +85,16 @@ export function App() {
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
       <div className="relative flex h-(--app-height) overflow-hidden bg-background">
         <div className="hidden shrink-0 md:flex">
-          <AppSidebar />
+          <ErrorBoundary fallback={sidebarFallback('w-72 flex-none border-r border-sidebar-border bg-sidebar')}>
+            <AppSidebar />
+          </ErrorBoundary>
         </div>
         <Sheet open={sidebarOpen} onOpenChange={(o) => uiStore.set({ sidebarOpen: o })}>
           <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 md:hidden" onOpenAutoFocus={focusContent} onEscapeKeyDown={keepFilterEscape}>
             <SheetTitle className="sr-only">Navigation</SheetTitle>
-            <AppSidebar mobile />
+            <ErrorBoundary fallback={sidebarFallback()}>
+              <AppSidebar mobile />
+            </ErrorBoundary>
           </SheetContent>
         </Sheet>
         <div className="flex min-w-0 flex-1 flex-col">
@@ -70,9 +102,7 @@ export function App() {
           <div className="flex min-h-0 min-w-0 flex-1">
             {/* Hidden, still mounted, while the plugin column fills the row (a split too narrow to fit shows over the session). */}
             <div className="contents" hidden={columnFull}>
-              <Suspense fallback={<ViewFallback />}>
-                <MainView />
-              </Suspense>
+              <MainPane />
             </div>
             <PluginView />
           </div>

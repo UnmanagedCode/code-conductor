@@ -3,6 +3,7 @@ import ReactMarkdown, { type Components, type ExtraProps, type Options } from 'r
 import remarkGfm from 'remark-gfm';
 import type { Element } from 'hast';
 import { cn } from '@/lib/utils';
+import { ErrorBoundary } from '@/ui/ErrorBoundary';
 import { classifyLink, followViewLink } from './viewLinks';
 import { safeUrl } from './markdown/safeUrl';
 import { rehypeBlockWhitespace } from './markdown/rehypeBlockWhitespace';
@@ -52,20 +53,6 @@ function RawSource({ text }: { text: string }) {
   return <pre>{text}</pre>;
 }
 
-/** Shows the raw source when rendering `text` throws; a new `text` tries again. */
-class MarkdownBoundary extends React.Component<{ text: string; children: React.ReactNode }, { text: string; failed: boolean }> {
-  state = { text: this.props.text, failed: false };
-  static getDerivedStateFromProps(props: { text: string }, state: { text: string }) {
-    return props.text === state.text ? null : { text: props.text, failed: false };
-  }
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  render() {
-    return this.state.failed ? <RawSource text={this.props.text} /> : this.props.children;
-  }
-}
-
 /**
  * Markdown (CommonMark + GFM) through react-markdown: raw HTML shows as its literal source, links and images pass the
  * scheme allow-lists in markdown/safeUrl.ts, and a code block at any depth carries a Copy button. Styled by the `.md`
@@ -82,11 +69,11 @@ export const Markdown = React.memo(function Markdown({
   return (
     <div className={cn('md', className)} onClick={followViewLink}>
       {refused ? <RawSource text={text} /> : (
-        <MarkdownBoundary text={text}>
+        <ErrorBoundary resetKey={text} fallback={() => <RawSource text={text} />}>
           <ReactMarkdown remarkPlugins={REMARK} remarkRehypeOptions={REMARK_REHYPE} rehypePlugins={inlineEnd ? REHYPE_INLINE_END : REHYPE} urlTransform={safeUrl} components={overrides}>
             {text}
           </ReactMarkdown>
-        </MarkdownBoundary>
+        </ErrorBoundary>
       )}
     </div>
   );
