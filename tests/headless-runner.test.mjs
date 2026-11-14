@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { sleep } from './poll.mjs';
 
 // Module-load-time constant, so it is set before the dynamic imports.
 process.env.ORCH_IDLE_DRAIN_SETTLE_MS = '50';
@@ -37,7 +38,6 @@ const ROOT_ERROR = fx('scenario-headless-root-error.json');
 const QUESTION = fx('scenario-question.json');
 const BASIC = fx('scenario-basic.json');
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let server, home;
 before(async () => { server = await bootServer({ scenarioPath: BASIC }); });

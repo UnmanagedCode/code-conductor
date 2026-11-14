@@ -20,9 +20,8 @@ const SYSTEM32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
 const run = promisify(execFile);
 
 // waitFor with the condition named in the timeout error.
-export async function until(what, predicate, timeout, interval = 300) {
-  try { return await waitFor(predicate, { timeout, interval }); }
-  catch { throw new Error(`timed out after ${timeout} ms waiting for ${what}`); }
+export function until(what, predicate, timeout, interval = 300) {
+  return waitFor(predicate, { timeout, interval, label: what });
 }
 
 async function powershell(command) {

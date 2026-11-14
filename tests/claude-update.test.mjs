@@ -14,6 +14,7 @@ import { withMaintenanceLock } from '../src/relaunchPrep.ts';
 import { buildRoutes } from '../src/routes.ts';
 import { hostPlatform } from '../src/platform/index.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { waitFor } from './poll.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = `${process.execPath} ${path.join(__dirname, 'fake-claude-update.mjs')}`;
@@ -46,12 +47,8 @@ async function withFake(vars, fn) {
   }
 }
 
-async function waitForFile(file, deadlineMs = 5000) {
-  const until = Date.now() + deadlineMs;
-  while (!existsSync(file)) {
-    if (Date.now() > until) throw new Error(`timed out waiting for ${file}`);
-    await new Promise((r) => setTimeout(r, 10));
-  }
+function waitForFile(file, deadlineMs = 5000) {
+  return waitFor(() => existsSync(file), { timeout: deadlineMs, interval: 10, label: `${file} to exist` });
 }
 
 test('applyClaudeUpdate runs the resolved CLAUDE_BIN with exactly "update" under the worker env, streams both streams, and returns the re-probed version', async () => {

@@ -12,6 +12,7 @@ import { readEventLog } from '../src/eventLog.ts';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { OPEN_LEASE } from './playbook-fixtures.mjs';
+import { waitFor } from './poll.mjs';
 
 process.env.PROJECTS_ROOT = await mkdtemp('cc-evrec-root-');
 
@@ -36,8 +37,7 @@ async function rig(seed = []) {
   // late extra write a short window to show up.
   const drain = async (n = 0) => {
     await gate.readProjection();
-    const deadline = Date.now() + 5000;
-    while ((await rows()).length < n && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+    await waitFor(async () => (await rows()).length >= n, { timeout: 5000, interval: 5 }).catch(() => {});
     await new Promise(r => setTimeout(r, 20));
   };
   return { gate, fire, rows, drain };

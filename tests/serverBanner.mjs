@@ -1,3 +1,5 @@
+import { waitFor } from './poll.mjs';
+
 // The readiness rule for a spawned `server.ts` child — ONE definition, imported
 // by every test that waits on one (tests/server-restart.test.mjs,
 // tests/eaddrinuse-retry.test.mjs) and by the regression guard that proves the
@@ -28,12 +30,6 @@ export const bannerFor = (port) => `code-conductor listening on http://127.0.0.1
 // failure-detection window.
 export async function waitForBanner(captured, port, { nth = 1, timeout = 20_000 } = {}) {
   const needle = bannerFor(port);
-  const start = Date.now();
-  for (;;) {
-    if (captured.stdout.split(needle).length - 1 >= nth) return;
-    if (Date.now() - start > timeout) {
-      throw new Error(`child never printed listening banner #${nth} for port ${port}`);
-    }
-    await new Promise(r => setTimeout(r, 50));
-  }
+  await waitFor(() => captured.stdout.split(needle).length - 1 >= nth,
+    { timeout, interval: 50, label: `child never printed listening banner #${nth} for port ${port}` });
 }

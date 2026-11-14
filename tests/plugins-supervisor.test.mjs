@@ -10,10 +10,10 @@ import { createSupervisor } from '../src/plugins/supervisor.ts';
 import { allocatePort, pidAlive, tcpOpen, waitForPort } from '../src/plugins/ports.ts';
 import { FAKE_PLUGIN_DIR, waitFor } from './plugin-helpers.mjs';
 import { hasMarker } from './procTree.mjs';
+import { sleep } from './poll.mjs';
 
 const manifest = (backend) => ({ id: 'fake-plugin', name: 'Fake', version: '1', pluginApi: 1, backend });
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The window over which a readiness-probe RATE is measured. Shared by the
 // cancellation test and its live-child control so the two can never drift into

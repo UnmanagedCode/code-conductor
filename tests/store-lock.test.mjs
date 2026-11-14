@@ -13,15 +13,12 @@ import { fileURLToPath } from 'node:url';
 import { withLock, createLockFileSync, releaseLockSync, mintLockToken, stageLockFileSync, publishLockFileSync, LINK_PROBE_PREFIX } from '../src/storeLock.ts';
 import { linkSync, rmSync } from 'node:fs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { waitFor, sleep } from './poll.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function tmpDir() {
   return mkdtemp('store-lock-');
-}
-
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
 }
 
 test('withLock runs fn under the lock and releases it after', async () => {
@@ -113,13 +110,8 @@ test('a released lock can be acquired again', async () => {
 // Returns true if `lockPath` disappears within `budgetMs`, false if it is still
 // there when the budget runs out. Polls rather than sleeping a fixed span so the
 // FAILING direction is fast; only the passing direction pays the full budget.
-async function lockVanishesWithin(lockPath, budgetMs) {
-  const deadline = Date.now() + budgetMs;
-  for (;;) {
-    try { await fs.stat(lockPath); } catch { return true; }
-    if (Date.now() >= deadline) return false;
-    await sleep(10);
-  }
+function lockVanishesWithin(lockPath, budgetMs) {
+  return waitFor(() => fs.stat(lockPath).then(() => false, () => true), { timeout: budgetMs, interval: 10 }).then(() => true, () => false);
 }
 
 // The lock must stay held until fn's BODY settles — not merely until fn returns

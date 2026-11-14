@@ -11,8 +11,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { waitFor } from '../src/waitFor.ts';
+import { sleep } from './poll.mjs';
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 test('initial short-circuits without subscribing', async () => {
   let subscribed = false;

@@ -30,6 +30,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { fileURLToPath } from 'node:url';
+import { sleep } from './poll.mjs';
 
 const { InstanceManager, Instance } = await import('../src/instances.ts');
 const { bootServer, api, waitFor, settle, instForSession, freshProjectsRoot, rmrf, driveTurn, seedSessionJsonl } =
@@ -42,7 +43,6 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_IDLE_DRAIN = path.join(__dirname, 'fixtures', 'scenario-bg-task-idle-drain.json');
 const SCENARIO_IDLE_REINVOKE = path.join(__dirname, 'fixtures', 'scenario-bg-task-idle-reinvoke.json');
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // Past the settle deadline with margin, so "did the settle fire?" is decided.
 const pastSettle = () => sleep(SETTLE_MS + 250);
 

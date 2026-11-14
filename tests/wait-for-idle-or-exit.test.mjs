@@ -21,7 +21,7 @@ describe('waitForIdleOrExit', () => {
       inst.status = 'crashed';
     }, 20);
     await assert.rejects(waitForIdleOrExit(inst, { timeout: 2000 }), (e) => {
-      assert.notEqual(e.message, 'waitFor: timeout');
+      assert.doesNotMatch(e.message, /^waitFor: timeout/);
       assert.match(e.message, /code=125/);
       assert.ok(e.message.includes(STDERR), e.message);
       return true;

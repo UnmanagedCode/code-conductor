@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { HEADLESS_FRAGMENT } from '../src/headless/fragment.ts';
+import { waitFor } from './poll.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -51,14 +52,8 @@ function headless(t, home, scenario, args) {
   return { child, out, closed };
 }
 
-async function until(pred, what, timeout = 30_000) {
-  const start = Date.now();
-  for (;;) {
-    const v = await pred();
-    if (v) return v;
-    if (Date.now() - start > timeout) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 50));
-  }
+function until(pred, what, timeout = 30_000) {
+  return waitFor(pred, { timeout, interval: 50, label: what });
 }
 
 function onlyJson(stdout) {

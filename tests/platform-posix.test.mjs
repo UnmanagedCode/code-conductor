@@ -7,8 +7,8 @@ import { posixPlatform, createPosixPlatform } from '../src/platform/posix.ts';
 import { START_TIME_TIMEOUT_MS } from '../src/platform/platform.ts';
 import { selectPlatform, hostPlatform, samePath, win32Platform } from '../src/platform/index.ts';
 import { resolveClaudeBin, resolveBackendLaunch } from '../src/claudeLauncher.ts';
+import { sleep } from './poll.mjs';
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 async function dies(pid) { for (let i = 0; i < 100 && alive(pid); i++) await sleep(20); return !alive(pid); }
 

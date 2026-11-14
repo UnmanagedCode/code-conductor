@@ -31,6 +31,7 @@ import { TERMINAL_ROWS, openSession, terminalRowTest } from './terminalBattery.m
 import { rmrf } from './rmrf.mjs';
 import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { waitFor } from './poll.mjs';
 
 // The binding for a frame or a flag a fixture builds by hand. Empty — so the
 // default run is byte-identical — unless CC_CONFORMANCE_REMOTE_ID is set.
@@ -74,13 +75,8 @@ async function withSystem(flags, fn) {
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-async function settle(pred, ms = 3_000) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    if (pred()) return true;
-    await new Promise(r => setTimeout(r, 25));
-  }
-  return pred();
+function settle(pred, ms = 3_000) {
+  return waitFor(pred, { timeout: ms, interval: 25 }).then(() => true, () => pred());
 }
 
 for (const config of CAPABILITY_CONFIGS) {
