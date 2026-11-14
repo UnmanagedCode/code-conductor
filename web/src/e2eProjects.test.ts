@@ -51,6 +51,10 @@ it('android runs ANDROID_SPECS, the overrides, harness and flows; desktop and ph
   // resolves, an overridden desktop spec, or any unlisted spec on android fails).
   const androidTop = [...(by.android ?? [])].filter((f) => !f.startsWith('flows/') && f !== 'harness.spec.ts').sort();
   expect(androidTop).toEqual([...ANDROID_SPECS, ...overrides].sort());
+  // Invariant: android lists every flows/ spec on disk, so dropping the flows glob from its testMatch fails here.
+  const flows = fs.readdirSync(E2E, { recursive: true, encoding: 'utf8' }).filter((f) => f.startsWith('flows/') && f.endsWith('.spec.ts')).sort();
+  expect(flows.length).toBeGreaterThan(0);
+  expect([...(by.android ?? [])].filter((f) => f.startsWith('flows/')).sort()).toEqual(flows);
   // Invariant: android lists the harness spec.
   expect(by.android?.has('harness.spec.ts')).toBe(true);
   for (const project of ['desktop', 'phone']) {
