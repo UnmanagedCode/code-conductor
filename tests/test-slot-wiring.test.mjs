@@ -128,9 +128,9 @@ test('the mutation wrapper queues before the runner starts, and hands it the hel
 test('the npm test gate queues before its first step, and its steps inherit the held marker', async () => {
   const dir = tmpDir();
   const npm = path.join(dir, 'npm-stub.mjs');
-  // The web file keeps a typecheck step (the stub): a tests/-only diff skips typecheck:node.
+  // The web file keeps a typecheck step (typecheck:web, run by the stub) in a tests/-only diff.
   fs.writeFileSync(npm, `console.log('STEP held=' + process.env.${HELD_VAR});\n`);
-  const run = await runBlocked(['tests/gate.mjs', 'tests/narration-classify.test.mjs', 'web/' + 'src/e2eProjects' + '.test.ts'], { env: { npm_execpath: npm } });
+  const run = await runBlocked(['tests/gate.mjs', 'tests/narration-classify.test.mjs', 'web/src/test/slotHeld.test.ts'], { env: { npm_execpath: npm } });
   try {
     await run.until(/test slot: waiting/);
     assert.doesNotMatch(run.out.stdout, /STEP/);
