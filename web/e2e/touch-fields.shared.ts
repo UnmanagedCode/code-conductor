@@ -33,14 +33,16 @@ export async function touchFieldsFlow({ page, cc }: { page: Page; cc: Cc }): Pro
     expect(await fontPx(page, '#composer-input'), `composer font at ${size.width}x${size.height}`).toBeGreaterThanOrEqual(MIN_FONT_PX);
   }
 
+  // The drawer helper keys on the project's viewport, so the dialog opens at the device size and is resized while open.
+  await page.setViewportSize(own);
+  const dialog = await next.openPlacementDialog(page, 'adopt');
+  const path = next.placementField(dialog, 'adopt', 'path');
   for (const size of [own, LANDSCAPE]) {
     await page.setViewportSize(size);
-    const dialog = await next.openPlacementDialog(page, 'adopt');
-    const path = next.placementField(dialog, 'adopt', 'path');
     expect(await path.evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), `directory field font at ${size.width}x${size.height}`).toBeGreaterThanOrEqual(MIN_FONT_PX);
-    await page.keyboard.press('Escape');
-    await expect(dialog).toBeHidden();
   }
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
 
   await page.setViewportSize(own);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
