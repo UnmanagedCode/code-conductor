@@ -161,6 +161,17 @@ describe('send and mic modes', () => {
     const c = mount(inst('s1', { overageActive: true, autoResumeAt: null, overageResetsAt: T }));
     expect(c.container.textContent).toContain(`Paused until ${clock}.`);
   });
+
+  it('overage paused with an armed resume names the autoResumeAt clock, not the gate reset', () => {
+    // Invariant: when both autoResumeAt and overageResetsAt are set and differ, the paused copy names the armed autoResumeAt deadline and not the raw gate reset.
+    const A = 1_900_000_000;
+    const B = A + 5 * 3600;
+    const clockOf = (t: number) => formatAutoResumeTime(t)!.replace('resumes at ', '');
+    expect(clockOf(A)).not.toBe(clockOf(B));
+    const c = mount(inst('s1', { overageActive: true, autoResumeAt: A, overageResetsAt: B }));
+    expect(c.container.textContent).toContain(`Paused until ${clockOf(A)}.`);
+    expect(c.container.textContent).not.toContain(clockOf(B));
+  });
 });
 
 describe('drafts', () => {
