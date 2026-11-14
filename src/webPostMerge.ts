@@ -21,7 +21,7 @@ import { runGit } from './worktrees.ts';
 import { localSystem } from './systems/registry.ts';
 import type { BootCommit } from './bootCommit.ts';
 import { sourcesUnmovedGuard } from './swapGuard.ts';
-import { serverImportsAt, type ServerImports } from './serverImports.ts';
+import { serverImportsAt, serverMayLoad, type ServerImports } from './serverImports.ts';
 import {
   SourcesMovedError, inputPaths, isWebInput, refreshWebDist, runViteBuild, stageWebBuild, webInputs,
   type RefreshOutcome, type WebBuilder, type WebInputs,
@@ -34,25 +34,6 @@ export type WebPostMergeDecision = { action: WebPostMergeAction; reason: string 
 export function bootCommitFromEnv(env: NodeJS.ProcessEnv): BootCommit {
   if (env.CC_SERVER_BOOT_SHA) return { sha: env.CC_SERVER_BOOT_SHA };
   return { unknown: env.CC_SERVER_BOOT_UNKNOWN || 'CC_SERVER_BOOT_SHA is unset: the merge target is not the running server\'s own checkout' };
-}
-
-// Paths the running server does not read except through its imports: an
-// entry ending in / is a directory, any other an exact path.
-const IMPORT_GATED = ['docs/', 'tests/', 'shared/', 'README.md'];
-const importGated = (p: string) => IMPORT_GATED.some((g) => (g.endsWith('/') ? p.startsWith(g) : p === g));
-
-// Why the running server may load `p`, or null when it provably does not. A
-// web/ path is cleared unless the walk reaches it; a gated one also needs a
-// walk that could be completed.
-function serverMayLoad(p: string, imports: ServerImports): string | null {
-  const web = p.startsWith('web/');
-  if (!web && !importGated(p)) {
-    return `changes since the server booted reach ${p}, which the running server may load, so a new UI may not match it`;
-  }
-  const chain = 'chains' in imports ? imports.chains.get(p) : undefined;
-  if (chain) return `${p} is loaded by the running server (${chain.join(' → ')}), so a new UI may not match it`;
-  if (!web && 'unknown' in imports) return `${p} may be loaded by the running server — ${imports.unknown} — so a new UI may not match it`;
-  return null;
 }
 
 export function decideWebPostMerge({ inputs, isMainCheckout, boot, bootIsAncestor, changedSinceBoot, changedThisMerge, serverImports }: {
@@ -76,7 +57,7 @@ export function decideWebPostMerge({ inputs, isMainCheckout, boot, bootIsAncesto
     if (!changedSinceBoot.some(relevant)) return { action: 'noop', reason: 'nothing the UI build reads changed since the server booted' };
     for (const p of changedSinceBoot) {
       const why = serverMayLoad(p, serverImports);
-      if (why !== null) return { action: 'stage', reason: why };
+      if (why !== null) return { action: 'stage', reason: `${why}, so a new UI may not match it` };
     }
     return { action: 'swap', reason: 'nothing changed since the server booted is code the running server loads (web/, docs/, tests/, README.md, and shared/ modules its imports do not reach)' };
   }

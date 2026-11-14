@@ -162,3 +162,12 @@ export interface SessionRow {
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | (string & {});
 export type Task = { subject: string; description: string; activeForm: string | null; status: TaskStatus };
 export type ListedTask = Task & { id: string };
+
+// GET /api/settings/self-update's `restart` (src/restartStatus.ts): whether the
+// running server is behind its own checkout's HEAD. `boot` = the commit it
+// started from, `head` = HEAD now; full shas. Only `needed` asks for a restart.
+export type ServerRestartState =
+  | { state: 'current'; boot: string }
+  | { state: 'live'; boot: string; head: string }
+  | { state: 'needed'; boot: string; head: string; reason: string }
+  | { state: 'unknown'; reason: string };

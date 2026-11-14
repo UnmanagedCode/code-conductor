@@ -173,6 +173,7 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 - [`src/webBuild.ts`](components/web.md#srcwebbuildts)
 - [`src/bootCommit.ts`](components/web.md#srcbootcommitts)
 - [`src/webPostMerge.ts` + `src/webPostMergeMain.ts`](components/web.md#srcwebpostmergets--srcwebpostmergemaints)
+- [`src/restartStatus.ts`](components/web.md#srcrestartstatusts)
 - [`src/serverImports.ts`](components/web.md#srcserverimportsts)
 - [`web/`](components/web.md#web)
 - [Markdown rendering](components/web.md#markdown-rendering)

@@ -76,7 +76,7 @@ test('Archived: groups start collapsed with the Conductor group first, and Delet
 test('About shows the legal notice and the update state', async ({ page, ui }) => {
   // GET only, and Update is never clicked: a real update would restart the cc.
   await page.route('**/api/settings/self-update', (r) => (r.request().method() === 'GET'
-    ? r.fulfill({ json: { version: '9.9.9', canCheck: true, updateAvailable: true, behind: 2, upstream: 'origin/main' } })
+    ? r.fulfill({ json: { version: '9.9.9', restart: { state: 'current', boot: 'c0ffee0000000000000000000000000000000000' }, canCheck: true, updateAvailable: true, behind: 2, upstream: 'origin/main' } })
     : r.abort()));
   // Likewise never clicked: a real run would update the shared harness's CLI.
   await page.route('**/api/settings/claude-update', (r) => (r.request().method() === 'GET'
