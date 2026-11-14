@@ -19,6 +19,8 @@ import { closeSidebarOnMobile } from './ui';
 import { resumeSession } from './sessionActions';
 import { beginGesture, gestureOvertaken, gestureSelected } from './gestures';
 import { startPristineWatch } from './pristine';
+import { startAgoTick } from './agoTick';
+import { startAccountUsagePolling } from './accountUsage';
 import { isLiveStatus } from '@shared/conductors';
 
 export { send };
@@ -549,6 +551,8 @@ export function startController() {
   });
 
   startPristineWatch(signal);
+  startAgoTick(signal);
+  startAccountUsagePolling(signal);
   connect();
 }
 

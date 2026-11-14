@@ -38,13 +38,25 @@ export async function probeTts() {
 
 const VOICE_PROBE_RETRY_MS = 5000;
 
-/** Probe voice where the platform has it; a failed capabilities load retries. */
-export function probeVoice() {
-  loadCapabilities().then((caps: { voice?: boolean } | null) => {
-    if (!caps) { setTimeout(probeVoice, VOICE_PROBE_RETRY_MS); return; }
-    if (!caps.voice) return;
-    voiceStore.set({ supported: true });
-    void probeMic();
-    void probeTts();
-  });
+/** Probe voice where the platform has it; a failed capabilities load retries until the returned stop runs. */
+export function probeVoice(): () => void {
+  let stopped = false;
+  let retry: ReturnType<typeof setTimeout> | null = null;
+  const attempt = () => {
+    retry = null;
+    loadCapabilities().then((caps: { voice?: boolean } | null) => {
+      if (stopped) return;
+      if (!caps) { retry = setTimeout(attempt, VOICE_PROBE_RETRY_MS); return; }
+      if (!caps.voice) return;
+      voiceStore.set({ supported: true });
+      void probeMic();
+      void probeTts();
+    });
+  };
+  attempt();
+  return () => {
+    stopped = true;
+    if (retry) clearTimeout(retry);
+    retry = null;
+  };
 }
