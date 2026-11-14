@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
+import { mkdtempSync } from './tmpRegistry.mjs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 /** Build a throwaway git repo from `files`, lint it, remove it. */
 function lintFixture(files, allow = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-docs-lint-'));
+  const dir = mkdtempSync('cc-docs-lint-');
   try {
     execFileSync('git', ['init', '-q', dir]);
     for (const [name, content] of Object.entries(files)) {
