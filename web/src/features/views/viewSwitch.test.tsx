@@ -26,7 +26,8 @@ import { appStore } from '@/state/app';
 import { parseHash, syncRoute } from '@/state/route';
 import { exitToConductor } from './AppSwitcher';
 import { pluginFrames } from './plugins';
-import { ACTIVE, mountApp, net, settle } from './test/pluginHost';
+import { ACTIVE, mountApp, net } from './test/pluginHost';
+import { settle } from '@/test/settle';
 import { ANCHOR, escape, only, open, sha, useViewSwitchHost, VIEWS, viewedPosts, type View } from './test/viewSwitch';
 
 useViewSwitchHost();

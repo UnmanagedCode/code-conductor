@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { expect, vi } from 'vitest';
 import { App } from '@/App';
 import { appStore } from '@/state/app';
+import { settle } from '@/test/settle';
 import { syncRoute } from '@/state/route';
 import type { Instance } from '@/state/types';
 import { uiStore } from '@/app/ui';
@@ -85,7 +86,6 @@ export async function endHost() {
   vi.unstubAllGlobals();
 }
 
-export const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
 export async function mountApp() {
   render(<App />);

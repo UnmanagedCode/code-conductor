@@ -19,10 +19,8 @@ vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 import { selectInstance } from '@/app/controller';
 import { uiStore } from '@/app/ui';
 import { dockStore, readDockState } from './dock';
-import {
-  ACTIVE, checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, net, pickApp, plainRow,
-  pressColumn, resetHost, residentFrame, sessionShown, settle, switcher, viewOpen,
-} from './test/pluginHost';
+import { ACTIVE, checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, net, pickApp, plainRow, pressColumn, resetHost, residentFrame, sessionShown, switcher, viewOpen } from './test/pluginHost';
+import { settle } from '@/test/settle';
 
 const ANCHOR = '#session=sess-1';
 

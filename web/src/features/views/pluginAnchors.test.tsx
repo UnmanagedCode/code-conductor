@@ -1,11 +1,12 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true}}
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { syncRoute } from '@/state/route';
 import { mockFetch } from '@/features/settings/test/fetchMock';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(async () => {}), refreshInstances: vi.fn(async () => {}),
@@ -24,7 +25,6 @@ const { catalogStore, pluginFrames } = await import('./plugins');
 const { SettingsView } = await import('@/features/settings/SettingsView');
 
 const APPS = [{ id: 'alpha', name: 'Alpha', enabled: true, hasFrontend: true }];
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
 beforeEach(() => {
   history.replaceState(null, '', '/');

@@ -24,9 +24,8 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-view="session" /> }));
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
-import {
-  column, DOCK_CATALOG, dockHandle, endHost, keepRow, mountApp, net, plainRow, resetHost, settle, sharedFrame,
-} from './test/pluginHost';
+import { column, DOCK_CATALOG, dockHandle, endHost, keepRow, mountApp, net, plainRow, resetHost, sharedFrame } from './test/pluginHost';
+import { settle } from '@/test/settle';
 
 afterEach(() => endHost());
 

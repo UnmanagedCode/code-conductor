@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { syncRoute } from '@/state/route';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn(),
@@ -23,7 +24,6 @@ const APPS = [
   { id: 'beta', name: 'Beta', enabled: true, hasFrontend: true },
   { id: 'gamma', name: 'Gamma Plugin', navLabel: 'Gamma', enabled: true, hasFrontend: true },
 ];
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 const drawer = () => document.querySelector('[data-slot="sheet-content"]') as HTMLElement | null;
 /** The desktop column: the sidebar that is not inside the phone drawer. */
 const desktopColumn = () => [...document.querySelectorAll('[data-sidebar]')].filter((e) => !e.closest('[data-slot="sheet-content"]'));

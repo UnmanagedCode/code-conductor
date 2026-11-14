@@ -19,10 +19,8 @@ vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
 import { notifyPluginsChanged } from '@/features/settings/pluginsSignal';
 import { openCommits } from './api';
-import {
-  ACTIVE, checkedApps, closeSwitcher, endHost, entryId, go, keepRow, mountApp, net, openSwitcher, pickApp, plainRow, postRoute, resetHost,
-  residentFrame, settle, sharedFrame, sidebar, standInWindow, switcher, switcherEntries, viewOpen,
-} from './test/pluginHost';
+import { ACTIVE, checkedApps, closeSwitcher, endHost, entryId, go, keepRow, mountApp, net, openSwitcher, pickApp, plainRow, postRoute, resetHost, residentFrame, sharedFrame, sidebar, standInWindow, switcher, switcherEntries, viewOpen } from './test/pluginHost';
+import { settle } from '@/test/settle';
 
 beforeEach(() => resetHost());
 afterEach(() => endHost());

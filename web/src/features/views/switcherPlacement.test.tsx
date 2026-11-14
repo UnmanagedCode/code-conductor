@@ -23,10 +23,8 @@ vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 import { uiStore } from '@/app/ui';
 import { notifyPluginsChanged, pluginsChangedSignal } from '@/features/settings/pluginsSignal';
 import { openCommits } from './api';
-import {
-  ACTIVE, checkedApps, closeSwitcher, column, DOCK_CATALOG, dockSplit, emitWidth, endHost, entryId, go, keepRow, mountApp, net, pickApp,
-  plainRow, pluginView, pressColumn, resetHost, settle, sidebar, stubResizeObserver, switcherEntries,
-} from './test/pluginHost';
+import { ACTIVE, checkedApps, closeSwitcher, column, DOCK_CATALOG, dockSplit, emitWidth, endHost, entryId, go, keepRow, mountApp, net, pickApp, plainRow, pluginView, pressColumn, resetHost, sidebar, stubResizeObserver, switcherEntries } from './test/pluginHost';
+import { settle } from '@/test/settle';
 import { DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
 import { dockStore, readDockState, setDockCollapsed } from './dock';
 

@@ -1,7 +1,8 @@
 // The bridge runs inside plugin frames as a classic script; drive it against a scripted fake window.
 // Plugin pages load the root /pluginBridge.js, served from this directory's pluginBridge.js.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { observerTurn, runBridge } from './test/bridge';
+import { settle } from '@/test/settle';
+import { runBridge } from './test/bridge';
 import { startPluginLinkHost } from './pluginLinkHost';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -70,11 +71,11 @@ describe('pluginBridge.js', () => {
       const b = runBridge();
       expect(b.frameRoot.getAttribute('data-cc-theme')).toBe('light');
       b.hostRoot.classList.add('dark');
-      await observerTurn();
+      await settle();
       expect(b.frameRoot.classList.contains('dark')).toBe(true);
       expect(b.frameRoot.getAttribute('data-cc-theme')).toBe('dark');
       b.hostRoot.classList.remove('dark');
-      await observerTurn();
+      await settle();
       expect(b.frameRoot.classList.contains('dark')).toBe(false);
       expect(b.frameRoot.getAttribute('data-cc-theme')).toBe('light');
     });
@@ -93,12 +94,12 @@ describe('pluginBridge.js', () => {
         expect(b.frameRoot.getAttribute('data-cc-theme'), 'precondition: system resolves light').toBe('light');
         mq.matches = true;
         for (const f of changeListeners) f();
-        await observerTurn();
+        await settle();
         expect(b.frameRoot.classList.contains('dark')).toBe(true);
         expect(b.frameRoot.getAttribute('data-cc-theme')).toBe('dark');
         mq.matches = false;
         for (const f of changeListeners) f();
-        await observerTurn();
+        await settle();
         expect(b.frameRoot.classList.contains('dark')).toBe(false);
         expect(b.frameRoot.getAttribute('data-cc-theme')).toBe('light');
       } finally {
@@ -143,7 +144,7 @@ describe('pluginBridge.js', () => {
       const b = runBridge({ hostRoot: host });
       for (const w of ['none', '1024px']) {
         host.setAttribute('data-cc-session-width', w);
-        await observerTurn();
+        await settle();
         expect(b.frameRoot.style.getPropertyValue(WIDTH)).toBe(w);
       }
     });
@@ -160,7 +161,7 @@ describe('pluginBridge.js', () => {
         const b = runBridge({ hostRoot: root });
         expect(b.frameRoot.style.getPropertyValue(WIDTH)).toBe('896px');
         const step = async (expected: string) => {
-          await observerTurn();
+          await settle();
           expect(b.frameRoot.style.getPropertyValue(WIDTH)).toBe(expected);
         };
         setSessionFull(true);
@@ -247,7 +248,7 @@ describe('window.ccBridge (session awareness)', () => {
     const [oc] = calls(b, 'sendPrompt');
     deliver(b, { cc: 1, type: 'result', id: oa.id, ok: true }, 'http://evil');
     deliver(b, { cc: 1, type: 'result', id: 'nope', ok: true });
-    await observerTurn();
+    await settle();
     expect(settled, 'nothing resolved yet').toEqual({});
     deliver(b, { cc: 1, type: 'result', id: oc.id, ok: false, code: 'SESSION_NOT_LIVE' });
     await c;
@@ -269,7 +270,7 @@ describe('window.ccBridge (session awareness)', () => {
     deliver(b, { cc: 1, type: 'result', id: o.id, ok: true }, 'http://h', sibling);
     deliver(b, { cc: 1, type: 'navigate', path: '/x' }, 'http://h', sibling);
     deliver(b, { cc: 1, type: 'session', session: SESSION }, 'http://h', null);
-    await observerTurn();
+    await settle();
     expect(b.win.ccBridge.session).toBeUndefined();
     expect(settled).toBe(false);
     expect(b.hist.replaced.length).toBe(before);
@@ -283,7 +284,7 @@ describe('window.ccBridge (session awareness)', () => {
     for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
       expect(() => deliver(b, { cc: 1, type: 'result', id, ok: true }), id).not.toThrow();
     }
-    await observerTurn();
+    await settle();
     expect(settled).toBe(false);
   });
 });

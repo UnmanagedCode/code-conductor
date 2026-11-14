@@ -19,10 +19,8 @@ vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
 import { parseHash, routeStore, syncRoute } from '@/state/route';
 import { overlayStore, pluginFrames, residentSignal } from './plugins';
-import {
-  endHost, go, holdStatus, keepRow, mountApp, navigate, net, plainRow, pluginView, postFrom, postRoute, resetHost, residentFrame,
-  settle, sharedFrame, shownFrames, standInWindow, viewOpen, type Answer, type StatusRow,
-} from './test/pluginHost';
+import { endHost, go, holdStatus, keepRow, mountApp, navigate, net, plainRow, pluginView, postFrom, postRoute, resetHost, residentFrame, sharedFrame, shownFrames, standInWindow, viewOpen, type Answer, type StatusRow } from './test/pluginHost';
+import { settle } from '@/test/settle';
 
 beforeEach(() => resetHost());
 afterEach(() => endHost());
