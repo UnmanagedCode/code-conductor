@@ -33,7 +33,8 @@ const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
 // The per-dispatch heartbeat override, shared verbatim by the four turn-starting
 // tools so their schemas cannot drift. The semantics live once, in
-// set_idle_timeout's own description (same tools list); this cross-references it.
+// set_idle_timeout's `timeoutSeconds` schema; the heartbeat itself is described
+// in conventions/conductor/core.md.
 const IDLE_TIMEOUT_SECONDS_PROP = {
   type: 'integer',
   minimum: 1,
@@ -58,31 +59,8 @@ const RUN_CODE_DESCRIPTION_PROP = {
   description: 'Clear, concise description of what this program does in active voice (5-10 words), e.g. "Count open cards per epic". Shown in the transcript in place of the code, so it has to identify it.',
 };
 
-// The OUTPUT half of project_bash's and system_bash's descriptions. Both tools
-// return the payload `bashPayload` (mcp/handlers.ts) builds, so every claim here
-// is a claim about that ONE function and cannot be allowed to differ between
-// them. Only the metadata KEY SET does, so each tool passes its own. Restated in
-// both descriptions rather than cross-referenced: a caller who finds only one of
-// the two tools never sees the other's text. `fmt` is coreTools' per-format
-// clause helper.
+// `fmt` (coreTools) picks a description's one per-format clause.
 type Fmt = (text: string, json: string) => string;
-const bashOutputDescription = (metaKeys: string, fmt: Fmt, { heldOpen = false } = {}) =>
-  fmt(`OUTPUT: a compact-JSON metadata block (content[0]) {${metaKeys}} PLUS a separate raw, un-escaped `
-    + 'text block (content[1]) carrying ', '`output` is ')
-  + 'the combined stdout+stderr output, in arrival order. A non-zero '
-  + 'exitCode is a normal result, not a tool error. truncated:true means retained output was capped at '
-  + fmt('the bash output cap (`BASH_OUTPUT_CAP`)', 'the safety ceiling (`JSON_BASH_OUTPUT_CAP`)')
-  + ' — the command still ran to completion; assume later output '
-  + 'beyond the cap was lost, not that the process was killed. '
-  + (heldOpen
-    ? 'outputMayBeIncomplete:true means a background process the command started held the output open '
-      + 'after the command exited, so output it wrote later is missing (on POSIX the process is also stopped unless it detached; on Windows it keeps running). '
-    : '')
-  + 'timeout is milliseconds (default per the '
-  + 'schema, clamped to the max enforced in `clampBashTimeoutMs` — larger values are clamped); on '
-  + 'timeout (the only hard kill) the whole process group is killed, exitCode is null, and timedOut:true '
-  + '— except that descendantsMaySurvive:true means only the direct child could be signalled, so what it '
-  + 'started may still be running. stdin is not connected — an interactive command hangs until timeout.';
 
 // The per-call context the MCP server injects next to the args (mcp/server.ts).
 interface ToolCtx extends CodeModeCtx {
@@ -170,7 +148,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         ' (an unborn HEAD cannot take a worktree)' +
         fmt(', and each worktree with branch, base, ahead/behind and its path, plus a `locked` marker on a worktree',
           ', and `locked` marks a worktree') +
-        ' the user has locked (merging it and deleting it are refused; only the user can unlock it). ' +
+        ' the user has locked. ' +
         'A project lives wherever its record says — inside the projects root, nested in a container ' +
         'directory, elsewhere on disk, or on a registered system — and every row has the same shape. ' +
         'The NAME is the `project` argument every other tool takes; the path is informational. ' +
@@ -188,19 +166,11 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         ' grouped by the directory the sessions live in: each ' +
         'project\'s main checkout first, then its worktrees.' +
         fmt(' A group header carries its branch, ahead/behind, and `live N · inactive N · archived N`.', '') +
-        ' Each LIVE worker summary is ' +
-        '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, backgroundJobs, mode, effort, thinking, ' +
-        'backend, model, contextTokens, contextWindowTokens, pid, worktree, persistent, conducted, debug, ' +
-        'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
-        'lastResponseAt, queuedCount, autoResumeAt, ' +
-        'overageActive, overageResetsAt, rootSessionId, parentSessionId, awaitingUser, awaitingUserSource, ' +
-        'awaitingWake, playbook, stage}. ' +
-        fmt('Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
+        fmt(' Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
           'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity',
-        'Inactive sessions are newest first. `lastActivity`') +
+        ' Inactive sessions are newest first. `lastActivity`') +
         ' is the timestamp on the session\'s own last record, so it is when that session actually ran. ' +
         'Their sessionIds still resume. ' +
-        'sessionId is the stable handle for every worker-addressing tool. ' +
         '`playbook`/`stage` say where the session sits in its playbook graph, or null when it is not ' +
         'playbook-tracked; playbook_state gives the full run picture. ' +
         '`conducted:true` marks a session spawned via this `spawn_instance` tool. ' +
@@ -212,8 +182,6 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         '`rotationReason` says whether the session\'s context was last reset by its own ' +
         '`renew_session` or by a prune, and `lastRotatedAt` when — a quiet worker that just ' +
         'rotated has a fresh context, not a stalled one. `segmentCount` is how many times over. ' +
-        '`worktree` is the worktree\'s full metadata object (or null)' +
-        fmt('; the rendering shows its name', '') + '. ' +
         '`rootSessionId` is the sessionId of the conductor at the root of a live worker\'s spawn chain; ' +
         '`parentSessionId` is the session that spawned or last resumed it — for a section lead\'s worker, the ' +
         'section lead — and still names that session after it exits. Both are null for a hand-spawned ' +
@@ -233,9 +201,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           '**`bypassPermissions` there means it resumes hot**') +
         ' — either it was ' +
         'recorded in that mode, or it has no recorded mode and therefore falls back to it. It reads the ' +
-        'session record only. ' +
-        'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
-        '`awaitingWake`, `playbook` and `stage`.',
+        'session record only.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -276,11 +242,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           'is a `retired` session row (plus its `exit`) instead of a `live` worker row, and carries') +
         ' no mode/effort/model — there is no process to read them off; ' +
         fmt('`resumes-hot`', 'its `resumeMode`') + ' is the one mode fact available off-process. ' +
-        fmt('`awaiting-user`', '`awaitingUser`') + ' is derived for the described session even when it is archived. ' +
-        '`sessionId` takes the handle only: a backing/segment id soft-refuses SESSION_NOT_A_HANDLE ' +
-        'naming the handle that owns it. ' +
-        'SESSION_UNLOCATABLE means the transcript exists but no registered project or worktree owns ' +
-        'its directory, so there is no location to report — re-register that worktree.',
+        fmt('`awaiting-user`', '`awaitingUser`') + ' is derived for the described session even when it is archived.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -300,7 +262,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           'then each worktree\'s name, branch, base branch@sha, creation time and absolute path, plus a `locked` ' +
           'marker on a worktree',
         ', oldest-first; `locked` marks a worktree') +
-        ' the user has locked (merging it and deleting it are refused; only the user can unlock it). The name is the ' +
+        ' the user has locked. The name is the ' +
         '`worktree` argument every other worktree tool takes, exactly as ' + fmt('printed', 'listed') + ' — there is one ' +
         'spelling per worktree.',
       inputSchema: {
@@ -322,8 +284,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'that transcript instead, reported as source:"disk" with status:"exited"; such a page contains no ' +
         'turn_end. Events carry _seq; poll ' +
         'incrementally by passing the returned `nextFrom` back as the next fromSeq (forward paging, ' +
-        'oldest-first). Returns {status, sessionId, source, events, lastSeq, trimmedBefore, hasMore, ' +
-        'nextFrom}. Event kinds: text_delta, tool_use, ' +
+        'oldest-first). Event kinds: text_delta, tool_use, ' +
         'tool_result (may carry is_error:true), plan_request, user_question, turn_end, etc. — same shape as the WebSocket snapshot. A conducted worker\'s `user_echo` ' +
         'carries `author: "human"|"conductor"`; absent = unknown (an unmarked line, a server- or ' +
         'CLI-injected turn, or not a conducted worker) — never inferred. (Caveat: an in-flight block is ' +
@@ -351,17 +312,13 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       description:
         'Spawn a new Claude subprocess inside a project (optionally inside a new or existing git worktree of it). ' +
         'Returns the worker summary — capture the returned `sessionId`, the stable handle every other ' +
-        'worker-addressing tool takes. Pass createWorktree:true to create a fresh worktree off HEAD, or ' +
-        'worktree:"<name>" to attach to an existing one (createWorktree wins if both are given). ' +
+        'worker-addressing tool takes. ' +
         'The session is archived on subprocess exit (transcript retained and still resumable, just out of the ' +
-        'default list_sessions view); mode still defaults to plan (NOT bypassPermissions) so workers plan before acting. ' +
+        'default list_sessions view). ' +
         'spawn_instance({resume:sessionId}) alone re-attaches a session at its recorded project + worktree, ' +
         'with its prior history — see `project` for when that holds. ' +
-        'A `.conduct` instance you spawn (a section lead) can in turn spawn — keep child agents in plan mode. ' +
-        'PLAYBOOKS: playbook / stage / provenance declare which workflow graph this worker joins and where. ' +
-        'A spawn with no `provenance` starts a new run and requires playbook + stage; a refusal lists every ' +
-        'playbook with its entry stages and the legal moves from there. Resuming a playbook-tracked session is ' +
-        'NOT a new run — it inherits that session\'s recorded playbook + stage, so the bare form needs neither.',
+        'A `.conduct` instance you spawn (a section lead) can in turn spawn. ' +
+        'PLAYBOOKS: playbook / stage / provenance declare which workflow graph this worker joins and where.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -443,8 +400,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'A send you cannot yet see in the worker\'s transcript has not failed — never re-send. ' +
         'The result carries `humanPrompts` (oldest first, ' + fmt('quoted and truncated', 'each whole') + ') only when the human has prompted ' +
         'this worker directly since its last wake to you — your send joined or followed a turn they started; ' +
-        'check it does not contradict them. ' +
-        'PLAYBOOKS: always carry `stage` — it is what makes send_prompt the default transition driver.',
+        'check it does not contradict them.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -563,14 +519,9 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'set_idle_timeout',
       description:
-        'Shorten the HEARTBEAT window on one of your sessions: the "did NOT finish" stub (still running, not ' +
-        'finished) that repeats every ORCH_SUBSCRIBE_TIMEOUT_MS while you are owed a wake from it, without ever ' +
-        'consuming that wake. There is nothing to register — a session you spawned or have ever prompted wakes ' +
-        'you automatically. This tool changes only how often that ping arrives. It re-arms a heartbeat that is ' +
+        'Shorten the HEARTBEAT window on one of your sessions. It re-arms a heartbeat that is ' +
         'already running; `armed:true` in the result means a wake from the target was pending and its live ' +
-        'heartbeat was re-armed. The ceiling is the ' +
-        'default, so this can only shorten. Caller identity is taken from the MCP URL path (`/mcp/<sessionId>`), ' +
-        'so this only works for orchestrator-spawned instances.',
+        'heartbeat was re-armed.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -613,8 +564,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'clears your accumulated context in place — SAME session process, fresh conversation (a managed ' +
         '/clear, not a restart) — and seeds the cleared session with your summary (plus a server-generated ' +
         'block of live instance/subscription state) as its first turn. ' +
-        'With `sessionId`: ask THAT worker to renew itself the same way — it writes its own summary; for a ' +
-        'worker you keep reassigning, ask at the seam between two of its jobs. ' +
+        'With `sessionId`: ask THAT worker to renew itself the same way — it writes its own summary. ' +
         'When to use: after landing and cleaning up a job, when history about finished work is dead weight ' +
         'taxing every future turn — renew at lifecycle seams, not because context is "full". ' +
         'Before renewing yourself: flush durable lessons to wherever you keep them (the summary carries ' +
@@ -663,7 +613,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'to write its own handoff and starts a turn, this keeps the conversation itself and comes back IDLE ' +
         'with nothing seeded, so you send the next prompt. ' +
         'When to use: a worker that must keep its recent working state, where only its older payloads are ' +
-        'dead weight; renew instead at a job seam, where a summary is all that needs to survive. ' +
+        'dead weight. ' +
         'The worker\'s own prompts and prose answers are never touched. ' +
         'One cost to weigh: a pruned file read re-arms the CLI\'s read-before-edit guard, so the worker may ' +
         'owe one re-Read before its next edit.',
@@ -763,9 +713,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       description:
         'Remove a worktree (git deregister + branch delete + dir sweep). Refuses if a live instance ' +
         'is attached, the working tree is dirty, or another worktree is based on this one ' +
-        '(WORKTREE_HAS_DEPENDENTS, listing them — delete those first) — unless force:true, which kills any ' +
-        'attached instance and deletes the branch its children are based on. Refuses a worktree the user has ' +
-        'locked (WORKTREE_LOCKED), checked first and even with force:true; only the user can unlock it.',
+        '— unless force:true, which kills any attached instance and deletes the branch its children are based on.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -789,10 +737,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'rebase-conflict (the rebase was attempted and ' +
         'aborted, leaving the worktree clean and untouched) are successful measurements, not failures — ' +
         'both are ok:true and carry branch, baseBranch, baseSha, ahead, behind and a ready-to-send ' +
-        'rebasePrompt: send_prompt it verbatim to whichever worker should do the work, or resolve it ' +
-        'another way. Refuses WORKTREE_HAS_DEPENDENTS (listing them) while any worktree is based on ' +
-        'this one, since every sync path rewrites the base its children were created from — delete those ' +
-        'worktrees first; killing their workers is not enough.',
+        'rebasePrompt.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -809,13 +754,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       description:
         'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff), then ' +
         'fast-forwards the worktree\'s own branch onto that merge commit so the same worktree stays ' +
-        'mergeable again later. Refuses with a friendly reason if the user has locked the worktree ' +
-        '(WORKTREE_LOCKED — checked first; no tool unlocks it; sync is unaffected), the worktree hasn\'t been synced ' +
-        'first (WORKTREE_BEHIND), the parent is on the wrong branch or dirty (BASE_BRANCH_MISMATCH / ' +
-        'PARENT_DIRTY), the worktree\'s own tree has uncommitted or untracked changes that would not ' +
-        'land (WORKTREE_DIRTY — pass allowDirty:true to merge anyway), the branch has no commits ' +
-        'to merge (NOTHING_TO_MERGE), or another worktree is based on this one ' +
-        '(WORKTREE_HAS_DEPENDENTS, listing them — see sync_worktree). That last one is about the worktree ' +
+        'mergeable again later. WORKTREE_HAS_DEPENDENTS is about the worktree ' +
         'being merged, never the one being merged INTO: merging a task into a feature succeeds while the ' +
         'feature still has other tasks based on it. On success the result also carries postWorktreeMerge: the ' +
         'report of the project\'s post-worktree-merge.sh, run in the merge target after the merge landed, shaped ' +
@@ -837,8 +776,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       name: 'list_workspaces',
       description:
         'List every workspace — both registered (in the central store\'s workspaces.json) ' +
-        'and derived (referenced by any project\'s `workspace` field). ' +
-        fmt('Returns [{name, projectCount}] sorted alphabetically.', 'Sorted alphabetically.') + ' Empty workspaces appear with projectCount 0.',
+        'and derived (referenced by any project\'s `workspace` field).',
       inputSchema: { type: 'object', properties: {}, required: [] },
       audience: 'all',
       handler: h.listWorkspaces,
@@ -855,8 +793,8 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         + ' `system` names one registry id; omit it for every '
         + 'registered System, `local` included (never enumerable — cc\'s own machine has no named remotes). A System whose '
         + 'provider does not advertise remote listing is reported ' + fmt('NOT ENUMERABLE', '`not-enumerable`') + ', never as having no remotes — its Remote '
-        + 'is named by hand; a failed enumeration is reported per System with its reason, never as an empty list. Each call '
-        + 'asks the provider afresh over the systems protocol. A listed id is configured, not necessarily reachable, and an '
+        + 'is named by hand; a failed enumeration is reported per System with its reason, never as an empty list. '
+        + 'A listed id is configured, not necessarily reachable, and an '
         + 'unlisted one is not necessarily refused. Unlike a plugin tool that lists one provider\'s own records, this asks '
         + 'every System through cc\'s provider protocol and returns only the remoteIds a project\'s Remote field takes.',
       inputSchema: {
@@ -874,9 +812,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       name: 'create_workspace',
       description:
         'Register a workspace name so it appears in the sidebar even before any project joins it. ' +
-        'Idempotent — calling on an existing name is a no-op (added:false). Workspace names use the ' +
-        'same charset as project names (letters, digits, `.`, `_`, `-`), length and charset per the schema\'s minLength/maxLength/pattern, and cannot ' +
-        'start with `.`.',
+        'Idempotent — calling on an existing name is a no-op (added:false).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -906,7 +842,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       description:
         'Remove a workspace from the registry and clear the `workspace` field on every project ' +
         'that currently points at it. The projects themselves are untouched; they fall back to ' +
-        'unassigned. Returns {removed, name, clearedProjects: string[]}.',
+        'unassigned.',
       inputSchema: {
         type: 'object',
         properties: { name: { type: 'string' } },
@@ -920,8 +856,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       name: 'rename_workspace',
       description:
         'Atomically rename a workspace: rewrites every member project\'s `workspace` field and ' +
-        'swaps the entry in the registry. No-op (renamed:false) when old and new names match. ' +
-        'Returns {renamed, name, movedProjects: string[]}.',
+        'swaps the entry in the registry. No-op (renamed:false) when old and new names match.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -962,11 +897,6 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'Change WHICH TARGET of its system a project is on, or clear it back to the provider\'s own '
         + 'default with remoteId:null (or ""). One registered system can serve many targets (ten '
         + 'containers behind one docker provider), and the target is chosen per project. '
-        + 'REFUSES 409 PROJECT_PLACEMENT_IN_USE while the project has live sessions or registered '
-        + 'worktrees, naming both in the message — kill the sessions and delete the worktrees first; '
-        + 'nothing is discarded for you. Also refuses SYSTEM_NO_REMOTES (the system\'s provider does '
-        + 'not serve named targets) and REMOTE_NOT_FOUND (it does, but not this one), both BEFORE '
-        + 'anything is written. Refuses a project on `local`, which is one machine. '
         + 'A permitted change removes nothing local: a worker reads the project\'s tree through the '
         + 'union mount at its real path on the system, so there is no cc-owned copy of the old target '
         + 'to go stale.',
@@ -1031,25 +961,14 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'Adopt an EXISTING directory that already lives on disk as a project, by absolute path. Nothing ' +
         'is copied or moved: cc records where it is and every project tool then works on the directory ' +
         'in place. NESTING UNDER THE PROJECTS ROOT IS LEGAL — a container directory there can hold ' +
-        'projects at any depth, and only the ones adopted are projects. The target must not be a ' +
-        "*subdirectory* of a git repository (adopt that repo's root instead), must not be a git " +
-        "directory with no work tree (a bare repo, or a repo's own `.git`), and must not be inside " +
-        "code-conductor's own state. A plain non-git directory is fine — it becomes an ordinary " +
+        'projects at any depth, and only the ones adopted are projects. ' +
+        "A plain non-git directory is fine — it becomes an ordinary " +
         "non-git project. Afterwards the project's path is the target's REAL path (symlinks " +
         'resolved), which is what list_projects reports. ' +
         'WRITES INTO THE TARGET: cc creates/overwrites `<target>/CONVENTIONS.md` (its own file, ' +
         'carrying the workspace + project conventions) and ensures `<target>/CLAUDE.md` has an ' +
         '`@CONVENTIONS.md` line, prepending it without touching existing content. Both land in the ' +
         'target directory; in a git target they are changes to commit. ' +
-        'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
-        'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_IS_CC_STATE, ' +
-        'TARGET_INSIDE_REPO, TARGET_NO_WORK_TREE, TARGET_DUBIOUS_OWNERSHIP, TRANSCRIPT_DIR_COLLISION, SYSTEM_UNREACHABLE, ' +
-        'INVALID_REMOTE_ID, INVALID_STALE_ACTION, PROJECT_PLACEMENT_IN_USE, PROJECT_EXISTS, ' +
-        'PROJECT_EXISTS_STALE, PROJECT_EXISTS_UNRESOLVABLE' + fmt(' — not errors', '') +
-        '. PROJECT_EXISTS_STALE means the name is held by a ' +
-        'record whose path no longer exists; it carries `heldPath` and `discards`, and re-calling ' +
-        'with `onStaleRecord` resolves it. PROJECT_EXISTS_UNRESOLVABLE means cc could not ask, so it ' +
-        'cannot tell a moved project from a machine that is merely down. ' +
         'A path identifies a tree only together with its (system, remoteId), so the same path on two ' +
         'targets of one system is two adoptable trees. ' +
         'Deleting an adopted project only deregisters it; the directory itself is never touched.',
@@ -1077,7 +996,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'list_project_conventions',
       description:
-        'List the available project conventions (slug, name, description, builtin, hasScaffold) that can be ' +
+        'List the available project conventions that can be ' +
         'passed to create_project\'s `conventions` param. Built-in seeds have builtin:true and are read-only; ' +
         'custom conventions (builtin:false) are managed via the Settings → Conventions → Project panel; ' +
         'enabled-plugin conventions have namespaced <plugin-id>/<slug> slugs. hasScaffold:true means picking it ' +
@@ -1090,7 +1009,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'list_conductor_conventions',
       description:
-        'List the conductor conventions (slug, name, description, builtin, enabled) composed into ' +
+        'List the conductor conventions composed into ' +
         "the conductor's system prompt. Built-in seeds have builtin:true; custom conventions (builtin:false) and the " +
         'enabled selection are managed via the Settings → Conductor conventions panel. The always-on core ' +
         'is not listed here.',
@@ -1103,8 +1022,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       name: 'list_playbooks',
       description:
         'List the available playbooks — the declarative workflow graphs a worker can be bound to. ' +
-        'Returns {playbooks, errors}: each playbook is {id, name, description, entryStages, ' +
-        'spawnableStages, plugin?}, and `errors` is [{id, message}] for definitions REJECTED at load time — ' +
+        '`errors` lists definitions REJECTED at load time — ' +
         'check it when a playbook you authored does not appear. `entryStages` are the stages a run may ' +
         'start in; `spawnableStages` are every stage a worker can be created directly in (the rest are ' +
         'transition-only). Built-ins ship in-repo; author your own as JSON under ' +
@@ -1133,7 +1051,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'stage\'s capacity for live workers of one run: `one` refuses a second, `many` permits ' +
         'several live at once. Each stage also reports `spawnable`, the per-stage form of ' +
         'list_playbooks\' `spawnableStages`. On an edge, `via` is the tool that drives it and the ' +
-        'ONLY tool that can. Refuses {ok:false, code:"PLAYBOOK_UNKNOWN", known:[…]} for an unknown id.',
+        'ONLY tool that can.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string', description: 'Playbook id, as listed by list_playbooks.' } },
@@ -1180,36 +1098,23 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
     {
       name: 'get_recent_messages',
       description:
-        'Return the most recent assistant message(s) from an instance. Each message has: ' +
-        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `hasPlan`, `planPath`, `questionCount`, `promptedBy`. ' +
+        'Return the most recent assistant message(s) from an instance. ' +
         '`promptedBy:"human"` marks a message whose turn the human prompted directly; absent = conductor-sent or unknown. ' +
         '`blocks` is present only when non-text blocks exist and contains only `tool_use` and ' +
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
         'in `blocks[]` when their content is represented in the message body ' + fmt('(see OUTPUT)', '(its `text`)') + '. ' +
-        '`hasPlan` (boolean) flags a turn that called ExitPlanMode; `planPath` (string) is the plan document\'s path when a ' +
+        '`planPath` (string) is the plan document\'s path when a ' +
         'file backs the plan — prefer handing that path on rather than copying the text, or ' +
-        'send_prompt({forward}) relays the whole message verbatim; `questionCount` (int) ' +
-        'flags a turn that called AskUserQuestion, with the number of questions — these are presence markers only, ' +
-        'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
+        'send_prompt({forward}) relays the whole message verbatim. ' +
         'By default, messages are returned when they have text, narration, a plan, or questions — ' +
-        'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
-        'include every assistant message regardless' +
-        fmt(' AND to emit tool inputs verbatim (see `blocks[].input` below)', '') +
-        '. Thinking blocks are excluded by default; ' +
-        'set `includeThinking` to true to include them in `blocks[]`. NARRATION — a thinking block Claude sends straight after a ' +
+        'tool-call-only messages with none of those are excluded. NARRATION — a thinking block Claude sends straight after a ' +
         'redacted one as a progress note — is never in `blocks[]` and needs no flag: it is always in the body ' +
         fmt('(see OUTPUT)', '(its `text`)') + '. ' +
-        '`count` applies to the filtered set. ' +
-        'DISK-BACKED & ring-first: served from the in-memory ring on the hot path; if the ring\'s retained ' +
-        'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
-        'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
+        'Never false-empty: messages the in-memory ring evicted are read back from the on-disk session transcript. ' +
         'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
         'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
-        fmt('OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-          'textTruncated, narrationChars?, narrationTruncated?, hasPlan?, planTruncated?, planPath?, questionCount?, questionsTruncated?, blocks?, blocksOmitted?}], ' +
-          'source:"ring"|"disk", ' +
-          'omittedToolOnly:int, omittedForBudget?, retained:{firstSeq, lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
+        fmt('OUTPUT: a compact-JSON metadata block (content[0]) oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
           'messages[k]\'s body: ',
         'Messages are oldest-first; each one\'s `text` is its body: ') +
         'its prose (if any) plus a "--- narration ---" section (the worker\'s progress note, not its answer), a "--- plan ---" (or "--- plan · saved to <path> ---") or a "--- questions ---" fenced section when the ' +
@@ -1228,7 +1133,6 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           'survive, while a larger one is replaced by an `[omitted: …]` marker and the block carries ' +
           '`inputTruncated:true`. To read an omitted argument: `includeToolCalls:true`. ',
         'Text, narration, plan, questions and `blocks[].input` ride whole. ') +
-        'Default count and max per the `count` schema. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
         'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +
         'of that turn — so a turn whose trailing prose spans several messages still surfaces the plan/questions ' +
@@ -1257,8 +1161,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         fmt('(or `no commits yet` on an unborn HEAD)', '(`unbornHead` on an unborn HEAD)') + ', '
         + 'uncommitted lines (`git status --porcelain`), ' +
         'recent commits (`git log`), and — for worktrees — mergeStatus (ahead/behind) plus a ' +
-        'diff-stat against the base branch. Useful for reviewing what an agent did without ' +
-        'leaving MCP.' +
+        'diff-stat against the base branch.' +
         fmt(' Returns PLAIN TEXT (no JSON), in sections: header, FILES, DIRTY, ' +
           'DIFFSTAT, COMMITS. The dirty list is capped; its header reports both counts and says ' +
           'truncated when it hits the cap.', ''),
@@ -1281,20 +1184,13 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'Return the unified diff of <baseRef>...HEAD in a worktree, PLUS the working tree\'s uncommitted state — ' +
         'judge a worker\'s output on that full result, not just its committed hunks. Start with summary:true: a ' +
         'full diff pulled into context is paid for on every later turn. ' +
-        'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
-        '(per the contextLines schema range/default) sets hunk context. The supported modes keep this usable at any size: (1) summary:true returns a ' +
+        'The supported modes keep this usable at any size: (1) summary:true returns a ' +
         'structured per-file stat {totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a ' +
         'diff' + fmt(', in one JSON block', '') + '; totals always cover the whole change set, and files pages by offset (a file index in ' +
-        'this mode) with truncated/nextOffset like diff mode. (2) paths:[...] scopes the diff (or summary) to ' +
-        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns as many whole lines as fit ' +
+        'this mode) with truncated/nextOffset like diff mode. (2) the diff is paginated by LINE INDEX: each call returns as many whole lines as fit ' +
         fmt('one MCP result', 'the page ceiling (`JSON_DIFF_PAGE_BYTES`)') +
-        ' (a single over-long line is cut, lineTruncated:true), ' +
-        'starting at offset (0-based line index, default 0).' +
-        fmt(' In diff mode the OUTPUT is a compact-JSON metadata ' +
-          'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
-          'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], untrackedTruncated?, untrackedTotal?, ' +
-          'ahead, lineTruncated?, includedFiles?, includedFilesTruncated?, includedFilesTotal?, omittedFiles?, ' +
-          'omittedFilesTruncated?, omittedFilesTotal?} ' +
+        ' (a single over-long line is cut, lineTruncated:true).' +
+        fmt(' In diff mode the OUTPUT is a compact-JSON metadata block (content[0]) ' +
           'PLUS a separate raw, un-escaped diff text block (content[1]);',
         ' In diff mode the diff text is `body`;') +
         ' when truncated, re-call with offset:nextOffset ' +
@@ -1308,8 +1204,7 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
           'are capped, flagged <list>Truncated + <list>Total; project_bash\'s git ls-files --others --exclude-standard / ' +
           'git diff --name-status give the full lists.', '') +
         ' `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
-        'hasUncommittedChanges:true is the signal that nothing will land if you merge_worktree right now. ' +
-        'Complements project_status.',
+        'hasUncommittedChanges:true is the signal that nothing will land if you merge_worktree right now.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1337,10 +1232,18 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'tool uses — the rg/find/grep shims and shell functions/aliases from the captured shell ' +
         'snapshot (cached per claude version); on a project whose `system` is not `local` that ' +
         'snapshot does not apply and the command runs in a plain login shell there. ' +
-        'Mirrors project/worktree for cwd scoping plus the ' +
-        'meaningful subset of the built-in Bash tool (command/description/timeout). Replaces ' +
-        'grep/glob — use rg/grep/find through this tool for search. ' +
-        bashOutputDescription('project, worktree, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, outputMayBeIncomplete?, error?', fmt, { heldOpen: true }),
+        fmt('OUTPUT: a compact-JSON metadata block (content[0]) PLUS a separate raw, un-escaped '
+          + 'text block (content[1]) carrying ', '`output` is ') +
+        'the combined stdout+stderr output, in arrival order. A non-zero ' +
+        'exitCode is a normal result, not a tool error. truncated:true means retained output was capped at ' +
+        fmt('the bash output cap (`BASH_OUTPUT_CAP`)', 'the safety ceiling (`JSON_BASH_OUTPUT_CAP`)') +
+        ' — the command still ran to completion; assume later output ' +
+        'beyond the cap was lost, not that the process was killed. ' +
+        'outputMayBeIncomplete:true means a background process the command started held the output open ' +
+        'after the command exited, so output it wrote later is missing (on POSIX the process is also stopped unless it detached; on Windows it keeps running). ' +
+        'On timeout (the only hard kill) the whole process group is killed, exitCode is null, and timedOut:true ' +
+        '— except that descendantsMaySurvive:true means only the direct child could be signalled, so what it ' +
+        'started may still be running. stdin is not connected — an interactive command hangs until timeout.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1360,17 +1263,14 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       name: 'system_bash',
       requires: 'remoteSystems',
       description:
-        'Read-only inspection only: run non-mutating commands (rg/grep/find, git log/diff, wc, jq, ' +
-        '…); anything that writes files, installs dependencies, commits, or starts long-lived ' +
-        'processes belongs in a spawned worker instead. Run a shell command on a REGISTERED SYSTEM ' +
+        'Read-only inspection only, as project_bash. Run a shell command on a REGISTERED SYSTEM ' +
         'addressed directly — no project in play, so a box can be inspected before anything is ' +
         'placed on it. `system` is a registry id and `remoteId` one of its named targets (omit for ' +
         'the provider\'s own default target). list_projects names a project\'s placement only when ' +
         'it is on a NON-LOCAL system; enumerate_remotes lists every registered System and the ' +
         'remoteIds it is configured for, where its provider can say. ' +
-        'Refuses system:"local" with code SYSTEM_IS_LOCAL — use your own Bash tool for ' +
-        'cc\'s own machine. The command runs in a plain login shell on that system. ' +
-        bashOutputDescription('system, remoteId, cwd, exitCode, durationMs, truncated?, timedOut?, descendantsMaySurvive?, error?', fmt),
+        'The command runs in a plain login shell on that system. ' +
+        'Output, truncation and timeout behave as in project_bash.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1398,12 +1298,10 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
         'the provider\'s default target; refused on `local`); `path` is absolute on that system, used verbatim. ' +
         'A source symlink is followed for its bytes; a directory or special-file source is refused, as is one ' +
         'above the per-file cap (`MAX_FILE_BYTES`). The destination\'s parent directories are created and the ' +
-        'write is atomic (temp file + rename) — a destination symlink is REPLACED, never written through. An ' +
-        'existing destination is refused DEST_EXISTS unless overwrite:true (a directory is never replaced). ' +
+        'write is atomic (temp file + rename) — a destination symlink is REPLACED, never written through. ' +
         'move:true deletes the source (a symlink source: the link only) only after the destination is written ' +
-        'and re-checked; any failure keeps the source. Writing — or moving out of — cc\'s own store on `local` ' +
-        'is refused PATH_IN_CC_STORE. ' +
-        fmt('OUTPUT: compact JSON {from, to, bytes, mode, moved}. An expected failure is a normal result',
+        'and re-checked; any failure keeps the source. ' +
+        fmt('An expected failure is a normal result',
           'An expected failure is a refusal') +
         ' {ok:false, code, reason, side?, errno?, written?} — written:true means the ' +
         'destination now holds the file and the source was kept.',
@@ -1426,15 +1324,11 @@ function coreTools(format: McpFormat): Array<Omit<Tool, 'outputSchema'>> {
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
         'guarded.' +
-        fmt(' OUTPUT: a compact-JSON metadata block (content[0]) {path, size, truncated, encoding, lineCount, ' +
-          'lineCountExact, lineTruncated?, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
+        fmt(' OUTPUT: a compact-JSON metadata block (content[0]) PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
           'file body.', ' The file\'s contents are `body`.') +
-        ' `lineCountExact` is false when the fast byte-capped read may have a partial final line. Supports ' +
-        '`offset` (1-based start line, default 1) and `limit` (max lines, default: to EOF) for range reads. Set ' +
-        '`lineNumbers:true` to prefix each line with a right-aligned number and tab (cat -n style, absolute to the ' +
-        'full file). ' + fmt('Metadata includes', 'The result includes') + ' `startLine`/`endLine` when a range is requested or the byte cap cut a line-param read. Binary files come back as a ' +
-        'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
-        '(default and maximum per the schema' + fmt(' — the most one result carries', '') + '); `truncated` says when. A cut line-range ' +
+        ' `lineCountExact` is false when the fast byte-capped read may have a partial final line. ' +
+        fmt('Metadata includes', 'The result includes') + ' `startLine`/`endLine` when a range is requested or the byte cap cut a line-param read. Binary files come back as a ' +
+        'base64 body with encoding:"base64". A cut line-range ' +
         'read ends on a whole line and endLine names it, so offset:endLine+1 continues — except a single line longer ' +
         'than maxBytes, which (with or without line params) is cut mid-line with an in-band "… [line cut: N bytes]" ' +
         'marker (when it fits within maxBytes), lineTruncated:true and endLine; ' +
