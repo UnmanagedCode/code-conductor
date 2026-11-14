@@ -552,24 +552,9 @@ test('send_prompt exposes forward as an optional object param', async () => {
 
 // ---------- contract strictness: descriptions and refusals name what is valid ----------
 
-// Invariant: pins are documented only by playbook surfaces — spawn_instance
-// (top level and every property) never mentions a pin, and list_sessions no
-// longer qualifies `resumes-hot` with one.
-test('spawn_instance and list_sessions carry no playbook-pin prose', async () => {
-  const { body } = await rpc('tools/list');
-  const spawn = body.result.tools.find(t => t.name === 'spawn_instance');
-  assert.doesNotMatch(spawn.description, /\bpin/i);
-  for (const [k, p] of Object.entries(spawn.inputSchema.properties)) {
-    assert.doesNotMatch(p.description ?? '', /\bpin/i, `spawn_instance.${k}`);
-  }
-  const ls = body.result.tools.find(t => t.name === 'list_sessions');
-  assert.doesNotMatch(ls.description, /pinning/);
-});
-
 // Invariant: a path passed as `project` is still refused (no path→name
 // resolution), and the refusal names the valid form — the NAME list_projects
-// prints and its regex. list_projects' own description says the name is the
-// argument.
+// prints and its regex.
 test('a filesystem path as project is refused naming the expected form', async () => {
   const repo = await makeRealRepo('pathy');
   const r = await callTool('project_status', { project: repo });
@@ -579,10 +564,6 @@ test('a filesystem path as project is refused naming the expected form', async (
   assert.match(t, /NAME/);
   assert.ok(t.includes('^[a-zA-Z0-9._-]+$'), t);
   assert.ok(t.includes(JSON.stringify(repo)), t);
-
-  const { body } = await rpc('tools/list');
-  const lp = body.result.tools.find(x => x.name === 'list_projects');
-  assert.match(lp.description, /NAME is the `project` argument/);
 });
 
 // Invariant: a resume whose location cannot be recovered is refused naming

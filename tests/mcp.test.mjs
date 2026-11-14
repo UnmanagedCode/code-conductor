@@ -13,6 +13,7 @@ import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
 import { isDeadStatus } from '../src/instanceStatus.ts';
 import { localPlace } from '../src/projects.ts';
+import { OUTPUT_SCHEMAS } from '../src/mcp/outputSchemas.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -213,29 +214,23 @@ test('tools/list returns the full expected tool catalog', async () => {
   }
 });
 
-// The metadata key set is the half of a bash tool's description a caller reads
-// to know which fields exist, and it is a hand-typed literal in each tool —
-// `bashOutputDescription` shares the prose AROUND the braces, not what is inside
-// them. Both lists are asserted here, together, so one cannot lose a key or
-// drift from the other silently: the only other description assertion in the
-// suite is that it is a non-empty string.
-test('both bash tools document exactly the metadata keys their shared payload sets', async () => {
-  const { body } = await rpc(baseUrl, 'tools/list');
-  const keysIn = (name) => {
-    const t = body.result.tools.find(x => x.name === name);
-    assert.ok(t, `${name} is in the catalog`);
-    const m = /metadata block \(content\[0\]\) \{([^}]*)\}/.exec(t.description);
-    assert.ok(m, `${name}'s description states its metadata block: ${t.description}`);
-    return m[1].split(',').map(k => k.trim());
-  };
-  // The identity keys each tool names its target by, then the payload-generic
-  // half every field `bashPayload` can set — the optionals marked `?` because
-  // each is absent unless it happened.
-  const SHARED = ['exitCode', 'durationMs', 'truncated?', 'timedOut?', 'descendantsMaySurvive?'];
-  // `outputMayBeIncomplete` is set only by the LOCAL runner, which project_bash
-  // reaches on a local project and system_bash never does (a provider cannot set it).
-  assert.deepEqual(keysIn('project_bash'), ['project', 'worktree', 'cwd', ...SHARED, 'outputMayBeIncomplete?', 'error?']);
-  assert.deepEqual(keysIn('system_bash'), ['system', 'remoteId', 'cwd', ...SHARED, 'error?']);
+// The two bash tools return the one payload `bashPayload` builds, so their
+// published result schemas must differ only in the keys naming the target; the
+// schema is the one place a caller reads which fields exist.
+test('both bash tools publish one shared payload schema apart from the keys naming their target', () => {
+  // Every variant's property names, in the order the schema lists them: the
+  // identity keys each tool names its target by, then the payload-generic half
+  // every field `bashPayload` can set.
+  const variantKeys = (name) => OUTPUT_SCHEMAS[name].anyOf.map(v => Object.keys(v.properties));
+  const project = variantKeys('project_bash');
+  const system = variantKeys('system_bash');
+  assert.ok(project.length > 1, 'the schema has more than one payload shape — the lookup is stale');
+  assert.equal(system.length, project.length);
+  project.forEach((keys, i) => {
+    assert.deepEqual(keys.slice(0, 3), ['project', 'worktree', 'cwd']);
+    assert.deepEqual(system[i].slice(0, 3), ['system', 'remoteId', 'cwd']);
+    assert.deepEqual(system[i].slice(3), keys.slice(3));
+  });
 });
 
 test('unknown method yields a JSON-RPC error envelope', async () => {

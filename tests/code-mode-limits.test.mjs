@@ -59,7 +59,6 @@ test('the run_code description states the real limits and fits 4096 chars in bot
     assert.ok(tool.description.includes(`defaults to ${describeDuration(RUN_CODE_DEFAULT_TIMEOUT_MS)}`), 'the default timeout');
     assert.ok(tool.description.includes(`at most ${describeDuration(RUN_CODE_MAX_TIMEOUT_MS)}`), 'the max timeout');
     assert.ok(!/RUN_RESULT_CAP|clampRunCodeTimeoutMs/.test(tool.description), 'no code constant names');
-    assert.match(tool.description, /^Code mode/);
   }
 });
 

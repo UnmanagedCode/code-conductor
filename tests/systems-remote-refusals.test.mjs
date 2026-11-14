@@ -29,6 +29,7 @@ import { bindRemoteSystem, seedRepo, git, referenceLaunch } from './remoteSystem
 import { adoptProject, listProjects, orchStoreRoot, projectsRoot, projectStoreDir } from '../src/projects.ts';
 import { createWorktree, mergeWorktreeIntoParent, setMergeHookVarsProvider } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
+import { OUTPUT_SCHEMAS } from '../src/mcp/outputSchemas.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 
 const SCENARIO = new URL('./fixtures/scenario-instance.json', import.meta.url).pathname;
@@ -614,18 +615,14 @@ describe('a remote project refuses what it cannot do, by name', () => {
       assert.ok(observed.has(k), `the ${k} branch of bashPayload was never reached — the fixture is stale`);
     }
 
-    const res = await fetch(baseUrl + '/mcp?format=text', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 9001, method: 'tools/list' }),
-    });
-    const tool = (await res.json()).result.tools.find(t => t.name === 'system_bash');
-    const m = /metadata block \(content\[0\]\) \{([^}]*)\}/.exec(tool.description);
-    assert.ok(m, `the description states its metadata block: ${tool.description}`);
-    // `?` marks a key as optional in the description; it is not part of the name.
-    const advertised = m[1].split(',').map(k => k.trim().replace(/\?$/, ''));
+    // The published payload schema, minus the body (its own content block) and
+    // `outputMayBeIncomplete`, which the schema shared with project_bash carries
+    // but only the LOCAL runner sets — a provider cannot.
+    const advertised = new Set(OUTPUT_SCHEMAS.system_bash.anyOf.flatMap(v => Object.keys(v.properties)));
+    assert.ok(advertised.has('outputMayBeIncomplete'), 'the shared schema carries the local-only key');
+    for (const k of ['output', 'outputMayBeIncomplete']) advertised.delete(k);
 
-    assert.deepEqual([...observed].sort(), advertised.sort());
+    assert.deepEqual([...observed].sort(), [...advertised].sort());
   });
 
   // PINS: output past the cap is marked IN THE BODY, not only by the metadata
