@@ -32,6 +32,8 @@ const distParent = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-webbuild-'));
 const distDir = path.join(distParent, 'dist');
 const log = { log: vi.fn(), error: vi.fn() };
 let first: WebState;
+/** Everything the beforeAll build sent to `log.log`, captured before any test can clear the mock. */
+let buildOutput = '';
 /** index.html's icon and apple-touch-icon links: each one's href and its `sizes` value, or null. */
 const iconLinks = (html: string) => [...html.matchAll(/<link\b[^>]*\brel="(?:icon|apple-touch-icon)"[^>]*>/g)].map(([tag]) => ({
   href: tag.match(/\bhref="([^"]*)"/)?.[1], sizes: tag.match(/\bsizes="([^"]*)"/)?.[1] ?? null,
@@ -54,6 +56,7 @@ function staticClosure(entry: string, read: (file: string) => string): Set<strin
 
 beforeAll(async () => {
   first = await ensureWebBuild({ log, distDir });
+  buildOutput = log.log.mock.calls.map((c) => String(c[0])).join('\n');
 }, 120_000);
 
 afterAll(() => {
@@ -101,8 +104,9 @@ describe('ensureWebBuild', () => {
     const sizes = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).map((f) => fs.statSync(path.join(assets, f)).size);
     expect(sizes.length).toBeGreaterThan(0);
     expect(Math.max(...sizes)).toBeLessThan(limitBytes);
-    // The build's own output reaches the server log; none of it is the size warning.
-    expect(log.log.mock.calls.map((c) => String(c[0])).filter((w) => /chunks are larger than/.test(w))).toEqual([]);
+    // The beforeAll build's output, snapshotted there (a later test clears the mock); the "web: built" line proves the capture is not empty.
+    expect(buildOutput).toContain('web: built in');
+    expect(buildOutput).not.toMatch(/chunks are larger than/);
   });
 
   it('the entry and the chunks it statically imports carry no dialog code; a lazy chunk does', () => {
