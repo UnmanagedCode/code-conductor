@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { APP_HEIGHT_VAR, startViewportFollow } from './viewport';
+import { APP_HEIGHT_VAR, HEIGHT_SLACK_PX, startViewportFollow } from './viewport';
 
 function rig(init: { height?: number; scale?: number; offsetTop?: number; scrollY?: number; noVv?: boolean } = {}) {
   const vv = Object.assign(new EventTarget(), { height: init.height ?? 844, scale: init.scale ?? 1, offsetTop: init.offsetTop ?? 0 });
@@ -74,5 +74,27 @@ describe('startViewportFollow', () => {
     r.vv.dispatchEvent(new Event('resize')); r.vv.dispatchEvent(new Event('scroll'));
     expect(r.get()).toBe('');
     expect(r.win.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('a visible height exactly the slack under innerHeight sets nothing', () => {
+    // Invariant: the boundary is exclusive: a viewport HEIGHT_SLACK_PX short is rounding, not a keyboard.
+    const r = rig({ height: 844 - HEIGHT_SLACK_PX });
+    start(r);
+    expect(r.get()).toBe('');
+  });
+
+  it('a visible height inside the slack sets nothing', () => {
+    // Invariant: a sub-slack shortfall is absorbed, so the slack term is not dropped.
+    const r = rig({ height: 844 - HEIGHT_SLACK_PX / 2 });
+    start(r);
+    expect(r.get()).toBe('');
+  });
+
+  it('a visible height just past the slack sets the variable', () => {
+    // Invariant: the first height beyond the slack counts as a covered viewport.
+    const h = 844 - HEIGHT_SLACK_PX - 0.5;
+    const r = rig({ height: h });
+    start(r);
+    expect(r.get()).toBe(`${h}px`);
   });
 });

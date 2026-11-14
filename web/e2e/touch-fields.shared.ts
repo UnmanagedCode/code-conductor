@@ -7,6 +7,8 @@ import { test, expect, type Cc } from './harness/fixtures.ts';
 import { createProject, spawnSession, LIVE_WORKER_MODEL } from './harness/api.ts';
 import { next } from './flows/ui.ts';
 
+// App.tsx's root element (TooltipProvider renders no DOM of its own); page-scroll.shared.ts measures the same box.
+const SHELL = '#root > div:first-child';
 const MIN_FONT_PX = 16;
 const LANDSCAPE = { width: 932, height: 430 };
 
@@ -47,4 +49,19 @@ export async function touchFieldsFlow({ page, cc }: { page: Page; cc: Cc }): Pro
   await page.setViewportSize(own);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--app-height'))).toBe('');
+}
+
+/** The shell sizes itself from --app-height: App.tsx's root element, the one page-scroll measures. */
+export async function shellFollowsAppHeightFlow({ page, cc }: { page: Page; cc: Cc }): Promise<void> {
+  const project = `touch-shell-${test.info().project.name}`;
+  await createProject(cc, project);
+  const { sessionId } = await spawnSession(cc, project, { model: LIVE_WORKER_MODEL });
+  await page.goto(`/#session=${sessionId}`);
+  await expect(page.locator('#composer-input')).toBeEnabled();
+  const shellHeight = () => page.locator(SHELL).evaluate((el) => el.getBoundingClientRect().height);
+  const innerHeight = await page.evaluate(() => window.innerHeight);
+  await page.evaluate(() => document.documentElement.style.setProperty('--app-height', '400px'));
+  await expect.poll(shellHeight).toBeCloseTo(400, 0);
+  await page.evaluate(() => document.documentElement.style.removeProperty('--app-height'));
+  await expect.poll(shellHeight).toBeCloseTo(innerHeight, 0);
 }
