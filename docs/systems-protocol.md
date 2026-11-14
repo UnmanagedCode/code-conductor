@@ -73,7 +73,7 @@ broken, because that boundary is easy to assume wrongly in both directions.
 
 - **What cc guarantees.** An operation cc did not bound itself expires at
   `DEFAULT_OP_TIMEOUT_MS` (`src/systems/providerSystem.ts`; override
-  `ORCH_OP_TIMEOUT_MS`, `docs/architecture.md`'s env table), and **the operation
+  `ORCH_OP_TIMEOUT_MS`, `docs/environment.md`), and **the operation
   fails with a named code** — `{code:124, timedOut:true}` from an `exec`,
   `ETIMEDOUT` from `readFile` / `writeFile` / `describeRemote`. Expiry sends
   `close`, which is this protocol's instruction to kill the command; a provider
