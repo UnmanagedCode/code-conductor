@@ -1,7 +1,10 @@
 #!/usr/bin/env node
-// Docs lint: backticked paths and code names must resolve in the repo, doc links and their
-// anchors must resolve, and every doc stays inside the line and byte caps a single Read call
-// can load. Rules: docs/architecture.md → Conventions.
+// Docs lint. Backticked paths (PATH_RE) must resolve to a tracked file, a directory, or a
+// gitignored output; backticked code-shaped names (CODE_LIKE) must be spelled in some non-doc
+// file, or be listed in NOT_IN_REPO. Doc links and their anchors must resolve. Every docs/**/*.md
+// stays within LINE_CAP per line and DEFAULT_BYTE_CAP (or its BYTE_CAPS ratchet) per file, so one
+// Read call can load it, and every ## heading under docs/components/ is linked from
+// docs/components.md.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
