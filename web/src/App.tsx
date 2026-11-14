@@ -26,6 +26,9 @@ const CommitsView = lazy(() => import('@/features/views/CommitsView').then((m) =
 const CostsView = lazy(() => import('@/features/views/CostsView').then((m) => ({ default: m.CostsView })));
 
 // Toasts sit below the views' top bar at every width, so none covers its controls.
+// One height for the shell and the root crash fallback, so a crash page follows the soft keyboard as the shell does (app/viewport.ts).
+const SHELL_HEIGHT = 'h-(--app-height)';
+
 const TOAST_OFFSET = { top: 'calc(env(safe-area-inset-top, 0px) + var(--header-height) + 0.5rem)' };
 // On desktop toasts keep TOAST_EDGE_GAP from the window's edge.
 const TOAST_OFFSET_DESKTOP = { ...TOAST_OFFSET, right: `${TOAST_EDGE_GAP}px` };
@@ -70,7 +73,7 @@ function MainPane() {
 /** The last resort: a crash outside every region replaces the page, not blanks it. */
 export function App() {
   return (
-    <ErrorBoundary fallback={(error) => <RegionFallback region="app" error={error} retryLabel="Reload page" onRetry={() => location.reload()} className="h-dvh" />}>
+    <ErrorBoundary fallback={(error) => <RegionFallback region="app" error={error} retryLabel="Reload page" onRetry={() => location.reload()} className={SHELL_HEIGHT} />}>
       <AppShell />
     </ErrorBoundary>
   );
@@ -83,7 +86,7 @@ function AppShell() {
   return (
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
-      <div className="relative flex h-(--app-height) overflow-hidden bg-background">
+      <div className={`relative flex ${SHELL_HEIGHT} overflow-hidden bg-background`}>
         <div className="hidden shrink-0 md:flex">
           <ErrorBoundary fallback={sidebarFallback('w-72 flex-none border-r border-sidebar-border bg-sidebar')}>
             <AppSidebar />

@@ -10,6 +10,7 @@ import { routeFetch } from '@/test/routeFetch';
 import { toast } from '@/ui/feedback';
 import { dialogStore, openNewProjectDialog } from '@/features/dialogs/api';
 import { openCommits, openCosts } from '@/features/views/api';
+import { APP_HEIGHT_VAR } from '@/app/viewport';
 
 // A crash switch per region: each stand-in below throws its own Error while its flag is on.
 const boom = vi.hoisted(() => {
@@ -95,6 +96,7 @@ const { pluginFrames } = await import('@/features/views/plugins');
 
 const desktopSidebar = () => [...document.querySelectorAll('[data-sidebar]')].filter((e) => !e.closest('[data-slot="sheet-content"]'));
 const region = (name: string) => document.querySelector<HTMLElement>(`[data-error-region="${name}"]`);
+const heightClasses = (el: Element) => [...el.classList].filter((c) => c.startsWith('h-'));
 const sessionView = () => document.querySelector('[data-view="session"]');
 
 /** Runs `fn` in act; returns what act rethrew, or null (React 19 rethrows an error no boundary caught). */
@@ -244,6 +246,22 @@ describe('a render crash stays in its region', () => {
     expect(reload, 'the fallback does not reload by itself').not.toHaveBeenCalled();
     await act(async () => { within(root!).getByRole('button', { name: 'Reload page' }).click(); });
     expect(reload, 'Reload page reloads').toHaveBeenCalledTimes(1);
+  });
+
+  it("the app fallback takes the shell's height, the one the viewport follow drives", async () => {
+    // Invariant: the root fallback sizes by the shell's own height class, and that class reads APP_HEIGHT_VAR, so a crash page follows the soft keyboard as the shell does.
+    const { container } = await mountApp();
+    const shell = container.firstElementChild!;
+    expect(shell.contains(desktopSidebar()[0]), 'control: the shell root').toBe(true);
+    const shellHeight = heightClasses(shell);
+    expect(shellHeight, 'the shell sizes by the viewport-followed var').toEqual([`h-(${APP_HEIGHT_VAR})`]);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await crash('banner');
+    const root = region('app');
+    expect(root, 'the app fallback is shown').not.toBeNull();
+    expect(root, 'the fallback replaces the shell at the top').toBe(container.firstElementChild);
+    expect(heightClasses(root!), 'the fallback takes the shell height').toEqual(shellHeight);
+    expectLogged(logged, boom.errors.banner);
   });
 
   it("a sidebar crash with the phone drawer open shows the fallback in the drawer; the app and main pane stay", async () => {
