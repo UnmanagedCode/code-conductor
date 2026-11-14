@@ -1259,7 +1259,7 @@ let pluginRolesProvider: () => PluginRoleRecord[] = () => [];
 export function setPluginRolesProvider(fn: (() => PluginRoleRecord[]) | null | undefined): void {
   pluginRolesProvider = typeof fn === 'function' ? fn : (() => []);
 }
-export function getPluginRoles(): PluginRoleRecord[] {
+function getPluginRoles(): PluginRoleRecord[] {
   try {
     const list = pluginRolesProvider();
     return Array.isArray(list) ? list : [];

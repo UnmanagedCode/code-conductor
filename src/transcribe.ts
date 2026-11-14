@@ -27,7 +27,7 @@ export function whisperRoot(): string {
   return path.join(process.env.INSTALL_ROOT || orchStoreRoot(), 'whisper.cpp');
 }
 
-export function modelsDir(): string {
+function modelsDir(): string {
   return path.join(whisperRoot(), 'models');
 }
 

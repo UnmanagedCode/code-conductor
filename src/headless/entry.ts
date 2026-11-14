@@ -26,7 +26,7 @@ export interface HeadlessEntryDeps {
 
 // The stderr lines naming where the run's web UI answers: the bound address, or
 // for a wildcard bind every non-internal IPv4 (in a container, its own IP).
-export function headlessUiLines(host: string, port: number, nets: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): string[] {
+function headlessUiLines(host: string, port: number, nets: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): string[] {
   const hosts = host === '0.0.0.0' || host === '::'
     ? Object.values(nets).flatMap((list) => list ?? []).filter((n) => n.family === 'IPv4' && !n.internal).map((n) => n.address)
     : [host];

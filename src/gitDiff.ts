@@ -18,7 +18,7 @@ import { httpError } from './httpError.ts';
 // Maximum bytes of raw git diff output to keep for a single file's unified
 // diff. Shared by both diff surfaces (REST here + the MCP project_diff
 // handler) so they behave consistently.
-export const DIFF_BYTE_CAP = 200 * 1024;
+const DIFF_BYTE_CAP = 200 * 1024;
 
 // Per-file changed-line ceiling. Checked from --numstat BEFORE reading the
 // unified diff, so a pathological file can never reach runGit's 16 MB maxBuffer.

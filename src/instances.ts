@@ -503,11 +503,11 @@ export const FORK_PERSIST_POLL_MS = 50;
 // (a `--resume` with no conversation, a wrapper rejecting the model) exits
 // inside it; one that accepts the launch and rejects the first request is not
 // caught (docs/models.md → known limitation).
-export const RELAUNCH_GRACE_MS = 3000;
+const RELAUNCH_GRACE_MS = 3000;
 // How long the relaunch may take to come up idle at all (its replay included)
 // before it is called failed. Generous: it bounds a CLI that stays alive but
 // never becomes usable, which would otherwise hold the relaunch forever.
-export const RELAUNCH_IDLE_DEADLINE_MS = 60_000;
+const RELAUNCH_IDLE_DEADLINE_MS = 60_000;
 // `code` of the error a relaunch that was never confirmed rejects with.
 export const RELAUNCH_FAILED = 'RELAUNCH_FAILED';
 

@@ -42,7 +42,7 @@ import { httpError } from './httpError.ts';
 // (retiredLineageSource) all serve it.
 export type LineageSource = PagerSource & Pick<InstanceLike, 'sessionId'>;
 
-export const NOT_AN_OLDER_SEGMENT = 'segment is not an older segment of this session';
+const NOT_AN_OLDER_SEGMENT = 'segment is not an older segment of this session';
 
 export interface LineagePage {
   events: UiEvent[];

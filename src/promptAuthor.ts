@@ -13,7 +13,7 @@
 
 import type { PromptAuthor } from '../shared/uiEvent.ts';
 
-export const AUTHOR_MARKER: Readonly<Record<PromptAuthor, string>> = {
+const AUTHOR_MARKER: Readonly<Record<PromptAuthor, string>> = {
   human: '[[cc:author:human]]',
   conductor: '[[cc:author:conductor]]',
 };

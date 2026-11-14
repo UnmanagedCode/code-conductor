@@ -238,7 +238,7 @@ const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0,
 // The one log entry for a route error: method, route, status and the clipped
 // message, then (5xx only) the clipped stack frames — never the message again,
 // which `stack` leads with.
-export function routeErrorLog(method: string, url: string, status: number, err: unknown): string {
+function routeErrorLog(method: string, url: string, status: number, err: unknown): string {
   let out = `routes: ${method} ${clip(url, ROUTE_ERROR_URL_MAX)} → ${status}: ${clip(errMessage(err), ROUTE_ERROR_MESSAGE_MAX)}`;
   const stack = (err as { stack?: unknown } | null)?.stack;
   if (status >= 500 && typeof stack === 'string') {

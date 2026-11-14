@@ -667,7 +667,7 @@ let atomicSeq = 0;
 
 // ── Entry point ──────────────────────────────────────────────────────
 
-export async function runReferenceProvider(argv: string[]): Promise<void> {
+async function runReferenceProvider(argv: string[]): Promise<void> {
   const opts = parseProviderArgs(argv);
   // Probed BEFORE stdin is read, so the hello can answer it; node holds stdin
   // until a listener is attached. `--no-pty` skips the spawn entirely.

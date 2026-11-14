@@ -105,7 +105,7 @@ const SEEDING_TOOLS = new Set(['Read', 'Write']);
 // (src/settings.ts buildMcpConfigJSON), so every tool it exposes carries this
 // prefix. `__` is the segment separator, so what follows is `<tool>` for a CORE
 // tool and `<plugin-id>__<tool>` for a plugin-forwarded one.
-export const CONDUCTOR_MCP_PREFIX = 'mcp__code-conductor__';
+const CONDUCTOR_MCP_PREFIX = 'mcp__code-conductor__';
 
 // The core conductor tools that stay PRUNABLE. Their results are bulk file /
 // command output — precisely what Prune exists to shed — where every other core

@@ -49,10 +49,10 @@ import { errMsg, sleep } from '../shared/basics.ts';
 // (The soft arms themselves are also bounded — see softInterruptDeadlineMs —
 // so a stop that never reaches a block boundary escalates on its own deadline;
 // this loop is the outer backstop for a turn that is running fine but long.)
-export const RESUME_DRAIN_GRACE_MS = 60000;
+const RESUME_DRAIN_GRACE_MS = 60000;
 // Gap between staggered respawns on boot — N concurrent claude spawns is a
 // resource spike on Termux/Android.
-export const RESUME_STAGGER_MS = 1500;
+const RESUME_STAGGER_MS = 1500;
 
 // --- Message texts -------------------------------------------------------
 
@@ -129,7 +129,7 @@ export function backgroundWorkLostNote(rootSessionId: string, sessionIds: string
 }
 
 // The continue notice a busy top-level session gets after a stop of `kind`.
-export function noticeFor(e: ResumeEntry, kind: RestoreKind): string {
+function noticeFor(e: ResumeEntry, kind: RestoreKind): string {
   const unclean = kind === 'unclean';
   const text = e.workers?.length
     ? (unclean ? buildWorkersUncleanResumeText : buildWorkersResumeText)(e.sessionId, e.workers)

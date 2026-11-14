@@ -16,8 +16,8 @@ import type { RunCodeMember } from '../codeMode/ctx.ts';
 // shallow validateArgs (src/mcp/server.ts) can't validate is rejected HERE,
 // so a schema the forwarder would silently mis-validate never registers.
 
-export const MANIFEST_FILENAME = 'conductor.plugin.json';
-export const SUPPORTED_PLUGIN_APIS = [1];
+const MANIFEST_FILENAME = 'conductor.plugin.json';
+const SUPPORTED_PLUGIN_APIS = [1];
 
 const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
@@ -43,7 +43,7 @@ const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend',
 export const MENU_ITEMS_MAX = 8;
 export const MENU_LABEL_MAX = 40;
 export const MENU_PATH_MAX = 200;
-export const MENU_ITEM_SCOPES = ['project', 'worktree'] as const;
+const MENU_ITEM_SCOPES = ['project', 'worktree'] as const;
 // RFC 3986 path characters only: no '%', '?', '#', '\', whitespace or control
 // characters. A flat class, never a nested repeat (which can backtrack).
 const MENU_PATH_RE = /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@\/]*$/;

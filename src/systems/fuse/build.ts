@@ -25,9 +25,9 @@ import { FUSE_UNAVAILABLE } from './preflight.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-export const UNION_SOURCE = path.join(HERE, 'union.c');
+const UNION_SOURCE = path.join(HERE, 'union.c');
 // The policy half — no libfuse, `#include`d by union.c.
-export const POLICY_SOURCE = path.join(HERE, 'policy.h');
+const POLICY_SOURCE = path.join(HERE, 'policy.h');
 
 const CFLAGS = ['-Wall', '-Wextra', '-O2'];
 

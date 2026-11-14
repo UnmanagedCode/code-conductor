@@ -23,7 +23,7 @@ import { humanizeDuration } from './duration.ts';
 import { httpError } from './httpError.ts';
 import type { Platform } from './platform/index.ts';
 
-export const LOGIN_TIMEOUT_MS = 10 * 60_000;
+const LOGIN_TIMEOUT_MS = 10 * 60_000;
 const KILL_GRACE_MS = 2000;
 const STDOUT_CAP = 16 * 1024;
 const STDERR_TAIL = 4 * 1024;

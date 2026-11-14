@@ -23,8 +23,8 @@ import { writeFileSync, readFileSync, rmSync, existsSync, mkdirSync, renameSync 
 import { orchStoreRoot } from './projects.ts';
 import { errMsg } from '../shared/basics.ts';
 
-export const PENDING_RESUME_FILENAME = 'pending-resume.json';
-export const RUNNING_RECORD_FILENAME = 'running-sessions.json';
+const PENDING_RESUME_FILENAME = 'pending-resume.json';
+const RUNNING_RECORD_FILENAME = 'running-sessions.json';
 
 // How a restored session's continue notice is delivered.
 export type Deliver = 'auto' | 'gated';

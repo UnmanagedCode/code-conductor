@@ -65,7 +65,7 @@ import type { InstanceLike, RingSeam } from './instanceTypes.ts';
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;
 
-export function clampLimit(n: unknown): number {
+function clampLimit(n: unknown): number {
   if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) return LIMIT_DEFAULT;
   return Math.min(n, LIMIT_MAX);
 }

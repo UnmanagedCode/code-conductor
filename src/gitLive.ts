@@ -9,15 +9,15 @@ import type { Platform } from './platform/index.ts';
 
 // Default timeout for a streamed git subcommand (clone/pull): long enough for
 // a big clone over a slow link.
-export const GIT_LIVE_TIMEOUT_MS = 120_000;
+const GIT_LIVE_TIMEOUT_MS = 120_000;
 // Bounded pre-check fetch used for update detection — must never block a list.
-export const GIT_FETCH_TIMEOUT_MS = 8_000;
+const GIT_FETCH_TIMEOUT_MS = 8_000;
 
 // Env for any git subprocess that talks to a remote outside an explicit user
 // action (the background fetch update-detection runs to freshen ahead/behind
 // data) — fail fast on missing credentials instead of hanging until the
 // timeout, which would otherwise be the common case for private repos.
-export const NO_PROMPT_GIT_ENV = {
+const NO_PROMPT_GIT_ENV = {
   ...process.env,
   GIT_TERMINAL_PROMPT: '0',
   GIT_ASKPASS: '',

@@ -77,7 +77,7 @@ export function selfProjectDir(): string {
 // `<projectsRoot>/.worktrees/<project>/<key>` — wherever the project itself
 // lives. Dot-prefixed so it can never be mistaken for a project directory, and
 // `<project>/` scoped so two projects may share a worktree key.
-export const LOCAL_WORKTREES_DIRNAME = '.worktrees';
+const LOCAL_WORKTREES_DIRNAME = '.worktrees';
 
 export function localWorktreesRoot(): string {
   return path.join(projectsRoot(), LOCAL_WORKTREES_DIRNAME);
@@ -86,7 +86,7 @@ export function localWorktreesRoot(): string {
 // Where the Plugin Library clones an installed plugin. A plugin checkout is an
 // ordinary project with an ordinary record; this directory only keeps cc's own
 // installs out of the area a user browses for adoptable trees.
-export const PLUGINS_DIRNAME = '.plugins';
+const PLUGINS_DIRNAME = '.plugins';
 
 export function pluginsRoot(): string {
   return path.join(projectsRoot(), PLUGINS_DIRNAME);
@@ -498,7 +498,7 @@ export async function ensureSelfProjectWorkspace(workspaceName: string, selfDir:
 // field in each member's `<store>/projects/<name>/project.json`. No live
 // name is in that state — the constraint is recorded so a future tightening
 // doesn't strand one silently.
-export function validateWorkspace(workspace: unknown): string | null {
+function validateWorkspace(workspace: unknown): string | null {
   if (workspace === null) return null;
   if (typeof workspace !== 'string') {
     throw httpError(400, 'workspace must be a string or null');
@@ -2157,7 +2157,7 @@ async function transcriptAt(place: TranscriptPlacement, id: string): Promise<boo
 // or not the worktree is still registered. The one home for that derivation —
 // the recorded-place fallback above and the removed-worktree rows of
 // listArchivedGroupedByProject both read through it.
-export async function recordedPlace(
+async function recordedPlace(
   proj: ProjectInfo, worktreeName: string,
 ): Promise<{ cwd: string; place: TranscriptPlacement }> {
   const { worktreePathFor } = await import('./worktrees.ts');

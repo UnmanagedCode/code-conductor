@@ -21,12 +21,12 @@ export type McpFormat = 'json' | 'text';
 // Text-format caps that have a name of their own (the project_bash /
 // system_bash descriptions cite BASH_OUTPUT_CAP).
 export const BASH_OUTPUT_CAP = MCP_BODY_BUDGET;
-export const DIRTY_CAP = 500;
-export const HISTORY_CAP = 200;
+const DIRTY_CAP = 500;
+const HISTORY_CAP = 200;
 
 // JSON-format safety ceilings. Each is far above any context budget and exists
 // only so one call cannot buffer an unbounded body into one response.
-export const JSON_READ_BODY_CAP = 8 * 1024 * 1024;
+const JSON_READ_BODY_CAP = 8 * 1024 * 1024;
 export const JSON_BASH_OUTPUT_CAP = 8 * 1024 * 1024;
 export const JSON_DIFF_PAGE_BYTES = 8 * 1024 * 1024;
 // Per echoed string in a refusal or an error (a tool name, a path, a reason).

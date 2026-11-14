@@ -45,7 +45,7 @@ async function fontFaces(segment: string, dir: string): Promise<string> {
 }
 
 /** The whole /pluginTheme.css body. `tokensFile` and `fontDirs` are test seams; they default to web/src/themeTokens.css and the installed FONT_PACKAGES. */
-export async function composePluginTheme({ tokensFile = THEME_TOKENS, fontDirs = installedFontDirs() }: { tokensFile?: string; fontDirs?: FontDirs } = {}): Promise<string> {
+async function composePluginTheme({ tokensFile = THEME_TOKENS, fontDirs = installedFontDirs() }: { tokensFile?: string; fontDirs?: FontDirs } = {}): Promise<string> {
   const faces = await Promise.all(Object.entries(fontDirs).map(([seg, dir]) => fontFaces(seg, dir)));
   return [
     '/* code-conductor host theme for plugin pages — docs/plugin-ui.md. Unlayered, so it wins over a plugin\'s @layer base fallback. */',

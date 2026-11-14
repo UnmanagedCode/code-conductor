@@ -134,7 +134,7 @@ export function systemNoPty(systemId: string, provider: string): Error & { statu
     { code: SYSTEM_NO_PTY });
 }
 
-export function terminalLimit(systemId: string, max: number): Error & { statusCode: number } {
+function terminalLimit(systemId: string, max: number): Error & { statusCode: number } {
   return httpError(429,
     `system '${systemId}' already has ${max} open terminals, the most it allows — close one first`,
     { code: TERMINAL_LIMIT });

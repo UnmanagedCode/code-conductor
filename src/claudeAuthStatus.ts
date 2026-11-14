@@ -18,7 +18,7 @@ import type { Platform } from './platform/index.ts';
 const STATUS_TIMEOUT_MS = 10_000;
 // How long one answer serves every reader. `GET /api/claude-auth/status` is a
 // plain unauthenticated GET any page can fire, and each miss forks the CLI.
-export const STATUS_CACHE_TTL_MS = 5_000;
+const STATUS_CACHE_TTL_MS = 5_000;
 
 export interface ClaudeAuthStatus {
   loggedIn: boolean;

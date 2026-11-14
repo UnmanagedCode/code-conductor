@@ -282,7 +282,7 @@ export function parsePolicyEvents(text: string): PolicyEventRow[] {
 // a LOCAL contract — this function's precondition is legible without reaching
 // across files for that invariant — and the REASON test is the one a fixture
 // kills.
-export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string; note: string } | null {
+function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string; note: string } | null {
   if (row.kind !== 'deny' || row.reason !== 'unpinned-fail-closed') return null;
   const s = suggestPin(row.path);
   // `note` RIDES THROUGH UNTOUCHED. `suggestPin` has two arms that answer

@@ -39,7 +39,7 @@ interface CleanupLog {
   warn?: (...args: unknown[]) => void;
 }
 
-export function startupSnapshotFile(): string {
+function startupSnapshotFile(): string {
   return sessionsFile() + '.startup.bak';
 }
 

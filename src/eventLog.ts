@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.ts';
 
-export const EVENT_LOG_VERSION = 1;
+const EVENT_LOG_VERSION = 1;
 
 // Lazy — see the header. Never call this at module scope.
 export function eventLogFile(): string {
@@ -93,7 +93,7 @@ export interface EventLog {
 
 // Serialised form: `v, ts, kind, actor, subject, …` — a fixed key order, so a
 // row reads the same whichever call site built it.
-export function serializeRow(row: NewEventRow, ts: string): EventRow {
+function serializeRow(row: NewEventRow, ts: string): EventRow {
   const { kind, actor, subject, ...rest } = row as NewEventRow & { subject?: string };
   return {
     v: EVENT_LOG_VERSION, ts, kind, actor,

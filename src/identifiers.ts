@@ -23,7 +23,7 @@ export function isSlug(value: unknown): value is string {
 // Session ids reach the server as user-supplied path params and are used to
 // build filesystem paths (`<encoded-cwd>/<sid>.jsonl`), so this allow-list is
 // the path-traversal guard, not merely a format check: no `.`, `/` or `\`.
-export const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 export function isSessionId(value: unknown): value is string {
   return typeof value === 'string' && SESSION_ID_RE.test(value);

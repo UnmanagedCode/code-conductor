@@ -1241,7 +1241,7 @@ function frameMessage(f: AnyFrame): string {
 }
 
 // POSIX file-type bits, the same ones fs.Stats.mode carries.
-export function kindFromMode(mode: number): SystemEntryKind {
+function kindFromMode(mode: number): SystemEntryKind {
   switch (mode & 0o170000) {
     case 0o040000: return 'dir';
     case 0o100000: return 'file';

@@ -205,7 +205,7 @@ export async function getDefaultPlaybookSelection(): Promise<DefaultPlaybookSele
 }
 
 // THE resolution path, and the only home of the fallback.
-export async function resolveDefaultPlaybookId(): Promise<string | null> {
+async function resolveDefaultPlaybookId(): Promise<string | null> {
   const sel = await getDefaultPlaybookSelection();
   if (sel.mode === 'playbook') return sel.id;
   return sel.mode === 'unset' ? DEFAULT_PLAYBOOK_ID : null;

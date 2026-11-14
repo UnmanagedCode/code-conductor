@@ -21,9 +21,9 @@ import { isBase64 } from './systems/protocol.ts';
 import type { ExecResult, ExecSpec, System } from './systems/system.ts';
 import { isRecord } from '../shared/basics.ts';
 
-export const EXEC_DEFAULT_TIMEOUT_MS = 120_000;
+const EXEC_DEFAULT_TIMEOUT_MS = 120_000;
 export const EXEC_MAX_TIMEOUT_MS = 600_000;
-export const EXEC_DEFAULT_OUTPUT_BYTES = 64 * 1024 * 1024;
+const EXEC_DEFAULT_OUTPUT_BYTES = 64 * 1024 * 1024;
 export const EXEC_MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 // The route's own JSON body limit — above the router-wide one, so stdin of a
 // useful size fits. Mounted ahead of that parser (src/routes.ts).

@@ -18,7 +18,7 @@ export function clampRunCodeTimeoutMs(timeout: unknown): number {
 // arrived within the per-server `timeout` (60 s when none is set). The
 // `--mcp-config` entry cc writes carries this one, so cc's own timeout always
 // fires first and answers `timedOut`.
-export const RUN_CODE_TIMEOUT_GRACE_MS = 60_000;
+const RUN_CODE_TIMEOUT_GRACE_MS = 60_000;
 export const CC_MCP_SERVER_TIMEOUT_MS = RUN_CODE_MAX_TIMEOUT_MS + RUN_CODE_TIMEOUT_GRACE_MS;
 
 // What one run_code result may carry. The result's cut text is at most
