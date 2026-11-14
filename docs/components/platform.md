@@ -158,6 +158,10 @@ who wrote a user turn, from in-band text shape plus the event flags (no author f
 
 the session column's pointer-only edge handles: an `aria-hidden` overlay (`[data-session-handles]`) mounted last inside `SessionView`'s `[data-session-body]`, with a frame carrying the column's `maxWidth` so the strips sit on the column's edges. The drag's room is read once at `pointerdown` from the transcript scroller's `clientWidth` (the basis every box's `100%` resolves against); the live width goes through `sessionWidthDragStore`, and `setSessionWidth` runs once on release. Behaviour: [features.md](../features.md) → Session width.
 
+## `web/src/app/viewport.ts`
+
+`startViewportFollow({win, root})` sets `--app-height` on `root` to `visualViewport.height × scale` when that is more than `HEIGHT_SLACK_PX` under `innerHeight`, else removes it; at a scale within `ZOOM_EPSILON` of 1 it calls `scrollTo(0, 0)` when the page or visual viewport is offset (never while pinch-zoomed). No `visualViewport`: no-op. Tests: `web/src/app/viewport.test.ts`.
+
 ## `web/src/features/session/promptFocus.ts`
 
 `focusPromptAfterSelect(userGesture, prompt, {win, doc})`; `SessionView` runs it one animation frame after each `select` event (`web/src/app/events.ts`) whose `userGesture` is true, on the composer textarea (`#composer-input`). `prompt.focus()` runs only when `userGesture === true` **and** the textarea is not `disabled`, `TOUCH_QUERY` (`(hover: none)`, shared with the modals from `web/src/lib/textEntry.ts`) does not match, no open dialog or modal matches `MODAL_SELECTOR`, and `doc.activeElement` is the textarea or not a text-entry field (`textarea`, a text-like `input`, contentEditable). `selectInstance` (`web/src/app/controller.ts`) emits `select` with the caller's `userGesture`. Tests: `web/src/features/composer/promptFocusBlockers.test.tsx`.

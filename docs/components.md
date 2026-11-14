@@ -107,6 +107,7 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 - [`shared/promptOrigin.ts`](components/platform.md#sharedpromptorigints)
 - [`web/src/features/session/SessionWidthHandles.tsx`](components/platform.md#websrcfeaturessessionsessionwidthhandlestsx)
 - [`web/src/features/session/promptFocus.ts`](components/platform.md#websrcfeaturessessionpromptfocusts)
+- [`web/src/app/viewport.ts`](components/platform.md#websrcappviewportts)
 
 ## [plugin-host.md](components/plugin-host.md) — the plugin host
 
