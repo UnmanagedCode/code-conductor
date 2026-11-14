@@ -32,7 +32,7 @@ import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { fileURLToPath } from 'node:url';
 
 const { InstanceManager, Instance } = await import('../src/instances.ts');
-const { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, seedSessionJsonl } =
+const { bootServer, api, waitFor, settle, instForSession, freshProjectsRoot, rmrf, driveTurn, seedSessionJsonl } =
   await import('./helpers.mjs');
 const { taskNotificationEvent } = await import('../src/taskNotification.ts');
 const { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } = await import('../shared/wakeCallback.ts');
@@ -168,7 +168,7 @@ test('trap (post-arm evidence): any event after the arm freezes out the settle; 
   assert.equal(instances._idleHub.hasArmedWake('w2'), true, 'one-shot subscription NOT consumed');
 
   // The re-invocation turn completes — the classic path owns the wake.
-  emitTurnEnd('w2'); await tick();
+  emitTurnEnd('w2'); await waitFor(() => cond._promptCalls.length >= 1); await settle();
   assert.equal(cond._promptCalls.length, 1, 'woken exactly once, at the re-invocation turn_end');
   cleanup(cond, work);
 });
@@ -202,7 +202,7 @@ test('characterization: a UI model switch inside the settle window delays the wa
   assert.ok(entry?.timerId, 'the heartbeat stays armed, so the wake is delayed rather than lost');
 
   // And the ordinary path still delivers it, exactly once.
-  emitTurnEnd('w2b'); await tick();
+  emitTurnEnd('w2b'); await waitFor(() => cond._promptCalls.length >= 1); await settle();
   assert.equal(cond._promptCalls.length, 1, 'woken exactly once, at the next turn_end');
   cleanup(cond, work);
 });
@@ -228,7 +228,7 @@ test('trap (pre-arm evidence): a dirty idle window refuses to arm; turn_end deli
   // The re-invocation turn_end (which also resets the dirty flag on a real
   // Instance) delivers through the unchanged path.
   work.idleWindowDirty = false;
-  emitTurnEnd('w3'); await tick();
+  emitTurnEnd('w3'); await waitFor(() => cond._promptCalls.length >= 1); await settle();
   assert.equal(cond._promptCalls.length, 1);
   cleanup(cond, work);
 });
@@ -325,7 +325,7 @@ test('fire-time drops: status flip (P8), instance removal, proc replacement (res
 
   // P8 tail: the prompted turn's turn_end delivers normally.
   w6a.status = 'idle';
-  emitTurnEnd('w6a'); await tick();
+  emitTurnEnd('w6a'); await waitFor(() => cond._promptCalls.length >= 1); await settle();
   assert.equal(cond._promptCalls.length, 1);
 
   instances._idleSubscribers.clear();
@@ -378,7 +378,7 @@ test('housekeeping: turn_end / purge / disarmSilently cancel a pending settle; a
   assert.equal(pendingSettles().has('w9a'), true);
   emitTurnEnd('w9a');
   assert.equal(pendingSettles().has('w9a'), false, 'turn_end cancelled the settle');
-  await tick();
+  await waitFor(() => cond._promptCalls.length >= 1); await settle();
   assert.equal(cond._promptCalls.length, 1);
   await pastSettle();
   assert.equal(cond._promptCalls.length, 1, 'no settle double-delivery after turn_end consumed');
@@ -475,7 +475,7 @@ test('a FORCE-ABORTED turn resolved by rotation completion reports INTERRUPTED t
   instances.emit('event', { id: 'wB', ev: {
     kind: 'system', subtype: 'rotation_complete', data: { comesUpIdle: true },
   } });
-  await tick();
+  await waitFor(() => cond._promptCalls.length >= 1); await settle();
 
   assert.equal(cond._promptCalls.length, 1);
   assert.match(cond._promptCalls[0].text, /was INTERRUPTED/);

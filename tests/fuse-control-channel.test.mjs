@@ -17,7 +17,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { promises as fs, openSync, closeSync, constants as fsConstants } from 'node:fs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { padPathTo } from './helpers.mjs';
+import { padPathTo, waitFor } from './helpers.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
          CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
@@ -792,7 +792,7 @@ describe('the control channel, cc side', () => {
     const c2 = await connect(s2.socketPath);
     try {
       const fetch = call(c2, CCU_OP.FETCH, 0, p);
-      await new Promise(r => setTimeout(r, 10));
+      await waitFor(() => fetching, { timeout: 5000 });
       const stat = await Promise.race([
         call(c2, CCU_OP.STAT, 0, p).then(() => 'stat-first'),
         fetch.then(() => 'fetch-first'),

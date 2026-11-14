@@ -261,7 +261,8 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 //     is why it went red on the gate. 400 ms is a CHOICE, not a maximum:
 //     `interrupting the in-flight command stops it on the system` below and
 //     `cancelling the in-flight command actually stops it` in
-//     tests/systems-shell-framing.test.mjs both measure 280 ms, and `close()
+//     tests/systems-shell-framing.test.mjs both abort once the command is seen to start, so their budget is the
+//     full 400 ms less one `waitFor` poll, and `close()
 //     reaps a command that is still in flight` measures 1500 ms. Raise it
 //     before suspecting the invariant.
 //   - Effects the command produced BEFORE the kill are CORRECT — cancellation is
@@ -278,7 +279,7 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 //     therefore going red on a kill the contract permits. Restoring that
 //     sensitivity means restoring the flake; they are one property, not two.
 //     What stays pinned is that the kill HAPPENS (the no-relay mutant dies six
-//     ways) and that its latency is BOUNDED — ~400 ms here, 280 ms / 1500 ms at
+//     ways) and that its latency is BOUNDED — ~400 ms here, ~400 ms / 1500 ms at
 //     the siblings above — so an unboundedly slow kill is still caught. A real
 //     kill-latency SLO would be a new requirement carrying its own number.
 test('a cancelled call does not run to completion, and a concurrent one is untouched', async () => {
@@ -313,7 +314,7 @@ test('a cancelled call does not run to completion, and a concurrent one is untou
 // NOT the same claim as the EFFECT test above, and the difference is what
 // each test puts between ISSUING the call and CANCELLING it. That one puts
 // nothing there — it aborts on the next statement, so it never establishes that
-// the command started. This one interposes a delay, and its boundary twin goes
+// the command started. This one waits until the command is seen running (its STARTED marker exists), and its boundary twin goes
 // further still and waits for the far-side process to appear. So the RE-FRAMED
 // test has no boundary twin and needs none: a boundary copy of a cancel that
 // nothing saw start would have its marker's absence satisfied by a command that
@@ -321,9 +322,11 @@ test('a cancelled call does not run to completion, and a concurrent one is untou
 // remove.
 test('interrupting the in-flight command stops it on the system', async () => {
   const witness = onSystem('STILL_RUNNING');
+  const started = onSystem('STARTED');
   const ac = new AbortController();
-  const running = redirect.runForwarded(`sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
-  await new Promise(r => setTimeout(r, 120));
+  const running = redirect.runForwarded(`touch ${JSON.stringify(started)}; sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+  // Interrupt as soon as the command is seen running on the system, not after a guessed delay.
+  await waitFor(() => fs.stat(started), { timeout: 5000 });
   ac.abort();
   const r = await running;
   assert.notEqual(r.code, 0);

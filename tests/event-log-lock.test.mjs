@@ -14,7 +14,7 @@ import { hostPlatform } from '../src/platform/index.ts';
 import { createPlaybookGate } from '../src/mcp/playbookGate.ts';
 import { readEventLog } from '../src/eventLog.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { bootServer, waitFor } from './helpers.mjs';
+import { bootServer, waitFor, settle } from './helpers.mjs';
 
 const QUIET = { warn() {} };
 const storeOf = (root) => path.join(root, '.code-conductor');
@@ -77,7 +77,7 @@ test('restart overlap: a gate leased on the lock writes rows before the handover
 
   instances.fire('session_launched', launched('w-before'));
   await gate.readProjection();
-  await new Promise(r => setTimeout(r, 20));
+  await waitFor(async () => (await readEventLog(file)).some(r => r.subject === 'w-before'));
   const before = await readEventLog(file);
   assert.ok(before.some(r => r.subject === 'w-before'), 'premise: the holder writes');
 
@@ -146,7 +146,7 @@ test('ATOMIC (microtask): a handover queued by the passing check itself cannot s
   const writes = watchWrites(t, file, lock);
   armed = true;
   instances.fire('session_launched', launched('w-raced'));
-  await settled(gate);
+  await waitFor(() => writes.length >= 1); await settle();
   assert.match(lock.writerCheck(), /handed over/, 'premise: the offer did run');
   assert.deepEqual(writes, [null], 'the raced row was written, and written while the lock was still clean');
   assert.deepEqual((await readEventLog(file)).map(r => r.subject), ['w-raced']);
@@ -167,7 +167,7 @@ test('ATOMIC (macrotask): an append enqueued just before a next-turn handover is
   instances.fire('session_launched', launched('w-before'));
   const offered = new Promise((resolve) => setImmediate(() => { lock.offerHandover('T-macrotask'); resolve(); }));
   await offered;
-  await settled(gate);
+  await waitFor(() => writes.length > 0); await settle();
   assert.ok(writes.length > 0, 'premise: the row enqueued before the offer reached the file');
   assert.ok(writes.every(w => w === null), `every write saw a clean lock: ${JSON.stringify(writes)}`);
 
