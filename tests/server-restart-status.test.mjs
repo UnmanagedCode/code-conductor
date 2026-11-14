@@ -104,7 +104,7 @@ test('GET /api/settings/self-update carries restart: current at boot, live after
   try {
     const first = await s.get();
     assert.deepEqual(first.restart, { state: 'current', boot: B });
-    assert.equal(typeof first.version, 'string', 'the other self-update keys are still there');
+    assert.ok('version' in first && 'upstream' in first, 'the other self-update keys are still there');
     assert.equal(typeof first.canCheck, 'boolean');
     const H1 = await commit(dir, { 'web/w.tsx': 'x\n' });
     assert.notEqual(H1, B);

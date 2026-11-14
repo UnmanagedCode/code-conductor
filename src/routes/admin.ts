@@ -14,6 +14,10 @@ import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { errMessage } from '../httpError.ts';
 import { jsonBody, type ServerCtx } from './shared.ts';
 import { errorBody } from './errors.ts';
+import type { ServerRestartState } from '../../shared/wireRows.ts';
+
+const UNRECORDED: ServerRestartState = { state: 'unknown', reason: 'this server did not record its boot commit' };
+const unrecorded = async (): Promise<ServerRestartState> => UNRECORDED;
 
 // What POST /admin/restart and /admin/shutdown run beyond the server handles:
 // which preparation steps are on (server.ts maps CC_SKIP_WEB_BUILD /
@@ -32,7 +36,7 @@ export interface RelaunchOptions {
   supervised?: boolean;
 }
 
-export function mountAdmin(r: express.Router, { instances, serverCtx, relaunch, recorder, pending, capabilities }: { instances?: InstanceManagerLike | null; serverCtx?: ServerCtx | null; relaunch: RelaunchOptions; recorder: RunningRecorder | null; pending: PendingContinue | null; capabilities: PlatformCapabilities }): void {
+export function mountAdmin(r: express.Router, { instances, serverCtx, relaunch, recorder, pending, capabilities, restartStatus }: { instances?: InstanceManagerLike | null; serverCtx?: ServerCtx | null; relaunch: RelaunchOptions; recorder: RunningRecorder | null; pending: PendingContinue | null; capabilities: PlatformCapabilities; restartStatus?: (() => Promise<ServerRestartState>) | null }): void {
   // Cheap liveness + per-process identity probe. The client restart flow polls
   // this for a CHANGED bootId to confirm it's talking to the replacement
   // process, not the old one still up during a resume drain (see bootId.ts).
@@ -115,9 +119,14 @@ export function mountAdmin(r: express.Router, { instances, serverCtx, relaunch, 
   // (`git pull --ff-only` + conditional `npm install`), streamed as NDJSON.
   // The client hands off to the restart+resume flow after a successful apply
   // (performRestart, web/src/features/sidebar/restart.ts); the POST itself never
-  // restarts the process.
+  // restarts the process. GET also carries `restart` (src/restartStatus.ts):
+  // whether this server is behind its checkout's HEAD, `unknown` for a server
+  // that recorded no boot commit.
   r.get('/settings/self-update', async (_req, res, next) => {
-    try { res.json(await getSelfUpdateStatus()); } catch (e) { next(e); }
+    try {
+      const [status, restart] = await Promise.all([getSelfUpdateStatus(), (restartStatus ?? unrecorded)()]);
+      res.json({ ...status, restart });
+    } catch (e) { next(e); }
   });
 
   // Same streaming contract as the plugin library update (streamNdjsonAction,

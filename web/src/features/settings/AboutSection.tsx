@@ -9,11 +9,12 @@ import { ClaudeUpdateCard } from './ClaudeUpdateCard';
 import { ApiError } from '@shared/http';
 import { loadPlugins, useUpdateAllPlugins } from './PluginsSection';
 import { json, errText, streamAction, capLog } from './api';
+import type { ServerRestartState } from '@shared/wireRows';
 
-export type SelfUpdateStatus = { version?: string; upstream?: string | null; ahead?: number | null; behind?: number | null; canCheck?: boolean; diverged?: boolean; updateAvailable?: boolean };
+export type SelfUpdateStatus = { version?: string; upstream?: string | null; ahead?: number | null; behind?: number | null; canCheck?: boolean; diverged?: boolean; updateAvailable?: boolean; restart: ServerRestartState };
 
 /** The version line and whether an Update button is offered. */
-export function describeUpdate(d: SelfUpdateStatus): { text: string; canUpdate: boolean } {
+export function describeUpdate(d: Omit<SelfUpdateStatus, 'restart'>): { text: string; canUpdate: boolean } {
   const v = d.version ? `v${d.version}` : 'version unknown';
   if (!d.canCheck) return { text: `${v} · can't check for updates (no upstream branch)`, canUpdate: false };
   if (d.diverged) return { text: `${v} · ${d.ahead} ahead, ${d.behind} behind ${d.upstream}; can't fast-forward`, canUpdate: false };
@@ -27,14 +28,14 @@ export function describeUpdate(d: SelfUpdateStatus): { text: string; canUpdate: 
 // The running self-update lives at module scope, not in the section: the pull
 // keeps streaming after About is left, and a remounted section must show it and
 // offer no second Update.
-export const selfUpdateStore = createStore<{ line: StatusLine; canUpdate: boolean; updating: boolean; label: string; log: string }>({
-  line: { text: 'Checking for updates…' }, canUpdate: false, updating: false, label: 'Update', log: '',
+export const selfUpdateStore = createStore<{ line: StatusLine; canUpdate: boolean; updating: boolean; label: string; log: string; restart: ServerRestartState | null }>({
+  line: { text: 'Checking for updates…' }, canUpdate: false, updating: false, label: 'Update', log: '', restart: null,
 });
 
 const WRAP = 'h-auto min-w-0 py-1.5 text-left whitespace-normal';
 
 export function AboutSection() {
-  const { line, canUpdate, updating, label, log } = useStore(selfUpdateStore, (s) => s);
+  const { line, canUpdate, updating, label, log, restart: restartState } = useStore(selfUpdateStore, (s) => s);
   const plugins = useUpdateAllPlugins();
   const showPlugins = plugins.updatable > 0 || plugins.progress !== null;
 
@@ -42,9 +43,9 @@ export function AboutSection() {
 
   React.useEffect(() => {
     if (selfUpdateStore.get().updating) return;
-    selfUpdateStore.set({ line: { text: 'Checking for updates…' }, canUpdate: false, label: 'Update', log: '' });
+    selfUpdateStore.set({ line: { text: 'Checking for updates…' }, canUpdate: false, label: 'Update', log: '', restart: null });
     json<SelfUpdateStatus>('/api/settings/self-update')
-      .then((d) => { const r = describeUpdate(d); selfUpdateStore.set({ line: { text: r.text }, canUpdate: r.canUpdate }); })
+      .then((d) => { const r = describeUpdate(d); selfUpdateStore.set({ line: { text: r.text }, canUpdate: r.canUpdate, restart: d.restart }); })
       .catch((e) => selfUpdateStore.set({ line: { text: `Failed to check for updates: ${errText(e)}`, tone: 'error' } }));
   }, []);
 
@@ -102,6 +103,11 @@ export function AboutSection() {
         )}
       >
         <Status text={line.text} tone={line.tone ?? 'muted'} />
+        {restartState?.state === 'needed' && (
+          <p role="note" className="text-sm text-muted-foreground">
+            Restart to run <code>{restartState.head.slice(0, 7)}</code> — the server is still running the code it started with. Restart from the sidebar's power menu.
+          </p>
+        )}
         <LogBox text={log} />
       </SettingsCard>
       <ClaudeUpdateCard />

@@ -19,6 +19,7 @@ import type { InstanceManagerLike } from './instanceTypes.ts';
 import type { PlaybookGate } from './mcp/playbookGate.ts';
 import { mountExec } from './routes/exec.ts';
 import { mountAdmin } from './routes/admin.ts';
+import type { ServerRestartState } from '../shared/wireRows.ts';
 import { mountSpawnPrefs, mountModels, mountModelCatalog } from './routes/models.ts';
 import { mountProjects } from './routes/projects.ts';
 import { mountWorkspaces } from './routes/workspaces.ts';
@@ -35,7 +36,7 @@ import { mountErrorHandler } from './routes/errors.ts';
 import type { RelaunchOptions } from './routes/admin.ts';
 import type { ServerCtx } from './routes/shared.ts';
 
-export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, recorder = null, pending = null, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus }:
+export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, recorder = null, pending = null, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus, restartStatus }:
   {
     instances?: InstanceManagerLike | null;
     serverCtx?: ServerCtx | null;
@@ -50,6 +51,8 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     capabilities?: PlatformCapabilities;
     claudeLogin?: ClaudeLoginFlow | null;
     claudeAuthStatus?: (() => Promise<ClaudeAuthStatus>) | null;
+    // GET /settings/self-update's `restart` (src/restartStatus.ts).
+    restartStatus?: (() => Promise<ServerRestartState>) | null;
   } = {}): express.Router {
   const r = express.Router();
   // Every /api body is live state: no cache entry for concurrent identical GETs
@@ -73,7 +76,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // src/playbookApi.ts; there is no write route.
   r.use('/playbooks', buildPlaybookApi({ playbookGate }));
 
-  mountAdmin(r, { instances, serverCtx, relaunch, recorder, pending, capabilities });
+  mountAdmin(r, { instances, serverCtx, relaunch, recorder, pending, capabilities, restartStatus });
   mountSpawnPrefs(r);
   mountProjects(r, { instances, capabilities });
   mountWorkspaces(r);

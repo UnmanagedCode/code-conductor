@@ -1,7 +1,7 @@
 // What the running server's code imports, read from a commit: the files
 // server.ts and src/ reach through their import statements, transitively.
-// Used by src/webPostMerge.ts to tell a changed path the server loads from one
-// only the UI build reads.
+// Used by src/webPostMerge.ts and src/restartStatus.ts (through serverMayLoad)
+// to tell a changed path the server loads from one only the UI build reads.
 //
 // Resolution is Node's for cc's sources: a relative specifier names the exact
 // file (cc imports `.ts` paths as written — allowImportingTsExtensions), with
@@ -32,6 +32,25 @@ const REQUIRE = /\brequire\s*\(/;
 const SPECIFIER = /\b(?:from|import)\s*(?:\(\s*)?(['"])([^'"\n]*)\1/g;
 // A specifier Node reads as a URL, `node:` included.
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+// Paths the running server does not read except through its imports: an
+// entry ending in / is a directory, any other an exact path.
+const IMPORT_GATED = ['docs/', 'tests/', 'shared/', 'README.md'];
+const importGated = (p: string) => IMPORT_GATED.some((g) => (g.endsWith('/') ? p.startsWith(g) : p === g));
+
+/**
+ * Why the running server may load `p`, as a clause for the caller to finish,
+ * or null when it provably does not. A web/ path is cleared unless the walk
+ * reaches it; a gated one also needs a walk that could be completed.
+ */
+export function serverMayLoad(p: string, imports: ServerImports): string | null {
+  const web = p.startsWith('web/');
+  if (!web && !importGated(p)) return `changes since the server booted reach ${p}, which the running server may load`;
+  const chain = 'chains' in imports ? imports.chains.get(p) : undefined;
+  if (chain) return `${p} is loaded by the running server (${chain.join(' → ')})`;
+  if (!web && 'unknown' in imports) return `${p} may be loaded by the running server (${imports.unknown})`;
+  return null;
+}
 
 const isRoot = (p: string) => p === 'server.ts' || p.startsWith('src/');
 

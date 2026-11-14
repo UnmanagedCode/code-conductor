@@ -6,6 +6,8 @@ import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
 import { buildRoutes } from './src/routes.ts';
+import { restartStatusFor } from './src/restartStatus.ts';
+import type { ServerRestartState } from './shared/wireRows.ts';
 import type { RelaunchOptions } from './src/routes/admin.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import type { ProgressTiming } from './src/codeMode/ctx.ts';
@@ -67,7 +69,7 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming, restartStatus }: { restartStatus?: () => Promise<ServerRestartState>; withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(hostSecurityHeaders());
@@ -166,7 +168,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   });
   app.use('/api', buildRoutes({
     instances, serverCtx, relaunch, recorder: runningRecorder, pending: pendingContinue, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
-    claudeLogin, claudeAuthStatus: claudeAuthStatus.get,
+    claudeLogin, claudeAuthStatus: claudeAuthStatus.get, restartStatus,
   }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities, codeModeTiming }));
   const pluginProxy = buildPluginProxy({ pluginHost });
@@ -304,6 +306,7 @@ async function startHolding(rootLock: RootLock, {
     bootCommit = await measureBootCommit(checkoutRoot);
     console.log(`boot commit: ${'sha' in bootCommit ? bootCommit.sha : `unknown — ${bootCommit.unknown}`}`);
   }
+  const restartStatus = bootCommit && restartStatusFor({ checkoutRoot, boot: bootCommit });
   // Apply any pending on-disk migrations before we accept traffic. Each
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
@@ -352,7 +355,7 @@ async function startHolding(rootLock: RootLock, {
   // sessions it must keep (as does pending-continue.json).
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
+  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, restartStatus, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)
