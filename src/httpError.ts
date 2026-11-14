@@ -1,6 +1,6 @@
 // The statusCode-bearing Error the REST and MCP surfaces consume.
 //
-// `err.statusCode` is what the express error handler (routes.ts) reads to pick
+// `err.statusCode` is what the express error handler (src/routes/errors.ts) reads to pick
 // a response code, and what `codeForStatus` (mcp/server.ts) maps to a JSON-RPC
 // code. `extra` merges arbitrary fields onto the error for handlers that render
 // more than a message — the plugin routes attach `{ status, tail, retryAfter }`

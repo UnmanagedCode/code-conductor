@@ -24,7 +24,7 @@ import {
   HOST_TARGET_KEYS, invalidArgument, parseEnvOverlay, parseHostTarget, resolveHostTarget,
   type HostTarget,
 } from './hostTarget.ts';
-import { errorBody } from './routes.ts';
+import { errorBody } from './routes/errors.ts';
 import { PTY_DIM_MAX, SystemError } from './systems/protocol.ts';
 import { TERM_RE, type Terminal, type TerminalEnd, type TerminalHandlers } from './systems/terminal.ts';
 import { isRecord } from '../shared/basics.ts';

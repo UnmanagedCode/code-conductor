@@ -4370,7 +4370,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     return this.summary();
   }
 
-  // Thin delegate so the caller (routes.ts) keeps talking to
+  // Thin delegate so the caller (src/routes/instanceHooks.ts) keeps talking to
   // the Instance — the broker holds the actual state.
   handleHookCallback(envelope: unknown, res: Response): void { this._hooks.handle(envelope as HookEnvelope | null | undefined, res); }
   queueToolNudge(toolUseId: string, text: string): void { this._toolNudges.queue(toolUseId, text); }
@@ -7014,7 +7014,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // idle-wake edges, renew arm, redirect connection and tmp root — none of which
     // anything else reclaims. remove() is the one teardown that does all of that.
     // Runs inside the `_resumingPublicIds` claim _doCreate holds, which is what
-    // makes an await here sound. src/routes.ts's detachInstancesForSession applies
+    // makes an await here sound. src/routes/projectSessions.ts's detachInstancesForSession applies
     // the same rule at the REST layer; this is it at the chokepoint.
     if (publicId) {
       for (const staleId of this.idsForSession(publicId)) {

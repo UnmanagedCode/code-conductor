@@ -279,7 +279,7 @@ export interface InstanceLike {
   setPlaybookEnforcement(mode: PlaybookEnforcement, opts?: { actor?: Actor }): void;
   // Orchestrator surfaces beyond the core lifecycle: the worktree the session
   // is attached to (MCP handlers, src/mcp/handlers.ts), making a session persistent
-  // (REST POST /api/instances/:id/persist, src/routes.ts), and the
+  // (REST POST /api/instances/:id/persist, src/routes/instances.ts), and the
   // EventEmitter 'event' channel (UI events) alongside 'status'.
   readonly worktree: WorktreeMeta | null;
   makePersistent(): Promise<InstanceSummary>;
@@ -302,7 +302,7 @@ export interface InstanceLike {
   // MCP handler surface: queues a tool-result nudge for this session's call
   // `toolUseId`, taken by that call's PostToolUse hook (src/toolResultNudges.ts).
   queueToolNudge(toolUseId: string, text: string): void;
-  // Route surface (src/routes.ts): the three destructive session rewrites,
+  // Route surface (src/routes/instances.ts): the three destructive session rewrites,
   // debug mutation and the hook-callback envelope. `_mutating` names the rewrite
   // fork/rewind/prune claim synchronously (any holder excludes the other two and
   // a prune pre-check); `rewriteBlocksPrompts` is whether that holder makes
@@ -468,7 +468,7 @@ export interface InstanceManagerLike {
   list(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }>;
   // list() minus the hidden pristine conductors: what a list payload serves.
   listVisible(): Array<InstanceSummary & { awaitingWake: boolean; waitingOnJob: boolean }>;
-  // Presence frames (src/wsHub.ts) and the pristine lookup (src/routes.ts).
+  // Presence frames (src/wsHub.ts) and the pristine lookup (src/routes/instances.ts).
   pristine: PristineTracker;
   pristineFor(sessionId: string): InstanceLike | null;
   liveForSession(sessionId: string): InstanceLike | null;
@@ -488,7 +488,7 @@ export interface InstanceManagerLike {
   requestSessionRenew(instanceId: string, opts: { followUp?: string | null; requestedBy?: string | null }): { requested: boolean; rerequested: boolean };
   dropSessionRenewRequest(instanceId: string): void;
   idsForWorktree(project: string, worktreeName: string): string[];
-  // Route surface (src/routes.ts).
+  // Route surface (src/routes/projects.ts, src/routes/projectSessions.ts).
   normalSessionIdsForPlace(place: TranscriptPlacement): Set<string>;
   liveBackingIdsForPlace(place: TranscriptPlacement): Set<string>;
   idsForSession(sessionId: string): string[];

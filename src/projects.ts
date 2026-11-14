@@ -1146,7 +1146,7 @@ export async function setProjectRemote(
 // Delete the entire project directory + the project's central-store
 // entry. Caller is responsible for first killing any running instances
 // and removing worktree registrations (the cascade is orchestrated in
-// src/routes.ts). Sessions under ~/.claude/projects/<encoded>/ are
+// src/routes/projects.ts). Sessions under ~/.claude/projects/<encoded>/ are
 // deliberately left in place — they might still be referenced by
 // `claude --resume` outside the orchestrator.
 // The project a DELETE addresses, resolved WITHOUT reaching its system.
@@ -1316,7 +1316,7 @@ async function adoptProjectSteps(
   }
   // Dot-leading names are reserved for orchestrator-managed projects — this is
   // what stops an adopted project shadowing `.conduct`. (The create path enforces
-  // the same rule in routes.ts; this one lives in the shared function so both
+  // the same rule in src/routes/projects.ts; this one lives in the shared function so both
   // adopt surfaces are covered.)
   if (name.startsWith('.')) {
     return { ok: false, code: 'INVALID_NAME', reason: `project name '${name}' cannot start with "." — reserved for orchestrator-managed projects.` };
