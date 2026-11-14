@@ -40,6 +40,7 @@ import { LOCAL_SYSTEM_ID } from './systems/localSystem.ts';
 import { SystemError } from './systems/protocol.ts';
 import type { System, SystemDirent } from './systems/system.ts';
 import { validateRemoteId } from './projects.ts';
+import { errCode } from '../shared/basics.ts';
 
 // Most names returned; `entries` and `links` count together.
 export const DIR_LIST_MAX_ENTRIES = 1000;
@@ -67,10 +68,6 @@ export interface DirListRefusal { ok: false; code: string; reason: string }
 // A `stat` failure about ONE entry: it drops that link and says nothing about
 // the system. Anything else that settles in time is the system failing.
 const PER_ENTRY_CODES = new Set(['EACCES', 'ELOOP', 'ENOTDIR', 'ENAMETOOLONG', 'ENOENT']);
-
-const errCode = (e: unknown): string | null =>
-  e && typeof e === 'object' && typeof (e as { code?: unknown }).code === 'string'
-    ? (e as { code: string }).code : null;
 
 const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 

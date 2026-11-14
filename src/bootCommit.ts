@@ -18,12 +18,11 @@ import { runGit } from './worktrees.ts';
 import { localSystem } from './systems/registry.ts';
 import { sourcesUnmovedGuard } from './swapGuard.ts';
 import { inputPaths, type SwapGuard, type WebInputs } from './webBuild.ts';
+import { errMsg } from '../shared/basics.ts';
 
 // An unknown boot commit still carries `head` when HEAD was readable: the boot
 // build's guard measures against it (bootSwapGuard).
 export type BootCommit = { sha: string } | { unknown: string; head?: string };
-
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** What the checkout at `root` would run as now. Never throws: boot must not fail on it. */
 export async function measureBootCommit(root: string): Promise<BootCommit> {
@@ -42,7 +41,7 @@ export async function measureBootCommit(root: string): Promise<BootCommit> {
     }
     return { sha };
   } catch (e) {
-    return { unknown: `could not read the checkout: ${errText(e)}` };
+    return { unknown: `could not read the checkout: ${errMsg(e)}` };
   }
 }
 

@@ -23,6 +23,7 @@ import { hostPlatform, samePath, type Platform } from './platform/index.ts';
 import type { ProjectPlacement } from './systems/registry.ts';
 import { firstPromptHead } from '../shared/promptPreview.ts';
 import { stripAuthorMarker } from './promptAuthor.ts';
+import { errCode, errMsg } from '../shared/basics.ts';
 
 // Re-exported from its implementation on the local system: the store is always
 // local, so cc's own atomic writes and the local System's are one operation.
@@ -2559,19 +2560,5 @@ export async function summarizeSessions(
     }
   }
   return { count, archivedCount, handCount, lastActivity };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 

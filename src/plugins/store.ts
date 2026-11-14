@@ -3,6 +3,7 @@ import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from '../projects.ts';
 import { isSlug } from '../identifiers.ts';
 import type { ManifestSource } from './manifest.ts';
+import { errCode, errMsg } from '../../shared/basics.ts';
 
 // The plugin host's persistence collaborator: the two JSON files under
 // `<orchStoreRoot()>/plugins/`, the corrupt-file preservation policy, the
@@ -208,17 +209,4 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     runtimeRecord, runtimeIds, recordStart, clearRuntime, clearRuntimeDetached, adopt,
     notices,
   };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict).
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

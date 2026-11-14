@@ -13,6 +13,7 @@ import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import { localSystem } from '../systems/registry.ts';
 import { pullPastGeneratedConventions } from '../conventionsCheckout.ts';
 import { getPluginLibrarySettings } from '../appSettings.ts';
+import { errCode, errMsg } from '../../shared/basics.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
@@ -658,18 +659,4 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
   }
 
   return { list, install, update };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

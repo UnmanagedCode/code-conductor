@@ -7,6 +7,7 @@ import { placementToken } from '../projects.ts';
 import type { System } from '../systems/system.ts';
 import { splitSkillPart, type SkillPart } from '../../shared/skillPart.ts';
 import type { RunCodeMember } from '../codeMode/ctx.ts';
+import { errMsg } from '../../shared/basics.ts';
 
 // What enabled plugins contribute to the conductor beyond an HTTP backend:
 // convention fragments, role bindings, playbook graphs and Claude Code plugin
@@ -584,8 +585,4 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   }
 
   return { conventions, roles, playbooks, claudePluginDirs, runCodeModule, runCodeMembers, invalidate, noteRegistryChange };
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

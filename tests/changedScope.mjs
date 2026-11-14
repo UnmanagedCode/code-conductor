@@ -52,7 +52,7 @@ const TEMP_ONLY = (what) => `${what}; its repo-dir literals are fixture paths or
 // ignored and reported, so a changed call over-selects until it is re-reviewed.
 export const WALKS_REVIEWED = {
   'src/webBuild.ts': {
-    sites: '6e3cf71c ad17a209 a75cbeb1 a2e63040 c6098721', node: [], web: ['web', 'shared'],
+    sites: '6e3cf71c ad17a209 a75cbeb1 a2e63040 d40714c6', node: [], web: ['web', 'shared'],
     why: 'listFiles walks the real web/ and shared/, but on node it only hashes them and tests compare hashes from one run; Vitest\'s build.test.ts runs real builds. The leftover sweep reads a temp distDir\'s parent',
   },
   'web/src/build.test.ts': {

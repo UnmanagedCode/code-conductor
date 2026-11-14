@@ -28,6 +28,7 @@ import { classifySpawnError, type FsErrorCode } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 import { createKeyedQueue } from './keyedQueue.ts';
 import { REBASE_PROMPT_LEAD } from '../shared/injectedTurns.ts';
+import { errCode } from '../shared/basics.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
@@ -1933,15 +1934,5 @@ export async function getProjectCommits(
     hasUncommitted, ...(hasUncommitted === undefined ? { uncommittedUnknown: true as const } : {}),
     aheadCount, aheadOf,
   };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }
 

@@ -38,6 +38,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { LOCAL_SYSTEM_ID } from './systems/localSystem.ts';
 import { listProjects, projectsRoot } from './projects.ts';
+import { errCode } from '../shared/basics.ts';
 
 // Levels below the projects root. Three gives container → sub-container →
 // project: one level of headroom past the model's normal container → project.
@@ -77,9 +78,6 @@ export interface AdoptSuggestions {
   unreadable: number;
   candidates: AdoptCandidate[];
 }
-
-const errCode = (e: unknown): string | undefined =>
-  (typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : undefined);
 
 // The charset `NAME_RE` admits in src/projects.ts.
 const ILLEGAL_IN_NAME = /[^a-zA-Z0-9._-]/g;

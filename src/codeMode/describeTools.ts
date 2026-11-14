@@ -8,6 +8,7 @@ import { RESERVED_METHODS } from './runtimeApi.ts';
 import { SUMMARY_CAP } from './limits.ts';
 import { renderSignature } from './tsSignature.ts';
 import { pascal } from './typeModel.ts';
+import { isRecord } from '../../shared/basics.ts';
 
 const DETAILS = ['names', 'summary', 'full'] as const;
 type Detail = typeof DETAILS[number];
@@ -78,10 +79,6 @@ function entryOf(t: ToolView, scriptable: boolean, detail: Detail): ToolEntry {
     entry.signature = signatureOf(t, ns, tool);
   }
   return entry;
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
 export async function describeTools(args: unknown, ctx: CodeModeCtx): Promise<{ tools: ToolEntry[] }> {

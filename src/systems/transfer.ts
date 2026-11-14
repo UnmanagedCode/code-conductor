@@ -16,6 +16,7 @@
 import path from 'node:path';
 import { MAX_FILE_BYTES } from './protocol.ts';
 import type { System } from './system.ts';
+import { errCode, errMsg } from '../../shared/basics.ts';
 
 export interface TransferEndpoint { sys: System; path: string }
 
@@ -26,15 +27,6 @@ export type TransferCode =
 export type TransferResult =
   | { ok: true; bytes: number; mode: string; moved: boolean }
   | { ok: false; code: TransferCode; reason: string; errno?: string; written?: true };
-
-// The `code` on a thrown Node error or SystemError (e.g. 'ENOENT'), or
-// undefined. Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
 
 // A System failure carrying a code is an ANSWER about the file and becomes a
 // result; one without a code is cc's own defect (a requireAbsolute violation,
@@ -47,10 +39,6 @@ function coded(e: unknown): string {
 
 function refuse(code: TransferCode, reason: string, extra: { errno?: string; written?: true } = {}): TransferResult {
   return { ok: false, code, reason, ...extra };
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 const KIND_WORD = { dir: 'a directory', symlink: 'a symlink', other: 'a special file (fifo, socket or device)', file: 'a file' } as const;

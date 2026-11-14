@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import { remoteConfigDir } from './projects.ts';
+import { errCode } from '../shared/basics.ts';
 
 // THE EXACT NAMES that are never linked. One further exclusion is a CLASS, not
 // a name, and is below.
@@ -245,10 +246,4 @@ async function placeLink(target: string, link: string): Promise<void> {
     if (errCode(e) === 'EISDIR' || errCode(e) === 'ENOTDIR' || errCode(e) === 'ENOTEMPTY') return;
     throw e;
   }
-}
-
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }

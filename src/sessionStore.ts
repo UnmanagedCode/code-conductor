@@ -115,6 +115,7 @@ import { withLock } from './storeLock.ts';
 import { MODES } from './sessionModes.ts';
 import { normalizeTitle } from './sessionTitles.ts';
 import { normalizeSummaryTiers, normalizeTierRecord, SUMMARY_LENGTHS, type SummaryTiers, type TierRecord } from './sessionSummaries.ts';
+import { errCode, errMsg } from '../shared/basics.ts';
 
 export type RotationReason = 'initial' | 'renew' | 'prune';
 // The doc's `version`, written first by every serialize. The parser does not
@@ -922,13 +923,3 @@ export function setSegmentArchived(backingId: string | null | undefined, on: boo
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-export function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-export function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}

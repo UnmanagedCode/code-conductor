@@ -24,6 +24,9 @@
 // Q is the question text with whitespace collapsed. The question's
 // `multiSelect` flag decides whether a pick list parses as `option` or
 // `multi`. The parse is strict: it consumes the whole text or fails.
+
+import { isRecord } from './basics.ts';
+
 // A question in an AskUserQuestion payload (as the CLI persists it and
 // reconstructMessages hoists it).
 export interface Question {
@@ -40,8 +43,6 @@ export type UserQuestionAnswer =
   | { kind: 'multi'; labels: string[]; note?: string }
   | { kind: 'custom'; text: string }
   | { kind: 'none' };
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /**
  * An AskUserQuestion's `questions` (the model's raw tool input) in the shape a

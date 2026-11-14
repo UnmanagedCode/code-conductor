@@ -10,6 +10,7 @@ import { orchStoreRoot } from './projects.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import type { UiEventOf } from '../shared/uiEvent.ts';
+import { errCode, errMsg } from '../shared/basics.ts';
 
 export function costsPath(): string {
   return path.join(orchStoreRoot(), 'costs.jsonl');
@@ -470,18 +471,4 @@ export async function getSessionStats(sessionId: string): Promise<{
   }
 
   return { sessionId, own, rolled, workerSessions: Math.max(0, visited.size - 1) };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

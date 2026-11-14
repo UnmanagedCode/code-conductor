@@ -55,6 +55,7 @@ import { promptTokenSum, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
 import { parseAuthorMarker } from './promptAuthor.ts';
 import { imageDimensions, imageTokenCost, IMAGE_MAX_TOKENS } from './imageCost.ts';
+import { errCode } from '../shared/basics.ts';
 
 // Stub shape for a pruned Read/Write tool_result. `true` (the default) makes the
 // stub a content-block array instead of a plain string.
@@ -850,15 +851,5 @@ export async function pruneSessionToNewId({
   }
 
   return { newSessionId: newSid, turnCount, cutTurnIndex: cut, saved, lastSurvivingUuid };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }
 

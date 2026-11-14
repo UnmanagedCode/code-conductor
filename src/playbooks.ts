@@ -35,6 +35,7 @@ import { createFragmentCatalog, validateSlug, type ExtraEntry } from './fragment
 import {
   type Projection, type WorkerState, hasEverBeen, liveSessionsInStage, runMembers, runRootOf, sameRun,
 } from './playbookState.ts';
+import { errCode, errMsg, isRecord, asRecord } from '../shared/basics.ts';
 
 // EXPORTED FOR DISK-BINDING IN TESTS, for the same reason the validator's
 // allowlists below are: tests/playbook-schema.test.mjs enumerates this directory
@@ -1669,22 +1670,4 @@ function capacityReason(stageName: string, blockingSessionId: string): string {
   return `stage '${stageName}' declares workers:"one" and this run already has a live worker in it: ` +
     `${short(blockingSessionId)}. Retire it (kill_instance({sessionId: "${short(blockingSessionId)}"})) to free ` +
     'the slot, or use a playbook whose stage declares workers:"many".';
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-function asRecord(v: unknown): Record<string, unknown> {
-  return isRecord(v) ? v : {};
-}
-
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

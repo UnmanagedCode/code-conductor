@@ -28,8 +28,9 @@
 import { readResumeManifest, readRunningRecord } from './resumeManifest.ts';
 import { readPendingNotices } from './pendingContinue.ts';
 import { transcriptIdsOnDisk } from './projects.ts';
-import { removeSessionRecords, sessionsFile, errMsg, type SessionsDoc } from './sessionStore.ts';
+import { removeSessionRecords, sessionsFile, type SessionsDoc } from './sessionStore.ts';
 import { isSessionId } from './identifiers.ts';
+import { errMsg } from '../shared/basics.ts';
 
 export const CLEANUP_GRACE_MS = 10 * 60 * 1000;
 

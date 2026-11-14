@@ -79,7 +79,7 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
-  isConducted, markConducted, setSessionPlace, isPersistent, setSegmentPersistent, getTurnMarks, recordTurnEnd, errCode,
+  isConducted, markConducted, setSessionPlace, isPersistent, setSegmentPersistent, getTurnMarks, recordTurnEnd,
   appendModelSwitch, reanchorModelSwitches, getModelSwitchesForSegment,
   type SessionBackendRecord, type TurnMarks, type ModelSwitchEntry,
 } from './sessionStore.ts';
@@ -139,6 +139,7 @@ import { httpError } from './httpError.ts';
 import { capabilityRefusal } from './capabilities.ts';
 import { isKnownEffort } from './effortLevels.ts';
 import { PRISTINE_REAP_GRACE_MS, PristineTracker, draftTitleOf, isHiddenPristine, type PristineTimers } from './pristine.ts';
+import { errCode } from '../shared/basics.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.ts; re-export it here so existing importers (and tests) that

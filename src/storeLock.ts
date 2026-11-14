@@ -30,6 +30,7 @@
 import { promises as fs, writeFileSync, linkSync, readFileSync, unlinkSync, rmSync, openSync, writeSync, closeSync, realpathSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import { errCode, sleep } from '../shared/basics.ts';
 
 // Bounded wait for a live owner to release. Env-tunable so tests can drive the
 // timing deterministically and unusually slow filesystems get headroom.
@@ -39,19 +40,6 @@ const LOCK_RETRY_BASE_MS = Number(process.env.ORCH_STORE_LOCK_RETRY_BASE_MS) || 
 interface LockRecord {
   pid?: number;
   token?: string;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-// The `code` on a thrown Node error (e.g. 'EEXIST'/'ENOENT'), or undefined when
-// the throw isn't an object with a string `code`. Catch variables are `unknown`
-// under strict, so this is the one narrowing point for error-code checks.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }
 
 // Parse the JSON a holder writes into the lockfile. The fields are validated

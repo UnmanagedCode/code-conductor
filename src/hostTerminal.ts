@@ -21,12 +21,13 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { PlatformCapabilities } from './platform/index.ts';
 import {
-  HOST_TARGET_KEYS, invalidArgument, isPlainObject, parseEnvOverlay, parseHostTarget, resolveHostTarget,
+  HOST_TARGET_KEYS, invalidArgument, parseEnvOverlay, parseHostTarget, resolveHostTarget,
   type HostTarget,
 } from './hostTarget.ts';
 import { errorBody } from './routes.ts';
 import { PTY_DIM_MAX, SystemError } from './systems/protocol.ts';
 import { TERM_RE, type Terminal, type TerminalEnd, type TerminalHandlers } from './systems/terminal.ts';
+import { isRecord } from '../shared/basics.ts';
 
 // Output sent to the socket and not yet written by it, at which the terminal
 // is paused; it is resumed when that reaches 0.
@@ -57,7 +58,7 @@ function parseSpec(url: string | undefined): TerminalRequest {
   if (raw === null) throw invalid('the spec query parameter is required: a URL-encoded JSON object');
   let body: unknown;
   try { body = JSON.parse(raw); } catch { throw invalid('spec is not JSON'); }
-  if (!isPlainObject(body)) throw invalid('spec must be a JSON object');
+  if (!isRecord(body)) throw invalid('spec must be a JSON object');
   for (const k of Object.keys(body)) {
     if (!SPEC_KEYS.has(k)) throw invalid(`unknown field ${JSON.stringify(k)}`);
   }
@@ -120,7 +121,7 @@ export interface TerminalBridge {
 function parseControl(data: Buffer): { cols: number; rows: number } | string {
   let m: unknown;
   try { m = JSON.parse(data.toString('utf8')); } catch { return 'a text message must be a JSON control message'; }
-  if (!isPlainObject(m) || m.type !== 'resize' || Object.keys(m).some(k => !['type', 'cols', 'rows'].includes(k))) {
+  if (!isRecord(m) || m.type !== 'resize' || Object.keys(m).some(k => !['type', 'cols', 'rows'].includes(k))) {
     return 'the only control message is {"type":"resize","cols":N,"rows":N}';
   }
   if (!isDim(m.cols) || !isDim(m.rows)) return `resize: cols and rows must be integers in 1..${PTY_DIM_MAX}`;

@@ -144,6 +144,7 @@ import { isSessionId } from './identifiers.ts';
 import type { PlaybookGate } from './mcp/playbookGate.ts';
 import { WORKER_TOOLS_POLICY } from './settings.ts';
 import { workerToolsHookBody } from './hookBroker.ts';
+import { errCode } from '../shared/basics.ts';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -221,16 +222,6 @@ function jsonBody(req: express.Request): Record<string, unknown> {
   const b: unknown = req.body;
   if (b == null || typeof b !== 'object' || Array.isArray(b)) return {};
   return b as Record<string, unknown>;
-}
-
-// Narrow an unknown thrown value's `code` field (the attachment stat catch
-// reads e.code === 'ENOENT') — the shared errCode idiom.
-function errCode(e: unknown): string | undefined {
-  if (e && typeof e === 'object' && 'code' in e) {
-    const c = (e as { code?: unknown }).code;
-    return typeof c === 'string' ? c : undefined;
-  }
-  return undefined;
 }
 
 

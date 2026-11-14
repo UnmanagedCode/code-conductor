@@ -9,6 +9,7 @@ import { runSessionOneShot, type OneShotUsage } from './sessionOneShot.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { httpError } from './httpError.ts';
 import { parseAuthorMarker } from './promptAuthor.ts';
+import { errCode } from '../shared/basics.ts';
 
 const LENGTH_INSTRUCTIONS: Record<'short' | 'medium' | 'long', { depth: string; budget: string; structure: string }> = {
   short: {
@@ -223,14 +224,4 @@ export async function askSession(sessionId: string, place: TranscriptPlacement, 
   const { system, user } = buildSessionPrompt(conversationText, questionTask(question));
   const { result, costUsd, usage } = await runSessionOneShot({ systemPrompt: system, prompt: user, signal });
   return { answer: result, costUsd, usage };
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }

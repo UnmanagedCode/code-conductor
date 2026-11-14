@@ -24,6 +24,7 @@
 import { getSystem, getSystems } from '../appSettings.ts';
 import { LOCAL_SYSTEM_ID, systemById } from './registry.ts';
 import { canListRemotes } from './providerSystem.ts';
+import { errMsg } from '../../shared/basics.ts';
 
 export const LOCAL_NOT_ENUMERABLE = "cc's own machine has no named remotes";
 
@@ -32,11 +33,9 @@ export type RemoteEnumeration =
   | { system: string; label: string; state: 'not-enumerable'; reason: string }
   | { system: string; label: string; state: 'failed'; reason: string; code?: string };
 
-const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
 function failed(system: string, label: string, e: unknown): RemoteEnumeration {
   const code = (e as { code?: unknown } | null)?.code;
-  return { system, label, state: 'failed', reason: messageOf(e), ...(typeof code === 'string' ? { code } : {}) };
+  return { system, label, state: 'failed', reason: errMsg(e), ...(typeof code === 'string' ? { code } : {}) };
 }
 
 export async function enumerateSystemRemotes(id: string): Promise<RemoteEnumeration> {

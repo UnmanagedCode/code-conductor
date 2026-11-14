@@ -14,11 +14,12 @@
 
 import type { PlatformCapabilities } from './platform/index.ts';
 import {
-  HOST_TARGET_KEYS, invalidArgument, isPlainObject, parseEnvOverlay, parseHostTarget, placeOf, resolveHostTarget,
+  HOST_TARGET_KEYS, invalidArgument, parseEnvOverlay, parseHostTarget, placeOf, resolveHostTarget,
   type HostTarget,
 } from './hostTarget.ts';
 import { isBase64 } from './systems/protocol.ts';
 import type { ExecResult, ExecSpec, System } from './systems/system.ts';
+import { isRecord } from '../shared/basics.ts';
 
 export const EXEC_DEFAULT_TIMEOUT_MS = 120_000;
 export const EXEC_MAX_TIMEOUT_MS = 600_000;
@@ -64,7 +65,7 @@ function boundedInt(v: unknown, name: string, max: number, dflt: number): number
 // Shape only: every refusal here is a 400 raised before anything is resolved
 // or launched.
 function parseRequest(body: unknown): HostExecRequest {
-  if (!isPlainObject(body)) throw invalid('the body must be a JSON object');
+  if (!isRecord(body)) throw invalid('the body must be a JSON object');
   for (const k of Object.keys(body)) {
     if (!KEYS.has(k)) throw invalid(`unknown field ${JSON.stringify(k)}`);
   }

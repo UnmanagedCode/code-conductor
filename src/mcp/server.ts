@@ -32,6 +32,7 @@ import type { CodeModeCtx, ProgressTiming, RunCodeMember } from '../codeMode/ctx
 import { toolUseIdOf } from '../toolResultNudges.ts';
 import { sessionKindOf } from '../conduct.ts';
 import { audienceAdmits, type CallerKind, type ToolAudience } from './toolAudience.ts';
+import { errCode, isRecord, asRecord } from '../../shared/basics.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -129,19 +130,6 @@ function rpcError(id: unknown, code: number, message: string, data?: unknown, ca
   return { jsonrpc: JSONRPC, id, error: err };
 }
 
-// The one narrowing predicate for every wire-boundary value this module reads
-// (msg, args, params, schema sub-fields): a non-null, non-array object.
-function isJsonRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-// The record-shaped view of an unknown value, `{}` for anything else — the
-// wire boundary is `unknown`, so every optional-field read goes through this
-// (or isJsonRecord) rather than a cast.
-function asRecord(v: unknown): Record<string, unknown> {
-  return isJsonRecord(v) ? v : {};
-}
-
 // The numeric HTTP-ish statusCode on a thrown value, or null — the narrowing
 // point for the tools/call error envelope (catch variables are `unknown`
 // under strict).
@@ -151,26 +139,18 @@ function errStatus(e: unknown): number | null {
   return typeof sc === 'number' ? sc : null;
 }
 
-// The `code` on a thrown value (handlers throw Object.assign(new Error, {code})),
-// or undefined — same idiom as routes.ts / handlers.ts.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const c = (e as { code?: unknown }).code;
-  return typeof c === 'string' ? c : undefined;
-}
-
 // The `details` object on a thrown value (a plugin refusal's machine-readable
 // extras, set by src/plugins/mcpBridge.ts), or undefined.
 function errDetails(e: unknown): Record<string, unknown> | undefined {
   if (typeof e !== 'object' || e === null) return undefined;
   const d = (e as { details?: unknown }).details;
-  return isJsonRecord(d) ? d : undefined;
+  return isRecord(d) ? d : undefined;
 }
 
 // The message prose for the tools/call error envelope: a thrown value's
 // `message` when it has one (Error or not), else its String() coercion —
 // matches the original `e?.message ?? String(e)` reading.
-function errMsg(e: unknown): string {
+function thrownMessage(e: unknown): string {
   if (typeof e === 'object' && e !== null && 'message' in e) {
     const m = (e as { message?: unknown }).message;
     if (m !== undefined && m !== null) return String(m);
@@ -190,16 +170,16 @@ function errMessage(e: unknown): string | undefined {
 
 // The id of a non-JSON-RPC request (used only for the -32600 error reply).
 function rpcRequestId(msg: unknown): unknown {
-  return isJsonRecord(msg) ? msg.id : undefined;
+  return isRecord(msg) ? msg.id : undefined;
 }
 
 // True when a tool's inputSchema declares `prop` with a truthy value — the
 // schema gate for the prefix-resolution chokepoint below. Driven off the schema
 // so a future tool declaring `provenance` is resolved without another edit here.
 function hasSchemaProperty(schema: unknown, prop: string): boolean {
-  if (!isJsonRecord(schema)) return false;
+  if (!isRecord(schema)) return false;
   const props = schema.properties;
-  if (!isJsonRecord(props)) return false;
+  if (!isRecord(props)) return false;
   return prop in props && !!props[prop];
 }
 
@@ -399,7 +379,7 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
   // serialized exactly like a handler soft-refusal (no isError).
   if (ctx.instances?.resolveSessionRef
       && hasSchemaProperty(tool.inputSchema, 'sessionId')
-      && isJsonRecord(args)
+      && isRecord(args)
       && typeof args.sessionId === 'string' && args.sessionId) {
     const ref = ctx.instances.resolveSessionRef(args.sessionId);
     if (ref && 'ambiguous' in ref) {
@@ -417,7 +397,7 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
   // below, which compares these values against the projection's full ids.
   if (ctx.instances?.resolveSessionRef
       && hasSchemaProperty(tool.inputSchema, 'provenance')
-      && isJsonRecord(args) && isJsonRecord(args.provenance)) {
+      && isRecord(args) && isRecord(args.provenance)) {
     const resolved: Record<string, unknown> = { ...args.provenance };
     for (const [stage, value] of Object.entries(args.provenance)) {
       if (typeof value !== 'string' || !value) continue;
@@ -437,7 +417,7 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
   // `provenance`.
   if (ctx.instances?.resolveSessionRef
       && hasSchemaProperty(tool.inputSchema, 'forward')
-      && isJsonRecord(args) && isJsonRecord(args.forward)
+      && isRecord(args) && isRecord(args.forward)
       && typeof args.forward.sessionId === 'string' && args.forward.sessionId) {
     const ref = ctx.instances.resolveSessionRef(args.forward.sessionId);
     if (ref && 'ambiguous' in ref) {
@@ -462,7 +442,7 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
   let resumeHandle: string | undefined;
   if (ctx.instances?.resolveResumeRef
       && hasSchemaProperty(tool.inputSchema, 'resume')
-      && isJsonRecord(args)
+      && isRecord(args)
       && typeof args.resume === 'string' && args.resume) {
     const ref = await ctx.instances.resolveResumeRef(args.resume);
     if (ref && 'ambiguous' in ref) {
@@ -489,7 +469,7 @@ async function runToolSteps(name: unknown, rawArgs: unknown, ctx: McpCtx): Promi
     // the addressing guidance, through the same error envelope. An empty
     // string is no path: it is left to each handler's own refusal
     // (list_sessions answers it PROJECT_UNKNOWN).
-    if (ctx.coreTools.has(tool) && isJsonRecord(args) && typeof args.project === 'string' && args.project !== '') {
+    if (ctx.coreTools.has(tool) && isRecord(args) && typeof args.project === 'string' && args.project !== '') {
       validateProjectRef(args.project);
     }
     const value = await tool.handler(args, ctx);
@@ -541,7 +521,7 @@ function serializeText(o: Exclude<Outcome, { kind: 'internal' }>, ctx: McpCtx): 
     const sc = errStatus(o.error);
     const code = errCode(o.error) ?? codeForStatus(sc);
     const details = errDetails(o.error);
-    const msg = errMsg(o.error);
+    const msg = thrownMessage(o.error);
     call = {
       result: {
         content: [
@@ -568,7 +548,7 @@ function capRefusal(body: Record<string, unknown>, cap: number): Record<string, 
       return c;
     }
     if (Array.isArray(v)) return v.map(walk);
-    if (isJsonRecord(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    if (isRecord(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
     return v;
   };
   const out = walk(body) as Record<string, unknown>;
@@ -594,7 +574,7 @@ function errorBody(e: unknown, cap: number): Record<string, unknown> {
     ...capRefusal({
       ok: false,
       code: errCode(e) ?? codeForStatus(sc) ?? 'TOOL_ERROR',
-      reason: errMsg(e),
+      reason: thrownMessage(e),
       ...(sc ? { statusCode: sc } : {}),
     }, cap),
     ...(details ? { details } : {}),
@@ -613,7 +593,7 @@ function jsonView(o: Exclude<Outcome, { kind: 'fault' | 'internal' }>, ctx: McpC
   if (o.kind === 'refused') return { structured: refusalBody(o.body, cap), isError: true };
   if (o.kind === 'error') return { structured: errorBody(o.error, cap), isError: true };
   const value = isDual(o.value) ? o.value.json : o.value;
-  if (!isJsonRecord(value)) {
+  if (!isRecord(value)) {
     // Every tool returns an object in JSON format; anything else is a cc
     // defect, surfaced rather than reshaped.
     const internal = `${o.tool.name} returned a non-object JSON result`;
@@ -654,7 +634,7 @@ function internalReply(id: unknown, reason: string, ctx: McpCtx): JsonRpcRespons
 
 async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
   const json = ctx.format === 'json';
-  if (!isJsonRecord(msg) || msg.jsonrpc !== JSONRPC) {
+  if (!isRecord(msg) || msg.jsonrpc !== JSONRPC) {
     const reason = 'invalid JSON-RPC request';
     return rpcError(rpcRequestId(msg) ?? null, -32600, reason, json ? { ok: false, code: 'REQUEST_INVALID', reason } : undefined, ctx.limits.echoCap);
   }
@@ -764,20 +744,20 @@ function urlFaultStatus(fault: UrlFault): number {
 }
 
 function isUrlFault(v: unknown): v is UrlFault {
-  return isJsonRecord(v) && typeof v.code === 'string' && typeof v.rpcCode === 'number';
+  return isRecord(v) && typeof v.code === 'string' && typeof v.rpcCode === 'number';
 }
 
 // One error object for the whole request — a batch or a notification is
 // refused once, with a null id.
 function urlFaultReply(body: unknown, fault: UrlFault): JsonRpcResponse {
-  const id = isJsonRecord(body) && body.id !== undefined ? body.id : null;
+  const id = isRecord(body) && body.id !== undefined ? body.id : null;
   return rpcError(id, fault.rpcCode, fault.reason, { ok: false, code: fault.code, reason: fault.reason });
 }
 
 // A request body express.json refused (body-parser marks its errors with a
 // `type`): bad JSON, too large, or a charset/encoding/length it cannot read.
 function bodyParserFault(err: unknown): { status: number; rpcCode: number; code: string; reason: string } | null {
-  if (!isJsonRecord(err) || typeof err.type !== 'string') return null;
+  if (!isRecord(err) || typeof err.type !== 'string') return null;
   if (err.type === 'entity.parse.failed') {
     return { status: 400, rpcCode: -32700, code: 'PARSE_ERROR', reason: 'request body is not valid JSON' };
   }
@@ -815,14 +795,14 @@ function progressTokenOf(msg: Record<string, unknown>): string | number | undefi
 // The body a run_code child posts to /run-result, or null when it is not that
 // shape.
 function parseRunOutcome(v: unknown): RunOutcome | null {
-  if (!isJsonRecord(v)) return null;
+  if (!isRecord(v)) return null;
   if (!(v.result === null || typeof v.result === 'string')) return null;
   if (typeof v.resultChars !== 'number' || !Number.isInteger(v.resultChars) || v.resultChars < 0) return null;
   if (typeof v.truncated !== 'boolean') return null;
   const outcome: RunOutcome = { result: v.result, resultChars: v.resultChars, truncated: v.truncated };
   if (v.error !== undefined) {
     const e = v.error;
-    if (!isJsonRecord(e) || typeof e.name !== 'string' || typeof e.message !== 'string') return null;
+    if (!isRecord(e) || typeof e.name !== 'string' || typeof e.message !== 'string') return null;
     if (e.code !== undefined && typeof e.code !== 'string') return null;
     if (e.status !== undefined && !(typeof e.status === 'number' && Number.isInteger(e.status))) return null;
     outcome.error = { name: e.name, message: e.message };
@@ -928,7 +908,7 @@ export function buildMcpRouter(
     }
     // A single tools/call may stream progress and be cancelled, by a
     // notifications/cancelled naming its id or by its connection closing.
-    if (isJsonRecord(body) && body.method === 'tools/call') {
+    if (isRecord(body) && body.method === 'tools/call') {
       const hasId = body.id !== undefined && body.id !== null;
       const sse = hasId && String(req.headers.accept ?? '').includes('text/event-stream');
       const stream = createCallStream(res, { sse, progressToken: progressTokenOf(body) });
@@ -993,7 +973,7 @@ export function buildMcpRouter(
     if (!pre) return;
     if (!name) { restFault(res, 404, 'TOOL_UNKNOWN', 'no tool named — POST /mcp/tools/<name>'); return; }
     const args: unknown = req.body;
-    if (!isJsonRecord(args)) { restFault(res, 400, 'ARGS_INVALID', 'the request body must be a JSON object of the tool\'s arguments'); return; }
+    if (!isRecord(args)) { restFault(res, 400, 'ARGS_INVALID', 'the request body must be a JSON object of the tool\'s arguments'); return; }
     const composed = await composeTools('json', pre.callerKind);
     const { textOnly } = composed;
     // describe_tools is run-scoped: composed in only for a call carrying a run

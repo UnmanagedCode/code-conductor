@@ -82,6 +82,7 @@ import { classifyForTool, type TierEntry } from './fuse/tierTable.ts';
 import { refusalFor, refusesTool } from './fuse/faultRefusals.ts';
 import type { Fault } from './fuse/control.ts';
 import type { UiEvent } from '../../shared/uiEvent.ts';
+import { errMsg, shQuote } from '../../shared/basics.ts';
 
 // A System cc can run one command on. Every non-local system is one
 // (registry.ts resolves a non-local id to a ProviderSystem); the type says so
@@ -607,15 +608,3 @@ export class SessionRedirect {
 }
 
 
-// POSIX single-quoting: everything inside is literal, and the only character
-// that has to be escaped is the quote itself. The rewritten command is run by
-// the CLI through a shell, so this is what carries a command containing quotes,
-// newlines or `$` through unchanged.
-function shQuote(s: string): string {
-  return `'${s.split("'").join(`'\\''`)}'`;
-}
-
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}

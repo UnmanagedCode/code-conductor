@@ -12,6 +12,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { orchStoreRoot } from './projects.ts';
 import { httpError } from './httpError.ts';
+import { errMsg } from '../shared/basics.ts';
 
 const LOG_CAP = 64 * 1024; // bytes of tail kept in memory
 
@@ -145,8 +146,4 @@ export function makeInstallRunner(config: InstallRunnerConfig): InstallRunner {
   }
 
   return { start, status, isRunning, _reset };
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

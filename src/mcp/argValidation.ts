@@ -1,3 +1,4 @@
+import { isRecord, asRecord } from '../../shared/basics.ts';
 // MCP tools/call argument validation — and the keyword vocabulary it enforces.
 //
 // Extracted from mcp/server.ts so the vocabulary lives WITH its enforcer, and so
@@ -38,14 +39,6 @@ export const DESCRIPTIVE_PROP_KEYS = ['description', 'default'] as const;
 export const ALLOWED_PROP_KEYS: ReadonlySet<string> =
   new Set<string>([...VALIDATED_CONSTRAINT_KEYS, ...DESCRIPTIVE_PROP_KEYS]);
 
-function isJsonRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-function asRecord(v: unknown): Record<string, unknown> {
-  return isJsonRecord(v) ? v : {};
-}
-
 // Shallow JSON-Schema validation. Covers the shapes we use: object with
 // named properties, scalar types, required keys, plus the constraint keywords
 // our schemas declare (enum, pattern, min/maxLength, minimum/maximum, array
@@ -53,9 +46,9 @@ function asRecord(v: unknown): Record<string, unknown> {
 // violation. No $ref / oneOf / anyOf — the registry doesn't use those.
 // Unknown properties are rejected (clean MCP contract — no silent drops).
 export function validateArgs(schema: unknown, args: unknown, toolName: unknown): string | null {
-  if (!isJsonRecord(schema) || schema.type !== 'object') return null;
+  if (!isRecord(schema) || schema.type !== 'object') return null;
   const a = args ?? {};
-  if (!isJsonRecord(a)) return 'arguments must be an object';
+  if (!isRecord(a)) return 'arguments must be an object';
   const req = Array.isArray(schema.required) ? schema.required : [];
   for (const k of req) {
     if (typeof k !== 'string' || !Object.hasOwn(a, k)) return `missing required argument: ${k}`;
@@ -111,7 +104,7 @@ function checkConstraints(k: string, v: unknown, p: Record<string, unknown>): st
       return `argument '${k}' must be <= ${p.maximum}`;
     }
   }
-  if (Array.isArray(v) && isJsonRecord(p.items) && p.items.type) {
+  if (Array.isArray(v) && isRecord(p.items) && p.items.type) {
     for (let i = 0; i < v.length; i++) {
       if (!typeMatches(p.items.type, v[i])) {
         return `argument '${k}[${i}]' must be ${p.items.type}`;

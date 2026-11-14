@@ -42,6 +42,7 @@ import { isProcessAlive } from './storeLock.ts';
 import { dependencyDrift } from './depsDrift.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP, RESULT_TAIL_CAP } from './groupedCommand.ts';
 import { hostPlatform } from './platform/index.ts';
+import { errMsg } from '../shared/basics.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WEB_ROOT = path.join(repoRoot, 'web');
@@ -134,8 +135,6 @@ function builtHash(distDir: string): string | null {
   } catch { return null; }
 }
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
 // Removes `<dist>.tmp-<pid>` / `<dist>.old-<pid>` siblings a killed process left
 // behind, and the same under the staged `<dist>.next`, in one read of the
 // parent (os.tmpdir() in tests, which can be huge). Only a pid that is no
@@ -151,7 +150,7 @@ function sweepLeftovers(distDir: string, log: Pick<Console, 'error'>): void {
     const pid = Number(re.exec(name)?.[1]);
     if (!pid || pid === process.pid || isProcessAlive(pid)) continue;
     try { fs.rmSync(path.join(parent, name), { recursive: true, force: true }); }
-    catch (e) { log.error(`web: could not remove the leftover ${path.join(parent, name)}: ${errText(e)}`); }
+    catch (e) { log.error(`web: could not remove the leftover ${path.join(parent, name)}: ${errMsg(e)}`); }
   }
 }
 
@@ -170,13 +169,13 @@ function swapIn(tmp: string, distDir: string, log: Pick<Console, 'error'>): void
     if (hadPrevious) {
       try { fs.renameSync(old, distDir); }
       catch (restoreErr) {
-        throw new Error(`${errText(e)}; restoring the previous build also failed: ${errText(restoreErr)} (it is left at ${old})`, { cause: e });
+        throw new Error(`${errMsg(e)}; restoring the previous build also failed: ${errMsg(restoreErr)} (it is left at ${old})`, { cause: e });
       }
     }
     throw e;
   }
   try { fs.rmSync(old, { recursive: true, force: true }); }
-  catch (e) { log.error(`web: the new build is live, but the previous one could not be removed from ${old}: ${errText(e)}`); }
+  catch (e) { log.error(`web: the new build is live, but the previous one could not be removed from ${old}: ${errMsg(e)}`); }
 }
 
 /** Builds the UI into `outDir`; injectable so a test can stand in for Vite. */
@@ -209,11 +208,11 @@ function removeAside(dir: string, log: Pick<Console, 'error'>): void {
     fs.rmSync(aside, { recursive: true, force: true });
     fs.renameSync(dir, aside);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') log.error(`web: could not remove ${dir}: ${errText(e)}`);
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') log.error(`web: could not remove ${dir}: ${errMsg(e)}`);
     return;
   }
   try { fs.rmSync(aside, { recursive: true, force: true }); }
-  catch (e) { log.error(`web: could not remove ${aside}: ${errText(e)}`); }
+  catch (e) { log.error(`web: could not remove ${aside}: ${errMsg(e)}`); }
 }
 
 // Build into `<dir>.tmp-<pid>`, stamp it, then swap it in as `dir`. The tmp is
@@ -334,7 +333,7 @@ const state: WebState = { phase: 'idle', error: null };
 
 const failureText = (e: unknown): string => {
   const tail = (e as { tail?: unknown })?.tail;
-  return typeof tail === 'string' && tail ? `${errText(e)}\n${tail}` : errText(e);
+  return typeof tail === 'string' && tail ? `${errMsg(e)}\n${tail}` : errMsg(e);
 };
 
 // `guard` is asked before the boot build's swap only while a previous build is

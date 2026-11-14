@@ -13,10 +13,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import {
-  ENV_NAME_RE, argvWrapper, assertEnvOverlay, shQuote, shellWithPrelude, unwrapResult,
+  ENV_NAME_RE, argvWrapper, assertEnvOverlay, shellWithPrelude, unwrapResult,
 } from '../src/systems/execWrap.ts';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { shQuote } from '../shared/basics.ts';
 
 const NONCE = '0123456789abcdef0123456789abcdef';
 const sys = new LocalSystem();
