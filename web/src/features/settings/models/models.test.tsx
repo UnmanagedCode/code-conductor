@@ -522,3 +522,123 @@ describe('Models → page actions', () => {
     expect(screen.queryByRole('button', { name: /cost/i })).toBeNull();
   });
 });
+
+describe('Models → spawn prefs failures', () => {
+  const DEBUG = 'Enable debug capture by default for new sessions';
+  const TASKS = 'Enable the task tools for every session';
+  const AB_SWITCH = 'Enable MCP auto-background for workers';
+  const refusal = (error: string) => ({ status: 500, json: { error } });
+  const cardOf = (el: Element) => el.closest('[data-slot="card"]') as HTMLElement;
+  const statusIn = (card: HTMLElement) => within(card).queryByRole('status');
+  const spawnGets = (calls: Call[]) => calls.filter((c) => c.method === 'GET' && c.url.startsWith('/api/settings/spawn'));
+  const spawnPosts = (calls: Call[]) => calls.filter((c) => c.method === 'POST' && c.url === '/api/settings/spawn/prefs');
+  const quietWarn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const AB = { enabled: true, thresholdMs: 120_000, minMs: 10_000, maxMs: 1_800_000 };
+
+  // Invariant: a failed read never shows a false "off" (no last good value, so the switch is disabled), the failure is visible on every card including the otherwise-hidden auto-background one, each card logs one warn carrying the error.
+  it('a refused spawn-prefs read leaves both switches disabled, shows the auto-background card with the reason, and warns once per card', async () => {
+    const warn = quietWarn();
+    const calls = mockFetch({ 'GET /api/settings/spawn': () => refusal('spawn read refused') });
+    show(PICK);
+    await waitFor(() => expect(spawnGets(calls)).toHaveLength(3));
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(3));
+    for (const c of warn.mock.calls) expect(c[1]).toEqual(expect.objectContaining({ message: 'spawn read refused' }));
+    for (const name of [DEBUG, TASKS]) {
+      const sw = screen.getByRole('switch', { name }) as HTMLButtonElement;
+      expect(sw.disabled).toBe(true);
+      expect(statusIn(cardOf(sw))?.textContent).toContain('spawn read refused');
+    }
+    const ab = cardOf(screen.getByText('MCP auto-background'));
+    expect(statusIn(ab)?.textContent).toContain('spawn read refused');
+    expect(within(ab).queryByRole('switch')).toBeNull();
+    expect(within(ab).queryByRole('slider')).toBeNull();
+  });
+
+  // Invariant: a refused save reverts to the last server-confirmed value; the visible warning shows the latest error; one warn per failure streak; a success clears the warning and ends the streak; one card's failure never touches the other.
+  it.each([
+    ['debugByDefault', DEBUG, TASKS],
+    ['taskTools', TASKS, DEBUG],
+  ])('a refused %s save reverts to the last confirmed value, warns once per streak, and a success clears the warning', async (key, label, otherLabel) => {
+    const warn = quietWarn();
+    const answers: unknown[] = [
+      refusal('prefs write refused'),
+      refusal('prefs disk full'),
+      { debugByDefault: true, taskTools: true },
+      refusal('prefs gone'),
+    ];
+    const calls = mockFetch({
+      'GET /api/settings/spawn': () => ({ debugByDefault: false, taskTools: false }),
+      'POST /api/settings/spawn/prefs': () => answers.shift(),
+    });
+    show(PICK);
+    const sw = () => screen.getByRole('switch', { name: label }) as HTMLButtonElement;
+    const card = () => cardOf(sw());
+    await waitFor(() => expect(sw().disabled).toBe(false));
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    expect(warn).toHaveBeenCalledTimes(0);
+
+    fireEvent.click(sw());
+    await waitFor(() => expect(spawnPosts(calls)).toHaveLength(1));
+    expect(spawnPosts(calls)[0].body).toEqual({ [key]: true });
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    expect(statusIn(card())?.textContent).toContain('prefs write refused');
+    expect(statusIn(cardOf(screen.getByRole('switch', { name: otherLabel })))).toBeNull();
+
+    fireEvent.click(sw());
+    await waitFor(() => expect(statusIn(card())?.textContent).toContain('prefs disk full'));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(sw());
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('true'));
+    await waitFor(() => expect(statusIn(card())).toBeNull());
+
+    fireEvent.click(sw());
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+    expect(spawnPosts(calls)[3].body).toEqual({ [key]: false });
+    expect(sw().getAttribute('aria-checked')).toBe('true');
+    expect(statusIn(card())?.textContent).toContain('prefs gone');
+  });
+
+  // Invariant: a refused auto-background save keeps the switch, reverts the slider to the last confirmed threshold, warns once per streak across switch and slider saves, and a success clears the warning.
+  it('a refused auto-background save keeps the switch, reverts the slider to the last saved threshold, and warns once per streak', async () => {
+    const warn = quietWarn();
+    const answers: unknown[] = [
+      refusal('prefs write refused'),
+      refusal('prefs disk full'),
+      { autoBackground: { ...AB, thresholdMs: 300_000 } },
+      refusal('prefs gone'),
+    ];
+    mockFetch({
+      'GET /api/settings/spawn': () => ({ autoBackground: AB }),
+      'POST /api/settings/spawn/prefs': () => answers.shift(),
+    });
+    show(PICK);
+    const slider = (await screen.findByRole('slider', { name: 'Background after' })) as HTMLInputElement;
+    const sw = () => screen.getByRole('switch', { name: AB_SWITCH });
+    const card = () => cardOf(sw());
+    expect(slider.value).toBe('120');
+    expect(warn).toHaveBeenCalledTimes(0);
+    const drag = (v: string) => { fireEvent.change(slider, { target: { value: v } }); fireEvent.keyUp(slider); };
+
+    fireEvent.click(sw());
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(sw().getAttribute('aria-checked')).toBe('true');
+    expect(statusIn(card())?.textContent).toContain('prefs write refused');
+
+    drag('300');
+    await waitFor(() => expect(statusIn(card())?.textContent).toContain('prefs disk full'));
+    expect(slider.value).toBe('120');
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    drag('300');
+    await waitFor(() => expect(statusIn(card())).toBeNull());
+    expect(slider.value).toBe('300');
+
+    drag('200');
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+    expect(slider.value).toBe('300');
+    expect(statusIn(card())?.textContent).toContain('prefs gone');
+  });
+});
