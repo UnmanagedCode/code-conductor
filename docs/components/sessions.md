@@ -180,7 +180,7 @@ Fork takes no `_exitSuppressed`, unlike its two siblings: they kill their source
 Sound because the two footprints are disjoint: the archive writes the sub-agent dir and the SOURCE transcript's segment flags, while the fork reads the source jsonl and writes only the new id's jsonl + metadata.
 `_archiveSession` itself deletes no jsonl.
 `createArgs` carries `persistent` explicitly, so the child of a persistent session is persistent (marked by its own `spawn()`) and the child of a normal one is normal (archived on its own exit); create()'s session-store recovery would not supply it, since forking writes no flag for the new id.
-The fork ROUTE (`routes.ts`) only parses `userMessageIndex` and spawns the `createArgs` the method hands back — every guard, the flag claim/release and the derivation of those respawn arguments belong to the instance, which is what all three of them are read off.
+The fork ROUTE (`src/routes/instances.ts`) only parses `userMessageIndex` and spawns the `createArgs` the method hands back — every guard, the flag claim/release and the derivation of those respawn arguments belong to the instance, which is what all three of them are read off.
 Not a new failure class for callers, which already tolerate the `not running` throw from the same window.
 Unlike `renew_session` it never calls `prompt()` — a pruned session resumes **idle**.
 - **Harness-state invariants (derived by probing the real CLI — treat as spec).**
