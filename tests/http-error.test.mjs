@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { httpError } from '../src/httpError.ts';
-import { errorBody } from '../src/routes.ts';
+import { errorBody } from '../src/routes/errors.ts';
 
 test('httpError carries the message and statusCode the caller passed', () => {
   const e = httpError(404, "project 'x' not found");

@@ -321,9 +321,10 @@ test('Instance.forkAtUserMessage claims _mutating with no await after the check'
     'no await may sit between the _mutating check and the claim — see this test\'s comment',
   );
   // And the route must NOT have kept a copy of the guard.
-  const routes = await fs.readFile(new URL('../src/routes.ts', import.meta.url), 'utf8');
-  const route = routes.slice(routes.indexOf("r.post('/instances/:id/fork'"),
-                             routes.indexOf("r.post('/instances/:id/fork'") + 1200);
+  const routes = await fs.readFile(new URL('../src/routes/instances.ts', import.meta.url), 'utf8');
+  const at = routes.indexOf("r.post('/instances/:id/fork'");
+  assert.ok(at >= 0, 'the fork route lives in src/routes/instances.ts');
+  const route = routes.slice(at, at + 1200);
   assert.doesNotMatch(route, /_mutating/,
     'the route must delegate the flag to the instance, not re-check it');
 });
