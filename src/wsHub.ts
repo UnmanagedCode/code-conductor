@@ -4,7 +4,8 @@
 // the cases for the authoritative set.
 //
 // Server → client: every frame is a member of `ServerFrame` (shared/wsFrames.ts),
-// and each JSON.stringify below is checked against its member.
+// and each JSON.stringify below is checked against its member, except the ack
+// reply, whose echoed reqId is `unknown`.
 //   * After a subscribe, no event/segment/reset_snapshot frame for the instance
 //     precedes its snapshot; those emitted while it is built follow it, in order.
 //     A status frame is not held.

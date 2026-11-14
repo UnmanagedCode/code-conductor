@@ -10,6 +10,7 @@ import { emit } from '@/app/events';
 import { stickyPrompt } from '@/app/controller';
 import type { Instance } from '@/state/types';
 import { CONDUCTOR_LABEL } from '@shared/conductors';
+import { formatAutoResumeTime } from '@shared/usage';
 import { Composer } from './Composer';
 import { createDraftStore, DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { focusPromptAfterSelect } from '@/features/session/promptFocus';
@@ -151,6 +152,14 @@ describe('send and mic modes', () => {
     c.swap(inst('s1', { overageStoppedUnarmed: true }));
     expect(c.button().disabled).toBe(true);
     expect(c.container.textContent).toMatch(/can't be queued here/);
+  });
+
+  it('overage paused with no armed resume names the reset clock from overageResetsAt', () => {
+    // Invariant: a session paused by the account overage gate with no armed auto-resume (autoResumeAt null) still shows when it resumes, taking the clock from overageResetsAt.
+    const T = 1_900_000_000;
+    const clock = formatAutoResumeTime(T)!.replace('resumes at ', '');
+    const c = mount(inst('s1', { overageActive: true, autoResumeAt: null, overageResetsAt: T }));
+    expect(c.container.textContent).toContain(`Paused until ${clock}.`);
   });
 });
 

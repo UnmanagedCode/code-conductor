@@ -2,6 +2,9 @@
 // and the session listing emit, and what the web client reads. Type-only; erased
 // at build time, so it is safe on both sides of the wire (DOM-free).
 //
+// It is also the DOM-free home of the cross-runtime wire types that shared/tasks.ts
+// re-exports (the task payloads).
+//
 // The rows carry no index signature: a field renamed here fails every reader that
 // still uses the old name, on the server and in the web client alike.
 
