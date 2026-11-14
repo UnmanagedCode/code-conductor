@@ -506,50 +506,73 @@ function LandingRenewNudgeCard({ data }: { data: ModelsPayload }) {
   );
 }
 
-function DebugDefaultCard() {
+/** A card's request-failure state: a visible warning, plus one console.warn per failure streak; a success ends the streak. */
+function useFailureStreak(card: string) {
+  const [warning, setWarning] = React.useState<string | null>(null);
+  const failing = React.useRef(false);
+  const fail = React.useCallback((what: 'load' | 'save', e: unknown) => {
+    if (!failing.current) console.warn(`${card} ${what} failed:`, e);
+    failing.current = true;
+    setWarning(what === 'load'
+      ? `Couldn't load this setting: ${errText(e)}. Reopen Settings to retry.`
+      : `Save failed: ${errText(e)}. Showing the saved setting.`);
+  }, [card]);
+  const ok = React.useCallback(() => { failing.current = false; setWarning(null); }, []);
+  return { warning, fail, ok };
+}
+
+function SpawnFlagCard({ prefKey, title, description, switchLabel }: {
+  prefKey: 'debugByDefault' | 'taskTools'; title: string; description: string; switchLabel: string;
+}) {
   const [on, setOn] = React.useState<boolean | null>(null);
+  const confirmed = React.useRef<boolean | null>(null);
+  const { warning, fail, ok } = useFailureStreak(title);
   React.useEffect(() => {
-    json<{ debugByDefault: boolean }>('/api/settings/spawn').then((d) => setOn(!!d.debugByDefault)).catch(() => setOn(false));
-  }, []);
+    json<Partial<Record<typeof prefKey, boolean>>>('/api/settings/spawn')
+      .then((d) => { confirmed.current = !!d[prefKey]; setOn(confirmed.current); })
+      .catch((e: unknown) => fail('load', e));
+  }, [prefKey, fail]);
   return (
     <SettingsCard
-      title="Debug capture"
-      description="Mirror raw CLI traffic of new sessions to the debug directory unless a spawn sets debug itself (the new-session dialog's Advanced options always win). Off by default."
+      title={title}
+      description={description}
       action={
         <Switch
           checked={!!on}
           disabled={on === null}
-          aria-label="Enable debug capture by default for new sessions"
+          aria-label={switchLabel}
           onCheckedChange={(v) => {
             setOn(v);
-            post('/api/settings/spawn/prefs', { debugByDefault: v }).catch(() => { /* next open re-syncs */ });
+            post('/api/settings/spawn/prefs', { [prefKey]: v })
+              .then(() => { confirmed.current = v; ok(); })
+              .catch((e: unknown) => { setOn(confirmed.current); fail('save', e); });
           }}
         />
       }
+    >
+      {warning ? <Status text={warning} tone="error" /> : undefined}
+    </SettingsCard>
+  );
+}
+
+function DebugDefaultCard() {
+  return (
+    <SpawnFlagCard
+      prefKey="debugByDefault"
+      title="Debug capture"
+      description="Mirror raw CLI traffic of new sessions to the debug directory unless a spawn sets debug itself (the new-session dialog's Advanced options always win). Off by default."
+      switchLabel="Enable debug capture by default for new sessions"
     />
   );
 }
 
 function TaskToolsCard() {
-  const [on, setOn] = React.useState<boolean | null>(null);
-  React.useEffect(() => {
-    json<{ taskTools?: boolean }>('/api/settings/spawn').then((d) => setOn(!!d.taskTools)).catch(() => setOn(false));
-  }, []);
   return (
-    <SettingsCard
+    <SpawnFlagCard
+      prefKey="taskTools"
       title="Task tools"
       description="Give every session cc launches the CLI's task-list tools (TaskCreate, TaskUpdate, …), so its task list shows in the task panel. Applies when a session next starts or resumes; a running session keeps the tools it launched with. Off by default."
-      action={
-        <Switch
-          checked={!!on}
-          disabled={on === null}
-          aria-label="Enable the task tools for every session"
-          onCheckedChange={(v) => {
-            setOn(v);
-            post('/api/settings/spawn/prefs', { taskTools: v }).catch(() => { /* next open re-syncs */ });
-          }}
-        />
-      }
+      switchLabel="Enable the task tools for every session"
     />
   );
 }
@@ -564,24 +587,31 @@ const fmtThreshold = (s: number) => {
   return r ? `${m} min ${r} s` : `${m} min`;
 };
 
+const AUTO_BACKGROUND_TITLE = 'MCP auto-background';
+const AUTO_BACKGROUND_DESCRIPTION = "When on, a worker's MCP call or explicit-foreground subagent that runs past the threshold moves to the background, and the worker is re-invoked when it finishes. Applies to project sessions, not the conductor; takes effect at a session's next launch. Off by default.";
+
 function AutoBackgroundCard() {
   const [ab, setAb] = React.useState<AutoBackground | null>(null);
   const [seconds, setSeconds] = React.useState(0);
+  const { warning, fail, ok } = useFailureStreak(AUTO_BACKGROUND_TITLE);
   const apply = (d: { autoBackground?: AutoBackground }) => {
     if (!d.autoBackground) return;
     setAb(d.autoBackground);
     setSeconds(d.autoBackground.thresholdMs / 1000);
   };
   React.useEffect(() => {
-    json<{ autoBackground?: AutoBackground }>('/api/settings/spawn').then(apply).catch(() => { /* card stays hidden */ });
-  }, []);
-  if (!ab) return null;
+    json<{ autoBackground?: AutoBackground }>('/api/settings/spawn').then(apply).catch((e: unknown) => fail('load', e));
+  }, [fail]);
+  const warningLine = warning ? <Status text={warning} tone="error" /> : undefined;
+  if (!ab) return warning ? <SettingsCard title={AUTO_BACKGROUND_TITLE} description={AUTO_BACKGROUND_DESCRIPTION}>{warningLine}</SettingsCard> : null;
   const save = (patch: { enabled?: boolean; thresholdMs?: number }) =>
-    post<{ autoBackground?: AutoBackground }>('/api/settings/spawn/prefs', { autoBackground: patch }).then(apply).catch(() => { /* next open re-syncs */ });
+    post<{ autoBackground?: AutoBackground }>('/api/settings/spawn/prefs', { autoBackground: patch })
+      .then((d) => { apply(d); ok(); })
+      .catch((e: unknown) => { setSeconds(ab.thresholdMs / 1000); fail('save', e); });
   return (
     <SettingsCard
-      title="MCP auto-background"
-      description="When on, a worker's MCP call or explicit-foreground subagent that runs past the threshold moves to the background, and the worker is re-invoked when it finishes. Applies to project sessions, not the conductor; takes effect at a session's next launch. Off by default."
+      title={AUTO_BACKGROUND_TITLE}
+      description={AUTO_BACKGROUND_DESCRIPTION}
       action={<Switch checked={ab.enabled} aria-label="Enable MCP auto-background for workers" onCheckedChange={(v) => void save({ enabled: v })} />}
     >
       <RangeField
@@ -589,6 +619,7 @@ function AutoBackgroundCard() {
         min={ab.minMs / 1000} max={ab.maxMs / 1000} step={THRESHOLD_STEP_S} value={seconds} disabled={!ab.enabled}
         format={fmtThreshold} onInput={setSeconds} onCommit={(s) => void save({ thresholdMs: s * 1000 })}
       />
+      {warningLine}
     </SettingsCard>
   );
 }
