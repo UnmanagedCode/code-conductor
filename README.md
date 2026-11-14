@@ -54,7 +54,7 @@ Prefer containers? **Docker Compose**: [docker/README.md](docker/README.md) — 
 - **Startup check** — boot probes the `claude` CLI and its credentials, then prints `claude OK` or one framed `WARNING` listing each issue. The server starts either way; sign in from **Settings → Account → Claude login** (or `claude auth login`), no restart needed. [`src/health.ts`](docs/components/web.md#srchealthts).
 - **Startup session cleanup** — each boot drops session records whose transcripts are all gone, after saving the store's pre-image, and removes nothing when every record looks transcript-less (a wrong `HOME` / `CLAUDE_CONFIG_DIR`). Rules: [`src/sessionCleanup.ts`](docs/components/store.md#srcsessioncleanupts).
 - **Workspace conventions** — composed from `conventions/workspace/` into every project's tracked `CONVENTIONS.md` and into `.conduct/CONVENTIONS.md`. The files are app-owned and overwritten: edit them in **⚙ Settings → Conventions → Workspace**.
-- **Voice (optional)** — install a dictation model (whisper.cpp) or a speech voice (Piper) from **⚙ Settings → Voice**, or run `bin/install-whisper.sh` / `bin/install-piper.sh` by hand; the composer mic and the 🔊 buttons appear once installed. Env overrides: [docs/architecture.md](docs/architecture.md#environment-variables); build internals: [`transcribe.ts`](docs/components/restart.md#srctranscribets), [`tts.ts`](docs/components/restart.md#srcttsts).
+- **Voice (optional)** — install a dictation model (whisper.cpp) or a speech voice (Piper) from **⚙ Settings → Voice**, or run `bin/install-whisper.sh` / `bin/install-piper.sh` by hand; the composer mic and the 🔊 buttons appear once installed. Env overrides: [docs/environment.md](docs/environment.md); build internals: [`transcribe.ts`](docs/components/restart.md#srctranscribets), [`tts.ts`](docs/components/restart.md#srcttsts).
 - **Install on Android** — Chrome → ⋮ → **Install app** / **Add to home screen** launches it standalone, also through an authenticated proxy such as a code-hub share; it needs HTTPS or loopback. [docs/features.md](docs/features.md#the-ui) → PWA and service worker.
 - **Web UI** — `web/` is the React UI served at `/`, rebuilt into `web/dist/` at start when its sources changed; `shared/` holds the modules it shares with the server and the node tests (`@shared/*`). [docs/components/web.md](docs/components/web.md#srcwebbuildts).
 - **Browser tests** — one Playwright harness in `web/e2e/` (`npm run test:e2e`, not part of `npm test`): [`web/e2e/README.md`](web/e2e/README.md). Mutation testing over the node, Vitest and Playwright suites: [`harness/mutation/README.md`](harness/mutation/README.md).
@@ -136,7 +136,8 @@ A **System** puts a project's tree, git repo and shell commands on another machi
 - [docs/features.md](docs/features.md) — exhaustive feature and UI-element catalog
 - [docs/models.md](docs/models.md) — backend registry, custom models, capability tiers & roles, Claude context windows
 - [docs/protocol.md](docs/protocol.md) — subprocess protocol (CLI flags + hooks), WebSocket protocol, REST endpoints
-- [docs/architecture.md](docs/architecture.md) — stack, environment variables, conventions, instance lifecycle, on-disk state, migrations
+- [docs/architecture.md](docs/architecture.md) — stack, conventions, instance lifecycle, on-disk state, migrations
+- [docs/environment.md](docs/environment.md) — environment variables, checked against `src/env.ts`
 - [docs/components.md](docs/components.md) — the per-module catalogue: an index into `docs/components/*.md`
 - [docs/testing.md](docs/testing.md) — the test gate, suites, fakes and isolation
 - [docs/testing-systems.md](docs/testing-systems.md) — the systems gate, the FUSE-union chroot suites and the gated real-dependency suites
