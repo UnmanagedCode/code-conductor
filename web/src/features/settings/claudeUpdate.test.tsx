@@ -46,7 +46,6 @@ function heldCheck(status = 200) {
   };
 }
 
-
 beforeEach(() => {
   selfUpdateStore.set(INITIAL_SELF);
   claudeUpdateStore.set(INITIAL_CLAUDE);

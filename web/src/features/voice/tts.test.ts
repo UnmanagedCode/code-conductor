@@ -36,7 +36,6 @@ function framed(...payloads: number[]) {
   return all;
 }
 
-
 beforeEach(() => {
   __resetTtsForTests();
   sources = [];

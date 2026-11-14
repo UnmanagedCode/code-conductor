@@ -33,7 +33,6 @@ function gatedFetch(pages: Page[], calls: string[]) {
   return { fetch, release: () => gates.shift()!() };
 }
 
-
 function install({ scrollHeight = { value: 1000 }, clientHeight = 800, active = { id: 'inst1' as string | null } } = {}) {
   const model = new ConversationModel();
   const h = createLazyHistory({ model, getActiveId: () => active.id });

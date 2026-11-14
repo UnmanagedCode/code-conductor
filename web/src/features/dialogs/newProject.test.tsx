@@ -43,7 +43,6 @@ function stub(extra: Record<string, Route> = {}) {
   });
 }
 
-
 async function openNew() {
   act(() => openNewProjectDialog());
   await system();

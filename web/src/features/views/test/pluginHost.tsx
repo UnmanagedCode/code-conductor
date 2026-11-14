@@ -86,7 +86,6 @@ export async function endHost() {
   vi.unstubAllGlobals();
 }
 
-
 export async function mountApp() {
   render(<App />);
   await settle();

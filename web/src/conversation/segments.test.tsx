@@ -21,7 +21,6 @@ const tokens = (m: ConversationModel) => m.items.map((i) => {
   return i.type;
 });
 
-
 function stubFetch(pages: any[]) {
   const calls: Record<string, string>[] = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {

@@ -49,7 +49,6 @@ function stub(extra: Record<string, Route> = {}) {
   });
 }
 
-
 async function openAdopt() {
   act(() => openAdoptProjectDialog());
   await system();

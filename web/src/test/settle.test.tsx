@@ -29,11 +29,23 @@ describe('settle', () => {
     expect(document.body.querySelectorAll('i')).toHaveLength(n);
   });
 
-  it('turns at least SETTLE_QUIET_TURNS times when the DOM stays quiet', async () => {
+  it('turns at least 10 times when the DOM stays quiet', async () => {
+    // Pins: the floor of a quiet settle, the longest zero-delay loop among the helpers it stands in for.
+    // The link count is a literal on purpose: a count derived from SETTLE_QUIET_TURNS would follow the constant down.
     const landed = vi.fn();
-    chain(SETTLE_QUIET_TURNS - 1, () => {}, landed);
+    chain(10, () => {}, landed);
     await settle();
     expect(landed).toHaveBeenCalledOnce();
+  });
+
+  it('keeps turning while a text node changes in place', async () => {
+    // Pins: characterData changes reset the quiet count, as appended nodes do.
+    const text = document.createTextNode('0');
+    document.body.appendChild(text);
+    const n = SETTLE_QUIET_TURNS + 5;
+    chain(n, (i) => { text.nodeValue = String(i + 1); });
+    await settle();
+    expect(text.nodeValue).toBe(String(n));
   });
 
   it('fails when the DOM never goes quiet', async () => {

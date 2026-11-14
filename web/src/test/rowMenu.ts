@@ -4,7 +4,6 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { settle } from './settle';
 
-
 /** The row's ⋮ trigger, by its accessible name (`Project menu`, `Worktree menu`). */
 export const rowMenuTrigger = (row: HTMLElement, name: string) => within(row).getByRole('button', { name });
 
