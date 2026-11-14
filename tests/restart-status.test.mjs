@@ -111,6 +111,23 @@ for (const [name, prep, change, chain] of ROWS) {
   });
 }
 
+// Invariant: a move out of server code into web/ is listed by its src/ side too (--no-renames), so it needs a restart; with rename detection only the web/ destination would be listed and the state would read live.
+test('what changed since boot decides needed or live: a rename out of src/ into web/ still needs a restart', async () => {
+  const f = await fixture();
+  try {
+    await fs.mkdir(path.join(f.root, 'web'), { recursive: true });
+    await fs.rename(path.join(f.root, 'src/a.ts'), path.join(f.root, 'web/a.ts'));
+    await git(f.root, 'add', '-A');
+    await git(f.root, 'commit', '-q', '-m', 'move src/a.ts to web/');
+    const H = await git(f.root, 'rev-parse', 'HEAD');
+    assert.notEqual(H, f.B, 'fixture check: HEAD moved');
+    assert.match(await git(f.root, 'diff', '--name-status', f.B, H), /^R\d+\s+src\/a\.ts\s+web\/a\.ts$/m, 'fixture check: git sees a rename');
+    const got = await f.status();
+    assert.deepEqual({ ...got, reason: undefined }, { state: 'needed', boot: f.B, head: H, reason: undefined });
+    assert.ok(got.reason.includes('src/a.ts'), got.reason);
+  } finally { await cleanup(f.root); }
+});
+
 test('an unknown import walk needs a restart for a gated path but not for web/', async () => {
   const f = await fixture({ 'src/a.ts': "import '../shared/p.ts';\nconst x = require('y');\n" });
   try {

@@ -38,7 +38,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('About restart hint', () => {
-  // Invariant: a needed restart is one note in the Version card that names the target (head) commit by its short sha, never the boot commit or the full sha, and never restarts by itself.
+  // Invariant: a needed restart is one note in the Version card that names the target (head) commit by its 7-character short sha, never the boot commit or the full sha, and never restarts by itself.
   it('a needed restart shows one note in the Version card naming the target commit by its short sha', async () => {
     mockFetch({ ...PLUGIN_ROUTES, 'GET /api/settings/self-update': () => status({ state: 'needed', boot: BOOT, head: HEAD, reason: 'src/a.ts changed' }) });
     render(<AboutSection />);
@@ -47,6 +47,7 @@ describe('About restart hint', () => {
     expect(notes).toHaveLength(1);
     const text = notes[0].textContent ?? '';
     expect(text).toContain(HEAD.slice(0, 7));
+    expect(text, 'exactly the 7-character short sha, not 8').not.toContain(HEAD.slice(0, 8));
     expect(text).not.toContain(HEAD);
     expect(text).not.toContain(BOOT.slice(0, 7));
     await settle();
