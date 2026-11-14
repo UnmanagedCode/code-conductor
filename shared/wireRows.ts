@@ -232,7 +232,6 @@ export interface UpstreamStatus extends MergeStatus {
   upstream: string | null;
 }
 
-
 // A place's session summary, as summarizeSessions (src/projects.ts) computes it.
 export interface SessionCounts {
   count: number;

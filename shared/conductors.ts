@@ -15,6 +15,7 @@
 // ownership.
 
 import { sessionLabel } from './promptPreview.ts';
+import type { PlaybookBinding } from './wireRows.ts';
 
 export const CONDUCT_PROJECT = '.conduct';
 export const CONDUCTOR_LABEL = 'Conductor';
@@ -48,10 +49,8 @@ export type InstanceFields = {
   title?: string | null;
   lastResponseAt?: number | null;
   createdAt?: number;
-  playbook?: string | null;
-  stage?: string | null;
   worktree?: { worktreeName: string } | null;
-};
+} & Partial<PlaybookBinding>;
 
 // A `.conduct` disk session row's fields read here.
 export type ConductRow = {
@@ -107,10 +106,8 @@ export type InstanceSessionRow<S extends string | null = string | null> = {
   instanceWaitingOnJob: boolean;
   conducted: boolean;
   rootSessionId: string | null;
-  playbook: string | null;
-  stage: string | null;
   synthetic: true;
-};
+} & Pick<PlaybookBinding, 'playbook' | 'stage'>;
 
 // A recorded spawn history entry (SpawnedProject, src/conductorSpawns.ts).
 export type SpawnedProject = { project: string; lastSpawnAt: string; worktrees?: string[] | null };
