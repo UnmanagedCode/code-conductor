@@ -37,7 +37,7 @@ const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 // safe: readiness comes from the child's own banner (./serverBanner.mjs), and
 // every destructive POST is preceded by the alive + tryBind checks below — a
 // collision costs this file a timeout and never reaches the stranger.
-// Full measurement: docs/architecture.md → "Port ownership".
+// Full measurement: docs/testing.md → "Port ownership".
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer();

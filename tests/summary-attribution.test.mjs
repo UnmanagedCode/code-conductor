@@ -47,7 +47,7 @@
 // `fast * 3 < medium` reduces to an absolute cap of C < 600ms, and C was measured at
 // 772ms at 72-way starvation (vs ~320ms at the repo's standard 24-way width). That
 // assertion went red 42% of the time on a completely correct reporter — card
-// 2026-0222, and docs/architecture.md's rule: make each branch reachable ONLY by
+// 2026-0222, and docs/testing.md's rule: make each branch reachable ONLY by
 // construction, never by margin.
 //
 // THE CONSTRUCTION. The four ranking fixtures chain their COMPLETIONS

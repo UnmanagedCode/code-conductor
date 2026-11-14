@@ -127,7 +127,7 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     let signalled = false;
     // Fires at most once. The kill is issued synchronously inside the observing
     // `data` handler, which TIGHTENS the R1 residual documented in
-    // docs/architecture.md (the outer loop must not stall between the pipe
+    // docs/testing.md (the outer loop must not stall between the pipe
     // becoming readable and the signal) — but it is a description of the code,
     // NOT a correctness requirement: deferring the kill (e.g. via setImmediate)
     // changes no outcome, since a late signal either still lands inside the

@@ -1186,7 +1186,7 @@ describe('the compiled policy driver', { skip }, () => {
   // so `open` at `cflags=2` is a WRITE open and `cflags=0` is a read one.
   //
   // IT IS AN INSTRUMENT CLAIM AND THAT IS WHY IT IS PINNED. The two-handle
-  // premise is carried as a standing condition (docs/architecture.md → "the
+  // premise is carried as a standing condition (docs/components/fuse.md → "the
   // two-handle window") whose CHECK is a `CC_FUSE_TRACE=1` capture counted
   // offline — and a trace that reported `cflags=0` for every op would answer the
   // question with a confident zero instead of failing. A source-shape

@@ -137,7 +137,7 @@ d('Windows smoke (real claude, Git for Windows)', () => {
       const why = `${e.stderr ?? ''}${e.message}`;
       if (/access\s+(?:is\s+)?denied|E_ACCESSDENIED/i.test(why)) {
         throw new Error('process probes need an interactive-type logon; a network logon such as plain SSH is refused ' +
-          'WMI and `taskkill /T` for a standard user — see docs/architecture.md (RUN_WIN_SMOKE)');
+          'WMI and `taskkill /T` for a standard user — see docs/testing-systems.md (RUN_WIN_SMOKE)');
       }
       throw new Error(`process probe failed: ${why}`);
     }

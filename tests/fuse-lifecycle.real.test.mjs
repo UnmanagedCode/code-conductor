@@ -9,7 +9,7 @@
 // files, 3 kills in 18 runs of the bare glob, always one arm riding the
 // runner's 60s per-test timeout until its whole file died at FILE_KILL_MS.
 // tests/run.mjs has no per-file exclusivity, so the cap lives in the
-// invocation. See docs/architecture.md -> "The FUSE-union chroot" for the
+// invocation. See docs/testing-systems.md -> "The FUSE-union chroot's two suites" for the
 // measurements.
 //
 // One of the tests/fuse-*.real.test.mjs files. The dependency preflight,

@@ -16,7 +16,7 @@
 // files, 3 kills in 18 runs of the bare glob, always one arm riding the
 // runner's 60s per-test timeout until its whole file died at FILE_KILL_MS.
 // tests/run.mjs has no per-file exclusivity, so the cap lives in the
-// invocation. See docs/architecture.md -> "The FUSE-union chroot" for the
+// invocation. See docs/testing-systems.md -> "The FUSE-union chroot's two suites" for the
 // measurements.
 //
 // One of the tests/fuse-*.real.test.mjs files. The dependency preflight,
@@ -716,7 +716,7 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
   //
   // So an unprivileged worker's reach into the ORCHESTRATOR's filesystem is
   // exactly "what uid 1000 could write there anyway, at any path cc did not
-  // pin". That is a real widening and it is recorded in docs/architecture.md
+  // pin". That is a real widening and it is recorded in docs/components/fuse-daemon.md
   // beside the substitution, not left for a reader to derive from this arm.
   //
   // MUTANTS: substitute T_HIDE ⇒ (c) dies; leave T_FAIL unsubstituted ⇒ (a),

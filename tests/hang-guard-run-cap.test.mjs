@@ -47,7 +47,7 @@ test('the absolute run cap fires, fails the run, and still prints the verdict', 
   // unref'd one cannot fire once the loop has otherwise drained, which would let
   // the runner exit 0 naturally and skip the verdict). Here a child is still
   // alive, so the loop is non-empty and an unref'd timer would fire too — this
-  // test does not discriminate ref'd from unref'd. See docs/architecture.md.
+  // test does not discriminate ref'd from unref'd. See docs/testing-hang-guard.md.
   //
   // quiet-pass rides along, FIRST in `files` order so node reports it before the
   // cap: it is the file that has already PASSED when the cap fires, whose output

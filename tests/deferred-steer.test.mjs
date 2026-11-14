@@ -256,7 +256,7 @@ test('a steer whose delivery FAILS is annotated, rejects its caller, and settles
 // POST_STOP_STEER_NOTE rides as its own content block and is dropped on replay
 // by isMidTurnNoteContent. If it stopped matching, the note would render as a
 // real user bubble AND shift the user-message index every rewind/fork
-// truncation counts by (docs/architecture.md → prefix-safety invariant).
+// truncation counts by (docs/components/platform.md → prefix-safety invariant).
 
 test('POST_STOP_STEER_NOTE carries all three isMidTurnNoteContent signals', () => {
   assert.notEqual(POST_STOP_STEER_NOTE, MID_TURN_NOTE, 'it says more than the plain note');

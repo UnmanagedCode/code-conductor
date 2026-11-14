@@ -3,7 +3,7 @@
 // The invariants asserted here are load-bearing, not stylistic — several were
 // derived by probing the real CLI's transcript-replay behaviour and would be
 // invisible to a reviewer reading only this repo. See the header comment in
-// src/sessionPrune.ts and docs/architecture.md → Prune.
+// src/sessionPrune.ts and docs/components/sessions.md → Prune.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -93,7 +93,7 @@
 // an oversight: the second row was measured buying no signal for its real-token
 // spend, and two of that family's cases turn on the model electing to act with
 // neither rate bounded. The pricing and the condition that would reopen it are
-// in docs/architecture.md -> the gated real-dependency suites (card 2026-0322
+// in docs/testing-systems.md -> the gated real-dependency suites (card 2026-0322
 // §2). This decides `RUN_CLI_CONTRACT` and nothing else: other gated families
 // such as `RUN_REAL_CLAUDE` and `RUN_DOCKER_SYSTEM` reach the same one-variable
 // lever and were not priced.

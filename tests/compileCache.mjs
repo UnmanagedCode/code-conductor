@@ -17,7 +17,7 @@
 //
 // (A THIRD ~770ms in this suite is unrelated: `C`, the per-file child-lifecycle
 // cost at 72-way starvation, in tests/summary-attribution.test.mjs and
-// docs/architecture.md's ratio-vs-difference worked example. Same number, different
+// docs/testing.md's ratio-vs-difference worked example. Same number, different
 // quantity, different conditions.)
 //
 // SHARED ACROSS RUNS, AND PER WORKTREE. Both halves are load-bearing:

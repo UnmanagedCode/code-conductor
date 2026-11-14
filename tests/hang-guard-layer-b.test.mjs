@@ -18,7 +18,7 @@ test('a file that leaks a handle on the PASS path fails the run and is named', a
 });
 
 test("Layer B's exit is what bounds a leak's cost — LEAK_GRACE_MS, not FILE_KILL_MS", async () => {
-  // The claim in tests/handleLeakGuard.mjs's header and in docs/architecture.md
+  // The claim in tests/handleLeakGuard.mjs's header and in docs/testing-hang-guard.md
   // is that a leak costs LEAK_GRACE_MS. If Layer B detected the leak but did not
   // EXIT, Layer A's per-file SIGKILL would still end the file and every
   // assertion in the test above would still hold — the cost would just silently
