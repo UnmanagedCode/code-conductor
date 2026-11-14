@@ -18,11 +18,8 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-view="session" /> }));
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
-import {
-  checkedNow, column, columnButtons, DOCK_CATALOG, dockHandle, dockSplit, dragBy, emitWidth, endHost, go, host, keepRow, mountApp, net,
-  pickApp, plainRow, postRoute, pressColumn, residentFrame, resetHost, sessionShown, settle, sharedFrame, standInWindow, stubResizeObserver,
-  viewOpen,
-} from './test/pluginHost';
+import { checkedNow, column, columnButtons, DOCK_CATALOG, dockHandle, dockSplit, dragBy, emitWidth, endHost, go, host, keepRow, mountApp, net, pickApp, plainRow, postRoute, pressColumn, residentFrame, resetHost, sessionShown, sharedFrame, standInWindow, stubResizeObserver, viewOpen } from './test/pluginHost';
+import { settle } from '@/test/settle';
 import { DOCK_PANEL_DEFAULT_WIDTH, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
 import { DOCK_WIDTH_STORAGE_KEY, dockStore, readDockState } from './dock';
 import { startPluginSessionWidth } from './pluginSessionWidth';

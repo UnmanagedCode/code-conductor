@@ -22,10 +22,8 @@ import type { Instance } from '@/state/types';
 import { openCosts, openSettings } from './api';
 import { closeDock, dockStore, readDockState } from './dock';
 import { DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH } from './dockLayout';
-import {
-  ACTIVE, checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, emitWidth, endHost, go, keepRow, mountApp, net, pickApp, plainRow,
-  postRoute, pressColumn, resetHost, residentFrame, sessionShown, settle, sharedFrame, shownFrames, standInWindow, stubResizeObserver, viewOpen,
-} from './test/pluginHost';
+import { ACTIVE, checkedNow, column, columnButtons, DOCK_CATALOG, dockSplit, emitWidth, endHost, go, keepRow, mountApp, net, pickApp, plainRow, postRoute, pressColumn, resetHost, residentFrame, sessionShown, sharedFrame, shownFrames, standInWindow, stubResizeObserver, viewOpen } from './test/pluginHost';
+import { settle } from '@/test/settle';
 
 const ANCHOR = '#session=sess-1';
 const OTHER: Instance = { id: 'i2', project: 'p', status: 'idle', sessionId: 'sess-2', mode: 'default' };

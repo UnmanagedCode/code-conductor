@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConversationModel } from './model';
 import { createLazyHistory } from './lazyHistory';
+import { settle } from '@/test/settle';
 
 type Page = { events: any[]; nextBefore: number | null; hasMore: boolean; segment?: string | null; pageSegment?: string | null } | 'error';
 
@@ -31,8 +32,6 @@ function gatedFetch(pages: Page[], calls: string[]) {
   });
   return { fetch, release: () => gates.shift()!() };
 }
-
-const settle = async (n = 6) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 5)); };
 
 function install({ scrollHeight = { value: 1000 }, clientHeight = 800, active = { id: 'inst1' as string | null } } = {}) {
   const model = new ConversationModel();
@@ -97,7 +96,7 @@ describe('auto-fill', () => {
     ], calls));
     const { h } = install({ scrollHeight: { value: 100 } });
     h.init({ tailStartSeq: 900 });
-    await settle(10);
+    await settle();
     expect(calls).toHaveLength(3);
   });
 
@@ -116,7 +115,7 @@ describe('auto-fill', () => {
     vi.stubGlobal('fetch', makeFetch(Array.from({ length: 6 }, (_, i) => ({ events: [], nextBefore: 900 - (i + 1) * 10, hasMore: true })), calls));
     const a = install({ scrollHeight: { value: 100 } });
     a.h.init({ tailStartSeq: 900 });
-    await settle(12);
+    await settle();
     expect(calls).toHaveLength(3);
     expect(a.h.status.get().visible).toBe(false);
 
@@ -131,7 +130,7 @@ describe('auto-fill', () => {
     ], calls2));
     const b = install({ scrollHeight: { value: 100 } });
     b.h.init({ tailStartSeq: 900 });
-    await settle(16);
+    await settle();
     expect(calls2).toHaveLength(6);
   });
 
@@ -144,7 +143,7 @@ describe('auto-fill', () => {
     ], calls));
     const { h, has } = install({ scrollHeight: { value: 100 } });
     h.init({ tailStartSeq: 60 });
-    await settle(10);
+    await settle();
     expect(has('seg-s1')).toBe(true);
     expect(calls[1]).toMatch(/before=50/);
     expect(calls[2]).toMatch(/segment=s1/);
@@ -222,7 +221,7 @@ describe('loadUntil', () => {
     const { h, active, has } = install();
     h.init({ tailStartSeq: 1000 });
     const run = h.loadUntil(() => false, () => true);
-    await settle(1);
+    await settle();
     active.id = 'inst2';
     h.reset();
     gate.release();
@@ -270,7 +269,7 @@ describe('loadUntil', () => {
     void h.loadEarlier();
     expect(h.state().loading).toBe(true);
     const run = h.loadUntil(() => has('old0'), () => true);
-    await settle(1);
+    await settle();
     expect(calls).toHaveLength(1);
     gate.release();
     expect(await run).toBe('found');
@@ -283,9 +282,9 @@ describe('loadUntil', () => {
     x.h.init({ tailStartSeq: 1000 });
     void x.h.loadEarlier();
     const run2 = x.h.loadUntil(() => x.has('old0'), () => true);
-    await settle(1);
+    await settle();
     gate2.release();
-    for (let i = 0; i < 10 && calls2.length < 2; i++) await settle(1);
+    for (let i = 0; i < 10 && calls2.length < 2; i++) await settle();
     expect(calls2).toHaveLength(2);
     gate2.release();
     expect(await run2).toBe('found');
@@ -299,9 +298,9 @@ describe('loadUntil', () => {
     const { h, has } = install();
     h.init({ tailStartSeq: 1000 });
     const run = h.loadUntil(() => false, () => true);
-    await settle(1);
+    await settle();
     gate.release();
-    for (let i = 0; i < 10 && calls.length < 2; i++) await settle(1);
+    for (let i = 0; i < 10 && calls.length < 2; i++) await settle();
     expect(has('old0')).toBe(true);
     h.reset();
     gate.release();

@@ -4,7 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, waitFor } from '@testing-library/react';
 import { openCommits, openCosts, openPlugin, openReview, openSettings } from '../api';
-import { endHost, mountApp, net, plainRow, resetHost, settle, viewOpen } from './pluginHost';
+import { endHost, mountApp, net, plainRow, resetHost, viewOpen } from './pluginHost';
+import { settle } from '@/test/settle';
 
 export type View = 'settings' | 'commits' | 'review' | 'costs' | 'plugin';
 export const VIEWS: View[] = ['settings', 'commits', 'review', 'costs', 'plugin'];

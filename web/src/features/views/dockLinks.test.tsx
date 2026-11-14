@@ -15,10 +15,8 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-view="session" /> }));
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
-import {
-  checkedNow, column, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, navigate, net, pickApp, plainRow, postFrom,
-  pressColumn, residentFrame, resetHost, sessionShown, settle, sharedFrame, standInWindow, viewOpen, type StandIn,
-} from './test/pluginHost';
+import { checkedNow, column, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, navigate, net, pickApp, plainRow, postFrom, pressColumn, residentFrame, resetHost, sessionShown, sharedFrame, standInWindow, viewOpen, type StandIn } from './test/pluginHost';
+import { settle } from '@/test/settle';
 import { Markdown } from '@/components/Markdown';
 import { clickLink } from '@/test/linkClick';
 import { DOCK_STORAGE_KEY, dockCollapsedStore, dockStore, readDockState } from './dock';

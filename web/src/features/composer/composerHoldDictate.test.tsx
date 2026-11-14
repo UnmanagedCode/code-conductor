@@ -22,6 +22,7 @@ import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import type { Instance } from '@/state/types';
 import { Composer } from './Composer';
 import { DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS } from './drafts';
+import { settle } from '@/test/settle';
 
 /** Holding Send this long with text in the box starts a recording. */
 const HOLD_MS = 500;
@@ -91,12 +92,10 @@ const storedDraft = (sid: string) => {
   const { text, transcribed } = JSON.parse(raw) as { text: string; transcribed: boolean };
   return { text, transcribed };
 };
-/** Lets the recorder → transcription → delivery chain land; it runs on microtasks. */
-const flushMicrotasks = () => act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); });
 /** Lets `ms` of fake time pass, then whatever it started land. */
 async function wait(ms: number) {
   await act(async () => { vi.advanceTimersByTime(ms); });
-  await flushMicrotasks();
+  await settle();
 }
 /** Puts the pointer down on the button; returns false when the press's default action is prevented. */
 const pressDown = () => fireEvent.pointerDown(button(), { pointerId: 1 });
@@ -116,7 +115,7 @@ async function tap() {
   await wait(HOLD_MS);
   pressDown();
   release();
-  await flushMicrotasks();
+  await settle();
 }
 /** Holds the button to the threshold. */
 async function holdToRecord() {
@@ -154,7 +153,7 @@ describe('holding Send with text in the box', () => {
     await tap();
     expect(transcriptions, 'a tap stops it and sends the audio for transcription').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value, 'the transcript is appended with one space').toBe('hello spoken');
     expect(microphone.released, 'the microphone is released').toBe(1);
     await tap();
@@ -167,13 +166,13 @@ describe('holding Send with text in the box', () => {
     await holdToRecord();
     expect(label(), 'positive control: the hold started a recording').toBe('Stop recording');
     await releaseTouch();
-    await flushMicrotasks();
+    await settle();
     expect(label(), 'the touch release leaves it recording').toBe('Stop recording');
     expect(transcriptions, 'nothing is transcribed yet').toBe(0);
     await tap();
     expect(transcriptions, 'the next tap stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value, 'after a trailing space, no second space').toBe('hello spoken');
   });
 
@@ -185,10 +184,10 @@ describe('holding Send with text in the box', () => {
     await wait(HOLD_MS);
     expect(label(), 'positive control: the hold is recording').toBe('Stop recording');
     fireEvent.click(button());
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'a keyboard activation, a click with no pointer, stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 
@@ -202,7 +201,7 @@ describe('holding Send with text in the box', () => {
     await tap();
     expect(transcriptions, 'the next tap stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 
@@ -230,7 +229,7 @@ describe('holding Send with text in the box', () => {
     expect(transcriptions).toBe(0);
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 
@@ -243,10 +242,10 @@ describe('holding Send with text in the box', () => {
     await wait(HOLD_MS);
     expect(label(), 'the cancel leaves it recording').toBe('Stop recording');
     fireEvent.click(button());
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'a keyboard activation, a click with no pointer, stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(label(), 'the control returns to Send').toBe('Send');
     expect(box().value).toBe('hello spoken');
   });
@@ -264,9 +263,9 @@ describe('holding Send with text in the box', () => {
     expect(label()).toBe('Stop recording');
     expect(pressDown(), 'pressing Stop recording does not either').toBe(false);
     release();
-    await flushMicrotasks();
+    await settle();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 
@@ -299,7 +298,7 @@ describe('holding Send with text in the box', () => {
     release();
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
     expect(microphone.released, 'each microphone opened is released').toBe(2);
   });
@@ -319,7 +318,7 @@ describe('leaving the session view (the composer unmounts)', () => {
     expect(box().value).toBe('hello ');
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
     expect(microphone, 'one microphone, released once').toEqual({ opened: 1, released: 1 });
     await wait(DRAFT_SAVE_DEBOUNCE_MS);
@@ -335,7 +334,7 @@ describe('leaving the session view (the composer unmounts)', () => {
     expect(transcriptions, 'positive control: the audio went for transcription').toBe(1);
     first.unmount();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(storedDraft('leave-land'), "the words are the session's draft, flagged as dictated").toEqual({ text: 'hello spoken', transcribed: true });
     mount(inst('leave-land'));
     expect(box().value).toBe('hello spoken');
@@ -354,7 +353,7 @@ describe('leaving the session view (the composer unmounts)', () => {
     expect(label(), 'the other session shows the running recording').toBe('Stop recording');
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value, "the other session's box stays empty").toBe('');
     expect(storedDraft('leave-to'), 'the other session has no draft').toBeNull();
     expect(storedDraft('leave-from'), "the words are the starting session's draft, flagged").toEqual({ text: 'from text spoken', transcribed: true });
@@ -388,7 +387,7 @@ describe('a transcript with no words', () => {
     release();
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(button().disabled, 'positive control: the transcription finished').toBe(false);
     await wait(DRAFT_SAVE_DEBOUNCE_MS);
     expect(storedDraft('words-empty'), 'the typed text is not flagged as dictated').toEqual({ text: 'typed', transcribed: false });
@@ -405,7 +404,7 @@ describe('a transcript with no words', () => {
     release();
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(button().disabled, 'positive control: the transcription finished').toBe(false);
     await wait(DRAFT_SAVE_DEBOUNCE_MS);
     expect(storedDraft('words-blank'), 'the typed text is not flagged as dictated').toEqual({ text: 'typed', transcribed: false });
@@ -426,7 +425,7 @@ describe('a transcript with no words', () => {
     expect(storedDraft('words-empty-a'), "positive control: A's text is stored").toEqual({ text: 'typed in A', transcribed: false });
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(label(), "the transcription finished; B's box is still empty").toBe('Dictate');
     expect(storedDraft('words-empty-a')).toEqual({ text: 'typed in A', transcribed: false });
     c.swap(inst('words-empty-a'));
@@ -444,7 +443,7 @@ describe('a transcript with no words', () => {
     expect(storedDraft('words-blank-a'), "positive control: A's text is stored").toEqual({ text: 'typed in A', transcribed: false });
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(label(), "the transcription finished; B's box is still empty").toBe('Dictate');
     expect(storedDraft('words-blank-a')).toEqual({ text: 'typed in A', transcribed: false });
     c.swap(inst('words-blank-a'));
@@ -469,7 +468,7 @@ describe('the transcription', () => {
     expect(transcriptions, 'a press while it transcribes posts nothing more').toBe(1);
     expect(sent, 'and sends nothing').toEqual([]);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(button().disabled).toBe(false);
     expect(box().value).toBe('hello spoken');
   });
@@ -485,7 +484,7 @@ describe('the transcription', () => {
     release();
     await tap();
     expect(transcriptions, 'positive control: the audio went for transcription').toBe(1);
-    await flushMicrotasks();
+    await settle();
     expect(error, 'the failure is shown to the user').toHaveBeenCalledTimes(1);
     expect(String(error.mock.calls[0][1]), "with the server's reason").toMatch(/whisper failed/);
     expect(button().disabled, 'the button is usable again').toBe(false);
@@ -505,7 +504,7 @@ describe('the transcription', () => {
     await holdToRecord();
     release();
     await tap();
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'positive control: the audio went for transcription').toBe(1);
     expect(error.mock.calls).toEqual([['Transcription failed', 'whisper.cpp not installed']]);
     expect(label(), 'the composer is idle again').toBe('Send');
@@ -520,7 +519,7 @@ describe('the transcription', () => {
     await holdToRecord();
     release();
     await tap();
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'positive control: the audio went for transcription').toBe(1);
     expect(error.mock.calls).toEqual([['Transcription failed', SERVER_UNREACHABLE_MESSAGE]]);
     expect(label(), 'the composer is idle again').toBe('Send');
@@ -587,10 +586,10 @@ describe('holding Space or Enter on Send with text in the box', () => {
     expect(transcriptions, 'nothing is transcribed yet').toBe(0);
     keyDown(' ');
     keyUp(' ');
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'a Space press stops it and sends the audio for transcription').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value, 'the transcript is appended with one space').toBe('hello spoken');
     expect(sent).toEqual([]);
   });
@@ -609,10 +608,10 @@ describe('holding Space or Enter on Send with text in the box', () => {
     expect(transcriptions).toBe(0);
     keyDown('Enter');
     keyUp('Enter');
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'an Enter press stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 
@@ -623,7 +622,7 @@ describe('holding Space or Enter on Send with text in the box', () => {
     keyDown('Enter');
     for (let i = 0; i < 3; i++) { await wait(100); keyDown('Enter', { repeat: true }); }
     keyUp('Enter');
-    await flushMicrotasks();
+    await settle();
     expect(sentTexts(), 'a short press with repeats sends once').toEqual(['one']);
     type('two');
     keyDown('Enter');
@@ -632,16 +631,16 @@ describe('holding Space or Enter on Send with text in the box', () => {
     await wait(100);
     expect(label(), 'positive control: the hold started a recording').toBe('Stop recording');
     for (let i = 0; i < 5; i++) { await wait(100); keyDown('Enter', { repeat: true }); }
-    await flushMicrotasks();
+    await settle();
     expect(label(), 'repeats after the threshold leave it recording').toBe('Stop recording');
     expect(transcriptions).toBe(0);
     keyUp('Enter');
     expect(sentTexts(), 'nor send').toEqual(['one']);
     keyDown(' ');
     keyUp(' ');
-    await flushMicrotasks();
+    await settle();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('two spoken');
   });
 
@@ -652,19 +651,19 @@ describe('holding Space or Enter on Send with text in the box', () => {
     keyDown('Enter');
     keyDown('Enter', { repeat: true });
     keyDown('Enter', { repeat: true });
-    await flushMicrotasks();
+    await settle();
     expect(label()).toBe('Stop recording');
     keyDown('Enter', { repeat: true });
     keyUp('Enter');
-    await flushMicrotasks();
+    await settle();
     expect(microphone.opened, 'one microphone').toBe(1);
     expect(transcriptions, 'a repeat does not stop it').toBe(0);
     keyDown('Enter');
     keyUp('Enter');
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'a fresh press stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('spoken');
     expect(microphone).toEqual({ opened: 1, released: 1 });
   });
@@ -678,7 +677,7 @@ describe('holding Space or Enter on Send with text in the box', () => {
     act(() => box().focus());
     await wait(HOLD_MS * 2);
     fireEvent.keyUp(box(), { key: 'Enter' });
-    await flushMicrotasks();
+    await settle();
     expect(microphone.opened, 'the microphone never opened').toBe(0);
     expect(sent, 'nothing is sent').toEqual([]);
     expect(box().value).toBe('hello');
@@ -694,7 +693,7 @@ describe('holding Space or Enter on Send with text in the box', () => {
     fireEvent.keyDown(button(), { key: 'Escape' });
     await wait(HOLD_MS * 2);
     keyUp(' ');
-    await flushMicrotasks();
+    await settle();
     expect(microphone.opened, 'the microphone never opened').toBe(0);
     expect(sent, 'the release sends nothing').toEqual([]);
     expect(label()).toBe('Send');
@@ -722,10 +721,10 @@ describe('holding Space or Enter on Send with text in the box', () => {
     act(() => button().focus());
     keyDown(' ');
     keyUp(' ');
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'the next press stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 
@@ -739,10 +738,10 @@ describe('holding Space or Enter on Send with text in the box', () => {
     act(() => button().focus());
     keyDown('Enter');
     keyUp('Enter');
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'the key press stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 
@@ -759,7 +758,7 @@ describe('holding Space or Enter on Send with text in the box', () => {
     await wait(HOLD_MS * 2);
     expect(sentTexts(), 'a held Space sends nothing before its release').toEqual(['one']);
     keyUp(' ');
-    await flushMicrotasks();
+    await settle();
     expect(sentTexts(), 'and sends on its release').toEqual(['one', 'two']);
     expect(microphone.opened, 'the microphone never opened').toBe(0);
   });
@@ -776,7 +775,7 @@ describe('interleaved holds on Send: the newest gesture wins', () => {
     await wait(100);
     pressDown();
     release();
-    await flushMicrotasks();
+    await settle();
     expect(sentTexts(), 'the tap sends').toEqual(['one']);
     await wait(100);
     expect(keyUp('Enter'), "the key's release is still swallowed").toBe(false);
@@ -800,7 +799,7 @@ describe('interleaved holds on Send: the newest gesture wins', () => {
     keyDown('Enter');
     await wait(100);
     release();
-    await flushMicrotasks();
+    await settle();
     expect(sent, "the superseded pointer's release sends nothing").toEqual([]);
     await wait(HOLD_MS - 200);
     expect(microphone.opened, "nor does the pointer's hold complete").toBe(0);
@@ -827,7 +826,7 @@ describe('interleaved holds on Send: the newest gesture wins', () => {
     expect(microphone.opened, 'one microphone').toBe(1);
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
     expect(microphone).toEqual({ opened: 1, released: 1 });
   });
@@ -852,7 +851,7 @@ describe('interleaved holds on Send: the newest gesture wins', () => {
     expect(microphone.opened).toBe(1);
     await tap();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
   });
 });
@@ -870,7 +869,7 @@ describe('Escape on Send cancels whatever hold is pending', () => {
     await wait(HOLD_MS * 2);
     expect(microphone.opened, 'nothing records').toBe(0);
     release();
-    await flushMicrotasks();
+    await settle();
     expect(sent, "the pointer's release and click send nothing").toEqual([]);
     expect(keyUp('Enter'), "the key's release is swallowed").toBe(false);
     expect(sent, 'and sends nothing').toEqual([]);
@@ -894,7 +893,7 @@ describe('Escape on Send cancels whatever hold is pending', () => {
     await wait(HOLD_MS * 2);
     expect(microphone.opened, 'nothing records').toBe(0);
     release();
-    await flushMicrotasks();
+    await settle();
     expect(sent, 'the release sends nothing').toEqual([]);
     await tap();
     expect(sentTexts(), 'the next tap sends').toEqual(['hello']);
@@ -907,15 +906,15 @@ describe('the Alt+Enter shortcut in the message box', () => {
     type('hello');
     act(() => box().focus());
     expect(chord(), 'the chord is consumed').toBe(false);
-    await flushMicrotasks();
+    await settle();
     expect(label()).toBe('Stop recording');
     expect(document.activeElement === box(), 'the box keeps the focus').toBe(true);
     expect(sent, 'nothing is sent').toEqual([]);
     chord();
-    await flushMicrotasks();
+    await settle();
     expect(transcriptions, 'the second chord stops it').toBe(1);
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
     expect(sent).toEqual([]);
   });
@@ -924,18 +923,18 @@ describe('the Alt+Enter shortcut in the message box', () => {
     mount(inst('chord-empty'));
     act(() => box().focus());
     chord();
-    await flushMicrotasks();
+    await settle();
     expect(label(), 'the chord records on an empty box').toBe('Stop recording');
     chord();
-    await flushMicrotasks();
+    await settle();
     expect(label(), 'positive control: it is transcribing').toBe('Transcribing');
     expect(chord(), 'the chord is still consumed').toBe(false);
-    await flushMicrotasks();
+    await settle();
     expect(microphone.opened, 'no second recording').toBe(1);
     expect(transcriptions, 'no second transcription').toBe(1);
     expect(label()).toBe('Transcribing');
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('spoken');
     expect(sent).toEqual([]);
   });
@@ -946,18 +945,18 @@ describe('the Alt+Enter shortcut in the message box', () => {
     act(() => box().focus());
     chord();
     chord({ repeat: true });
-    await flushMicrotasks();
+    await settle();
     expect(label()).toBe('Stop recording');
     chord({ repeat: true });
     chord({ repeat: true });
-    await flushMicrotasks();
+    await settle();
     expect(label(), 'repeats leave it recording').toBe('Stop recording');
     expect(microphone.opened, 'one microphone').toBe(1);
     expect(transcriptions).toBe(0);
     chord();
-    await flushMicrotasks();
+    await settle();
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value).toBe('hello spoken');
     expect(microphone).toEqual({ opened: 1, released: 1 });
   });

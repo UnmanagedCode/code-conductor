@@ -12,6 +12,7 @@ import { performRestart } from '@/features/sidebar/restart';
 import { AboutSection, selfUpdateStore } from './AboutSection';
 import { claudeUpdateStore } from './ClaudeUpdateCard';
 import { pluginsStore } from './PluginsSection';
+import { settle } from '@/test/settle';
 
 const INITIAL_SELF = selfUpdateStore.get();
 const INITIAL_CLAUDE = claudeUpdateStore.get();
@@ -44,9 +45,6 @@ function heldCheck(status = 200) {
     release(json: unknown) { controller.enqueue(new TextEncoder().encode(JSON.stringify(json))); controller.close(); },
   };
 }
-
-// Long enough for a released check's body to be read and its settle handler to run.
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
 beforeEach(() => {
   selfUpdateStore.set(INITIAL_SELF);

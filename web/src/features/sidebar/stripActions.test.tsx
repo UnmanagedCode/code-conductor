@@ -7,6 +7,7 @@ import { CLOSE_TITLES } from '@shared/closeAction';
 import { entryReason } from '@shared/needsYou';
 import { autoResumeBadge } from '@shared/usage';
 import { conductor, conductorRowOf, hand, proj, seed, stripBadgeOf, stripClosesOf, stripEntryOf, stripSids, wt } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -34,8 +35,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 const reseed = (over: Parameters<typeof seed>[0]) => act(() => seed(over));
 const ask = (awaitingUser: 'question' | 'plan', awaitingUserSource: 'tool' | 'text') => ({ awaitingUser, awaitingUserSource });
 /** A strip entry's ×: the one button in its row besides the entry. */

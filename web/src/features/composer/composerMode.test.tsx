@@ -8,6 +8,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { voiceStore } from '@/features/voice/store';
 import type { Instance } from '@/state/types';
 import { Composer } from './Composer';
+import { settle } from '@/test/settle';
 
 const inst = (extra: Partial<Instance> = {}): Instance => ({ id: 'i-mode', project: 'demo', status: 'idle', sessionId: 'sess-mode', mode: 'x', ...extra });
 
@@ -34,7 +35,6 @@ function mount(i: Instance) {
   return { ...r, box: () => screen.getByLabelText('Message') as HTMLTextAreaElement };
 }
 const type = (box: HTMLTextAreaElement, v: string) => fireEvent.change(box, { target: { value: v } });
-const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); });
 const root = (c: HTMLElement) => c.querySelector('[data-composer]') as HTMLElement;
 const dropOf = (files: File[]) => ({ dataTransfer: { files, types: ['Files'] } });
 

@@ -69,5 +69,3 @@ export function runBridge({ top = false, pathname = '/plugins/hub/a', origin = '
   return { posted, win, click, hist, listeners, docListeners, contentLoaded, frameRoot, hostRoot };
 }
 
-/** Lets pending MutationObserver callbacks run. */
-export const observerTurn = () => new Promise<void>((r) => setTimeout(r, 0));

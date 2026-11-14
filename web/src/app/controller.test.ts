@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -44,7 +45,7 @@ async function boot({ instances = [] as any[], locate = null as null | ((sid: st
   c.startController();
   stopPrevious = c.stopController;
   const emit = (t: string, detail: any) => ws.bus.dispatchEvent(new CustomEvent(t, { detail }));
-  const open = async () => { emit('open', {}); for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0)); };
+  const open = async () => { emit('open', {}); await settle(); };
   return { c, ws, actions, fetch, appStore, getUsageTracker, getTaskTracker, rateLimits, trackerSignal, selects, emit, open };
 }
 

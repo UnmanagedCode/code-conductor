@@ -3,11 +3,12 @@
 // every other link is unchanged.
 import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { Markdown } from './Markdown';
 import { classifyLink } from './viewLinks';
 import { routeStore, syncRoute } from '@/state/route';
 import { clickLink } from '@/test/linkClick';
+import { settle } from '@/test/settle';
 
 const ANCHOR = '#session=sess-1';
 
@@ -19,7 +20,6 @@ afterEach(() => { cleanup(); });
 
 const view = () => routeStore.get().route;
 const para = (c: HTMLElement) => c.querySelector('p') as HTMLElement;
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
 const ROUTED: { href: string; view: string; path?: string }[] = [
   { href: '#plugin/code-review/?review=r-9&thread=t-7', view: 'plugin', path: '?review=r-9&thread=t-7' },

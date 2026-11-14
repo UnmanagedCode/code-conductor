@@ -10,9 +10,10 @@ import { routeFetch } from '@/test/routeFetch';
 import { formatAgo } from '@/lib/time';
 import { A, ALPHA, conductor, el, hand, openOf, proj, sectionLeadFleet, seed, worker, wt } from '@/test/sidebarFleet';
 import {
-  bandOf, filterInput, isOpen, marksIn, rowIds, rowsRoute, sessionsToggleOf, settleSearch, shownProjects, typeFilter,
+  bandOf, filterInput, isOpen, marksIn, rowIds, rowsRoute, sessionsToggleOf, advanceSearch, shownProjects, typeFilter,
   worktreesToggleOf,
 } from '@/test/textFilter';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({ selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn() }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -61,7 +62,7 @@ const calls = () => routeFetch({
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
 /** Types a query and lets the search load every list it needs. */
-const search = async (q: string) => { await typeFilter(q); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS); };
+const search = async (q: string) => { await typeFilter(q); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS); };
 const trigger = () => screen.getByRole('combobox', { name: 'Filter by conductor' });
 const summaryOf = (key: string) => el(`[data-sessions-summary="${key}"]`).textContent ?? '';
 const clearFromEmptyState = () => act(async () => { fireEvent.click(within(el('[data-filter-empty]')).getByRole('button', { name: 'Clear filter' })); });
@@ -183,7 +184,6 @@ describe('what a narrowed project lists', () => {
 
 describe('a scope without a query', () => {
   const opsMembers = () => [...document.querySelectorAll('[data-workspace="Ops"] [data-project-row]')].map((e) => e.getAttribute('data-project-row'));
-  const settle = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
   it('Hand lists only the Ops members with hand sessions, and the band still counts all three', async () => {
     // Pins: the band count is unfiltered by a scope; only the text filter changes it.
@@ -375,16 +375,16 @@ describe('the conductor scope', () => {
     await search('lint');
     expect(shownProjects()).toEqual(['tools']);
     chooseOption(trigger(), 'Hand-spawned only');
-    await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(shownProjects()).toEqual(['tools']);
     await search('wa-w');
     expect(el('[data-filter-empty]')).toBeTruthy(); // Hand: the conducted row is not listed
     chooseOption(trigger(), 'All sessions');
-    await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(shownProjects()).toEqual(['shop']);
     await search('lint');
     chooseOption(trigger(), ALPHA);
-    await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(el('[data-filter-empty]')).toBeTruthy(); // A owns nothing named lint
   });
 });

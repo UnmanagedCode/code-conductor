@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { voiceStore } from './store';
 import { __markInteractedForTests, __resetTtsForTests, getCurrentSpeakToken, maybeAutoSpeak, requestSpeak, speakStore, stop, toggleSpeak } from './tts';
+import { settle } from '@/test/settle';
 
 type FakeSource = { buffer: unknown; started: number | null; stopped: boolean; onended: (() => void) | null; connect: () => void; start: (t: number) => void; stop: () => void };
 
@@ -35,8 +36,6 @@ function framed(...payloads: number[]) {
   return all;
 }
 
-const flush = () => new Promise((r) => setTimeout(r, 0));
-
 beforeEach(() => {
   __resetTtsForTests();
   sources = [];
@@ -56,7 +55,7 @@ describe('read aloud', () => {
   it('speaks a tapped message: posts the markdown-stripped text and schedules one source per frame', async () => {
     requestSpeak('**Hello** `world`', 'n1');
     expect(speakStore.get().activeNodeId).toBe('n1');
-    await flush(); await flush();
+    await settle(); await settle();
     expect(ttsBodies).toHaveLength(1);
     expect(ttsBodies[0]).not.toMatch(/[*`]/);
     expect(sources).toHaveLength(2);
@@ -65,7 +64,7 @@ describe('read aloud', () => {
 
   it('turns the button back off when playback ends naturally', async () => {
     requestSpeak('Hello there.', 'n1');
-    await flush(); await flush();
+    await settle(); await settle();
     for (const s of sources) s.onended?.();
     expect(getCurrentSpeakToken()).toBeNull();
     expect(speakStore.get().activeNodeId).toBeNull();
@@ -73,7 +72,7 @@ describe('read aloud', () => {
 
   it('a second tap on the speaking message stops it', async () => {
     toggleSpeak('Hello there.', 'n1');
-    await flush(); await flush();
+    await settle(); await settle();
     toggleSpeak('Hello there.', 'n1');
     expect(sources.every((s) => s.stopped)).toBe(true);
     expect(speakStore.get().activeNodeId).toBeNull();
@@ -81,7 +80,7 @@ describe('read aloud', () => {
 
   it('tapping another message switches to it', async () => {
     requestSpeak('First.', 'n1');
-    await flush(); await flush();
+    await settle(); await settle();
     const first = [...sources];
     requestSpeak('Second.', 'n2');
     expect(first.every((s) => s.stopped)).toBe(true);
@@ -91,7 +90,7 @@ describe('read aloud', () => {
   it('does nothing while TTS is unavailable', async () => {
     voiceStore.set({ ttsAvailable: false });
     requestSpeak('Hello.', 'n1');
-    await flush();
+    await settle();
     expect(fetch).not.toHaveBeenCalled();
     expect(speakStore.get().activeNodeId).toBeNull();
   });
@@ -101,12 +100,12 @@ describe('auto-speak', () => {
   it('waits for a user gesture and the Speech setting', async () => {
     voiceStore.set({ ttsEnabled: true });
     maybeAutoSpeak('Finished the task.', 'n1');
-    await flush();
+    await settle();
     expect(fetch).not.toHaveBeenCalled();
     __markInteractedForTests();
     voiceStore.set({ ttsEnabled: false });
     maybeAutoSpeak('Finished the task.', 'n1');
-    await flush();
+    await settle();
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -116,10 +115,10 @@ describe('auto-speak', () => {
     maybeAutoSpeak('One.', 'n1');
     maybeAutoSpeak('Two.', 'n2');
     expect(speakStore.get().activeNodeId).toBe('n1');
-    await flush(); await flush();
+    await settle(); await settle();
     expect(ttsBodies).toEqual(['One.']);
     for (const s of sources) s.onended?.();
-    await flush(); await flush();
+    await settle(); await settle();
     expect(ttsBodies).toEqual(['One.', 'Two.']);
     expect(speakStore.get().activeNodeId).toBe('n2');
     stop();

@@ -9,7 +9,8 @@ import { emit } from '@/app/events';
 import { uiStore } from '@/app/ui';
 import { held, routeFetch, type RouteAnswer, type RoutedCall } from '@/test/routeFetch';
 import { A, ALPHA, conductor, el, hand, proj, seed, worker } from '@/test/sidebarFleet';
-import { rowIds, rowsRoute, sessionGets, sessionsToggleOf, settleSearch, typeFilter } from '@/test/textFilter';
+import { rowIds, rowsRoute, sessionGets, sessionsToggleOf, advanceSearch, typeFilter } from '@/test/textFilter';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({ selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn() }));
 vi.mock('@/features/views/AppSwitcher', () => ({ AppSwitcher: () => null }));
@@ -22,7 +23,6 @@ const { resetSessionSearch, SESSION_SEARCH_DEBOUNCE_MS, SESSION_SEARCH_CONCURREN
 
 const summary = (count: number, handCount = count, lastActivity = 1) => ({ count, archivedCount: 0, handCount, lastActivity });
 const urls = (calls: RoutedCall[]) => sessionGets(calls).map((c) => c.url);
-const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
 const disk = (sessionId: string, firstPrompt: string) => ({ sessionId, firstPrompt, lastActivity: 1 });
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
 const placeNames = (n: number) => Array.from({ length: n }, (_, i) => `p${i + 1}`);
@@ -54,7 +54,7 @@ describe('the session loader', () => {
     renderSidebar();
     for (const q of ['l', 'lo', 'log']) { await typeFilter(q); await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS - 1); }); }
     expect(sessionGets(calls)).toHaveLength(0);
-    await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(urls(calls).sort()).toEqual(['/api/projects/p1/sessions', '/api/projects/p2/sessions', '/api/projects/p3/sessions']);
   });
 
@@ -63,13 +63,13 @@ describe('the session loader', () => {
     seedPlaces(['p1', 'p2']);
     const calls = routeFetch({ 'GET /api/projects/': rowsRoute([]) });
     renderSidebar();
-    await typeFilter('login'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('login'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(2);
-    for (const q of ['logi', 'login', 'x']) { await typeFilter(q); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS); }
+    for (const q of ['logi', 'login', 'x']) { await typeFilter(q); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS); }
     expect(sessionGets(calls)).toHaveLength(2);
-    await typeFilter(''); await flush();
+    await typeFilter(''); await settle();
     invalidateSessions(); // a session start or stop wipes the cache between searches
-    await typeFilter('login'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('login'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(4);
   });
 
@@ -80,13 +80,13 @@ describe('the session loader', () => {
     const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
     const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
     renderSidebar();
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
     gates.get('p1')!.release({ json: [] });
-    await flush();
+    await settle();
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY + 1);
     for (const g of gates.values()) g.release({ json: [] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(10);
   });
 
@@ -99,7 +99,7 @@ describe('the session loader', () => {
       'GET /api/projects/p2/sessions': rowsRoute([disk('d-2', 'alpha two')]),
     });
     renderSidebar();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(rowIds('p1')).toEqual(['d-1']);
     expect(rowIds('p2')).toEqual(['d-2']);
     const before = sessionGets(calls).length;
@@ -110,13 +110,13 @@ describe('the session loader', () => {
         projects: [proj('p1', { sessions: summary(2, 2, 9) }), proj('p2', { sessions: summary(1) })],
       });
     });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(urls(calls).slice(before)).toEqual(['/api/projects/p1/sessions']);
     expect(rowIds('p1')).toEqual(['d-1', 'd-3']);
     expect(rowIds('p2')).toEqual(['d-2']);
     const afterWipe = sessionGets(calls).length;
     await act(async () => { emit('sessionsStale', { project: 'p2', worktree: null }); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(urls(calls).slice(afterWipe)).toEqual(['/api/projects/p2/sessions']);
   });
 
@@ -126,14 +126,14 @@ describe('the session loader', () => {
     const calls = routeFetch({ 'GET /api/projects/': rowsRoute([]) });
     renderSidebar();
     await act(async () => { sidebarStore.set({ filter: 'hand' }); });
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(urls(calls)).toEqual(['/api/projects/p2/sessions']);
-    await typeFilter(''); await flush();
+    await typeFilter(''); await settle();
     invalidateSessions();
     seed({ projects: [proj('p1', { sessions: summary(1) })], workspaces: [], instances: [conductor(A, { title: ALPHA }), worker('wa-w', A, 'p1')] });
     await act(async () => { sidebarStore.set({ filter: A }); });
     const before = sessionGets(calls).length;
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(before);
     expect(calls.some((c) => c.url.includes('includeArchived'))).toBe(false);
   });
@@ -147,15 +147,15 @@ describe('the session loader', () => {
       'GET /api/projects/p-fail/sessions': () => new Error('boom'),
     });
     renderSidebar();
-    await typeFilter('needle'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('needle'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(document.querySelector('[data-filter-pending]')).toBeTruthy();
     gate.release({ json: [disk('d-ok', 'needle disk')] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(document.querySelector('[data-filter-pending]')).toBeNull();
     expect(rowIds('p-ok')).toEqual(['d-ok']);
     expect(el('[data-session-row="h-live"]')).toBeTruthy();
     const before = sessionGets(calls).length;
-    await typeFilter('needle l'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('needle l'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(before);
   });
 
@@ -166,12 +166,12 @@ describe('the session loader', () => {
     const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
     const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
     renderSidebar();
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
-    await typeFilter(''); await flush();
+    await typeFilter(''); await settle();
     expect(document.querySelector('[data-filter-pending]')).toBeNull();
     for (const g of gates.values()) g.release({ json: [] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
   });
 
@@ -182,13 +182,13 @@ describe('the session loader', () => {
     let n = 0;
     const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-new', 'alpha new')] }) });
     renderSidebar();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(1);
     await act(async () => {
       appStore.set({ instances: [hand('h-new', 'p1', null, { firstPrompt: 'beta' })], projects: [proj('p1', { sessions: summary(2, 2, 9) })] });
     });
     first.release({ json: [disk('d-old', 'alpha old')] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(2);
     expect(rowIds('p1')).toEqual(['d-new']);
   });
@@ -199,10 +199,10 @@ describe('the session loader', () => {
     const calls = routeFetch({ 'GET /api/projects/': rowsRoute([]) });
     renderSidebar();
     await act(async () => { sidebarStore.set({ filter: 'hand' }); });
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(urls(calls)).toEqual(['/api/projects/p2/sessions']);
     await act(async () => { sidebarStore.set({ filter: '' }); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(urls(calls)).toEqual(['/api/projects/p2/sessions', '/api/projects/p1/sessions']);
   });
 
@@ -213,11 +213,11 @@ describe('the session loader', () => {
     const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
     const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
     renderSidebar();
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
     await act(async () => { sidebarStore.set({ filter: A }); });
     for (const g of gates.values()) g.release({ json: [] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
   });
 
@@ -232,17 +232,17 @@ describe('the session loader', () => {
     const outstanding = () => urls(calls).filter((u) => !released.has(u.split('/')[3])).length;
     renderSidebar();
     await act(async () => { sidebarStore.set({ filter: 'hand' }); });
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(urls(calls)).toEqual(['p5', 'p6', 'p7', 'p8'].map((n) => `/api/projects/${n}/sessions`));
-    await typeFilter(''); await flush();
+    await typeFilter(''); await settle();
     await act(async () => { sidebarStore.set({ filter: '' }); });
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(outstanding()).toBe(SESSION_SEARCH_CONCURRENCY);
     released.add('p5'); gates.get('p5')!.release({ json: [] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(outstanding()).toBe(SESSION_SEARCH_CONCURRENCY);
     for (const [n, g] of gates) { released.add(n); g.release({ json: [] }); }
-    await flush(); await flush(); await flush();
+    await settle(); await settle(); await settle();
     expect(new Set(urls(calls)).size).toBe(10);
   });
 
@@ -258,7 +258,7 @@ describe('the session loader', () => {
       'GET /api/projects/p2/sessions': rowsRoute([disk('d-2', 'alpha two')]),
     });
     renderSidebar();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(rowIds('p1')).toEqual(['d-1']);
     await act(async () => { sessionsToggleOf('p1')!.click(); });
     expect(rowIds('p1')).toEqual([]);
@@ -274,7 +274,7 @@ describe('the session loader', () => {
         projects: [proj('p1', { sessions: summary(2, 2, 1) }), proj('p2', { sessions: summary(1) })],
       });
     });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(urls(calls).slice(before)).toEqual(['/api/projects/p1/sessions']);
   });
 
@@ -283,7 +283,7 @@ describe('the session loader', () => {
     const { calls, before } = await loadedWithP1Collapsed();
     invalidateSessions(); // what a turn ending does to that place's list; the summary then changes
     await act(async () => { appStore.set({ projects: [proj('p1', { sessions: summary(1, 1, 9) }), proj('p2', { sessions: summary(1) })] }); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(urls(calls).slice(before)).toEqual(['/api/projects/p1/sessions']);
   });
 
@@ -292,10 +292,10 @@ describe('the session loader', () => {
     seedPlaces(['p-fail']);
     const calls = routeFetch({ 'GET /api/projects/p-fail/sessions': () => new Error('boom') });
     renderSidebar();
-    await typeFilter('needle'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('needle'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(1);
     await act(async () => { invalidateSessions(); });
-    await typeFilter('needle l'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('needle l'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(1);
   });
 
@@ -307,19 +307,19 @@ describe('the session loader', () => {
     const gates = new Map(hung.map((n) => [n, held<RouteAnswer>()]));
     const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => (gates.has(n) ? gates.get(n)!.answer : { json: [] })])));
     renderSidebar();
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(urls(calls)).toEqual(hung.map((n) => `/api/projects/${n}/sessions`));
-    await typeFilter(''); await flush();
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter(''); await settle();
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(urls(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
     expect(document.querySelector('[data-filter-pending]')).toBeTruthy();
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(urls(calls)).toContain('/api/projects/p5/sessions');
     expect(document.querySelector('[data-filter-pending]')).toBeNull();
     // The hung requests are never cancelled, so end them here: the cache's in-flight latch outlives the test.
     for (const g of gates.values()) g.release({ json: [] });
-    await flush(); await flush();
+    await settle(); await settle();
   });
 
   it('lets the new search record a place whose load from an ended search settles into it', async () => {
@@ -329,14 +329,14 @@ describe('the session loader', () => {
     let n = 0;
     const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-1', 'alpha one')] }) });
     renderSidebar();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
-    await typeFilter(''); await flush();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS); // the new search is running; p1's old request still holds its slot
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter(''); await settle();
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS); // the new search is running; p1's old request still holds its slot
     expect(sessionGets(calls)).toHaveLength(1);
     first.release({ json: [disk('d-1', 'alpha one')] });
-    await flush(); await flush();
+    await settle(); await settle();
     await act(async () => { invalidateSessions(); }); // a wipe with the fingerprint unchanged
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(1);
     expect(rowIds('p1')).toEqual(['d-1']);
   });
@@ -348,14 +348,14 @@ describe('the session loader', () => {
     let n = 0;
     const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : { json: [disk('d-1', 'alpha one')] }) });
     renderSidebar();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
-    await typeFilter(''); await flush();
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter(''); await settle();
     await typeFilter('alpha');
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS - 1); }); // the new search is still debouncing
     first.release({ json: [disk('d-1', 'alpha one')] });
-    await flush(); await flush();
+    await settle(); await settle();
     await act(async () => { invalidateSessions(); });
-    await settleSearch(1);
+    await advanceSearch(1);
     expect(sessionGets(calls)).toHaveLength(2);
     expect(rowIds('p1')).toEqual(['d-1']);
   });
@@ -386,15 +386,15 @@ describe('the session loader', () => {
     const gate = held<RouteAnswer>();
     const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => gate.answer });
     renderSidebar();
-    await typeFilter('p1'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('p1'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(1);
     await act(async () => { sessionsToggleOf('p1')!.click(); }); // the user opens the group: its load coalesces onto the loader's
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(el('[data-sessions="p1"]').textContent).toContain('Loading');
     expect(document.body.textContent).not.toContain("Couldn't load");
     gate.release({ json: [disk('d-1', 'one')] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(rowIds('p1')).toEqual(['d-1']);
     expect(document.body.textContent).not.toContain("Couldn't load");
     expect(sessionGets(calls)).toHaveLength(1);
@@ -406,13 +406,13 @@ describe('the session loader', () => {
     const gate = held<RouteAnswer>();
     const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => gate.answer });
     renderSidebar();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(document.querySelector('[data-filter-pending]')).toBeNull();
     expect(rowIds('p1')).toEqual([]);
     gate.release({ json: [disk('d-1', 'alpha one')] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(rowIds('p1')).toEqual(['d-1']);
     expect(sessionGets(calls)).toHaveLength(1);
   });
@@ -424,19 +424,19 @@ describe('the session loader', () => {
     const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
     const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
     renderSidebar();
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     expect(sessionGets(calls)).toHaveLength(SESSION_SEARCH_CONCURRENCY);
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(urls(calls)).toEqual(names.slice(0, 8).map((n) => `/api/projects/${n}/sessions`)); // p1..p4 released, p5..p8 counted
     for (const n of ['p1', 'p2']) gates.get(n)!.release({ json: [] }); // late settles of released requests
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(8);
     gates.get('p5')!.release({ json: [] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(9);
     for (const g of gates.values()) g.release({ json: [] });
-    await flush(); await flush(); await flush();
+    await settle(); await settle(); await settle();
   });
 
   it('refetches a place whose fingerprint changed while its released request was still loading, without a second request in the meantime', async () => {
@@ -447,25 +447,25 @@ describe('the session loader', () => {
     let n = 0;
     const calls = routeFetch({ 'GET /api/projects/p1/sessions': () => (n++ === 0 ? first.answer : second.answer) });
     renderSidebar();
-    await typeFilter('alpha'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS);
+    await typeFilter('alpha'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS);
     await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_SEARCH_TIMEOUT_MS); }); // the request is released, still loading
-    await flush();
+    await settle();
     await act(async () => { appStore.set({ projects: [proj('p1', { sessions: summary(2, 2, 9) })] }); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(1);
     first.release({ json: [disk('d-old', 'alpha old')] });
-    await flush(); await flush(); await flush();
+    await settle(); await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(2);
     // While the refetch is outstanding the pre-change rows are neither cached nor held, so nothing lists them.
     expect(rowIds('p1')).toEqual([]);
     expect(document.body.textContent).not.toContain('alpha old');
     second.release({ json: [disk('d-new', 'alpha new')] });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(2);
     expect(rowIds('p1')).toEqual(['d-new']);
     // The new rows are the ones held: a wipe at the unchanged fingerprint refetches nothing and keeps them listed.
     await act(async () => { invalidateSessions(); });
-    await flush(); await flush();
+    await settle(); await settle();
     expect(sessionGets(calls)).toHaveLength(2);
     expect(rowIds('p1')).toEqual(['d-new']);
   });
@@ -477,17 +477,17 @@ describe('the session loader', () => {
     const gates = new Map(names.map((n) => [n, held<RouteAnswer>()]));
     const calls = routeFetch(Object.fromEntries(names.map((n) => [`GET /api/projects/${n}/sessions`, () => gates.get(n)!.answer])));
     renderSidebar();
-    await typeFilter('x'); await settleSearch(SESSION_SEARCH_DEBOUNCE_MS); // p1..p4 running, p5 and p6 queued
+    await typeFilter('x'); await advanceSearch(SESSION_SEARCH_DEBOUNCE_MS); // p1..p4 running, p5 and p6 queued
     for (let i = 0; i < 2; i++) await act(async () => { appStore.set({}); }); // two re-plans over the queued places
     gates.get('p1')!.release({ json: [] });
-    await flush(); await flush(); // p5 starts
+    await settle(); await settle(); // p5 starts
     gates.get('p5')!.release({ json: [] });
-    await flush(); await flush(); // p5 settles, p6 starts; a duplicate p5 would still be queued
+    await settle(); await settle(); // p5 settles, p6 starts; a duplicate p5 would still be queued
     await act(async () => { invalidateSessions(); }); // a wipe at an unchanged fingerprint: a duplicate p5 would now refetch
     gates.get('p6')!.release({ json: [] });
-    await flush(); await flush();
+    await settle(); await settle();
     for (const g of gates.values()) g.release({ json: [] });
-    await flush(); await flush(); await flush();
+    await settle(); await settle(); await settle();
     expect(urls(calls).filter((u) => u.includes('/p5/'))).toHaveLength(1);
     expect(urls(calls)).toHaveLength(6);
   });

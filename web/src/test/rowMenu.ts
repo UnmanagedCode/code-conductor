@@ -2,8 +2,7 @@
 // It opens on focus + ArrowDown. While it is open Radix hides the rest of the
 // page from role queries, so close it before any getByRole outside it.
 import { act, fireEvent, screen, within } from '@testing-library/react';
-
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+import { settle } from './settle';
 
 /** The row's ⋮ trigger, by its accessible name (`Project menu`, `Worktree menu`). */
 export const rowMenuTrigger = (row: HTMLElement, name: string) => within(row).getByRole('button', { name });

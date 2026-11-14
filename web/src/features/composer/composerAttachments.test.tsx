@@ -22,6 +22,7 @@ import { voiceStore } from '@/features/voice/store';
 import type { Instance } from '@/state/types';
 import { Composer } from './Composer';
 import { DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS } from './drafts';
+import { settle } from '@/test/settle';
 
 // Each test uses session ids no other test uses: pending lists and drafts live at module scope and
 // outlive a test's unmount. A test that gives a spawning instance (no session id) a list ends by
@@ -111,10 +112,6 @@ function heldImage(name: string, body: string) {
   Object.defineProperty(file, 'arrayBuffer', { value: async () => { await gate; return new TextEncoder().encode(body).buffer; } });
   return { file, open };
 }
-/** Lets encodes and React updates land (real timers). */
-const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); });
-/** Lets the recorder → transcription → delivery chain land; it runs on microtasks, so timers may be fake. */
-const flushMicrotasks = () => act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); });
 /** Taps the mic to record, then again to stop: the transcription is held until `releaseTranscript()`. */
 async function recordAndStop() {
   await act(async () => { fireEvent.click(micButton()); });
@@ -418,7 +415,7 @@ describe('dictation delivery', () => {
     expect(box().value, 'positive control: A shows its draft again').toBe('earlier');
     const writes = vi.spyOn(localStorage, 'setItem');
     releaseTranscript();
-    await flushMicrotasks();
+    await settle();
     expect(box().value, 'joined into the box once').toBe('earlier spoken');
     expect(writes.mock.calls.filter(([key]) => key === DRAFT_KEY_PREFIX + 'back-a'), 'the delivery does not write the draft directly').toEqual([]);
     vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS);

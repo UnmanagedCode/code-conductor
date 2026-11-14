@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, waitFor } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
 vi.mock('@/app/sessionActions', () => ({
@@ -59,8 +60,6 @@ const fetchMock = vi.fn(async (url: string) => {
 
 /** Delivers one server message to the controller, as the socket does. */
 const hint = (t: string, detail: Record<string, unknown> = {}) => act(async () => { bus.dispatchEvent(new CustomEvent(t, { detail })); });
-/** Lets pending reads resolve and React re-render. */
-const settle = () => act(async () => { for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0)); });
 
 const rows = () => [...document.querySelectorAll('[data-project-row]')].map((e) => e.getAttribute('data-project-row')).sort();
 const groups = () => [...document.querySelectorAll('section[data-workspace]')].map((e) => e.getAttribute('data-workspace')).sort();

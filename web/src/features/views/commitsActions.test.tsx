@@ -11,6 +11,7 @@ import { held, routeFetch, type RouteAnswer, type RoutedCall } from '@/test/rout
 import { CommitsView } from './CommitsView';
 import { viewStore } from './api';
 import type { CommitsPayload } from './commitsModel';
+import { settle } from '@/test/settle';
 
 const sha = (c: string) => c.repeat(40);
 /** A one-commit history whose head commit's subject is `subject`, with a working-tree row. */
@@ -43,7 +44,6 @@ function heldResult() {
   return { promise: h.answer, release: async (result: WorktreeOpResult | null) => { await act(async () => { h.release(result); }); await settle(); } };
 }
 
-const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); });
 async function show(project: string, worktree: string | null) {
   await act(async () => { viewStore.set({ commits: { project, worktree } }); });
   await settle();

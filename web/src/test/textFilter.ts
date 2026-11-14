@@ -3,6 +3,7 @@
 import { act, fireEvent } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { RoutedCall, Route } from './routeFetch';
+import { settle } from './settle';
 
 export const filterInput = () => document.querySelector('[data-filter-input]') as HTMLInputElement;
 
@@ -11,10 +12,10 @@ export async function typeFilter(text: string) {
   await act(async () => { fireEvent.change(filterInput(), { target: { value: text } }); });
 }
 
-/** Lets the debounce elapse and every answered load settle (fake timers must be installed). */
-export async function settleSearch(ms: number) {
+/** Advances fake time by `ms` (the debounce), then lets every answered load settle (fake timers must be installed). */
+export async function advanceSearch(ms: number) {
   await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
-  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  await settle();
 }
 
 /** The project rows the list shows, in order. */

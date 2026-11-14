@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { routeFetch } from '@/test/routeFetch';
 import type { Project } from '@/state/types';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
 vi.mock('@/ui/feedback', () => ({
@@ -41,7 +42,6 @@ async function mount() {
   fireEvent.click(await screen.findByRole('button', { name: /^p/ }));
   const row = (sid: string) => document.querySelector(`[data-session="${sid}"]`) as HTMLElement;
   const buttons = (sid: string) => within(row(sid)).queryAllByRole('button').map((b) => b.textContent?.trim());
-  const settle = () => act(async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); });
   return { appStore, routeStore, calls, row, buttons, settle };
 }
 

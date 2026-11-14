@@ -10,6 +10,7 @@ import { consumeStashedAnchor, stashCurrentAnchorForRelaunch } from '@shared/anc
 import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import type { Instance, Project } from '@/state/types';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -53,17 +54,16 @@ async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAn
   const { appStore, activeInstance } = await import('@/state/app');
   c.startController();
   stop = c.stopController;
-  const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
-  const frame = async (t: string, detail: object = {}) => { ws.bus.dispatchEvent(new CustomEvent(t, { detail })); await flush(); };
+  const frame = async (t: string, detail: object = {}) => { ws.bus.dispatchEvent(new CustomEvent(t, { detail })); await settle(); };
   return {
-    c, appStore, calls, reads, flush, frame,
+    c, appStore, calls, reads, settle, frame,
     ended: () => appStore.get().ended,
     open: () => frame('open'),
     hint: () => frame('instances'),
     /** Answers the n-th instance read (1-based) with `list`, then lets everything it unblocks run. */
-    land: async (n: number, list: unknown[]) => { reads[n - 1].release({ json: list }); await flush(); },
+    land: async (n: number, list: unknown[]) => { reads[n - 1].release({ json: list }); await settle(); },
     /** Answers every instance read not answered yet with `list`. */
-    landRest: async (from: number, list: unknown[]) => { for (let n = from; n <= reads.length; n++) { reads[n - 1].release({ json: list }); await flush(); } },
+    landRest: async (from: number, list: unknown[]) => { for (let n = from; n <= reads.length; n++) { reads[n - 1].release({ json: list }); await settle(); } },
     active: () => activeInstance(appStore.get())?.id ?? null,
     ids: () => appStore.get().instances.map((i) => i.id),
     items: () => c.conversation.items.map((i) => i.type),
@@ -137,7 +137,7 @@ describe('restoring the URL-named session on first connect', () => {
     await b.hint();
     await b.land(1, [A, B]);
     await b.land(2, [A, B]);
-    await b.flush();
+    await b.settle();
     expect(b.active()).toBeNull();
     expect(location.hash).toBe('');
     expect(b.locates()).toBe(1);
@@ -169,7 +169,7 @@ describe('restoring the URL-named session on first connect', () => {
     expect(b.locates(), 'fixture check: the unlisted anchor is being looked up').toBe(1);
     b.c.selectInstance('iB', { userGesture: true });
     lookup.release(MISS);
-    await b.flush();
+    await b.settle();
     expect(location.hash).toBe('#session=s-b');
     expect(b.active()).toBe('iB');
     expect(b.subscribes()).toEqual(['iB']);
@@ -184,7 +184,7 @@ describe('restoring the URL-named session on first connect', () => {
     expect(b.locates(), 'fixture check: the unlisted anchor is being looked up').toBe(1);
     b.c.selectInstance('iB', { userGesture: true });
     lookup.release({ json: { project: 'p', worktreeName: null, archived: true } });
-    await b.flush();
+    await b.settle();
     expect(location.hash).toBe('#session=s-b');
     expect(b.active()).toBe('iB');
   });
@@ -198,7 +198,7 @@ describe('restoring the URL-named session on first connect', () => {
     expect(b.locates(), 'fixture check: the unlisted anchor is being looked up').toBe(1);
     b.c.selectInstance('iB', { userGesture: true });
     lookup.release(ON_DISK);
-    await b.flush();
+    await b.settle();
     await b.landRest(2, [A, B, D]);
     expect(b.posts()).toBe(0);
     expect(b.active()).toBe('iB');
@@ -215,7 +215,7 @@ describe('restoring the URL-named session on first connect', () => {
     b.c.selectInstance('iB', { userGesture: true });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     lookup.release(new Error('offline'));
-    await b.flush();
+    await b.settle();
     expect(warn).toHaveBeenCalledExactlyOnceWith('auto-resume from anchor failed', expect.objectContaining({ message: SERVER_UNREACHABLE_MESSAGE }));
     expect(location.hash).toBe('#session=s-b');
     expect(b.active()).toBe('iB');
@@ -230,7 +230,7 @@ describe('restoring the URL-named session on first connect', () => {
     await ctl.open();
     await ctl.land(1, [A, B]);
     ctlLookup.release(ON_DISK);
-    await ctl.flush();
+    await ctl.settle();
     await ctl.landRest(2, [A, B, D]);
     expect(ctl.active(), 'control: the restore alone resumes and opens the named session').toBe(D.id);
 
@@ -242,10 +242,10 @@ describe('restoring the URL-named session on first connect', () => {
     await b.land(1, [A, B]);
     expect(b.locates(), 'fixture check: the unlisted anchor is being looked up').toBe(1);
     history.back();
-    await b.flush();
+    await b.settle();
     expect(b.active(), 'fixture check: Back selected the session its entry names').toBe('iB');
     lookup.release(ON_DISK);
-    await b.flush();
+    await b.settle();
     await b.landRest(2, [A, B, D]);
     expect(b.posts()).toBe(0);
     expect(b.active()).toBe('iB');
@@ -318,14 +318,14 @@ describe('restoring the URL-named session on first connect', () => {
     await b.open();
     await b.land(1, [A]);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     expect(b.locates(), 'fixture check: the restore and the click are both looking up').toBe(2);
     lookups['s-x'].release(ON_DISK);
-    await b.flush();
+    await b.settle();
     await b.land(2, [A, X]);
     expect(b.active(), 'fixture check: the restore resumed and opened its session').toBe(X.id);
     lookups['s-y'].release(ON_DISK);
-    await b.flush();
+    await b.settle();
     await b.landRest(3, [A, X, Y]);
     await click;
     expect(b.posts()).toBe(2);
@@ -340,13 +340,13 @@ describe('restoring the URL-named session on first connect', () => {
     await b.open();
     await b.land(1, [A]);
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     expect(b.locates(), 'fixture check: the restore and the click are both looking up').toBe(2);
     lookups['s-y'].release(ON_DISK);
-    await b.flush();
+    await b.settle();
     expect(b.posts(), 'fixture check: the click is resuming').toBe(1);
     lookups['s-x'].release(ON_DISK);
-    await b.flush();
+    await b.settle();
     expect(b.posts(), 'fixture check: the restore resumed behind it').toBe(2);
     await b.land(2, [A, Y]);
     await b.land(3, [A, X, Y]);

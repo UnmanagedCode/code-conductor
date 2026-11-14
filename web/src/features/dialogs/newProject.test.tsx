@@ -25,6 +25,7 @@ import { loadCapabilities } from '@shared/capabilities';
 import { routeFetch, type Route, type RoutedCall } from '@/test/routeFetch';
 import { bubbleInputs, scrollersBetween } from '@/test/scrollRegion';
 import { SYSTEMS, chooseSystem, chooseTarget, findTargetSelect, findTargetText, listed, listedAnswer, pathNote, system, typePath } from '@/test/placementDriver';
+import { settle } from '@/test/settle';
 
 const CREATED = { name: 'demo', path: '/x', system: 'local' };
 const CONVENTIONS = [
@@ -42,13 +43,10 @@ function stub(extra: Record<string, Route> = {}) {
   });
 }
 
-/** Lets pending fetches and their state updates land. */
-const flush = () => act(async () => { for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(0); });
-
 async function openNew() {
   act(() => openNewProjectDialog());
   await system();
-  await flush();
+  await settle();
 }
 async function renderNew() {
   const r = render(<DialogsHost />);
@@ -475,7 +473,7 @@ describe('New project dialog', () => {
     render(<DialogsHost />);
     act(() => openNewProjectDialog());
     await screen.findByLabelText('Name');
-    await flush();
+    await settle();
     expect(loadCapabilities).toHaveBeenCalled();
     expect(screen.queryByRole('combobox', { name: 'System' })).toBeNull();
     expect(calls.some((c) => c.url === '/api/settings/systems')).toBe(false);

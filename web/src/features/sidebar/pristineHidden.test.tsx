@@ -7,6 +7,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import { selectOptions } from '@/test/radixSelect';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
 vi.mock('@/app/sessionActions', () => ({
@@ -34,7 +35,6 @@ const Q = conductor('iQ', 's-q', { firstPrompt: 'plan the release' });
 const P = conductor('iP', 's-p', { pristine: true });
 
 const row = (sid: string) => document.querySelector(`[data-conductor="${sid}"]`);
-const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); });
 
 let reads: ReturnType<typeof held<RouteAnswer>>[];
 

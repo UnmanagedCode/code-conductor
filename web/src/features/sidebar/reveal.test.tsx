@@ -14,6 +14,7 @@ import {
   A, ALPHA, B, FLEET_UI, blockOf, conductorRowOf, disk, el, fleet, projectRowOf, rowOf, sectionLeadFleet, seed, seedFleet, treeOf, worker, wt,
   type Fleet,
 } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -41,11 +42,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions, setSessionsOpen, setWorktreesOpen, resetLensScroll } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-/** Runs every animation frame queued so far: the reveal scrolls in one. */
-const nextFrame = () => act(async () => { await new Promise<void>((r) => requestAnimationFrame(() => r())); });
-
 const WS_KEY = 'code-conductor:workspaces-expanded';
 
 /**
@@ -400,11 +396,11 @@ describe('the phone drawer', () => {
     seedFleet(fleet());
     renderSidebar();
     await settle();
-    await nextFrame();
+    await settle();
     scroll.mockClear();
     select('i-wa-main1');
     expect(scroll).not.toHaveBeenCalled();
-    await nextFrame();
+    await settle();
     expect(scroll.mock.contexts.length).toBe(1);
     expect(scroll.mock.contexts[0] === rowOf('wa-main1')).toBe(true);
     expect(scroll.mock.calls[0]).toEqual([{ block: 'nearest' }]);
@@ -416,7 +412,7 @@ describe('the phone drawer', () => {
     const first = renderSidebar();
     await settle();
     select('i-wa-main1');
-    await nextFrame();
+    await settle();
     first.unmount();
     scroll.mockClear();
     const second = renderSidebar();
@@ -425,7 +421,7 @@ describe('the phone drawer', () => {
     expect(scroll.mock.calls[0]).toEqual([{ block: 'nearest' }]);
     second.unmount();
     select(null);
-    await nextFrame();
+    await settle();
     scroll.mockClear();
     renderSidebar();
     expect(scroll).not.toHaveBeenCalled();

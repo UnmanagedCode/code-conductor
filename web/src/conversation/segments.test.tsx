@@ -5,6 +5,7 @@ import { createLazyHistory } from './lazyHistory';
 import { flush, noActions, renderModel } from './renderModel';
 import { groupsOf, text, thinking, tool, turnEnd } from './testkit';
 import type { UiEvent, UiEventOf } from '@shared/uiEvent';
+import { settle } from '@/test/settle';
 
 let seq = 1000;
 const echo = (t: string, extra: Partial<UiEventOf<'user_echo'>> = {}): UiEventOf<'user_echo'> => ({ kind: 'user_echo', text: t, userIndex: seq % 97, _seq: seq--, ...extra });
@@ -19,8 +20,6 @@ const tokens = (m: ConversationModel) => m.items.map((i) => {
   if (i.type === 'assistant') return 'A';
   return i.type;
 });
-
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 5)); };
 
 function stubFetch(pages: any[]) {
   const calls: Record<string, string>[] = [];

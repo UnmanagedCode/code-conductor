@@ -4,6 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { A, ALPHA, B, BRAVO, COLOUR, FLEET_UI, barOf, conductor, hand, proj, seed, stripEntryOf } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -31,8 +32,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 /** Three live idle sessions, all Finished: A selected and unread, B unread, h read. */
 const seedStrip = () => seed({

@@ -24,9 +24,8 @@ vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
 import { DOCK_STORAGE_KEY, dockStore } from './dock';
-import {
-  ACTIVE, checkedNow, column, DOCK_CATALOG, endHost, keepRow, mountApp, net, plainRow, resetHost, sessionShown, settle, viewOpen,
-} from './test/pluginHost';
+import { ACTIVE, checkedNow, column, DOCK_CATALOG, endHost, keepRow, mountApp, net, plainRow, resetHost, sessionShown, viewOpen } from './test/pluginHost';
+import { settle } from '@/test/settle';
 
 afterEach(() => endHost());
 

@@ -7,6 +7,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { selectOptions } from '@/test/radixSelect';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn(),
@@ -22,7 +23,6 @@ const { catalogStore } = await import('@/features/views/plugins');
 const { UsageChip } = await import('@/features/session/UsageChip');
 const { SessionHeader } = await import('@/features/session/SessionHeader');
 
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 const wrap = (ui: React.ReactNode) => render(<TooltipProvider>{ui}</TooltipProvider>);
 const press = (el: Element) => act(async () => {
   fireEvent.pointerDown(el, { button: 0, ctrlKey: false });

@@ -17,6 +17,7 @@ import type { Instance } from '@/state/types';
 import { pluginFrames } from './plugins';
 import { startPluginSessionBridge } from './pluginSession';
 import { postFrom, standInWindow, type StandIn } from './test/pluginHost';
+import { settle } from '@/test/settle';
 
 const sendMock = vi.mocked(send);
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -51,7 +52,6 @@ let abortPristine: AbortController;
 
 const sessionMsgs = (w: StandIn) => w.posted.filter((m: any) => m?.type === 'session') as { session: unknown }[];
 const results = (w: StandIn) => w.posted.filter((m: any) => m?.type === 'result') as any[];
-const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 /** Posts one call and returns the one result the frame got back for its id. */
 async function ask(from: StandIn, type: 'openSession' | 'sendPrompt', fields: Record<string, unknown>) {
   const id = `c${Math.random()}`;

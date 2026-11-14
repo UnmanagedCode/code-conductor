@@ -9,6 +9,7 @@ import { chooseOption } from '@/test/radixSelect';
 import {
   conductor, conductorRowOf, hand, proj, sectionLeadFleet, seed, stripEntryOf, stripGroups, stripHeadCounts, stripLabelOf, stripSids, worker,
 } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -36,8 +37,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 const reseed = (over: Parameters<typeof seed>[0]) => act(() => seed(over));
 const ask = (awaitingUser: 'question' | 'plan', awaitingUserSource: 'tool' | 'text') => ({ awaitingUser, awaitingUserSource });
 const strip = () => document.querySelector('[data-strip]');

@@ -7,6 +7,7 @@ import { CLOSE_TITLES } from '@shared/closeAction';
 import { barOf, blockOf, conductor, conductorDotOf, conductorOpenOf, conductorRowOf, el, hand, inactiveGroup, proj, sectionLead, sectionLeadFleet, seed, treeOf, worker, wt, type Fleet } from '@/test/sidebarFleet';
 import { conductorColor } from '@shared/conductorColor';
 import { pickProjectMenuItem, pickWorktreeMenuItem } from '@/test/rowMenu';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -38,8 +39,6 @@ const { closeDialog, dialogStore } = await import('@/features/dialogs/api');
 const FRESH = sidebarStore.get();
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 /** A conductor's chips as `project:kind`, in order, and whether any other text (the empty-list placeholder) sits beside them. */
 function chipsOf(sid: string) {

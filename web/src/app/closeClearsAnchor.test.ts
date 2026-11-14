@@ -9,6 +9,7 @@ import '@/test/browserHash';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeStashedAnchor } from '@shared/anchor';
 import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { settle } from '@/test/settle';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -54,13 +55,12 @@ async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAn
   const { appStore, activeInstance } = await import('@/state/app');
   c.startController();
   stop = c.stopController;
-  const flush = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
-  const frame = async (t: string) => { ws.bus.dispatchEvent(new CustomEvent(t, { detail: {} })); await flush(); };
-  const land = async (n: number, list: Inst[]) => { reads[n - 1].release({ json: list }); await flush(); };
+  const frame = async (t: string) => { ws.bus.dispatchEvent(new CustomEvent(t, { detail: {} })); await settle(); };
+  const land = async (n: number, list: Inst[]) => { reads[n - 1].release({ json: list }); await settle(); };
   /** Answers every instance read not answered yet, from the n-th on, with `list`. */
   const landRest = async (from: number, list: Inst[]) => { for (let n = from; n <= reads.length; n++) await land(n, list); };
   return {
-    c, actions, route, reads, flush, land, landRest,
+    c, actions, route, reads, settle, land, landRest,
     open: () => frame('open'),
     hint: () => frame('instances'),
     /** Connects and lands the first connect's list. */
@@ -83,7 +83,7 @@ describe('closing the session the anchor names', () => {
     expect(location.hash, 'fixture check: the pick wrote its anchor').toBe('#session=s-c');
     const entries = history.length;
     const stopped = b.stopIdle(C);
-    await b.flush();
+    await b.settle();
     await b.landRest(2, [A]);
     await stopped;
     expect(b.active()).toBeNull();
@@ -98,7 +98,7 @@ describe('closing the session the anchor names', () => {
     b.c.selectInstance('iC', { userGesture: true });
     const entries = history.length;
     const archived = b.actions.archiveSession({ projectName: 'p', sessionId: 's-c' });
-    await b.flush();
+    await b.settle();
     await b.landRest(2, [A]);
     await archived;
     expect(b.active()).toBeNull();
@@ -112,7 +112,7 @@ describe('closing the session the anchor names', () => {
     b.c.selectInstance('iC', { userGesture: true });
     const entries = history.length;
     const deleted = b.actions.performProjectDelete({ name: 'p', deleteDirectory: false });
-    await b.flush();
+    await b.settle();
     await b.landRest(2, []);
     await deleted;
     expect(b.active()).toBeNull();
@@ -128,7 +128,7 @@ describe('closing the session the anchor names', () => {
     await b.land(1, [A, B]);
     b.c.selectInstance('iB', { userGesture: true });
     const stopped = b.stopIdle(B);
-    await b.flush();
+    await b.settle();
     expect(b.reads, 'fixture check: the first connect\'s read is in flight, the stop\'s refresh waits behind it').toHaveLength(2);
     await b.land(2, [A]);
     await b.land(3, [A]);
@@ -145,14 +145,14 @@ describe('closing the session the anchor names', () => {
     await b.connected([A, C]);
     b.c.selectInstance('iC', { userGesture: true });
     const click = b.c.handleNotificationClick({ sessionId: 's-y' });
-    await b.flush();
+    await b.settle();
     const stopped = b.stopIdle(C);
-    await b.flush();
+    await b.settle();
     await b.landRest(2, [A]);
     await stopped;
     expect(b.active(), 'fixture check: the stop closed the active session').toBeNull();
     lookup.release(ON_DISK);
-    await b.flush();
+    await b.settle();
     await b.landRest(3, [A, Y]);
     await click;
     expect(b.active()).toBe(Y.id);
@@ -167,7 +167,7 @@ describe('closing the session the anchor names', () => {
     const state = history.state;
     expect(state, 'fixture check: the view was pushed as one of the app\'s view entries').not.toBeNull();
     const stopped = b.stopIdle(C);
-    await b.flush();
+    await b.settle();
     await b.landRest(2, [A]);
     await stopped;
     expect(b.active()).toBeNull();
@@ -180,7 +180,7 @@ describe('closing the session the anchor names', () => {
     await b.connected([A, C]);
     b.c.selectInstance('iC', { userGesture: true });
     const stopped = b.stopIdle(A);
-    await b.flush();
+    await b.settle();
     await b.landRest(2, [C]);
     await stopped;
     expect(b.active()).toBe('iC');
@@ -196,7 +196,7 @@ describe('Back onto an entry naming a session that is not listed', () => {
     await b.connected([A]);
     expect(b.active(), 'fixture check: the current entry names no session, so nothing was restored').toBeNull();
     history.back();
-    await b.flush();
+    await b.settle();
     expect(location.hash).toBe('');
     expect(b.route.routeStore.get().route.sessionId).toBeNull();
     expect(b.active()).toBeNull();
@@ -211,7 +211,7 @@ describe('Back onto an entry naming a session that is not listed', () => {
     b.c.selectInstance('iA', { push: true });
     const entries = history.length;
     history.back();
-    await b.flush();
+    await b.settle();
     expect(b.active(), 'fixture check: Back landed on the session already shown').toBe('iA');
     expect(location.hash).toBe('#session=s-a');
     expect(history.length).toBe(entries);
@@ -225,7 +225,7 @@ describe('Back onto an entry naming a session that is not listed', () => {
     const b = await boot();
     await b.open();
     history.back();
-    await b.flush();
+    await b.settle();
     expect(location.hash, 'fixture check: Back reached the entry naming the session').toBe('#session=s-a');
     await b.land(1, [A]);
     expect(b.active()).toBe('iA');
@@ -241,7 +241,7 @@ describe('Back onto an entry naming a session that is not listed', () => {
     b.c.startController();
     await b.open();
     history.back();
-    await b.flush();
+    await b.settle();
     expect(location.hash).toBe('#session=s-x');
     await b.land(2, [A]);
     expect(b.posts(), 'fixture check: the restore resumed the session its entry names').toBe(1);

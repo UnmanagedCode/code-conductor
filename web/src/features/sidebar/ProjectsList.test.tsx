@@ -4,6 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { formatAutoResumeTime } from '@shared/usage';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -63,8 +64,6 @@ const list = (key: string) => el(`[data-sessions="${key}"]`);
 const summaryOf = (key: string) => el(`[data-sessions-summary="${key}"]`);
 const wsHeader = (name: string) => el(`section[data-workspace="${name}"] button[aria-expanded]`);
 const items = (key: string) => [...list(key).children].map((li) => li.getAttribute('data-session-row') ?? li.textContent);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 beforeEach(() => {
   localStorage.clear();
