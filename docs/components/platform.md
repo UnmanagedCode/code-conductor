@@ -65,7 +65,7 @@ Pinned by `tests/grouped-command.test.mjs` (drain, ceiling, stall, reaping); `pl
 
 ## `src/httpError.ts`
 
-`httpError(statusCode, message, extra?)` → `Object.assign(new Error(message), {statusCode}, extra)`. The single constructor for the statusCode-bearing Error the express error handler (`routes.ts`) and `codeForStatus` (`mcp/server.ts`) read; `extra` carries the plugin routes' `{status, tail, retryAfter}` 503 fields. Every module that needs it imports from here — no local copies. (Node-style `{code:'ENOENT'}` errors are a different thing and stay hand-built.) `errMessage(e)` extracts the message a REST error body carries from any thrown value: its string `message`, else `'internal error'`.
+`httpError(statusCode, message, extra?)` → `Object.assign(new Error(message), {statusCode}, extra)`. The single constructor for the statusCode-bearing Error the express error handler (`src/routes/errors.ts`) and `codeForStatus` (`mcp/server.ts`) read; `extra` carries the plugin routes' `{status, tail, retryAfter}` 503 fields. Every module that needs it imports from here — no local copies. (Node-style `{code:'ENOENT'}` errors are a different thing and stay hand-built.) `errMessage(e)` extracts the message a REST error body carries from any thrown value: its string `message`, else `'internal error'`.
 
 ## `src/duration.ts`
 

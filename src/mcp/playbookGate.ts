@@ -106,7 +106,7 @@ export interface PlaybookGate {
   readProjection(): Promise<Projection>;
   readHistory(): Promise<EventRow[]>;
   // The batch binding lookup for a surface that may not import the log or the
-  // projection directly (src/routes.ts's GET /api/instances — see
+  // projection directly (src/routes/instances.ts's GET /api/instances — see
   // tests/event-log-chokepoint.test.mjs). One projection read for the whole
   // list, in input order; null/null per id for an untracked worker. A load
   // failure (anything but ENOENT) propagates, so a caller that wants to degrade

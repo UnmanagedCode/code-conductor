@@ -1,6 +1,6 @@
 // Remote enumeration: which remoteIds a registered System's provider says it is
 // configured to route to (docs/systems-protocol.md §2.2). The one caller behind
-// both front-ends — `GET /api/systems/:id/remotes` (src/routes.ts) and the MCP
+// both front-ends — `GET /api/systems/:id/remotes` (src/routes/systems.ts) and the MCP
 // tool `enumerate_remotes` (src/mcp/handlers.ts).
 //
 // THREE STATES, NEVER COLLAPSED. `listed` carries the ids, possibly none.

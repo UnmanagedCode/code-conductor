@@ -4,7 +4,7 @@ import { errMessage } from './httpError.ts';
 // Runs a long action that reports progress via onChunk and flips into
 // streaming mode via onValidated — the plugin library's install/update
 // (src/plugins/api.ts), cc's self-update and the Claude CLI update
-// (src/routes.ts).
+// (src/routes/admin.ts).
 // Before onValidated fires, a rejection is a normal thrown error — routed to
 // the shared trailing error middleware via `next`, same as every other route
 // (preserves the 404/409/400 status codes of validation failures).

@@ -2283,7 +2283,7 @@ export async function mergeWorktree({ project, worktree, allowDirty }: { project
 // Workspaces are sidebar-organisation primitives — registered names plus
 // a `workspace` field per project. The registry persists independently
 // of membership so an empty workspace still shows up. These tools mirror
-// the REST endpoints in src/routes.ts (PUT /projects/:name/workspace,
+// the REST endpoints in src/routes/projects.ts and src/routes/workspaces.ts (PUT /projects/:name/workspace,
 // POST/PUT/DELETE /workspaces, GET /workspaces) so a conductor can set
 // up its own organisation alongside the human.
 

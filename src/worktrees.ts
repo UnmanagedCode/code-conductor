@@ -934,7 +934,7 @@ export async function repairWorktreesAfterProjectMove(projectName: string): Prom
 }
 
 // Set or clear the user's lock (see WorktreeMeta.locked). Browser-only by
-// construction: routes.ts is its one importer and no MCP handler reaches it,
+// construction: src/routes/worktrees.ts is its one importer and no MCP handler reaches it,
 // so no agent can unlock a worktree, and an agent can lock one only at
 // creation (createWorktree's `lock`) (pinned by
 // tests/worktree-lock.test.mjs). Returns the stored state, not the requested one.

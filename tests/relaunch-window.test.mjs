@@ -18,7 +18,7 @@ import { SwitchLauncher } from './switchLauncher.mjs';
 import { isPersistent, isArchived, settleSessionWrites } from '../src/sessionStore.ts';
 import { localPlace } from '../src/projects.ts';
 import { RELAUNCH_FAILED } from '../src/instances.ts';
-import { ROUTE_ERROR_LOG_MAX } from '../src/routes.ts';
+import { ROUTE_ERROR_LOG_MAX } from '../src/routes/errors.ts';
 import { httpError } from '../src/httpError.ts';
 import { PROMPT_MISMATCH } from '../src/sessionEdit.ts';
 

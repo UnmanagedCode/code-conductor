@@ -1,7 +1,7 @@
 // `POST /api/exec` — run one command on a project's System, or on a System
 // addressed directly, for a plugin backend (docs/plugins.md → Host exec).
 //
-// All of it lives here so the route in src/routes.ts stays a mount: request
+// All of it lives here so the route in src/routes/exec.ts stays a mount: request
 // validation and the mapping from an ExecResult to a status and a body. The
 // target forms, the capability gate and resolution are src/hostTarget.ts,
 // shared with GET /api/terminal.
@@ -26,7 +26,7 @@ export const EXEC_MAX_TIMEOUT_MS = 600_000;
 const EXEC_DEFAULT_OUTPUT_BYTES = 64 * 1024 * 1024;
 export const EXEC_MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 // The route's own JSON body limit — above the router-wide one, so stdin of a
-// useful size fits. Mounted ahead of that parser (src/routes.ts).
+// useful size fits. Mounted ahead of that parser (src/routes/exec.ts).
 export const EXEC_BODY_LIMIT = 16 * 1024 * 1024;
 
 const KEYS = new Set([

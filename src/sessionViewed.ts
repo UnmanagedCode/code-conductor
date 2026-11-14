@@ -1,5 +1,5 @@
 // The one "the human saw it" write behind POST /api/sessions/:sid/viewed. It is
-// browser-only by construction: routes.ts is its one importer and no MCP
+// browser-only by construction: src/routes/sessions.ts is its one importer and no MCP
 // handler reaches it, so a conductor reading a worker's output never marks the
 // worker viewed (pinned by tests/session-viewed.test.mjs).
 

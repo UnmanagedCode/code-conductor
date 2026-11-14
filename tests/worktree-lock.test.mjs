@@ -435,9 +435,9 @@ async function tsFiles(dir) {
 }
 
 // Invariant: no agent can clear the lock or set it on an existing worktree. The
-// writer is named by no MCP module and imported by routes.ts alone, and no MCP
+// writer is named by no MCP module and imported by src/routes/worktrees.ts alone, and no MCP
 // tool is a lock tool.
-test('the lock writer is browser-only: routes.ts imports it, nothing under src/mcp names it, no lock tool exists', async () => {
+test('the lock writer is browser-only: src/routes/worktrees.ts imports it, nothing under src/mcp names it, no lock tool exists', async () => {
   const files = await tsFiles(SRC);
   const rel = (f) => path.relative(SRC, f);
   const bodies = new Map(await Promise.all(files.map(async f => [rel(f), await fs.readFile(f, 'utf8')])));
@@ -445,7 +445,7 @@ test('the lock writer is browser-only: routes.ts imports it, nothing under src/m
     .map(([f]) => f);
   assert.deepEqual(mcpHits, [], 'no MCP module names the lock writer');
   const importers = [...bodies].filter(([, b]) => /import[^;]*\bsetWorktreeLock\b[^;]*from/.test(b)).map(([f]) => f);
-  assert.deepEqual(importers, ['routes.ts'], 'routes.ts is the one importer (positive control: the sweep finds it)');
+  assert.deepEqual(importers, [path.join('routes', 'worktrees.ts')], 'src/routes/worktrees.ts is the one importer (positive control: the sweep finds it)');
 
   const { body } = await rpc('tools/list', {});
   const names = body.result.tools.map(tool => tool.name);

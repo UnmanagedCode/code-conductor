@@ -5,7 +5,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { hostPlatform, type Platform } from './src/platform/index.ts';
-import { buildRoutes, type RelaunchOptions } from './src/routes.ts';
+import { buildRoutes } from './src/routes.ts';
+import type { RelaunchOptions } from './src/routes/admin.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import type { ProgressTiming } from './src/codeMode/ctx.ts';
 import { createPlaybookGate } from './src/mcp/playbookGate.ts';
@@ -58,7 +59,7 @@ const PLUGIN_BRIDGE = path.join(WEB_ROOT, 'src', 'features', 'views', 'pluginBri
 
 // The shared mutable handle server.ts populates with the http server + wss once
 // they exist (route handlers read them at request time). Structural match for
-// routes.ts's ServerCtx.
+// src/routes/shared.ts's ServerCtx.
 interface ServerCtx {
   server?: http.Server | null;
   wss?: WebSocketServer | null;

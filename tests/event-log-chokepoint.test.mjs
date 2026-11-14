@@ -53,7 +53,9 @@ test('the surfaces the manager stream reaches never import the event log: routes
   // They reach the log only through the gate (reads) and the manager's event
   // stream (writes), so none of them can grow a second writer.
   const importRe = /from\s+['"][^'"]*\/eventLog(?:\.ts)?['"]/;
-  for (const rel of ['src/routes.ts', 'src/instances.ts', 'src/idleSubscriptions.ts', 'src/playbookApi.ts', 'src/wsHub.ts']) {
+  const routerFiles = (await sourceFiles()).filter((f) => f.startsWith('src/routes/'));
+  assert.ok(routerFiles.length > 0, 'the router modules are scanned');
+  for (const rel of ['src/routes.ts', ...routerFiles, 'src/instances.ts', 'src/idleSubscriptions.ts', 'src/playbookApi.ts', 'src/wsHub.ts']) {
     assert.doesNotMatch(await read(rel), importRe, `${rel} must not import src/eventLog.ts`);
   }
 });

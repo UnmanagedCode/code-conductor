@@ -1,7 +1,7 @@
 // The server half of the unread indicator: every turn end raises the session
 // record's turnEndSeq, POST /api/sessions/:sid/viewed raises viewedSeq, both
 // reach every client through the instances summary, and nothing on the MCP
-// surface can mark a session viewed (src/sessionViewed.ts, src/routes.ts).
+// surface can mark a session viewed (src/sessionViewed.ts, src/routes/sessions.ts).
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -236,8 +236,8 @@ async function tsFiles(dir) {
 
 // Invariant: the viewed writer is reachable from the browser route only —
 // nothing under src/mcp/ imports sessionViewed.ts or names its writers, and
-// routes.ts is applySessionViewed's one importer.
-test('the viewed writer is imported by routes.ts alone', async () => {
+// src/routes/sessions.ts is applySessionViewed's one importer.
+test('the viewed writer is imported by routes/sessions.ts alone', async () => {
   const files = await tsFiles(SRC);
   const rel = (f) => path.relative(SRC, f);
   const bodies = new Map(await Promise.all(files.map(async f => [rel(f), await fs.readFile(f, 'utf8')])));
@@ -245,7 +245,7 @@ test('the viewed writer is imported by routes.ts alone', async () => {
     && /sessionViewed|markViewed|applySessionViewed/.test(b)).map(([f]) => f);
   assert.deepEqual(mcpHits, [], 'no MCP module reaches the viewed writer');
   const importers = [...bodies].filter(([, b]) => /import[^;]*\bapplySessionViewed\b[^;]*from/.test(b)).map(([f]) => f);
-  assert.deepEqual(importers, ['routes.ts'], 'routes.ts is the one importer (positive control: the sweep finds it)');
+  assert.deepEqual(importers, [path.join('routes', 'sessions.ts')], 'routes/sessions.ts is the one importer (positive control: the sweep finds it)');
   const markViewedUsers = [...bodies].filter(([f, b]) => f !== 'sessionStore.ts' && /\bmarkViewed\b/.test(b)).map(([f]) => f);
   assert.deepEqual(markViewedUsers, ['sessionViewed.ts']);
 });
