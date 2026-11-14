@@ -54,3 +54,19 @@ The registry is `ENV_VARS` in `src/env.ts`. `tests/env-registry.test.mjs` fails 
 | `RUN_REAL_CLAUDE` | `=1` runs the opt-in real-claude smoke test. |
 | `RUN_REAL_NPM` | `=1` runs the C3 fresh-resolution row of `tests/windows-installer-contract.test.mjs`: `npm install --package-lock-only --ignore-scripts` of a copy of `package.json` against the registry (needs network). |
 | `RUN_WIN_SMOKE` | `=1` runs `tests/win-smoke.real.test.mjs` on a Windows host against a real signed-in `claude` and Git for Windows. Run it directly with `node --test`, not through `npm test`. See [the gated real-dependency suites](testing-systems.md). |
+| `PATH` / `Path` / `ProgramFiles` / `SystemRoot` / `LOCALAPPDATA` / `LD_LIBRARY_PATH` / `SHELL` | Host OS variables cc reads but does not own (kind `platform` in `ENV_VARS`): the executable search path, the Windows directories the Git for Windows bash search uses, the library path whisper.cpp is prepended to, the login shell the terminal starts. Readers: `src/platform/win32.ts`, `src/systems/fuse/tierTable.ts`, `src/systems/fuse/wrap.ts`, `src/transcribe.ts`, `src/systems/ptyHost.ts`. |
+| `CC_RUN_URL` / `CC_RUN_TOKEN` / `CC_RUN_MEMBERS` | Internal: set by `run_code` for the runtime child (`RUN_URL_ENV`, `RUN_TOKEN_ENV`, `RUN_MEMBERS_ENV` in `src/codeMode/runtimeApi.ts`) and read back by `src/codeMode/runtime.ts`. Contract: [code-mode.md](code-mode.md). |
+| `CC_SERVER_BOOT_SHA` / `CC_SERVER_BOOT_UNKNOWN` | Internal: the commit the running server booted from, or why it is unknown, handed to merge hooks that land in the server's own checkout (`bootCommitFromEnv` in `src/webPostMerge.ts`). See [components/web.md](components/web.md). |
+| `CC_ROOT_LOCK_HANDOVER` | Internal: set by a restarting server for its replacement (`ROOT_LOCK_HANDOVER_ENV` in `src/rootLock.ts`), read and deleted at boot. See [components/headless.md](components/headless.md#the-projects-root-lock). |
+| `WHISPER_INSTALL_SCRIPT` / `PIPER_INSTALL_SCRIPT` | Override the installer script for whisper / Piper (`scriptEnvVar` in `src/whisperInstall.ts` / `src/ttsInstall.ts`, read by `src/installRunner.ts`). |
+| `CC_FUSE_SOURCE_OVERRIDE_ROOT` | Selects the source root the FUSE union draws from instead of the session's own (`src/instances.ts`). |
+| `CC_FUSE_TRACE` | `=1` turns on the FUSE plan trace (`resolveTraceEnabled` in `src/systems/fuse/plan.ts`). |
+| `CC_LOCAL_SYSTEM_REMOTE_ID` | Target the `CC_LOCAL_SYSTEM_PROVIDER` provider is bound to (`LOCAL_REMOTE_ENV` in `src/systems/registry.ts`). |
+| `CLAUDE_CODE_GIT_BASH_PATH` | Git for Windows bash path, searched before the default roots (`src/platform/win32.ts`). |
+| `CLAUDE_SHELL_ENV_TIMEOUT_MS` | Timeout for capturing the user shell environment (default in `src/claudeShellEnv.ts`). |
+| `ORCH_DISABLE_STDIO_PERMISSIONS` | Kill switch for the stdio permission path in `src/instances.ts`. |
+| `ORCH_IDLE_DRAIN_SETTLE_MS` | Settle window before an idle subscription drains (`IDLE_DRAIN_SETTLE_MS` in `src/idleSubscriptions.ts`). |
+| `ORCH_RENEW_CLEAR_TIMEOUT_MS` | Timeout for the clear step of a session renew (`src/sessionRenew.ts`). |
+| `ORCH_SOFT_INTERRUPT_DEADLINE_MS` | Deadline for a soft interrupt before it escalates (`softInterruptDeadlineMs` in `src/instances.ts`). |
+| `ORCH_STORE_LOCK_RETRY_MAX` / `ORCH_STORE_LOCK_RETRY_BASE_MS` | Retry count and base delay for the store lock (`src/storeLock.ts`). |
+| `SELF_UPDATE_REPO_ROOT` | The checkout self-update works on (default in `src/selfUpdate.ts`). |

@@ -91,6 +91,7 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 - [Platform capabilities](components/platform.md#platform-capabilities)
 - [`src/groupedCommand.ts`](components/platform.md#srcgroupedcommandts)
 - [`src/httpError.ts`](components/platform.md#srchttperrorts)
+- [`src/env.ts`](components/platform.md#srcenvts)
 - [`src/duration.ts`](components/platform.md#srcdurationts)
 - [`src/backgroundJobs.ts`](components/platform.md#srcbackgroundjobsts)
 - [`web/src/features/dialogs/PathInput.tsx`](components/platform.md#websrcfeaturesdialogspathinputtsx)

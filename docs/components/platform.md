@@ -67,6 +67,10 @@ Pinned by `tests/grouped-command.test.mjs` (drain, ceiling, stall, reaping); `pl
 
 `httpError(statusCode, message, extra?)` → `Object.assign(new Error(message), {statusCode}, extra)`. The single constructor for the statusCode-bearing Error the express error handler (`src/routes/errors.ts`) and `codeForStatus` (`mcp/server.ts`) read; `extra` carries the plugin routes' `{status, tail, retryAfter}` 503 fields. Every module that needs it imports from here — no local copies. (Node-style `{code:'ENOENT'}` errors are a different thing and stay hand-built.) `errMessage(e)` extracts the message a REST error body carries from any thrown value: its string `message`, else `'internal error'`.
 
+## `src/env.ts`
+
+The registry of every environment variable the code reads or sets (`ENV_VARS`: kind, default, purpose) and `DEFAULT_PORT`, the one place the default listen port is written in code. Dependency-free, so `bin/windows-launch.mjs` imports it. `tests/env-registry.test.mjs` holds production reads and the table in [environment.md](../environment.md) to it.
+
 ## `src/duration.ts`
 
 `humanizeDuration(ms)` → compact `h`/`m`/`s`, largest-first, zero components dropped, truncated to whole seconds (`30m`, `1h30m`, `1m30s`, `<1s` sub-second, `0s` for 0/negative/non-finite), never `ms`. The renderer for conductor-facing timeout text: the heartbeat's "did NOT finish" stub (`src/idleSubscriptions.ts`) and the plugin MCP 504 (`src/plugins/mcpBridge.ts`). Distinct from `shared/usage.ts`'s `formatDuration` (spaced, two components max, `—` for null), which is UI-only and stays that way.

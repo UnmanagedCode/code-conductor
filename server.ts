@@ -50,6 +50,7 @@ import { takeRestartSupervisor } from './src/restartSupervisor.ts';
 import { acquireRootLock, RootLockHeldError, RootLockUnreadableError, ROOT_LOCK_HELD_EXIT, type RootLock } from './src/rootLock.ts';
 import { parseHeadlessArgs } from './src/headless/args.ts';
 import { headlessMain } from './src/headless/entry.ts';
+import { DEFAULT_PORT } from './src/env.ts';
 import type { ResumeNoticesFrame } from './shared/wsFrames.ts';
 
 // The event-log lease of a server built without the projects-root lock.
@@ -256,7 +257,7 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 // hooks into its own checkout.
 export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean } {
   return {
-    port: Number(env.PORT ?? 8787),
+    port: Number(env.PORT ?? DEFAULT_PORT),
     host: env.HOST ?? '127.0.0.1',
     buildWeb: env.CC_SKIP_WEB_BUILD !== '1',
     syncDeps: env.CC_SKIP_DEPS_SYNC !== '1',
@@ -267,7 +268,7 @@ export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host:
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 export async function start({
-  port = 8787, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild,
+  port = DEFAULT_PORT, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild,
   recordBootCommit = false, checkoutRoot = SERVER_ROOT, headless = false,
 }: {
   port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown>;

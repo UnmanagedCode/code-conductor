@@ -45,6 +45,7 @@ Load-bearing rules this codebase follows — keep new work inside them so the pr
 11. **Dependency-free helpers live once, in `shared/basics.ts`.** It imports nothing; import the helpers it exports rather than writing a local copy. Enforced by `tests/basics-guard.test.mjs`. Its one exemption is `src/systems/referenceProvider.ts`'s `errMsg` (that file is flat-copied into a container with only its siblings).
 12. **Server sources (`server.ts`, `src/`, `shared/`, `migrations/`) have no runtime import cycle.** Static, non-type imports only (`import type` and dynamic `import()` are not edges; `import { type X }` is). Enforced by `tests/import-cycles.test.mjs`; the scanner and the shrink-only `BASELINE` are in `tests/importCycles.mjs`. Break a cycle by moving the pure code both sides need into a leaf module.
 13. **An export has a caller outside its module.** `node scripts/unused-exports.mjs` lists the `server.ts`/`src/`/`shared/` exports no other tracked file's code references, values and types counted separately; drop `export` from a value used only in its own module, delete one used nowhere. `tsconfig.json` sets `noUnusedLocals`/`noUnusedParameters` (as `web/tsconfig.json` does): prefix a deliberately unused parameter with `_`.
+14. **Every production env read is registered in `ENV_VARS` (`src/env.ts`), with its kind.** `tests/env-registry.test.mjs` enforces it via `scripts/env-reads.mjs`, which also fails an env access it cannot resolve. The port default is `DEFAULT_PORT`.
 
 ## Instance lifecycle
 ```

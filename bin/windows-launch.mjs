@@ -12,6 +12,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveGitBash, gitRootOfBash, taskkillArgv } from '../src/platform/win32.ts';
+import { DEFAULT_PORT } from '../src/env.ts';
 
 const w = path.win32;
 
@@ -95,7 +96,7 @@ function gitOfBash(bash, env, exists) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function portOf(env) {
-  return Number(getEnv(env, 'PORT') || 8787);
+  return Number(getEnv(env, 'PORT') || DEFAULT_PORT);
 }
 
 // 'cc' (with pid) | 'unidentified' (answers 200 JSON but has no `app`: a build
