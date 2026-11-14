@@ -12,6 +12,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 // Dynamic import so we can reload with a fresh module cache per test would
 // require workers; instead we use the exported invalidateAccountUsage() between tests.
 import { getAccountUsage, invalidateAccountUsage } from '../src/accountUsage.ts';
+import { waitFor } from './poll.mjs';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -598,13 +599,7 @@ function deferredFetch() {
   return { pending, response, restore() { globalThis.fetch = original; } };
 }
 // Bounded: a read that never reaches the API (served from a cache or a backoff) fails here.
-const waitForCalls = async (pending, n) => {
-  const deadline = Date.now() + 2000;
-  while (pending.length < n) {
-    if (Date.now() > deadline) throw new Error(`expected API call #${n}; the read never reached the API`);
-    await new Promise(r => setTimeout(r, 1));
-  }
-};
+const waitForCalls = (pending, n) => waitFor(() => pending.length >= n, { timeout: 2000, interval: 1, label: `expected API call #${n}; the read never reached the API` });
 
 test('a fetch begun before invalidateAccountUsage() that succeeds after it is not cached', async () => {
   await makeTmpHome({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test' } });

@@ -95,7 +95,10 @@ beforeEach(() => {
   pages = [];
   paths = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    paths.push(new URL(url, 'http://localhost').pathname);
+    const path = new URL(url, 'http://localhost').pathname;
+    // Only lineage pages are the fixture's: the controller's usage poll must not take one off the queue.
+    if (!path.endsWith('/lineage-events')) return { ok: true, status: 200, json: async () => ({}) };
+    paths.push(path);
     const page = pages.shift() ?? { events: [], hasMore: false, segment: null, nextBefore: null };
     return { ok: true, status: 200, json: async () => page };
   }));

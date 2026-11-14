@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { sleep, waitFor } from './poll.mjs';
 
 // Module-load-time constant, so it is set before the dynamic import.
 process.env.ORCH_IDLE_DRAIN_SETTLE_MS = '40';
@@ -21,15 +22,10 @@ const { InstanceManager } = await import('../src/instances.ts');
 const { posixPlatform } = await import('../src/platform/posix.ts');
 const { WAKE_BODY_SEP } = await import('../shared/wakeCallback.ts');
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // Delivery is a microtask plus an async fold — a short beat settles it.
 const tick = () => sleep(15);
-async function until(pred, ms = 2000) {
-  const end = Date.now() + ms;
-  while (!pred()) {
-    if (Date.now() > end) throw new Error('condition not reached');
-    await sleep(5);
-  }
+function until(pred, ms = 2000) {
+  return waitFor(pred, { timeout: ms, interval: 5 });
 }
 
 function rig() {

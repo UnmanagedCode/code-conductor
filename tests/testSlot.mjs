@@ -32,6 +32,7 @@
 // everything the holder spawns inherits CC_TEST_SLOT_HELD, which makes a nested
 // acquire a no-op: a child never waits on its parent's slot.
 import net from 'node:net';
+import { sleep } from './poll.mjs';
 
 // Below the Linux (32768) and Windows (49152) ephemeral ranges, so no outgoing
 // connection is ever handed a slot's port.
@@ -61,7 +62,6 @@ export function resolveSlots(env = process.env) {
   return { slots, base };
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // A server on `port`, or null when it is taken.
 function tryListen(port, info) {

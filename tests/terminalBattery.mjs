@@ -27,6 +27,7 @@ import { LOCAL_PROVIDER_ENV, parseProviderLaunch } from '../src/systems/registry
 import { REFERENCE_PROVIDER } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { waitFor } from './poll.mjs';
 
 const WAIT_MS = 10_000;
 
@@ -48,13 +49,8 @@ export function expectedLocalTerminalRefusal(sys) {
 
 export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-export async function settle(pred, ms = 5_000) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    if (await pred()) return true;
-    await new Promise(r => setTimeout(r, 20));
-  }
-  return pred();
+export function settle(pred, ms = 5_000) {
+  return waitFor(pred, { timeout: ms, interval: 20 }).then(() => true, () => pred());
 }
 
 // `n` bytes covering every byte value, the same on every run (xorshift32).

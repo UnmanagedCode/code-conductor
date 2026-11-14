@@ -7,6 +7,7 @@ import '@/test/browserHash';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { Instance } from '@/state/types';
+import { routeFetch } from '@/test/routeFetch';
 
 vi.mock('@shared/ws', () => {
   const bus = new EventTarget();
@@ -30,6 +31,7 @@ async function boot() {
   const { appStore } = await import('@/state/app');
   const { SubagentPanel } = await import('@/features/session/SessionPanels');
   const ws = await import('@shared/ws') as unknown as { sent: [string, unknown][] };
+  routeFetch({}); // the controller's usage poll reads at start
   appStore.set({ instances: [conductor, worker, pinged] });
   c.startController();
   stopPrevious = c.stopController;

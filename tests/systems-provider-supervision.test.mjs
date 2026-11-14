@@ -17,6 +17,7 @@ import { DEFAULT_OP_TIMEOUT_MS, ProviderSystem } from '../src/systems/providerSy
 import { providerArgv } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { waitFor } from './poll.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(__dirname, 'fake-provider.mjs');
@@ -38,26 +39,16 @@ async function tmp(fn) {
 // server.ts, and this suite deliberately boots nothing.
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-async function settle(pred, ms = 5_000) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    if (pred()) return true;
-    await new Promise(r => setTimeout(r, 25));
-  }
-  return pred();
+function settle(pred, ms = 5_000) {
+  return waitFor(pred, { timeout: ms, interval: 25 }).then(() => true, () => pred());
 }
 
 // A pid a command wrote for itself, once the write has landed.
-async function pidFrom(file) {
-  const until = Date.now() + 5_000;
-  while (Date.now() < until) {
-    try {
-      const pid = Number((await fs.readFile(file, 'utf8')).trim());
-      if (pid > 0) return pid;
-    } catch { /* not written yet */ }
-    await new Promise(r => setTimeout(r, 10));
-  }
-  throw new Error(`no pid appeared in ${file}`);
+function pidFrom(file) {
+  return waitFor(async () => {
+    const pid = Number((await fs.readFile(file, 'utf8')).trim());
+    return pid > 0 && pid;
+  }, { timeout: 5_000, interval: 10, label: `a pid in ${file}` });
 }
 
 test('a provider speaking a protocol version cc does not is REFUSED, naming both versions', async () => {

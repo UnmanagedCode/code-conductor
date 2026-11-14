@@ -14,8 +14,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InstanceManager } from '../src/instances.ts';
 import { posixPlatform } from '../src/platform/posix.ts';
+import { sleep } from './poll.mjs';
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const tick = () => sleep(15);
 
 function rig() {

@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, flakyLaunch } from './remoteSystem.mjs';
 import { addSystem } from '../src/appSettings.ts';
@@ -37,13 +37,8 @@ async function wire(file) {
   return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
 }
 
-async function settle(pred, ms = 3_000) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    if (pred()) return true;
-    await new Promise(r => setTimeout(r, 20));
-  }
-  return pred();
+function settle(pred, ms = 3_000) {
+  return waitFor(pred, { timeout: ms, interval: 20 }).then(() => true, () => pred());
 }
 
 // A real `tools/call` over POST /mcp — the boundary a remoteId refusal has to

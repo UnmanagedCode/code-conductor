@@ -4,7 +4,6 @@ import './index.css';
 import '@/app/theme';
 import { App } from './App';
 import { startController } from '@/app/controller';
-import { startAccountUsagePolling } from '@/app/accountUsage';
 import { loadModels } from '@/app/models';
 import { probeVoice } from '@/features/voice/store';
 import { startViewedMarker } from '@/app/viewedMarker';
@@ -14,6 +13,7 @@ import { startPluginSessionBridge } from '@/features/views/pluginSession';
 import { startPluginSessionWidth } from '@/features/views/pluginSessionWidth';
 import { startPluginLinkHost } from '@/features/views/pluginLinkHost';
 import { startResumeNotices } from '@/features/resume';
+import { startViewportFollow } from '@/app/viewport';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -22,7 +22,6 @@ createRoot(document.getElementById('root')!).render(
 );
 
 startController();
-startAccountUsagePolling();
 void loadModels();
 probeVoice();
 startViewedMarker();
@@ -32,3 +31,4 @@ startPluginSessionBridge();
 startPluginSessionWidth();
 startPluginLinkHost();
 startResumeNotices();
+startViewportFollow();

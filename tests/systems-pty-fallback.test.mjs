@@ -13,6 +13,7 @@ import { ProviderSystem } from '../src/systems/providerSystem.ts';
 import { REFERENCE_PROVIDER } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { waitFor } from './poll.mjs';
 
 const RECORDING = path.join(import.meta.dirname, 'fixtures', 'recordingProvider.mjs');
 const SPEC = { argv: ['cat'], cols: 80, rows: 24, term: 'xterm' };
@@ -32,12 +33,11 @@ async function recorded(file) {
 // The recording is appended as frames arrive, so a frame cc has just sent may
 // still be on its way.
 async function settleRecorded(file, pred, ms = 5_000) {
-  const until = Date.now() + ms;
-  for (;;) {
+  const hit = await waitFor(async () => {
     const frames = await recorded(file);
-    if (pred(frames) || Date.now() > until) return frames;
-    await new Promise(r => setTimeout(r, 20));
-  }
+    return pred(frames) && frames;
+  }, { timeout: ms, interval: 20 }).catch(() => null);
+  return hit ?? recorded(file);
 }
 
 const isPtyFrame = (f) => (f.type === 'exec' && 'pty' in f) || ['input', 'resize', 'ack'].includes(f.type);

@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import {
   allow, claudeSession, fixture, forwardServer, hookServer, settingsJSON, t,
 } from './cliContractCase.mjs';
+import { sleep } from './poll.mjs';
 
 const FORWARDER = path.join(
   path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'systems', 'bashForwarder.ts',
@@ -59,7 +60,6 @@ const rewriteHook = (url, timeout, onPre = () => {}) => hookServer((e) => {
   return allow({ ...e.tool_input, command: forwarderArgv(url, 'probe: the command cc would run'), timeout });
 });
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // PINS: at a plain tool timeout the CLI DETACHES the forwarder — it does not
 // kill it — so no abort reaches cc and the socket stays open and WRITABLE while

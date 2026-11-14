@@ -18,6 +18,16 @@ How the web UI (`web/`) is tested: its Vitest and Playwright suites ([Suites](#s
 - **Hash routing needs browser semantics.** Import `@/test/browserHash` (`web/src/test/browserHash.ts`) first in the test file, before anything that loads `state/route.ts`; its positive control is `pluginHost.test.tsx` → "a history call fires no hashchange here, and setting location.hash does".
 - **Real layout (offsets, overlap) is measurable only in a browser:** a `web/e2e` spec, or `bootCc()` (`web/e2e/harness/boot.ts`) from an ad-hoc script; Playwright's Chromium, all state in a scratch root.
 
+## What no headless pass reaches: iOS Safari
+
+| Behaviour | Why unreachable | Covered by |
+|---|---|---|
+| Focus zoom (font under 16px) | Chromium never zooms | `web/e2e/touch-fields.spec.ts` checks the computed font-size on a coarse pointer, at the device size and at 932×430 |
+| Contact AutoFill / QuickType, autocorrect | Safari's closed-source field heuristics | `PROSE_FIELD_PROPS` attribute assertions only; hand check |
+| Keyboard pan of the page | no soft keyboard in Playwright | `web/src/app/viewport.test.ts` drives a stubbed `visualViewport`; `touch-fields.spec.ts` checks the follower stays idle |
+
+Hand check on an iPhone (Safari and the installed PWA, portrait and landscape): tapping the composer does not zoom; with the keyboard open the session header stays visible and the composer sits above the keyboard (pinch-zoom while typing is not snapped back); no "AutoFill Contact" appears and a misspelling autocorrects, on the composer, question-card note, plan feedback and **Ask about this session**.
+
 ## Dialog tests
 
 - **A test that opens a dialog once cannot observe its open handler's resets.** Deleting one `value = ''` from the handler leaves such a suite green.

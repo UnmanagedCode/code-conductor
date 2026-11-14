@@ -55,6 +55,7 @@ function spawnHolder(t, root, args = []) {
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
   });
+  // Own poller: fails fast once the child exits, and the timeout carries its stdout/stderr.
   const waitFor = async (re, timeout = 20_000) => {
     const start = Date.now();
     for (;;) {

@@ -550,6 +550,20 @@ describe('answer bubble', () => {
   });
 });
 
+const PROSE = { autocomplete: 'off', autocorrect: 'on', autocapitalize: 'sentences', spellcheck: 'true' };
+
+describe('prose fields in cards', () => {
+  const traits = (el: Element) => Object.fromEntries(Object.keys(PROSE).map((k) => [k, el.getAttribute(k)]));
+
+  it('the plan feedback box and the question answer box carry the prose traits', async () => {
+    // Invariant: free-text card fields opt out of contact AutoFill and keep keyboard correction on.
+    const plan = await show([{ kind: 'plan_request', toolUseId: 'p1', plan: '# Plan', planPath: '/tmp/plan.md' }]);
+    expect(traits(plan.root.querySelector('[data-item="plan"] textarea')!)).toEqual(PROSE);
+    const q = await show([CARD()]);
+    expect(traits(input(q.card()))).toEqual(PROSE);
+  });
+});
+
 describe('plan card', () => {
   const PLAN = { kind: 'plan_request', toolUseId: 'p1', plan: '# Plan\n\n- step one', planPath: '/tmp/plan.md' };
 

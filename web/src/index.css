@@ -11,6 +11,9 @@
   /* The height of each view's top bar. App.tsx's Toaster sits below it, never over its controls. */
   --header-height: 3.5rem;
 
+  /* The app shell's height: app/viewport.ts overrides it while a soft keyboard covers part of the page. */
+  --app-height: 100dvh;
+
   /* The logo's theme inks (components/logo); logoArt.ts's PALETTES carries the same values for the static icons. */
   --logo-ink: #15171c;
   --logo-tile: #f7e5de;

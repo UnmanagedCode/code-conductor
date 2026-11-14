@@ -22,6 +22,7 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { sleep } from './poll.mjs';
 
 // The default heartbeat window is a module-load-time constant
 // (src/idleSubscriptions.ts DEFAULT_SUBSCRIBE_TIMEOUT_MS ←
@@ -30,7 +31,6 @@ import assert from 'node:assert/strict';
 // as idle-drain-settle.test.mjs). Read back rather than re-declared, so the
 // assertions cannot drift from the value the hub actually armed with.
 process.env.ORCH_SUBSCRIBE_TIMEOUT_MS = '400';
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const { InstanceManager, Instance } = await import('../src/instances.ts');
 const { DEFAULT_SUBSCRIBE_TIMEOUT_MS } = await import('../src/idleSubscriptions.ts');

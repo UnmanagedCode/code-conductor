@@ -18,6 +18,7 @@ import { ConversationModel, type AssistantNode } from './model';
 import { text, tool, turnEnd } from './testkit';
 import { flush, renderModel } from './renderModel';
 import { CALL_USAGE_TITLE } from './format';
+import { routeFetch } from '@/test/routeFetch';
 
 async function pageRendered(events: any[]) {
   const live = new ConversationModel();
@@ -89,6 +90,7 @@ const bubbleReading = (bubble: HTMLElement) =>
   [...bubble.querySelectorAll('[data-call-usage-line], p')].map((el) => (el.hasAttribute('data-call-usage-line') ? 'usage' : el.textContent));
 
 beforeEach(() => {
+  routeFetch({}); // the controller's usage poll reads at start
   act(() => { appStore.set({ instances: [inst('i1'), inst('i2')], activeId: 'i1' }); });
   startController();
 });

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, waitFor, freshProjectsRoot, rmrf, api } from './helpers.mjs';
+import { bootServer, waitFor, freshProjectsRoot, rmrf, api, sleep } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
 import { createRunningRecorder, cliRows, START_TIME_ATTEMPTS } from '../src/runningRecord.ts';
 import { hostPlatform } from '../src/platform/index.ts';
@@ -94,7 +94,6 @@ function fakeInst(n) {
     summary: () => ({ project: 'p', sessionId: `s${n}`, cwd: '/w', mode: 'plan' }),
   };
 }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Invariant: writes are bounded and atomic — start() writes at once (an empty
 // live set too); a burst of change events coalesces into one trailing write;
