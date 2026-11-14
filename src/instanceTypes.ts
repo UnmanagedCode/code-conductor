@@ -302,8 +302,9 @@ export interface InstanceLike {
   // MCP handler surface: queues a tool-result nudge for this session's call
   // `toolUseId`, taken by that call's PostToolUse hook (src/toolResultNudges.ts).
   queueToolNudge(toolUseId: string, text: string): void;
-  // Route surface (src/routes/instances.ts): the three destructive session rewrites,
-  // debug mutation and the hook-callback envelope. `_mutating` names the rewrite
+  // Route surface: the three destructive session rewrites and debug mutation
+  // (src/routes/instances.ts) and the hook-callback envelope
+  // (src/routes/instanceHooks.ts). `_mutating` names the rewrite
   // fork/rewind/prune claim synchronously (any holder excludes the other two and
   // a prune pre-check); `rewriteBlocksPrompts` is whether that holder makes
   // prompt() refuse. Both stay on the contract for the MCP-side interlock,
@@ -488,9 +489,14 @@ export interface InstanceManagerLike {
   requestSessionRenew(instanceId: string, opts: { followUp?: string | null; requestedBy?: string | null }): { requested: boolean; rerequested: boolean };
   dropSessionRenewRequest(instanceId: string): void;
   idsForWorktree(project: string, worktreeName: string): string[];
-  // Route surface (src/routes/projects.ts, src/routes/projectSessions.ts).
+  // Route surface: normalSessionIdsForPlace (src/routes/projects.ts,
+  // src/routes/projectSessions.ts); liveBackingIdsForPlace is read by the MCP side
+  // (src/mcp/handlers.ts) only.
   normalSessionIdsForPlace(place: TranscriptPlacement): Set<string>;
   liveBackingIdsForPlace(place: TranscriptPlacement): Set<string>;
+  // idsForSession: src/routes/projectSessions.ts and src/routes/sessions.ts (the
+  // title/summary checks); sessionIdsForWorktree: src/routes/projectSessions.ts;
+  // removeAllForProject: src/routes/projects.ts.
   idsForSession(sessionId: string): string[];
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
   removeAllForProject(projectName: string, opts?: { actor?: Actor }): Promise<number>;
