@@ -437,6 +437,35 @@ describe('expanded conductor tree', () => {
     expect(live).not.toContain('9');
   });
 
+  it("a worktree's ahead/behind pill title names the divergence: ahead only, behind only, both in ahead-then-behind order, a null count as zero, and no pill when level", async () => {
+    // Invariants: ahead-only and behind-only each get their own message with no clause for the other side;
+    // both diverged get the combined message with ahead before behind; a null count reads as zero; 0/0 renders no pill.
+    const cases = {
+      ahead: { ahead: 2, behind: 0 },
+      behind: { ahead: 0, behind: 5 },
+      both: { ahead: 2, behind: 5 },
+      nullAhead: { ahead: null, behind: 3 },
+      nullBehind: { ahead: 4, behind: null },
+      level: { ahead: 0, behind: 0 },
+    };
+    const names = Object.keys(cases);
+    seed({
+      projects: [proj('p', { worktrees: names.map((n) => wt(n, { baseBranch: 'main', mergeStatus: cases[n as keyof typeof cases] })) })],
+      instances: [conductor('A')],
+      conductorSpawns: { A: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: names }] },
+    });
+    renderSidebar();
+    await settle();
+    const tree = expand('A');
+    const pillTitle = (name: string) => tree.querySelector<HTMLElement>(`[data-worktree-row="${name}"] .text-info[title]`)?.title ?? null;
+    expect(pillTitle('ahead')).toBe('2 commit(s) ahead of main — fast-forward parent to land them');
+    expect(pillTitle('behind')).toBe('5 commit(s) behind main — click Sync to catch up');
+    expect(pillTitle('both')).toBe('2 commit(s) ahead of main, 5 behind — rebase, then fast-forward');
+    expect(pillTitle('nullAhead')).toBe('3 commit(s) behind main — click Sync to catch up');
+    expect(pillTitle('nullBehind')).toBe('4 commit(s) ahead of main — fast-forward parent to land them');
+    expect(pillTitle('level')).toBeNull();
+  });
+
   it('expansion survives an instances update, and the tree takes the new worker', async () => {
     // Invariant: the expanded state is the conductor's, not the render's: the same block stays open and lists a worker that arrives.
     seed(treeFixture());

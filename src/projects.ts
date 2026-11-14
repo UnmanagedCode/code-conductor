@@ -23,7 +23,7 @@ import {
 import { writeFileAtomic } from './systems/localSystem.ts';
 import { REMOTE_ID_MAX, remoteIdDefect } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
-import type { SessionRow } from '../shared/wireRows.ts';
+import type { SessionRow, ProjectInfo, SessionCounts } from '../shared/wireRows.ts';
 import { samePath } from './platform/index.ts';
 import { firstPromptHead } from '../shared/promptPreview.ts';
 import { stripAuthorMarker } from './promptAuthor.ts';
@@ -298,25 +298,6 @@ export function validateProjectRef(name: string): string {
     throw httpError(400, `invalid project name ${JSON.stringify(name)} — pass the project's NAME as list_projects prints it (^[a-zA-Z0-9._-]+$), not its path`);
   }
   return validateName(name);
-}
-
-export interface ProjectInfo {
-  name: string;
-  path: string;
-  workspace: string | null;
-  // The System the tree lives on and WHICH TARGET of it — both from
-  // placementOf(), so the `.conduct` pin holds here too. Plain strings, not the
-  // System HANDLE: both REST and MCP spread this into a response body. `path`
-  // is the tree's path ON that system; there is no second path field, which is
-  // what makes an in-root and an out-of-root project indistinguishable here.
-  system: string;
-  remoteId: string | null;
-  // Set only when the row's RECORD could not be parsed. The name is recoverable
-  // from the store directory without reading the file, so the row is emitted
-  // with an empty `path` and this reason rather than dropped — a silently
-  // skipped row is the disappearing row the degraded-listing contract exists to
-  // prevent.
-  degraded?: string;
 }
 
 // What the resolver hands back: where the project's tree is, and — threaded
@@ -2355,7 +2336,7 @@ async function recordedWorktreesByProject(): Promise<Map<string, Set<string>>> {
 export async function summarizeSessions(
   place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
-): Promise<{ count: number; archivedCount: number; handCount: number; lastActivity: number }> {
+): Promise<SessionCounts> {
   const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
   let entries: string[];
   try { entries = await fs.readdir(dir); }

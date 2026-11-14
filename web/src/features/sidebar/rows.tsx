@@ -240,9 +240,9 @@ function upstreamTitle(ms: { ahead: number; behind: number; upstream: string }) 
   return `${ms.behind} commit(s) behind ${ms.upstream} — pull to catch up`;
 }
 
-function worktreeTitle(ms: { ahead: number; behind: number }, base: string | undefined) {
-  if (ms.ahead > 0 && ms.behind > 0) return `${ms.ahead} commit(s) ahead of ${base}, ${ms.behind} behind — rebase, then fast-forward`;
-  if (ms.ahead > 0) return `${ms.ahead} commit(s) ahead of ${base} — fast-forward parent to land them`;
+function worktreeTitle(ms: { ahead: number | null; behind: number | null }, base: string | undefined) {
+  if ((ms.ahead ?? 0) > 0 && (ms.behind ?? 0) > 0) return `${ms.ahead} commit(s) ahead of ${base}, ${ms.behind} behind — rebase, then fast-forward`;
+  if ((ms.ahead ?? 0) > 0) return `${ms.ahead} commit(s) ahead of ${base} — fast-forward parent to land them`;
   return `${ms.behind} commit(s) behind ${base} — click Sync to catch up`;
 }
 

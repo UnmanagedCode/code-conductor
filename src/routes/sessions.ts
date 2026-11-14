@@ -14,6 +14,7 @@ import { generateSummary, askSession, countMessages } from '../summarize.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { httpError } from '../httpError.ts';
 import { intQueryParam, sidParam, sendAttachment, jsonBody, type ServerCtx } from './shared.ts';
+import type { ProjectsHintFrame } from '../../shared/wsFrames.ts';
 
 export function mountSessions(r: express.Router, { instances, serverCtx }: { instances?: InstanceManagerLike | null; serverCtx?: ServerCtx | null }): void {
   // Nudge every connected client to re-fetch /api/projects, for a route that
@@ -23,7 +24,7 @@ export function mountSessions(r: express.Router, { instances, serverCtx }: { ins
   function broadcastProjects(): void {
     const wss = serverCtx?.wss;
     if (!wss) return;
-    const msg = JSON.stringify({ t: 'projects' });
+    const msg = JSON.stringify({ t: 'projects' } satisfies ProjectsHintFrame);
     for (const ws of wss.clients) {
       if (ws.readyState === WebSocket.OPEN) {
         try { ws.send(msg); } catch { /* ignore */ }
