@@ -47,6 +47,7 @@ import { httpError } from './httpError.ts';
 import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
 import { createKeyedQueue } from './keyedQueue.ts';
 import { errCode, errMsg } from '../shared/basics.ts';
+import type { ProjectConventionSelection } from '../shared/wireRows.ts';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 
@@ -119,14 +120,7 @@ export function placementDisclosure(system: unknown, systemPath: unknown): { id:
 const MARKER_RE = /^<!-- cc:conventions ?(.*?) ?-->$/;
 export const NONE_TOKEN = ':none';
 
-// A project's convention selection. `unset` (never chosen) and `none` (chosen
-// to have none) compose the same document; only the marker and the sidebar's
-// flag tell them apart. `selected` slugs are in marker order, verbatim, and may
-// repeat.
-export type ProjectConventionSelection =
-  | { mode: 'unset' }
-  | { mode: 'none' }
-  | { mode: 'selected'; slugs: string[] };
+export type { ProjectConventionSelection } from '../shared/wireRows.ts';
 
 export function slugsOf(sel: ProjectConventionSelection): string[] {
   return sel.mode === 'selected' ? sel.slugs : [];

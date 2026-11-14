@@ -29,7 +29,7 @@ import type { System } from './systems/system.ts';
 import { createKeyedQueue } from './keyedQueue.ts';
 import { REBASE_PROMPT_LEAD } from '../shared/injectedTurns.ts';
 import { errCode } from '../shared/basics.ts';
-import type { WorktreeHookResult } from '../shared/wireRows.ts';
+import type { WorktreeHookResult, WorktreeMeta, MergeStatus, UpstreamStatus } from '../shared/wireRows.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
@@ -57,33 +57,7 @@ const WORKTREE_META_FILENAME = 'worktree.json';
 // LITERALLY in `listDependentWorktrees`, where a reference that matches nothing
 // yields an EMPTY dependents list rather than an error — so a stale one does
 // not mis-address a directory, it silently stops a guard firing.
-export interface WorktreeMeta {
-  parentProject: string;
-  parentPath: string;
-  worktreeName: string;
-  worktreePath: string;
-  branch: string;
-  baseBranch: string;
-  baseSha: string;
-  // Set only when this worktree was created off ANOTHER worktree of the same
-  // project ("a feature branch"): the base worktree's worktreeName. Absent
-  // means based on the project root — the canonical shape, not a legacy one.
-  // `parentProject` stays the ROOT project name either way: listWorktrees
-  // filters on it, so a derived worktree that recorded its base there would
-  // disappear from every listing in the app.
-  baseWorktree?: string;
-  // The user's lock. Absent means unlocked — the canonical shape: unlocking
-  // deletes the key, never writes `false`. Its writers are setWorktreeLock
-  // (browser-only, set or clear) and createWorktree's `lock` option (set at
-  // creation only); no agent can clear it. It refuses two things: merging this worktree
-  // into its base (gate 0 of mergeWorktreeIntoParent, so every merge surface
-  // inherits it) and an AGENT deleting it (the MCP deleteWorktree handler, even
-  // under force). The human's delete paths and sync never read it. Read it only
-  // through listWorktrees / getWorktree / requireWorktree: an instance's
-  // `inst.worktree` is a snapshot taken at spawn and goes stale.
-  locked?: true;
-  createdAt: string;
-}
+export type { WorktreeMeta } from '../shared/wireRows.ts';
 
 // Where this project / worktree's central-store entry lives. Pass
 // `worktreeName: null` for the project root.
@@ -1137,11 +1111,6 @@ export async function removeWorktree(
   return meta;
 }
 
-export interface MergeStatus {
-  ahead: number | null;
-  behind: number | null;
-}
-
 // Read `git rev-list --left-right --count <left>...<right>` from `cwd` and
 // parse the pair. LEFT is BEHIND (commits on <left> missing from <right>),
 // RIGHT is AHEAD. Returns { ahead: null, behind: null } on a non-zero exit or
@@ -1183,10 +1152,6 @@ export async function worktreeWorkLanded(projectName: string, meta: WorktreeMeta
   if (!worktreeLandingRecorded(projectName, meta.worktreeName, meta.createdAt)) return false;
   const status = await getWorktreeMergeStatus(await resolveSystem(projectName), meta);
   return status.ahead === 0;
-}
-
-export interface UpstreamStatus extends MergeStatus {
-  upstream: string | null;
 }
 
 // Compare the project's currently-checked-out branch against its

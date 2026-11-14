@@ -25,6 +25,7 @@ import { type PlatformCapabilities } from '../platform/index.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { httpError, errMessage } from '../httpError.ts';
 import { jsonBody } from './shared.ts';
+import type { ProjectRow, WorktreeRow } from '../../shared/wireRows.ts';
 
 export function mountProjects(r: express.Router, { instances, capabilities }: { instances?: InstanceManagerLike | null; capabilities: PlatformCapabilities }): void {
   // Compute the tree facts for one project — its git state and its recorded
@@ -108,7 +109,7 @@ export function mountProjects(r: express.Router, { instances, capabilities }: { 
       // One catalog read per request, so a slug the catalog has lost reads as
       // unresolved on the next list read, cache or not.
       const catalogSlugs = new Set((await getProjectConventionsCatalog()).map(e => e.slug));
-      const enriched = await Promise.all(projects.map(async (p) => {
+      const enriched = await Promise.all(projects.map(async (p): Promise<ProjectRow> => {
         // Git facts are cached for TTL_MS; concurrent requests coalesce.
         // Keyed on the PLACEMENT, not the name: git facts are measured on the
         // project's system, so an entry cached before a project moved between
@@ -117,7 +118,7 @@ export function mountProjects(r: express.Router, { instances, capabilities }: { 
         // Attach a lightweight session count + last-active timestamp to
         // each worktree too, so the sidebar can decide whether to show
         // its "Sessions (N)" subnode without an extra fetch.
-        const worktreesWithSessions = await Promise.all(gitFacts.worktrees.map(async (w) => {
+        const worktreesWithSessions = await Promise.all(gitFacts.worktrees.map(async (w): Promise<WorktreeRow> => {
           const wtPlace = placeOf(p, w.worktreePath);
           const wtNormalSids = instances ? instances.normalSessionIdsForPlace(wtPlace) : null;
           return {

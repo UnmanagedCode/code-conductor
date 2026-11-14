@@ -1,4 +1,4 @@
-// The REST row types: what the server's Instance.summary(), InstanceManager.list()
+// The REST row types: what the server's Instance.summary(), InstanceManager.list(), the GET /projects listing
 // and the session listing emit, and what the web client reads. Type-only; erased
 // at build time, so it is safe on both sides of the wire (DOM-free).
 //
@@ -165,6 +165,98 @@ export interface SessionRow {
   awaitingUser: 'question' | 'plan' | null;
   awaitingUserSource: 'tool' | 'text' | null;
 }
+
+// A project's convention selection. `unset` (never chosen) and `none` (chosen
+// to have none) compose the same document; only the marker and the sidebar's
+// flag tell them apart. `selected` slugs are in marker order, verbatim, and may
+// repeat.
+export type ProjectConventionSelection =
+  | { mode: 'unset' }
+  | { mode: 'none' }
+  | { mode: 'selected'; slugs: string[] };
+
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  workspace: string | null;
+  // The System the tree lives on and WHICH TARGET of it — both from
+  // placementOf(), so the `.conduct` pin holds here too. Plain strings, not the
+  // System HANDLE: both REST and MCP spread this into a response body. `path`
+  // is the tree's path ON that system; there is no second path field, which is
+  // what makes an in-root and an out-of-root project indistinguishable here.
+  system: string;
+  remoteId: string | null;
+  // Set only when the row's RECORD could not be parsed. The name is recoverable
+  // from the store directory without reading the file, so the row is emitted
+  // with an empty `path` and this reason rather than dropped — a silently
+  // skipped row is the disappearing row the degraded-listing contract exists to
+  // prevent.
+  degraded?: string;
+}
+
+// A worktree's registration record; src/worktrees.ts documents its stored fields.
+export interface WorktreeMeta {
+  parentProject: string;
+  parentPath: string;
+  worktreeName: string;
+  worktreePath: string;
+  branch: string;
+  baseBranch: string;
+  baseSha: string;
+  // Set only when this worktree was created off ANOTHER worktree of the same
+  // project ("a feature branch"): the base worktree's worktreeName. Absent
+  // means based on the project root — the canonical shape, not a legacy one.
+  // `parentProject` stays the ROOT project name either way: listWorktrees
+  // filters on it, so a derived worktree that recorded its base there would
+  // disappear from every listing in the app.
+  baseWorktree?: string;
+  // The user's lock. Absent means unlocked — the canonical shape: unlocking
+  // deletes the key, never writes `false`. Its writers are setWorktreeLock
+  // (browser-only, set or clear) and createWorktree's `lock` option (set at
+  // creation only); no agent can clear it. It refuses two things: merging this worktree
+  // into its base (gate 0 of mergeWorktreeIntoParent, so every merge surface
+  // inherits it) and an AGENT deleting it (the MCP deleteWorktree handler, even
+  // under force). The human's delete paths and sync never read it. Read it only
+  // through listWorktrees / getWorktree / requireWorktree: an instance's
+  // `inst.worktree` is a snapshot taken at spawn and goes stale.
+  locked?: true;
+  createdAt: string;
+}
+
+export interface MergeStatus {
+  ahead: number | null;
+  behind: number | null;
+}
+
+export interface UpstreamStatus extends MergeStatus {
+  upstream: string | null;
+}
+
+
+// A place's session summary, as summarizeSessions (src/projects.ts) computes it.
+export interface SessionCounts {
+  count: number;
+  archivedCount: number;
+  handCount: number;
+  lastActivity: number;
+}
+
+// A worktree of a GET /projects row: its registration, its divergence from its base, its session summary.
+export type WorktreeRow = WorktreeMeta & { mergeStatus: MergeStatus; sessions: SessionCounts };
+
+// A row of GET /projects: the project record plus what the listing measures. docs/protocol.md
+// states each field's meaning.
+export type ProjectRow = ProjectInfo & {
+  sessionIds: string[];
+  systemUnreachable: string | null;
+  gitRefusal: string | null;
+  isGitRepo?: boolean;
+  unbornHead: boolean;
+  worktrees: WorktreeRow[];
+  sessions: SessionCounts;
+  mergeStatus: UpstreamStatus;
+  conventions?: (ProjectConventionSelection & { unresolved: string[] }) | { error: string };
+};
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | (string & {});
 export type Task = { subject: string; description: string; activeForm: string | null; status: TaskStatus };
