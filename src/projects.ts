@@ -1,6 +1,5 @@
 import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadSessions, fileFacts, setSegmentArchived, type SessionIndex } from './sessionStore.ts';
@@ -13,19 +12,18 @@ import { forgetWorktreeLandings } from './worktreeLandings.ts';
 import { isSessionId, isMintedPublicId, assertBackingId } from './identifiers.ts';
 import { projectsRoot, orchStoreRoot, projectStoreDir } from './storeRoot.ts';
 import {
-  NAME_RE, validateName, recordFile, malformed, readProjectRecord,
+  NAME_RE, validateName, recordFile, readProjectRecord,
   type ProjectLocation, type ProjectRecord,
 } from './projectRecord.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
 import {
   CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, localSystem, placementOf, projectPlacement,
-  resolveSystem, systemById,
+  systemById,
 } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
 import { REMOTE_ID_MAX, remoteIdDefect } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 import { samePath } from './platform/index.ts';
-import type { ProjectPlacement } from './systems/registry.ts';
 import { firstPromptHead } from '../shared/promptPreview.ts';
 import { stripAuthorMarker } from './promptAuthor.ts';
 import { errCode, errMsg } from '../shared/basics.ts';

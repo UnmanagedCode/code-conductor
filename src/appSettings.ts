@@ -321,10 +321,6 @@ export async function setTierEnabled(tier: TierName, enabled: unknown): Promise<
 
 // Models group: default spawn tier. Controls which model card is
 // pre-selected when the spawn dialog opens. Defaults to 'powerful' when unset.
-// Membership is derived from CAPABILITY_TIERS (used only via .includes(), so
-// catalog order is irrelevant).
-const VALID_SPAWN_TIERS = CAPABILITY_TIERS.map(t => t.tier);
-
 export function getDefaultSpawnTier(): TierName {
   const s = loadSync();
   const v = s.models?.defaultTier;

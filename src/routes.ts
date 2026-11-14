@@ -5,7 +5,7 @@ import type { Server } from 'node:http';
 import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import {
-  listProjects, adoptProject, listSessions, listSessionsForCwd,
+  listProjects, adoptProject, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
   findSessionLocation, projectsBySystem, setProjectRemote, setProjectWorkspace,
@@ -20,7 +20,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits, setWorktreeLock,
 } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
+import { isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
 import { enumerateSystemRemotes } from './systems/remoteEnumeration.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
@@ -41,7 +41,7 @@ import { applyClaudeUpdate } from './claudeUpdate.ts';
 import { probeClaudeBin } from './health.ts';
 import { streamNdjsonAction } from './ndjsonAction.ts';
 import { BOOT_ID } from './bootId.ts';
-import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
+import { getOrCompute, invalidate, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
 import { projectsOperation } from './projectsChanged.ts';
 import { pageLineageEvents, retiredLineageSource } from './lineagePager.ts';
@@ -300,7 +300,7 @@ function mountInstallableCatalog(r: express.Router, cfg: InstallableCatalogCfg):
     };
   }
 
-  r.get(`/settings/${prefix}`, async (req, res, next) => {
+  r.get(`/settings/${prefix}`, async (_req, res, next) => {
     try { res.json(await state()); } catch (e) { next(e); }
   });
 
@@ -328,7 +328,7 @@ function mountInstallableCatalog(r: express.Router, cfg: InstallableCatalogCfg):
     } catch (e) { next(e); }
   });
 
-  r.get(`/settings/${prefix}/install/status`, (req, res) => {
+  r.get(`/settings/${prefix}/install/status`, (_req, res) => {
     res.json(installer.status());
   });
 
@@ -435,7 +435,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // Cheap liveness + per-process identity probe. The client restart flow polls
   // this for a CHANGED bootId to confirm it's talking to the replacement
   // process, not the old one still up during a resume drain (see bootId.ts).
-  r.get('/health', (req, res) => {
+  r.get('/health', (_req, res) => {
     res.json({ ok: true, app: 'code-conductor', pid: process.pid, bootId: BOOT_ID, capabilities });
   });
 
@@ -515,7 +515,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // The client hands off to the restart+resume flow after a successful apply
   // (performRestart, web/src/features/sidebar/restart.ts); the POST itself never
   // restarts the process.
-  r.get('/settings/self-update', async (req, res, next) => {
+  r.get('/settings/self-update', async (_req, res, next) => {
     try { res.json(await getSelfUpdateStatus()); } catch (e) { next(e); }
   });
 
@@ -524,15 +524,15 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // thrown error (→ trailing error middleware, preserving status codes); after
   // it, bytes are committed as 200 NDJSON and both outcomes resolve into one
   // terminal {type:'result',...} line.
-  r.post('/settings/self-update', (req, res, next) => streamNdjsonAction(res, next,
+  r.post('/settings/self-update', (_req, res, next) => streamNdjsonAction(res, next,
     (onChunk, onValidated) => applySelfUpdate({ onChunk, onValidated })));
 
   // Settings → About's Claude CLI update (src/claudeUpdate.ts) — same NDJSON
   // contract as self-update; no restart follows. GET is the `--version` probe.
-  r.get('/settings/claude-update', async (req, res, next) => {
+  r.get('/settings/claude-update', async (_req, res, next) => {
     try { res.json(await probeClaudeBin({ platform: hostPlatform })); } catch (e) { next(e); }
   });
-  r.post('/settings/claude-update', (req, res, next) => streamNdjsonAction(res, next,
+  r.post('/settings/claude-update', (_req, res, next) => streamNdjsonAction(res, next,
     (onChunk, onValidated) => applyClaudeUpdate({ platform: hostPlatform, onChunk: (t) => onChunk('update', t), onValidated })));
 
   // Settings → Models spawn prefs: debugByDefault (whether newly spawned
@@ -546,7 +546,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     taskTools: getTaskToolsEnabled(),
     autoBackground: { ...getAutoBackground(), minMs: AUTO_BACKGROUND_MIN_MS, maxMs: AUTO_BACKGROUND_MAX_MS },
   });
-  r.get('/settings/spawn', async (req, res, next) => {
+  r.get('/settings/spawn', async (_req, res, next) => {
     try { res.json(spawnPrefs()); } catch (e) { next(e); }
   });
   r.post('/settings/spawn/prefs', async (req, res, next) => {
@@ -640,7 +640,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     };
   }
 
-  r.get('/projects', async (req, res, next) => {
+  r.get('/projects', async (_req, res, next) => {
     try {
       const projects = await listProjects();
       // One catalog read per request, so a slug the catalog has lost reads as
@@ -736,7 +736,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // No query parameters and no soft-refusal envelope: there is nothing here to
   // refuse, and a missing or unreachable root is an empty list rather than an
   // error. A genuine throw becomes the router's standard {error}.
-  r.get('/projects/suggestions', async (req, res, next) => {
+  r.get('/projects/suggestions', async (_req, res, next) => {
     try { res.json(await suggestAdoptableDirs()); }
     catch (e) { next(e); }
   });
@@ -773,7 +773,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // Mounted at a literal path so the regular /projects/:name guards don't
   // need to special-case the name and so curl-ing this never spawns a
   // visible project. Idempotent — second call is a fast no-op.
-  r.post('/projects/.conduct/ensure', async (req, res, next) => {
+  r.post('/projects/.conduct/ensure', async (_req, res, next) => {
     try {
       const result = await ensureConductProject();
       res.json({ ok: true, ...result });
@@ -919,7 +919,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // Workspaces persist independently of membership: an empty workspace
   // stays visible in the sidebar. The registry is the union source.
 
-  r.get('/workspaces', async (req, res, next) => {
+  r.get('/workspaces', async (_req, res, next) => {
     try {
       res.json(await summarizeWorkspaces());
     } catch (e) { next(e); }
@@ -1080,7 +1080,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
 
   // All archived sessions, grouped by the project (+ worktree) that owns
   // them — backs the Settings → Archived page.
-  r.get('/archived', async (req, res, next) => {
+  r.get('/archived', async (_req, res, next) => {
     try {
       res.json({ groups: await listArchivedGroupedByProject() });
     } catch (e) { next(e); }
@@ -1541,7 +1541,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       }
     }
 
-    r.get('/instances', async (req, res, next) => {
+    r.get('/instances', async (_req, res, next) => {
       try {
         const rows = instances.listVisible();
         const bindings = await playbookBindings(rows.map(row => row.sessionId));
@@ -1966,7 +1966,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // blob here, the server runs whisper.cpp locally and returns the text.
   // /status drives the frontend's button-visibility — both binaries must
   // be present or the mic button stays hidden.
-  r.get('/transcribe/status', async (req, res, next) => {
+  r.get('/transcribe/status', async (_req, res, next) => {
     try {
       const available = await transcribeAvailable();
       res.json({ available });
@@ -2061,7 +2061,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
       defaultSpawnTier: getDefaultSpawnTier() };
   }
 
-  r.get('/settings/models', (req, res) => {
+  r.get('/settings/models', (_req, res) => {
     res.json(modelsSettingsState());
   });
 
@@ -2306,7 +2306,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // assistant's text here; the server runs Piper locally and streams the
   // synthesized audio back sentence-by-sentence. /status drives the button's
   // visibility — the piper venv + the active voice must be present.
-  r.get('/tts/status', async (req, res, next) => {
+  r.get('/tts/status', async (_req, res, next) => {
     try {
       const available = await ttsAvailable();
       res.json({ available });
@@ -2379,7 +2379,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // delivered per project (folded into each project's in-tree CONVENTIONS.md,
   // and into `.conduct/CONVENTIONS.md` before every conductor spawn), so every
   // mutation fans out over all projects to take effect immediately.
-  r.get('/settings/conventions/workspace', async (req, res, next) => {
+  r.get('/settings/conventions/workspace', async (_req, res, next) => {
     try {
       const [conventions, enabled] = await Promise.all([getWorkspaceConventionsCatalog(), getWorkspaceSelection()]);
       res.json({ core: WORKSPACE_CORE_META, conventions, enabled });
@@ -2447,7 +2447,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // short catalog exactly like a complete one. The fix on this surface is a
   // dialog affordance for a human picker rather than a bare field, and is
   // carded separately.
-  r.get('/settings/conventions/project', async (req, res, next) => {
+  r.get('/settings/conventions/project', async (_req, res, next) => {
     try { res.json({ conventions: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
   });
 
@@ -2501,7 +2501,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // catalog missing an unreachable plugin's conventions exactly like a complete
   // one. Deferred by decision and carded separately: this is a read-only view
   // and nothing is committed from it.
-  r.get('/settings/conventions/conductor', async (req, res, next) => {
+  r.get('/settings/conventions/conductor', async (_req, res, next) => {
     try {
       const [conventions, enabled, catalog, defaultPlaybook, defaultPlaybookEnforcement, missing] = await Promise.all([
         getConductorConventionsCatalog(), getConductorSelection(), listPlaybooks(), getDefaultPlaybookSelection(),
@@ -2599,7 +2599,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // (with stale: true) when a fresh fetch isn't available, instead of
   // blanking the chip — see src/accountUsage.ts. Returns
   // { usage: <data>|null, stale, fetchedAt } — never exposes the raw token.
-  r.get('/usage', async (req, res, next) => {
+  r.get('/usage', async (_req, res, next) => {
     try {
       const result = await getAccountUsage({ allowStale: true });
       if (!result) return res.json({ usage: null, stale: false, fetchedAt: null });
@@ -2618,27 +2618,27 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
     if (!claudeLogin) throw httpError(503, 'login flow unavailable');
     return claudeLogin;
   };
-  r.get('/claude-auth/status', async (req, res, next) => {
+  r.get('/claude-auth/status', async (_req, res, next) => {
     try {
       if (!claudeAuthStatus) throw httpError(503, 'Claude auth status unavailable');
       // A CLI that cannot be run or answers garbage is the upstream's failure.
       res.json(await claudeAuthStatus().catch((e: unknown) => { throw httpError(502, errMessage(e)); }));
     } catch (e) { next(e); }
   });
-  r.get('/claude-auth/login', (req, res, next) => {
+  r.get('/claude-auth/login', (_req, res, next) => {
     try { res.json(loginFlow().snapshot()); } catch (e) { next(e); }
   });
-  r.post('/claude-auth/login', (req, res, next) => {
+  r.post('/claude-auth/login', (_req, res, next) => {
     try { res.json(loginFlow().start()); } catch (e) { next(e); }
   });
   r.post('/claude-auth/login/code', (req, res, next) => {
     try { res.json(loginFlow().submitCode(jsonBody(req).code)); } catch (e) { next(e); }
   });
-  r.post('/claude-auth/login/cancel', (req, res, next) => {
+  r.post('/claude-auth/login/cancel', (_req, res, next) => {
     try { res.json(loginFlow().cancel()); } catch (e) { next(e); }
   });
 
-  r.get('/costs/summary', async (req, res, next) => {
+  r.get('/costs/summary', async (_req, res, next) => {
     try { res.json(await getCostSummary()); } catch (e) { next(e); }
   });
 

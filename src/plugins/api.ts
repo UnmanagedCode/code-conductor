@@ -49,7 +49,7 @@ async function refreshProjectConventions(): Promise<void> {
 export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: PluginHostApiLike | null; pluginLibrary?: PluginLibraryApiLike | null } = {}): express.Router {
   const r = express.Router();
 
-  r.use((req, res, next) => {
+  r.use((_req, res, next) => {
     if (!pluginHost) return res.status(404).json({ error: 'plugins are not available' });
     next();
   });
@@ -63,7 +63,7 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   // Plugin Library — installable catalog (git repo URLs) + clone-to-install.
   // Constructed alongside pluginHost (same withInstances gate in server.ts),
   // so the guard above already covers these too.
-  r.get('/library', async (req, res, next) => {
+  r.get('/library', async (_req, res, next) => {
     try { res.json(await lib.list()); } catch (e) { next(e); }
   });
 
@@ -82,7 +82,7 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   // `notices` carries any non-ENOENT registry.json/runtime.json load failure from
   // the init this call triggers — read AFTER awaiting list(), which is what runs
   // ensureInit and therefore what populates them.
-  r.get('/', async (req, res, next) => {
+  r.get('/', async (_req, res, next) => {
     try {
       const rows = await host.list();
       res.json({ rows, notices: host.notices() });
@@ -101,7 +101,7 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   // slugs unresolvable: referencing projects still refresh their other,
   // resolvable conventions, with the plugin's slugs named in a note (never
   // blanked); an enable re-resolves them ⇒ full refresh.
-  r.post('/rescan', async (req, res, next) => {
+  r.post('/rescan', async (_req, res, next) => {
     try {
       const result = await host.rescan();
       await refreshProjectConventions();

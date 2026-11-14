@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
+import { Parser, QuiescenceScan, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
 import { RetiredPagers } from './retiredPagers.ts';
 import type { LineageSource } from './lineagePager.ts';
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, writeFileAtomic, toolResultsDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, claudeConfigFarmRoot, remoteConfigDir, projectsRoot, selfProjectDir, projectRootPlace, type TranscriptPlacement } from './projects.ts';
@@ -83,7 +83,7 @@ import {
   appendModelSwitch, reanchorModelSwitches, getModelSwitchesForSegment,
   type SessionBackendRecord, type TurnMarks, type ModelSwitchEntry,
 } from './sessionStore.ts';
-import { MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode } from './sessionModes.ts';
+import { MODES, DEFAULT_MODE, effectiveResumeMode } from './sessionModes.ts';
 import { applySessionTitle, forkTitle } from './sessionTitles.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { IdleRenewNudgeController, type NudgeTimers } from './idleRenewNudge.ts';

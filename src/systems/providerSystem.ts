@@ -26,7 +26,6 @@
 // target's environment exactly as the derivations' `LC_ALL=C` does.
 
 import { randomBytes } from 'node:crypto';
-import path from 'node:path';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, PTY_INPUT_WINDOW_BYTES, PTY_WINDOW_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   readRemoteList, type AnyFrame, type Capabilities, type ClientFrame, type SystemErrorCode,
@@ -234,7 +233,7 @@ export class ProviderSystem implements System, ShellHost {
     try {
       raw = await this.#request<{ mirrorRoot?: unknown; exclude?: unknown }>('m', (id) => ({
         type: 'describeRemote', id, ...this.#binding(),
-      }), (id, f, resolve) => {
+      }), (_id, f, resolve) => {
         if (f.type === 'remoteDescriptor') resolve({ mirrorRoot: f.mirrorRoot, exclude: f.exclude });
       });
     } catch (e) {
@@ -563,7 +562,7 @@ export class ProviderSystem implements System, ShellHost {
       ...(opts.mode === undefined ? {} : { mode: opts.mode & 0o7777 }),
       ...(opts.atomic ? { atomic: true } : {}),
       ...(opts.exclusive ? { exclusive: true } : {}),
-    }), (id, f, resolve) => {
+    }), (_id, f, resolve) => {
       if (f.type === 'writeFileResult') resolve();
     }, (id) => {
       let seq = 0;

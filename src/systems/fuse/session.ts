@@ -33,7 +33,7 @@ import { wrapLaunch, type LaunchWrap } from './wrap.ts';
 import { scanProcesses, membersOf, type ProcRow, type RawScan } from './procScan.ts';
 import { reclaimProcess, type OrphanReclaim } from './orphans.ts';
 import { ControlServer } from './control.ts';
-import { localDirSource, type RemoteSource } from './remoteSource.ts';
+import { type RemoteSource } from './remoteSource.ts';
 import type { UiEvent } from '../../../shared/uiEvent.ts';
 
 export interface Deadlines {

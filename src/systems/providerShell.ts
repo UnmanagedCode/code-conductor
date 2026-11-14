@@ -40,9 +40,7 @@
 // src/systems/toolRedirect.ts turns the difference into the notice a worker
 // reads, which is where a discarded `cd` becomes visible instead of silent.
 
-import {
-  FS_ERROR_CODES, SystemError, classifySpawnError, type SystemErrorCode,
-} from './protocol.ts';
+import { SystemError, classifySpawnError } from './protocol.ts';
 import {
   FramedStreamFilter, frameCommand, newNonce, parseFramedStderr, parseFramedStdout, sentinelFor,
 } from './shellFraming.ts';
@@ -91,10 +89,6 @@ export interface ShellResult {
   // the shell's own answer is the only one that is right. It is a REPORT, not a
   // hand-off: nothing feeds it into the next command.
   cwd: string;
-}
-
-function isFsErrorCode(code: SystemErrorCode): boolean {
-  return (FS_ERROR_CODES as readonly string[]).includes(code) && code !== 'EUNKNOWN';
 }
 
 // THE CLI's OWN CEILING for one Bash call. cc's sits ABOVE it rather than being

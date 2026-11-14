@@ -3,11 +3,9 @@
 // logic, never self-HTTP. Each handler receives (args, { instances }).
 
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
 import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.ts';
 import {
   listProjects as fsListProjects,
-  listSessions as fsListSessions,
   listSessionsForCwdWithCounts,
   summarizeSessions,
   createProject as fsCreateProject,
