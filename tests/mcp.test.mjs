@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl, registerLocalProject} from './helpers.mjs';
 import { OPEN_LEASE } from './playbook-fixtures.mjs';
 import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
-import { isDeadStatus } from '../src/instances.ts';
+import { isDeadStatus } from '../src/instanceStatus.ts';
 import { localPlace } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

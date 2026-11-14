@@ -73,7 +73,7 @@ import {
 import { loadPlaybooks, playbookSummary, playbookDetail, legalMovesFrom, decide, missingPlaybookCause, type Playbook } from '../playbooks.ts';
 import { runMembers, playbookBinding, type Projection } from '../playbookState.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
-import { isDeadStatus } from '../instances.ts';
+import { isDeadStatus } from '../instanceStatus.ts';
 // The handle check describe_session enforces. Static import is safe here:
 // sessionLineage.ts imports orchStoreRoot from projects.ts, and nothing imports
 // this module.

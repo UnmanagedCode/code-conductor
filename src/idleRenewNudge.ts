@@ -20,7 +20,7 @@ import { isTopLevelConductor } from '../shared/conductors.ts';
 import { buildIdleRenewNudge, PROMPT_CACHE_TTL_MINUTES } from '../shared/idleRenewNudge.ts';
 import type { UiEvent } from '../shared/uiEvent.ts';
 import { renewalDeferredBy } from './sessionRenew.ts';
-import { isDeadStatus } from './instances.ts';
+import { isDeadStatus } from './instanceStatus.ts';
 
 export const IDLE_NUDGE_SWEEP_MS = 30_000;
 const MINUTE_MS = 60_000;

@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { compareInstanceRows } from '../src/mcp/handlers.ts';
-import { isDeadStatus } from '../src/instances.ts';
+import { isDeadStatus } from '../src/instanceStatus.ts';
 
 const wt = (name) => (name === null ? null : { worktreeName: name, branch: 'b', baseBranch: 'main', baseSha: 'abc', postWorktreeCreate: null });
 const row = (project, worktree, createdAt, sessionId) => ({ project, worktree: wt(worktree), createdAt, sessionId });
