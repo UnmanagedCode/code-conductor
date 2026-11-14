@@ -12,7 +12,7 @@ const LONG_OWNER = 'e2e-owner-with-a-very-long-conductor-title-that-cannot-fit-t
 
 type Ctx = { page: Page; cc: Parameters<typeof spawnSession>[0] };
 
-async function reachable(page: Page, target: ReturnType<Page['locator']>) {
+async function reachable(_page: Page, target: ReturnType<Page['locator']>) {
   await target.scrollIntoViewIfNeeded();
   await expect(target).toBeVisible();
   await expect(target).toBeInViewport();
