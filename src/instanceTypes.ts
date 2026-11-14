@@ -495,7 +495,7 @@ export interface InstanceManagerLike {
   normalSessionIdsForPlace(place: TranscriptPlacement): Set<string>;
   liveBackingIdsForPlace(place: TranscriptPlacement): Set<string>;
   // idsForSession: src/routes/projectSessions.ts and src/routes/sessions.ts (the
-  // title/summary checks); sessionIdsForWorktree: src/routes/projectSessions.ts;
+  // title and viewed routes); sessionIdsForWorktree: src/routes/projectSessions.ts;
   // removeAllForProject: src/routes/projects.ts.
   idsForSession(sessionId: string): string[];
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
