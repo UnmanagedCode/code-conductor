@@ -31,10 +31,6 @@ export default defineConfig({
   build: {
     outDir: path.join(here, 'dist'),
     emptyOutDir: true,
-    // Served from the local machine, with the full-page views and the dialogs in
-    // lazy chunks; the entry (React + Radix + the session view) is past Vite's
-    // default warning size, and every boot-time rebuild would print the warning.
-    chunkSizeWarningLimit: 800,
     rolldownOptions: {
       output: {
         codeSplitting: {
@@ -42,6 +38,10 @@ export default defineConfig({
           // logo gets its own chunk, still statically imported, so the page
           // preloads it with the entry.
           groups: [
+            // React, ReactDOM and the scheduler get their own chunk, statically imported and preloaded with the entry: an
+            // app-only change leaves its hash, so a returning browser keeps it cached. The priority claims them before the
+            // markdown group, whose dependency capture would otherwise pull React into the markdown chunk.
+            { name: 'react-vendor', priority: 1, test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
             { name: 'logo-art', test: /[\\/]components[\\/]logo[\\/]logoArt\.ts$/ },
             // react-markdown and the unified ecosystem it pulls in (parser, GFM, mdast/hast, entity tables) get their
             // own chunk, also statically imported and preloaded with the entry.
