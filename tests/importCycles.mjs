@@ -28,7 +28,6 @@ const CODE = /\.(?:ts|mts|cts|tsx|mjs|js|cjs)$/;
 const DECL = /\.d\.m?ts$/;
 
 export const BASELINE = [
-  ['src/backgroundJobs.ts', 'src/idleRenewNudge.ts', 'src/idleSubscriptions.ts', 'src/instances.ts', 'src/mcp/handlers.ts', 'src/mcp/readRenderers.ts', 'src/usageOverageMonitor.ts'],
   ['src/projects.ts', 'src/sessionStore.ts', 'src/sessionTitles.ts', 'src/systems/registry.ts'],
 ];
 
