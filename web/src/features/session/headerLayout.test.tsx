@@ -318,6 +318,15 @@ describe('title block', () => {
     expect(subline()!.textContent).not.toMatch(/Stopping|resumes|queued/);
   });
 
+  it('an overage-paused session with no armed resume shows the reset time on line 1', () => {
+    // Invariant: a session paused by the account overage gate with no armed auto-resume (autoResumeAt null) shows a line-1 badge naming the reset time from overageResetsAt, not the bare "paused" fallback.
+    const T = 1_900_000_000;
+    render(tree(base({ overageActive: true, autoResumeAt: null, overageResetsAt: T })));
+    const texts = lineBadges().map((el) => el.textContent ?? '');
+    expect(texts).toContain(formatAutoResumeTime(T));
+    expect(texts).not.toContain('paused');
+  });
+
   it('an armed session\'s badge reads its full resume time and queued count with its tooltip; clearing the resume removes it', async () => {
     // Invariant: an armed resume puts a line-1 badge with the full resume time; with messages queued the badge and its tooltip count them, with none neither mentions a queue; the tooltip says it will resume; clearing the resume removes the badge.
     const T = 1_900_000_000;
@@ -441,7 +450,7 @@ describe('Resume', () => {
     }
     for (const [name, inst] of [
       ['idle', base()],
-      ['exited mid-switch', stopped('exited', { modelSwitch: { from: 'a', to: 'b' } })],
+      ['exited mid-switch', stopped('exited', { modelSwitch: { from: 'a', to: 'b', fromBackend: 'claude', toBackend: 'claude' } })],
     ] as const) {
       const r = render(tree(inst));
       expect(screen.queryByRole('button', { name: 'Resume' }), name).toBeNull();

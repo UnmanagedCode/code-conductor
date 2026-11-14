@@ -84,7 +84,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   const overageUnarmed = !!inst?.overageStoppedUnarmed;
   const canSend = !!inst && promptSendable(inst);
   const overagePaused = !!(inst?.overageActive || inst?.autoResumeAt) && !overageUnarmed;
-  const resumeAt = (inst?.autoResumeAt ?? inst?.overageResetsAt ?? null) as number | null;
+  const resumeAt = inst?.autoResumeAt ?? inst?.overageResetsAt ?? null;
   const voiceOn = voice.supported;
   const hasContent = text.trim().length > 0 || pending.some((p) => !p.error);
 

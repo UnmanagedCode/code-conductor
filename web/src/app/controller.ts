@@ -2,7 +2,7 @@
 // router (snapshot / reset_snapshot / segment / event / status / instances /
 // projects) and the first-connect anchor restore. UI features subscribe to the
 // stores and to app events; nothing here touches the DOM beyond the URL hash.
-import { bus, connect, send } from '@shared/ws';
+import { bus, connect, send, type BusEventMap } from '@shared/ws';
 import { ApiError, apiFetch } from '@shared/http';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
 import { appStore, activeInstance, findInstance, worktreeRemoved, type AppState, type StaleList } from '@/state/app';
@@ -401,10 +401,10 @@ export function startController() {
   if (lifetime) return;
   lifetime = new AbortController();
   const { signal } = lifetime;
-  const listen = (t: string, fn: (e: Event) => void) => bus.addEventListener(t, fn, { signal });
+  const listen = <K extends keyof BusEventMap>(t: K, fn: (e: BusEventMap[K]) => void) => bus.addEventListener(t, fn, { signal });
 
-  listen('snapshot', (e: Event) => {
-    const m = (e as CustomEvent).detail;
+  listen('snapshot', (e) => {
+    const m = e.detail;
     const tracker = getTaskTracker(m.id);
     tracker.reset();
     if (m.tasksAtTailStart?.length) tracker.seedActive(m.tasksAtTailStart);
@@ -428,8 +428,8 @@ export function startController() {
     if (typeof m.droppedText === 'string') emit('prefill', { text: m.droppedText });
   });
 
-  listen('reset_snapshot', (e: Event) => {
-    const m = (e as CustomEvent).detail;
+  listen('reset_snapshot', (e) => {
+    const m = e.detail;
     getTaskTracker(m.id).reset();
     getUsageTracker(m.id).reset();
     const isActive = m.id === appStore.get().activeId;
@@ -441,35 +441,35 @@ export function startController() {
     if (isActive && typeof m.droppedText === 'string') emit('prefill', { text: m.droppedText });
   });
 
-  listen('segment', (e: Event) => {
-    const m = (e as CustomEvent).detail;
+  listen('segment', (e) => {
+    const m = e.detail;
     if (m.id !== appStore.get().activeId) return;
     conversation.segmentId = m.currentSegmentId ?? null;
     conversation.setCurrentSegment(m.currentSegmentId ?? null);
   });
 
-  listen('event', (e: Event) => {
-    const m = (e as CustomEvent).detail;
+  listen('event', (e) => {
+    const m = e.detail;
     const tracker = getTaskTracker(m.id);
     const prev = tracker.completedBatches.length;
     tracker.apply(m.ev);
     getUsageTracker(m.id).apply(m.ev);
     rateLimits.apply(m.ev);
     const k = m.ev?.kind;
-    if (HEADER_EVENTS.has(k) || (k === 'system' && HEADER_SYSTEM.has(m.ev?.subtype))) trackerSignal.bump();
+    if (HEADER_EVENTS.has(k) || (m.ev?.kind === 'system' && HEADER_SYSTEM.has(m.ev.subtype))) trackerSignal.bump();
     if (m.id !== appStore.get().activeId) return;
     // A live history_replayed: the server put a resume/respawn/rewind's
     // history in the ring without streaming it. Pull it as a reload does — the
     // snapshot tail (which carries this divider) plus lazy scroll-back.
-    if (k === 'system' && m.ev.subtype === 'history_replayed') { subscribe(m.id); return; }
+    if (m.ev?.kind === 'system' && m.ev.subtype === 'history_replayed') { subscribe(m.id); return; }
     conversation.apply(m.ev);
     if (tracker.completedBatches.length > prev) {
       conversation.apply({ kind: 'task_completion', tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
     }
   });
 
-  listen('status', (e: Event) => {
-    const m = (e as CustomEvent).detail;
+  listen('status', (e) => {
+    const m = e.detail;
     patchInstance(m.id, {
       status: m.status,
       mode: m.mode,

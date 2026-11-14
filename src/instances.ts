@@ -132,6 +132,8 @@ import type { Actor, CreateInstanceInput, ExitCause, InstanceLike, InstanceManag
 import type { UiEvent, UiEventOf, UserEchoAttachment, PromptAuthor } from '../shared/uiEvent.ts';
 import { authorMarkerBlock, combineAuthors, quoteHumanPrompts, type HumanPromptQuote } from './promptAuthor.ts';
 import type { WorktreeMeta } from './worktrees.ts';
+import type { WorktreeHookResult } from '../shared/wireRows.ts';
+import type { Usage } from '../shared/usage.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
 import type { WriteStream } from 'node:fs';
@@ -733,7 +735,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // The mirror advertisement this session was created under, or null for a
   // local one. Compared on every relaunch; see attachRedirect and launch().
   _mirrorScope: MirrorScope | null;
-  worktree: (WorktreeMeta & { postWorktreeCreate?: unknown }) | null;
+  worktree: (WorktreeMeta & { postWorktreeCreate?: WorktreeHookResult }) | null;
   persistent: boolean;
   // A conductor from New conductor that has had no prompt yet (src/pristine.ts).
   // In memory only: a restart never carries one.
@@ -872,7 +874,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _turnStarts: number;
   _questionAnswers: QuestionAnswerCorrelator;
   _liveThinkingTokens: number | null;
-  _lastContextUsage: unknown;
+  _lastContextUsage: Usage | null;
   _callUsage: CallUsageTracker;
   _cacheEstimate: CacheEstimator;
   _pending: Map<string, PendingRequest>;
@@ -1649,7 +1651,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // even when the tail holds no message_start — see the constructor comment for
   // why the ring can't be trusted, and note context_usage is never retained at
   // all, so for that kind this field is the only carrier.
-  get lastContextUsage(): unknown { return this._lastContextUsage; }
+  get lastContextUsage(): Usage | null { return this._lastContextUsage; }
 
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are

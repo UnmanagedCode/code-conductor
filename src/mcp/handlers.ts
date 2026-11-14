@@ -168,7 +168,7 @@ interface DiffFileRow {
 // conductor — UI-only; no MCP payload carries a hidden one), `displayLabel` (the
 // sidebar's label, for plugins; list_sessions / describe_session render their
 // own from `title` and `firstPrompt`).
-export const CONDUCTOR_VIEW_KEYS = [
+export const CONDUCTOR_VIEW_KEYS: (keyof InstanceSummary)[] = [
   'project',
   // Load-bearing for the conductor's self-identification check: it confirms its
   // own cwd ends in `.conduct` and stops if it doesn't (i.e. it is running

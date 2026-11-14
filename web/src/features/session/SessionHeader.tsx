@@ -283,7 +283,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                 <TooltipContent className="max-w-64">{resumeBadge.title}</TooltipContent>
               </Tooltip>
             ) : inst.overageActive ? (
-              <Badge variant="warning" className="shrink-0"><ClockIcon />{formatAutoResumeTime(inst.overageResetsAt as number) || 'paused'}</Badge>
+              <Badge variant="warning" className="shrink-0"><ClockIcon />{formatAutoResumeTime(inst.overageResetsAt) || 'paused'}</Badge>
             ) : null}
           </div>
           {(inst.title || worktree || owner.kind !== 'none') && (

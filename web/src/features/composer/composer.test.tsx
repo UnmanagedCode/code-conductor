@@ -10,6 +10,7 @@ import { emit } from '@/app/events';
 import { stickyPrompt } from '@/app/controller';
 import type { Instance } from '@/state/types';
 import { CONDUCTOR_LABEL } from '@shared/conductors';
+import { formatAutoResumeTime } from '@shared/usage';
 import { Composer } from './Composer';
 import { createDraftStore, DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { focusPromptAfterSelect } from '@/features/session/promptFocus';
@@ -138,7 +139,7 @@ describe('send and mic modes', () => {
   it('a dead or switching session cannot send', () => {
     const c = mount(inst('s1', { status: 'exited' }));
     expect(c.box().disabled).toBe(true);
-    c.swap(inst('s1', { modelSwitch: { from: 'a', to: 'b' } }));
+    c.swap(inst('s1', { modelSwitch: { from: 'a', to: 'b', fromBackend: 'claude', toBackend: 'claude' } }));
     type(c.box(), 'x');
     expect(c.button().disabled).toBe(true);
   });
@@ -151,6 +152,25 @@ describe('send and mic modes', () => {
     c.swap(inst('s1', { overageStoppedUnarmed: true }));
     expect(c.button().disabled).toBe(true);
     expect(c.container.textContent).toMatch(/can't be queued here/);
+  });
+
+  it('overage paused with no armed resume names the reset clock from overageResetsAt', () => {
+    // Invariant: a session paused by the account overage gate with no armed auto-resume (autoResumeAt null) still shows when it resumes, taking the clock from overageResetsAt.
+    const T = 1_900_000_000;
+    const clock = formatAutoResumeTime(T)!.replace('resumes at ', '');
+    const c = mount(inst('s1', { overageActive: true, autoResumeAt: null, overageResetsAt: T }));
+    expect(c.container.textContent).toContain(`Paused until ${clock}.`);
+  });
+
+  it('overage paused with an armed resume names the autoResumeAt clock, not the gate reset', () => {
+    // Invariant: when both autoResumeAt and overageResetsAt are set and differ, the paused copy names the armed autoResumeAt deadline and not the raw gate reset.
+    const A = 1_900_000_000;
+    const B = A + 5 * 3600;
+    const clockOf = (t: number) => formatAutoResumeTime(t)!.replace('resumes at ', '');
+    expect(clockOf(A)).not.toBe(clockOf(B));
+    const c = mount(inst('s1', { overageActive: true, autoResumeAt: A, overageResetsAt: B }));
+    expect(c.container.textContent).toContain(`Paused until ${clockOf(A)}.`);
+    expect(c.container.textContent).not.toContain(clockOf(B));
   });
 });
 

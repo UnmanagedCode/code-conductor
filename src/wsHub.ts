@@ -3,28 +3,15 @@
 // Client → server messages are dispatched in the `switch (msg.t)` below; see
 // the cases for the authoritative set.
 //
-// Server → client:
-//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan, playbookEnforcement,
-//                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL; default DEFAULT_SNAPSHOT_TAIL)
-//                          tailStartSeq, trimmedBefore, // >0 ⇒ older ring history exists
-//                          tailSegmentId,            // the backing segment the tail starts in
-//                          currentSegmentId,         // the backing segment the instance runs under now
-//                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
-//                          (older history — ring and earlier segments — is paged via
-//                          GET /api/instances/:id/lineage-events)
-//                          (no event/segment/reset_snapshot frame for the instance
-//                          precedes it after a subscribe; those emitted while it is
-//                          built follow it, in order — a status frame is not held)
-//   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...], droppedText? } // droppedText ⇒ rewind prefill
-//   { t: "event",          id, ev }                 // never a pull-only (replayed history) event
-//   { t: "segment",        id, currentSegmentId }  // before every forwarded outer system/init
-//   { t: "status",         id, status, sessionId, mode, model, autoApprovePlan, playbookEnforcement,
-//                          interrupting, modelSwitch, modelSwitchFailure }
-//   { t: "closed",         id, code, signal }
-//   { t: "projects" }              // hint to re-fetch /api/projects (also on every src/projectsChanged.ts signal)
-//   { t: "instances" }             // hint to re-fetch /api/instances
-//   { t: "ack",            reqId, ok, error? }
-//   { t: "error",          message }
+// Server → client: every frame is a member of `ServerFrame` (shared/wsFrames.ts),
+// and each JSON.stringify below is checked against its member, except the ack
+// reply, whose echoed reqId is `unknown`.
+//   * After a subscribe, no event/segment/reset_snapshot frame for the instance
+//     precedes its snapshot; those emitted while it is built follow it, in order.
+//     A status frame is not held.
+//   * Older history (ring and earlier segments) is paged via
+//     GET /api/instances/:id/lineage-events.
+//   * A `projects` frame also follows every src/projectsChanged.ts signal.
 
 import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
@@ -35,6 +22,10 @@ import { isKnownTier } from './modelVersions.ts';
 import { getTierBackend, getTierEffort, isKnownBackend, isKnownBinding } from './appSettings.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from '../shared/uiEvent.ts';
+import type {
+  SnapshotFrame, ResetSnapshotFrame, ResetSnapshotPayload, EventFrame, SegmentFrame, StatusFrame,
+  InstancesHintFrame, ProjectsHintFrame, HelloFrame, ErrorFrame,
+} from '../shared/wsFrames.ts';
 import { currentSegmentScope, segmentOfSeq, insertRingSeamDividers } from './eventArchive.ts';
 
 export interface WsHubOptions {
@@ -54,7 +45,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     return s;
   }
 
-  instances.on('event', ({ id, ev, pullOnly }: { id: string; ev: UiEvent | null; pullOnly?: boolean }) => {
+  instances.on('event', ({ id, ev, pullOnly }: { id: string; ev: UiEvent; pullOnly?: boolean }) => {
     // Replayed history reaches a client through the snapshot it pulls after
     // the live `history_replayed`, never as one frame per event.
     if (pullOnly) return;
@@ -68,10 +59,10 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       // floor). The seams are already current here: markSeam runs before the
       // init's emit.
       if (inst && ev?.kind === 'system' && ev.subtype === 'init' && !ev.parentToolUseId) {
-        frames.push(JSON.stringify({ t: 'segment', id, currentSegmentId: currentSegmentScope(inst).segmentId }));
+        frames.push(JSON.stringify({ t: 'segment', id, currentSegmentId: currentSegmentScope(inst).segmentId } satisfies SegmentFrame));
       }
       const out = inst && ev ? insertRingSeamDividers([ev], inst.ring.seams, inst.ring.trimmedBefore) : [ev];
-      for (const e of out) frames.push(JSON.stringify({ t: 'event', id, ev: e }));
+      for (const e of out) frames.push(JSON.stringify({ t: 'event', id, ev: e } satisfies EventFrame));
       for (const ws of subs) for (const msg of frames) sendInstanceFrame(ws, id, msg);
     }
   });
@@ -93,21 +84,21 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       interrupting: !!summary.interrupting,
       modelSwitch: summary.modelSwitch ?? null,
       modelSwitchFailure: summary.modelSwitchFailure ?? null,
-    });
+    } satisfies StatusFrame);
     if (subs) for (const ws of subs) safeSend(ws, payload);
-    broadcastAll(JSON.stringify({ t: 'instances' }));
+    broadcastAll(JSON.stringify({ t: 'instances' } satisfies InstancesHintFrame));
     // Status flips (especially the post-turn transition back to `idle`)
     // mean the CLI has flushed its session jsonl to disk, so per-project
     // session summary numbers may have just changed. Nudge clients to
     // re-fetch /api/projects — otherwise the sidebar's `summary.count`
     // stays stale at the page-load value and a Sessions subnode can
     // vanish when the last live instance is removed.
-    broadcastAll(JSON.stringify({ t: 'projects' }));
+    broadcastAll(JSON.stringify({ t: 'projects' } satisfies ProjectsHintFrame));
   });
 
   instances.on('list_changed', () => {
-    broadcastAll(JSON.stringify({ t: 'instances' }));
-    broadcastAll(JSON.stringify({ t: 'projects' }));
+    broadcastAll(JSON.stringify({ t: 'instances' } satisfies InstancesHintFrame));
+    broadcastAll(JSON.stringify({ t: 'projects' } satisfies ProjectsHintFrame));
   });
 
   // A committed change to the project list, a workspace or a worktree record,
@@ -115,23 +106,23 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
   // it — a new worktree is one of them.
   onProjectsChanged(() => {
     invalidateAll();
-    broadcastAll(JSON.stringify({ t: 'projects' }));
+    broadcastAll(JSON.stringify({ t: 'projects' } satisfies ProjectsHintFrame));
   });
 
   instances.on('subscription_changed', () => {
-    broadcastAll(JSON.stringify({ t: 'instances' }));
+    broadcastAll(JSON.stringify({ t: 'instances' } satisfies InstancesHintFrame));
   });
 
   // A worker's playbook binding just spawned or moved stage — same hint as a
   // status flip, no `projects` companion since session lists don't change.
   instances.on('playbook_changed', () => {
-    broadcastAll(JSON.stringify({ t: 'instances' }));
+    broadcastAll(JSON.stringify({ t: 'instances' } satisfies InstancesHintFrame));
   });
 
   // A session's turn marks (unread state) changed — the instances list carries
   // them, and no session list or git fact moved, so no `projects` companion.
   instances.on('turn_marks', () => {
-    broadcastAll(JSON.stringify({ t: 'instances' }));
+    broadcastAll(JSON.stringify({ t: 'instances' } satisfies InstancesHintFrame));
   });
 
   // Rewind: server-side, the instance's ring buffer was just wiped and the
@@ -140,10 +131,10 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
   // lands — that's what `reset_snapshot` does; the history itself follows as a
   // pulled snapshot after the live `history_replayed`. Same shape as
   // `snapshot` so the client can apply it through the same path.
-  instances.on('snapshot_reset', (snap: { id: string }) => {
+  instances.on('snapshot_reset', (snap: ResetSnapshotPayload) => {
     const subs = subscribers.get(snap.id);
     if (!subs) return;
-    const msg = JSON.stringify({ t: 'reset_snapshot', ...snap });
+    const msg = JSON.stringify({ t: 'reset_snapshot', ...snap } satisfies ResetSnapshotFrame);
     for (const ws of subs) sendInstanceFrame(ws, snap.id, msg);
   });
 
@@ -240,7 +231,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
         // message_start in events[] would also reach conversation.apply.
         lastContextUsage,
         ...(droppedText != null ? { droppedText } : {}),
-      }));
+      } satisfies SnapshotFrame));
     } finally {
       // Flushed even when the build threw, so no live frame is lost.
       mine.delete(id);
@@ -253,7 +244,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     ws.on('message', async (raw) => {
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; }
-      catch { safeSend(ws, JSON.stringify({ t: 'error', message: 'invalid json' })); return; }
+      catch { safeSend(ws, JSON.stringify({ t: 'error', message: 'invalid json' } satisfies ErrorFrame)); return; }
 
       const reply = (ok: boolean, error?: string) => safeSend(ws, JSON.stringify({ t: 'ack', reqId: msg.reqId ?? null, ok, error }));
       const id = typeof msg.id === 'string' && msg.id ? msg.id : null;
@@ -413,6 +404,6 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       instances.pristine.drop(ws);
     });
 
-    safeSend(ws, JSON.stringify({ t: 'hello' }));
+    safeSend(ws, JSON.stringify({ t: 'hello' } satisfies HelloFrame));
   });
 }

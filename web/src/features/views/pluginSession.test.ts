@@ -243,7 +243,7 @@ describe('sendPrompt', () => {
 
   it.each([
     ['spawning', { status: 'spawning' }],
-    ['mid model switch', { modelSwitch: { from: 'a', to: 'b' } }],
+    ['mid model switch', { modelSwitch: { from: 'a', to: 'b', fromBackend: 'claude', toBackend: 'claude' } }],
     ['overage stopped unarmed', { overageStoppedUnarmed: true }],
   ])('refuses a session that is %s as SESSION_NOT_READY and sends nothing', async (_name, over) => {
     // Invariant: the bridge honours the composer's Send-disabled gate.

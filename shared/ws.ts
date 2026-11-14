@@ -3,16 +3,24 @@
 // Exposes a single `bus` event target whose events mirror server messages
 // plus connection-state ('open' / 'close' / 'reconnecting').
 
-// A server frame: its type `t`, plus the ack fields when `t` is 'ack'.
-export type ServerMsg = { t: string; reqId?: string; ok?: boolean; error?: string; [k: string]: unknown };
+import type { ServerFrame, AckFrame } from './wsFrames.ts';
+
+// Each bus event name is a frame's `t`; `detail` is the frame. The connection
+// states carry no detail.
+export type BusEventMap = { [F in ServerFrame as F['t']]: CustomEvent<F> } & { open: Event; close: Event; reconnecting: Event };
+interface FrameBus extends EventTarget {
+  addEventListener<K extends keyof BusEventMap>(type: K, listener: (ev: BusEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void;
+}
 
 type Timer = ReturnType<typeof setTimeout>;
 
-export const bus = new EventTarget();
+// connect() dispatches each parsed frame, named by its `t`, in a CustomEvent whose `detail` is the frame.
+export const bus: FrameBus = new EventTarget();
 let ws: WebSocket | null = null;
 let reconnectTimer: Timer | null = null;
 let nextReqId = 1;
-const pending = new Map<string, { resolve: (msg: ServerMsg) => void; reject: (e: Error) => void; timer: Timer }>();
+const pending = new Map<string, { resolve: (msg: AckFrame) => void; reject: (e: Error) => void; timer: Timer }>();
 
 export function connect(): void {
   cleanup();
@@ -25,7 +33,7 @@ export function connect(): void {
   });
   ws.addEventListener('error', () => { /* let close fire */ });
   ws.addEventListener('message', (e) => {
-    let msg: ServerMsg;
+    let msg: ServerFrame;
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.t === 'ack' && msg.reqId != null) {
       const p = pending.get(msg.reqId);
@@ -61,9 +69,9 @@ function scheduleReconnect(): void {
 // With {ack: true} the send resolves on the server's ok ack and rejects on
 // its error ack, on a closed socket, or after 10s; without it, it returns
 // nothing.
-export function send(t: string, payload: Record<string, unknown>, opts: { ack: true }): Promise<ServerMsg>;
+export function send(t: string, payload: Record<string, unknown>, opts: { ack: true }): Promise<AckFrame>;
 export function send(t: string, payload?: Record<string, unknown>, opts?: { ack?: false }): void;
-export function send(t: string, payload: Record<string, unknown> = {}, { ack = false }: { ack?: boolean } = {}): Promise<ServerMsg> | void {
+export function send(t: string, payload: Record<string, unknown> = {}, { ack = false }: { ack?: boolean } = {}): Promise<AckFrame> | void {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     if (ack) return Promise.reject(new Error('not connected'));
     return;
@@ -72,7 +80,7 @@ export function send(t: string, payload: Record<string, unknown> = {}, { ack = f
   if (ack) {
     const reqId = `c${nextReqId++}`;
     msg.reqId = reqId;
-    const p = new Promise<ServerMsg>((resolve, reject) => {
+    const p = new Promise<AckFrame>((resolve, reject) => {
       // The deadline is a CONTRACT — a send whose ack never arrives must reject so
       // callers like sendCardAnswer's onFail can re-open the card
       // (tests/ws-deferred-steer.test.mjs) — but it must not outlive the ack.

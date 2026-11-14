@@ -1,59 +1,17 @@
-// Wire shapes the client reads. The server owns them (src/instanceTypes.ts,
-// src/projects.ts); these name only the fields the UI uses and keep an index
-// signature for everything else.
+// Wire shapes the client reads. Instance and SessionRow are views of the shared
+// rows (shared/wireRows.ts): a required core plus a Partial of the rest, so partial
+// fixtures type while a field renamed on the server fails every reader. Project
+// and Worktree are declared here because their producer has no declared type;
+// they keep an index signature for what the UI does not name.
 
-export type BackgroundJob = { id?: string; command?: string; description?: string; [k: string]: unknown };
+import type { InstanceListRow, SessionRow as WireSessionRow } from '@shared/wireRows';
 
-export type Instance = {
-  id: string;
-  project: string;
-  status: string;
-  displayStatus?: string;
-  sessionId: string | null;
-  mode: string;
-  model?: string | null;
-  backend?: string | null;
-  effort?: string | null;
-  thinking?: string | null;
-  tier?: string | null;
-  role?: string | null;
-  cwd?: string;
-  worktree?: InstanceWorktree | null;
-  persistent?: boolean;
-  /** A conductor from New conductor with no prompt yet (app/pristine.ts). */
-  pristine?: boolean;
-  conducted?: boolean;
-  callerInstanceId?: string | null;
-  rootSessionId?: string | null;
-  parentSessionId?: string | null;
-  awaitingWake?: boolean;
-  waitingOnJob?: boolean;
-  awaitingUser?: 'question' | 'plan' | null;
-  awaitingUserSource?: 'tool' | 'text' | null;
-  autoApprovePlan?: boolean;
-  playbookEnforcement?: string;
-  interrupting?: boolean;
-  contextTokens?: number | null;
-  contextWindowTokens?: number | null;
-  turnEndSeq?: number;
-  viewedSeq?: number;
-  liveTurnEnds?: number;
-  lastTurnError?: boolean;
-  liveAsks?: number;
-  backgroundJobs?: BackgroundJob[];
-  activeAgentTasks?: number;
-  modelSwitch?: { from: string; to: string; fromBackend?: string; toBackend?: string } | null;
-  modelSwitchFailure?: { from: string; to: string; fromBackend?: string; toBackend?: string; error: string } | null;
-  firstPrompt?: string | null;
-  title?: string | null;
-  lastResponseAt?: number | null;
-  createdAt?: number;
-  debug?: boolean;
-  debugDir?: string | null;
+export type { WorktreeHookResult as PostWorktreeHook, InstanceWorktree } from '@shared/wireRows';
+
+export type Instance = Pick<InstanceListRow, 'id' | 'project' | 'status' | 'sessionId' | 'mode'> & Partial<InstanceListRow> & {
+  // Joined onto GET /instances rows from the playbook projection.
   playbook?: string | null;
   stage?: string | null;
-  autoResumeAt?: number | null;
-  queuedCount?: number;
   /**
    * Set only on `AppState.ended`: the session this pane shows has no instance in
    * any list. `instance` — it left while shown, and its scroll-back still pages
@@ -61,31 +19,6 @@ export type Instance = {
    * `worktreeName` is where it ran, which may no longer exist.
    */
   ended?: { source: 'instance' | 'session'; worktreeName: string | null };
-  [k: string]: unknown;
-};
-
-/** A worktree hook's report — `postWorktreeCreate` / `postWorktreeMerge` (WorktreeHookResult, src/worktrees.ts). */
-export type PostWorktreeHook = {
-  ran: boolean;
-  source?: string | null;
-  skipped?: 'disabled' | 'STORE_HOOK_LOCAL_ONLY';
-  error?: boolean;
-  timedOut?: boolean;
-  descendantsMaySurvive?: true;
-  exitCode?: number | null;
-  durationMs?: number;
-  truncated?: boolean;
-  output?: string;
-  [k: string]: unknown;
-};
-
-/** An instance's worktree, as the summary carries it (src/instances.ts). */
-export type InstanceWorktree = {
-  worktreeName: string;
-  branch: string;
-  baseBranch: string;
-  baseSha: string;
-  postWorktreeCreate: PostWorktreeHook | null;
 };
 
 export type Worktree = {
@@ -127,13 +60,4 @@ export type Project = {
   [k: string]: unknown;
 };
 
-export type SessionRow = {
-  sessionId: string;
-  title?: string | null;
-  firstPrompt?: string | null;
-  lastActivity?: number;
-  size?: number;
-  awaitingUser?: 'question' | 'plan' | null;
-  awaitingUserSource?: 'tool' | 'text' | null;
-  [k: string]: unknown;
-};
+export type SessionRow = Pick<WireSessionRow, 'sessionId'> & Partial<WireSessionRow>;
