@@ -38,7 +38,7 @@ export { projectsRoot, orchStoreRoot, projectStoreDir, validateName, readProject
 
 
 // The conductor's own repo root — one level up from src/, unlike
-// DEFAULT_PROJECTS_ROOT above which goes two levels up to the *parent* of
+// DEFAULT_PROJECTS_ROOT (src/storeRoot.ts) which goes two levels up to the *parent* of
 // the repo (where sibling projects, including this one, live).
 const SELF_PROJECT_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -55,7 +55,7 @@ const SELF_PROJECT_DIR = path.resolve(
 // The first character additionally excludes `.`, so `..`, `.` and `.hidden`
 // are refused — a dot-leading or dot-only name is exactly the path hazard
 // this regex exists to prevent. That's a deliberate deviation from NAME_RE
-// above, which still admits `.hidden` because `.conduct` is a real project
+// (src/projectRecord.ts), which still admits `.hidden` because `.conduct` is a real project
 // name; the dot-ONLY half of the hazard (`.` / `..`) is closed in
 // validateName instead, since NAME_RE has no positional rules to close it in.
 // Do NOT "restore parity" by loosening this regex — it reopens the hazard for

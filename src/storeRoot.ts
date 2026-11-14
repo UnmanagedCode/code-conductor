@@ -6,7 +6,7 @@ import { hostPlatform, type Platform } from './platform/index.ts';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
-// projects.ts → <parent>/. Matches the convention that the orchestrator
+// storeRoot.ts → <parent>/. Matches the convention that the orchestrator
 // + its sibling projects all live under a single workspace dir (the
 // user's ~/cc-projects/ by default). Override with PROJECTS_ROOT.
 const DEFAULT_PROJECTS_ROOT = path.resolve(
