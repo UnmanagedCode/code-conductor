@@ -14,6 +14,7 @@ import { startPluginSessionBridge } from '@/features/views/pluginSession';
 import { startPluginSessionWidth } from '@/features/views/pluginSessionWidth';
 import { startPluginLinkHost } from '@/features/views/pluginLinkHost';
 import { startResumeNotices } from '@/features/resume';
+import { startViewportFollow } from '@/app/viewport';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -32,3 +33,4 @@ startPluginSessionBridge();
 startPluginSessionWidth();
 startPluginLinkHost();
 startResumeNotices();
+startViewportFollow();

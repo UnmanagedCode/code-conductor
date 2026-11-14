@@ -366,6 +366,23 @@ describe('session rename', () => {
   });
 });
 
+describe('prose fields in session dialogs', () => {
+  const PROSE = { autocomplete: 'off', autocorrect: 'on', autocapitalize: 'sentences', spellcheck: 'true' };
+  const traits = (el: HTMLElement) => Object.fromEntries(Object.keys(PROSE).map((k) => [k, el.getAttribute(k)]));
+
+  it('the ask box and the rename title box carry the prose traits', async () => {
+    // Invariant: free-text dialog fields opt out of contact AutoFill and keep keyboard correction on.
+    routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data: { medium: { summary: 'Recap text.', isStale: false } } } }) });
+    render(<DialogsHost />);
+    act(() => openSummaryDialog('s1'));
+    await screen.findByText('Recap text.');
+    expect(traits(screen.getByRole('textbox', { name: 'Question about this session' }))).toEqual(PROSE);
+    act(() => closeDialog('summary'));
+    act(() => openRenameDialog('s1', 'Old title'));
+    expect(traits(await screen.findByRole('textbox', { name: 'Session title' }))).toEqual(PROSE);
+  });
+});
+
 describe('prune context', () => {
   const turn = (o: Partial<PruneTurn> = {}): PruneTurn => ({ thinking: 30, toolInputTruncatable: 10, toolInputMinimal: 20, toolOutput: 100, toolOutputImage: 0, exempt: 0, ...o });
   const analysis = (n: number, over: Partial<PruneAnalysis> = {}): PruneAnalysis => ({

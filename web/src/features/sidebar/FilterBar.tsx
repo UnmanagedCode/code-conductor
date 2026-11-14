@@ -3,7 +3,7 @@ import { SearchIcon, XIcon } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { setLens } from '@/app/ui';
 import { cn } from '@/lib/utils';
-import { isTextEntry } from '@/lib/textEntry';
+import { TOUCH_FIELD_TEXT, isTextEntry } from '@/lib/textEntry';
 import { filterOwner } from './derive';
 import { setFilter, useSidebarUi } from './state';
 import { OWNER_BAR, ownerStyle } from './rows';
@@ -85,7 +85,7 @@ export function FilterBar({ m, active }: { m: SidebarModel; active: boolean }) {
           clearQuery();
           e.currentTarget.blur();
         }}
-        className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-xs"
+        className={cn('min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-xs', TOUCH_FIELD_TEXT)}
       />
       {query && (
         <button

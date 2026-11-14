@@ -5,6 +5,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Markdown } from '@/components/Markdown';
 import { cn } from '@/lib/utils';
+import { PROSE_FIELD_PROPS } from '@/lib/textEntry';
 import { buildApprovePrompt, buildRejectPrompt } from '@shared/planApproval';
 import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { send } from '@shared/ws';
@@ -77,6 +78,7 @@ export function PlanCard({ node, model }: { node: PlanNode; model: ConversationM
             rows={2}
             placeholder="Feedback or refinements (sent with Reject; optional on Approve)"
             className="min-h-0 resize-y text-sm"
+            {...PROSE_FIELD_PROPS}
           />
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={locked} onClick={() => decide('approve')}><CheckIcon /> Approve &amp; implement</Button>
@@ -182,6 +184,7 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
           })}
         </div>
         <Input
+          {...PROSE_FIELD_PROPS}
           value={node.drafts[active] ?? ''}
           onChange={(e) => model.questionDraft(node, active, e.target.value)}
           // Enter moves to the next unanswered question, or sends once every question is answered.

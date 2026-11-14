@@ -36,6 +36,14 @@ const appended: Element[] = [];
 afterEach(() => { for (const e of appended.splice(0)) e.remove(); });
 const append = (e: Element) => { document.body.append(e); appended.push(e); };
 
+describe('filter input font', () => {
+  it('carries the touch font class', () => {
+    // Pins: the sidebar filter is 16px on a coarse pointer, so iOS does not zoom into it on focus (its md:text-xs would otherwise win on a wide touch screen).
+    renderSidebar();
+    expect(filterInput().classList.contains('pointer-coarse:text-base')).toBe(true);
+  });
+});
+
 describe('/', () => {
   it('on the page body focuses the input, is prevented, and types nothing', () => {
     // Pins: the shortcut moves focus without inserting its own character.
