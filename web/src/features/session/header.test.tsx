@@ -298,10 +298,10 @@ describe('change model', () => {
   });
 
   it('a switch in flight shows the switching chip; a failed one shows a failure chip', () => {
-    const a = wrap(<SessionHeader inst={base({ modelSwitch: { from: 'a', to: 'b-model' } })} onMenu={() => {}} />);
+    const a = wrap(<SessionHeader inst={base({ modelSwitch: { from: 'a', to: 'b-model', fromBackend: 'claude', toBackend: 'claude' } })} onMenu={() => {}} />);
     expect(a.container.textContent).toContain('Switching to b-model');
     a.unmount();
-    const b = wrap(<SessionHeader inst={base({ modelSwitchFailure: { from: 'a', to: 'b-model', error: 'not found' } })} onMenu={() => {}} />);
+    const b = wrap(<SessionHeader inst={base({ modelSwitchFailure: { from: 'a', to: 'b-model', fromBackend: 'claude', toBackend: 'claude', error: 'not found' } })} onMenu={() => {}} />);
     expect(b.container.textContent).toContain('Switch failed');
   });
 
