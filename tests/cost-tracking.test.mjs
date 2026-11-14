@@ -61,7 +61,7 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     // Dynamically import with fresh module cache is not straightforward in
     // node:test isolation mode, so we import the module functions directly.
     // Each test boots with its own PROJECTS_ROOT so costsPath() resolves to dir.
-    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
+    const { initCostTracking, costsPath, flushCostWrites } = await import('../src/costTracking.ts');
 
     // Create a minimal EventEmitter acting as InstanceManager.
     const emitter = new EventEmitter();
@@ -75,8 +75,8 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     // And a plain turn_end with no verdict fields — should persist the defaults.
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.001 }) });
 
-    // Wait briefly for the async appendFile to complete.
-    await new Promise(r => setTimeout(r, 50));
+    // Wait for both queued appends to land.
+    await flushCostWrites();
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true }); // ensure readable even if absent
@@ -163,7 +163,7 @@ test('cost-tracking: a substitution-backend turn_end omits cost_usd entirely', a
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
+    const { initCostTracking, costsPath, flushCostWrites } = await import('../src/costTracking.ts');
 
     const emitter = new EventEmitter();
     emitter.get = () => fakeInst({ backend: 'ollama' });
@@ -173,7 +173,7 @@ test('cost-tracking: a substitution-backend turn_end omits cost_usd entirely', a
     // someone else's model — a nonzero value here must still be dropped from the row.
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.0123 }) });
 
-    await new Promise(r => setTimeout(r, 50));
+    await flushCostWrites();
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
@@ -199,7 +199,7 @@ test('cost-tracking: a substitution-backend turn_end (no usage) omits token fiel
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
+    const { initCostTracking, costsPath, flushCostWrites } = await import('../src/costTracking.ts');
 
     const emitter = new EventEmitter();
     const insts = {
@@ -219,7 +219,7 @@ test('cost-tracking: a substitution-backend turn_end (no usage) omits token fiel
     // Anthropic turn_end: full usage block present.
     emitter.emit('event', { id: 'claude-1', ev: turnEndEv({ costDelta: 0.02 }) });
 
-    await new Promise(r => setTimeout(r, 50));
+    await flushCostWrites();
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
@@ -268,12 +268,12 @@ async function withStore(fn) {
 }
 
 // Emit turn_ends through initCostTracking and return the raw rows written.
-async function writeRows({ initCostTracking, costsPath }, insts, emits) {
+async function writeRows({ initCostTracking, costsPath, flushCostWrites }, insts, emits) {
   const emitter = new EventEmitter();
   emitter.get = (id) => insts[id];
   initCostTracking(emitter);
   for (const [id, ev] of emits) emitter.emit('event', { id, ev });
-  await new Promise(r => setTimeout(r, 50));
+  await flushCostWrites();
   const raw = await fs.readFile(costsPath(), 'utf8').catch(() => '');
   return raw.split('\n').filter(Boolean);
 }
@@ -702,7 +702,7 @@ test('cost-tracking: turn_end persists timing + resolves parentSessionId', async
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
+    const { initCostTracking, costsPath, flushCostWrites } = await import('../src/costTracking.ts');
 
     // Emitter doubling as InstanceManager: a worker whose callerInstanceId
     // (the conductor's stable instanceId) resolves live to its current sessionId.
@@ -717,7 +717,7 @@ test('cost-tracking: turn_end persists timing + resolves parentSessionId', async
     // Turn missing timing — should default to null (legacy shape).
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.01 }) });
 
-    await new Promise(r => setTimeout(r, 50));
+    await flushCostWrites();
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
@@ -745,7 +745,7 @@ test('cost-tracking: persists per-turn durationApiMsDelta as duration_api_ms', a
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
+    const { initCostTracking, costsPath, flushCostWrites } = await import('../src/costTracking.ts');
     const emitter = new EventEmitter();
     emitter.get = () => fakeInst();
     initCostTracking(emitter);
@@ -755,7 +755,7 @@ test('cost-tracking: persists per-turn durationApiMsDelta as duration_api_ms', a
     // Only the raw cumulative present (legacy in-flight event): falls back to it.
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.01, durationApiMs: 3200 }) });
 
-    await new Promise(r => setTimeout(r, 50));
+    await flushCostWrites();
 
     await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
     const lines = (await fs.readFile(costsPath(), 'utf8').catch(() => '')).split('\n').filter(Boolean);

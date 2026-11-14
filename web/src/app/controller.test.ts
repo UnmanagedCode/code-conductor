@@ -330,21 +330,31 @@ describe('refreshing projects', () => {
     expect(appStore.get().conductorSpawns).toEqual(body);
   });
 
-  it('a non-ok or rejected conductors fetch replaces the spawns with an empty map', async () => {
+  it('a non-ok or rejected conductors fetch keeps the last spawn map and flags it stale until the next good read', async () => {
     const body = { C: [{ project: 'p', lastSpawnAt: '2026-01-01T00:00:00Z', worktrees: [] }] };
     const { c, appStore } = await load();
-    conductors = { body };
-    await c.refreshProjects();
-    expect(appStore.get().conductorSpawns).toEqual(body);
-    conductors = 'non-ok';
-    await c.refreshProjects();
-    expect(appStore.get().conductorSpawns).toEqual({});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      conductors = { body };
+      await c.refreshProjects();
+      expect(appStore.get().conductorSpawns).toEqual(body);
+      conductors = 'non-ok';
+      await c.refreshProjects();
+      expect(appStore.get().conductorSpawns).toEqual(body);
+      expect(appStore.get().staleLists).toEqual(['conductorSpawns']);
 
-    conductors = { body };
-    await c.refreshProjects();
-    expect(appStore.get().conductorSpawns).toEqual(body);
-    conductors = 'rejected';
-    await c.refreshProjects();
-    expect(appStore.get().conductorSpawns).toEqual({});
+      conductors = { body: {} };
+      await c.refreshProjects();
+      expect(appStore.get().conductorSpawns).toEqual({});
+      expect(appStore.get().staleLists).toEqual([]);
+
+      conductors = { body };
+      await c.refreshProjects();
+      conductors = 'rejected';
+      await c.refreshProjects();
+      expect(appStore.get().conductorSpawns).toEqual(body);
+      expect(appStore.get().staleLists).toEqual(['conductorSpawns']);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
   });
 });
