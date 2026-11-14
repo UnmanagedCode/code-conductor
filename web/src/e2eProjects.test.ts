@@ -46,6 +46,8 @@ it('android runs ANDROID_SPECS, the overrides, harness and flows; desktop and ph
   const overridden = overrides.map((f) => f.replace(/\.android\.spec\.ts$/, '.spec.ts'));
   // Invariant: an override sits beside the desktop spec it replaces.
   for (const f of overridden) expect(fs.existsSync(path.join(E2E, f)), `${f} beside its override`).toBe(true);
+  // Invariant: ANDROID_SPECS names no overridden desktop spec, judged from the disk walk rather than from the constant itself.
+  expect(ANDROID_SPECS.filter((f) => overridden.includes(f))).toEqual([]);
   const by = listedFiles();
   // Invariant: android lists exactly ANDROID_SPECS plus the overrides outside flows/ and harness (an entry that no longer
   // resolves, an overridden desktop spec, or any unlisted spec on android fails).
