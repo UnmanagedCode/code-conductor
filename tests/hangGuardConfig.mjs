@@ -92,7 +92,7 @@ function ms(envName, fallback) {
 // files, not a later deadline.
 // RE-ANCHOR THIS WHEN THE TOP FILE CHANGES.
 //
-// HOW TO REPRODUCE THE STARVED CONDITION: docs/architecture.md -> "Reproducing CPU
+// HOW TO REPRODUCE THE STARVED CONDITION: docs/testing-hang-guard.md -> "Reproducing CPU
 // starvation". It is recorded once, there — every starved figure in this repo cites
 // the same recipe and a second copy would drift.
 //

@@ -1978,7 +1978,7 @@ export interface SessionLocation {
 //
 // ONE PASS: the place's own path is the primary and only candidate.
 // WHAT THIS NEEDS FROM THE SYSTEM. THE ONE HOME for this contract — the sites
-// that care (`src/mcp/handlers.ts`'s disk branch, `docs/architecture.md`,
+// that care (`src/mcp/handlers.ts`'s disk branch, `docs/components/store.md`,
 // tests/systems-remote-session-location.test.mjs) point here instead of keeping
 // their own copy, because two comfortable summaries are both FALSE and a third
 // paraphrase is how the last two got written:

@@ -215,7 +215,7 @@ export function localDirSource(root: string): RemoteSource {
         // the replacement fresh permissions, so the mirror's own mode is
         // already the post-rename one and copying it cannot restore the
         // original. Remembering the pre-edit mode across that rename is a
-        // different mechanism, specified at docs/architecture.md → "What
+        // different mechanism, specified at docs/components/fuse.md → "What
         // `fileBridge` carried, and where it has to land again".
         await fsp.copyFile(src, abs);
         await fsp.chmod(abs, mirror.mode & 0o7777);

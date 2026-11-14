@@ -77,7 +77,7 @@ test('a value-returning onTimeout resolves, and detaches', async () => {
 });
 
 test('an Error-returning onTimeout rejects, and detaches', async () => {
-  // The Error-returning disposition — no production adopter today; see docs/architecture.md.
+  // The Error-returning disposition — no production adopter today; see docs/components/restart.md.
   const em = new EventEmitter();
   const boom = new Error('timed out after 20 ms');
   await assert.rejects(

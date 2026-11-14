@@ -1,6 +1,6 @@
 # Event log — on-disk format
 
-The stable record format of `events.jsonl`: every governed conductor call, every session's lifecycle, conducted turns, wakes and enforcement changes, in one file. Plugins and tools may read the file directly; this doc is its contract. Enforcement, the playbook projection and the read tools are in [protocol.md → Playbooks](protocol.md#playbooks) and [architecture.md → Playbooks](architecture.md#playbooks).
+The stable record format of `events.jsonl`: every governed conductor call, every session's lifecycle, conducted turns, wakes and enforcement changes, in one file. Plugins and tools may read the file directly; this doc is its contract. Enforcement, the playbook projection and the read tools are in [protocol.md → Playbooks](protocol.md#playbooks) and [components/playbooks.md → Playbooks](components/playbooks.md#playbooks).
 
 - **Owner of the shapes:** the `EventRow` union in `src/eventLog.ts`. A field in a table below that disagrees with the union is a doc bug.
 - **Location:** `eventLogFile()` → `<orchStoreRoot()>/events.jsonl`.
@@ -85,7 +85,7 @@ A human steer mid-turn starts no turn and writes nothing. A UI interrupt writes 
 
 ## The writer
 
-- One writer per projects root: the server holding the projects-root lock ([architecture.md → The projects-root lock](architecture.md#the-projects-root-lock)). Each append runs `RootLock.writerCheck()` and the write in one synchronous step; it fails once the lock is released, a newer server holds the root, the lock record is no longer this server's, or a restart handover has been offered.
+- One writer per projects root: the server holding the projects-root lock ([components/headless.md → The projects-root lock](components/headless.md#the-projects-root-lock)). Each append runs `RootLock.writerCheck()` and the write in one synchronous step; it fails once the lock is released, a newer server holds the root, the lock record is no longer this server's, or a restart handover has been offered.
 - A refused write is **dropped**, never queued or retried: `console.error` once per blocked episode, a `console.warn` per dropped row, an `event_log_blocked` bubble in the transcript of the live conductor the first dropped row names (its actor, else its subject), and a `console.log` when writing resumes.
 - A server built without the lock (`createServer` with no `relaunch.rootLock`) writes nothing, loudly; `createServer`'s `eventLogLease` option overrides the lease for tests.
 

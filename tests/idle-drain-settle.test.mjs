@@ -177,7 +177,7 @@ test('trap (post-arm evidence): any event after the arm freezes out the settle; 
 // motivates it). `system/model_changed` is retained by EventLog.push, so a UI
 // "Change model" landing inside the settle window advances ring.nextSeq and
 // freezes the settle out exactly like any other retained idle-time event. That
-// is accepted and documented (architecture.md → the idle task-drain settle):
+// is accepted and documented (components/instances.md → the idle task-drain settle):
 // the cost is DELAY — the wake falls back to the heartbeat — never a spurious,
 // early or doubled wake. This test exists so a future "fix" that force-fires
 // the settle, or that makes the announce seq-less to dodge this interaction,

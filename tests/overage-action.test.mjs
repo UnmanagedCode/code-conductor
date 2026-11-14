@@ -1207,7 +1207,7 @@ test('MECHANISM (2026-0208): resume delivery is gated on the fire-time usage ver
     // yet nothing is delivered. The delivery clock is the usage fetch's, not ours.
     await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.id));
     // Negative assertion: fixed sleep for margin, then `settle()` to drain whatever it
-    // scheduled (docs/architecture.md → Testing). The sleep alone is the weak half —
+    // scheduled (docs/testing.md). The sleep alone is the weak half —
     // `settle()` is what makes the kill load-independent.
     await new Promise((r) => setTimeout(r, 200));
     await settle();

@@ -99,7 +99,7 @@ function report() {
   if (handles === null) {
     lines.push(`${LEAK_MARKER} culprits: UNAVAILABLE — process._getActiveHandles() is absent on this`);
     lines.push(`${LEAK_MARKER}   Node (${process.version}). The leak above is still real; only the`);
-    lines.push(`${LEAK_MARKER}   naming of it is lost. See docs/architecture.md → "Suite hang guard".`);
+    lines.push(`${LEAK_MARKER}   naming of it is lost. See docs/testing-hang-guard.md → "Suite hang guard".`);
   } else if (handles.length === 0) {
     // Two DIFFERENT causes produce an empty handle list on a live loop, and this
     // guard cannot tell them apart — so it must not assert either one:
@@ -108,7 +108,7 @@ function report() {
     //   * teardown work still IN FLIGHT. Pending fs operations and awaited child
     //     exits are REQUESTS, not handles, so they are equally invisible here —
     //     and "await the child's actual exit in teardown" is exactly the pattern
-    //     docs/architecture.md recommends, so this is a shape we expect to meet.
+    //     docs/testing-hang-guard.md recommends, so this is a shape we expect to meet.
     // Either way the loop was open past the grace, which is the criterion; only
     // the attribution is uncertain.
     lines.push(`${LEAK_MARKER} culprits: no ref'd HANDLE, but the loop is open. In Node`);

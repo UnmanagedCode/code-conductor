@@ -1402,7 +1402,7 @@ test('update(): classification I/O failure never blocks the pull — a dangling-
 // ── Local / offline catalogs ─────────────────────────────────────────────
 
 // settings.json must be written BEFORE the first appSettings call under the
-// root — the module caches the parsed document (docs/architecture.md →
+// root — the module caches the parsed document (docs/testing.md →
 // "Hand-editing `settings.json` in a test").
 async function seedSettings(obj) {
   await fs.mkdir(orchStoreRoot(), { recursive: true });

@@ -30,7 +30,7 @@
 // then passed 4/4 alone at TEST_CONCURRENCY=1), so it carries no rate. Only the
 // capped family glob above does.
 //
-// See docs/architecture.md → "The FUSE-union chroot" for every measurement,
+// See docs/testing-systems.md → "The FUSE-union chroot's two suites" for every measurement,
 // including what the cap costs in wall.
 //
 // Real sudo, real unshare, real FUSE, real mounts, real pids — and a FAKE
@@ -71,7 +71,7 @@
 // at the hang guard's per-file deadline (FILE_KILL_MS, tests/hangGuardConfig.mjs);
 // separate files are charged the MAX. The answer to a file over the deadline is
 // more files, not a later deadline — see the FILE_KILL_MS comment there, and
-// docs/architecture.md → "The FUSE-union chroot" for this family's own
+// docs/testing-systems.md → "The FUSE-union chroot's two suites" for this family's own
 // before→after figures.
 //
 // This module is NOT named `*.test.mjs`, so run.mjs's discover() (which globs

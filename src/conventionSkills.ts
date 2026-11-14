@@ -4,7 +4,7 @@
 // The split itself (inline part vs skill part) is src/fragmentCatalog.ts's
 // splitSkillPart; the scope composers return both parts off one selection read.
 // This module only writes what they returned and reclaims it. Layout, lifecycle
-// and namespaces: docs/architecture.md → "Convention skill parts".
+// and namespaces: docs/components/playbooks.md → "Convention skill parts".
 
 import { promises as fsp, rmSync } from 'node:fs';
 import path from 'node:path';

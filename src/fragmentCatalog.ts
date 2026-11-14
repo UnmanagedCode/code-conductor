@@ -237,7 +237,7 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', skillPa
   // the next composition without an orchestrator restart. A memo here does not
   // merely go stale — every document these bodies feed is REGENERATED OVER a
   // committed file, so the pre-edit text gets written back and the edit
-  // silently reverts. Cost is measured and stated in docs/architecture.md →
+  // silently reverts. Cost is measured and stated in docs/components/store.md →
   // src/fragmentCatalog.ts.
   // A seed whose file carries a malformed skill marker throws, naming the file:
   // a shipped fragment is never composed half-parsed.

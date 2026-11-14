@@ -361,7 +361,7 @@ static pthread_mutex_t trace_mu = PTHREAD_MUTEX_INITIALIZER;
  * `cflags` IS THE FRAME INTENT THE OP DECLARED — the same CCU_FLAG_* byte the
  * FETCH carried — and it is in the line because a trace that cannot separate a
  * READ open from a WRITE open cannot answer the two-handle question, which is a
- * standing condition (docs/architecture.md → "the two-handle window"). `0` where
+ * standing condition (docs/components/fuse.md → "the two-handle window"). `0` where
  * the op sent no frame of its own, which is every `fh` branch below.
  */
 static void tr(const char *op, const char *path, const char *tier, unsigned cflags)
@@ -1314,7 +1314,7 @@ static int pt_releasedir(const char *path, struct fuse_file_info *fi)
  * A FAILED RECONCILE FAILS THE OP. The mirror is then ahead of the source and
  * the caller is told so; making that divergence STICKY — refusing every later
  * write to the path until a re-fetch resyncs it — is a separate mechanism and
- * is out of scope here (docs/architecture.md → "A failed push is loud and
+ * is out of scope here (docs/components/fuse.md → "A failed push is loud and
  * sticky"). What
  * this discharges is the weaker, load-bearing half: a project-tier mutation
  * never reports success having landed nowhere.
@@ -1535,7 +1535,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	 * the source holding NEITHER end — the old name already unlinked, the new
 	 * one never created. That is a named, unhidden limit, not a state the
 	 * source can be restored from here; making the divergence sticky is out
-	 * of scope (docs/architecture.md → "A failed push is loud and sticky"). */
+	 * of scope (docs/components/fuse.md → "A failed push is loud and sticky"). */
 	if ((rc = push_mirror("rename", from, 1)) != 0) return rc;
 	return push_mirror("rename", to, 0);
 

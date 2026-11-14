@@ -12,7 +12,7 @@
 // `mirrorRoot` IS THE BOUNDARY OF THE UNION'S REMOTE TIER. Widening it moves
 // what is served from the system rather than what is copied to cc, and the
 // project keeps its own narrower entry inside it. The mode-preservation and
-// sticky-divergence semantics are specified in docs/architecture.md → what
+// sticky-divergence semantics are specified in docs/components/fuse.md → what
 // `fileBridge` carried.
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
