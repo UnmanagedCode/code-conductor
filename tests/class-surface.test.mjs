@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classSurface } from '../scripts/class-surface.mjs';
+import { mkdtempSync } from './tmpRegistry.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const surface = (src) => classSurface(`data:text/javascript,${encodeURIComponent(src)}`);
@@ -40,23 +39,21 @@ test('class-surface', async (t) => {
   });
 
   await t.test('the CLI dumps the real instances module non-vacuously', () => {
-    const scratch = mkdtempSync(path.join(tmpdir(), 'cc-surface-'));
-    try {
-      const out = execFileSync(process.execPath, ['scripts/class-surface.mjs', 'src/instances.ts'], {
-        cwd: ROOT, encoding: 'utf8',
-        env: { ...process.env, PROJECTS_ROOT: path.join(scratch, 'p'), CLAUDE_PROJECTS_ROOT: path.join(scratch, 'c') },
-      });
-      const lines = out.split('\n');
-      const members = (cls) => {
-        const at = lines.indexOf(`CLASS ${cls}`);
-        assert.ok(at >= 0, cls);
-        let n = 0;
-        for (let i = at + 1; i < lines.length && !lines[i].startsWith('CLASS '); i++) if (lines[i]) n++;
-        return n;
-      };
-      assert.ok(members('Instance') >= 100);
-      assert.ok(members('InstanceManager') >= 50);
-    } finally { rmSync(scratch, { recursive: true, force: true }); }
+    const scratch = mkdtempSync('cc-surface-');
+    const out = execFileSync(process.execPath, ['scripts/class-surface.mjs', 'src/instances.ts'], {
+      cwd: ROOT, encoding: 'utf8',
+      env: { ...process.env, PROJECTS_ROOT: path.join(scratch, 'p'), CLAUDE_PROJECTS_ROOT: path.join(scratch, 'c') },
+    });
+    const lines = out.split('\n');
+    const members = (cls) => {
+      const at = lines.indexOf(`CLASS ${cls}`);
+      assert.ok(at >= 0, cls);
+      let n = 0;
+      for (let i = at + 1; i < lines.length && !lines[i].startsWith('CLASS '); i++) if (lines[i]) n++;
+      return n;
+    };
+    assert.ok(members('Instance') >= 100);
+    assert.ok(members('InstanceManager') >= 50);
   });
 
   await t.test('a removed member changes the dump', async () => {
