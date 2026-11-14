@@ -83,7 +83,7 @@ test('npm test gate', async (t) => {
     const rows = [
       'src/fx/a.ts', 'shared/fx/a.ts', 'harness/fx/a.ts', 'fx.ts', 'migrations/fx/a.d.mts',
       'tests/fx/a.ts', 'tests/fx/a.d.ts', 'tests/fx/a.d.mts', 'tests/fx/a.cts', 'tests/fx/a.tsx', 'tests/fx/a.json',
-      'tsconfig.fx.json', 'src/fx/a.mjs', 'web/src/fx/a.css', 'src/fx/.gitignore', 'src/fx/a.md.ts',
+      'tsconfig.fx.json', 'src/fx/a.mjs', 'web/src/fx/a.css', 'src/fx/.gitignore', 'src/fx/a.md.ts', 'src/fx/a.md.mjs',
       'tests-fx/a.mjs', 'web/tests/a.mjs',
     ];
     for (const row of rows) {
