@@ -3,6 +3,7 @@ import { act, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { uiStore } from '@/app/ui';
 import { conductor, conductorOpenOf, hand, openOf, proj, rowOf, seed, worker } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(),
@@ -24,8 +25,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions, agoTick } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 /** The buttons whose accessible name is exactly `name`. */
 const named = (name: string) => screen.queryAllByRole('button', { name });
 

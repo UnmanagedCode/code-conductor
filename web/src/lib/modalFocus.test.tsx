@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TOUCH_QUERY } from './textEntry';
 import { openerOf } from './modalFocus';
+import { settle } from '@/test/settle';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); document.body.innerHTML = ''; });
 
@@ -162,7 +163,6 @@ describe('the focus return of a modal that mounts already open', () => {
         </>
       );
     }
-    const settle = () => act(async () => { await new Promise((res) => setTimeout(res, 0)); });
     const r = render(<Host mounted={false} open />);
     const opener = document.querySelector<HTMLElement>('[data-testid="opener"]')!;
     await act(async () => { opener.focus(); });

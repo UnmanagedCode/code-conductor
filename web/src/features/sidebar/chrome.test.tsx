@@ -4,6 +4,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn(),
@@ -62,7 +63,6 @@ describe('the sidebar column width at startup', () => {
 });
 
 describe('the ≡ project-actions menu', () => {
-  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
   const trigger = () => screen.getByRole('button', { name: 'Project actions' });
   const open = async () => {
     await settle();
@@ -119,7 +119,6 @@ describe('the ≡ project-actions menu', () => {
 });
 
 describe("the phone drawer's close", () => {
-  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
   it("is the drawer's one close, the header row's control right after ⚙, and closes the drawer", async () => {
     // Invariant: the drawer's single close × lives in the sidebar header row with the other header controls, so it shares their line and right edge.

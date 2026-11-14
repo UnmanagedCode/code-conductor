@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { uiStore } from '@/app/ui';
 import { conductor, conductorOpenOf, conductorRowOf, hand, labelOf, openOf, proj, seed, stripEntryOf, stripLabelOf, worker } from '@/test/sidebarFleet';
@@ -9,6 +9,7 @@ import { buildForwardFrame } from '@shared/forwardFrame';
 import { buildRenewSeed } from '@shared/renewSeed';
 import { readJsonl } from '@/conversation/testkit';
 import { firstPromptHead } from '@shared/promptPreview';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(),
@@ -30,8 +31,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 /** A first prompt as the server stores it: its head, cut by `Instance.prompt` and `readFirstPrompt`. */
 const stored = firstPromptHead;

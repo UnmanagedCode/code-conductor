@@ -5,6 +5,7 @@ import { toast as sonnerToast } from 'sonner';
 import { installToastFocus } from '@/ui/toastFocus';
 import { ToastHost, toast } from '@/ui/feedback';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { settle } from '@/test/settle';
 
 // A page, then sonner's markup: <section> → list → toast → Close toast (and, with `second`, a
 // second toast after it). `sonner` stands for sonner's
@@ -36,8 +37,6 @@ function dismiss(focused: HTMLElement, toastEl: HTMLElement) {
   focused.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
   toastEl.remove();
 }
-/** Lets the mutation observer and the focusout check run. */
-const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('installToastFocus', () => {
   it('hides a Tab or click entry from sonner\'s list and re-dispatches it to the document once, from the section, with its relatedTarget', () => {

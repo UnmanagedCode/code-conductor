@@ -5,6 +5,7 @@ import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { CLOSE_TITLES } from '@shared/closeAction';
 import { blockOf, conductor, conductorRowOf, el, inactiveGroup, proj, seed, treeOf, worker, wt } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -34,8 +35,6 @@ const { sidebarStore, invalidateSessions } = await import('./state');
 const FRESH = sidebarStore.get();
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 /** The Inactive group's disclosure button. */
 const inactiveToggle = () => inactiveGroup()?.querySelector(':scope > button[aria-expanded]') as HTMLElement | null;

@@ -9,6 +9,7 @@ import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { emit } from '@/app/events';
 import { el, fleet, seedFleet, seed, FLEET_UI } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(),
@@ -30,7 +31,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions, resetLensScroll } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 function select(id: string | null) {
   act(() => {

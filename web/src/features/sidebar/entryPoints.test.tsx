@@ -5,6 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { routeStore, syncRoute } from '@/state/route';
 import { uiStore } from '@/app/ui';
+import { settle } from '@/test/settle';
 
 vi.mock('@/app/controller', () => ({
   selectInstance: vi.fn(), send: vi.fn(), refreshProjects: vi.fn(), refreshInstances: vi.fn(),
@@ -29,7 +30,6 @@ beforeEach(() => {
 });
 
 describe.each([{ mobile: false }, { mobile: true }])('sidebar entry points (mobile: $mobile)', ({ mobile }) => {
-  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
   const trigger = () => screen.getByRole('button', { name: 'Project actions' });
   const open = async () => {
     await settle();

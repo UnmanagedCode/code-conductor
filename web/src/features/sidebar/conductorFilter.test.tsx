@@ -11,6 +11,7 @@ import {
   A, ALPHA, B, BRAVO, C, COLOUR, FLEET_UI, NO_BAR, barOf, el, fleet, hand, headOf, proj, rowOf, seed, seedFleet, worker, wt,
   type Fleet,
 } from '@/test/sidebarFleet';
+import { settle } from '@/test/settle';
 
 const selectInstance = vi.fn();
 vi.mock('@/app/controller', () => ({
@@ -38,8 +39,6 @@ const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore, invalidateSessions } = await import('./state');
 
 const renderSidebar = () => render(<TooltipProvider><AppSidebar /></TooltipProvider>);
-/** Lets the lazy session loads resolve and re-render. */
-const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 /** C's label: its first prompt on disk. */
 const CHARLIE = 'charlie: an old run';
