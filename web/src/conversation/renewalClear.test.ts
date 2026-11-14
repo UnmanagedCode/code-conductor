@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ConversationModel } from './model';
+import { ConversationModel, isClearCommandText } from './model';
 import { apply, readJsonl, replayLines, serverModules, shape, users } from './testkit';
 import type { UiEvent } from '@shared/uiEvent';
 
@@ -93,6 +93,19 @@ describe('a renewal\'s /clear command line on the load path', () => {
     expect(shape(m)).toEqual(['user', 'assistant']);
     expect(users(m).map((u) => u.variant)).toEqual(['renew']);
     expect(bubbleTexts(m).some((t) => t.includes('<command-name>'))).toBe(false);
+  });
+
+  it('isClearCommandText: true for the recorded wrapper, false when the tag or /clear is only mentioned mid-text', () => {
+    expect(isClearCommandText(clearEcho().text)).toBe(true);
+    expect(isClearCommandText('why is <command-name>/clear</command-name> in my log')).toBe(false);
+    expect(isClearCommandText('why is /clear in my log')).toBe(false);
+  });
+
+  it('a plain prompt mentioning the /clear tag mid-text directly above the reseed keeps its bubble', () => {
+    const m = new ConversationModel();
+    apply(m, { kind: 'user_echo', text: 'why is <command-name>/clear</command-name> in my log', userIndex: 0 });
+    apply(m, seedEcho());
+    expect(bubbleTexts(m)).toContain('why is <command-name>/clear</command-name> in my log');
   });
 
   it('paged: the echo ends the older page and the seed heads the newer one', () => {
