@@ -94,24 +94,30 @@ describe('the projects hint in the Conductors lens', () => {
     expect(conductors()).toEqual([]);
   });
 
-  it("a failed conduct-sessions read does not stop the other reads, and the next good read shows the server's list", async () => {
-    // Invariant: a non-ok or rejected .conduct read still lands the projects read beside it, and the following good read shows exactly the server's new list.
-    server.conduct = { rows: [{ sessionId: 'A', title: 'Alpha', lastActivity: 1 }] };
-    await hint('projects');
-    await waitFor(() => expect(conductors()).toEqual(['A']));
+  it("a failed conduct-sessions read keeps the last list and does not stop the other reads, and the next good read shows the server's list", async () => {
+    // Invariant: a non-ok or rejected .conduct read keeps the lens as it was, still lands the projects read beside it, and the following good read shows exactly the server's new list.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      server.conduct = { rows: [{ sessionId: 'A', title: 'Alpha', lastActivity: 1 }] };
+      await hint('projects');
+      await waitFor(() => expect(conductors()).toEqual(['A']));
 
-    server = { projects: ['alpha', 'beta'], conduct: 'non-ok' };
-    await hint('projects');
-    await waitFor(() => expect(appStore.get().projects.map((p) => p.name)).toEqual(['alpha', 'beta']));
-    server.conduct = { rows: [{ sessionId: 'B', title: 'Bravo', lastActivity: 2 }] };
-    await hint('projects');
-    await waitFor(() => expect(conductors()).toEqual(['B']));
+      server = { projects: ['alpha', 'beta'], conduct: 'non-ok' };
+      await hint('projects');
+      await waitFor(() => expect(appStore.get().projects.map((p) => p.name)).toEqual(['alpha', 'beta']));
+      expect(conductors()).toEqual(['A']);
+      server.conduct = { rows: [{ sessionId: 'B', title: 'Bravo', lastActivity: 2 }] };
+      await hint('projects');
+      await waitFor(() => expect(conductors()).toEqual(['B']));
 
-    server = { projects: ['alpha', 'beta', 'gamma'], conduct: 'rejected' };
-    await hint('projects');
-    await waitFor(() => expect(appStore.get().projects.map((p) => p.name)).toEqual(['alpha', 'beta', 'gamma']));
-    server.conduct = { rows: [{ sessionId: 'C', title: 'Charlie', lastActivity: 3 }] };
-    await hint('projects');
-    await waitFor(() => expect(conductors()).toEqual(['C']));
+      server = { projects: ['alpha', 'beta', 'gamma'], conduct: 'rejected' };
+      await hint('projects');
+      await waitFor(() => expect(appStore.get().projects.map((p) => p.name)).toEqual(['alpha', 'beta', 'gamma']));
+      expect(conductors()).toEqual(['B']);
+      server.conduct = { rows: [{ sessionId: 'C', title: 'Charlie', lastActivity: 3 }] };
+      await hint('projects');
+      await waitFor(() => expect(conductors()).toEqual(['C']));
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
   });
 });

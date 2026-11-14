@@ -4,6 +4,9 @@ import { CONDUCT_PROJECT, type SpawnedProject } from '@shared/conductors';
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting';
 
+/** The side lists `projectReads` keeps across a failed read: AppState keys. */
+export type StaleList = 'workspaces' | 'conductSessions' | 'conductorSpawns';
+
 export type AppState = {
   connection: ConnectionState;
   /** True once the socket has dropped at least once after the first open. */
@@ -22,6 +25,8 @@ export type AppState = {
   ended: Instance | null;
   /** One-line status in the sidebar footer (resume / restart progress). */
   sidebarStatus: { text: string; warn: boolean } | null;
+  /** The side lists whose last read failed and that still show their previous value. */
+  staleLists: StaleList[];
 };
 
 export const appStore = createStore<AppState>({
@@ -36,6 +41,7 @@ export const appStore = createStore<AppState>({
   activeId: null,
   ended: null,
   sidebarStatus: null,
+  staleLists: [],
 });
 
 /** A listed instance, else the pristine slot's. */

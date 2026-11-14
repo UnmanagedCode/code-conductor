@@ -8,8 +8,8 @@ vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: v
 
 import { bus } from '@shared/ws';
 import { refreshInstances, refreshProjects, startController, stopController } from './controller';
-import { appStore, type AppState } from '@/state/app';
-import type { Project, SessionRow } from '@/state/types';
+import { appStore } from '@/state/app';
+import type { Project } from '@/state/types';
 
 describe('refreshing the lists', () => {
   it('a JSON 5xx from /api/projects rejects with its reason and keeps the last project list', async () => {
@@ -36,32 +36,178 @@ describe('refreshing the lists', () => {
     expect(appStore.get().instances).toEqual([live]);
   });
 
-  it('a refused workspaces read degrades to no workspaces, silently, and the project list still applies', async () => {
-    appStore.set({ workspaces: ['stale-ws'] });
+  it('a workspaces read refused on the first load leaves workspaces empty, flags them stale, and still applies the project list', async () => {
+    appStore.set({ workspaces: [], staleLists: [] });
     routeFetch({
       'GET /api/projects/.conduct/sessions': () => ({ json: [] }),
       'GET /api/projects': () => ({ json: [{ name: 'gamma' }] }),
       'GET /api/workspaces': () => ({ status: 500, json: { error: 'workspaces read refused' } }),
       'GET /api/conductors/projects': () => ({ json: {} }),
     });
-    await expect(refreshProjects()).resolves.toBeUndefined();
-    expect(appStore.get().workspaces).toEqual([]);
-    expect(appStore.get().projects).toEqual([{ name: 'gamma' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(refreshProjects()).resolves.toBeUndefined();
+      expect(appStore.get()).toMatchObject({ workspaces: [], staleLists: ['workspaces'], projects: [{ name: 'gamma' }] });
+      expect(warn.mock.calls).toEqual([['workspaces read failed; keeping the last list:', expect.objectContaining({ message: 'workspaces read refused' })]]);
+    } finally { warn.mockRestore(); }
   });
 
-  it('refused conductor-session and conductor-spawn reads degrade to empty, silently, and the project list still applies', async () => {
-    appStore.set({ conductSessions: [{ sessionId: 'stale' }] as unknown as SessionRow[], conductorSpawns: { stale: [] } as AppState['conductorSpawns'] });
+  it('conductor-session and conductor-projects reads refused on the first load leave both empty and flagged, and the project list still applies', async () => {
+    appStore.set({ conductSessions: [], conductorSpawns: {}, staleLists: [] });
     routeFetch({
       'GET /api/projects/.conduct/sessions': () => ({ status: 500, json: { error: 'conduct sessions refused' } }),
       'GET /api/projects': () => ({ json: [{ name: 'delta' }] }),
       'GET /api/workspaces': () => ({ json: [{ name: 'ws1' }] }),
       'GET /api/conductors/projects': () => new TypeError('Failed to fetch'),
     });
-    await expect(refreshProjects()).resolves.toBeUndefined();
-    expect(appStore.get().conductSessions).toEqual([]);
-    expect(appStore.get().conductorSpawns).toEqual({});
-    expect(appStore.get().workspaces).toEqual(['ws1']);
-    expect(appStore.get().projects).toEqual([{ name: 'delta' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(refreshProjects()).resolves.toBeUndefined();
+      expect(appStore.get()).toMatchObject({
+        conductSessions: [], conductorSpawns: {}, staleLists: ['conductSessions', 'conductorSpawns'],
+        workspaces: ['ws1'], projects: [{ name: 'delta' }],
+      });
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
+  });
+
+  describe('a side read that fails after a good load', () => {
+    type Side = { workspaces: RouteAnswer; sessions: RouteAnswer; spawns: RouteAnswer };
+    const prevSession = { sessionId: 'cond-prev' };
+    const prevSpawn = { 'cond-prev': [{ project: 'p1' }] };
+    const good1: Side = {
+      workspaces: { json: [{ name: 'ws-alpha' }, { name: 'ws-beta' }] },
+      sessions: { json: [prevSession] },
+      spawns: { json: prevSpawn },
+    };
+    const good2: Side = {
+      workspaces: { json: [{ name: 'ws-gamma' }] },
+      sessions: { json: [{ sessionId: 'cond-next' }] },
+      spawns: { json: { 'cond-next': [{ project: 'p2' }] } },
+    };
+    const refused = (what: string): RouteAnswer => ({ status: 500, json: { error: what } });
+
+    /** Serves the project list and each side read from its own queue of answers, one per refresh. */
+    function serve(rounds: Side[]) {
+      const queues = {
+        workspaces: rounds.map((r) => r.workspaces), sessions: rounds.map((r) => r.sessions), spawns: rounds.map((r) => r.spawns),
+      };
+      const names = ['alpha', 'gamma', 'delta', 'epsilon'];
+      let n = 0;
+      routeFetch({
+        'GET /api/projects/.conduct/sessions': () => queues.sessions.shift()!,
+        'GET /api/projects': () => ({ json: [{ name: names[n++] }] }),
+        'GET /api/workspaces': () => queues.workspaces.shift()!,
+        'GET /api/conductors/projects': () => queues.spawns.shift()!,
+      });
+    }
+    const quietWarn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const expectFirstLoad = () => {
+      expect(appStore.get().workspaces, 'positive control: workspaces landed').toEqual(['ws-alpha', 'ws-beta']);
+      expect(appStore.get().conductSessions, 'positive control: sessions landed').toEqual([prevSession]);
+      expect(appStore.get().conductorSpawns, 'positive control: spawns landed').toEqual(prevSpawn);
+    };
+
+    it('a refused workspaces read after a good load keeps the last workspaces and flags them stale', async () => {
+      const warn = quietWarn();
+      try {
+        serve([good1, { ...good2, workspaces: refused('workspaces read refused') }]);
+        await refreshProjects();
+        expectFirstLoad();
+        await refreshProjects();
+        expect(appStore.get().workspaces).toEqual(['ws-alpha', 'ws-beta']);
+        expect(appStore.get()).toMatchObject({ staleLists: ['workspaces'], projects: [{ name: 'gamma' }], conductSessions: [{ sessionId: 'cond-next' }] });
+        expect(warn.mock.calls).toEqual([['workspaces read failed; keeping the last list:', expect.objectContaining({ message: 'workspaces read refused' })]]);
+      } finally { warn.mockRestore(); }
+    });
+
+    it('a refused conductor-sessions read after a good load keeps the last sessions and flags them stale', async () => {
+      const warn = quietWarn();
+      try {
+        serve([good1, { ...good2, sessions: refused('conduct sessions refused') }]);
+        await refreshProjects();
+        expectFirstLoad();
+        await refreshProjects();
+        expect(appStore.get().conductSessions).toEqual([prevSession]);
+        expect(appStore.get()).toMatchObject({ staleLists: ['conductSessions'], projects: [{ name: 'gamma' }], workspaces: ['ws-gamma'] });
+        expect(warn.mock.calls).toEqual([['conductSessions read failed; keeping the last list:', expect.objectContaining({ message: 'conduct sessions refused' })]]);
+      } finally { warn.mockRestore(); }
+    });
+
+    it('an unreachable conductor-projects read after a good load keeps the last spawn map and flags it stale', async () => {
+      const warn = quietWarn();
+      try {
+        serve([good1, { ...good2, spawns: new TypeError('Failed to fetch') }]);
+        await refreshProjects();
+        expectFirstLoad();
+        await refreshProjects();
+        expect(appStore.get().conductorSpawns).toEqual(prevSpawn);
+        expect(appStore.get()).toMatchObject({ staleLists: ['conductorSpawns'], projects: [{ name: 'gamma' }], workspaces: ['ws-gamma'] });
+        expect(warn.mock.calls).toEqual([['conductorSpawns read failed; keeping the last list:', expect.objectContaining({ message: 'cc server unreachable — it may be restarting' })]]);
+      } finally { warn.mockRestore(); }
+    });
+
+    it('a list that keeps failing warns once and keeps one stale flag', async () => {
+      const warn = quietWarn();
+      try {
+        const bad = (o: Partial<Side> = {}): Side => ({ ...good2, workspaces: refused('ws down'), ...o });
+        serve([good1, bad(), bad(), bad({ sessions: refused('sessions down') })]);
+        await refreshProjects();
+        expectFirstLoad();
+        await refreshProjects();
+        const first = (appStore.get() as unknown as { staleLists: unknown }).staleLists;
+        expect(first).toEqual(['workspaces']);
+        await refreshProjects();
+        expect((appStore.get() as unknown as { staleLists: unknown }).staleLists).toBe(first);
+        expect(warn).toHaveBeenCalledTimes(1);
+        await refreshProjects();
+        expect(appStore.get()).toMatchObject({ staleLists: ['workspaces', 'conductSessions'] });
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(warn.mock.calls[1]).toEqual(['conductSessions read failed; keeping the last list:', expect.objectContaining({ message: 'sessions down' })]);
+      } finally { warn.mockRestore(); }
+    });
+
+    it('a good read after a failure applies the new list and clears the stale flag', async () => {
+      const warn = quietWarn();
+      try {
+        const bad: Side = { ...good2, workspaces: refused('ws down') };
+        serve([good1, bad, { ...good2, workspaces: { json: [{ name: 'ws-delta' }] } }, bad]);
+        await refreshProjects();
+        expectFirstLoad();
+        await refreshProjects();
+        expect(appStore.get()).toMatchObject({ staleLists: ['workspaces'] });
+        await refreshProjects();
+        expect(appStore.get()).toMatchObject({ workspaces: ['ws-delta'], staleLists: [] });
+        expect(warn).toHaveBeenCalledTimes(1);
+        await refreshProjects();
+        expect(appStore.get()).toMatchObject({ workspaces: ['ws-delta'], staleLists: ['workspaces'] });
+        expect(warn).toHaveBeenCalledTimes(2);
+      } finally { warn.mockRestore(); }
+    });
+
+    it('workspaces recovering while conductor sessions fail in one refresh replaces the stale set and warns for the new failure only', async () => {
+      const warn = quietWarn();
+      try {
+        serve([
+          good1,
+          { ...good2, workspaces: refused('ws down') },
+          { ...good2, workspaces: { json: [{ name: 'ws-delta' }] }, sessions: refused('sessions down') },
+        ]);
+        await refreshProjects();
+        expectFirstLoad();
+        await refreshProjects();
+        const before = (appStore.get() as unknown as { staleLists: unknown }).staleLists;
+        expect(before).toEqual(['workspaces']);
+        expect(warn).toHaveBeenCalledTimes(1);
+        await refreshProjects();
+        const after = (appStore.get() as unknown as { staleLists: unknown }).staleLists;
+        expect(after).toEqual(['conductSessions']);
+        expect(after).not.toBe(before);
+        expect(appStore.get()).toMatchObject({ workspaces: ['ws-delta'], conductSessions: [{ sessionId: 'cond-next' }] });
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(warn.mock.calls[1]).toEqual(['conductSessions read failed; keeping the last list:', expect.objectContaining({ message: 'sessions down' })]);
+      } finally { warn.mockRestore(); }
+    });
   });
 
   it("a server hint whose read is refused is logged, not left unhandled, and keeps the last list", async () => {
