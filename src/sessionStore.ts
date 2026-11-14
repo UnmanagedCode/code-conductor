@@ -923,5 +923,3 @@ export function setSegmentArchived(backingId: string | null | undefined, on: boo
   if (typeof backingId !== 'string' || !backingId) return Promise.resolve(false);
   return segmentWrite('setSegmentArchived', backingId, 'archived', on, owner);
 }
-
-// ── helpers ──────────────────────────────────────────────────────────────────

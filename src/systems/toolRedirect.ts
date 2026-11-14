@@ -606,5 +606,3 @@ export class SessionRedirect {
     this.#shell = null;
   }
 }
-
-

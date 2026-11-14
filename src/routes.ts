@@ -224,7 +224,6 @@ function jsonBody(req: express.Request): Record<string, unknown> {
   return b as Record<string, unknown>;
 }
 
-
 // Upper bound, in characters, on everything the trailing error middleware logs
 // for one error (its line plus, for a 5xx, the stack frames). Some refusals
 // quote a caller-supplied value in their message, which may be megabytes.
