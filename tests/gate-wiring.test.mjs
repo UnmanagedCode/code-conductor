@@ -38,7 +38,7 @@ function fixtureRepo() {
   fs.writeFileSync(path.join(root, 'npm-stub.mjs'), "console.log('STEP ' + process.argv.slice(2).join(' '));\n");
   fs.writeFileSync(path.join(root, '.gitignore'), 'node_modules\n');
   fs.symlinkSync(path.join(here, '..', 'node_modules'), path.join(root, 'node_modules'));
-  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: root, stdio: 'ignore' });
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'ignore' });
   git('init', '-q', '-b', 'main');
   git('add', '-A');
   git('commit', '-q', '-m', 'base');
