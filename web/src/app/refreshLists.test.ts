@@ -184,6 +184,30 @@ describe('refreshing the lists', () => {
         expect(warn).toHaveBeenCalledTimes(2);
       } finally { warn.mockRestore(); }
     });
+
+    it('workspaces recovering while conductor sessions fail in one refresh replaces the stale set and warns for the new failure only', async () => {
+      const warn = quietWarn();
+      try {
+        serve([
+          good1,
+          { ...good2, workspaces: refused('ws down') },
+          { ...good2, workspaces: { json: [{ name: 'ws-delta' }] }, sessions: refused('sessions down') },
+        ]);
+        await refreshProjects();
+        expectFirstLoad();
+        await refreshProjects();
+        const before = (appStore.get() as unknown as { staleLists: unknown }).staleLists;
+        expect(before).toEqual(['workspaces']);
+        expect(warn).toHaveBeenCalledTimes(1);
+        await refreshProjects();
+        const after = (appStore.get() as unknown as { staleLists: unknown }).staleLists;
+        expect(after).toEqual(['conductSessions']);
+        expect(after).not.toBe(before);
+        expect(appStore.get()).toMatchObject({ workspaces: ['ws-delta'], conductSessions: [{ sessionId: 'cond-next' }] });
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(warn.mock.calls[1]).toEqual(['conductSessions read failed; keeping the last list:', expect.objectContaining({ message: 'sessions down' })]);
+      } finally { warn.mockRestore(); }
+    });
   });
 
   it("a server hint whose read is refused is logged, not left unhandled, and keeps the last list", async () => {

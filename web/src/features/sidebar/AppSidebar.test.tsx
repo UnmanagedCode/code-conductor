@@ -30,7 +30,6 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 
 const { AppSidebar } = await import('./AppSidebar');
 const { sidebarStore } = await import('./state');
-const { STALE_LIST_LABELS } = await import('./staleLists');
 const { closeDialog, dialogStore } = await import('@/features/dialogs/api');
 
 const inst = (o: Record<string, any>) => ({ id: `i-${o.sessionId}`, status: 'idle', mode: 'plan', ...o });
@@ -350,7 +349,7 @@ describe('AppSidebar', () => {
     seed({ staleLists: ['conductorSpawns'] });
     renderSidebar();
     const status = () => document.querySelector('[data-sidebar-status]')!.textContent ?? '';
-    expect(status()).toContain(STALE_LIST_LABELS.conductorSpawns);
+    expect(status()).toContain('conductor projects');
     expect(status()).not.toContain('Connected');
     act(() => appStore.set({ staleLists: [] }));
     expect(status()).toContain('Connected');
@@ -363,8 +362,48 @@ describe('AppSidebar', () => {
     expect(status()).toContain('Resuming…');
     act(() => appStore.set({ sidebarStatus: null }));
     expect(status()).toContain('Reconnecting…');
-    expect(status()).not.toContain(STALE_LIST_LABELS.workspaces);
+    expect(status()).not.toContain('workspaces');
     act(() => appStore.set({ connection: 'open' }));
-    expect(status()).toContain(STALE_LIST_LABELS.workspaces);
+    expect(status()).toContain('workspaces');
+  });
+
+  const footerStatus = () => document.querySelector('[data-sidebar-status]') as HTMLElement;
+
+  it('while connected, a progress status outranks the stale-list warning, which shows once the status clears', () => {
+    seed({ staleLists: ['workspaces'], sidebarStatus: { text: 'Resuming…', warn: false } });
+    renderSidebar();
+    expect(footerStatus().textContent).toContain('Resuming…');
+    expect(footerStatus().textContent).not.toContain('Couldn');
+    act(() => appStore.set({ sidebarStatus: null }));
+    expect(footerStatus().textContent).toBe("Couldn't refresh workspaces — showing the last loaded");
+  });
+
+  it('the stale-list line is drawn with the warning triangle and no spinner', () => {
+    seed({ staleLists: ['workspaces'] });
+    renderSidebar();
+    expect(footerStatus().querySelector('svg.lucide-triangle-alert')).not.toBeNull();
+    expect(footerStatus().querySelector('.animate-spin')).toBeNull();
+  });
+
+  it('two stale lists read as one comma-joined line in the order given', () => {
+    seed({ staleLists: ['workspaces', 'conductSessions'] });
+    renderSidebar();
+    expect(footerStatus().textContent).toBe("Couldn't refresh workspaces, conductor sessions — showing the last loaded");
+  });
+
+  it.each([
+    ['workspaces', "Couldn't refresh workspaces — showing the last loaded"],
+    ['conductSessions', "Couldn't refresh conductor sessions — showing the last loaded"],
+    ['conductorSpawns', "Couldn't refresh conductor projects — showing the last loaded"],
+  ] as const)('the %s list is named by its own label in the footer', (list, text) => {
+    seed({ staleLists: [list] });
+    renderSidebar();
+    expect(footerStatus().textContent).toBe(text);
+  });
+
+  it('a freshly created app store has no stale lists', async () => {
+    vi.resetModules();
+    const fresh = await import('@/state/app');
+    expect(fresh.appStore.get().staleLists).toEqual([]);
   });
 });
