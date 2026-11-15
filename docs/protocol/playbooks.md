@@ -58,7 +58,7 @@ A stage's `workerTools` governs the **bound session's own tool calls** — the w
 
 Allow-list example — a read-only reviewer: `{"*": "deny", "Read": "allow", "Grep": "allow", "Glob": "allow"}` (`Edit` → denied by `'*'`; `Read` → allowed by `'Read'`). Specificity example: `{"mcp__code-conductor__code-kanban__*": "allow", "mcp__code-conductor__code-kanban__move*": "deny"}` denies `mcp__code-conductor__code-kanban__move_card` and allows `mcp__code-conductor__code-kanban__read_card`.
 
-**Per call** (`checkWorkerTool({sessionId, parentSessionId, toolName})`; the route passes the URL's instance's `sessionId` and its `parentSessionId` — the conductor that spawned or resumed it):
+**Per call** (`checkWorkerTool({sessionId, parentSessionId, toolName})`; the route passes the URL's instance's `sessionId` and its `parentSessionId` — the recorded spawner, or the MCP caller that last resumed it):
 
 | Case | Hook answer | Event log | UI |
 |---|---|---|---|
@@ -69,7 +69,7 @@ Allow-list example — a read-only reviewer: `{"*": "deny", "Read": "allow", "Gr
 | Bound, but its playbook or stage is not loaded (definition drift) | `{}` | nothing | `console.warn` once per (session, playbook, stage) |
 | The event log cannot be loaded, or anything else throws | `{}` | nothing | `console.warn` with the error |
 
-- **Level:** the owner's live conductor instance's `playbookEnforcement`; else the owner's level folded from the log's `config` rows; else the Settings default (`getDefaultPlaybookEnforcement`, `src/conductorConventions.ts`) — which covers a bound worker resumed from the sidebar by a human.
+- **Level:** the owner's live conductor instance's `playbookEnforcement`; else the owner's level folded from the log's `config` rows; else the Settings default (`getDefaultPlaybookEnforcement`, `src/conductorConventions.ts`) — which covers a bound worker with no recorded parent (a worker resumed from the sidebar by a human keeps its recorded parent, so its owner's level applies).
 - **Reason** (`workerToolDeniedReason`): `cc playbook policy: stage '<stage>' of playbook '<playbook>' does not let its worker call <tool> (denied by workerTools entry '<key>'). Retrying is refused the same way. Do this step with a tool the stage allows, or report that it needs <tool> and stop.`
 - **Liveness:** the binding (from the in-memory projection) and the definition (`loadPlaybooks()`) are read per call, so a `move` or an edit to the definition governs the worker's **next** tool call, with no relaunch.
 - **Cost** (measured with `curl` against a running cc on one host): a hook-callback round trip for an unknown instance takes 0.5–1.0 ms, and `GET /api/playbooks` (a full `loadPlaybooks()` + tool-index load) takes 0.85–2.1 ms. So an unbound session pays under 1 ms per tool call (one Map lookup, no disk read) and a bound one about 2 ms; on `Edit`/`Write`/`Bash`, already hooked, the entries run in parallel.

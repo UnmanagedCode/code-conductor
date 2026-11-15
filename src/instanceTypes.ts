@@ -430,6 +430,8 @@ export interface InstanceManagerLike {
   pristine: PristineTracker;
   pristineFor(sessionId: string): InstanceLike | null;
   liveForSession(sessionId: string): InstanceLike | null;
+  // See InstanceManager.adoptOwnedResume.
+  adoptOwnedResume(resume: string, callerInstanceId: string): InstanceLike | null;
   // The last spontaneous exit of a session by its exact PUBLIC id, or null. In
   // memory only; cleared by a commanded exit and by a successful resume.
   exitCauseFor(sessionId: string): ExitCause | null;

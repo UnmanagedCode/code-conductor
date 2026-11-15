@@ -187,8 +187,22 @@ const instanceReads = coalescedReads(
       ...(ended ? { ended } : {}),
     });
     emit('instances');
+    followLive();
   },
 );
+/**
+ * The read-only pane's session came live (the boot restore or its conductor resumed it): select it, with no
+ * gesture. Only while the session view shows that session: a full-page view stays, and the pane follows on
+ * the route change that brings the session view back.
+ */
+function followLive() {
+  const { ended, activeId, instances } = appStore.get();
+  if (!ended || activeId !== ended.id) return;
+  const { view, sessionId } = routeStore.get().route;
+  if (view !== 'session' || sessionId !== ended.sessionId) return;
+  const live = instances.find((i) => i.sessionId === ended.sessionId && isLiveStatus(i.status));
+  if (live) selectInstance(live.id);
+}
 /** `inst` as the ended pane shows it: a live status reads as exited. */
 function endedFrom(inst: Instance): Instance {
   const status = isLiveStatus(inst.status) ? 'exited' : inst.status;
@@ -296,11 +310,13 @@ export function openEndedSession({ sessionId, project, worktreeName, title = nul
 }
 
 /**
- * Select a live instance owning `sessionId`, or locate it on disk and resume it.
- * An automatic lookup (no user gesture, e.g. the first-connect restore) yields to
- * a session selected while it runs: that one stands, with its anchor, and nothing
- * is cleared or resumed over it. A user's lookup (a notification click) yields
- * only to a selection made by a gesture started after it, never to the restore.
+ * Select a live instance owning `sessionId`, or locate it on disk. A session
+ * that is not live opens read-only (the Ended pane, whose Resume is the explicit
+ * action): only a user's lookup (a notification click) resumes it. An automatic
+ * lookup (no user gesture, e.g. the first-connect restore) never starts a session
+ * and yields to a session selected while it runs: that one stands, with its
+ * anchor. A user's lookup yields only to a selection made by a gesture started
+ * after it, never to the restore.
  */
 export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss = true, userGesture = false } = {}): Promise<boolean> {
   const live = appStore.get().instances.find((i) => i.sessionId === anchor);
@@ -327,21 +343,22 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
       .catch((e) => { if (e instanceof ApiError) return null; throw e; });
     if (overtaken()) return true;
     if (!hit) { clear(); return false; }
-    // An archived session is never resurrected silently from a link, and one
-    // whose worktree is gone cannot be: either opens read-only.
-    if (hit.archived || worktreeRemoved(appStore.get().projects, hit.project, hit.worktreeName)) {
+    // An archived session is never resurrected from a link, one whose worktree
+    // is gone cannot be, and no page load resumes a stopped one: each opens
+    // read-only. Only a user's lookup resumes.
+    if (!userGesture || hit.archived || worktreeRemoved(appStore.get().projects, hit.project, hit.worktreeName)) {
       void openEndedSession({ sessionId: anchor, project: hit.project, worktreeName: hit.worktreeName });
       return true;
     }
     appStore.set({ sidebarStatus: { text: 'Resuming session…', warn: true } });
     try {
-      await resumeSession({ projectName: hit.project, worktreeName: hit.worktreeName, sessionId: anchor, silent: true, userGesture, gesture });
+      await resumeSession({ projectName: hit.project, worktreeName: hit.worktreeName, sessionId: anchor, silent: true, gesture });
     } finally {
       appStore.set({ sidebarStatus: null });
     }
     return true;
   } catch (e) {
-    console.warn('auto-resume from anchor failed', e);
+    console.warn('opening session from anchor failed', e);
     if (overtaken()) return true;
     clear();
     return false;
@@ -494,6 +511,7 @@ export function startController() {
 
   // Back / forward between session anchors (e.g. back from a worker to its conductor): select the
   // session the entry names if it is listed, else clear the anchor, so a reload never resumes it.
+  signal.addEventListener('abort', routeStore.subscribe(followLive));
   addEventListener('popstate', () => {
     if (routeStore.get().route.view !== 'session') return;
     const anchor = readSessionAnchor();

@@ -2,7 +2,8 @@
 // load the named session opens from the first instance-list read even while a
 // newer read, started by the server's `instances` hint, is still in flight, and
 // stays open once that read lands. Closing the open session drops its anchor
-// with a replace, so a reload resumes nothing. The bodies are shared by the
+// with a replace, so a reload resumes nothing, and a reload on an anchor naming a
+// stopped session opens it read-only (never resuming it). The bodies are shared by the
 // per-project spec files; this module declares no tests.
 import type { Page, Route, WebSocketRoute } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -53,7 +54,7 @@ export async function closeThenReloadFlow({ page, cc }: Args): Promise<void> {
   const project = `close-${test.info().project.name}`;
   const closed = await spawnSession(cc, project, { persistent: true });
   const marker = await spawnSession(cc, project, { persistent: true });
-  // fake-claude writes no transcript: with one on disk the stopped session stays resumable, so a reload would resume it.
+  // fake-claude writes no transcript: with one on disk the stopped session stays resumable, so a reload on its anchor locates it.
   await seedTranscript(cc, closed.id, 'close me');
   const anchored = new RegExp(`/#session=${closed.sessionId}$`);
   await page.goto(`/#session=${closed.sessionId}`);
@@ -78,10 +79,11 @@ export async function closeThenReloadFlow({ page, cc }: Args): Promise<void> {
   expect(restores).toEqual([]);
   await expect(next.sessionHeader(page)).toHaveCount(0);
 
-  // Control: the same reload with the anchor still naming the session resumes and opens it.
+  // Control: the same reload with the anchor still naming the session opens it read-only and resumes nothing.
   await page.evaluate((sid) => history.replaceState(null, '', `/#session=${sid}`), closed.sessionId);
-  const resume = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/instances');
+  restores.length = 0;
   await page.reload();
-  await resume;
-  await expect(next.sessionHeader(page), 'control: an anchor naming the session resumes it').toBeVisible();
+  await expect(page.locator('[data-session-ended]'), 'control: an anchor naming the stopped session opens it read-only').toBeVisible();
+  expect(restores.some((r) => r.endsWith('/locate')), 'control: the anchor was looked up').toBe(true);
+  expect(restores.filter((r) => r.startsWith('POST')), 'control: nothing was resumed').toEqual([]);
 }

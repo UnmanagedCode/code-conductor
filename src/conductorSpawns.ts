@@ -2,6 +2,7 @@
 // worktrees those workers ran in, derived from the spawn-time facts
 // recorded on each session (`parent` by `markConducted`, `project` / `worktree`
 // by `setSessionPlace`).
+// `conductedLineage` answers a session's stored lineage for a caller-less resume.
 // A read-only consumer of the session store: everything goes through
 // `loadSessions()`, nothing here writes.
 
@@ -29,6 +30,15 @@ export function rootOf(doc: SessionsDoc, publicId: string): string | null {
     cur = rec.parent;
   }
   return null;
+}
+
+// A session's stored spawn lineage: null unless it is `conducted`; else its
+// recorded `parent` and the `rootOf` its chain resolves to (either null when
+// unrecorded).
+export function conductedLineage(doc: SessionsDoc, publicId: string): { parent: string | null; root: string | null } | null {
+  const rec = doc.get(publicId);
+  if (rec?.conducted !== true) return null;
+  return { parent: rec.parent ?? null, root: rootOf(doc, publicId) };
 }
 
 const memo = new WeakMap<SessionsDoc, SpawnedProjectsByRoot>();
