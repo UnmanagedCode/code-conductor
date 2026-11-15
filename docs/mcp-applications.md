@@ -61,8 +61,8 @@ How JSON format differs from text:
 | `list_workspaces` | `{workspaces}` (the text view stays a bare array) |
 
 `describe_session`, `project_status` and `describe_playbook` answer with their object as it is.
-- **Refusals** are `result.isError:true`, and their `structuredContent` matches `REFUSAL_SCHEMA` (`src/mcp/outputSchemas.ts`): `{ok:false, code, reason?, statusCode?, truncated?, details?, …}`, plus the refusal's own fields (`sessionId`, `matches`, `legalMoves`, …). `details` is a plugin refusal's own machine-readable object, passed through untouched ([docs/plugins.md](plugins.md#typed-plugin-tools-both-formats) → 6); no core refusal carries it. An `outputSchema` describes the **success** shape only.
-- **Plugin tools** appear in JSON format only when their manifest declares an `outputSchema`, and then answer `structuredContent` like a core tool, validated by cc against that schema ([docs/plugins.md](plugins.md#typed-plugin-tools-both-formats)). A plugin tool with no `outputSchema` is text-only: absent from the JSON `tools/list`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT`.
+- **Refusals** are `result.isError:true`, and their `structuredContent` matches `REFUSAL_SCHEMA` (`src/mcp/outputSchemas.ts`): `{ok:false, code, reason?, statusCode?, truncated?, details?, …}`, plus the refusal's own fields (`sessionId`, `matches`, `legalMoves`, …). `details` is a plugin refusal's own machine-readable object, passed through untouched ([docs/plugins/tools.md](plugins/tools.md#typed-plugin-tools-both-formats) → 6); no core refusal carries it. An `outputSchema` describes the **success** shape only.
+- **Plugin tools** appear in JSON format only when their manifest declares an `outputSchema`, and then answer `structuredContent` like a core tool, validated by cc against that schema ([docs/plugins/tools.md](plugins/tools.md#typed-plugin-tools-both-formats)). A plugin tool with no `outputSchema` is text-only: absent from the JSON `tools/list`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT`.
 
 ## Error channels
 
@@ -162,7 +162,7 @@ JSON drops every context cap: the result budget and its `RESULT_OVER_BUDGET` bac
 | `JSON_ECHO_CAP` | each echoed string in a refusal, and a JSON-RPC error's `message` | `truncated` (refusals) |
 | `URL_ECHO_CAP` (`src/mcp/server.ts`, both formats) | each URL fragment a URL-level fault echoes (a query key, a format value, a caller id, a route) | — |
 
-**Plugin tools:** cc applies **no** ceiling to a typed plugin tool's `structured` reply — none of the safety ceilings above apply to it. The only bounds are the plugin's own `mcp.timeoutMs` and the V8 string-length ceiling, past which serializing fails loudly as `INTERNAL`, never as a cut. A plugin refusal's `reason` still takes `JSON_ECHO_CAP`; its `details` takes no ceiling. The plugin's side of this — never truncating in json — is in [docs/plugins.md](plugins.md#typed-plugin-tools-both-formats).
+**Plugin tools:** cc applies **no** ceiling to a typed plugin tool's `structured` reply — none of the safety ceilings above apply to it. The only bounds are the plugin's own `mcp.timeoutMs` and the V8 string-length ceiling, past which serializing fails loudly as `INTERNAL`, never as a cut. A plugin refusal's `reason` still takes `JSON_ECHO_CAP`; its `details` takes no ceiling. The plugin's side of this — never truncating in json — is in [docs/plugins/tools.md](plugins/tools.md#typed-plugin-tools-both-formats).
 
 Unchanged in both formats:
 - the request body limit `MCP_REQUEST_BODY_LIMIT` (`src/mcp/server.ts`; over it → `PAYLOAD_TOO_LARGE`)
@@ -175,7 +175,7 @@ Unchanged in both formats:
 ## Limitations
 
 - **Untyped plugin tools are text-only.** A plugin tool without a manifest `outputSchema` is absent from JSON format and the REST alias.
-- **No auth.** Any local process can call as any live session. A tool's `audience` is not auth either ([docs/plugins.md](plugins.md#tool-audience)).
+- **No auth.** Any local process can call as any live session. A tool's `audience` is not auth either ([docs/plugins/tools.md](plugins/tools.md#tool-audience)).
 - **No streaming, except progress.** Every result is buffered whole and a JSON result can reach the ceilings above; the one exception is a single `tools/call` whose client accepts `text/event-stream`, which may stream progress notifications before its response ([code-mode.md → Progress and cancellation](code-mode.md#progress-and-cancellation)).
 
 ## Samples

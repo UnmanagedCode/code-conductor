@@ -16,7 +16,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 - **Testing — the gate, suites, fakes, test slots** → `docs/testing.md`; systems, FUSE and gated real-dependency suites → `docs/testing-systems.md`; the suite hang guard → `docs/testing-hang-guard.md`
 - **Project name → directory resolution** → `resolveProjectDir` in `src/projectRegistry.ts` is the single chokepoint every project path comes from, and it is ONE record read; `registerProject` is the one guarded writer. The realpath rule, the delete-means-deregister rule and the reserved-name refusal are in `docs/components/store.md` → `src/projects.ts`
 - **Event log on-disk format (record kinds + fields; plugins read it)** → `docs/event-log.md`
-- **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`
+- **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`, the index into `docs/plugins/*.md`
 - **Windows launcher / installer contract (installer itself is the separate code-conductor-windows project)** → `docs/windows.md`
 - **Host-OS differences (spawn options, shell, kill, command splitting, path keys, feature capabilities)** → `Platform` in `src/platform/`; no `process.platform` elsewhere
 - **Project-scoped I/O — git, files in a project tree, commands run in one** → take the project's `System` handle (`src/systems/`) rather than bare `node:fs`/`spawn`; `docs/architecture.md` → Conventions carries the rule and the list of sanctioned exceptions

@@ -11,7 +11,7 @@ import type { PlaybookGate } from './mcp/playbookGate.ts';
 // builders list_playbooks / describe_playbook render from. Mounted from
 // src/routes.ts at /playbooks (⇒ /api/playbooks), inheriting its JSON body
 // parser and trailing error middleware. There is no write route: an authoring
-// plugin writes the user-overlay file itself (docs/plugins.md).
+// plugin writes the user-overlay file itself (docs/plugins/runtime.md).
 //
 // Playbook state is read ONLY through the gate (tests/event-log-chokepoint.test.mjs).
 

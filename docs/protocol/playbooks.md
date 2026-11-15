@@ -2,7 +2,7 @@
 
 ## Playbooks
 
-A **playbook** is a JSON graph of **stages** a worker is bound to. The conductor declares its intent on the calls that create or move workers; the server verifies the move against the graph and records the call in the event log ([event-log.md](../event-log.md)). Definitions: built-ins in `playbooks/*.json`, user overlay in `<store>/playbooks/*.json`, and enabled plugins' `playbooks` (ids `<plugin-id>/<slug>` — manifest schema, freshness and disable semantics in [plugins.md](../plugins.md)). Schema, validator and the policy decision live in `src/playbooks.ts`; the conductor reads a graph via `describe_playbook` — it is deliberately **not** restated in prose here or in any prompt.
+A **playbook** is a JSON graph of **stages** a worker is bound to. The conductor declares its intent on the calls that create or move workers; the server verifies the move against the graph and records the call in the event log ([event-log.md](../event-log.md)). Definitions: built-ins in `playbooks/*.json`, user overlay in `<store>/playbooks/*.json`, and enabled plugins' `playbooks` (ids `<plugin-id>/<slug>` — manifest schema, freshness and disable semantics in [plugins/manifest.md](../plugins/manifest.md)). Schema, validator and the policy decision live in `src/playbooks.ts`; the conductor reads a graph via `describe_playbook` — it is deliberately **not** restated in prose here or in any prompt.
 
 **Scope.** A stage governs two scopes of call, one key each:
 - **`tools` — the conductor's calls that address a worker in the stage.** Applies only when the caller resolves to the conductor (`isConductorInstance`, `src/conduct.ts`) — a worker is not offered the tools it governs (core tool audience, see [Tool audience](mcp.md#mcp-tool-protocol)). The rest of this paragraph and the sections below through the read tools are about this scope.
@@ -35,7 +35,7 @@ Each omitted fact arrives at point of use and cannot go stale under a live worke
 Absent on the explicit `none`, when the selected id no longer resolves, or when the `playbooks` convention is off (the section rides that toggle, like the available-playbooks listing).
 **Freshness:** every input to this section is read **per compose** — the built-in `playbooks/*.json` definitions (through `fragmentCatalog`'s `seedExt: '.json'` catalog, whose seed bodies are never memoised), the user overlay at `<store>/playbooks/*.json`, and the selection itself.
 An edit to any of them reaches the next conductor spawned, with **no orchestrator restart**, exactly like a `conventions/*.md` edit.
-The exception is a **plugin** playbook: its body is held on the plugin's manifest, read at manifest load, so an edit reaches the section only after that manifest is re-read — see the freshness bullet under `playbooks` in [plugins.md](../plugins.md).
+The exception is a **plugin** playbook: its body is held on the plugin's manifest, read at manifest load, so an edit reaches the section only after that manifest is re-read — see the freshness bullet under `playbooks` in [plugins/manifest.md](../plugins/manifest.md).
 
 #### Worker tools (`workerTools`)
 
@@ -116,7 +116,7 @@ Row shapes and ordering: [event-log.md](../event-log.md).
 
 ### REST — `/api/playbooks`
 
-Read + validate only, served by `buildPlaybookApi` (`src/playbookApi.ts`, mounted at `/api/playbooks` from `src/routes.ts`). There is **no write or delete route**: an authoring plugin writes the user-overlay file itself — see [plugins.md → Authoring playbooks from a plugin](../plugins.md#authoring-playbooks-from-a-plugin). Playbook state is read only through the playbook gate (`tests/event-log-chokepoint.test.mjs`).
+Read + validate only, served by `buildPlaybookApi` (`src/playbookApi.ts`, mounted at `/api/playbooks` from `src/routes.ts`). There is **no write or delete route**: an authoring plugin writes the user-overlay file itself — see [plugins/runtime.md → Authoring playbooks from a plugin](../plugins/runtime.md#authoring-playbooks-from-a-plugin). Playbook state is read only through the playbook gate (`tests/event-log-chokepoint.test.mjs`).
 
 Shape conventions (all three routes):
 - An optional key (`description` on a stage or a transition) is **absent** when unauthored — never `null` or `""`.

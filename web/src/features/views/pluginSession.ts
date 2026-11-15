@@ -1,5 +1,5 @@
 // Parent side of the bridge's session awareness (optional host capability, see
-// docs/plugins.md → Bridge protocol): tells plugin frames which session is
+// docs/plugins/runtime.md → Bridge protocol): tells plugin frames which session is
 // active and carries out their `openSession` / `sendPrompt` calls. Frame
 // attribution lives in PluginFrames; this module owns what the messages mean.
 import { ApiError, apiFetch } from '@shared/http';

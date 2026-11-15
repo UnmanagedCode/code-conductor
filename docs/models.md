@@ -411,7 +411,7 @@ at — **or** a concrete `{backend, model}`. The two are told apart by
   reference or `{backend:'claude', model}` — every other backend is **user-local**
   (its rows exist only in this user's settings). A **user override** of a plugin role
   *may* name any backend and is persisted under `models.roleBackend` keyed by the
-  namespaced id, beating the manifest at spawn. See [plugins.md](plugins.md).
+  namespaced id, beating the manifest at spawn. See [plugins/manifest.md](plugins/manifest.md).
 
 **Dead-binding revert.** A valid binding is returned **verbatim** — never silently
 rewritten. Only an invalid one (unknown Claude version, a since-removed model, an

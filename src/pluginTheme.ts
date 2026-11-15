@@ -4,7 +4,7 @@
 // index.css imports — composed per request from those sources, so it answers
 // with no web build in place and cannot drift from the host's tokens. The font
 // files the rules point at are served under /pluginTheme/fonts/<pkg>/<file>.
-// Contract: docs/plugins.md → Theme stylesheet.
+// Contract: docs/plugins/runtime.md → Theme stylesheet.
 import express from 'express';
 import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';

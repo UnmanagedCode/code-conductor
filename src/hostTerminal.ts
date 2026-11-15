@@ -1,6 +1,6 @@
 // `GET /api/terminal` — a terminal on a project's System, or on a System
 // addressed directly, for a plugin backend, as a WebSocket
-// (docs/plugins.md → Host terminal).
+// (docs/plugins/runtime.md → Host terminal).
 //
 // All of it lives here so server.ts's upgrade dispatch stays one branch: the
 // Origin refusal, the spec, target resolution (src/hostTarget.ts, shared with

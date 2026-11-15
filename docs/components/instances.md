@@ -28,7 +28,7 @@ the cross-site WebSocket hijacking guard: `upgradeOriginAllowed(headers)` (the p
 
 ## `src/pluginTheme.ts`
 
-the host theme for plugin pages: `composePluginTheme()` builds `/pluginTheme.css` per request from the installed Geist fontsource packages' `index.css` (their `url(./files/…)` rewritten to `/pluginTheme/fonts/<pkg>/<file>`, throwing when a package yields none) and `web/src/themeTokens.css`; `pluginThemeRouter()` serves it (a compose failure is logged and answered `503 text/plain` with a fixed body) and the allowlisted `.woff2` files (`FONT_PACKAGES`); both take `tokensFile` and `fontDirs` (URL segment → package directory) test seams. Contract: [plugins.md](../plugins.md) → Theme stylesheet.
+the host theme for plugin pages: `composePluginTheme()` builds `/pluginTheme.css` per request from the installed Geist fontsource packages' `index.css` (their `url(./files/…)` rewritten to `/pluginTheme/fonts/<pkg>/<file>`, throwing when a package yields none) and `web/src/themeTokens.css`; `pluginThemeRouter()` serves it (a compose failure is logged and answered `503 text/plain` with a fixed body) and the allowlisted `.woff2` files (`FONT_PACKAGES`); both take `tokensFile` and `fontDirs` (URL segment → package directory) test seams. Contract: [plugins/runtime.md](../plugins/runtime.md) → Theme stylesheet.
 
 ## `src/instances.ts`
 

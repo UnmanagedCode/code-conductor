@@ -1,5 +1,5 @@
 // `POST /api/exec` — run one command on a project's System, or on a System
-// addressed directly, for a plugin backend (docs/plugins.md → Host exec).
+// addressed directly, for a plugin backend (docs/plugins/runtime.md → Host exec).
 //
 // All of it lives here so the route in src/routes/exec.ts stays a mount: request
 // validation and the mapping from an ExecResult to a status and a body. The

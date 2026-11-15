@@ -247,7 +247,7 @@ export async function setAutoBackground(patch: unknown): Promise<AutoBackground>
 }
 
 // ── Plugin Library ───────────────────────────────────────────────────────
-// Local/offline catalogs (see docs/plugins.md → "Local / offline catalogs").
+// Local/offline catalogs (see docs/plugins/rest.md → "Local / offline catalogs").
 // Hand-edited only — no setter, no UI. `libraryDirs` are extra drop-in catalog
 // directories read after the store's own; `builtinLibrary: false` hides the
 // built-in entries. Never throws: a malformed value is dropped, and anything but
