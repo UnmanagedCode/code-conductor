@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, waitFor, freshProjectsRoot, rmrf, api, sleep } from './helpers.mjs';
+import { bootServer, waitFor, freshProjectsRoot, rmrf, api } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
 import { createRunningRecorder, cliRows, START_TIME_ATTEMPTS } from '../src/runningRecord.ts';
 import { hostPlatform } from '../src/platform/index.ts';
@@ -19,6 +19,8 @@ const BASIC = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 // The first prompt leaves the session in 'turn'.
 const DRAIN = path.join(__dirname, 'fixtures', 'scenario-drain.json');
 const QUIET = { log() {}, warn() {}, error() {} };
+// Distinct from every retry delay (startRetryMs 5 doubling), so a test can tell the debounce from a retry.
+const DEBOUNCE_MS = 1;
 
 let ctx, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: BASIC }); ({ instances } = ctx); });
@@ -95,16 +97,42 @@ function fakeInst(n) {
   };
 }
 
+// A clock the test advances by hand, injected through the recorder's `timers`.
+// runAll() fires every pending entry, yielding a turn first so the async
+// start-time reads between a retry and the next timer have settled, and stops
+// once a turn leaves nothing pending: after it, nothing is left that could write.
+function fakeTimers() {
+  const entries = new Map();
+  const sets = [];
+  let next = 0;
+  return {
+    set(fn, ms) { const h = ++next; entries.set(h, { fn, ms }); sets.push(ms); return h; },
+    clear(h) { entries.delete(h); },
+    pending: () => entries.size,
+    sets,
+    async runAll() {
+      for (;;) {
+        await new Promise((r) => setImmediate(r));
+        if (entries.size === 0) return;
+        for (const [h, e] of [...entries]) { entries.delete(h); e.fn(); }
+      }
+    },
+  };
+}
+
 // Invariant: writes are bounded and atomic — start() writes at once (an empty
 // live set too); a burst of change events coalesces into one trailing write;
 // an unchanged state writes nothing; pause() stops writes until resume(), which
-// writes at once; stop() unsubscribes; no tmp file is ever left behind.
+// writes at once; stop() unsubscribes; no tmp file is ever left behind. A
+// paused or stopped recorder schedules nothing (no pending timer), so no late
+// write can follow either.
 test('debounced, change-only, pausable, atomic writes', async () => {
   fs.mkdirSync(orchStoreRoot(), { recursive: true });
   const mgr = fakeManager();
   const writes = [];
   const write = (payload) => { writes.push(payload.instances.map((e) => e.sessionId)); writeRunningRecord(payload); };
-  const recorder = createRunningRecorder({ instances: mgr, platform: hostPlatform, log: QUIET, debounceMs: 30, write });
+  const timers = fakeTimers();
+  const recorder = createRunningRecorder({ instances: mgr, platform: hostPlatform, log: QUIET, debounceMs: 30, write, timers });
   recorder.start();
   assert.deepEqual(writes, [[]], 'start writes at once, an empty live set included');
   assert.deepEqual(readRunningRecord({ log: QUIET }), { instances: [], clis: [] });
@@ -112,18 +140,21 @@ test('debounced, change-only, pausable, atomic writes', async () => {
   mgr.byId.set('i1', fakeInst(1));
   for (let i = 0; i < 20; i++) mgr.emit(i % 2 ? 'status' : 'list_changed');
   assert.equal(writes.length, 1, 'nothing is written inside the debounce window');
-  await waitFor(() => writes.length === 2, { timeout: 2000, interval: 5 });
-  await sleep(100);
+  assert.equal(timers.pending(), 1, 'the burst coalesced into one pending debounce');
+  await timers.runAll();
   assert.deepEqual(writes, [[], ['s1']], 'the burst wrote once');
+  assert.equal(timers.pending(), 0, 'nothing is left to write again');
 
   mgr.emit('subscription_changed');
-  await sleep(100);
+  await timers.runAll();
   assert.equal(writes.length, 2, 'an unchanged state writes nothing');
+  assert.equal(timers.pending(), 0, 'nor is anything left pending');
 
   recorder.pause();
   mgr.byId.set('i2', fakeInst(2));
   mgr.emit('status');
-  await sleep(100);
+  assert.equal(timers.pending(), 0, 'paused: nothing is scheduled');
+  await timers.runAll();
   assert.equal(writes.length, 2, 'paused: no write');
   recorder.resume();
   assert.deepEqual(writes.at(-1), ['s1', 's2'], 'resume writes at once');
@@ -133,7 +164,8 @@ test('debounced, change-only, pausable, atomic writes', async () => {
   assert.equal(mgr.listenerCount(), 0, 'stop unsubscribes');
   mgr.byId.delete('i1');
   mgr.emit('status');
-  await sleep(100);
+  assert.equal(timers.pending(), 0, 'stopped: nothing is scheduled');
+  await timers.runAll();
   assert.equal(writes.length, 3, 'stopped: no write');
   const residue = fs.readdirSync(orchStoreRoot()).filter((n) => n.startsWith('running-sessions.json.tmp-'));
   assert.deepEqual(residue, [], 'the atomic write leaves no tmp file');
@@ -149,25 +181,77 @@ test('a failed start-time read is retried with backoff, a bounded number of time
     const mgr = fakeManager();
     mgr.byId.set('i1', { ...fakeInst(1), pid: 4242, _fuse: null });
     let calls = 0;
-    const delays = [];
+    const timers = fakeTimers();
     const platform = { ...hostPlatform, processStartTime: async () => answers[calls++] ?? null };
-    const setTimer = (fn, ms) => { delays.push(ms); return setTimeout(fn, 1); };
-    const recorder = createRunningRecorder({ instances: mgr, platform, log: QUIET, debounceMs: 5, startRetryMs: 5, setTimer });
+    const recorder = createRunningRecorder({ instances: mgr, platform, log: QUIET, debounceMs: DEBOUNCE_MS, startRetryMs: 5, timers });
     recorder.start();
-    return { recorder, delays, calls: () => calls, start: () => readRunningRecord({ log: QUIET })?.clis[0]?.start };
+    // The retry delays: every timer the recorder set except the debounce.
+    const delays = () => timers.sets.filter((ms) => ms !== DEBOUNCE_MS);
+    return { recorder, timers, delays, calls: () => calls, start: () => readRunningRecord({ log: QUIET })?.clis[0]?.start };
   };
   const flaky = await run([null, null, 'T']);
-  await waitFor(() => flaky.start() === 'T', { timeout: 2000, interval: 5 });
+  await flaky.timers.runAll();
+  assert.equal(flaky.start(), 'T');
   assert.equal(flaky.calls(), 3);
   flaky.recorder.stop();
 
   const never = await run([]);
-  await waitFor(() => never.calls() === START_TIME_ATTEMPTS, { timeout: 2000, interval: 5 });
-  await sleep(150);
+  await never.timers.runAll();
   assert.equal(never.calls(), START_TIME_ATTEMPTS, 'no read past the bound');
+  assert.equal(never.timers.pending(), 0, 'nothing is left that could read again');
   assert.equal(never.start(), null);
-  assert.deepEqual(never.delays, Array.from({ length: START_TIME_ATTEMPTS - 1 }, (_, i) => 5 * 2 ** i), 'each retry waits twice the last');
+  assert.deepEqual(never.delays(), Array.from({ length: START_TIME_ATTEMPTS - 1 }, (_, i) => 5 * 2 ** i), 'each retry waits twice the last');
   never.recorder.stop();
+});
+
+// Invariant (I3): pause() cancels a debounce that is already armed, so nothing
+// is left pending that could write while paused; after resume() a change
+// schedules a fresh debounce and writes once, with the new content.
+test('pause cancels an armed debounce, and a change after resume() schedules a fresh one', async () => {
+  fs.mkdirSync(orchStoreRoot(), { recursive: true });
+  const mgr = fakeManager();
+  const writes = [];
+  const write = (payload) => { writes.push(payload.instances.map((e) => e.sessionId)); writeRunningRecord(payload); };
+  const timers = fakeTimers();
+  const recorder = createRunningRecorder({ instances: mgr, platform: hostPlatform, log: QUIET, debounceMs: 30, write, timers });
+  recorder.start();
+  mgr.byId.set('i1', fakeInst(1));
+  mgr.emit('status');
+  assert.equal(timers.pending(), 1, 'premise: a debounce is armed');
+
+  recorder.pause();
+  assert.equal(timers.pending(), 0, 'pause cancelled the armed debounce');
+  recorder.resume();
+  assert.deepEqual(writes, [[], ['s1']], 'resume wrote the state at once');
+
+  mgr.byId.set('i2', fakeInst(2));
+  mgr.emit('status');
+  assert.equal(timers.pending(), 1, 'a change after resume armed a fresh debounce');
+  await timers.runAll();
+  assert.deepEqual(writes, [[], ['s1'], ['s1', 's2']], 'exactly one write, with the new content');
+  assert.equal(timers.pending(), 0);
+  recorder.stop();
+});
+
+// Invariant (I3): stop() clears start-time retries that are armed, so no read
+// happens after it.
+test('stop clears an armed start-time retry', async () => {
+  fs.mkdirSync(orchStoreRoot(), { recursive: true });
+  const mgr = fakeManager();
+  mgr.byId.set('i1', { ...fakeInst(1), pid: 4242, _fuse: null });
+  let reads = 0;
+  const platform = { ...hostPlatform, processStartTime: async () => { reads++; return null; } };
+  const timers = fakeTimers();
+  const recorder = createRunningRecorder({ instances: mgr, platform, log: QUIET, debounceMs: DEBOUNCE_MS, startRetryMs: 5, timers });
+  recorder.start();
+  await new Promise((r) => setImmediate(r)); // the failed read settles and arms its retry
+  assert.equal(reads, 1, 'premise: one read, failed');
+  assert.ok(timers.pending() >= 1, 'premise: a retry is armed');
+
+  recorder.stop();
+  assert.equal(timers.pending(), 0, 'stop cleared the armed retry');
+  await timers.runAll();
+  assert.equal(reads, 1, 'no read happened after stop');
 });
 
 // Invariant: every live CLI the launcher spawned gets one row — top-level,

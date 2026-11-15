@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sleep, waitFor } from './poll.mjs';
+import { quiesceHub } from './hubQuiesce.mjs';
 
 // Module-load-time constant, so it is set before the dynamic import.
 process.env.ORCH_IDLE_DRAIN_SETTLE_MS = '40';
@@ -44,6 +45,7 @@ function rig() {
       summary() { return { id, sessionId: inst.sessionId, status: inst.status }; },
       // A sent wake opens a turn, as Instance.prompt → _setStatus('turn') does.
       async prompt(text, _atts, opts) {
+        if (inst.promptDelayMs) await new Promise((res) => setTimeout(res, inst.promptDelayMs));
         calls.push({ text, opts });
         if (inst.status !== 'turn') { inst.status = 'turn'; hub.onTurnStart(id); }
       },
@@ -68,16 +70,23 @@ function rig() {
     await tick();
     await instances.shutdown().catch(() => {});
   };
-  // A delivered wake has LANDED: first its positive signal, then no wake to
-  // `recipient` still in flight (deliver() sets _inFlight synchronously and
-  // clears it after prompt() resolves or the wake is requeued). Never the drain
-  // alone — before the wake is decided the drain is vacuously true. An exact
-  // count after this reads "no duplicate by drain time", not "never" (card 2026-0872).
-  const landed = async (positive, recipient) => {
+  const quiesce = () => quiesceHub(hub);
+  // A delivered wake has LANDED: first its positive signal, then the hub is
+  // quiescent. Never the quiescence alone — before the wake is decided it is
+  // vacuously true. An exact count after this reads "no duplicate while a settle
+  // or park timer could still deliver one".
+  const landed = async (positive) => {
+    await waitFor(positive, { interval: 2 });
+    await quiesce();
+  };
+  // The recipient-only form, for a test whose heartbeat keeps firing through the
+  // wait (a short window on a slow delivery path keeps some wake in flight
+  // continuously, so the hub never quiesces): no wake to `recipient` in flight.
+  const landedRecipient = async (positive, recipient) => {
     await waitFor(positive, { interval: 2 });
     await waitFor(() => !hub._inFlight.has(recipient), { interval: 2 });
   };
-  return { instances, hub, mk, own, start, end, emit, teardown, fakes, landed };
+  return { instances, hub, mk, own, start, end, emit, teardown, fakes, landed, landedRecipient, quiesce };
 }
 
 // P owns C, C owns G; C and G are mid-turn.
@@ -106,11 +115,11 @@ test('the owner is not woken while its child ends turns waiting on its own worke
   assert.equal(r.instances.list().find(i => i.id === 'P').awaitingWake, true);
 
   r.end(G);
-  await r.landed(() => C.calls.length >= 1, 'C');
+  await r.landed(() => C.calls.length >= 1);
   assert.equal(C.calls.length, 1, 'the worker woke its owner C');
   assert.equal(P.calls.length, 0, 'C is in the turn that wake opened');
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1, 'woken exactly once');
   assert.ok(folded(P.calls[0]), 'with the child\'s folded output');
   await r.teardown();
@@ -131,7 +140,7 @@ test('a question or a plan for the user passes through the hold', async (t) => {
       const { P, C } = chain(r);
       r.emit(C, ev);
       r.end(C);
-      if (wakes) await r.landed(() => P.calls.length >= 1, 'P'); else await tick();
+      if (wakes) await r.landed(() => P.calls.length >= 1); else await r.quiesce();
       assert.equal(P.calls.length, wakes);
       await r.teardown();
     });
@@ -150,7 +159,7 @@ test('an ask in a turn whose wake was deferred still passes through at the re-in
   assert.equal(P.calls.length, 0, 'deferred on the live subagent');
   C.activeAgentTaskCount = 0;
   r.start(C); r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1, 'the ask still passed through');
   await r.teardown();
 });
@@ -162,11 +171,11 @@ test('an ask does not leak into a later held turn', async () => {
   const { P, C } = chain(r);
   r.emit(C, { kind: 'user_question', toolUseId: 'q1' });
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1, 'premise: the ask woke the owner');
   P.status = 'idle';
   r.start(C); r.end(C);
-  await tick();
+  await r.quiesce();
   assert.equal(P.calls.length, 1, 'the next turn, with no ask, is held');
   await r.teardown();
 });
@@ -178,7 +187,7 @@ test('a force-aborted turn passes through the hold as INTERRUPTED', async () => 
   const { P, C } = chain(r);
   C.turnForceAborted = true;
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   assert.match(P.calls[0].text, /INTERRUPTED/);
   assert.ok(!folded(P.calls[0]), 'partial output is not folded');
@@ -207,7 +216,7 @@ test('the heartbeat reports a held child and leaves the wake armed', async () =>
   assert.match(P.calls[0].text, /did NOT finish/);
   assert.equal(r.hub.subscribers.get('C')?.has('P'), true, 'still armed after the beat');
   r.end(G);
-  await r.landed(() => C.calls.length >= 1, 'C');
+  await r.landedRecipient(() => C.calls.length >= 1, 'C'); // P's 30 ms heartbeat never lets the hub quiesce
   r.end(C);
   // P's beats opened turns of its own, so the real wake may arrive folded or as
   // a mid-turn stub; either way it is the one call that is not a beat.
@@ -240,7 +249,7 @@ test('removing the worker an idle child waits on releases the owner\'s held wake
   r.end(C);
   r.instances.byId.delete('G');
   r.instances._purgeIdleFor('G');
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   assert.ok(folded(P.calls[0]));
   assert.equal(C.calls.length, 0, 'a removal delivers nothing to the child');
@@ -264,7 +273,7 @@ test('the removal release skips a child that is deferring or has no process', as
       mutate(C);
       r.instances.byId.delete('G');
       r.instances._purgeIdleFor('G');
-      if (wakes) await r.landed(() => P.calls.length >= 1, 'P'); else await tick();
+      if (wakes) await r.landed(() => P.calls.length >= 1); else await r.quiesce();
       assert.equal(P.calls.length, wakes);
       await r.teardown();
     });
@@ -293,7 +302,7 @@ test('a worker with an idle-drain settle pending keeps the owner held until the 
   await until(() => C.calls.length === 1, SETTLE_MS + 5000);
   assert.equal(P.calls.length, 0, 'C is in the turn G\'s result opened');
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1, 'one wake, after C\'s real turn end');
   assert.ok(folded(P.calls[0]));
   await r.teardown();
@@ -376,7 +385,7 @@ test('a cleared wait releases a held wake but not one still owed by an undeliver
         r.own(G, W); r.start(W);
       }
       r.hub.disarmSilently('W', 'G');
-      if (wakes) await r.landed(() => C.calls.length >= 1, 'C'); else await tick();
+      if (wakes) await r.landed(() => C.calls.length >= 1); else await tick();
       assert.equal(C.calls.length, wakes);
       await r.teardown();
     });
@@ -404,7 +413,7 @@ test('removing a project that holds both a child and its worker does not wake th
       await tick();
       releaseC();
       await removal;
-      if (wakes) await r.landed(() => P.calls.length >= 1, 'P'); else await tick();
+      if (wakes) await r.landed(() => P.calls.length >= 1); else await r.quiesce();
       assert.equal(P.calls.length, wakes);
       await r.teardown();
     });
@@ -421,7 +430,7 @@ test('removing the worker of a mid-turn child leaves the decision to the child\'
   await tick();
   assert.equal(P.calls.length, 0);
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   await r.teardown();
 });
@@ -433,7 +442,7 @@ test('disarming the child\'s last wait releases the owner\'s held wake', async (
   const { P, C } = chain(r);
   r.end(C);
   r.hub.disarmSilently('G', 'C');
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   await r.teardown();
 });
@@ -451,16 +460,16 @@ test('a refused wake to a live child keeps the owner held until it is redelivere
   r.end(G);
   r.end(C);
   assert.equal(P.calls.length, 0, 'held on the in-flight wake');
-  await r.landed(() => (r.hub._deferredWakes.get('C')?.length ?? 0) >= 1, 'C');
+  await r.landed(() => (r.hub._deferredWakes.get('C')?.length ?? 0) >= 1);
   assert.equal(P.calls.length, 0, 'the refusal did not release the owner');
   assert.equal(r.hub._deferredWakes.get('C')?.length, 1, 'the wake is owed again');
   C.prompt = send;
   r.end(C);
-  await r.landed(() => C.calls.length >= 1, 'C');
+  await r.landed(() => C.calls.length >= 1);
   assert.equal(C.calls.length, 1, 'redelivered at the next turn end');
   assert.equal(P.calls.length, 0, 'the owner waits on the turn the wake opened');
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   await r.teardown();
 });
@@ -472,7 +481,7 @@ test('a sent wake to the child opens a turn and keeps the owner holding', async 
   r.end(G);
   r.end(C);
   assert.equal(P.calls.length, 0, 'held on the in-flight wake');
-  await r.landed(() => C.calls.length >= 1, 'C');
+  await r.landed(() => C.calls.length >= 1);
   assert.equal(C.calls.length, 1);
   assert.equal(P.calls.length, 0);
   await r.teardown();
@@ -487,11 +496,11 @@ test('a wake deferred to the child holds the owner and is flushed at the child\'
   r.end(G);
   assert.equal(r.hub._deferredWakes.get('C')?.length, 1, 'premise: deferred');
   r.end(C);
-  await r.landed(() => C.calls.length >= 1, 'C');
+  await r.landed(() => C.calls.length >= 1);
   assert.equal(C.calls.length, 1, 'the deferred wake was flushed');
   assert.equal(P.calls.length, 0, 'the owner was held');
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   await r.teardown();
 });
@@ -507,13 +516,13 @@ test('a chain P ← C ← G ← W wakes each level exactly once, bottom up', asy
   await tick();
   assert.deepEqual([P.calls.length, C.calls.length, G.calls.length], [0, 0, 0], 'everything held on W');
   r.end(W);
-  await r.landed(() => G.calls.length >= 1, 'G');
+  await r.landed(() => G.calls.length >= 1);
   assert.deepEqual([P.calls.length, C.calls.length, G.calls.length], [0, 0, 1]);
   r.end(G);
-  await r.landed(() => C.calls.length >= 1, 'C');
+  await r.landed(() => C.calls.length >= 1);
   assert.deepEqual([P.calls.length, C.calls.length, G.calls.length], [0, 1, 1]);
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.deepEqual([P.calls.length, C.calls.length, G.calls.length], [1, 1, 1]);
   await r.teardown();
 });
@@ -530,10 +539,10 @@ test('mutual ownership does not deadlock the hold', async () => {
   await tick();
   assert.equal(P.calls.length, 0, 'C ended while P was busy: held');
   r.end(P);
-  await r.landed(() => C.calls.length >= 1, 'C');
+  await r.landed(() => C.calls.length >= 1);
   assert.equal(C.calls.length, 1, 'P ended waiting only on C: not held');
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1, 'C\'s next turn end released P');
   await r.teardown();
 });
@@ -546,7 +555,7 @@ test('a worker idle with live subagents still holds', async () => {
   G.activeAgentTaskCount = 1;
   r.end(G);
   r.end(C);
-  await tick();
+  await r.quiesce();
   assert.equal(P.calls.length, 0);
   await r.teardown();
 });
@@ -558,7 +567,7 @@ test('a stopped worker does not hold', async () => {
   const { P, C, G } = chain(r);
   G.proc = null; G.status = 'exited';
   r.end(C);
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   await r.teardown();
 });
@@ -577,7 +586,7 @@ test('the idle-drain settle and an idle rotation hold too', async (t) => {
       r.emit(C, { kind: 'system', subtype: 'task_notification', data: { task_id: 't' } });
       assert.ok(r.hub._pendingSettles.has('C'), 'premise: settle armed');
       await until(() => !r.hub._pendingSettles.has('C'), SETTLE_MS + 5000);
-      if (!held) await r.landed(() => P.calls.length >= 1, 'P'); else await tick();
+      if (!held) await r.landed(() => P.calls.length >= 1); else await r.quiesce();
       assert.equal(P.calls.length, held ? 0 : 1);
       await r.teardown();
     });
@@ -589,7 +598,7 @@ test('the idle-drain settle and an idle rotation hold too', async (t) => {
       r.end(C);
       C.rotationPending = false;
       r.emit(C, { kind: 'system', subtype: 'rotation_complete', data: { comesUpIdle: true } });
-      if (!held) await r.landed(() => P.calls.length >= 1, 'P'); else await tick();
+      if (!held) await r.landed(() => P.calls.length >= 1); else await r.quiesce();
       assert.equal(P.calls.length, held ? 0 : 1);
       await r.teardown();
     });
@@ -603,7 +612,7 @@ test('a held child exiting on its own wakes the owner with EXITED', async () => 
   r.end(C);
   C.proc = null;
   r.hub.onTargetExit('C', { sessionId: C.sessionId, code: 1, signal: null });
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   assert.match(P.calls[0].text, /EXITED/);
   await r.teardown();
@@ -642,10 +651,10 @@ test('an overage sever re-decides the severed child\'s hold without delivering',
   await tick();
   assert.equal(R.calls.length, 0, 'P is still held on C');
   r.start(C); r.end(C); // C finally reports to P
-  await r.landed(() => P.calls.length >= 1, 'P');
+  await r.landed(() => P.calls.length >= 1);
   assert.equal(P.calls.length, 1);
   r.end(P);
-  await r.landed(() => R.calls.length >= 1, 'R');
+  await r.landed(() => R.calls.length >= 1);
   assert.equal(R.calls.length, 1, 'R woken once, after C reported');
   await r.teardown();
 });
@@ -667,7 +676,7 @@ test('a child\'s new turn clears its hold, so a deferred turn end is not release
       }
       r.instances.byId.delete('G');
       r.instances._purgeIdleFor('G');
-      if (wakes) await r.landed(() => P.calls.length >= 1, 'P'); else await tick();
+      if (wakes) await r.landed(() => P.calls.length >= 1); else await r.quiesce();
       assert.equal(P.calls.length, wakes);
       await r.teardown();
     });
@@ -676,18 +685,24 @@ test('a child\'s new turn clears its hold, so a deferred turn end is not release
 
 // Invariant: once wakes are suspended, no path delivers anything — a heartbeat,
 // a turn end, or a release — and a release consumes nothing either.
-test('suspended wakes deliver nothing on any path', async () => {
+test('suspended wakes deliver nothing on any path', async (t) => {
+  // Heartbeats run on a clock the test advances; setTimeout stays real.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const r = rig();
+  const beats = [];
+  const deliver = r.hub.deliver.bind(r.hub);
+  r.hub.deliver = (caller, target, opts) => { if (opts?.timedOut) beats.push(caller); return deliver(caller, target, opts); };
   const { P, C, G } = chain(r, { windowMs: 10 });
   const G2 = r.mk('G2');
   r.own(C, G2); r.start(G2);
   r.end(C);
   r.instances.suspendWakes();
-  await sleep(50); // several heartbeat windows of P on the held C
+  t.mock.timers.tick(5 * 10); // five heartbeat windows of P on the held C
+  assert.ok(beats.length >= 5, 'premise: the heartbeats fired and suspension dropped them');
   r.end(G); // a turn end that would wake C
   r.instances.byId.delete('G2');
   r.instances._purgeIdleFor('G2'); // C's last wait cleared: a release of P
-  await tick();
+  await r.quiesce();
   assert.deepEqual([P.calls.length, C.calls.length], [0, 0]);
   assert.equal(r.hub.subscribers.get('C')?.has('P'), true, 'the release consumed nothing');
   await r.teardown();
@@ -704,5 +719,71 @@ test('resumed wakes deliver again after a suspension', async () => {
   r.end(W);
   await until(() => P.calls.length === 1);
   assert.equal(P.calls.length, 1);
+  await r.teardown();
+});
+
+// Invariant (I1): quiesce() holds until a decided delivery has landed, with no
+// positive wait before it — the wake's send is slower than one macrotask turn.
+test('quiesce waits for a decided delivery to land', async () => {
+  const r = rig();
+  const P = r.mk('P'), W = r.mk('W');
+  P.promptDelayMs = 30;
+  r.own(P, W); r.start(W);
+  r.end(W);
+  await r.quiesce();
+  assert.equal(P.calls.length, 1, 'the wake landed before quiesce returned');
+  await r.teardown();
+});
+
+// Invariant (I1): quiesce() also holds through a pending idle-drain settle, which
+// decides its delivery only when the timer fires.
+test('quiesce waits for a settle-driven delivery', async () => {
+  const r = rig();
+  const P = r.mk('P'), W = r.mk('W');
+  r.own(P, W); r.start(W);
+  W.activeAgentTaskCount = 1;
+  r.end(W); // deferred on the live subagent
+  W.activeAgentTaskCount = 0;
+  r.emit(W, { kind: 'system', subtype: 'task_notification', data: { task_id: 't' } });
+  assert.ok(r.hub._pendingSettles.has('W'), 'premise: the settle is pending');
+  await r.quiesce();
+  assert.equal(P.calls.length, 1, 'the settle fired and its wake landed before quiesce returned');
+  await r.teardown();
+});
+
+// Invariant (I1): quiesce() holds while a park backstop is pending — the wake was
+// sent into a running turn the CLI may queue — and resolves once the backstop has
+// released the hold. The backstop timer is captured through the hub's `_setTimer`
+// seam and fired by hand; the wait is counted by the polls of `_inFlight`, which
+// the predicate reads on every attempt.
+test('quiesce waits for a pending park backstop, then resolves once it releases', async () => {
+  const r = rig();
+  const timers = [];
+  r.hub._setTimer = (fn) => { const h = { fn }; timers.push(h); return h; };
+  r.hub._clearTimer = () => {};
+  const P = r.mk('P', { status: 'turn', queuedPromptPending: false }), W = r.mk('W');
+  P.prompt = async (text, _atts, opts) => { P.calls.push({ text, opts }); P.queuedPromptPending = true; };
+  r.own(P, W); r.start(W);
+  r.end(W); // the wake goes into P's running turn and parks
+  await waitFor(() => P.calls.length === 1, { interval: 2 });
+  await waitFor(() => r.hub._parked.has('P'), { interval: 2, label: 'the wake to park' });
+  P.status = 'idle';
+  r.emit(P, { kind: 'turn_end', isError: false, stopReason: 'end_turn' }); // arms the backstop
+  assert.equal(timers.length, 1, 'premise: the backstop is armed');
+  assert.equal(r.hub._parkTimers.size, 1, 'premise: it is tracked');
+
+  let polls = 0;
+  const inFlight = r.hub._inFlight;
+  Object.defineProperty(inFlight, 'size', { get() { polls++; return Map.prototype.__lookupGetter__('size').call(inFlight); } });
+  let resolved = false;
+  const q = r.quiesce().then(() => { resolved = true; });
+  await waitFor(() => polls >= 3, { interval: 2, label: 'quiesce to poll the pending backstop' });
+  assert.equal(resolved, false, 'quiesce does not resolve while the backstop is pending');
+
+  timers[0].fn(); // the backstop releases the parked hold
+  await q;
+  assert.equal(r.hub._parkTimers.size, 0, 'the backstop is gone');
+  assert.equal(r.hub._parked.has('P'), false, 'the hold was released');
+  assert.equal(P.calls.length, 1, 'the parked wake had been delivered');
   await r.teardown();
 });

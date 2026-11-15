@@ -39,6 +39,12 @@ interface Log {
   warn?: (...args: unknown[]) => void;
 }
 
+export interface RecorderTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+const realTimers: RecorderTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) };
+
 export interface RunningRecorder {
   // Subscribe and write at once.
   start(): void;
@@ -71,16 +77,17 @@ export function cliRows(
 
 export function createRunningRecorder({
   instances, platform, log = console, debounceMs = RUNNING_RECORD_DEBOUNCE_MS, write = writeRunningRecord,
-  startRetryMs = START_TIME_RETRY_MS, setTimer = (fn, ms) => setTimeout(fn, ms),
+  startRetryMs = START_TIME_RETRY_MS, timers = realTimers,
 }: {
   instances: InstanceManagerLike; platform: Platform; log?: Log; debounceMs?: number; startRetryMs?: number;
-  // Schedules a start-time retry; a test observes the delays through it.
-  setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  // The clock behind the debounced flush and the start-time retries; a test
+  // injects one it advances by hand.
+  timers?: RecorderTimers;
   // The file write; a test counts calls through it.
   write?: typeof writeRunningRecord;
 }): RunningRecorder {
   let state: 'new' | 'running' | 'paused' | 'stopped' = 'new';
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timer: unknown = null;
   let lastJson: string | null = null;
   // Start times by CLI process handle, so a later process reusing a pid never
   // inherits an earlier one's start. Only a read value is cached; a null read
@@ -89,7 +96,7 @@ export function createRunningRecorder({
   const starts = new WeakMap<object, string>();
   const failures = new WeakMap<object, number>();
   const resolving = new WeakSet<object>();
-  const retries = new Set<ReturnType<typeof setTimeout>>();
+  const retries = new Set<unknown>();
   const group = !!platform.spawnOptions('child').detached;
 
   // A read counts only while `proc` is still the instance's live CLI: cc holds
@@ -106,8 +113,8 @@ export function createRunningRecorder({
         const failed = (failures.get(proc) ?? 0) + 1;
         failures.set(proc, failed);
         if (failed >= START_TIME_ATTEMPTS || state === 'stopped') return;
-        const timer = setTimer(() => { retries.delete(timer); read(inst, proc, pid); }, startRetryMs * 2 ** (failed - 1));
-        retries.add(timer);
+        const retry = timers.set(() => { retries.delete(retry); read(inst, proc, pid); }, startRetryMs * 2 ** (failed - 1));
+        retries.add(retry);
       });
   };
 
@@ -137,9 +144,9 @@ export function createRunningRecorder({
 
   function schedule(): void {
     if (state !== 'running' || timer) return;
-    timer = setTimeout(() => { timer = null; flush(); }, debounceMs);
+    timer = timers.set(() => { timer = null; flush(); }, debounceMs);
   }
-  const cancel = (): void => { if (timer) { clearTimeout(timer); timer = null; } };
+  const cancel = (): void => { if (timer) { timers.clear(timer); timer = null; } };
   const onChange = (): void => schedule();
 
   return {
@@ -171,7 +178,7 @@ export function createRunningRecorder({
       }
       state = 'stopped';
       cancel();
-      for (const t of retries) clearTimeout(t);
+      for (const t of retries) timers.clear(t);
       retries.clear();
     },
     clis() {
