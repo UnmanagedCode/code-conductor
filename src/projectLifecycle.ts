@@ -105,7 +105,7 @@ async function createProjectSteps(
   // there is nothing to clobber and no repo check to make: isGitRepo() walks UP,
   // so it would answer "yes" for this empty dir whenever the projects root
   // itself sits inside a repo, and skip the init. Dynamic import because
-  // worktrees.ts statically imports this module (as with listWorktrees below).
+  // worktrees.ts statically imports projects.ts, which imports this module.
   //
   // NOT FATAL, and the failure is reported rather than thrown: by now the dir
   // and the record exist, so a 500 here would leave a half-created project whose
@@ -186,7 +186,7 @@ const SCAFFOLD_COMMIT_MESSAGE =
 // `deliverAdoptedConventions` warns-and-continues for the same reason.
 //
 // `runGit` is passed in rather than imported: worktrees.ts statically imports
-// this module, so createProject reaches it through a dynamic import and there is
+// projects.ts, so createProject reaches it through a dynamic import and there is
 // no reason for a second one here. `scaffolded` is the project-relative path of
 // every file creation actually wrote.
 async function commitScaffold(
@@ -341,7 +341,7 @@ function describePlacement(p: { system: string; remoteId: string | null }): stri
 // own copy.
 //
 // `liveInstanceIds` is REQUIRED and has no default. src/instances.ts imports
-// this module, so the reverse import would close a cycle and the manager cannot
+// src/projects.ts, so the reverse import would close a cycle and the manager cannot
 // be reached from here; a required, non-defaultable getter is what raises the
 // bar over a plain array, since a caller has to consciously supply a source
 // rather than pass `[]`. BE HONEST ABOUT WHAT THAT IS: a caller that supplies
@@ -367,7 +367,7 @@ export async function setProjectRemote(
   }
   const next = validateRemoteId(remoteId);
 
-  // Dynamic, as elsewhere in this module: worktrees.ts statically imports it.
+  // Dynamic, as elsewhere in this module: worktrees.ts statically imports projects.ts.
   const { registeredWorktreeNames } = await import('./worktrees.ts');
   const worktrees = await registeredWorktreeNames(name);
   const instances = liveInstanceIds();
@@ -697,7 +697,7 @@ async function adoptProjectSteps(
   // work tree this refusal would be wrong about.
   //
   // Dynamic import for the same reason as createProject's — worktrees.ts
-  // statically imports this module.
+  // statically imports projects.ts.
   //
   // Git refusing the repo on ownership answers neither question, and reading it
   // as "no repo" would adopt a foreign-owned repo as a plain directory and
