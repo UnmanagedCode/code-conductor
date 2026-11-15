@@ -79,7 +79,14 @@ function rig() {
     await waitFor(positive, { interval: 2 });
     await quiesce();
   };
-  return { instances, hub, mk, own, start, end, emit, teardown, fakes, landed, quiesce };
+  // The recipient-only form, for a test whose heartbeat keeps firing through the
+  // wait (a short window on a slow delivery path keeps some wake in flight
+  // continuously, so the hub never quiesces): no wake to `recipient` in flight.
+  const landedRecipient = async (positive, recipient) => {
+    await waitFor(positive, { interval: 2 });
+    await waitFor(() => !hub._inFlight.has(recipient), { interval: 2 });
+  };
+  return { instances, hub, mk, own, start, end, emit, teardown, fakes, landed, landedRecipient, quiesce };
 }
 
 // P owns C, C owns G; C and G are mid-turn.
@@ -209,7 +216,7 @@ test('the heartbeat reports a held child and leaves the wake armed', async () =>
   assert.match(P.calls[0].text, /did NOT finish/);
   assert.equal(r.hub.subscribers.get('C')?.has('P'), true, 'still armed after the beat');
   r.end(G);
-  await r.landed(() => C.calls.length >= 1);
+  await r.landedRecipient(() => C.calls.length >= 1, 'C'); // P's 30 ms heartbeat never lets the hub quiesce
   r.end(C);
   // P's beats opened turns of its own, so the real wake may arrive folded or as
   // a mid-turn stub; either way it is the one call that is not a beat.
