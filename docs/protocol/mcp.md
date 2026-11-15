@@ -127,7 +127,7 @@ It publishes `lastRotatedAt` / `rotationReason` / `segmentCount`: pinning the pu
 Deliberately rotation-generic rather than `lastRenewedAt` — prune rotates too.
 It publishes `rootSessionId` / `parentSessionId` / `awaitingUser` / `awaitingUserSource` — what a conductor-first view groups and sorts by.
 `rootSessionId` is the public sessionId of the root of a **live** conducted worker's spawn chain.
-`parentSessionId` is that of its immediate spawner or resumer, and it keeps naming that session after it exits.
+`parentSessionId` is that of its immediate spawner or resumer (a caller-less resume keeps the recorded spawner), and it keeps naming that session after it exits. `spawn_instance({resume})` of an already-running worker the caller owns on record and no live session owns adopts it (same instance, links re-formed) instead of `already attached`.
 Both are `null` on a hand-spawned session, on a conducted one spawned anonymously, and on any dead instance.
 `awaitingUser` (`'question'` \| `'plan'` \| `null`) is the sticky ask with no real user message since, and `awaitingUserSource` (`'tool'` \| `'text'` \| `null`, null iff `awaitingUser` is) says whether an `AskUserQuestion`/`ExitPlanMode` or a turn-end text ask set it.
 Always null on a conducted worker.

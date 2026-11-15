@@ -26,6 +26,7 @@ import { SERVER_UNREACHABLE_MESSAGE } from '@shared/http';
 import { appStore } from '@/state/app';
 import * as controller from './controller';
 import { on } from './events';
+import { gestureSelected } from './gestures';
 import {
   archiveSession, closeSession, forkActiveSession, forkRenewal, forkWholeSession, performProjectDelete, persistSession, respawnActive, restoreSession, resumeSession, rewindActiveSession,
   rewindRenewal,
@@ -258,17 +259,17 @@ describe('persist, resume, rewind, fork, delete', () => {
     expect(controller.refreshProjects).not.toHaveBeenCalled();
   });
 
-  it('a user resume selects with a gesture; a silent one without; a silent 409 selects the owner', async () => {
+  it('a user resume selects with a gesture, a silent one too; a silent 409 selects the owner; a non-silent 409 toasts', async () => {
     stubFetch(() => ({ body: { id: 'new' } }));
     await resumeSession({ projectName: 'p', worktreeName: 'wt', sessionId: 's1' });
     expect(calls[0]).toEqual({ url: '/api/instances', method: 'POST', body: { project: 'p', resume: 's1', worktree: 'wt' } });
     expect(controller.selectInstance).toHaveBeenLastCalledWith('new', { userGesture: true, gesture: expect.any(Number) });
     await resumeSession({ projectName: 'p', sessionId: 's1', silent: true });
-    expect(controller.selectInstance).toHaveBeenLastCalledWith('new', { userGesture: false });
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('new', { userGesture: true, gesture: expect.any(Number) });
     stubFetch(() => ({ status: 409, body: { error: 'busy' } }));
     appStore.set({ instances: [{ id: 'owner', sessionId: 's1', project: 'p', status: 'idle', mode: 'x' }] });
     await resumeSession({ projectName: 'p', sessionId: 's1', silent: true });
-    expect(controller.selectInstance).toHaveBeenLastCalledWith('owner', { userGesture: false });
+    expect(controller.selectInstance).toHaveBeenLastCalledWith('owner', { userGesture: true, gesture: expect.any(Number) });
     expect(toasts).toHaveLength(0);
     await resumeSession({ projectName: 'p', sessionId: 's1' });
     expect(toasts[0]).toEqual(['error', 'Resume failed', 'busy']);
@@ -289,7 +290,7 @@ describe('persist, resume, rewind, fork, delete', () => {
     expect(controller.refreshInstances).not.toHaveBeenCalled();
     expect(controller.selectInstance).not.toHaveBeenCalled();
     expect(toasts).toEqual([]);
-    expect(warn).toHaveBeenCalledExactlyOnceWith('anchor auto-resume failed', expect.objectContaining({ message: SERVER_UNREACHABLE_MESSAGE }));
+    expect(warn).toHaveBeenCalledExactlyOnceWith('notification resume failed', expect.objectContaining({ message: SERVER_UNREACHABLE_MESSAGE }));
     warn.mockRestore();
   });
 
@@ -447,34 +448,32 @@ describe('resuming the active session', () => {
   });
 });
 
-describe('an automatic resume and a session picked while it runs', () => {
-  it('an automatic resume selects its session unless another was selected while its POST ran, a 409 owner likewise; a user\'s resume, silent or not, always selects its own', async () => {
+describe('a resume and a session picked while it runs', () => {
+  it('a resume selects its session unless a newer gesture picked another while its POST ran, a 409 owner likewise', async () => {
     const answers: ((a: { status?: number; body?: unknown }) => void)[] = [];
     vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => new Promise((resolve) => {
       calls.push({ url, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined });
       answers.push(({ status = 200, body = {} }) => resolve({ ok: status < 400, status, json: async () => body }));
     })));
-    /** One resume of `s1` whose POST answers `answer`; `pick` is selected while the POST is in flight. Returns the ids it selected. */
-    const run = async (opts: { silent?: boolean; userGesture?: boolean }, answer: { status?: number; body?: unknown }, pick: string | null) => {
+    /** One silent resume of `s1` whose POST answers `answer`; a newer gesture runs while it is in flight iff `overtake`. Returns the ids it selected. */
+    const run = async (answer: { status?: number; body?: unknown }, overtake: boolean) => {
       vi.mocked(controller.selectInstance).mockClear();
       appStore.set({ activeId: null, instances: [{ id: 'owner', sessionId: 's1', project: 'p', status: 'idle', mode: 'x' }] });
-      const done = resumeSession({ projectName: 'p', sessionId: 's1', ...opts });
-      if (pick) appStore.set({ activeId: pick });
+      const done = resumeSession({ projectName: 'p', sessionId: 's1', silent: true });
+      if (overtake) gestureSelected();
       answers.shift()!(answer);
       await done;
       return vi.mocked(controller.selectInstance).mock.calls.map(([id]) => id);
     };
-    expect(await run({ silent: true }, { body: { id: 'new' } }, null), 'control: an automatic resume selects its session').toEqual(['new']);
-    expect(await run({ silent: true }, { body: { id: 'new' } }, 'picked')).toEqual([]);
-    expect(await run({ silent: true }, { status: 409, body: { error: 'busy' } }, null), 'control: an automatic 409 selects the owner').toEqual(['owner']);
-    expect(await run({ silent: true }, { status: 409, body: { error: 'busy' } }, 'picked')).toEqual([]);
-    expect(await run({}, { body: { id: 'new' } }, 'picked'), 'a user resume selects its own').toEqual(['new']);
-    expect(await run({ silent: true, userGesture: true }, { body: { id: 'new' } }, 'picked'), 'a silent user resume (a notification click) selects its own').toEqual(['new']);
+    expect(await run({ body: { id: 'new' } }, false), 'control: a resume selects its session').toEqual(['new']);
+    expect(await run({ body: { id: 'new' } }, true)).toEqual([]);
+    expect(await run({ status: 409, body: { error: 'busy' } }, false), 'control: a silent 409 selects the owner').toEqual(['owner']);
+    expect(await run({ status: 409, body: { error: 'busy' } }, true)).toEqual([]);
   });
 
-  it('an automatic resume also yields to a session selected while its instance list refreshes, a 409 owner likewise', async () => {
-    /** One automatic resume of `s1` whose POST answers `status`; `pick` is selected while its refreshInstances is held. Returns the ids it selected. */
-    const run = async (status: number, pick: string | null) => {
+  it('a resume also yields to a newer gesture started while its instance list refreshes, a 409 owner likewise', async () => {
+    /** One silent resume of `s1` whose POST answers `status`; a newer gesture runs while its refreshInstances is held iff `overtake`. Returns the ids it selected. */
+    const run = async (status: number, overtake: boolean) => {
       stubFetch(() => (status === 409 ? { status, body: { error: 'busy' } } : { body: { id: 'new' } }));
       vi.mocked(controller.selectInstance).mockClear();
       appStore.set({ activeId: null, instances: [{ id: 'owner', sessionId: 's1', project: 'p', status: 'idle', mode: 'x' }] });
@@ -485,15 +484,15 @@ describe('an automatic resume and a session picked while it runs', () => {
       vi.mocked(controller.refreshInstances).mockImplementationOnce(() => { entered(); return gate; });
       const done = resumeSession({ projectName: 'p', sessionId: 's1', silent: true });
       await inRefresh;
-      if (pick) appStore.set({ activeId: pick });
+      if (overtake) gestureSelected();
       release();
       await done;
       return vi.mocked(controller.selectInstance).mock.calls.map(([id]) => id);
     };
-    expect(await run(200, null), 'control: an automatic resume selects its session').toEqual(['new']);
-    expect(await run(200, 'picked')).toEqual([]);
-    expect(await run(409, null), 'control: an automatic 409 selects the owner').toEqual(['owner']);
-    expect(await run(409, 'picked')).toEqual([]);
+    expect(await run(200, false), 'control: a resume selects its session').toEqual(['new']);
+    expect(await run(200, true)).toEqual([]);
+    expect(await run(409, false), 'control: a silent 409 selects the owner').toEqual(['owner']);
+    expect(await run(409, true)).toEqual([]);
   });
 });
 

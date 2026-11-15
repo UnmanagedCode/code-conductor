@@ -1219,7 +1219,11 @@ export async function spawnInstance(args: SpawnArgs, ctx: McpCtx) {
     if (msg) throw Object.assign(new Error(msg), { statusCode: 400, code: 'ARGS_INVALID' });
   }
   let inst;
-  try {
+  // A conductor resuming its own worker that is already running unowned
+  // (the user resumed it first) adopts it rather than being refused.
+  const adopted = args.resume && callerInst ? instances.adoptOwnedResume(args.resume, callerInst.id) : null;
+  if (adopted) inst = adopted;
+  else try {
     const { model, backend, tier, role } = resolveSpawnModel(args.model, { resume: args.resume, backend: args.backend });
     // createWorktree:true → create a fresh worktree (passed to create() as the
     // boolean `true`); worktree:"<name>" → attach to an existing one.

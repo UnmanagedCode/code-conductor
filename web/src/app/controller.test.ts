@@ -227,11 +227,14 @@ describe('selection and anchors', () => {
     expect(b.ws.sent.filter(([t]: any) => t === 'subscribe')).toHaveLength(1);
   });
 
-  it('first connect auto-resumes a non-archived anchored session silently, with no gesture', async () => {
+  it('first connect opens a stopped, non-archived anchored session read-only, keeping its anchor, and resumes nothing', async () => {
     history.replaceState(null, '', '/#session=s-disk');
     const b = await boot({ locate: () => ({ project: 'p', worktreeName: 'wt', archived: false }) });
     await b.open();
-    expect(b.actions.resumeSession).toHaveBeenCalledWith({ projectName: 'p', worktreeName: 'wt', sessionId: 's-disk', silent: true, userGesture: false });
+    expect(b.actions.resumeSession).not.toHaveBeenCalled();
+    expect(b.appStore.get().activeId).toBe('ended:s-disk');
+    expect(b.appStore.get().ended).toMatchObject({ sessionId: 's-disk', project: 'p', ended: { source: 'session', worktreeName: 'wt' } });
+    expect(location.hash).toBe('#session=s-disk');
   });
 
   it('first connect opens an archived anchored session read-only, keeping its anchor, and clears the anchor of a missing session', async () => {
@@ -275,7 +278,7 @@ describe('notification clicks', () => {
   it('a reaped session is located and resumed silently with a gesture', async () => {
     const b = await boot({ locate: () => ({ project: 'p', worktreeName: null, archived: false }) });
     await b.c.handleNotificationClick({ instanceId: 'gone', sessionId: 's9' });
-    expect(b.actions.resumeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's9', projectName: 'p', silent: true, userGesture: true }));
+    expect(b.actions.resumeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's9', projectName: 'p', silent: true }));
   });
 
   it('a clicked archived session opens read-only', async () => {

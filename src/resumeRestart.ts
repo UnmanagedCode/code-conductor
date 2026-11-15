@@ -481,7 +481,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       if (!first) await wait(staggerMs);
       first = false;
       try {
-        // The browser's anchor auto-resume can attach a carried-over session before
+        // A user's resume (a sidebar click, a notification) can attach a carried-over session before
         // the staggered restore reaches it. Adopt that instance so the session still
         // gets its restart prompt; this loop is its only sender, so it arrives once.
         // No await separates this check from create()'s synchronous guards, so a

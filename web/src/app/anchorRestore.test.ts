@@ -1,6 +1,7 @@
 // The first connect's restore of the session the URL names, under every order
 // the instance list, the server's `instances` hints and the anchor lookup can
-// answer in: the named session opens whenever it is live or resumable, a hint's
+// answer in: the named session opens whenever it is live or on disk (a stopped one
+// read-only: a page load never resumes), a hint's
 // read starts only after the read in flight has landed, an unknown session
 // lands on the home screen with nothing re-read, a session the user picks or
 // Back returns to meanwhile stands, and a notification clicked meanwhile opens
@@ -24,7 +25,6 @@ const resumed = (sessionId: string) => inst(`i:${sessionId}`, sessionId);
 const A = inst('iA', 's-a');
 const B = inst('iB', 's-b');
 const D = resumed('s-disk');
-const X = resumed('s-x');
 const Y = resumed('s-y');
 const MISS: RouteAnswer = { status: 404, json: {} };
 const ON_DISK: RouteAnswer = { json: { project: 'p', worktreeName: null, archived: false } };
@@ -231,8 +231,7 @@ describe('restoring the URL-named session on first connect', () => {
     await ctl.land(1, [A, B]);
     ctlLookup.release(ON_DISK);
     await ctl.settle();
-    await ctl.landRest(2, [A, B, D]);
-    expect(ctl.active(), 'control: the restore alone resumes and opens the named session').toBe(D.id);
+    expect(ctl.active(), 'control: the restore alone opens the named session, read-only').toBe('ended:s-disk');
 
     history.replaceState(null, '', '/#session=s-b');
     history.pushState(null, '', '/#session=s-disk');
@@ -296,22 +295,20 @@ describe('restoring the URL-named session on first connect', () => {
     expect(consumeStashedAnchor()).toBe('s-a');
   });
 
-  it('a stopped session the URL names is resumed and keeps its anchor when a hint\'s newer read is in flight past the post-resume read', async () => {
+  it('a stopped session the URL names opens read-only and keeps its anchor, with nothing resumed, when a hint\'s newer read is in flight', async () => {
     history.replaceState(null, '', '/#session=s-disk');
     const b = await boot(() => ON_DISK);
     await b.open();
     await b.land(1, []);
-    expect(b.posts(), 'fixture check: the anchor was resumed').toBe(1);
-    expect(b.reads, 'fixture check: the post-resume read is in flight').toHaveLength(2);
+    expect(b.posts(), 'nothing on page load resumes the session').toBe(0);
     await b.hint();
-    await b.land(2, [D]);
+    await b.land(2, []);
     expect(location.hash).toBe('#session=s-disk');
-    expect(b.active()).toBe(D.id);
-    await b.land(3, [D]);
-    expect(b.active()).toBe(D.id);
+    expect(b.active()).toBe('ended:s-disk');
+    expect(b.posts()).toBe(0);
   });
 
-  it('a notification click whose lookup answers after the first-connect restore has resumed its session still resumes and opens the clicked one, with its anchor', async () => {
+  it('a notification click whose lookup answers after the first-connect restore opened its own session read-only still resumes and opens the clicked one, with its anchor', async () => {
     history.replaceState(null, '', '/#session=s-x');
     const lookups: Record<string, Held> = { 's-x': held<RouteAnswer>(), 's-y': held<RouteAnswer>() };
     const b = await boot((sid) => lookups[sid].answer);
@@ -322,18 +319,17 @@ describe('restoring the URL-named session on first connect', () => {
     expect(b.locates(), 'fixture check: the restore and the click are both looking up').toBe(2);
     lookups['s-x'].release(ON_DISK);
     await b.settle();
-    await b.land(2, [A, X]);
-    expect(b.active(), 'fixture check: the restore resumed and opened its session').toBe(X.id);
+    expect(b.active(), 'fixture check: the restore opened its session read-only').toBe('ended:s-x');
     lookups['s-y'].release(ON_DISK);
     await b.settle();
-    await b.landRest(3, [A, X, Y]);
+    await b.landRest(2, [A, Y]);
     await click;
-    expect(b.posts()).toBe(2);
+    expect(b.posts(), 'only the click resumed').toBe(1);
     expect(b.active()).toBe(Y.id);
     expect(location.hash).toBe('#session=s-y');
   });
 
-  it('a notification click whose lookup answers first opens the clicked session over the first-connect restore resuming behind it, with its anchor', async () => {
+  it('a notification click whose lookup answers first opens the clicked session, resumed, over the first-connect restore opening its own read-only behind it, with its anchor', async () => {
     history.replaceState(null, '', '/#session=s-x');
     const lookups: Record<string, Held> = { 's-x': held<RouteAnswer>(), 's-y': held<RouteAnswer>() };
     const b = await boot((sid) => lookups[sid].answer);
@@ -347,12 +343,39 @@ describe('restoring the URL-named session on first connect', () => {
     expect(b.posts(), 'fixture check: the click is resuming').toBe(1);
     lookups['s-x'].release(ON_DISK);
     await b.settle();
-    expect(b.posts(), 'fixture check: the restore resumed behind it').toBe(2);
+    expect(b.posts(), 'the restore resumed nothing').toBe(1);
     await b.land(2, [A, Y]);
-    await b.land(3, [A, X, Y]);
     await click;
     expect(b.active()).toBe(Y.id);
     expect(location.hash).toBe('#session=s-y');
+  });
+});
+
+describe('a page load after a restart', () => {
+  it('an anchor naming a stopped session opens it read-only and posts no resume', async () => {
+    history.replaceState(null, '', '/#session=s-disk');
+    const b = await boot(() => ON_DISK);
+    await b.open();
+    await b.land(1, [A]);
+    expect(b.locates(), 'fixture check: the unlisted anchor was looked up').toBe(1);
+    expect(b.posts()).toBe(0);
+    expect(b.ended()?.sessionId).toBe('s-disk');
+    expect(b.active()).toBe('ended:s-disk');
+    expect(location.hash).toBe('#session=s-disk');
+  });
+
+  it('the read-only pane goes live in place once the session is resumed elsewhere', async () => {
+    history.replaceState(null, '', '/#session=s-disk');
+    const b = await boot(() => ON_DISK);
+    await b.open();
+    await b.land(1, [A]);
+    expect(b.active(), 'fixture check: the pane is read-only').toBe('ended:s-disk');
+    await b.hint();
+    await b.land(2, [A, D]);
+    expect(b.active()).toBe(D.id);
+    expect(b.ended()).toBeNull();
+    expect(location.hash).toBe('#session=s-disk');
+    expect(b.posts(), 'the page itself resumed nothing').toBe(0);
   });
 });
 
@@ -384,16 +407,15 @@ describe('restoring a URL-named session that cannot resume', () => {
     expect(b.ended()).toMatchObject({ sessionId: 's-wt', ended: { source: 'session', worktreeName: 'gone' } });
   });
 
-  it('the same session resumes while the project still lists its worktree', async () => {
+  it('the same session opens read-only, nothing resumed, while the project still lists its worktree', async () => {
     history.replaceState(null, '', '/#session=s-wt');
     const p: Project = { name: 'p', path: '/p', system: 'local', remoteId: null, worktrees: [{ worktreeName: 'gone' }] };
     const b = await boot(() => ({ json: { project: 'p', worktreeName: 'gone', archived: false } }), [p]);
     await b.open();
     await b.land(1, [A]);
-    await b.landRest(2, [A, resumed('s-wt')]);
-    expect(b.posts()).toBe(1);
-    expect(b.ended()).toBeNull();
-    expect(b.active()).toBe('i:s-wt');
+    expect(b.posts()).toBe(0);
+    expect(b.ended()).toMatchObject({ sessionId: 's-wt', ended: { source: 'session', worktreeName: 'gone' } });
+    expect(b.active()).toBe('ended:s-wt');
   });
 });
 

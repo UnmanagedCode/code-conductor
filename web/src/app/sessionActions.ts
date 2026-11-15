@@ -52,13 +52,12 @@ export function loadSessions(projectName: string, worktreeName?: string | null) 
 }
 
 export async function resumeSession({
-  projectName, worktreeName, sessionId, silent = false, userGesture = !silent, gesture,
-}: { projectName: string; worktreeName?: string | null; sessionId: string; silent?: boolean; userGesture?: boolean; gesture?: number }) {
-  // An automatic resume (a URL anchor) never takes over a session selected while it ran. A user's
-  // (`gesture`: the token of the click that started it, else its own) yields only to a newer gesture's.
-  const selected = activeId();
-  const token = userGesture ? gesture ?? beginGesture() : undefined;
-  const wanted = () => (token === undefined ? activeId() === selected : !gestureOvertaken(token));
+  projectName, worktreeName, sessionId, silent = false, gesture,
+}: { projectName: string; worktreeName?: string | null; sessionId: string; silent?: boolean; gesture?: number }) {
+  // Every resume is a user's (`gesture`: the token of the click that started it, else its own) and
+  // yields only to a newer gesture's. `silent` (a notification click) quietly selects a live owner on a 409.
+  const token = gesture ?? beginGesture();
+  const wanted = () => !gestureOvertaken(token);
   try {
     let inst: Instance;
     try {
@@ -72,16 +71,16 @@ export async function resumeSession({
         // A concurrent resume (e.g. the server's restart restore) may already own it.
         await refreshInstances();
         const live = instances().find((i) => i.sessionId === sessionId);
-        if (live && wanted()) selectInstance(live.id, { userGesture, gesture: token });
+        if (live && wanted()) selectInstance(live.id, { userGesture: true, gesture: token });
         return;
       }
       throw e;
     }
     await refreshProjects();
     await refreshInstances();
-    if (wanted()) selectInstance(inst.id, { userGesture, gesture: token });
+    if (wanted()) selectInstance(inst.id, { userGesture: true, gesture: token });
   } catch (e: any) {
-    if (silent) { console.warn('anchor auto-resume failed', e); return; }
+    if (silent) { console.warn('notification resume failed', e); return; }
     toast.error('Resume failed', e.message);
   }
 }

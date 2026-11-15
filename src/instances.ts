@@ -78,9 +78,10 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import {
   getTitle as getSessionTitle, getSessionBackend, setSessionBackend, getSessionMode, setSessionMode,
-  isConducted, markConducted, setSessionPlace, isPersistent, setSegmentPersistent, getTurnMarks, recordTurnEnd,
+  loadSessions, resolveOwner, markConducted, setSessionPlace, isPersistent, setSegmentPersistent, getTurnMarks, recordTurnEnd,
   type SessionBackendRecord, type TurnMarks,
 } from './sessionStore.ts';
+import { conductedLineage } from './conductorSpawns.ts';
 import { MODES, DEFAULT_MODE, effectiveResumeMode } from './sessionModes.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { IdleRenewNudgeController, type NudgeTimers } from './idleRenewNudge.ts';
@@ -626,10 +627,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   conducted: boolean;
   callerInstanceId: string | null;
   // Public sessionId of the conductor that spawned this worker, resolved once at
-  // create. Recorded on the session as `parent` at spawn.
+  // create: from the caller, or on a caller-less resume from the stored chain.
+  // Recorded on the session as `parent` at spawn.
   parentSessionId: string | null;
   // Public sessionId of the root of this instance's live spawn chain, resolved
-  // once at create (see _doCreateResolved) and never persisted. Reported as
+  // once at create (see _doCreateResolved; from the caller, or on a caller-less
+  // resume from the stored chain; `adoptOwnedResume` re-forms it) and never
+  // persisted. Reported as
   // summary().rootSessionId only while this conducted instance is live.
   rootSessionId: string | null;
   // The sticky ask this session is waiting on the user for (src/awaitingUser.ts),
@@ -3300,8 +3304,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   async _writeSessionMetadata(): Promise<void> {
     // Re-assert the durable persistent + conducted flags BEFORE the normal
     // session's early return, so a session that survives SIGKILL recovers BOTH
-    // on respawn (InstanceManager.create() OR-recovers them via
-    // isPersistent/isConducted). In steady state both are no-ops that cost a
+    // on respawn (InstanceManager.create() OR-recovers them from
+    // the store). In steady state both are no-ops that cost a
     // stat each (the store's precheck); they self-heal a spawn-time write that
     // failed. The last-prompt / permission-mode write below stays after the
     // early return — it exists only to surface a session in the shell-side
@@ -4881,6 +4885,24 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this.idsForSession(sessionId).map(id => this.byId.get(id))
       .find((i): i is Instance => i != null && i.proc != null) ?? null;
   }
+  // A conductor's own live worker that came up before the conductor did (a user
+  // resumed it): re-form the spawn edge instead of refusing the conductor's
+  // spawn_instance({resume}). Only for a conducted worker whose recorded parent
+  // is `callerInstanceId`'s session and whose current owner is gone; anything
+  // else returns null and keeps the "already attached" refusal.
+  adoptOwnedResume(resume: string, callerInstanceId: string): Instance | null {
+    const caller = this.byId.get(callerInstanceId);
+    const inst = this.liveForSession(resume);
+    if (!caller?.sessionId || !inst || inst === caller || !inst.conducted) return null;
+    if (inst.parentSessionId !== caller.sessionId) return null;
+    const owner = inst.callerInstanceId ? this.byId.get(inst.callerInstanceId) : undefined;
+    if (owner && isLiveOrComingUp(owner)) return null;
+    inst.callerInstanceId = caller.id;
+    inst.rootSessionId = rootSessionOf(caller);
+    inst.emit('status', inst.summary());
+    return inst;
+  }
+
   // THE liveness authority for a public sessionId (governance reads this, and
   // only this — see liveForSession above for the "is there a proc I can
   // address right now" counterpart).
@@ -5047,7 +5069,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Thin wrapper over _doCreate that serialises concurrent resumes of the same
   // session. The corruption-prevention checks live HERE, in the synchronous
   // prefix (no `await` before they run), so two concurrent resume calls — the
-  // restart anchor auto-resume racing the manifest restore, or a manual
+  // user's resume racing the manifest restore, or a manual
   // stop+resume — can't both slip past during the await gap _doCreate opens
   // before spawn() attaches `.proc`.
   create(opts: CreateInstanceInput = {}): Promise<Instance> {
@@ -5218,7 +5240,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     //       the tier to {backend, model}) and restart-manifest restore.
     //   (b) resume with no explicit backend — the session store records which
     //       backend ran the session (one of the two bits jsonl can't carry),
-    //       covering UI resume / crash / anchor auto-resume uniformly.
+    //       covering UI resume / crash resume uniformly.
     // An EXPLICIT backend that isn't in the registry must refuse, not fall back to
     // `claude`: `finalModel` keeps the caller's foreign model id, so the fallback
     // would launch a real `claude --model <foreign-id>` against the Anthropic
@@ -5551,9 +5573,39 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // resuming a historical session, recover it from the session store
     // so a UI-resumed conducted session re-acquires the marker (survives
     // --resume). Per-session and immutable, so OR-ing the two is safe.
+    // A resume with no caller (a UI/REST one) also recovers the session's stored
+    // lineage: the recorded parent and its chain's root, and the live spawn edge
+    // when that parent is running. A caller's resume makes the caller parent and
+    // root, as a spawn does.
     let conductedFlag = !!conducted;
-    if (!conductedFlag && resume) {
-      try { conductedFlag = await isConducted(publicId ?? resume); } catch { /* best-effort */ }
+    let effectiveCaller: string | null = callerInstanceId ?? null;
+    let parentSessionId: string | null = null;
+    let rootSessionId: string | null = null;
+    if (effectiveCaller) {
+      const callerInst = this.byId.get(effectiveCaller);
+      parentSessionId = callerInst?.sessionId ?? null;
+      rootSessionId = rootSessionOf(callerInst);
+    }
+    if (resume && (!conductedFlag || !effectiveCaller)) {
+      try {
+        const index = await loadSessions();
+        const owner = resolveOwner(index, publicId ?? resume);
+        const stored = owner ? conductedLineage(index.byPublic, owner) : null;
+        if (stored) {
+          conductedFlag = true;
+          if (!effectiveCaller && stored.parent) {
+            const parentInst = this.liveForSession(stored.parent);
+            if (parentInst) {
+              effectiveCaller = parentInst.id;
+              parentSessionId = parentInst.sessionId;
+              rootSessionId = rootSessionOf(parentInst);
+            } else {
+              parentSessionId = stored.parent;
+              rootSessionId = stored.root;
+            }
+          }
+        }
+      } catch { /* best-effort */ }
     }
     // Recover the persistent flag from the resumed segment on resume so a
     // persistent session that survived SIGKILL, or was archived and restored,
@@ -5565,7 +5617,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // gets a BRAND NEW Instance object (firstPrompt starts null) — unlike the
     // manifest-driven restart-resume path (resumeRestart.ts), which seeds it
     // from its own in-memory snapshot, every OTHER resume (a UI "resume dead
-    // session" click, crash/anchor auto-resume, spawn_instance({resume})) had
+    // session" click, crash resume, spawn_instance({resume})) had
     // nothing recovering it, so the next prompt()'s fallback-when-null guard
     // (see prompt() below) would clobber the label with whatever was just
     // typed. `--resume` does not fork history into a new jsonl (verified:
@@ -5602,9 +5654,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       persistent: !!persistent,
       pristine: !!pristine,
       conducted: conductedFlag,
-      callerInstanceId: callerInstanceId ?? null,
-      parentSessionId: (callerInstanceId ? this.byId.get(callerInstanceId)?.sessionId : null) ?? null,
-      rootSessionId: rootSessionOf(callerInstanceId ? this.byId.get(callerInstanceId) : undefined),
+      callerInstanceId: effectiveCaller,
+      parentSessionId,
+      rootSessionId,
       // `debug` falls back to the persisted conductor-wide default only when
       // the caller omitted it (undefined) — an explicit true/false always wins.
       // `??` also treats an explicit `null` as "omitted" (falls through to the

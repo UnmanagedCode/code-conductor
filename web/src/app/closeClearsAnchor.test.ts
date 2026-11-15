@@ -45,7 +45,9 @@ async function boot(locate: (sessionId: string) => RouteAnswer | Promise<RouteAn
     'GET /api/instances': () => { const h = held<RouteAnswer>(); reads.push(h); return h.answer; },
     'POST /api/instances': (body) => ({ json: resumed(body.resume) }),
     // No session here is a pristine conductor: its lookup (tried before locate) misses.
-    'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? { status: 404, json: {} } : locate(decodeURIComponent(url.split('/')[3]))),
+    'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? { status: 404, json: {} }
+      : url.includes('/lineage-events') ? { json: { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null } }
+      : locate(decodeURIComponent(url.split('/')[3]))),
     'GET /api/projects': () => ({ json: [] }),
     'GET /api/workspaces': () => ({ json: [] }),
   });
@@ -244,9 +246,8 @@ describe('Back onto an entry naming a session that is not listed', () => {
     await b.settle();
     expect(location.hash).toBe('#session=s-x');
     await b.land(2, [A]);
-    expect(b.posts(), 'fixture check: the restore resumed the session its entry names').toBe(1);
-    await b.landRest(3, [A, resumed('s-x')]);
-    expect(b.active()).toBe(resumed('s-x').id);
+    expect(b.posts(), 'the restore resumes nothing').toBe(0);
+    expect(b.active(), 'the restore opened the session its entry names, read-only').toBe('ended:s-x');
     expect(location.hash).toBe('#session=s-x');
   });
 });
