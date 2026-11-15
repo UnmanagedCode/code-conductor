@@ -268,7 +268,7 @@ export async function systemById(id: string, remoteId: string | null, subject: s
   }
   const sys = handleFor(row, argv, remoteId);
   // Connecting HERE, not at first use, is what keeps the degraded listing
-  // honest: tryResolveProject (src/projects.ts) turns this refusal into the
+  // honest: tryResolveProject (src/projectRegistry.ts) turns this refusal into the
   // row's `systemUnreachable` reason, whereas a handle that connects lazily
   // would hand the listing a System that fails every fact separately with
   // nothing to say why.

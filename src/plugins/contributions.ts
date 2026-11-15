@@ -187,7 +187,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // WHICH MACHINES THE CACHED SCAN WAS ABOUT, as one string. Two terms:
   //
   //   * each contributing plugin's placement, via placementToken — the cheap
-  //     LOCAL prefix of resolveProjectDir (src/projects.ts). It reaches no
+  //     LOCAL prefix of resolveProjectDir (src/projectRegistry.ts). It reaches no
   //     system on purpose: this runs on every compose, and a check that resolved
   //     a system would throw while a box was down and flip the catalog
   //     permanently degraded instead of merely re-checking.

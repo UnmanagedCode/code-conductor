@@ -2306,7 +2306,7 @@ export async function renameWorkspace({ oldName, newName }: { oldName: string; n
 }
 
 // Assign or clear a project's workspace: the twin of the REST PUT, both on
-// setProjectWorkspace (projects.ts). `workspace: null` or "" clears it, a new
+// setProjectWorkspace (projectRegistry.ts). `workspace: null` or "" clears it, a new
 // name is auto-registered, and `.conduct` is refused.
 export async function setProjectWorkspace({ project, workspace }: { project: string; workspace?: string | null }) {
   if (typeof project !== 'string' || !project) throw new Error('project required');
