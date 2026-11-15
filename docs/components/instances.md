@@ -68,6 +68,7 @@ Routed-site inventory in [protocol.md](../protocol.md).
 **Seam modules:** `src/instances/overageRouting.ts` holds the bodies of `InstanceManager`'s overage trip, stop routing and lock release (`_handleOverageTrip` … `_clearOverage`) and `softInterruptDeadlineMs`, as `this: InstanceManager` functions; the class keeps a same-name one-line delegate for each.
 `src/instances/steer.ts` holds the bodies of `Instance`'s steer/interrupt/drain controller (`interrupt` … `interruptTurnForStop`) as `this: Instance` functions, plus `MID_TURN_NOTE`, `POST_STOP_STEER_NOTE` and `CLEAN_STOP_GRACE_MS` (re-exported); the state and a same-name delegate per function stay on `Instance`.
 `src/instances/rewind.ts` holds the bodies of `Instance`'s rewind and boundary-fork paths (`rewindToUserMessage` … `_fileOrdinalFor`) as `this: Instance` functions, plus their refusal codes and fork-wait constants (re-exported); `forkAtUserMessage`, `forkAtTip`, `_claimForkSource` and a delegate per function stay on `Instance`.
+`src/instances/restartSwitch.ts` holds the bodies of `Instance`'s model-switch restart and relaunch window (`setModel` … `_lastExitCause`) as `this: Instance` functions, plus `RELAUNCH_FAILED` (re-exported) and `assertBackendLaunchResolvable`; `setEffort`, `_wipeForResume` and a delegate per function stay on `Instance`.
 
 ## `src/idleSubscriptions.ts`
 
