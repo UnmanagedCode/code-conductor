@@ -1689,7 +1689,24 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
       try { return (await fs.readFile(transcript, 'utf8')).includes(RESUME_TEXT); }
       catch { return false; }
     });
-    await new Promise(r => setTimeout(r, 300)); // let any stray prompt surface
+    // A sweep over the armed controller: the deadline is an hour out, so it is not
+    // due and nothing may be sent. Usage is stubbed so no sweep path reaches the
+    // account endpoint; resolved once the sweep cycle and any verify have ended.
+    const ctrl = instances._overageResume;
+    const fetchUsage = ctrl.fetchUsage;
+    ctrl.fetchUsage = async () => ({ five_hour: { utilization: 0 } });
+    try {
+      await ctrl._tick();
+      await waitFor(() => !ctrl._ticking && ctrl._checking.size === 0 && !ovgInst._overageResumeFiring,
+        { interval: 2, label: 'the resume controller to be idle' });
+    } finally {
+      ctrl.fetchUsage = fetchUsage;
+    }
+    // The resume prompt that would go out carries the queued message, so it is not
+    // AUTO_RESUME_TEXT verbatim: any echo at all is a prompt sent. (This entry is
+    // not wasBusy, so restore itself sends nothing.)
+    assert.equal(ovgInst.ring.toArray().some(e => e.kind === 'user_echo'), false,
+      'a sweep leaves a not-yet-due deadline unsent');
     const dump = await fs.readFile(transcript, 'utf8');
     assert.ok(dump.includes(RESUME_TEXT), 'plain session re-prompted with RESUME_TEXT');
     assert.ok(!dump.includes(AUTO_RESUME_TEXT), 'future overage deadline did NOT fire');

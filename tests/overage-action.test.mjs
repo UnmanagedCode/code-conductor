@@ -19,10 +19,19 @@ import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { buildConductorResumePreamble, IDLE_PARKED_RESUME_TEXT } from '../src/overageResume.ts';
 import { sendPrompt, approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
 import { getAccountUsage } from '../src/accountUsage.ts';
+import { quiesceHub } from './hubQuiesce.mjs';
 import { installUsageSeamTripwire, assertUsageSeamInjected, assertUsageSeamsInstalled } from './overageUsageSeam.mjs';
 import { ensureConductProject, CONDUCT_PROJECT_NAME, isConductorInstance } from '../src/conduct.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+
+// The resume scheduler is idle: no sweep cycle mid-flight, no usage verify
+// outstanding, and no resume prompt still settling on `inst`. `ctrl` is
+// `instances._overageResume`.
+const resumeQuiesced = (ctrl, inst) => waitFor(
+  () => !ctrl._ticking && ctrl._checking.size === 0 && !inst._overageResumeFiring,
+  { interval: 2, timeout: 5000, label: 'the resume controller to be idle' },
+);
 // The live `rate_limit_event` delivers the window reset as the camelCase
 // epoch-seconds `resetsAt` (confirmed against a real CLI capture), alongside
 // `status`, `rateLimitType`, and — on an overage trip — a far-future overage
@@ -863,7 +872,7 @@ test('an idle conductor\'s wake on a NON-OWNED target Pass 3 leaves running is s
     'and it is marked, so its resume prompt says the callbacks are gone');
   // The severed wait cannot fire: that target reaching turn_end wakes nobody.
   instances.emit('event', { id: standalone.id, ev: { kind: 'turn_end', isError: false } });
-  await new Promise(r => setTimeout(r, 50));
+  await quiesceHub(instances._idleHub);
   assert.equal(cEvs.some(e => e.kind === 'user_echo' && /finished its turn/.test(e.text || '')), false,
     'no wake reaches the stopped conductor');
 });
@@ -1142,7 +1151,9 @@ test('stop-resume: queued attachments are concatenated into the single resume pr
         .filter(t => t.includes(AUTO_RESUME_TEXT));
     };
     await waitFor(async () => (await stdinTextsOfUserLines()).length === 1, { timeout: 10000 });
-    await new Promise(r => setTimeout(r, 200)); // settle — catch any duplicate send
+    // The scheduler is idle and nothing is armed to send a second resume.
+    await resumeQuiesced(ctx.instances._overageResume, inst);
+    assert.equal(ctx.instances._overageResume.timers.has(inst.id), false, 'no second resume re-armed');
 
     const delivered = await stdinTextsOfUserLines();
     assert.equal(delivered.length, 1, 'exactly ONE resume prompt reached the CLI stdin');
@@ -1589,6 +1600,9 @@ test('routing stop-resume: a no-workers orchestrator arms a resume and gets the 
 // re-trip (we never send a resume turn while still throttled). resetsAt is in the past
 // (the window "reset" on our clock) so the fire is due immediately, yet usage says the
 // account is still throttled.
+// Verify cycles the still-over-threshold test lets the sweep run before it asserts.
+const CYCLES = 6;
+
 test('stop-resume: fire while still-over-threshold reschedules, no resume sent', async () => {
   await boot(scenario([overageEvent({ resetsAt: nowSec() - 100 }), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
@@ -1599,8 +1613,17 @@ test('stop-resume: fire while still-over-threshold reschedules, no resume sent',
   await waitFor(() => inst.autoResumeAt != null);
   assert.ok(inst.autoResumeAt < nowSec() + 30, 'recheck deadline is near-now, not a far-future clock');
 
-  // Let the real sweep fire + re-check several times; it must never resume while OVER.
-  await new Promise(r => setTimeout(r, 250)); // ~6 sweep cycles (40ms) × recheck (60ms)
+  // Let the real sweep fire + re-check CYCLES times; it must never resume while OVER.
+  // A recheck of 1 ms makes every sweep tick (40 ms) a verify, so the cycles run at
+  // the sweep cadence; the reschedule path is unchanged (_reschedule keeps the later
+  // of the past resetsAt and now + recheck).
+  process.env.ORCH_OVERAGE_RECHECK_MS = '1';
+  const ctrl = ctx.instances._overageResume;
+  const fetchOver = ctrl.fetchUsage;
+  let fetches = 0;
+  ctrl.fetchUsage = async () => { fetches++; return fetchOver(); };
+  await waitFor(() => fetches >= CYCLES, { timeout: 10000, label: `${CYCLES} sweep verifies` });
+  await resumeQuiesced(ctrl, inst);
   assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
     'no resume prompt delivered while still throttled');
   assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'still parked (re-armed each cycle)');
