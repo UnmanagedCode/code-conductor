@@ -359,7 +359,7 @@ test('a worker whose settle did not deliver keeps the owner held, and the owner 
       r.end(C);
       await until(() => P.calls.length > 0);
       assert.ok(folded(P.calls[0]));
-      await r.quiesce(); // no second wake decided, settling or parked
+      await sleep(120); // several of C's old heartbeat windows: no second wake
       assert.equal(P.calls.length, 1, 'exactly one owner wake in total');
       await r.teardown();
     });

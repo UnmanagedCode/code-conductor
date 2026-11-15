@@ -1617,18 +1617,25 @@ test('stop-resume: fire while still-over-threshold reschedules, no resume sent',
   // A recheck of 1 ms makes every sweep tick (40 ms) a verify, so the cycles run at
   // the sweep cadence; the reschedule path is unchanged (_reschedule keeps the later
   // of the past resetsAt and now + recheck).
+  const prevRecheck = process.env.ORCH_OVERAGE_RECHECK_MS;
   process.env.ORCH_OVERAGE_RECHECK_MS = '1';
-  const ctrl = ctx.instances._overageResume;
-  const fetchOver = ctrl.fetchUsage;
-  let fetches = 0;
-  ctrl.fetchUsage = async () => { fetches++; return fetchOver(); };
-  await waitFor(() => fetches >= CYCLES, { timeout: 10000, label: `${CYCLES} sweep verifies` });
-  await resumeQuiesced(ctrl, inst);
-  assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
-    'no resume prompt delivered while still throttled');
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'still parked (re-armed each cycle)');
-  assert.equal(inst.autoStoppedForOverage, true, 'still auto-stopped');
-  assert.equal(ctx.instances._overageActive, true, 'global lockout still engaged while parked');
+  try {
+    const ctrl = ctx.instances._overageResume;
+    const fetchOver = ctrl.fetchUsage;
+    let fetches = 0;
+    ctrl.fetchUsage = async () => { fetches++; return fetchOver(); };
+    const resumed = () => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT);
+    // A resume ends the wait at once, so it fails by the assertion below rather than a timeout.
+    await waitFor(() => fetches >= CYCLES || resumed(), { timeout: 10000, label: `${CYCLES} sweep verifies` });
+    await resumeQuiesced(ctrl, inst);
+    assert.equal(resumed(), false, 'no resume prompt delivered while still throttled');
+    assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'still parked (re-armed each cycle)');
+    assert.equal(inst.autoStoppedForOverage, true, 'still auto-stopped');
+    assert.equal(ctx.instances._overageActive, true, 'global lockout still engaged while parked');
+  } finally {
+    if (prevRecheck === undefined) delete process.env.ORCH_OVERAGE_RECHECK_MS;
+    else process.env.ORCH_OVERAGE_RECHECK_MS = prevRecheck;
+  }
 });
 
 // (d) Fetch failure is "can't confirm": reschedule (do NOT resume blindly) until the
