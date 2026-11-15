@@ -1,15 +1,15 @@
 // The disk feed of awaitingUser (src/awaitingUserTranscript.ts): what the
 // backward chunked scan reads, where it stops, how it walks segments, and what
 // its process-lifetime memo re-reads — plus the SessionRow cost bound
-// (an archived non-conducted row is derived only when `deriveAwaitingFor`
-// names it; a conducted row never is).
+// (an archived non-conducted row is derived only by `sessionRowForCwd`;
+// a conducted row never is).
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { deriveAwaitingUser, chainEndingAt } from '../src/awaitingUserTranscript.ts';
-import { localPlace, sessionFilePath, listSessionsForCwdWithCounts } from '../src/projects.ts';
+import { localPlace, sessionFilePath, listSessionsForCwdWithCounts, sessionRowForCwd } from '../src/projects.ts';
 import { setSegmentArchived, markConducted } from '../src/sessionStore.ts';
 import { buildWakeStub } from '../shared/wakeCallback.ts';
 import { mintPublicId, recordRotation } from '../src/sessionLineage.ts';
@@ -225,9 +225,9 @@ test('a record with two text blocks: only the last one is the final text', async
   }
 });
 
-// INVARIANT: deriveAwaitingFor matches the row's PUBLIC id (what describe_session
+// INVARIANT: sessionRowForCwd matches the row's PUBLIC id (what describe_session
 // is given), not its current backing sid, and derives over the whole live chain.
-test('deriveAwaitingFor names a renewed session by its public id and derives across its segments', async () => {
+test('sessionRowForCwd names a renewed session by its public id and derives across its segments', async () => {
   const p = place('lineage');
   const first = sid(); const second = sid();
   await seedSessionJsonl(p, first, [user('go'), asst('m1', [askTool('tq')], 'tool_use')]);
@@ -236,16 +236,16 @@ test('deriveAwaitingFor names a renewed session by its public id and derives acr
   await recordRotation(publicId, second, 'renew');
   assert.notEqual(publicId, second, 'premise: the public id is not the current backing sid');
   await setSegmentArchived(second, true);
-  const rowOf = async (opts) => (await listSessionsForCwdWithCounts(p, null, { includeArchived: true, ...opts })).rows
+  const listed = (await listSessionsForCwdWithCounts(p, null, { includeArchived: true })).rows
     .find(r => r.sessionId === publicId);
-  assert.equal((await rowOf({})).awaitingUser, null, 'premise: archived, so a plain list read does not derive it');
-  assert.equal((await rowOf({ deriveAwaitingFor: second })).awaitingUser, null, 'the backing sid names no row');
-  const row = await rowOf({ deriveAwaitingFor: publicId });
+  assert.equal(listed.awaitingUser, null, 'premise: archived, so a plain list read does not derive it');
+  assert.equal(await sessionRowForCwd(p, second), null, 'the backing sid names no row');
+  const row = await sessionRowForCwd(p, publicId);
   assert.equal(row.awaitingUser, 'question');
   assert.equal(row.awaitingUserSource, 'tool', 'the ask sits in the OLDER segment');
 });
 
-test('SessionRow: list reads leave archived and conducted rows null; deriveAwaitingFor derives the named row', async () => {
+test('SessionRow: list reads leave archived and conducted rows null; sessionRowForCwd derives the named row', async () => {
   const p = place('rows');
   const [live, archived, conducted] = [sid(), sid(), sid()];
   const records = [user('go'), asst('m1', [askTool('tq')], 'tool_use')];
@@ -253,30 +253,28 @@ test('SessionRow: list reads leave archived and conducted rows null; deriveAwait
   await setSegmentArchived(archived, true);
   await markConducted(conducted);
 
-  const rowsOf = async (opts) => new Map((await listSessionsForCwdWithCounts(p, null, { includeArchived: true, ...opts })).rows
+  const listed = new Map((await listSessionsForCwdWithCounts(p, null, { includeArchived: true })).rows
     .map(r => [r.sessionId, r]));
-  const listed = await rowsOf({});
   assert.equal(listed.get(live).awaitingUser, 'question');
   assert.equal(listed.get(live).awaitingUserSource, 'tool');
   assert.equal(listed.get(archived).awaitingUser, null, 'archived: not derived in a list read');
   assert.equal(listed.get(conducted).awaitingUser, null, 'conducted: never carries the flag');
   assert.ok(!('rootSessionId' in listed.get(live)) && !('parentSessionId' in listed.get(live)), 'a disk row carries neither spawn-tree key');
 
-  const described = await rowsOf({ deriveAwaitingFor: archived });
-  assert.equal(described.get(archived).awaitingUser, 'question');
-  assert.equal(described.get(archived).awaitingUserSource, 'tool');
+  const described = await sessionRowForCwd(p, archived);
+  assert.equal(described.awaitingUser, 'question');
+  assert.equal(described.awaitingUserSource, 'tool');
 });
 
 // INVARIANT: awaitingUser is null on a conducted session on every surface —
-// describe_session's deriveAwaitingFor exception included.
-test('deriveAwaitingFor on an archived CONDUCTED row with a pending tool ask reports null', async () => {
+// describe_session's sessionRowForCwd exception included.
+test('sessionRowForCwd on an archived CONDUCTED row with a pending tool ask reports null', async () => {
   const p = place('conducted-archived');
   const s = sid();
   await seedSessionJsonl(p, s, [user('go'), asst('m1', [askTool('tq')], 'tool_use')]);
   await setSegmentArchived(s, true);
   await markConducted(s);
-  const row = (await listSessionsForCwdWithCounts(p, null, { includeArchived: true, deriveAwaitingFor: s })).rows
-    .find(r => r.sessionId === s);
+  const row = await sessionRowForCwd(p, s);
   assert.equal(row.awaitingUser, null);
   assert.equal(row.awaitingUserSource, null);
 });

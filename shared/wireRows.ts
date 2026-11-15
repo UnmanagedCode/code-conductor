@@ -159,8 +159,8 @@ export interface SessionRow {
   // hot" would tell a reader a hot resume is safe.
   resumeMode: string;
   // The sticky ask derived from the transcript (src/awaitingUserTranscript.ts).
-  // Always null on a conducted or archived row unless the listing was asked to
-  // derive that one row (`deriveAwaitingFor`). A disk row has no owner: that
+  // Always null on a conducted or archived row, except on `describe_session`'s
+  // retired row (`sessionRowForCwd`), which derives an archived row too. A disk row has no owner: that
   // exists only while a session is live.
   awaitingUser: 'question' | 'plan' | null;
   awaitingUserSource: 'tool' | 'text' | null;

@@ -89,7 +89,7 @@ the pure core of `awaitingUser` (no IO, no import of `src/instances.ts`): `isTex
 
 ## `src/awaitingUserTranscript.ts`
 
-`deriveAwaitingUser(place, segmentIds)`: the same state derived from a session's persisted transcript by a bounded backward scan, with a process-lifetime memo. Used by `Instance.launch()` (hydrate) and `listSessionsForCwdWithCounts` (the SessionRow fields). `chainEndingAt` orders a segment list for it.
+`deriveAwaitingUser(place, segmentIds)`: the same state derived from a session's persisted transcript by a bounded backward scan, with a process-lifetime memo. Used by `Instance.launch()` (hydrate) and the shared session-row builder (`listSessionsForCwdWithCounts`, `sessionRowForCwd`; the SessionRow fields). `chainEndingAt` orders a segment list for it.
 
 ## `src/sessionActivity.ts`
 
