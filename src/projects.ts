@@ -10,7 +10,7 @@ import { httpError } from './httpError.ts';
 import { markProjectsChanged, projectsOperation } from './projectsChanged.ts';
 import { forgetWorktreeLandings } from './worktreeLandings.ts';
 import { isSessionId, isMintedPublicId, assertBackingId } from './identifiers.ts';
-import { projectsRoot, orchStoreRoot, projectStoreDir } from './storeRoot.ts';
+import { projectsRoot, orchStoreRoot, projectStoreDir, localWorktreesRoot, pluginsRoot } from './storeRoot.ts';
 import {
   NAME_RE, validateName, recordFile, readProjectRecord,
   type ProjectLocation, type ProjectRecord,
@@ -33,7 +33,7 @@ import { errCode, errMsg } from '../shared/basics.ts';
 // local, so cc's own atomic writes and the local System's are one operation.
 export { writeFileAtomic };
 // Re-exported from the leaves they moved to: each has many importers.
-export { projectsRoot, orchStoreRoot, projectStoreDir, validateName, readProjectRecord, assertBackingId };
+export { projectsRoot, orchStoreRoot, projectStoreDir, localWorktreesRoot, pluginsRoot, validateName, readProjectRecord, assertBackingId };
 
 
 // The conductor's own repo root — one level up from src/, unlike
@@ -69,26 +69,6 @@ const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 // checkout isn't under projectsRoot().
 export function selfProjectDir(): string {
   return SELF_PROJECT_DIR;
-}
-
-
-// Every local worktree checkout cc creates lives under one dotfolder at
-// `<projectsRoot>/.worktrees/<project>/<key>` — wherever the project itself
-// lives. Dot-prefixed so it can never be mistaken for a project directory, and
-// `<project>/` scoped so two projects may share a worktree key.
-const LOCAL_WORKTREES_DIRNAME = '.worktrees';
-
-export function localWorktreesRoot(): string {
-  return path.join(projectsRoot(), LOCAL_WORKTREES_DIRNAME);
-}
-
-// Where the Plugin Library clones an installed plugin. A plugin checkout is an
-// ordinary project with an ordinary record; this directory only keeps cc's own
-// installs out of the area a user browses for adoptable trees.
-const PLUGINS_DIRNAME = '.plugins';
-
-export function pluginsRoot(): string {
-  return path.join(projectsRoot(), PLUGINS_DIRNAME);
 }
 
 

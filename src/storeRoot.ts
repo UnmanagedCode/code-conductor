@@ -56,3 +56,22 @@ export function orchStoreRoot(): string {
 export function projectStoreDir(name: string): string {
   return path.join(orchStoreRoot(), 'projects', name);
 }
+
+// Every local worktree checkout cc creates lives under one dotfolder at
+// `<projectsRoot>/.worktrees/<project>/<key>` — wherever the project itself
+// lives. Dot-prefixed so it can never be mistaken for a project directory, and
+// `<project>/` scoped so two projects may share a worktree key.
+const LOCAL_WORKTREES_DIRNAME = '.worktrees';
+
+export function localWorktreesRoot(): string {
+  return path.join(projectsRoot(), LOCAL_WORKTREES_DIRNAME);
+}
+
+// Where the Plugin Library clones an installed plugin. A plugin checkout is an
+// ordinary project with an ordinary record; this directory only keeps cc's own
+// installs out of the area a user browses for adoptable trees.
+const PLUGINS_DIRNAME = '.plugins';
+
+export function pluginsRoot(): string {
+  return path.join(projectsRoot(), PLUGINS_DIRNAME);
+}
