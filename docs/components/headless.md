@@ -101,7 +101,7 @@ Every holder, a restart's replacement included, takes the lock by an exclusive p
 The replacement reads `pending-resume.json` / `pending-archive.json` only after it holds the lock (`acquireRootLock` runs first in `start()`), so a resume restart carries over exactly as without the lock.
 
 ## Headless mode
-`src/headless/`. `server.ts`'s entry block hands any argv carrying a headless flag to `headlessMain` (`src/headless/entry.ts`); every other argv boots the ordinary server. User-facing behavior: [features.md](../features.md) → Headless mode; the result object and exit codes: [protocol.md](../protocol.md) → Headless run result.
+`src/headless/`. `server.ts`'s entry block hands any argv carrying a headless flag to `headlessMain` (`src/headless/entry.ts`); every other argv boots the ordinary server. User-facing behavior: [features.md](../features.md) → Headless mode; the result object and exit codes: [protocol/headless.md](../protocol/headless.md) → Headless run result.
 
 | Module | Owns |
 |---|---|

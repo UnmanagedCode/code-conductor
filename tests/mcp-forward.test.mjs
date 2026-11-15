@@ -1,6 +1,6 @@
 // send_prompt({forward:{sessionId}}) — inject another worker's recent output
 // into a prompt server-side, verbatim, without the text ever passing through
-// the conductor's own context. See docs/protocol.md → "send_prompt({forward})"
+// the conductor's own context. See docs/protocol/mcp-results.md → "send_prompt({forward})"
 // for the mechanism; this file pins the worker-visible contract (§1 of the
 // design) and the refusal table (§3).
 //

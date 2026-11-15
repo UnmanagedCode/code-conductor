@@ -8,7 +8,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 - **Feature / UI behavior** → `docs/features.md`
 - **The web UI** → `web/`, the React UI served at `/`; its shared client modules are `shared/` files reached through the `@shared/*` alias. Build, mounts and layout: `docs/components/web.md` → `src/webBuild.ts`, `web/`
 - **Backend registry (launch templates + env), custom models, tiers/roles, Claude context windows** → `docs/models.md`
-- **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
+- **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`, the index into `docs/protocol/*.md`
 - **Code mode — `run_code`, the in-script `cc` API, `describe_tools`, progress/cancel** → `docs/code-mode.md`
 - **`/mcp` as an application API — URL contract (caller in the path, `?format=`), JSON results and `outputSchema`, error channels, REST alias, `CONDUCTOR_MCP_URL`** → `docs/mcp-applications.md`
 - **Instance lifecycle, on-disk state, migrations** → `docs/architecture.md`

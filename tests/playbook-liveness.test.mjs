@@ -33,7 +33,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 // every case below turns on a stage's `needs`, `workers` or liveness value.
 // PROJECTS_ROOT is read live by orchStoreRoot(), and node:test runs each file in
 // its own process, so this is scoped to this file alone. The user overlay is read
-// per call (docs/protocol.md → Playbooks), so no cache has to be primed.
+// per call (docs/protocol/playbooks.md → Playbooks), so no cache has to be primed.
 process.env.PROJECTS_ROOT = await mkdtemp('cc-pbliveness-root-');
 {
   const dir = path.join(orchStoreRoot(), 'playbooks');

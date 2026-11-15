@@ -107,7 +107,7 @@ test('the served plugin theme, booted with no build', async (t) => {
       // Invariant: the served sheet cannot differ from the host's effective tokens — an index.css override, a removed @import, a mapped token missing from the shared file, or a stale served copy all fail it.
       assert.equal(r.status, 200);
       assert.match(r.headers.get('content-type') ?? '', /^text\/css/);
-      assert.equal(r.headers.get('cache-control'), 'no-cache', 'revalidated on every load, as docs/plugins.md and docs/protocol.md promise');
+      assert.equal(r.headers.get('cache-control'), 'no-cache', 'revalidated on every load, as docs/plugins.md and docs/protocol/rest-settings.md promise');
       const host = palette(await inlineImports(INDEX_CSS));
       const served = palette(sheet);
       for (const scope of [':root', '.dark']) {

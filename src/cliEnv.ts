@@ -25,7 +25,7 @@ import type { Platform } from './platform/index.ts';
 // project — in ONE directory. That is strictly worse than the collision this
 // module's callers exist to fix, and cc never sets the variable itself.
 //
-// The session identity trio (docs/protocol.md → Session identity env): an
+// The session identity trio (docs/protocol/subprocess.md → Session identity env): an
 // outer cc session's identity (this cc running inside one) never reaches a CLI
 // this cc spawns; Instance.spawn sets a session's own after this strip.
 const STRIPPED = [

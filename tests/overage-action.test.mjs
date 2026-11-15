@@ -697,7 +697,7 @@ test('an un-armed worker REFUSES a queued send instead of stranding it', async (
     assert.equal(res.ok, false, `${label}: soft-refused, not thrown`);
     assert.equal(res.code, 'OVERAGE_STOPPED_UNARMED', `${label}: names the state`);
     // No "Nothing was sent" — `ok:false` plus a refusal code already means that on
-    // this surface (docs/protocol.md's refusal convention), so restating it is
+    // this surface (docs/protocol/mcp-results.md's refusal convention), so restating it is
     // reassurance on a channel that volunteers the fact.
     assert.match(res.reason, /re-drive it then/, `${label}: says when to retry`);
     assert.ok(!/Nothing was sent/.test(res.reason), `${label}: no redundant reassurance`);

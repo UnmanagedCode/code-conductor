@@ -328,7 +328,7 @@ test('an ambiguous resume prefix soft-refuses SESSION_AMBIGUOUS, naming `resume`
 });
 
 test('a backing id passed as resume is normalised to the handle before the gate sees it', async () => {
-  // Pins docs/protocol.md's "a public id or any backing id is fine" to behaviour.
+  // Pins docs/protocol/mcp.md's "a public id or any backing id is fine" to behaviour.
   const cwd = await project();
   const full = await spawnLiveWorker();
   const backing = instForSession(instances, full).backingSessionId;

@@ -2076,7 +2076,7 @@ test('project_read scoped by worktree reads the worktree copy, not the project r
   assert.equal(fromWt.content, 'worktree\n', 'the scope really did reach the worktree');
 });
 
-// The echo invariant (docs/protocol.md → Input params): a response reports the
+// The echo invariant (docs/protocol/mcp.md → Input params): a response reports the
 // worktree's registered name. With one spelling there is nothing to
 // canonicalize, so what this pins is that the name is REPORTED at all — a
 // conductor keying a card / wiki page / UI state off it needs a stable string.

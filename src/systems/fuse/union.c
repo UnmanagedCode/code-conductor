@@ -2148,7 +2148,7 @@ int main(int argc, char *argv[])
 		 * THE COLUMNS AND THE ONE CAVEAT, IN THE FILE ITSELF. This log
 		 * outlives the run directory (cc harvests it into the store) and
 		 * is read by an operator or an agent who has not read
-		 * docs/protocol.md. `#` so both parsers skip it.
+		 * docs/protocol/fuse-event-log.md. `#` so both parsers skip it.
 		 */
 		fprintf(event_fp,
 			"# cc-union events v2\tkind\top\tpath\treason\tpid\ttgid\tcomm\tcmdline"

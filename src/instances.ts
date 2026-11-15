@@ -460,7 +460,7 @@ export class EventLog {
   // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
   // events unconditionally — see web/src/conversation/model.ts). The per-token
   // live-stream floods (one system/thinking_tokens per thinking_delta token,
-  // emitted by the Claude CLI as a live progress estimate — docs/protocol.md owns
+  // emitted by the Claude CLI as a live progress estimate — docs/protocol/ws-events.md owns
   // the observed-emitter list; it is NOT specific to any one backend, and prose
   // streams one text_delta per token on every backend) are kept OUT of the ring so
   // a single long turn can't overflow it and strand the archive mid-turn
@@ -1088,7 +1088,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // is the fire's own gate — deliberately NOT `interrupting`, which is also the
     // WS-visible "stopping…" flag — and _interruptFired suppresses any further
     // control_request until a request rejects or the turn exits; an ACK does not
-    // clear it, and it is NOT one per arm. Full rule: docs/protocol.md → Two-tier
+    // clear it, and it is NOT one per arm. Full rule: docs/protocol/subprocess.md → Two-tier
     // interrupt.
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
@@ -1876,7 +1876,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // `_seq`: push() assigns it to the object it receives (see EventLog.push),
     // so cloning for the ring leaves the live frame with `_seq: undefined` and
     // breaks the monotonic-`_seq` contract the `event` message relies on for
-    // idempotent merge (docs/protocol.md). A stamp placed between push() and
+    // idempotent merge (docs/protocol/websocket.md). A stamp placed between push() and
     // emit() still reaches both — it is the same object — so only one placed
     // after emit() would miss the WS frame.
     this.ring.push(wrapped); // stamps wrapped._seq
@@ -2089,7 +2089,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       //
       // `replayed: true` keeps it OUT of the ring (EventLog.push declines it),
       // so it is emitted seq-less to the live feed only. Two reasons: `events[]`
-      // stays free of synthetic message_starts (see docs/protocol.md's snapshot
+      // stays free of synthetic message_starts (see docs/protocol/websocket.md's snapshot
       // entry), and it can never become the ring head after a trim and fake a
       // `history_gap` at the archive seam (message_start is quiescent —
       // parser.ts). Non-retention also keeps it invisible to ring.nextSeq, which
@@ -2679,7 +2679,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Remote workers get the same host value: their CLI runs on this machine,
     // and their redirected Bash runs on the remote without cc's env.
     spawnEnv.CC_PROJECTS_ROOT = path.resolve(projectsRoot());
-    // Session identity for hooks / MCP servers in this session (docs/protocol.md
+    // Session identity for hooks / MCP servers in this session (docs/protocol/subprocess.md
     // → Session identity env). cc-managed like CC_PROJECTS_ROOT. The deletes back
     // up cliEnvBase's strip, so an outer session's value can never survive.
     if (this.sessionId) spawnEnv.CC_SESSION_ID = this.sessionId; else delete spawnEnv.CC_SESSION_ID;
@@ -2767,7 +2767,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // itself runs on a substitution backend and both blocks apply, the effective window is
     // min(MAX_CONTEXT_TOKENS, AUTO_COMPACT_WINDOW) — the knob wins only when
     // it's smaller than the native window; otherwise the native window still
-    // binds, same as docs/protocol.md's "remains the binding minimum".
+    // binds, same as docs/protocol/subprocess.md's "remains the binding minimum".
     if (isConductorInstance(this)) {
       const cw = getConductorCompactWindow();
       if (cw.enabled) {
@@ -5456,7 +5456,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // spawnInstance (src/mcp/handlers.ts) rebuilds the conductor-facing
         // reason from scratch rather than surfacing this message, because by here
         // `resume` is the backing id and printing it would hand a conductor a
-        // ~/.claude UUID (docs/protocol.md → Public vs backing id). Without the
+        // ~/.claude UUID (docs/protocol/mcp.md → Public vs backing id). Without the
         // property the surfaced refusal loses WHERE it looked, which is what made
         // a wrong-cwd resume read as a bad id.
         throw Object.assign(

@@ -45,7 +45,7 @@ Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the
 - Node built-ins load by dynamic import of a `node:` specifier. The working directory is the session's own checkout. A program's own `import()` resolves bare specifiers from cc's install (the location of `src/codeMode/runtime.ts`) and relative ones from `src/codeMode/`, never from the cwd: use `node:` specifiers or absolute paths. A plugin's own module imports resolve from the plugin's checkout instead.
 - Some plugin names exist only inside a program: they are absent from `tools/list` and the REST listing, `describe_tools` lists them like any tool, and a call from outside a program is `TOOL_UNKNOWN`. Such a call runs inside the program, not through the tool gate. A plugin may also be unavailable on this machine (`TOOL_UNAVAILABLE` 409) or fail to load (`PLUGIN_LOAD_FAILED` 500). The mechanism is [plugins.md → `runCode`](plugins.md).
 - `run_code` called from inside a program is refused [`SCRIPT_NESTED`](#refusals).
-- A program's calls get no tool-result nudge (`SELF_TITLE_NUDGE`, `LANDING_RENEW_NUDGE`): those ride the calling tool's PostToolUse hook, keyed by the CLI's toolUseId, which a REST-alias call does not carry ([protocol.md](protocol.md) → Tool-result nudges).
+- A program's calls get no tool-result nudge (`SELF_TITLE_NUDGE`, `LANDING_RENEW_NUDGE`): those ride the calling tool's PostToolUse hook, keyed by the CLI's toolUseId, which a REST-alias call does not carry ([protocol/mcp.md](protocol/mcp.md) → Tool-result nudges).
 - A program cannot wait for a worker: `spawn_instance` and `send_prompt` return at once, and the worker's turn end wakes the session as usual.
 
 ## `describe_tools`

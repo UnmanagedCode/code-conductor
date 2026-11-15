@@ -267,7 +267,7 @@ export async function drainToIdle({ instances, log = console, graceMs = RESUME_D
         // Already forced once ⇒ leave it alone; a second control_request buys
         // nothing and the turn is already severed as far as we can sever it.
         // No status check: BOTH tiers are contracted to no-op off-turn
-        // (docs/protocol.md → Two-tier interrupt), pinned for the forced tier by
+        // (docs/protocol/subprocess.md → Two-tier interrupt), pinned for the forced tier by
         // tests/instances.test.mjs → 'forced interrupt is a no-op when not in a
         // turn'. Re-adding one here would duplicate a guarantee the callee owns.
         if (inst.turnForceAborted) continue;

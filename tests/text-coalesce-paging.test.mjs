@@ -9,7 +9,7 @@
 //   - the ASYNC seam: unlike thinking, a text slot IS routinely paged mid-stream
 //     (get_transcript on a running worker), so in-place growth across an await
 //     gets pinned here rather than left to a comment,
-//   - the documented get_transcript cursor consequence (docs/protocol.md): an
+//   - the documented get_transcript cursor consequence (docs/protocol/mcp-results.md): an
 //     open block's slot is served once and never re-served, so nobody
 //     "fixes" that into a same-_seq re-serve the client would silently drop.
 

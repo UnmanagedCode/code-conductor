@@ -128,3 +128,14 @@ test('every components heading must be linked from the components index', () => 
   assert.deepEqual(r.unindexed.map((u) => u.text), ['`b`']);
   assert.deepEqual(r.dead, []);
 });
+
+test('every topic heading must be linked from its own index', () => {
+  const r = lintFixture({
+    'docs/components.md': '# Components\n\n- [`b`](components/x.md#b)\n',
+    'docs/components/x.md': '# X\n\n## `b`\n',
+    'docs/protocol.md': '# Protocol\n\n- [`a`](protocol/x.md#a)\n- [`b`](components/x.md#b)\n',
+    'docs/protocol/x.md': '# X\n\n## `a`\n\ntext\n\n## `b`\n\ntext\n',
+  });
+  assert.deepEqual(r.unindexed.map((u) => [u.file, u.text, u.why]), [['docs/protocol/x.md', '`b`', 'no link in docs/protocol.md']]);
+  assert.deepEqual(r.dead, []);
+});

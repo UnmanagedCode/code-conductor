@@ -1060,7 +1060,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
       { plan, unionBinary: '/store/bin/union-abc', ccBootId: 'boot-9', spawnedAt: 5 },
     );
     const workerText = fileText(w, plan.workerEnvPath);
-    // The session identity (docs/protocol.md → Session identity env) is not a
+    // The session identity (docs/protocol/subprocess.md → Session identity env) is not a
     // plan name, so it reaches the worker's hooks and MCP servers unchanged.
     assert.match(workerText, /^export CC_SESSION_ID='abcd1234'$/m);
     assert.match(workerText, /^export CC_SESSION_KIND='worker'$/m);

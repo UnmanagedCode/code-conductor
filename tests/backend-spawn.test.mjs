@@ -979,7 +979,7 @@ describe('launch_failed crash signal', () => {
     assert.equal(hasLaunchFailed(), undefined, 'no launch_failed for claude backend');
   });
 
-  // T10 (card 2026-0286 §2) — the case docs/protocol.md names FIRST ("wrapper binary
+  // T10 (card 2026-0286 §2) — the case docs/protocol/ws-events.md names FIRST ("wrapper binary
   // missing") and which emitted NOTHING terminal before the terminal latch: the
   // wrapper never started, so there was no 'exit' to key launch_failed on.
   test('a substitution-backend spawn that NEVER STARTED also emits launch_failed', async () => {

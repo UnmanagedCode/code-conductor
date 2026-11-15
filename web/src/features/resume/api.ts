@@ -1,4 +1,4 @@
-// The resume banner's REST surface (/api/resume-notices, docs/protocol.md).
+// The resume banner's REST surface (/api/resume-notices, docs/protocol/rest-instances.md).
 import { apiFetch } from '@shared/http';
 
 export type ResumeKind = 'restart' | 'unclean';

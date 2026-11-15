@@ -207,7 +207,7 @@ export function mountProjects(r: express.Router, { instances, capabilities }: { 
   // Subdirectory names of one absolute path on one system — the path
   // autocomplete in the Adopt and New-project dialogs. Soft refusals return 200
   // with {ok:false, code, reason}, like POST /projects/external. Contract and
-  // limits: src/dirListing.ts, docs/protocol.md.
+  // limits: src/dirListing.ts, docs/protocol/rest.md.
   r.get('/fs/dirs', async (req, res, next) => {
     try {
       const { path: p, system, remoteId } = req.query;

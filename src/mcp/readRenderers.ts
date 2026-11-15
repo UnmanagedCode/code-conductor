@@ -506,7 +506,7 @@ export function renderProjectStatus(status: unknown): string {
 // The sibling renderer is renderPlaybookConvention (src/playbookConvention.ts),
 // which renders a playbook into the conductor's SYSTEM PROMPT and deliberately
 // omits `needs`, `spawnable` and every `tools` entry except `spawn_instance`'s
-// pin (docs/protocol.md → Playbooks). Do not
+// pin (docs/protocol/playbooks.md → Playbooks). Do not
 // merge the two: this surface answers "what does this stage permit?" when asked,
 // and folding it into the prompt renderer would push every stage's tools policy
 // into every conductor's system prompt.
@@ -526,7 +526,7 @@ export function renderProjectStatus(status: unknown): string {
 // entry, and no label or indent separates those. Nothing here can fix that, and
 // nothing tries to: the containment is editorial, the rule being that a
 // description states the conductor's MOVE and never restates the graph
-// (docs/protocol.md → Playbooks, "Optional `description`").
+// (docs/protocol/playbooks.md → Playbooks, "Optional `description`").
 //
 // Absent (unauthored) means NO line at all, not a — : the field is either
 // authored prose or nothing.

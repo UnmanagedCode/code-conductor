@@ -1,6 +1,6 @@
 # `/mcp` for applications
 
-cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does (those its audience admits) and gets **structured JSON** back. The tool catalog is in [features.md → MCP interface](features.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol).
+cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does (those its audience admits) and gets **structured JSON** back. The tool catalog is in [features.md → MCP interface](features.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol/mcp.md → MCP tool protocol](protocol/mcp.md#mcp-tool-protocol).
 
 Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts`.
 
@@ -95,7 +95,7 @@ How JSON format differs from text:
 - Every `runTool` failure is an outcome, never an escaped rejection, and every async route forwards a stray rejection to the router's error middleware (`buildMcpRouter`), so no `/mcp` request can take the server down or reach Express's HTML error page.
 - URL-level faults (`CALLER_UNKNOWN`, `FORMAT_INVALID`, `QUERY_PARAM_UNKNOWN`) carry `data` in both formats.
 - In text format the `-32600`, `-32601` and `-32603` replies `dispatch` emits (and the router error middleware's `-32603`) carry no `data`. The body-parser faults (`PARSE_ERROR`, `PAYLOAD_TOO_LARGE`, body `REQUEST_INVALID`) carry `data` in both formats, as the URL-level faults do: the body is refused before any format applies.
-- In text format a tool fault is an `isError` result whose text is the reason, and a refusal or error is the text view described in protocol.md.
+- In text format a tool fault is an `isError` result whose text is the reason, and a refusal or error is the text view described in protocol/mcp-results.md.
 - Every echoed string in a JSON refusal is cut at `JSON_ECHO_CAP`, and the refusal then carries `truncated:true` — except a plugin refusal's `details`, which is never cut.
 
 ## REST alias
@@ -107,7 +107,7 @@ How JSON format differs from text:
 | `GET /mcp/tools`, `GET /mcp/<sessionId>/tools` | the listing |
 
 - Same core as `tools/call` (`runTool`): one argument validation, one playbook gate, one handler. The alias body for a call is byte-for-byte the `structuredContent` of the same `tools/call`, with the same caller attribution.
-- **No tool-result nudges.** An application caller — the REST alias, or a `tools/call` without the CLI's `params._meta["claudecode/toolUseId"]` — never gets one; they ride a Claude CLI session's PostToolUse hook ([protocol.md](protocol.md) → Tool-result nudges).
+- **No tool-result nudges.** An application caller — the REST alias, or a `tools/call` without the CLI's `params._meta["claudecode/toolUseId"]` — never gets one; they ride a Claude CLI session's PostToolUse hook ([protocol/mcp.md](protocol/mcp.md) → Tool-result nudges).
 - **Success:** `200` + the `structuredContent` object itself, with no envelope.
 - **Refusal or thrown error:** `200` + the refusal object.
 - **Faults:** the statuses in the table above.
@@ -132,7 +132,7 @@ An agent chains or batches calls with the `run_code` tool: one JavaScript progra
 
 - A plugin's value is set whenever cc has a port.
 - A worker has no `CONDUCTOR_MCP_URL`: its programs call through `run_code`. An inherited value (cc itself running as some cc's worker) is removed, never passed on: by `Instance.launch` for workers and by the supervisor's `spawnChild` for plugins.
-- The session variables' contract (lifetime, the kind rule, remote sessions, where they never reach) is [protocol.md → Session identity env](protocol.md#subprocess-protocol). A plugin backend gets no `CC_SESSION_*`: it serves many sessions and reads its caller from the forwarded `caller.sessionId`.
+- The session variables' contract (lifetime, the kind rule, remote sessions, where they never reach) is [protocol/subprocess.md → Session identity env](protocol/subprocess.md#subprocess-protocol). A plugin backend gets no `CC_SESSION_*`: it serves many sessions and reads its caller from the forwarded `caller.sessionId`.
 
 ### Resolve your own session
 

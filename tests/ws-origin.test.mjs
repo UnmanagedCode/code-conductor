@@ -2,7 +2,7 @@
 // when its Origin's host:port equals the Host it addressed; a refusal is a raw
 // 403 that reaches neither the wsHub nor the plugin proxy (which would lazy-start
 // the child). An upgrade with no Origin is a non-browser client and is admitted.
-// Contract: docs/protocol.md → Handshake: Origin check.
+// Contract: docs/protocol/websocket.md → Handshake: Origin check.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';

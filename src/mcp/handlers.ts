@@ -152,7 +152,7 @@ interface DiffFileRow {
 //
 // Excluded on purpose — the complement of this list over summary(), pinned as a
 // set by tests/mcp-conductor-view.test.mjs (WITHHELD_KEYS) and described in
-// docs/protocol.md → Emitted handles; update all three together:
+// docs/protocol/mcp.md → Emitted handles; update all three together:
 // `id` + `callerInstanceId` (per-process instanceIds that die on restart —
 // `sessionId` is the only worker handle this surface speaks), `debugDir` (the
 // `debug` boolean is the signal), `autoApprovePlan` (UI-only),
@@ -861,7 +861,7 @@ export async function listWorktrees({ project }: { project: string }) {
 // HANDLE-ONLY, AND ENFORCED. The conductor must never see or use a ~/.claude
 // session UUID, so a backing/segment id is refused rather than resolved. The
 // test is `publicIdFor(input) !== input` and is NEVER a length or shape test: a
-// session with no lineage row has public id == backing id (docs/protocol.md →
+// session with no lineage row has public id == backing id (docs/protocol/mcp.md →
 // Public vs backing id, the store's base case), so a full 36-char UUID may be
 // the only handle that session has. publicIdFor is exact for all three cases —
 // a known segment maps to its owner (refuse), a known public id maps to itself
@@ -3165,7 +3165,7 @@ export async function bashProject({ project, worktree, command, timeout }: {
   const timeoutMs = clampBashTimeoutMs(timeout);
   const { cwd, worktreeMeta, system } = await resolveProjectCwd(project, worktree);
   // Responses report the CANONICAL name, never the caller's spelling — see
-  // docs/protocol.md → Input params. All three exit paths below echo it.
+  // docs/protocol/mcp.md → Input params. All three exit paths below echo it.
   const wtName = worktreeMeta?.worktreeName ?? null;
 
   // BUCKET 3, and local-only BY CONSTRUCTION rather than by refusal: the bundle
