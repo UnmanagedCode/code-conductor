@@ -8,11 +8,14 @@ Project resolution, the session store, the conductor and conventions modules, an
 
 ## `src/projects.ts`
 
-FS ops on `<projectsRoot>/`; the store-root helpers (`projectsRoot`, `orchStoreRoot`, `projectStoreDir`, `localWorktreesRoot`, `pluginsRoot`), the record reader (`readProjectRecord`, `validateName`, the record types) and the registry (below) live in the leaves `src/storeRoot.ts`, `src/projectRecord.ts` and `src/projectRegistry.ts`, which `projects.ts` re-exports, while `projects.ts` owns project lifecycle (create, adopt, retarget, delete), transcript-path resolution (`claudeProjectsRoot`, `remoteConfigDir`, `transcriptRoot`, `encodeCwd`), session listing and location, CLAUDE.md seeding.
+FS ops on `<projectsRoot>/`; the store-root helpers (`projectsRoot`, `orchStoreRoot`, `projectStoreDir`, `localWorktreesRoot`, `pluginsRoot`), the record reader (`readProjectRecord`, `validateName`, the record types), the registry and project lifecycle (both below) live in `src/storeRoot.ts`, `src/projectRecord.ts`, `src/projectRegistry.ts` and `src/projectLifecycle.ts`, which `projects.ts` re-exports, while `projects.ts` owns transcript-path resolution (`claudeProjectsRoot`, `remoteConfigDir`, `transcriptRoot`, `encodeCwd`) and session listing and location.
 
 **`src/projectRegistry.ts`** holds the registry: resolution (`resolveProjectDir`, `getProject`, `tryResolveProject`, `placementToken`, `validateProjectRef`), the store-derived listing (`listProjects`, `findSelfProject`, `projectsBySystem`), the record writers (`registerProject`, `writeProjectMeta`, `writeProjectRecord`) and the workspace registry in `<store>/workspaces.json` (`listWorkspaces`, `summarizeWorkspaces`, `addWorkspace`, `removeWorkspace`, `renameWorkspace`, `setProjectWorkspace`).
-It must never import `projects.ts`: lifecycle there imports `heldNameReason`, `projectKeyCollisionReason` and `writeProjectRecord` from it, and those three are not re-exported.
+It must never import `projects.ts`: `src/projectLifecycle.ts` imports `heldNameReason`, `projectKeyCollisionReason` and `writeProjectRecord` from it, and those three are not re-exported.
 Its `systems/transcriptKey.ts` import stays lazy, because that module statically imports `projects.ts`.
+
+**`src/projectLifecycle.ts`** holds project lifecycle: creation (`createProject`, with `validatePlacementInput`, the CLAUDE.md and CONVENTIONS.md seed and `commitScaffold`), adoption (`adoptProject`, `heldRecordVerdict`, `staleDiscards`, `deliverAdoptedConventions`), the target change (`setProjectRemote`, `validateRemoteId`, `normalizeSystemPath`) and deregistration (`getProjectForDelete`, `deleteProject`, `removeProjectStoreDir`); `projects.ts` re-exports its public names.
+It must never import `projects.ts`, and it reaches `worktrees.ts`, `projectsCache.ts` and `projectClaudeMd.ts` only by dynamic import: `worktrees.ts` and `projectClaudeMd.ts` statically import `projects.ts`, so a static edge to either closes a cycle.
 
 **`resolveProjectDir(name)` is THE resolution chokepoint** every project path in the app comes from, and it is **ONE record read with no filesystem probing**.
 `readProjectRecord(name)` answers `null` for an unregistered name and the record's `location` otherwise; `placementOf` turns that into `{system, remoteId, path}`, and the path IS the answer.

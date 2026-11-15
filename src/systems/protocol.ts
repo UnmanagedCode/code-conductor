@@ -72,7 +72,7 @@ export const PTY_DIM_MAX = 4096;
 export const REMOTE_ID_MAX = 128;
 
 // THE ONE remoteId RULE, shared by the Remote field (`validateRemoteId`,
-// src/projects.ts) and a provider's `remoteList` (`readRemoteList` below), so an
+// src/projectLifecycle.ts) and a provider's `remoteList` (`readRemoteList` below), so an
 // id a provider lists is always one cc accepts back as a project's Remote.
 // Returns the defect, not a message: each caller words its own refusal.
 export function remoteIdDefect(id: string): 'empty' | 'too-long' | 'invalid-char' | null {
