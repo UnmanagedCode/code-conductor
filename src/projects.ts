@@ -1,4 +1,4 @@
-import { promises as fs, type Dirent } from 'node:fs';
+import { promises as fs, type Dirent, type Stats } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadSessions, fileFacts, setSegmentArchived, type SessionIndex } from './sessionStore.ts';
@@ -306,10 +306,8 @@ async function rowScanFor(place: TranscriptPlacement): Promise<RowScan> {
   return { place, dir, index, liveSegmentIdsOf, deriveAwaitingUser, chainEndingAt };
 }
 
-type FileStat = Awaited<ReturnType<typeof fs.stat>>;
-
 // The stat of a transcript that is a real file, else null.
-async function transcriptStat(full: string): Promise<FileStat | null> {
+async function transcriptStat(full: string): Promise<Stats | null> {
   try {
     const stat = await fs.stat(full);
     return stat.isFile() ? stat : null;
@@ -319,7 +317,7 @@ async function transcriptStat(full: string): Promise<FileStat | null> {
 // The one per-file row builder behind the listing and `sessionRowForCwd`, so the
 // two cannot drift. `sid` is the transcript's filename stem.
 async function buildSessionRow(
-  scan: RowScan, sid: string, full: string, stat: FileStat,
+  scan: RowScan, sid: string, full: string, stat: Stats,
   { record, segment }: ReturnType<typeof fileFacts>,
   { deriveArchived }: { deriveArchived: boolean },
 ): Promise<SessionRow> {
