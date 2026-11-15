@@ -236,39 +236,85 @@ test("nested: a UI resume of a section lead's worker restores the lead as parent
   assert.equal(sum.callerInstanceId, instForSession(instances, lead.sessionId).id);
 });
 
-test("a conductor's spawn_instance({resume}) adopts its own worker that a UI resume started before it was live; another conductor is refused", async () => {
+// Conductor `a` (stopped, then resumed as `a2`) and its worker `w`, which a UI resume started
+// while `a` was down: running, conducted, recorded parent `a`, no owner.
+async function unownedWorkerWithResumedSpawner(project) {
   const a = await driver();
-  const b = await driver();
-  const w = await stoppedOwnedWorker('own-adopt', a);
+  const w = await stoppedOwnedWorker(project, a);
   const aBacking = a.backingSessionId;
   const aSid = a.sessionId;
   await kill(aSid);
   const inst = await uiResume(w);
   assert.equal(inst.summary().callerInstanceId, null, 'premise: the worker came up before its spawner');
-
   // The conductor's transcript must exist to resume it.
   await seedSessionJsonl(localPlace(path.join(process.env.PROJECTS_ROOT, CONDUCT_PROJECT_NAME)), aBacking);
   const r = await api(baseUrl, 'POST', '/api/instances', { project: CONDUCT_PROJECT_NAME, resume: aSid, playbookEnforcement: 'warn', mode: 'bypassPermissions' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const a2 = instances.get(r.body.id);
   await waitFor(() => a2.status === 'idle');
+  return { w, inst, a2, aSid };
+}
+
+// Records the `status` summaries `inst` emits while `fn` runs.
+async function statusesDuring(inst, fn) {
+  const statuses = [];
+  const onStatus = (sum) => { if (sum?.id === inst.id) statuses.push(sum); };
+  instances.on('status', onStatus);
+  try { await fn(); } finally { instances.off('status', onStatus); }
+  return statuses;
+}
+
+test("a conductor's spawn_instance({resume}) adopts its own worker that a UI resume started before it was live; another conductor is refused", async () => {
+  const b = await driver();
+  const { w, inst, a2, aSid } = await unownedWorkerWithResumedSpawner('own-adopt');
 
   const refused = await rpcJson(b.sessionId, 'spawn_instance', { resume: w.sessionId, mode: 'bypassPermissions' });
   assert.match(JSON.stringify(refused.body), /already attached/, 'a conductor that is not the recorded spawner is refused');
   assert.equal(inst.summary().callerInstanceId, null, 'and the worker stays unowned');
 
-  const statuses = [];
-  const onStatus = (sum) => { if (sum?.id === inst.id) statuses.push(sum); };
-  instances.on('status', onStatus);
-  let view;
-  try {
-    view = unwrap(await callTool('spawn_instance', { resume: w.sessionId, title: 'adopted worker', mode: 'bypassPermissions' }, { caller: aSid }));
-  } finally { instances.off('status', onStatus); }
-  assert.ok(statuses.some(x => x.callerInstanceId === a2.id), 'adoption broadcasts a status summary carrying the new owner, so lists refresh');
-  assert.equal(inst.summary().title, 'adopted worker', "the adopting call's title is applied to the adopted session");
+  const view = unwrap(await callTool('spawn_instance', { resume: w.sessionId, title: 'adopted worker', mode: 'bypassPermissions' }, { caller: aSid }));
   assert.equal(view.sessionId, w.sessionId, JSON.stringify(view));
   assert.equal(instForSession(instances, w.sessionId), inst, 'the running instance was adopted, not a second process');
+  assert.equal(inst.summary().title, 'adopted worker', "the adopting call's title is applied to the adopted session");
   assert.equal(inst.summary().callerInstanceId, a2.id);
   assert.equal(inst.summary().parentSessionId, aSid);
   assert.equal(inst.summary().rootSessionId, aSid);
+});
+
+test('adoption broadcasts a status summary carrying the new owner on its own, with no title to emit one', async () => {
+  const { w, inst, a2, aSid } = await unownedWorkerWithResumedSpawner('own-adopt-emit');
+  const statuses = await statusesDuring(inst, async () => {
+    const view = unwrap(await callTool('spawn_instance', { resume: w.sessionId, mode: 'bypassPermissions' }, { caller: aSid }));
+    assert.equal(view.sessionId, w.sessionId, JSON.stringify(view));
+  });
+  assert.equal(inst.summary().callerInstanceId, a2.id, 'premise: the worker was adopted');
+  assert.ok(statuses.some(x => x.callerInstanceId === a2.id), 'a summary with the new owner is emitted, so lists refresh');
+});
+
+test('adoption refuses a worker whose owner is live, even its recorded spawner: already attached, instance unchanged', async () => {
+  const a = await driver();
+  const w = await stoppedOwnedWorker('own-owned', a);
+  await spawnFrom(a.sessionId, { resume: w.sessionId });
+  const inst = instForSession(instances, w.sessionId);
+  assert.equal(inst.summary().callerInstanceId, a.id, 'premise: the spawner already owns the running worker');
+  const statuses = await statusesDuring(inst, async () => {
+    const refused = await rpcJson(a.sessionId, 'spawn_instance', { resume: w.sessionId, mode: 'bypassPermissions' });
+    assert.match(JSON.stringify(refused.body), /already attached/);
+  });
+  assert.equal(instForSession(instances, w.sessionId), inst, 'no second process');
+  assert.equal(inst.summary().callerInstanceId, a.id);
+  assert.equal(inst.summary().parentSessionId, a.sessionId);
+  assert.equal(inst.summary().rootSessionId, a.sessionId);
+  assert.deepEqual(statuses, [], 'a refusal re-forms and broadcasts nothing');
+});
+
+test("nested: a UI resume of a worker whose section lead is stopped keeps the lead as parent and the top conductor as root, read from the stored chain", async () => {
+  const a = await driver();
+  const lead = await spawnFrom(a.sessionId, { project: CONDUCT_PROJECT_NAME, playbook: 'section-lead', stage: 'section-lead' });
+  const w = await stoppedOwnedWorker('own-nested-dead', lead, { playbook: 'freeform', stage: 'freeform' });
+  await kill(lead.sessionId);
+  const sum = (await uiResume(w)).summary();
+  assert.equal(sum.parentSessionId, lead.sessionId, 'the recorded spawner, though it is not running');
+  assert.equal(sum.rootSessionId, a.sessionId, 'climbed through the stopped lead to the top conductor, not the lead itself');
+  assert.equal(sum.callerInstanceId, null, 'no live spawner to own it');
 });
